@@ -4,7 +4,7 @@ return [
     'format_type' => 'swift', // swift, block, delimited, fixed_width
     
     'format_detection' => [
-        'swift' => ['/\{1:[A-Z0-9]+\}/', '/\{4:\n/'],
+        'swift' => ['/\{1:[A-Z0-9]+\}/', '/\{4:\n/'], 
         'delimited' => ['/^\|/', '/\|/'],
         'fixed_width' => ['/^[A-Z0-9]{100,}$/']
     ],
