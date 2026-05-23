@@ -1,5 +1,5 @@
 <?php
-namespace VouchMorph\Infrastructure\MessageAdapters;
+namespace Infrastructure\MessageAdapters;
 
 class MessageAdapterFactory {
     private array $globalConfig;
@@ -8,7 +8,7 @@ class MessageAdapterFactory {
     private string $currentCountry;
     
     public function __construct(string $countryCode = null) {
-        $this->globalConfig = require __DIR__ . '/../../config/message_adapters.php';
+        $this->globalConfig = require __DIR__ . '/../../Config/message_adapters.php';
         
         if ($countryCode) {
             $this->setCountry($countryCode);
@@ -19,7 +19,7 @@ class MessageAdapterFactory {
         $this->currentCountry = strtolower($countryCode);
         
         // Load country-specific config
-        $configPath = __DIR__ . "/../../Config/countries/{$this->currentCountry}/bank_formats.php";
+        $configPath = __DIR__ . "/../../Config/Countries/{$this->currentCountry}/bank_formats.php";
         
         if (!file_exists($configPath)) {
             throw new \Exception("No bank format config for country: {$countryCode}");
