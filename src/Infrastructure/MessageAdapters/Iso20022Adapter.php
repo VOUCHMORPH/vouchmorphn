@@ -1,7 +1,7 @@
 <?php
-namespace VouchMorph\Infrastructure\MessageAdapters;
+namespace Infrastructure\MessageAdapters;
 
-use VouchMorph\Core\Transaction\InternalTransaction;
+use Core\Transaction\InternalTransaction;
 
 class Iso20022Adapter implements MessageAdapterInterface {
     private string $countryCode;
@@ -11,11 +11,11 @@ class Iso20022Adapter implements MessageAdapterInterface {
         $this->countryCode = $countryCode ?? 'BW';
         
         // Load country-specific ISO mappings
-        $configPath = __DIR__ . "/../../Config/countries/{$this->countryCode}/iso_mappings.php";
+        $configPath = __DIR__ . "/../../config/countries/{$this->countryCode}/iso_mappings.php";
         if (file_exists($configPath)) {
             $this->countryConfig = require $configPath;
         } else {
-            $this->countryConfig = require __DIR__ . '/../../Config/iso_default_mappings.php';
+            $this->countryConfig = require __DIR__ . '/../../config/iso_default_mappings.php';
         }
     }
     
