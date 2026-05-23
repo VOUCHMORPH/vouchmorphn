@@ -8,7 +8,7 @@ class LegacyAdapter implements MessageAdapterInterface {
     private array $countryConfig;
     private string $version;
     private string $delimiter;
-    private array $fieldOrder;
+    private array $fieldOrder; 
     
     public function __construct(string $countryCode = null) {
         $this->countryCode = strtolower($countryCode ?? 'bw');
