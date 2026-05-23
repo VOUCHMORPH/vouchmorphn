@@ -11,11 +11,11 @@ class Iso20022Adapter implements MessageAdapterInterface {
         $this->countryCode = $countryCode ?? 'BW';
         
         // Load country-specific ISO mappings
-        $configPath = __DIR__ . "/../../config/countries/{$this->countryCode}/iso_mappings.php";
+        $configPath = __DIR__ . "/../../Config/Countries/{$this->countryCode}/iso_mappings.php";
         if (file_exists($configPath)) {
             $this->countryConfig = require $configPath;
         } else {
-            $this->countryConfig = require __DIR__ . '/../../config/iso_default_mappings.php';
+            $this->countryConfig = require __DIR__ . '/../../Config/iso_default_mappings.php';
         }
     }
     
