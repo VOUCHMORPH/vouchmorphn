@@ -1,61 +1,48 @@
 <?php
-
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
+// public/api/v1/swap/service-endpoint.php
 
 declare(strict_types=1);
 
-use BUSINESS_LOGIC_LAYER\services\SwapService;
-use APP_LAYER\utils\SessionManager;
-use DATA_PERSISTENCE_LAYER\Config\DBConnection;
+require_once __DIR__ . '/../../../src/bootstrap.php';
+
+use Domain\Services\SwapService;
+use Infrastructure\Database\DBConnection;
+use Infrastructure\Session\SessionManager;
 
 header('Content-Type: application/json');
 
-// Ensure no accidental white-space before JSON
-while (ob_get_level()) { ob_end_clean(); }
-
-// 1️⃣ BOOTSTRAP & ERROR HANDLING
-// Log errors to file, don't show them to the user
+// Disable error output to ensure clean JSON
 ini_set('display_errors', '0');
-error_reporting(E_ALL); 
+error_reporting(E_ALL);
 
+// Global exception handler
 set_exception_handler(function (Throwable $e) {
+    error_log("[SWAP_ENDPOINT] Exception: " . $e->getMessage() . "\n" . $e->getTraceAsString());
     http_response_code(500);
     echo json_encode([
         "status" => "error",
         "message" => "Internal System Error",
-        "trace_id" => bin2hex(random_bytes(8)) // For log correlation
+        "trace_id" => bin2hex(random_bytes(8))
     ]);
-    // Log the actual $e->getMessage() to your server logs here
     exit;
 });
 
-try {
-    $config = require_once __DIR__ . '/../../CORE_CONFIG/load_country.php';
-    $country = defined('SYSTEM_COUNTRY') ? SYSTEM_COUNTRY : 'BW'; 
-
-    require_once __DIR__ . '/../../DATA_PERSISTENCE_LAYER/config/DBConnection.php';
-    require_once __DIR__ . '/../../BUSINESS_LOGIC_LAYER/services/SwapService.php';
-    require_once __DIR__ . '/../../APP_LAYER/utils/session_manager.php';
-} catch (Throwable $e) {
-    throw $e; // Caught by global handler
-}
-
-// 2️⃣ AUTHENTICATION & VERBS
-SessionManager::start();
-
+// Only POST allowed
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
     echo json_encode(["status" => "error", "message" => "Method Not Allowed"]);
     exit;
 }
 
+// Authentication
+SessionManager::start();
 if (!SessionManager::isLoggedIn()) {
     http_response_code(401);
     echo json_encode(["status" => "error", "message" => "Unauthorized"]);
     exit;
 }
 
-// 3️⃣ INPUT SANITIZATION
+// Parse input
 $raw = file_get_contents('php://input');
 $data = json_decode($raw, true);
 
@@ -65,8 +52,8 @@ if (json_last_error() !== JSON_ERROR_NONE) {
     exit;
 }
 
-// 4️⃣ MANDATORY FIELDS & IDEMPOTENCY
-$required = ['fromParticipant', 'toParticipant', 'amount'];
+// Validate required fields for executeSwap
+$required = ['source', 'destination'];
 foreach ($required as $field) {
     if (empty($data[$field])) {
         http_response_code(400);
@@ -75,65 +62,68 @@ foreach ($required as $field) {
     }
 }
 
-// Crucial for Financial Sandboxes: Client-generated unique ID
-$idempotencyKey = $_SERVER['HTTP_X_IDEMPOTENCY_KEY'] ?? $data['request_id'] ?? null;
-if (!$idempotencyKey) {
+// Validate source has required sub-fields
+if (empty($data['source']['institution']) || empty($data['source']['asset_type']) || empty($data['source']['amount'])) {
     http_response_code(400);
-    echo json_encode(["status" => "error", "message" => "X-Idempotency-Key header required"]);
+    echo json_encode(["status" => "error", "message" => "Source must have institution, asset_type, and amount"]);
     exit;
 }
 
-// 5️⃣ SERVICE INIT
-$swapDB = DBConnection::getInstance($config['db']['swap']);
-$swapService = new SwapService(
-    $swapDB, 
-    $config['settings'] ?? [], 
-    $country, 
-    $config['encryption']['key'] ?? 'SECRET', 
-    $config
+// Validate destination has institution
+if (empty($data['destination']['institution'])) {
+    http_response_code(400);
+    echo json_encode(["status" => "error", "message" => "Destination must have institution"]);
+    exit;
+}
+
+// Load country configuration
+$country = getenv('SYSTEM_COUNTRY') ?: 'BW';
+$configPath = __DIR__ . '/../../../config/countries/' . strtolower($country) . '/participants.json';
+
+if (!file_exists($configPath)) {
+    // Fallback to Botswana
+    $configPath = __DIR__ . '/../../../config/countries/botswana/participants.json';
+}
+
+$participants = json_decode(file_get_contents($configPath), true);
+$feesConfig = json_decode(file_get_contents(dirname($configPath) . '/fees.json'), true);
+
+// Initialize database
+$dbConfig = require __DIR__ . '/../../../src/Core/Database/db_config.php';
+$swapDB = new PDO(
+    "pgsql:host={$dbConfig['host']};dbname={$dbConfig['database']}",
+    $dbConfig['user'],
+    $dbConfig['password']
 );
+$swapDB->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-// 6️⃣ COMPLIANCE & PRE-FLIGHT
-$user = SessionManager::getUser();
-$userId = (int)($user['id'] ?? 0);
+// Initialize SwapService
+$settings = [];
+$encryptionKey = getenv('ENCRYPTION_KEY') ?: 'default-test-key-32-chars-long!!!!';
 
-// Validate Amount
-$amount = filter_var($data['amount'], FILTER_VALIDATE_FLOAT);
-if ($amount === false || $amount <= 0) {
-    http_response_code(400);
-    echo json_encode(["status" => "error", "message" => "Invalid amount"]);
-    exit;
-}
+$combinedConfig = [
+    'participants' => $participants,
+    'fees' => $feesConfig,
+    'card_config' => json_decode(file_get_contents(dirname($configPath) . '/cards.json'), true),
+    'atm_notes' => json_decode(file_get_contents(dirname($configPath) . '/atm_notes.json'), true)
+];
 
-// KYC/AML Check
-if (!($user['kyc_verified'] ?? false) || ($user['aml_score'] ?? 0) > 90) {
-    http_response_code(403);
-    echo json_encode(["status" => "error", "message" => "Compliance verification required"]);
-    exit;
-}
+$swapService = new SwapService($swapDB, $settings, $country, $encryptionKey, $combinedConfig);
 
-// 7️⃣ EXECUTION
+// Execute swap
 try {
-    // Inject validated values back into data array
-    $data['user_id'] = $userId;
-    $data['amount'] = $amount;
-    $data['idempotency_key'] = $idempotencyKey;
-
-    $result = $swapService->initiateSwap($data);
-
-    // Fee Logging (Audit Trail)
-    if (!empty($result['fees']) && is_array($result['fees'])) {
-        foreach ($result['fees'] as $fee) {
-            $swapService->logFeeSplit($userId, $fee);
-        }
-    }
-
-    $httpCode = (isset($result['status']) && $result['status'] === 'success') ? 200 : 400;
+    $result = $swapService->executeSwap($data);
+    
+    $httpCode = ($result['status'] === 'success') ? 200 : 400;
     http_response_code($httpCode);
-    echo json_encode($result, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-
+    echo json_encode($result, JSON_UNESCAPED_SLASHES);
+    
 } catch (Exception $e) {
-    // Log error locally: error_log($e->getMessage());
+    error_log("[SWAP_ENDPOINT] Execution error: " . $e->getMessage());
     http_response_code(500);
-    echo json_encode(["status" => "error", "message" => "Transaction failed during processing"]);
+    echo json_encode([
+        "status" => "error",
+        "message" => $e->getMessage(),
+        "swap_reference" => $result['swap_reference'] ?? null
+    ]);
 }
