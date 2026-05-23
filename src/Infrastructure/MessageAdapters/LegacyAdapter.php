@@ -14,7 +14,7 @@ class LegacyAdapter implements MessageAdapterInterface {
         $this->countryCode = strtolower($countryCode ?? 'bw');
         
         // Load country-specific legacy format configuration
-        $configPath = __DIR__ . "/../../config/countries/{$this->countryCode}/legacy_format.php";
+        $configPath = __DIR__ . "/../../Config/Countries/{$this->countryCode}/legacy_format.php";
         
         if (file_exists($configPath)) {
             $this->countryConfig = require $configPath;
