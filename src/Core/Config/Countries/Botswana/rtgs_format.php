@@ -1,7 +1,7 @@
 <?php
 return [
     'version' => 'MT103',
-    'format_type' => 'swift', // swift, block, delimited, fixed_width
+    'format_type' => 'swift', // swift, block, delimited, fixed_width 
     
     'format_detection' => [
         'swift' => ['/\{1:[A-Z0-9]+\}/', '/\{4:\n/'], 
