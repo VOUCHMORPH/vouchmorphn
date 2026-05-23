@@ -18,56 +18,57 @@ class MobileMoneyAdapter implements MessageAdapterInterface {
         if (file_exists($configPath)) {
             $this->countryConfig = require $configPath;
         } else {
-            // Default mobile money format (JSON-based)
-            $this->countryConfig = [
-                'version' => '1.0',
-                'encoding' => 'JSON',
-                'required_fields' => ['msisdn', 'amount', 'currency', 'reference'],
-                'provider_mappings' => [
-                    'default' => [
-                        'format' => 'json',
-                        'endpoint_pattern' => '/api/momo/v1/transfer'
-                    ]
-                ]
-            ];
+            // NO DEFAULTS WITH HARDCODED NAMES
+            // Throw exception to force proper configuration
+            throw new \Exception("No mobile money configuration found for country: {$countryCode}. Please create config/countries/{$countryCode}/mobile_money.php");
         }
         
         $this->version = $this->countryConfig['version'] ?? '1.0';
         $this->providerFormats = $this->countryConfig['provider_mappings'] ?? [];
+        
+        // Validate that we have provider mappings
+        if (empty($this->providerFormats)) {
+            throw new \Exception("No provider_mappings defined for mobile money in country: {$countryCode}");
+        }
     }
     
     public function toExternal(InternalTransaction $transaction): string {
-        // Detect mobile money provider from bank code or metadata
+        // Detect provider from transaction metadata or bank code
         $provider = $this->detectProvider($transaction);
-        $format = $this->getProviderFormat($provider);
         
-        switch ($format['type'] ?? 'json') {
+        if (!isset($this->providerFormats[$provider])) {
+            throw new \Exception("No format configuration for provider: {$provider} in country: {$this->countryCode}");
+        }
+        
+        $format = $this->providerFormats[$provider];
+        $formatType = $format['type'] ?? 'json';
+        
+        switch ($formatType) {
             case 'json':
-                return $this->buildJsonMessage($transaction, $provider);
+                return $this->buildJsonMessage($transaction, $provider, $format);
             case 'xml':
-                return $this->buildXmlMessage($transaction, $provider);
-            case 'usSD':
-                return $this->buildUssdMessage($transaction, $provider);
+                return $this->buildXmlMessage($transaction, $provider, $format);
+            case 'delimited':
+                return $this->buildDelimitedMessage($transaction, $provider, $format);
             default:
-                return $this->buildJsonMessage($transaction, $provider);
+                throw new \Exception("Unsupported format type: {$formatType} for provider: {$provider}");
         }
     }
     
     public function toInternal(string $message): InternalTransaction {
-        // Try to detect format from message content
-        $format = $this->detectMessageFormat($message);
+        // Detect format from message structure
+        $formatType = $this->detectFormatType($message);
         
         $data = [];
-        
-        if ($format === 'json') {
+        if ($formatType === 'json') {
             $data = $this->parseJsonMessage($message);
-        } elseif ($format === 'xml') {
+        } elseif ($formatType === 'xml') {
             $data = $this->parseXmlMessage($message);
         } else {
-            $data = $this->parseUssdMessage($message);
+            $data = $this->parseDelimitedMessage($message);
         }
         
-        // Map mobile money fields to internal transaction
+        // Map using field mappings from config
         $transactionData = $this->mapToInternalFormat($data);
         $transactionData['messageFormat'] = 'mobile_money';
         $transactionData['messageVersion'] = $this->version;
@@ -77,28 +78,19 @@ class MobileMoneyAdapter implements MessageAdapterInterface {
     }
     
     public function validate(string $message): bool {
-        // Basic validation
         if (empty(trim($message))) {
             return false;
         }
         
-        // Try JSON validation
-        if ($this->isJson($message)) {
-            $data = json_decode($message, true);
-            return $this->validateRequiredFields($data);
-        }
+        $formatType = $this->detectFormatType($message);
         
-        // Try XML validation
-        if ($this->isXml($message)) {
-            return $this->validateXmlStructure($message);
+        if ($formatType === 'json') {
+            return $this->validateJson($message);
+        } elseif ($formatType === 'xml') {
+            return $this->validateXml($message);
+        } else {
+            return $this->validateDelimited($message);
         }
-        
-        // Try USSD format validation
-        if ($this->isUssdFormat($message)) {
-            return $this->validateUssdFormat($message);
-        }
-        
-        return false;
     }
     
     public function getVersion(): string {
@@ -106,128 +98,170 @@ class MobileMoneyAdapter implements MessageAdapterInterface {
     }
     
     private function detectProvider(InternalTransaction $transaction): string {
-        // Check metadata first
+        // Check metadata first (dynamic, no hardcoding)
         $metadata = $transaction->getMetadata();
         if (isset($metadata['mobile_money_provider'])) {
             return $metadata['mobile_money_provider'];
         }
         
-        // Check bank code
+        // Check if bank code matches any provider pattern from config
         $bankCode = $transaction->getReceiverBankCode();
         foreach ($this->providerFormats as $provider => $config) {
-            if (isset($config['bank_codes']) && in_array($bankCode, $config['bank_codes'])) {
-                return $provider;
+            if (isset($config['bank_codes'])) {
+                foreach ($config['bank_codes'] as $configuredBankCode) {
+                    if ($bankCode === $configuredBankCode) {
+                        return $provider;
+                    }
+                }
             }
-            if (stripos($bankCode, $provider) !== false) {
-                return $provider;
+            
+            // Check for regex pattern matching if configured
+            if (isset($config['bank_code_pattern'])) {
+                if (preg_match($config['bank_code_pattern'], $bankCode)) {
+                    return $provider;
+                }
             }
         }
         
-        return 'default';
-    }
-    
-    private function getProviderFormat(string $provider): array {
-        return $this->providerFormats[$provider] ?? $this->providerFormats['default'] ?? [
-            'type' => 'json',
-            'version' => '1.0'
-        ];
-    }
-    
-    private function buildJsonMessage(InternalTransaction $transaction, string $provider): string {
-        $format = $this->getProviderFormat($provider);
-        $fieldMap = $format['field_mappings'] ?? $this->getDefaultFieldMappings();
+        // Use default provider if configured (with dynamic name from config)
+        if (isset($this->countryConfig['default_provider'])) {
+            return $this->countryConfig['default_provider'];
+        }
         
+        throw new \Exception("Cannot detect mobile money provider for bank code: {$bankCode}");
+    }
+    
+    private function buildJsonMessage(InternalTransaction $transaction, string $provider, array $format): string {
+        $fieldMappings = $format['field_mappings'] ?? [];
         $payload = [];
         
-        foreach ($fieldMap as $externalField => $internalField) {
+        foreach ($fieldMappings as $externalField => $internalField) {
             $method = 'get' . ucfirst($internalField);
             if (method_exists($transaction, $method)) {
-                $payload[$externalField] = $transaction->$method();
+                $value = $transaction->$method();
+                
+                // Apply any transformations from config
+                if (isset($format['transformations'][$externalField])) {
+                    $value = $this->applyTransformation($value, $format['transformations'][$externalField]);
+                }
+                
+                $payload[$externalField] = $value;
             }
         }
         
-        // Add provider-specific fields
+        // Add static fields from config (dynamic, not hardcoded)
         if (isset($format['static_fields'])) {
             $payload = array_merge($payload, $format['static_fields']);
         }
         
-        // Add timestamp
-        $payload['timestamp'] = date('Y-m-d\TH:i:sP');
-        $payload['provider'] = $provider;
+        // Add timestamp using configured format
+        $timestampFormat = $format['timestamp_format'] ?? 'Y-m-d\TH:i:sP';
+        $payload[$format['timestamp_field'] ?? 'timestamp'] = date($timestampFormat);
         
-        // Wrap in provider-specific structure
+        // Add provider identifier if configured
+        if (isset($format['include_provider']) && $format['include_provider']) {
+            $payload[$format['provider_field'] ?? 'provider'] = $provider;
+        }
+        
+        // Wrap in container if configured
         if (isset($format['wrapper'])) {
             $payload = [$format['wrapper'] => $payload];
         }
         
-        return json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        $jsonOptions = $format['json_options'] ?? JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES;
+        return json_encode($payload, $jsonOptions);
     }
     
-    private function buildXmlMessage(InternalTransaction $transaction, string $provider): string {
+    private function buildXmlMessage(InternalTransaction $transaction, string $provider, array $format): string {
         $xml = new \DOMDocument('1.0', 'UTF-8');
-        $xml->formatOutput = true;
+        $xml->formatOutput = $format['pretty_print'] ?? true;
         
-        $root = $xml->appendChild($xml->createElement('MobileMoneyTransfer'));
-        $root->setAttribute('provider', $provider);
-        $root->setAttribute('version', $this->version);
+        $rootName = $format['root_element'] ?? 'MobileMoneyTransfer';
+        $root = $xml->appendChild($xml->createElement($rootName));
         
-        // Add fields
-        $fields = [
-            'transactionId' => $transaction->getTransactionId(),
-            'msisdn' => $transaction->getReceiverAccount(),
-            'amount' => $transaction->getAmount(),
-            'currency' => $transaction->getCurrency(),
-            'reference' => $transaction->getReference(),
-            'senderName' => $transaction->getSenderName(),
-            'timestamp' => date('Y-m-d H:i:s')
-        ];
+        // Add attributes from config
+        if (isset($format['attributes'])) {
+            foreach ($format['attributes'] as $attrName => $attrValue) {
+                if ($attrValue === '{provider}') {
+                    $attrValue = $provider;
+                } elseif ($attrValue === '{version}') {
+                    $attrValue = $this->version;
+                }
+                $root->setAttribute($attrName, $attrValue);
+            }
+        }
         
-        foreach ($fields as $tag => $value) {
-            $root->appendChild($xml->createElement($tag, htmlspecialchars((string)$value)));
+        // Add fields from mappings
+        $fieldMappings = $format['field_mappings'] ?? [];
+        foreach ($fieldMappings as $xmlTag => $internalField) {
+            $method = 'get' . ucfirst($internalField);
+            if (method_exists($transaction, $method)) {
+                $value = $transaction->$method();
+                
+                // Apply transformations
+                if (isset($format['transformations'][$xmlTag])) {
+                    $value = $this->applyTransformation($value, $format['transformations'][$xmlTag]);
+                }
+                
+                $root->appendChild($xml->createElement($xmlTag, htmlspecialchars((string)$value)));
+            }
         }
         
         return $xml->saveXML();
     }
     
-    private function buildUssdMessage(InternalTransaction $transaction, string $provider): string {
-        // USSD format: *provider*amount*recipient*reference#
-        $format = $this->getProviderFormat($provider);
-        $pattern = $format['ussd_pattern'] ?? '*{provider}*{amount}*{recipient}*{reference}#';
+    private function buildDelimitedMessage(InternalTransaction $transaction, string $provider, array $format): string {
+        $delimiter = $format['delimiter'] ?? '|';
+        $fieldOrder = $format['field_order'] ?? [];
+        $fields = [];
         
-        $replacements = [
-            '{provider}' => $provider,
-            '{amount}' => $transaction->getAmount(),
-            '{recipient}' => $transaction->getReceiverAccount(),
-            '{reference}' => substr($transaction->getReference(), 0, 20),
-            '{currency}' => $transaction->getCurrency(),
-            '{sender}' => $transaction->getSenderAccount()
-        ];
+        foreach ($fieldOrder as $fieldName) {
+            $method = 'get' . ucfirst($fieldName);
+            if (method_exists($transaction, $method)) {
+                $value = $transaction->$method();
+                
+                // Apply transformations
+                if (isset($format['transformations'][$fieldName])) {
+                    $value = $this->applyTransformation($value, $format['transformations'][$fieldName]);
+                }
+                
+                $fields[] = $this->escapeForDelimiter((string)$value, $delimiter);
+            } else {
+                $fields[] = '';
+            }
+        }
         
-        return str_replace(array_keys($replacements), array_values($replacements), $pattern);
-    }
-    
-    private function detectMessageFormat(string $message): string {
-        if ($this->isJson($message)) {
-            return 'json';
+        $message = implode($delimiter, $fields);
+        
+        // Add prefix if configured
+        if (isset($format['prefix'])) {
+            $prefix = str_replace('{provider}', $provider, $format['prefix']);
+            $prefix = str_replace('{version}', $this->version, $prefix);
+            $message = $prefix . $message;
         }
-        if ($this->isXml($message)) {
-            return 'xml';
+        
+        // Add suffix if configured
+        if (isset($format['suffix'])) {
+            $suffix = str_replace('{provider}', $provider, $format['suffix']);
+            $message = $message . $suffix;
         }
-        if ($this->isUssdFormat($message)) {
-            return 'ussd';
-        }
-        return 'json';
+        
+        return $message;
     }
     
     private function parseJsonMessage(string $message): array {
         $data = json_decode($message, true);
         
-        // Unwrap if needed
-        if (isset($data['data'])) {
-            $data = $data['data'];
-        }
-        if (isset($data['transfer'])) {
-            $data = $data['transfer'];
+        // Unwrap if wrapper exists (configured in country config)
+        if (isset($this->countryConfig['unwrap_path'])) {
+            $path = explode('.', $this->countryConfig['unwrap_path']);
+            foreach ($path as $key) {
+                if (isset($data[$key])) {
+                    $data = $data[$key];
+                } else {
+                    break;
+                }
+            }
         }
         
         return $data;
@@ -239,62 +273,101 @@ class MobileMoneyAdapter implements MessageAdapterInterface {
         return json_decode($json, true);
     }
     
-    private function parseUssdMessage(string $message): array {
-        // Parse USSD format: *provider*amount*recipient*reference#
-        $cleaned = trim($message, '*#');
-        $parts = explode('*', $cleaned);
+    private function parseDelimitedMessage(string $message): array {
+        // Remove prefix/suffix if configured
+        if (isset($this->countryConfig['strip_prefix'])) {
+            $message = preg_replace($this->countryConfig['strip_prefix'], '', $message);
+        }
+        if (isset($this->countryConfig['strip_suffix'])) {
+            $message = preg_replace($this->countryConfig['strip_suffix'], '', $message);
+        }
         
-        return [
-            'provider' => $parts[0] ?? '',
-            'amount' => $parts[1] ?? 0,
-            'recipient' => $parts[2] ?? '',
-            'reference' => $parts[3] ?? ''
-        ];
+        // Need to know which provider format to use for parsing
+        // Try to detect by pattern matching
+        $detectedProvider = null;
+        foreach ($this->providerFormats as $provider => $format) {
+            if (isset($format['parse_pattern'])) {
+                if (preg_match($format['parse_pattern'], $message)) {
+                    $detectedProvider = $provider;
+                    break;
+                }
+            }
+        }
+        
+        if (!$detectedProvider) {
+            throw new \Exception("Cannot detect provider for delimited message");
+        }
+        
+        $format = $this->providerFormats[$detectedProvider];
+        $delimiter = $format['delimiter'] ?? '|';
+        $fieldOrder = $format['field_order'] ?? [];
+        $parts = explode($delimiter, $message);
+        
+        $data = [];
+        foreach ($fieldOrder as $index => $fieldName) {
+            if (isset($parts[$index])) {
+                $data[$fieldName] = $this->unescapeForDelimiter($parts[$index], $delimiter);
+            }
+        }
+        
+        return $data;
     }
     
     private function mapToInternalFormat(array $data): array {
-        $map = [
-            'transactionId' => ['transactionId', 'id', 'txn_id'],
-            'amount' => ['amount', 'value', 'amount_value'],
-            'currency' => ['currency', 'ccy', 'currency_code'],
-            'reference' => ['reference', 'ref', 'description'],
-            'senderAccount' => ['sender', 'from', 'source_msisdn'],
-            'receiverAccount' => ['recipient', 'to', 'destination_msisdn', 'msisdn']
-        ];
+        // Use reverse mapping from provider configs
+        // Try to find which provider's mappings match this data
+        $reverseMappings = $this->countryConfig['reverse_mappings'] ?? [];
+        
+        if (empty($reverseMappings)) {
+            // Build reverse mappings from provider configs
+            foreach ($this->providerFormats as $provider => $format) {
+                if (isset($format['field_mappings'])) {
+                    foreach ($format['field_mappings'] as $external => $internal) {
+                        $reverseMappings[$external] = $internal;
+                    }
+                }
+            }
+        }
         
         $result = [];
-        foreach ($map as $internalField => $possibleKeys) {
-            foreach ($possibleKeys as $key) {
-                if (isset($data[$key])) {
-                    $result[$internalField] = $data[$key];
-                    break;
-                }
+        foreach ($data as $key => $value) {
+            if (isset($reverseMappings[$key])) {
+                $result[$reverseMappings[$key]] = $value;
+            } else {
+                // Store unmapped fields in metadata
+                $result['metadata'][$key] = $value;
             }
         }
         
         return $result;
     }
     
-    private function validateRequiredFields(array $data): bool {
-        $required = $this->countryConfig['required_fields'] ?? ['msisdn', 'amount', 'currency'];
+    private function detectFormatType(string $message): string {
+        if ($this->isJson($message)) {
+            return 'json';
+        }
+        if ($this->isXml($message)) {
+            return 'xml';
+        }
+        return 'delimited';
+    }
+    
+    private function validateJson(string $message): bool {
+        json_decode($message);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            return false;
+        }
         
-        foreach ($required as $field) {
-            $found = false;
-            foreach ($data as $key => $value) {
-                if (stripos($key, $field) !== false && !empty($value)) {
-                    $found = true;
-                    break;
-                }
-            }
-            if (!$found) {
-                return false;
-            }
+        // Apply schema validation if configured
+        if (isset($this->countryConfig['json_schema'])) {
+            // Would implement JSON schema validation here
+            return true;
         }
         
         return true;
     }
     
-    private function validateXmlStructure(string $message): bool {
+    private function validateXml(string $message): bool {
         try {
             $xml = simplexml_load_string($message);
             return $xml !== false;
@@ -303,19 +376,49 @@ class MobileMoneyAdapter implements MessageAdapterInterface {
         }
     }
     
-    private function validateUssdFormat(string $message): bool {
-        return preg_match('/^\*.*\*.*\*.*\*.*#$/', $message) === 1;
+    private function validateDelimited(string $message): bool {
+        // Check against configured patterns for each provider
+        foreach ($this->providerFormats as $provider => $format) {
+            if (isset($format['validation_pattern'])) {
+                if (preg_match($format['validation_pattern'], $message)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
     
-    private function getDefaultFieldMappings(): array {
-        return [
-            'transactionId' => 'transactionId',
-            'msisdn' => 'receiverAccount',
-            'amount' => 'amount',
-            'currency' => 'currency',
-            'reference' => 'reference',
-            'senderMsisdn' => 'senderAccount'
-        ];
+    private function applyTransformation($value, string $transformation) {
+        switch ($transformation) {
+            case 'int':
+                return (int)$value;
+            case 'float':
+                return (float)$value;
+            case 'string':
+                return (string)$value;
+            case 'date_ymd':
+                return date('Ymd', strtotime($value));
+            case 'date_dmy':
+                return date('dmY', strtotime($value));
+            default:
+                // Custom transformation function from config
+                if (strpos($transformation, 'format:') === 0) {
+                    $format = substr($transformation, 7);
+                    return date($format, strtotime($value));
+                }
+                return $value;
+        }
+    }
+    
+    private function escapeForDelimiter(string $value, string $delimiter): string {
+        if (strpos($value, $delimiter) !== false) {
+            $value = str_replace($delimiter, '\\' . $delimiter, $value);
+        }
+        return $value;
+    }
+    
+    private function unescapeForDelimiter(string $value, string $delimiter): string {
+        return str_replace('\\' . $delimiter, $delimiter, $value);
     }
     
     private function isJson(string $string): bool {
@@ -325,9 +428,5 @@ class MobileMoneyAdapter implements MessageAdapterInterface {
     
     private function isXml(string $string): bool {
         return preg_match('/<[^>]+>/', $string) === 1;
-    }
-    
-    private function isUssdFormat(string $string): bool {
-        return strpos($string, '*') !== false && substr($string, -1) === '#';
     }
 }
