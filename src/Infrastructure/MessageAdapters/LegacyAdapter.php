@@ -1,7 +1,7 @@
 <?php
-namespace VouchMorph\Infrastructure\MessageAdapters;
+namespace Infrastructure\MessageAdapters;
 
-use VouchMorph\Core\Transaction\InternalTransaction;
+use Core\Transaction\InternalTransaction;
 
 class LegacyAdapter implements MessageAdapterInterface {
     private string $countryCode;
@@ -14,7 +14,7 @@ class LegacyAdapter implements MessageAdapterInterface {
         $this->countryCode = strtolower($countryCode ?? 'bw');
         
         // Load country-specific legacy format configuration
-        $configPath = __DIR__ . "/../../Config/countries/{$this->countryCode}/legacy_format.php";
+        $configPath = __DIR__ . "/../../config/countries/{$this->countryCode}/legacy_format.php";
         
         if (file_exists($configPath)) {
             $this->countryConfig = require $configPath;
