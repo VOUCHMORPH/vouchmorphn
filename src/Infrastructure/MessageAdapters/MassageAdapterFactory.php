@@ -8,7 +8,7 @@ class MessageAdapterFactory {
     private string $currentCountry;
     
     public function __construct(string $countryCode = null) {
-        $this->globalConfig = require __DIR__ . '/../../Config/message_adapters.php';
+        $this->globalConfig = require __DIR__ . '/../../Config/message_adapters.php'; 
         
         if ($countryCode) {
             $this->setCountry($countryCode);
