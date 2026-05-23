@@ -1,7 +1,7 @@
 <?php
-namespace VouchMorph\Infrastructure\MessageAdapters;
+namespace Infrastructure\MessageAdapters;
 
-use VouchMorph\Core\Transaction\InternalTransaction;
+use Core\Transaction\InternalTransaction;
 
 class MobileMoneyAdapter implements MessageAdapterInterface {
     private string $countryCode;
@@ -13,7 +13,7 @@ class MobileMoneyAdapter implements MessageAdapterInterface {
         $this->countryCode = strtolower($countryCode ?? 'bw');
         
         // Load country-specific mobile money configuration
-        $configPath = __DIR__ . "/../../Config/countries/{$this->countryCode}/mobile_money.php";
+        $configPath = __DIR__ . "/../../config/countries/{$this->countryCode}/mobile_money.php";
         
         if (file_exists($configPath)) {
             $this->countryConfig = require $configPath;
