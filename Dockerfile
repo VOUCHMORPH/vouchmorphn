@@ -26,9 +26,9 @@ COPY composer.lock* ./
 RUN composer install --no-dev --optimize-autoloader --no-interaction || true
 
 # Copy application code
+# Note: config/ directory no longer exists - all configs moved to src/Core/Config/
 COPY src/ src/
 COPY public/ public/
-COPY config/ config/
 
 # Expose port
 EXPOSE 9000
