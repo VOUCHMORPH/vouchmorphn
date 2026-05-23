@@ -1,5 +1,5 @@
 <?php
-namespace VouchMorph\Core\Transaction;
+namespace Core\Transaction;
 
 class InternalTransaction {
     private string $transactionId;
