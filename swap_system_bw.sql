@@ -4157,3 +4157,8 @@ CREATE TABLE IF NOT EXISTS user_hooks (
     created_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(user_identifier, hook_name)
 );
+
+ALTER TABLE swap_requests 
+ADD COLUMN forex_rate DECIMAL(20,10) NOT NULL,
+ADD COLUMN rate_locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+ADD COLUMN expected_to_amount DECIMAL(20,8) GENERATED ALWAYS AS (amount * forex_rate) STORED;
