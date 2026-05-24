@@ -1,0 +1,65 @@
+{
+    "fees": {
+        "CASHOUT_SWAP_FEE": {
+            "total_amount": 10.00,
+            "currency": "ZAR",
+            "swap_levy": 1.00,
+            "description": "Cashout swap fee - client pays 10 upfront",
+            "split_after_levy": {
+                "platform_percent": 35,
+                "source_institution_percent": 15,
+                "destination_institution_percent": 50
+            },
+            "destination_split": {
+                "generate_code_fee_percent": 10,
+                "cashout_fee_percent": 90,
+                "description": "Destination's share (50%) split 10% generate code / 90% cashout"
+            },
+            "earnings_rules": {
+                "generate_code_fee_earned_at": "code_generation",
+                "cashout_fee_earned_at": "cashout_completion",
+                "description": "Generate code fee earned immediately when code is generated. Cashout fee earned only when cashout is successfully completed."
+            },
+            "swap_on_swap": {
+                "free_first": true,
+                "client_pays": 0,
+                "generate_code_fee_paid_by": "vouchmorph_from_platform_share",
+                "cashout_fee_source": "unearned_cashout_fee_from_failed_attempt",
+                "description": "First retry: VouchMorph pays generate code fee (0.45) from its share. Cashout fee (4.05) comes from the unearned cashout fee of the failed first attempt."
+            }
+        },
+        "DEPOSIT_SWAP_FEE": {
+            "total_amount": 6.00,
+            "currency": "ZAR",
+            "swap_levy": 1.00,
+            "description": "Deposit swap fee - client pays 6 upfront",
+            "split_after_levy": {
+                "platform_percent": 35,
+                "source_institution_percent": 15,
+                "destination_institution_percent": 50
+            }
+        },
+        "CARD_LOAD_FEE": {
+            "total_amount": 6.00,
+            "currency": "ZAR",
+            "swap_levy": 1.00,
+            "description": "Card load fee - follows deposit fee structure",
+            "split_after_levy": {
+                "platform_percent": 35,
+                "source_institution_percent": 15,
+                "destination_institution_percent": 50
+            }
+        },
+        "CARD_ISSUANCE_FEE": {
+            "total_amount": 50.00,
+            "currency": "ZAR",
+            "description": "Card issuance fee - 50.00"
+            }
+        }
+    },
+    "regulatory": {
+        "vat_rate": 0.12,
+        "reporting_currency": "ZAR"
+    }
+
+
