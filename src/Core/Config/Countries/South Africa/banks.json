@@ -1,0 +1,160 @@
+{
+  "metadata": {
+    "version": "2.1.0",
+    "region": "ZA",
+    "schema_type": "PARTICIPANT_ADAPTER_REGISTRY",
+    "updated_at": "2026-05-24T12:00:00Z"
+  },
+  "participants": {
+    "FNB_ZA": {
+      "type": "BANK",
+      "legal_entity": {
+        "name": "First National Bank South Africa",
+        "lei_code": null,
+        "bic_swift": "FIRNZAJJ"
+      },
+      "integration": {
+        "adapter_class": "FNBAdapter",
+        "auth_profile": "OAUTH2_MTLS",
+        "api_base_url": "https://api.fnb.co.za/v1",
+        "timeout_ms": 5000,
+        "sandbox_mode": true,
+        "trace_id_prefix": "ZA_SANDBOX_",
+        "fallback_endpoints": {}
+      },
+      "capabilities": {
+        "supports_instant_settlement": true,
+        "supports_reverse_payment": true,
+        "sca_methods": ["OTP", "BIOMETRIC"],
+        "currency_support": ["ZAR", "USD", "EUR"]
+      },
+      "compliance_profile": {
+        "aml_screening_required": true,
+        "travel_rule_compliant": true,
+        "data_residency": "ZA",
+        "audit_level": "SOC2_TYPE_2"
+      },
+      "status": "ACTIVE"
+    },
+    "ABSA_ZA": {
+      "type": "BANK",
+      "legal_entity": {
+        "name": "Absa Bank Limited",
+        "lei_code": null,
+        "bic_swift": "ABSAZAJJ"
+      },
+      "integration": {
+        "adapter_class": "ABSAAdapter",
+        "auth_profile": "OAUTH2_MTLS",
+        "api_base_url": "https://api.absa.africa/v1",
+        "timeout_ms": 5000,
+        "sandbox_mode": true,
+        "trace_id_prefix": "ZA_SANDBOX_",
+        "fallback_endpoints": {}
+      },
+      "capabilities": {
+        "supports_instant_settlement": true,
+        "supports_reverse_payment": true,
+        "sca_methods": ["OTP", "BIOMETRIC"],
+        "currency_support": ["ZAR", "USD", "EUR"]
+      },
+      "compliance_profile": {
+        "aml_screening_required": true,
+        "travel_rule_compliant": true,
+        "data_residency": "ZA",
+        "audit_level": "SOC2_TYPE_2"
+      },
+      "status": "ACTIVE"
+    },
+    "STANDARD_BANK_ZA": {
+      "type": "BANK",
+      "legal_entity": {
+        "name": "Standard Bank of South Africa",
+        "lei_code": null,
+        "bic_swift": "SBZAZAJJ"
+      },
+      "integration": {
+        "adapter_class": "StandardBankAdapter",
+        "auth_profile": "OAUTH2_MTLS",
+        "api_base_url": "https://api.standardbank.co.za/v1",
+        "timeout_ms": 5000,
+        "sandbox_mode": true,
+        "trace_id_prefix": "ZA_SANDBOX_",
+        "fallback_endpoints": {}
+      },
+      "capabilities": {
+        "supports_instant_settlement": true,
+        "supports_reverse_payment": true,
+        "sca_methods": ["OTP", "BIOMETRIC"],
+        "currency_support": ["ZAR", "USD", "EUR"]
+      },
+      "compliance_profile": {
+        "aml_screening_required": true,
+        "travel_rule_compliant": true,
+        "data_residency": "ZA",
+        "audit_level": "SOC2_TYPE_2"
+      },
+      "status": "ACTIVE"
+    },
+    "NEDBANK_ZA": {
+      "type": "BANK",
+      "legal_entity": {
+        "name": "Nedbank Limited",
+        "lei_code": null,
+        "bic_swift": "NEDSZAJJ"
+      },
+      "integration": {
+        "adapter_class": "NedbankAdapter",
+        "auth_profile": "OAUTH2_MTLS",
+        "api_base_url": "https://api.nedbank.co.za/v1",
+        "timeout_ms": 5000,
+        "sandbox_mode": true,
+        "trace_id_prefix": "ZA_SANDBOX_",
+        "fallback_endpoints": {}
+      },
+      "capabilities": {
+        "supports_instant_settlement": true,
+        "supports_reverse_payment": true,
+        "sca_methods": ["OTP", "BIOMETRIC"],
+        "currency_support": ["ZAR", "USD", "EUR"]
+      },
+      "compliance_profile": {
+        "aml_screening_required": true,
+        "travel_rule_compliant": true,
+        "data_residency": "ZA",
+        "audit_level": "SOC2_TYPE_2"
+      },
+      "status": "ACTIVE"
+    },
+    "CAPITEC_ZA": {
+      "type": "BANK",
+      "legal_entity": {
+        "name": "Capitec Bank Limited",
+        "lei_code": null,
+        "bic_swift": "CABLZAJJ"
+      },
+      "integration": {
+        "adapter_class": "CapitecAdapter",
+        "auth_profile": "OAUTH2_MTLS",
+        "api_base_url": "https://api.capitecbank.co.za/v1",
+        "timeout_ms": 5000,
+        "sandbox_mode": true,
+        "trace_id_prefix": "ZA_SANDBOX_",
+        "fallback_endpoints": {}
+      },
+      "capabilities": {
+        "supports_instant_settlement": true,
+        "supports_reverse_payment": true,
+        "sca_methods": ["OTP", "BIOMETRIC"],
+        "currency_support": ["ZAR", "USD", "EUR"]
+      },
+      "compliance_profile": {
+        "aml_screening_required": true,
+        "travel_rule_compliant": true,
+        "data_residency": "ZA",
+        "audit_level": "SOC2_TYPE_2"
+      },
+      "status": "ACTIVE"
+    }
+  }
+}
