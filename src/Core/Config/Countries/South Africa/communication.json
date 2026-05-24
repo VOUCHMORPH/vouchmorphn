@@ -1,0 +1,22 @@
+{
+  "sms_gateway": {
+    "provider": "cazacom",
+    "base_url": "https://cazacom-prod.up.railway.app",
+    "api_key": "SACCUS_INTERNAL_KEY_2025",
+    "api_path": "/backend/routes/api.php",
+    "sms_endpoint": "?path=sms/send",
+    "default_sender": "VOUCHMORPH",
+    "default_cost": 0.1,
+    "enabled": true,
+    "timeout": 10,
+    "retry_attempts": 3
+  },
+  "templates": {
+    "withdrawal": "🔐 VouchMorph Withdrawal\nCode: {{code}}\nAmount: {{amount}} BWP\nValid for 24 hours.",
+    "confirmation": "✅ VouchMorph Transaction {{status}}\nAmount: {{amount}} BWP\nRef: {{reference}}",
+    "otp": "Your VouchMorph verification code is: {{otp}}",
+    "security_alert": "SECURITY ALERT: {{alert}} detected on your account."
+  },
+  "country_code": "277",
+  "local_number_length": 8
+}
