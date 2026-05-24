@@ -1,0 +1,117 @@
+{
+  "message_based_issuers": [
+    "VOUCHMORPH_ZA",
+    "FNB_ZA",
+    "ABSA_ZA",
+    "STANDARD_BANK_ZA",
+    "NEDBANK_ZA",
+    "CAPITEC_ZA"
+  ],
+
+  "default_card_type": "balance_based",
+  "authorization_expiry_days": 30,
+
+  "card_bin": "400001",
+  "card_expiry_years": 3,
+
+  "daily_spend_limit": 20000,
+  "monthly_spend_limit": 200000,
+  "atm_daily_limit": 5000,
+  "pos_max_transaction": 10000,
+  "online_max_transaction": 20000,
+
+  "currencies_supported": ["ZAR", "USD", "EUR"],
+  "default_currency": "ZAR",
+
+  "cvv_secret_key_env": "CARD_CVV_SECRET",
+  "pin_encryption_key_env": "CARD_PIN_ENCRYPTION_KEY",
+
+  "card_brands": {
+    "visa": {
+      "bins": [
+        "400001",
+        "400002",
+        "400003",
+        "400004",
+        "400005"
+      ],
+      "enabled": true
+    },
+
+    "mastercard": {
+      "bins": [
+        "510001",
+        "510002",
+        "510003",
+        "510004",
+        "510005"
+      ],
+      "enabled": true
+    }
+  },
+
+  "card_purposes": {
+
+    "student": {
+      "daily_limit": 5000,
+      "monthly_limit": 30000,
+      "atm_daily_limit": 2000,
+      "allowed_channels": [
+        "ATM",
+        "POS",
+        "ECOMMERCE"
+      ]
+    },
+
+    "general": {
+      "daily_limit": 20000,
+      "monthly_limit": 200000,
+      "atm_daily_limit": 5000,
+      "allowed_channels": [
+        "ATM",
+        "POS",
+        "ECOMMERCE"
+      ]
+    },
+
+    "travel": {
+      "daily_limit": 50000,
+      "monthly_limit": 500000,
+      "atm_daily_limit": 10000,
+      "allowed_channels": [
+        "ATM",
+        "POS",
+        "ECOMMERCE",
+        "FOREX"
+      ]
+    }
+  },
+
+  "features": {
+    "virtual_cards": true,
+    "physical_cards": true,
+    "apple_pay": true,
+    "google_pay": true,
+    "samsung_pay": true,
+    "atm_withdrawal": true,
+    "pos_payments": true,
+    "online_payments": true,
+    "contactless_payments": true
+  },
+
+  "fees": {
+    "issuance": 0,
+    "monthly": 0,
+    "atm_withdrawal": 2.50,
+    "pos_transaction": 0,
+    "online_transaction": 0,
+    "foreign_transaction_percentage": 2.5
+  },
+
+  "metadata": {
+    "version": "1.0",
+    "country": "ZA",
+    "last_updated": "2026-05-24",
+    "description": "South Africa Card Configuration"
+  }
+}
