@@ -18,34 +18,61 @@ require_once __DIR__ . '/Settlement/HybridSettlementStrategy.php';
 class SwapService
 {
     private PDO $swapDB;
+    private array $settings;
     private array $config;
     private array $participants;
+    private TokenEncryptor $encryptor;
+    private SwapStatusResolver $swapStatusResolver;
+    private string $countryCode;  // DECLARED PROPERTY (fixes deprecation)
+    private array $feesConfig = [];
+    private array $flowsConfig = [];
+    private array $atmNotes = [];
+    private array $cardConfig = [];
     private HybridSettlementStrategy $settlement;
     private ?SmsNotificationService $smsService = null;
     private ?CardService $cardService = null;
-    private ?ForexService $forexService = null;
-    private ?FeeService $feeService = null;
+    private ?ForexService $forexService = null;  // Make sure ForexService class exists
     private ?array $fxContext = null;
-    private array $atmNotes = [];
+    private ?FeeService $feeService = null;
 
     private const HOLD_EXPIRY_HOURS = 24;
+    private const MESSAGE_CARD_EXPIRY_DAYS = 30;
     private const LOG_FILE = '/tmp/vouchmorphn_swap_audit.log';
 
-    public function __construct(PDO $swapDB, array $settings, string $country, string $encryptionKey, array $config)
-    {
+    private const PHONE_FIELDS = [
+        'phone', 'wallet_phone', 'ewallet_phone', 'card_phone',
+        'claimant_phone', 'beneficiary_phone', 'account_phone'
+    ];
+
+    public function __construct(
+        PDO $swapDB, 
+        array $settings, 
+        string $country, 
+        string $encryptionKey, 
+        array $config
+    ) {
         $this->swapDB = $swapDB;
-        $this->config = $config;
+        $this->settings = $settings;
         $this->countryCode = strtoupper($country);
+        $this->config = $config;
         
+        // Load participants
         $this->participants = $config['participants'] ?? [];
         $this->participants = array_change_key_case($this->participants, CASE_LOWER);
         
-        $this->atmNotes = $config['atm_notes'] ?? ['BWP' => [10, 20, 50, 100, 200]];
+        // Initialize fee service
         $this->feeService = new FeeService($config['fees'] ?? [], $config['currency'] ?? 'BWP');
+        
+        // Initialize settlement strategy
         $this->settlement = new HybridSettlementStrategy($this->swapDB);
+        
+        // Initialize forex service
         $this->forexService = new ForexService($this->swapDB, $config, $this->participants, $this->feeService);
+        
+        // Initialize card service
         $this->cardService = new CardService($this->swapDB, $this->countryCode, $this->participants['vouchmorph'] ?? []);
         
+        // Initialize SMS if configured
         if (isset($config['communication']['sms_gateway']['enabled']) && $config['communication']['sms_gateway']['enabled']) {
             $this->smsService = new SmsNotificationService($this->swapDB, $config['communication']['sms_gateway']);
         }
