@@ -257,7 +257,7 @@ if (empty($availableCountries)) {
                 <?php endif; ?>
 
                 <button type="submit" class="login-btn">
-                    <?php echo $mfaRequired ? 'VERIFY CODE' : 'SIGN IN →'; ?>
+                    <?php echo $mfaRequired ? 'VERIFY CODE' : 'SIGN IN →'; ?> 
                 </button>
             </form>
             <?php endif; ?>
