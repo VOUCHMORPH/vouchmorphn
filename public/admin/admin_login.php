@@ -56,7 +56,7 @@ require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
 
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
-use ADMIN_LAYER\Auth\AdminAuth;
+use Application\Admin\Auth\AdminAuth;
 
 // Initialize database connection from config
 try {
