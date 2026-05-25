@@ -4062,3 +4062,16 @@ CREATE TABLE ussd_sessions (
 
 CREATE UNIQUE INDEX uniq_session_key
 ON ussd_sessions (session_id, session_key);
+
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS national_id VARCHAR(50) DEFAULT NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS drivers_license VARCHAR(50) DEFAULT NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS passport VARCHAR(50) DEFAULT NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS id_type VARCHAR(20) DEFAULT NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS date_of_birth DATE DEFAULT NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_national_id ON users(national_id);
+CREATE INDEX IF NOT EXISTS idx_drivers_license ON users(drivers_license);
+CREATE INDEX IF NOT EXISTS idx_passport ON users(passport);
+
