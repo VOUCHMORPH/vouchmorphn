@@ -98,6 +98,7 @@ try {
 // Get country code for display
 $countryCode = $adminCountry ?: ($config['country_code'] ?? 'BW');
 $countryName = $config['country'] ?? 'Botswana';
+$currencySymbol = $config['currency_symbol'] ?? 'BWP';
 
 // Load participants from config
 $participants = $config['participants'] ?? [];
@@ -115,37 +116,68 @@ $hasAccess = function($permission) use ($adminRoleId) {
     return in_array('all', $userPerms) || in_array($permission, $userPerms);
 };
 
-// Get system metrics
+// Get system metrics - FIXED: proper data types
 $metrics = [];
 try {
     // Get today's transaction count
     $stmt = $db->prepare("SELECT COUNT(*) FROM swap_requests WHERE DATE(created_at) = CURRENT_DATE");
     $stmt->execute();
-    $metrics['today_transactions'] = $stmt->fetchColumn();
+    $metrics['today_transactions'] = (int)$stmt->fetchColumn();
     
-    // Get today's volume
+    // Get today's volume (keep as float for calculations, string for display)
     $stmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM swap_requests WHERE DATE(created_at) = CURRENT_DATE");
     $stmt->execute();
-    $metrics['today_volume'] = number_format((float)$stmt->fetchColumn(), 2);
+    $volumeRaw = (float)$stmt->fetchColumn();
+    $metrics['today_volume_raw'] = $volumeRaw;
+    $metrics['today_volume'] = number_format($volumeRaw, 2);
     
     // Get active holds
     $stmt = $db->prepare("SELECT COUNT(*) FROM hold_transactions WHERE status = 'ACTIVE'");
     $stmt->execute();
-    $metrics['active_holds'] = $stmt->fetchColumn();
+    $metrics['active_holds'] = (int)$stmt->fetchColumn();
     
     // Get pending settlements
     $stmt = $db->prepare("SELECT COUNT(*) FROM settlement_queue WHERE status = 'PENDING'");
     $stmt->execute();
-    $metrics['pending_settlements'] = $stmt->fetchColumn();
+    $metrics['pending_settlements'] = (int)$stmt->fetchColumn();
+    
+    // Get total users
+    $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL");
+    $stmt->execute();
+    $metrics['total_users'] = (int)$stmt->fetchColumn();
+    
+    // Get total swap volume (all time)
+    $stmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM swap_requests");
+    $stmt->execute();
+    $totalVolumeRaw = (float)$stmt->fetchColumn();
+    $metrics['total_volume'] = number_format($totalVolumeRaw, 2);
     
 } catch (Throwable $e) {
     error_log("[ADMIN DASHBOARD] Metrics error: " . $e->getMessage());
     $metrics = [
         'today_transactions' => 0,
         'today_volume' => '0.00',
+        'today_volume_raw' => 0,
         'active_holds' => 0,
-        'pending_settlements' => 0
+        'pending_settlements' => 0,
+        'total_users' => 0,
+        'total_volume' => '0.00'
     ];
+}
+
+// Get recent transactions
+$recentTransactions = [];
+try {
+    $stmt = $db->prepare("
+        SELECT swap_id, user_id, amount, status, created_at 
+        FROM swap_requests 
+        ORDER BY created_at DESC 
+        LIMIT 10
+    ");
+    $stmt->execute();
+    $recentTransactions = $stmt->fetchAll();
+} catch (Throwable $e) {
+    error_log("[ADMIN DASHBOARD] Recent transactions error: " . $e->getMessage());
 }
 
 // Get current view
@@ -182,12 +214,15 @@ $view = $_GET['view'] ?? 'dashboard';
             justify-content: space-between;
             align-items: center;
             color: #fff;
+            flex-wrap: wrap;
+            gap: 15px;
         }
 
         .header-left {
             display: flex;
             align-items: center;
             gap: 30px;
+            flex-wrap: wrap;
         }
 
         .logo {
@@ -215,6 +250,7 @@ $view = $_GET['view'] ?? 'dashboard';
             display: flex;
             align-items: center;
             gap: 20px;
+            flex-wrap: wrap;
         }
 
         .user-details {
@@ -301,7 +337,7 @@ $view = $_GET['view'] ?? 'dashboard';
 
         .metrics-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
             gap: 20px;
             margin-bottom: 30px;
         }
@@ -311,6 +347,11 @@ $view = $_GET['view'] ?? 'dashboard';
             border: 2px solid #001B44;
             padding: 20px;
             box-shadow: 4px 4px 0 #A1B5D8;
+            transition: transform 0.2s;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-2px);
         }
 
         .metric-label {
@@ -322,15 +363,16 @@ $view = $_GET['view'] ?? 'dashboard';
         }
 
         .metric-value {
-            font-size: 2.2rem;
+            font-size: 2rem;
             font-weight: 600;
             color: #001B44;
             line-height: 1.2;
+            word-break: break-word;
         }
 
         .grid-2 {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(2, 1fr);
             gap: 20px;
             margin-bottom: 30px;
         }
@@ -348,6 +390,8 @@ $view = $_GET['view'] ?? 'dashboard';
             margin-bottom: 20px;
             padding-bottom: 10px;
             border-bottom: 2px solid #001B44;
+            flex-wrap: wrap;
+            gap: 10px;
         }
 
         .card-title {
@@ -386,6 +430,10 @@ $view = $_GET['view'] ?? 'dashboard';
             border-bottom: 1px solid #ddd;
         }
 
+        tr:hover {
+            background: #f5f5f5;
+        }
+
         .status {
             display: inline-block;
             padding: 3px 10px;
@@ -399,6 +447,12 @@ $view = $_GET['view'] ?? 'dashboard';
             background: #d4edda;
             color: #155724;
             border-color: #c3e6cb;
+        }
+
+        .status-pending {
+            background: #fff3cd;
+            color: #856404;
+            border-color: #ffeeba;
         }
 
         .admin-footer {
@@ -420,6 +474,15 @@ $view = $_GET['view'] ?? 'dashboard';
             }
             .admin-content {
                 padding: 20px;
+            }
+            .admin-header {
+                padding: 15px;
+            }
+            .header-left {
+                gap: 15px;
+            }
+            .metric-value {
+                font-size: 1.5rem;
             }
         }
     </style>
@@ -455,7 +518,7 @@ $view = $_GET['view'] ?? 'dashboard';
         <?php endif; ?>
         
         <?php if ($adminRoleId === 999): ?>
-            <a href="?view=admins" class="nav-item <?php echo $view === 'admins' ? 'active' : ''; ?>">ADMINISTRATORS</a>
+            <a href="admin_management.php" class="nav-item">ADMINISTRATORS</a>
             <a href="?view=config" class="nav-item <?php echo $view === 'config' ? 'active' : ''; ?>">CONFIGURATION</a>
         <?php endif; ?>
     </nav>
@@ -467,14 +530,15 @@ $view = $_GET['view'] ?? 'dashboard';
             <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?> · <?php echo htmlspecialchars($countryName); ?> Time</div>
         </div>
 
+        <!-- Metrics Grid - FIXED: No double number_format() -->
         <div class="metrics-grid">
             <div class="metric-card">
                 <div class="metric-label">TODAY'S TRANSACTIONS</div>
                 <div class="metric-value"><?php echo number_format($metrics['today_transactions']); ?></div>
             </div>
             <div class="metric-card">
-                <div class="metric-label">TODAY'S VOLUME (<?php echo htmlspecialchars($config['currency'] ?? 'BWP'); ?>)</div>
-                <div class="metric-value"><?php echo number_format($metrics['today_volume'], 2); ?></div>
+                <div class="metric-label">TODAY'S VOLUME (<?php echo htmlspecialchars($currencySymbol); ?>)</div>
+                <div class="metric-value"><?php echo $metrics['today_volume']; ?></div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">ACTIVE HOLDS</div>
@@ -484,9 +548,18 @@ $view = $_GET['view'] ?? 'dashboard';
                 <div class="metric-label">PENDING SETTLEMENTS</div>
                 <div class="metric-value"><?php echo number_format($metrics['pending_settlements']); ?></div>
             </div>
+            <div class="metric-card">
+                <div class="metric-label">TOTAL USERS</div>
+                <div class="metric-value"><?php echo number_format($metrics['total_users']); ?></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">TOTAL VOLUME (<?php echo htmlspecialchars($currencySymbol); ?>)</div>
+                <div class="metric-value"><?php echo $metrics['total_volume']; ?></div>
+            </div>
         </div>
 
         <div class="grid-2">
+            <!-- Participants Overview -->
             <div class="card">
                 <div class="card-header">
                     <span class="card-title">PARTICIPANTS</span>
@@ -515,25 +588,76 @@ $view = $_GET['view'] ?? 'dashboard';
                                 <td><span class="status status-success"><?php echo htmlspecialchars($status); ?></span></td>
                             </tr>
                             <?php endforeach; ?>
+                            <?php if (count($participants) === 0): ?>
+                                <tr><td colspan="3" style="text-align: center;">No participants configured</td><tr>
+                            <?php endif; ?>
                         </tbody>
                     </table>
                 </div>
             </div>
 
+            <!-- Recent Transactions -->
             <div class="card">
                 <div class="card-header">
-                    <span class="card-title">SYSTEM INFORMATION</span>
-                    <span class="card-badge">LIVE</span>
+                    <span class="card-title">RECENT TRANSACTIONS</span>
+                    <span class="card-badge">LAST 10</span>
                 </div>
-                <div style="padding: 20px;">
-                    <p><strong>Country:</strong> <?php echo htmlspecialchars($countryName); ?> (<?php echo htmlspecialchars($countryCode); ?>)</p>
-                    <p><strong>Environment:</strong> <?php echo htmlspecialchars(getenv('APP_ENV') ?: 'production'); ?></p>
-                    <p><strong>Database:</strong> Connected</p>
-                    <p><strong>PHP Version:</strong> <?php echo phpversion(); ?></p>
-                    <p><strong>Server Time:</strong> <?php echo date('Y-m-d H:i:s'); ?></p>
+                <div class="table-responsive">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Amount</th>
+                                <th>Status</th>
+                                <th>Date</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($recentTransactions as $tx): ?>
+                            <tr>
+                                <td><?php echo $tx['swap_id']; ?></td>
+                                <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format($tx['amount'], 2); ?></td>
+                                <td><span class="status status-<?php echo strtolower($tx['status']) === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status']); ?></span></td>
+                                <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'])); ?></td>
+                            </tr>
+                            <?php endforeach; ?>
+                            <?php if (empty($recentTransactions)): ?>
+                                <tr><td colspan="4" style="text-align: center;">No transactions yet</td><tr>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
+
+        <!-- System Health -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">SYSTEM HEALTH</span>
+                <span class="card-badge">LIVE</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                <div>
+                    <strong>Country:</strong> <?php echo htmlspecialchars($countryName); ?> (<?php echo htmlspecialchars($countryCode); ?>)
+                </div>
+                <div>
+                    <strong>Environment:</strong> <?php echo htmlspecialchars(getenv('APP_ENV') ?: 'production'); ?>
+                </div>
+                <div>
+                    <strong>Database:</strong> <span style="color: green;">✓ Connected</span>
+                </div>
+                <div>
+                    <strong>PHP Version:</strong> <?php echo phpversion(); ?>
+                </div>
+                <div>
+                    <strong>Server Time:</strong> <?php echo date('Y-m-d H:i:s'); ?>
+                </div>
+                <div>
+                    <strong>Admin Role:</strong> <?php echo htmlspecialchars($roleName); ?>
+                </div>
+            </div>
+        </div>
+
         <?php elseif ($view === 'reports'): ?>
         <div class="content-header">
             <h1>REGULATORY REPORTS</h1>
@@ -545,27 +669,141 @@ $view = $_GET['view'] ?? 'dashboard';
                     <span class="card-title">Daily Settlement Report</span>
                 </div>
                 <p>End-of-day net positions and settlement amounts</p>
-                <p style="margin-top: 15px;"><a href="reports/daily_settlement.php" target="_blank">Generate Report →</a></p>
+                <p style="margin-top: 15px;">
+                    <a href="reports/daily.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                </p>
             </div>
             <div class="card">
                 <div class="card-header">
                     <span class="card-title">Transaction Audit Log</span>
                 </div>
                 <p>7-year audit trail of all swap transactions</p>
-                <p style="margin-top: 15px;"><a href="reports/transaction_audit.php" target="_blank">Generate Report →</a></p>
+                <p style="margin-top: 15px;">
+                    <a href="reports/audit_trails.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                </p>
             </div>
             <div class="card">
                 <div class="card-header">
-                    <span class="card-title">Compliance Report</span>
+                    <span class="card-title">Suspicious Activity Report</span>
                 </div>
-                <p>AML/KYC compliance summary</p>
-                <p style="margin-top: 15px;"><a href="reports/compliance.php" target="_blank">Generate Report →</a></p>
+                <p>AML/KYC compliance and fraud monitoring</p>
+                <p style="margin-top: 15px;">
+                    <a href="reports/suspicious.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                </p>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Monthly Reconciliation</span>
+                </div>
+                <p>Monthly financial reconciliation report</p>
+                <p style="margin-top: 15px;">
+                    <a href="reports/monthly.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                </p>
             </div>
         </div>
+
+        <?php elseif ($view === 'config' && $adminRoleId === 999): ?>
+        <div class="content-header">
+            <h1>SYSTEM CONFIGURATION</h1>
+            <div class="timestamp">Configuration Management</div>
+        </div>
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Country Configuration</span>
+                </div>
+                <p>Current Country: <strong><?php echo htmlspecialchars($countryName); ?></strong></p>
+                <p>Currency: <strong><?php echo htmlspecialchars($currencySymbol); ?></strong></p>
+                <p>Timezone: <strong>Africa/Gaborone</strong></p>
+                <p style="margin-top: 15px;">
+                    <a href="../../src/Core/Config/Countries/<?php echo $countryCode; ?>/config.php" style="color: #001B44;">Edit Config →</a>
+                </p>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Database Status</span>
+                </div>
+                <p>Connection: <span style="color: green;">Active</span></p>
+                <p>Type: PostgreSQL</p>
+                <p>Database: <?php echo htmlspecialchars($dbConfig['database'] ?? 'N/A'); ?></p>
+            </div>
+        </div>
+
+        <?php elseif ($view === 'transactions' && $hasAccess('review_transactions')): ?>
+        <div class="content-header">
+            <h1>TRANSACTION MANAGEMENT</h1>
+            <div class="timestamp">Monitor and Review Transactions</div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">All Transactions</span>
+                <span class="card-badge">SWAP REQUESTS</span>
+            </div>
+            <div class="table-responsive">
+                <?php
+                $txStmt = $db->query("SELECT * FROM swap_requests ORDER BY created_at DESC LIMIT 50");
+                $allTransactions = $txStmt->fetchAll();
+                ?>
+                <table>
+                    <thead>
+                        <tr><th>ID</th><th>User</th><th>Amount</th><th>Status</th><th>Created At</th></tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($allTransactions as $tx): ?>
+                        <tr>
+                            <td><?php echo $tx['swap_id']; ?></td>
+                            <td><?php echo $tx['user_id']; ?></td>
+                            <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format($tx['amount'], 2); ?></td>
+                            <td><span class="status status-<?php echo strtolower($tx['status']) === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status']); ?></span></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'])); ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <?php elseif ($view === 'audit' && $hasAccess('audit_logs')): ?>
+        <div class="content-header">
+            <h1>AUDIT LOGS</h1>
+            <div class="timestamp">System Audit Trail</div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Recent Activities</span>
+                <span class="card-badge">ADMIN ACTIONS</span>
+            </div>
+            <div class="table-responsive">
+                <?php
+                $auditStmt = $db->query("SELECT * FROM admin_actions ORDER BY created_at DESC LIMIT 50");
+                $auditLogs = $auditStmt->fetchAll();
+                ?>
+                <table>
+                    <thead>
+                        <tr><th>Action</th><th>Entity</th><th>Status</th><th>Admin</th><th>Date</th></tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($auditLogs as $log): ?>
+                        <tr>
+                            <td><?php echo htmlspecialchars($log['action_type'] ?? 'N/A'); ?></td>
+                            <td><?php echo htmlspecialchars($log['entity_type'] ?? 'N/A'); ?></td>
+                            <td><?php echo htmlspecialchars($log['status'] ?? 'N/A'); ?></td>
+                            <td><?php echo $log['assigned_admin_id']; ?></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($log['created_at'])); ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
         <?php else: ?>
         <div class="content-header">
             <h1><?php echo ucfirst($view); ?></h1>
             <div class="timestamp">Module under development</div>
+        </div>
+        <div class="card">
+            <p>This module is currently being developed. Please check back later.</p>
         </div>
         <?php endif; ?>
     </main>
