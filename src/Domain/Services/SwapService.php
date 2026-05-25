@@ -10,6 +10,11 @@ use Domain\Services\Settlement\HybridSettlementStrategy;
 use Infrastructure\Banks\GenericBankClient;
 use Infrastructure\SMS\SmsNotificationService;
 
+require_once __DIR__ . '/ForexService.php';
+require_once __DIR__ . '/FeeService.php';
+require_once __DIR__ . '/CardService.php';
+require_once __DIR__ . '/Settlement/HybridSettlementStrategy.php';
+
 class SwapService
 {
     private PDO $swapDB;
