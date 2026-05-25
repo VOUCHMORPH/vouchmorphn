@@ -1,37 +1,42 @@
 <?php
+declare(strict_types=1);
+
 namespace Infrastructure\MessageAdapters;
 
 use Core\Transaction\InternalTransaction;
 
-class Iso20022Adapter implements MessageAdapterInterface {
+class Iso20022Adapter implements MessageAdapterInterface
+{
     private string $countryCode;
     private array $countryConfig;
-    private array $defaultConfig;
     private string $version;
     
-    public function __construct(string $countryCode = null) {
+    public function __construct(?string $countryCode = null) 
+    {
         $this->countryCode = strtolower($countryCode ?? 'bw');
         
         // Load country-specific ISO mappings
-        $configPath = __DIR__ . "/../../Config/countries/{$this->countryCode}/iso_mappings.php";
+        $configPath = __DIR__ . "/../../Core/Config/Countries/{$this->countryCode}/iso_mappings.php";
         
         if (file_exists($configPath)) {
             $this->countryConfig = require $configPath;
             $this->version = $this->countryConfig['version'] ?? 'pacs.008.001.08';
         } else {
-            // Load default mappings (created above)
-            $defaultPath = __DIR__ . '/../../Config/iso_default_mappings.php';
+            // Load default mappings
+            $defaultPath = __DIR__ . '/../../Core/Config/iso_default_mappings.php';
             
             if (!file_exists($defaultPath)) {
-                throw new \Exception("Default ISO mappings not found at: {$defaultPath}");
+                $this->countryConfig = [];
+                $this->version = 'pacs.008.001.08';
+            } else {
+                $this->countryConfig = require $defaultPath;
+                $this->version = $this->countryConfig['version'] ?? 'pacs.008.001.08';
             }
-            
-            $this->countryConfig = require $defaultPath;
-            $this->version = $this->countryConfig['version'] ?? 'pacs.008.001.08';
         }
     }
     
-    public function toExternal(InternalTransaction $transaction): string {
+    public function toExternal(InternalTransaction $transaction): string 
+    {
         $namespace = $this->countryConfig['namespace'] ?? 'urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08';
         
         $xml = new \DOMDocument('1.0', 'UTF-8');
@@ -64,7 +69,6 @@ class Iso20022Adapter implements MessageAdapterInterface {
         $cdtrAcct = $pmtInf->appendChild($xml->createElement('CdtrAcct'));
         $id = $cdtrAcct->appendChild($xml->createElement('Id'));
         
-        // Use Othr (Other) for account ID (works for all countries)
         $othr = $id->appendChild($xml->createElement('Othr'));
         $othr->appendChild($xml->createElement('Id', $transaction->getReceiverAccount()));
         
@@ -77,7 +81,8 @@ class Iso20022Adapter implements MessageAdapterInterface {
         return $xml->saveXML();
     }
     
-    public function toInternal(string $message): InternalTransaction {
+    public function toInternal(string $message): InternalTransaction 
+    {
         $dom = new \DOMDocument();
         $dom->loadXML($message);
         $xpath = new \DOMXPath($dom);
@@ -91,49 +96,29 @@ class Iso20022Adapter implements MessageAdapterInterface {
             $prefix = '';
         }
         
-        // Extract data using mappings
-        $mappings = $this->countryConfig['mappings'] ?? [];
+        // Extract data
+        $transactionId = $this->extractNodeValue($xpath, $prefix . 'GrpHdr/ns:MsgId', $prefix);
+        $amountNode = $xpath->query('//' . $prefix . 'IntrBkSttlmAmt');
+        $amount = $amountNode && $amountNode->length > 0 ? (float)$amountNode->item(0)->nodeValue : 0;
         
-        $data = [];
-        foreach ($mappings as $fieldName => $xpathExpr) {
-            // Add namespace prefix if needed
-            if ($ns && strpos($xpathExpr, '//') === 0) {
-                $xpathExpr = '//' . $prefix . substr($xpathExpr, 2);
-            }
-            
-            $nodes = $xpath->query($xpathExpr);
-            if ($nodes && $nodes->length > 0) {
-                $value = $nodes->item(0)->nodeValue;
-                
-                // Special handling for amount
-                if ($fieldName === 'amount') {
-                    $value = (float)$value;
-                }
-                
-                $data[$fieldName] = $value;
-            }
+        $currency = '';
+        if ($amountNode && $amountNode->length > 0) {
+            $currency = $amountNode->item(0)->getAttribute('Ccy');
         }
         
-        // Map bank codes if needed
-        if (isset($this->countryConfig['bank_codes']) && isset($data['senderBankCode'])) {
-            $bankCodes = $this->countryConfig['bank_codes'];
-            if (isset($bankCodes[$data['senderBankCode']])) {
-                $data['senderBankCode'] = $bankCodes[$data['senderBankCode']];
-            }
-        }
+        $senderName = $this->extractNodeValue($xpath, '//' . $prefix . 'Dbtr/ns:Nm', $prefix);
+        $receiverName = $this->extractNodeValue($xpath, '//' . $prefix . 'Cdtr/ns:Nm', $prefix);
+        $receiverAccount = $this->extractNodeValue($xpath, '//' . $prefix . 'CdtrAcct/ns:Id/ns:Othr/ns:Id', $prefix);
+        $reference = $this->extractNodeValue($xpath, '//' . $prefix . 'RmtInf/ns:Ustrd', $prefix);
         
         $transactionData = [
-            'transactionId' => $data['transactionId'] ?? $this->generateTransactionId(),
-            'amount' => $data['amount'] ?? 0,
-            'currency' => $data['currency'] ?? 'BWP',
-            'reference' => $data['reference'] ?? '',
-            'senderName' => $data['senderName'] ?? '',
-            'receiverName' => $data['receiverName'] ?? '',
-            'senderAccount' => $data['senderAccount'] ?? '',
-            'receiverAccount' => $data['receiverAccount'] ?? '',
-            'senderBankCode' => $data['senderBankCode'] ?? '',
-            'receiverBankCode' => $data['receiverBankCode'] ?? '',
-            'purpose' => $data['purpose'] ?? 'PAYMENT',
+            'transactionId' => $transactionId ?: $this->generateTransactionId(),
+            'amount' => $amount,
+            'currency' => $currency ?: 'BWP',
+            'reference' => $reference,
+            'senderName' => $senderName,
+            'receiverName' => $receiverName,
+            'receiverAccount' => $receiverAccount,
             'messageFormat' => 'iso20022',
             'messageVersion' => $this->version,
             'countryCode' => $this->countryCode
@@ -142,47 +127,27 @@ class Iso20022Adapter implements MessageAdapterInterface {
         return new InternalTransaction($transactionData);
     }
     
-    public function validate(string $message): bool {
-        // Basic XML validation
+    public function validate(string $message): bool 
+    {
         try {
             $dom = new \DOMDocument();
             $dom->loadXML($message);
-            
-            // Check required fields from config
-            $requiredFields = $this->countryConfig['required_fields'] ?? ['transactionId', 'amount'];
             
             $xpath = new \DOMXPath($dom);
             $ns = $this->detectNamespace($dom);
             if ($ns) {
                 $xpath->registerNamespace('ns', $ns);
-                $prefix = 'ns:';
-            } else {
-                $prefix = '';
             }
             
-            foreach ($requiredFields as $field) {
-                $mapping = $this->countryConfig['mappings'][$field] ?? null;
-                if ($mapping) {
-                    if ($ns && strpos($mapping, '//') === 0) {
-                        $mapping = '//' . $prefix . substr($mapping, 2);
-                    }
-                    $nodes = $xpath->query($mapping);
-                    if (!$nodes || $nodes->length === 0) {
-                        return false;
-                    }
-                }
+            // Check required elements
+            $msgIdNodes = $xpath->query('//*[local-name()="MsgId"]');
+            if (!$msgIdNodes || $msgIdNodes->length === 0) {
+                return false;
             }
             
-            // Validate amount limits
             $amountNodes = $xpath->query('//*[local-name()="IntrBkSttlmAmt"]');
-            if ($amountNodes && $amountNodes->length > 0) {
-                $amount = (float)$amountNodes->item(0)->nodeValue;
-                $maxAmount = $this->countryConfig['validation']['max_amount'] ?? 999999999;
-                $minAmount = $this->countryConfig['validation']['min_amount'] ?? 0;
-                
-                if ($amount > $maxAmount || $amount < $minAmount) {
-                    return false;
-                }
+            if (!$amountNodes || $amountNodes->length === 0) {
+                return false;
             }
             
             return true;
@@ -191,21 +156,39 @@ class Iso20022Adapter implements MessageAdapterInterface {
         }
     }
     
-    public function getVersion(): string {
+    public function getVersion(): string 
+    {
         return $this->version;
     }
     
-    private function detectNamespace(\DOMDocument $dom): ?string {
+    private function detectNamespace(\DOMDocument $dom): ?string 
+    {
         $root = $dom->documentElement;
         if ($root && $root->namespaceURI) {
             return $root->namespaceURI;
         }
-        
-        // Try to find from config
         return $this->countryConfig['namespace'] ?? null;
     }
     
-    private function generateTransactionId(): string {
+    private function extractNodeValue(\DOMXPath $xpath, string $query, string $prefix): string 
+    {
+        $nodes = $xpath->query($query);
+        if ($nodes && $nodes->length > 0) {
+            return $nodes->item(0)->nodeValue;
+        }
+        
+        // Try without namespace prefix
+        $altQuery = str_replace('ns:', '', $query);
+        $nodes = $xpath->query($altQuery);
+        if ($nodes && $nodes->length > 0) {
+            return $nodes->item(0)->nodeValue;
+        }
+        
+        return '';
+    }
+    
+    private function generateTransactionId(): string 
+    {
         return 'ISO_' . $this->countryCode . '_' . time() . '_' . bin2hex(random_bytes(4));
     }
 }
