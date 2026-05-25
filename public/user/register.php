@@ -18,7 +18,8 @@ if (!file_exists($configPath)) {
 }
 
 try {
-    $config = require $configPath;
+require_once $configPath;
+$config = \Core\Config\LoadCountry::getConfig();
     if (!is_array($config)) {
         die("Configuration file did not return an array");
     }
