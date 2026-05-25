@@ -64,9 +64,7 @@ class AdminAuth
                 return ['success' => false, 'message' => 'Account not found.'];
             }
             
-            // Check country access - FIXED LOGIC
-            // Super admin (role_id = 999) can access any country
-            // Other admins must have matching country_code OR no country restriction
+            // Check country access - Super admin (role_id = 999) can access any country
             $isSuperAdmin = ($admin['role_id'] == 999);
             $hasCountryRestriction = !empty($admin['country_code']);
             $countryMatches = ($admin['country_code'] === $country);
@@ -78,18 +76,38 @@ class AdminAuth
             
             error_log("[ADMIN AUTH] Country check passed for: {$username}");
             
-            // Update last login
-            $ipAddress = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-            $updateStmt = $this->db->prepare("
-                UPDATE admins 
-                SET last_login_at = NOW(), 
-                    last_login_ip = :ip 
-                WHERE admin_id = :admin_id
-            ");
-            $updateStmt->execute([
-                ':ip' => $ipAddress,
-                ':admin_id' => $admin['admin_id']
-            ]);
+            // Update last login - NON-FATAL (wrapped in try-catch)
+            try {
+                $ipAddress = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+                
+                // Check if columns exist first (safe approach)
+                $checkColumns = $this->db->query("
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'admins' 
+                    AND column_name IN ('last_login_at', 'last_login_ip')
+                ");
+                $existingColumns = $checkColumns->fetchAll(\PDO::FETCH_COLUMN);
+                
+                if (in_array('last_login_at', $existingColumns) && in_array('last_login_ip', $existingColumns)) {
+                    $updateStmt = $this->db->prepare("
+                        UPDATE admins 
+                        SET last_login_at = NOW(), 
+                            last_login_ip = :ip 
+                        WHERE admin_id = :admin_id
+                    ");
+                    $updateStmt->execute([
+                        ':ip' => $ipAddress,
+                        ':admin_id' => $admin['admin_id']
+                    ]);
+                    error_log("[ADMIN AUTH] Last login updated for: {$username}");
+                } else {
+                    error_log("[ADMIN AUTH] Last login columns missing, skipping update");
+                }
+            } catch (\Throwable $e) {
+                // Non-fatal - don't fail the login if this fails
+                error_log("[ADMIN AUTH] Last login update skipped (non-fatal): " . $e->getMessage());
+            }
             
             // Clear any existing session data first
             SessionManager::remove('admin_id');
@@ -175,8 +193,6 @@ class AdminAuth
                 return ['success' => true, 'message' => 'MFA not required.'];
             }
             
-            // For now, accept any 6-digit code for testing
-            // In production, implement proper TOTP verification
             if (strlen($code) !== 6 || !ctype_digit($code)) {
                 return ['success' => false, 'message' => 'Invalid authentication code.'];
             }
@@ -199,10 +215,7 @@ class AdminAuth
         $loggedIn = SessionManager::get('admin_logged_in') === true;
         $mfaPending = SessionManager::get('admin_mfa_pending') === true;
         
-        $result = $loggedIn && !$mfaPending;
-        error_log("[ADMIN AUTH] isLoggedIn check: loggedIn=" . ($loggedIn ? 'true' : 'false') . ", mfaPending=" . ($mfaPending ? 'true' : 'false') . ", result=" . ($result ? 'true' : 'false'));
-        
-        return $result;
+        return $loggedIn && !$mfaPending;
     }
     
     /**
@@ -219,8 +232,6 @@ class AdminAuth
         SessionManager::remove('admin_logged_in');
         SessionManager::remove('admin_mfa_pending');
         SessionManager::destroy();
-        
-        error_log("[ADMIN AUTH] Admin logged out");
     }
     
     /**
@@ -261,32 +272,14 @@ class AdminAuth
     {
         $roleId = self::getCurrentRoleId();
         
-        // Super admin (999) has all permissions
         if ($roleId === 999) {
             return true;
         }
         
-        // Define role-based permissions
         $permissions = [
-            3 => [  // Regulator (BOB)
-                'view_dashboard',
-                'view_reports',
-                'audit_logs',
-                'compliance_checks'
-            ],
-            4 => [  // Compliance Officer
-                'view_dashboard',
-                'view_reports',
-                'manage_compliance',
-                'review_transactions',
-                'kyc_verification'
-            ],
-            5 => [  // Auditor
-                'view_dashboard',
-                'view_reports',
-                'audit_logs',
-                'read_only'
-            ]
+            3 => ['view_dashboard', 'view_reports', 'audit_logs', 'compliance_checks'],
+            4 => ['view_dashboard', 'view_reports', 'manage_compliance', 'review_transactions', 'kyc_verification'],
+            5 => ['view_dashboard', 'view_reports', 'audit_logs', 'read_only']
         ];
         
         $rolePermissions = $permissions[$roleId] ?? [];
@@ -294,35 +287,8 @@ class AdminAuth
         return in_array($permission, $rolePermissions);
     }
     
-    /**
-     * Check if admin is super admin
-     */
-    public static function isSuperAdmin(): bool
-    {
-        return self::getCurrentRoleId() === 999;
-    }
-    
-    /**
-     * Check if admin is regulator
-     */
-    public static function isRegulator(): bool
-    {
-        return self::getCurrentRoleId() === 3;
-    }
-    
-    /**
-     * Check if admin is compliance officer
-     */
-    public static function isComplianceOfficer(): bool
-    {
-        return self::getCurrentRoleId() === 4;
-    }
-    
-    /**
-     * Check if admin is auditor
-     */
-    public static function isAuditor(): bool
-    {
-        return self::getCurrentRoleId() === 5;
-    }
+    public static function isSuperAdmin(): bool { return self::getCurrentRoleId() === 999; }
+    public static function isRegulator(): bool { return self::getCurrentRoleId() === 3; }
+    public static function isComplianceOfficer(): bool { return self::getCurrentRoleId() === 4; }
+    public static function isAuditor(): bool { return self::getCurrentRoleId() === 5; }
 }
