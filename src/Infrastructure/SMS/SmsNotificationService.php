@@ -23,17 +23,16 @@ class SmsNotificationService
     {
         $this->db = $db;
         $this->config = $config;
+        $this->smsGateway = null;
         
         // Initialize SMS Gateway if configured
         try {
-            // Check if SmsGatewayClient exists
-            $gatewayPath = __DIR__ . '/SmsGatewayClient.php';
-            if (file_exists($gatewayPath)) {
-                require_once $gatewayPath;
+            // Check if SmsGatewayClient class exists
+            if (class_exists('\\Infrastructure\\SMS\\SmsGatewayClient')) {
                 $this->smsGateway = new SmsGatewayClient($db, $config);
+                $this->log("SmsGatewayClient initialized successfully");
             } else {
-                $this->smsGateway = null;
-                $this->log("SmsGatewayClient not found at: {$gatewayPath}");
+                $this->log("SmsGatewayClient class not found - SMS will be in mock mode");
             }
         } catch (Exception $e) {
             $this->smsGateway = null;
