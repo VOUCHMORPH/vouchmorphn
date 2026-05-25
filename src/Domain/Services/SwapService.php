@@ -23,8 +23,6 @@ use Domain\ValueObjects\SwapStatusResolver;
  * SwapService - ISO20022 & FSPIOP Compliant
  * Multi-country aware, dynamic configuration loading
  * ALL fees and rates are loaded from country configuration files - NO HARDCODING
- * 
- * NOW WITH FX, CROSS-BORDER CAPABILITIES, AND FEE SEPARATION FOR CASHOUT RETRY
  */
 class SwapService
 {
@@ -110,50 +108,35 @@ class SwapService
             $this->swapStatusResolver = null;
         }
 
-        // PRIORITY 1: Use config from LoadCountry (already loaded)
-        if (isset($config['fees']) && !empty($config['fees'])) {
-            $this->feesConfig = $config['fees'];
-            error_log("[SwapService] Using fees config from LoadCountry");
-        } else {
-            try {
-                $this->loadCountryFees();
-                error_log("[SwapService] Country fees loaded successfully from files");
-            } catch (\Exception $e) {
-                error_log("[SwapService] ERROR loading country fees: " . $e->getMessage());
-                throw new RuntimeException("Failed to load country fees: " . $e->getMessage());
-            }
+        // ALWAYS load from country files - NO HARDCODING
+        try {
+            $this->loadCountryFees();
+            error_log("[SwapService] Country fees loaded successfully from files");
+        } catch (\Exception $e) {
+            error_log("[SwapService] ERROR loading country fees: " . $e->getMessage());
+            throw new RuntimeException("Failed to load country fees: " . $e->getMessage());
         }
         
         // Initialize FeeService with loaded config
         $this->feeService = new FeeService($this->feesConfig, 'BWP');
         error_log("[SwapService] FeeService initialized");
         
-        // PRIORITY 1: Use card config from LoadCountry
-        if (isset($config['card_config']) && !empty($config['card_config'])) {
-            $this->cardConfig = $config['card_config'];
-            error_log("[SwapService] Using card config from LoadCountry");
-        } else {
-            try {
-                $this->loadCardConfig();
-                error_log("[SwapService] Card config loaded successfully from files");
-            } catch (\Exception $e) {
-                error_log("[SwapService] ERROR loading card config: " . $e->getMessage());
-                throw new RuntimeException("Failed to load card config: " . $e->getMessage());
-            }
+        // ALWAYS load card config from country files - NO HARDCODING
+        try {
+            $this->loadCardConfig();
+            error_log("[SwapService] Card config loaded successfully from files");
+        } catch (\Exception $e) {
+            error_log("[SwapService] ERROR loading card config: " . $e->getMessage());
+            throw new RuntimeException("Failed to load card config: " . $e->getMessage());
         }
         
-        // PRIORITY 1: Use ATM notes from LoadCountry
-        if (isset($config['atm_notes']) && !empty($config['atm_notes'])) {
-            $this->atmNotes = $config['atm_notes'];
-            error_log("[SwapService] Using ATM notes from LoadCountry");
-        } else {
-            try {
-                $this->loadAtmNotes();
-                error_log("[SwapService] ATM notes loaded successfully from files");
-            } catch (\Exception $e) {
-                error_log("[SwapService] ERROR loading ATM notes: " . $e->getMessage());
-                throw new RuntimeException("Failed to load ATM notes: " . $e->getMessage());
-            }
+        // ALWAYS load ATM notes from country files - NO HARDCODING
+        try {
+            $this->loadAtmNotes();
+            error_log("[SwapService] ATM notes loaded successfully from files");
+        } catch (\Exception $e) {
+            error_log("[SwapService] ERROR loading ATM notes: " . $e->getMessage());
+            throw new RuntimeException("Failed to load ATM notes: " . $e->getMessage());
         }
         
         try {
@@ -215,79 +198,51 @@ class SwapService
         error_log("Fee service status: " . ($this->feeService ? "ACTIVE" : "NOT AVAILABLE"));
     }
     
-   /**
- * Get country data directory path - Compatible with LoadCountry paths
- */
-private function getCountryDataDir(): string
-{
-    // PRIORITY 1: Use the same path structure as LoadCountry
-    // Your actual config files are in src/Core/Config/Countries/{country}/
-    $coreConfigPath = __DIR__ . "/../Core/Config/Countries/" . ucfirst(strtolower($this->countryCode));
-    
-    if (is_dir($coreConfigPath)) {
-        error_log("[SwapService] Found country data dir in core config: {$coreConfigPath}");
-        return $coreConfigPath;
-    }
-    
-    // PRIORITY 2: Try with country name (Botswana) not code (BW)
-    $systemCountryFile = __DIR__ . "/../Core/Config/SystemCountry.php";
-    if (file_exists($systemCountryFile)) {
-        $countryMeta = require $systemCountryFile;
-        $countryName = $countryMeta['name'] ?? 'Botswana';
-        $countryPath = __DIR__ . "/../Core/Config/Countries/" . $countryName;
+    /**
+     * Get country data directory path - Uses actual config file location
+     * Files are in: src/Core/Config/Countries/{country}/
+     */
+    private function getCountryDataDir(): string
+    {
+        // Primary path: src/Core/Config/Countries/{CountryName}/
+        $coreConfigPath = __DIR__ . "/../Core/Config/Countries/" . ucfirst(strtolower($this->countryCode));
         
-        if (is_dir($countryPath)) {
-            error_log("[SwapService] Found country data dir using country name: {$countryPath}");
-            return $countryPath;
+        if (is_dir($coreConfigPath)) {
+            error_log("[SwapService] Found country data dir in core config: {$coreConfigPath}");
+            return $coreConfigPath;
         }
-    }
-    
-    // PRIORITY 3: Try with uppercase first letter (Botswana)
-    $upperFirstPath = __DIR__ . "/../Core/Config/Countries/" . ucfirst(strtolower($this->countryCode));
-    if (is_dir($upperFirstPath)) {
-        error_log("[SwapService] Found country data dir using uppercase: {$upperFirstPath}");
-        return $upperFirstPath;
-    }
-    
-    // PRIORITY 4: Try project root relative paths
-    $projectRoot = dirname(__DIR__, 3);
-    $projectPaths = [
-        $projectRoot . "/src/Core/Config/Countries/" . ucfirst(strtolower($this->countryCode)),
-        $projectRoot . "/src/Core/Config/Countries/Botswana",
-        $projectRoot . "/src/Core/Config/Countries/" . $this->countryCode,
-    ];
-    
-    foreach ($projectPaths as $path) {
-        if (is_dir($path)) {
-            error_log("[SwapService] Using country data dir from project root: {$path}");
-            return $path;
+        
+        // Try with country name from SystemCountry.php
+        $systemCountryFile = __DIR__ . "/../Core/Config/SystemCountry.php";
+        if (file_exists($systemCountryFile)) {
+            $countryMeta = require $systemCountryFile;
+            $countryName = $countryMeta['name'] ?? 'Botswana';
+            $countryPath = __DIR__ . "/../Core/Config/Countries/" . $countryName;
+            
+            if (is_dir($countryPath)) {
+                error_log("[SwapService] Found country data dir using country name: {$countryPath}");
+                return $countryPath;
+            }
         }
-    }
-    
-    // FALLBACK: Last resort - check all possible locations
-    $possiblePaths = [
-        __DIR__ . "/../Core/Config/Countries/Botswana",
-        __DIR__ . "/../../Core/Config/Countries/Botswana",
-        dirname(__DIR__, 2) . "/Core/Config/Countries/Botswana",
-        dirname(__DIR__, 3) . "/src/Core/Config/Countries/Botswana",
-    ];
-    
-    foreach ($possiblePaths as $path) {
-        if (is_dir($path)) {
-            error_log("[SwapService] Using fallback country data dir: {$path}");
-            return $path;
+        
+        // Try project root relative path
+        $projectRoot = dirname(__DIR__, 3);
+        $projectPath = $projectRoot . "/src/Core/Config/Countries/" . ucfirst(strtolower($this->countryCode));
+        if (is_dir($projectPath)) {
+            error_log("[SwapService] Using country data dir from project root: {$projectPath}");
+            return $projectPath;
         }
+        
+        // Final error - no hardcoded fallback
+        $error = "Could not find country config directory for {$this->countryCode}. ";
+        $error .= "Expected path: " . $coreConfigPath;
+        error_log("[SwapService] ERROR: " . $error);
+        throw new RuntimeException($error);
     }
-    
-    // Final fallback - throw helpful error
-    $error = "Could not find country config directory for {$this->countryCode}. ";
-    $error .= "Checked paths: " . implode(', ', $possiblePaths);
-    error_log("[SwapService] ERROR: " . $error);
-    throw new RuntimeException($error);
-}
     
     /**
-     * Load ATM notes from configuration
+     * Load ATM notes from configuration - NO HARDCODING
+     * MUST load from atm_notes.json file only
      */
     private function loadAtmNotes(): void
     {
@@ -317,6 +272,7 @@ private function getCountryDataDir(): string
     
     /**
      * Load card configuration from country config - NO HARDCODING
+     * MUST load from cards.json file only
      */
     private function loadCardConfig(): void
     {
@@ -349,13 +305,15 @@ private function getCountryDataDir(): string
     }
 
     /**
-     * Load country fees from configuration - NO HARDCODING, MUST load from file
+     * Load country fees from configuration - NO HARDCODING
+     * MUST load from fees.json file only
      */
     private function loadCountryFees(): void
     {
         $dataDir = $this->getCountryDataDir();
         
         $feesFile = $dataDir . '/fees.json';
+        
         if (!file_exists($feesFile)) {
             throw new RuntimeException("Fees file missing for country {$this->countryCode}: {$feesFile}");
         }
@@ -365,32 +323,43 @@ private function getCountryDataDir(): string
             throw new RuntimeException("Failed to read fees file: {$feesFile}");
         }
         
-        $this->feesConfig = json_decode($content, true);
+        $decoded = json_decode($content, true);
         if (json_last_error() !== JSON_ERROR_NONE) {
             throw new RuntimeException("Invalid JSON in fees file: {$feesFile} - " . json_last_error_msg());
         }
         
-        $requiredFees = ['CASHOUT_SWAP_FEE', 'DEPOSIT_SWAP_FEE', 'CARD_LOAD_FEE', 'CARD_ISSUANCE_FEE'];
-        foreach ($requiredFees as $requiredFee) {
-            if (!isset($this->feesConfig['fees'][$requiredFee])) {
-                throw new RuntimeException("Missing required fee configuration: {$requiredFee} in {$feesFile}");
-            }
-            
-            $fee = $this->feesConfig['fees'][$requiredFee];
-            if (!isset($fee['total_amount'])) {
-                throw new RuntimeException("Fee {$requiredFee} missing 'total_amount' in {$feesFile}");
-            }
+        // Validate required structure
+        if (!isset($decoded['fees'])) {
+            throw new RuntimeException("Missing 'fees' key in {$feesFile}");
         }
         
-        if (!isset($this->feesConfig['regulatory']['vat_rate'])) {
+        if (!isset($decoded['regulatory']['vat_rate'])) {
             throw new RuntimeException("Missing 'regulatory.vat_rate' in {$feesFile}");
         }
         
+        $requiredFees = ['CASHOUT_SWAP_FEE', 'DEPOSIT_SWAP_FEE', 'CARD_LOAD_FEE', 'CARD_ISSUANCE_FEE'];
+        foreach ($requiredFees as $requiredFee) {
+            if (!isset($decoded['fees'][$requiredFee])) {
+                throw new RuntimeException("Missing required fee configuration: {$requiredFee} in {$feesFile}");
+            }
+            
+            $fee = $decoded['fees'][$requiredFee];
+            if (!isset($fee['total_amount'])) {
+                throw new RuntimeException("Fee {$requiredFee} missing 'total_amount' in {$feesFile}");
+            }
+            
+            if (!isset($fee['split'])) {
+                throw new RuntimeException("Fee {$requiredFee} missing 'split' configuration in {$feesFile}");
+            }
+        }
+        
+        $this->feesConfig = $decoded;
         error_log("[SwapService] Fees loaded from: {$feesFile}");
     }
 
     /**
      * Initialize SMS service from country config - NO HARDCODING
+     * MUST load from communication.json file only
      */
     private function initSmsService(): void
     {
@@ -436,7 +405,7 @@ private function getCountryDataDir(): string
         }
         
         $institution = $destination['institution'] ?? '';
-        $messageBasedIssuers = $this->cardConfig['message_based_issuers'] ?? ['VOUCHMORPH'];
+        $messageBasedIssuers = $this->cardConfig['message_based_issuers'] ?? [];
         
         if (in_array(strtoupper($institution), array_map('strtoupper', $messageBasedIssuers))) {
             return 'message_based';
@@ -3449,7 +3418,7 @@ private function getCountryDataDir(): string
             $errorMsg = 'Bank communication failed';
             if (isset($result['curl_error']) && !empty($result['curl_error'])) {
                 $errorMsg .= ': ' . $result['curl_error'];
-            } elseif (isset($result['status_code'])) {
+            } elseif (isset$result['status_code'])) {
                 $errorMsg .= ': HTTP ' . $result['status_code'];
             }
             throw new RuntimeException("Deposit failed: " . $errorMsg);
