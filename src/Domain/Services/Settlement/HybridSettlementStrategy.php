@@ -13,12 +13,12 @@ use Exception;
  * 
  * VouchMorph NEVER holds customer funds.
  * VouchMorph ONLY:
- * 1. Orchestrates settlement messages between participants
+ * 1. Orchestrates settlement messages between institutions
  * 2. Tracks net positions for reconciliation
- * 3. Bills participants for fees into VouchMorph's operational account
+ * 3. Bills institutions for fees into VouchMorph's operational account
  * 4. Routes cross-border settlements through VouchMorph corridor accounts
  * 
- * Real money movement happens directly between participants via:
+ * Real money movement happens directly between institutions via:
  * - RTGS
  * - SWIFT  
  * - Central bank rails
@@ -40,9 +40,9 @@ class HybridSettlementStrategy
     
     // Settlement statuses - messages only, not fund status
     private const STATUS_PENDING = 'PENDING';      // Message queued
-    private const STATUS_SENT = 'SENT';            // Message sent to participant
-    private const STATUS_ACKNOWLEDGED = 'ACK';     // Participant acknowledged
-    private const STATUS_COMPLETED = 'COMPLETED';  // Participant confirmed settlement
+    private const STATUS_SENT = 'SENT';            // Message sent to institution
+    private const STATUS_ACKNOWLEDGED = 'ACK';     // Institution acknowledged
+    private const STATUS_COMPLETED = 'COMPLETED';  // Institution confirmed settlement
     private const STATUS_FAILED = 'FAILED';        // Message delivery failed
     
     // Message types
@@ -67,14 +67,14 @@ class HybridSettlementStrategy
      */
     private function ensureMessageTablesExist(): void
     {
-        // Settlement messages outbox - messages to participants
+        // Settlement messages outbox - messages to institutions
         $this->db->exec("
             CREATE TABLE IF NOT EXISTS settlement_outbox (
                 message_id BIGSERIAL PRIMARY KEY,
                 message_uuid UUID UNIQUE NOT NULL,
                 swap_reference VARCHAR(100) NOT NULL,
-                from_participant VARCHAR(100) NOT NULL,
-                to_participant VARCHAR(100) NOT NULL,
+                from_institution VARCHAR(100) NOT NULL,
+                to_institution VARCHAR(100) NOT NULL,
                 amount NUMERIC(24,2) NOT NULL,
                 currency CHAR(3) NOT NULL,
                 message_type VARCHAR(50) NOT NULL,
@@ -92,24 +92,24 @@ class HybridSettlementStrategy
         $this->db->exec("
             CREATE TABLE IF NOT EXISTS net_positions (
                 id BIGSERIAL PRIMARY KEY,
-                debtor VARCHAR(100) NOT NULL,
-                creditor VARCHAR(100) NOT NULL,
+                from_institution VARCHAR(100) NOT NULL,
+                to_institution VARCHAR(100) NOT NULL,
                 amount NUMERIC(24,2) NOT NULL,
                 currency_code CHAR(3) NOT NULL,
                 created_at TIMESTAMP DEFAULT NOW(),
                 updated_at TIMESTAMP DEFAULT NOW(),
-                UNIQUE(debtor, creditor, currency_code)
+                UNIQUE(from_institution, to_institution, currency_code)
             )
         ");
         
-        // Fee invoices sent to participants
+        // Fee invoices sent to institutions
         $this->db->exec("
             CREATE TABLE IF NOT EXISTS fee_invoices (
                 invoice_id BIGSERIAL PRIMARY KEY,
                 invoice_uuid UUID UNIQUE NOT NULL,
                 swap_reference VARCHAR(100) NOT NULL,
-                participant_id BIGINT NOT NULL,
-                participant_name VARCHAR(100) NOT NULL,
+                institution_id BIGINT NOT NULL,
+                institution_name VARCHAR(100) NOT NULL,
                 fee_type VARCHAR(50) NOT NULL,
                 fee_amount NUMERIC(12,2) NOT NULL,
                 currency CHAR(3) NOT NULL,
@@ -130,8 +130,8 @@ class HybridSettlementStrategy
                 swap_reference VARCHAR(100) NOT NULL,
                 from_country CHAR(2) NOT NULL,
                 to_country CHAR(2) NOT NULL,
-                from_participant VARCHAR(100) NOT NULL,
-                to_participant VARCHAR(100) NOT NULL,
+                from_institution VARCHAR(100) NOT NULL,
+                to_institution VARCHAR(100) NOT NULL,
                 amount NUMERIC(24,2) NOT NULL,
                 source_currency CHAR(3) NOT NULL,
                 destination_currency CHAR(3) NOT NULL,
@@ -162,13 +162,13 @@ class HybridSettlementStrategy
             )
         ");
         
-        // Settlement acknowledgements from participants
+        // Settlement acknowledgements from institutions
         $this->db->exec("
             CREATE TABLE IF NOT EXISTS settlement_acknowledgements (
                 ack_id BIGSERIAL PRIMARY KEY,
                 message_uuid UUID NOT NULL,
                 swap_reference VARCHAR(100) NOT NULL,
-                from_participant VARCHAR(100) NOT NULL,
+                from_institution VARCHAR(100) NOT NULL,
                 ack_type VARCHAR(20) NOT NULL,
                 ack_payload JSONB,
                 received_at TIMESTAMP DEFAULT NOW()
@@ -202,13 +202,15 @@ class HybridSettlementStrategy
      * UPDATE NET POSITION - Track who owes whom (message-level only)
      * VouchMorph does NOT move money - just tracks obligations
      * 
-     * @param string $fromInstitution - Debtor institution
-     * @param string $toInstitution - Creditor institution  
+     * @param string $swapRef - Swap reference for tracking
+     * @param string $fromInstitution - Debtor institution (where money comes FROM)
+     * @param string $toInstitution - Creditor institution (where money goes TO)
      * @param float $amount - Amount
      * @param string $transactionType - Type of transaction
      * @param string $currency - Currency code
      */
     public function updateNetPosition(
+        string $swapRef,
         string $fromInstitution, 
         string $toInstitution, 
         float $amount, 
@@ -219,8 +221,9 @@ class HybridSettlementStrategy
             // Update net positions table for reconciliation
             $this->updateNetPositionsTable($fromInstitution, $toInstitution, $amount, $currency);
             
-            // Send settlement instruction message to participants
+            // Send settlement instruction message to institutions
             $messageUuid = $this->sendSettlementInstruction(
+                $swapRef,
                 $fromInstitution,
                 $toInstitution,
                 $amount,
@@ -240,42 +243,42 @@ class HybridSettlementStrategy
     }
     
     /**
-     * Send settlement instruction to participants
-     * Participants settle directly - VouchMorph only messages
+     * Send settlement instruction to institutions
+     * Institutions settle directly - VouchMorph only messages
      */
     private function sendSettlementInstruction(
-        string $fromParticipant,
-        string $toParticipant,
+        string $swapRef,
+        string $fromInstitution,
+        string $toInstitution,
         float $amount,
         string $currency,
         string $transactionType
     ): string {
         $messageUuid = $this->generateUuid();
-        $swapRef = 'SWAP_' . bin2hex(random_bytes(8));
         
         // Construct settlement instruction message
         $instruction = [
             'instruction_id' => $messageUuid,
             'swap_reference' => $swapRef,
             'type' => 'SETTLEMENT_INSTRUCTION',
-            'debtor' => $fromParticipant,
-            'creditor' => $toParticipant,
+            'from_institution' => $fromInstitution,
+            'to_institution' => $toInstitution,
             'amount' => $amount,
             'currency' => $currency,
             'transaction_type' => $transactionType,
             'settlement_deadline' => date('Y-m-d H:i:s', strtotime('+2 hours')),
             'instructions' => [
-                'method' => 'DIRECT_PARTICIPANT_SETTLEMENT',
+                'method' => 'DIRECT_INSTITUTION_SETTLEMENT',
                 'reference' => $swapRef,
                 'notes' => 'Please settle directly with counterparty. VouchMorph does not hold funds.',
                 'reconciliation_required' => true
             ]
         ];
         
-        // Store in outbox for delivery to participants
+        // Store in outbox for delivery to institutions
         $stmt = $this->db->prepare("
             INSERT INTO settlement_outbox 
-            (message_uuid, swap_reference, from_participant, to_participant, 
+            (message_uuid, swap_reference, from_institution, to_institution, 
              amount, currency, message_type, message_payload, status, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NOW())
         ");
@@ -283,17 +286,17 @@ class HybridSettlementStrategy
         $stmt->execute([
             $messageUuid,
             $swapRef,
-            $fromParticipant,
-            $toParticipant,
+            $fromInstitution,
+            $toInstitution,
             $amount,
             $currency,
             self::MSG_SETTLEMENT_INSTRUCTION,
             json_encode($instruction)
         ]);
         
-        // Trigger delivery to participants (webhook/queue)
-        $this->deliverToParticipant($fromParticipant, $instruction);
-        $this->deliverToParticipant($toParticipant, $instruction);
+        // Trigger delivery to institutions (webhook/queue)
+        $this->deliverToInstitution($fromInstitution, $instruction);
+        $this->deliverToInstitution($toInstitution, $instruction);
         
         return $messageUuid;
     }
@@ -356,6 +359,7 @@ class HybridSettlementStrategy
         ]);
         
         $this->updateNetPosition(
+            $swapRef . '_step1',
             $sourceInstitution,
             $sourceAccount['account_name'],
             $amount,
@@ -393,6 +397,7 @@ class HybridSettlementStrategy
         ]);
         
         $this->updateNetPosition(
+            $swapRef . '_step3',
             $destinationAccount['account_name'],
             $destinationInstitution,
             $convertedAmount,
@@ -481,7 +486,7 @@ class HybridSettlementStrategy
         
         if (!$vmSourceAccount || !$vmDestAccount) {
             // Fall back to direct settlement if corridor not configured
-            $this->updateNetPosition($sourceInstitution, $destinationInstitution, $amount, 'direct_settlement', $currency);
+            $this->updateNetPosition($swapRef, $sourceInstitution, $destinationInstitution, $amount, 'direct_settlement', $currency);
             return [
                 'method' => 'direct',
                 'corridor_fee' => 0,
@@ -490,8 +495,8 @@ class HybridSettlementStrategy
         }
         
         // Route: Source → VouchMorph (source) → VouchMorph (dest) → Destination
-        $this->updateNetPosition($sourceInstitution, $vmSourceAccount['account_name'], $amount, 'corridor_inbound', $currency);
-        $this->updateNetPosition($vmDestAccount['account_name'], $destinationInstitution, $amount, 'corridor_outbound', $currency);
+        $this->updateNetPosition($swapRef . '_inbound', $sourceInstitution, $vmSourceAccount['account_name'], $amount, 'corridor_inbound', $currency);
+        $this->updateNetPosition($swapRef . '_outbound', $vmDestAccount['account_name'], $destinationInstitution, $amount, 'corridor_outbound', $currency);
         
         // Apply corridor fee if any
         $actualCorridorFee = 0;
@@ -669,23 +674,23 @@ class HybridSettlementStrategy
     /**
      * Check if a settlement needs cross-border routing
      */
-    public function needsCrossBorder(string $sourceInstitution, string $destinationInstitution, array $participants): bool
+    public function needsCrossBorder(string $sourceInstitution, string $destinationInstitution, array $institutions): bool
     {
-        $sourceCountry = $this->getInstitutionCountry($sourceInstitution, $participants);
-        $destinationCountry = $this->getInstitutionCountry($destinationInstitution, $participants);
+        $sourceCountry = $this->getInstitutionCountry($sourceInstitution, $institutions);
+        $destinationCountry = $this->getInstitutionCountry($destinationInstitution, $institutions);
         
         return $sourceCountry !== $destinationCountry;
     }
     
     /**
-     * Get institution country from participants config
+     * Get institution country from institutions config
      */
-    private function getInstitutionCountry(string $institution, array $participants): string
+    private function getInstitutionCountry(string $institution, array $institutions): string
     {
-        foreach ($participants as $participant) {
-            if (strtolower($participant['name'] ?? '') === strtolower($institution) ||
-                strtolower($participant['provider_code'] ?? '') === strtolower($institution)) {
-                return $participant['country_code'] ?? 'BW';
+        foreach ($institutions as $inst) {
+            if (strtolower($inst['name'] ?? '') === strtolower($institution) ||
+                strtolower($inst['provider_code'] ?? '') === strtolower($institution)) {
+                return $inst['country_code'] ?? 'BW';
             }
         }
         return 'BW'; // Default to Botswana
@@ -797,7 +802,7 @@ class HybridSettlementStrategy
             $stmt = $this->db->prepare("
                 INSERT INTO cross_border_messages
                 (message_uuid, swap_reference, from_country, to_country,
-                 from_participant, to_participant, amount, source_currency,
+                 from_institution, to_institution, amount, source_currency,
                  destination_currency, exchange_rate, corridor_fee, status, created_at)
                 VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NOW())
                 RETURNING message_id
@@ -825,13 +830,13 @@ class HybridSettlementStrategy
     }
     
     /**
-     * Invoice participants for fees
+     * Invoice institutions for fees
      * This is the ONLY money that moves to VouchMorph
      */
     public function invoiceFee(
         string $swapReference,
-        string $participantName,
-        int $participantId,
+        string $institutionName,
+        int $institutionId,
         string $feeType,
         float $feeAmount,
         string $currency = 'BWP',
@@ -866,7 +871,7 @@ class HybridSettlementStrategy
         
         $stmt = $this->db->prepare("
             INSERT INTO fee_invoices 
-            (invoice_uuid, swap_reference, participant_id, participant_name, 
+            (invoice_uuid, swap_reference, institution_id, institution_name, 
              fee_type, fee_amount, currency, vat_amount, total_amount, status, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SENT', NOW())
         ");
@@ -874,8 +879,8 @@ class HybridSettlementStrategy
         $stmt->execute([
             $invoiceUuid,
             $swapReference,
-            $participantId,
-            $participantName,
+            $institutionId,
+            $institutionName,
             $feeType,
             $feeAmount,
             $currency,
@@ -883,10 +888,10 @@ class HybridSettlementStrategy
             $totalAmount
         ]);
         
-        // Send invoice to participant
-        $this->deliverToParticipant($participantName, $invoice);
+        // Send invoice to institution
+        $this->deliverToInstitution($institutionName, $invoice);
         
-        error_log("[SETTLEMENT] Fee invoice sent to $participantName: $totalAmount $currency");
+        error_log("[SETTLEMENT] Fee invoice sent to $institutionName: $totalAmount $currency");
         
         return $invoiceUuid;
     }
@@ -923,13 +928,13 @@ class HybridSettlementStrategy
     }
     
     /**
-     * Deliver message to participant via webhook/queue
+     * Deliver message to institution via webhook/queue
      */
-    private function deliverToParticipant(string $participantName, array $message): void
+    private function deliverToInstitution(string $institutionName, array $message): void
     {
-        // This would call participant's webhook or put in their queue
+        // This would call institution's webhook or put in their queue
         // For now, just log
-        error_log("[SETTLEMENT] Message delivered to $participantName: " . json_encode($message));
+        error_log("[SETTLEMENT] Message delivered to $institutionName: " . json_encode($message));
         
         // Mark message as sent
         if (isset($message['instruction_id'])) {
@@ -943,32 +948,32 @@ class HybridSettlementStrategy
     }
     
     /**
-     * Acknowledge settlement from participant
-     * Participant confirms they have settled directly with counterparty
+     * Acknowledge settlement from institution
+     * Institution confirms they have settled directly with counterparty
      */
-    public function acknowledgeSettlement(string $messageUuid, string $participantName, array $proofData = []): bool
+    public function acknowledgeSettlement(string $messageUuid, string $institutionName, array $proofData = []): bool
     {
         try {
             // Record acknowledgement
             $stmt = $this->db->prepare("
                 INSERT INTO settlement_acknowledgements 
-                (message_uuid, swap_reference, from_participant, ack_type, ack_payload, received_at)
+                (message_uuid, swap_reference, from_institution, ack_type, ack_payload, received_at)
                 SELECT ?, swap_reference, ?, 'SETTLED', ?, NOW()
                 FROM settlement_outbox 
                 WHERE message_uuid = ?
             ");
             
-            $stmt->execute([$messageUuid, $participantName, json_encode($proofData), $messageUuid]);
+            $stmt->execute([$messageUuid, $institutionName, json_encode($proofData), $messageUuid]);
             
             // Update outbox status
             $stmt = $this->db->prepare("
                 UPDATE settlement_outbox 
                 SET status = 'ACKNOWLEDGED', acknowledged_at = NOW()
-                WHERE message_uuid = ? AND to_participant = ?
+                WHERE message_uuid = ? AND to_institution = ?
             ");
-            $stmt->execute([$messageUuid, $participantName]);
+            $stmt->execute([$messageUuid, $institutionName]);
             
-            error_log("[SETTLEMENT] Settlement acknowledged by $participantName for $messageUuid");
+            error_log("[SETTLEMENT] Settlement acknowledged by $institutionName for $messageUuid");
             
             // Check if both parties have acknowledged
             $this->checkSettlementComplete($messageUuid);
@@ -1027,12 +1032,12 @@ class HybridSettlementStrategy
      * Process net settlement between nodes (reduces correspondent banking)
      * VouchMorph calculates net obligations and sends updated instructions
      */
-    public function calculateNetObligations(array $participantBalances): array
+    public function calculateNetObligations(array $institutionBalances): array
     {
         $netObligations = [];
         $batchId = 'BATCH_' . bin2hex(random_bytes(8));
         
-        foreach ($participantBalances as $debtor => $creditors) {
+        foreach ($institutionBalances as $debtor => $creditors) {
             foreach ($creditors as $creditor => $amounts) {
                 foreach ($amounts as $currency => $amount) {
                     if ($amount <= 0.01) continue;
@@ -1045,8 +1050,8 @@ class HybridSettlementStrategy
                         $netAmount = abs($amount - $reverseAmount);
                         $netObligations[] = [
                             'batch_id' => $batchId,
-                            'debtor' => $amount > $reverseAmount ? $debtor : $creditor,
-                            'creditor' => $amount > $reverseAmount ? $creditor : $debtor,
+                            'from_institution' => $amount > $reverseAmount ? $debtor : $creditor,
+                            'to_institution' => $amount > $reverseAmount ? $creditor : $debtor,
                             'gross_amount' => $amount,
                             'reverse_amount' => $reverseAmount,
                             'net_amount' => $netAmount,
@@ -1062,8 +1067,8 @@ class HybridSettlementStrategy
                     } else {
                         $netObligations[] = [
                             'batch_id' => $batchId,
-                            'debtor' => $debtor,
-                            'creditor' => $creditor,
+                            'from_institution' => $debtor,
+                            'to_institution' => $creditor,
                             'gross_amount' => $amount,
                             'reverse_amount' => 0,
                             'net_amount' => $amount,
@@ -1079,8 +1084,9 @@ class HybridSettlementStrategy
         foreach ($netObligations as $obligation) {
             if ($obligation['net_amount'] > 0) {
                 $this->sendSettlementInstruction(
-                    $obligation['debtor'],
-                    $obligation['creditor'],
+                    $obligation['original_message_id'],
+                    $obligation['from_institution'],
+                    $obligation['to_institution'],
                     $obligation['net_amount'],
                     $obligation['currency'],
                     'NET_SETTLEMENT'
@@ -1094,16 +1100,16 @@ class HybridSettlementStrategy
     /**
      * Get net position with currency support
      */
-    public function getNetPosition(string $debtor, string $creditor, string $currency = 'BWP'): float
+    public function getNetPosition(string $fromInstitution, string $toInstitution, string $currency = 'BWP'): float
     {
         try {
             $stmt = $this->db->prepare("
                 SELECT amount FROM net_positions
-                WHERE debtor = :debtor AND creditor = :creditor AND currency_code = :currency
+                WHERE from_institution = :from_institution AND to_institution = :to_institution AND currency_code = :currency
             ");
             $stmt->execute([
-                ':debtor' => $debtor,
-                ':creditor' => $creditor,
+                ':from_institution' => $fromInstitution,
+                ':to_institution' => $toInstitution,
                 ':currency' => $currency
             ]);
             
@@ -1120,19 +1126,19 @@ class HybridSettlementStrategy
      * Update net positions table (tracking only)
      */
     private function updateNetPositionsTable(
-        string $debtorInstitution,
-        string $creditorInstitution,
+        string $fromInstitution,
+        string $toInstitution,
         float $amount,
         string $currency
     ): void {
         try {
             $checkStmt = $this->db->prepare("
                 SELECT amount FROM net_positions 
-                WHERE debtor = :debtor AND creditor = :creditor AND currency_code = :currency
+                WHERE from_institution = :from_institution AND to_institution = :to_institution AND currency_code = :currency
             ");
             $checkStmt->execute([
-                ':debtor' => $debtorInstitution,
-                ':creditor' => $creditorInstitution,
+                ':from_institution' => $fromInstitution,
+                ':to_institution' => $toInstitution,
                 ':currency' => $currency
             ]);
             $existing = $checkStmt->fetch(PDO::FETCH_ASSOC);
@@ -1142,24 +1148,24 @@ class HybridSettlementStrategy
                     UPDATE net_positions 
                     SET amount = amount + :amount,
                         updated_at = NOW()
-                    WHERE debtor = :debtor AND creditor = :creditor AND currency_code = :currency
+                    WHERE from_institution = :from_institution AND to_institution = :to_institution AND currency_code = :currency
                 ");
                 $stmt->execute([
-                    ':debtor' => $debtorInstitution,
-                    ':creditor' => $creditorInstitution,
+                    ':from_institution' => $fromInstitution,
+                    ':to_institution' => $toInstitution,
                     ':amount' => $amount,
                     ':currency' => $currency
                 ]);
             } else {
                 $stmt = $this->db->prepare("
                     INSERT INTO net_positions 
-                        (debtor, creditor, amount, currency_code, created_at, updated_at)
+                        (from_institution, to_institution, amount, currency_code, created_at, updated_at)
                     VALUES 
-                        (:debtor, :creditor, :amount, :currency, NOW(), NOW())
+                        (:from_institution, :to_institution, :amount, :currency, NOW(), NOW())
                 ");
                 $stmt->execute([
-                    ':debtor' => $debtorInstitution,
-                    ':creditor' => $creditorInstitution,
+                    ':from_institution' => $fromInstitution,
+                    ':to_institution' => $toInstitution,
                     ':amount' => $amount,
                     ':currency' => $currency
                 ]);
@@ -1173,16 +1179,16 @@ class HybridSettlementStrategy
     /**
      * Clear net position after settlement
      */
-    private function clearNetPosition(string $debtor, string $creditor, string $currency): void
+    private function clearNetPosition(string $fromInstitution, string $toInstitution, string $currency): void
     {
         $stmt = $this->db->prepare("
             DELETE FROM net_positions
-            WHERE debtor = :debtor AND creditor = :creditor AND currency_code = :currency
+            WHERE from_institution = :from_institution AND to_institution = :to_institution AND currency_code = :currency
         ");
         
         $stmt->execute([
-            ':debtor' => $debtor,
-            ':creditor' => $creditor,
+            ':from_institution' => $fromInstitution,
+            ':to_institution' => $toInstitution,
             ':currency' => $currency
         ]);
     }
@@ -1228,7 +1234,7 @@ class HybridSettlementStrategy
         float $amount,
         string $currency = 'BWP'
     ): void {
-        $this->sendSettlementInstruction($fromInstitution, $toInstitution, $amount, $currency, 'DEPOSIT');
+        $this->sendSettlementInstruction($legRef, $fromInstitution, $toInstitution, $amount, $currency, 'DEPOSIT');
         $this->updateNetPositionsTable($fromInstitution, $toInstitution, $amount, $currency);
     }
     
@@ -1248,8 +1254,8 @@ class HybridSettlementStrategy
         // Send authorization message
         $message = [
             'type' => 'CASHOUT_AUTHORIZATION',
-            'from' => $fromInstitution,
-            'to' => $toInstitution,
+            'from_institution' => $fromInstitution,
+            'to_institution' => $toInstitution,
             'amount' => $amount,
             'currency' => $currency,
             'expiry' => $expiry->format('Y-m-d H:i:s'),
@@ -1258,7 +1264,7 @@ class HybridSettlementStrategy
             'reference' => $legRef
         ];
         
-        $this->deliverToParticipant($toInstitution, $message);
+        $this->deliverToInstitution($toInstitution, $message);
     }
     
     /**
@@ -1273,7 +1279,7 @@ class HybridSettlementStrategy
             'reference' => $legRef
         ];
         
-        // Would deliver to relevant participants
+        // Would deliver to relevant institutions
         error_log("[SETTLEMENT] Cashout confirmation sent for $legRef");
     }
     
@@ -1287,71 +1293,71 @@ class HybridSettlementStrategy
         float $amount,
         string $currency = 'BWP'
     ): void {
-        $this->sendSettlementInstruction($toInstitution, $fromInstitution, $amount, $currency, 'CASHOUT_REVERSAL');
+        $this->sendSettlementInstruction($legRef, $toInstitution, $fromInstitution, $amount, $currency, 'CASHOUT_REVERSAL');
         $this->updateNetPositionsTable($toInstitution, $fromInstitution, $amount, $currency);
     }
     
     /**
      * Auto swap-to-swap settlement
      */
-    public function autoSwapToSwap(string $from, string $to, float $amount, string $currency = 'BWP'): void
+    public function autoSwapToSwap(string $swapRef, string $fromInstitution, string $toInstitution, float $amount, string $currency = 'BWP'): void
     {
         if ($amount <= 0) return;
         
-        $this->sendSettlementInstruction($from, $to, $amount, $currency, 'SWAP_TO_SWAP');
-        $this->updateNetPositionsTable($from, $to, $amount, $currency);
+        $this->sendSettlementInstruction($swapRef, $fromInstitution, $toInstitution, $amount, $currency, 'SWAP_TO_SWAP');
+        $this->updateNetPositionsTable($fromInstitution, $toInstitution, $amount, $currency);
     }
     
     /**
-     * Get pending settlement messages for a participant
+     * Get pending settlement messages for an institution
      */
-    public function getPendingMessagesForParticipant(string $participantName): array
+    public function getPendingMessagesForInstitution(string $institutionName): array
     {
         $stmt = $this->db->prepare("
             SELECT * FROM settlement_outbox 
-            WHERE (from_participant = ? OR to_participant = ?)
+            WHERE (from_institution = ? OR to_institution = ?)
             AND status IN ('PENDING', 'SENT')
             ORDER BY created_at ASC
         ");
         
-        $stmt->execute([$participantName, $participantName]);
+        $stmt->execute([$institutionName, $institutionName]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
     
     /**
-     * Get outstanding fee invoices for a participant
+     * Get outstanding fee invoices for an institution
      */
-    public function getOutstandingInvoices(string $participantName): array
+    public function getOutstandingInvoices(string $institutionName): array
     {
         $stmt = $this->db->prepare("
             SELECT * FROM fee_invoices 
-            WHERE participant_name = ? AND status = 'SENT'
+            WHERE institution_name = ? AND status = 'SENT'
             ORDER BY created_at ASC
         ");
         
-        $stmt->execute([$participantName]);
+        $stmt->execute([$institutionName]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
     
     /**
-     * Generate reconciliation report for a participant
+     * Generate reconciliation report for an institution
      */
-    public function generateReconciliationReport(string $participantName, string $currency = 'BWP'): array
+    public function generateReconciliationReport(string $institutionName, string $currency = 'BWP'): array
     {
         // Get net position
-        $netAsDebtor = $this->getTotalNetPositionAsDebtor($participantName, $currency);
-        $netAsCreditor = $this->getTotalNetPositionAsCreditor($participantName, $currency);
+        $netAsDebtor = $this->getTotalNetPositionAsDebtor($institutionName, $currency);
+        $netAsCreditor = $this->getTotalNetPositionAsCreditor($institutionName, $currency);
         
         $netObligation = $netAsDebtor - $netAsCreditor;
         
         // Get pending settlement messages
-        $pendingMessages = $this->getPendingMessagesForParticipant($participantName);
+        $pendingMessages = $this->getPendingMessagesForInstitution($institutionName);
         
         // Get corridor activity
-        $corridorActivity = $this->getCorridorActivityForParticipant($participantName);
+        $corridorActivity = $this->getCorridorActivityForInstitution($institutionName);
         
         return [
-            'participant' => $participantName,
+            'institution' => $institutionName,
             'currency' => $currency,
             'as_at' => date('Y-m-d H:i:s'),
             'total_owed_to_others' => $netAsDebtor,
@@ -1365,9 +1371,9 @@ class HybridSettlementStrategy
     }
     
     /**
-     * Get corridor activity for a participant
+     * Get corridor activity for an institution
      */
-    private function getCorridorActivityForParticipant(string $participantName): array
+    private function getCorridorActivityForInstitution(string $institutionName): array
     {
         try {
             $stmt = $this->db->prepare("
@@ -1390,26 +1396,26 @@ class HybridSettlementStrategy
         }
     }
     
-    private function getTotalNetPositionAsDebtor(string $participant, string $currency): float
+    private function getTotalNetPositionAsDebtor(string $institution, string $currency): float
     {
         $stmt = $this->db->prepare("
             SELECT COALESCE(SUM(amount), 0) as total 
             FROM net_positions 
-            WHERE debtor = ? AND currency_code = ?
+            WHERE from_institution = ? AND currency_code = ?
         ");
-        $stmt->execute([$participant, $currency]);
+        $stmt->execute([$institution, $currency]);
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         return (float)($result['total'] ?? 0);
     }
     
-    private function getTotalNetPositionAsCreditor(string $participant, string $currency): float
+    private function getTotalNetPositionAsCreditor(string $institution, string $currency): float
     {
         $stmt = $this->db->prepare("
             SELECT COALESCE(SUM(amount), 0) as total 
             FROM net_positions 
-            WHERE creditor = ? AND currency_code = ?
+            WHERE to_institution = ? AND currency_code = ?
         ");
-        $stmt->execute([$participant, $currency]);
+        $stmt->execute([$institution, $currency]);
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         return (float)($result['total'] ?? 0);
     }
