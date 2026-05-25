@@ -11,16 +11,14 @@ ini_set('display_startup_errors', 1);
 // Define root path
 define('PROJECT_ROOT', dirname(__DIR__, 2));
 
-// Load configuration with better error handling
+// Load configuration
 $configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
 if (!file_exists($configPath)) {
     die("Configuration loader not found at: " . $configPath);
 }
 
-// Require the class definition
 require_once $configPath;
 
-// Use the static method to get config
 try {
     $config = \Core\Config\LoadCountry::getConfig();
     if (!is_array($config)) {
@@ -30,7 +28,7 @@ try {
     die("Failed to load configuration: " . $e->getMessage());
 }
 
-// Set system country - safely define constant only if not already defined
+// Set system country - safely define constants
 $systemCountry = $config['country'] ?? getenv('VM_COUNTRY') ?? 'BW';
 if (!defined('SYSTEM_COUNTRY')) {
     define('SYSTEM_COUNTRY', $systemCountry);
@@ -43,17 +41,16 @@ if (!defined('SYSTEM_COUNTRY_CODE')) {
 // Validate required configuration
 if (!isset($config['db']['swap']) || !is_array($config['db']['swap'])) {
     error_log("REGISTER ERROR: Swap database configuration missing for {$systemCountry}");
-    error_log("Available DB configs: " . print_r(array_keys($config['db'] ?? []), true));
-    die("System initialisation error: Swap database configuration missing. Please check your configuration.");
+    die("System initialisation error: Swap database configuration missing.");
 }
 
 $sourceKey = $config['db']['source_client_key'] ?? 'cazacom';
 if (!isset($config['db'][$sourceKey]) || !is_array($config['db'][$sourceKey])) {
     error_log("REGISTER ERROR: Source database configuration missing for key: {$sourceKey}");
-    die("System initialisation error: Source database configuration missing for {$sourceKey}.");
+    die("System initialisation error: Source database configuration missing.");
 }
 
-// Load required files with error checking
+// Load required files
 $requiredFiles = [
     'SessionManager' => PROJECT_ROOT . '/src/Application/Utils/SessionManager.php',
     'DBConnection' => PROJECT_ROOT . '/src/Core/Database/DBConnection.php',
@@ -82,7 +79,7 @@ if (SessionManager::isLoggedIn()) {
 }
 
 // ----------------------------------------
-// Country configuration bootstrap
+// Country configuration
 // ----------------------------------------
 $countryConfig = $config['country_settings'][$systemCountry] ?? [];
 $countryDialCode = $countryConfig['dial_code'] ?? '+267';
@@ -92,37 +89,18 @@ $countryName = $countryConfig['name'] ?? $systemCountry;
 $countryCurrency = $countryConfig['currency'] ?? 'BWP';
 $countryTimeZone = $countryConfig['timezone'] ?? 'Africa/Gaborone';
 
-// ID validation rules per country
-$idValidationRules = $countryConfig['id_validation'] ?? [
-    'national_id' => ['pattern' => '/^[0-9]{9,12}$/', 'min_length' => 9, 'max_length' => 12, 'example' => '123456789', 'label' => 'National ID'],
-    'drivers_license' => ['pattern' => '/^[A-Z0-9]{8,15}$/i', 'min_length' => 8, 'max_length' => 15, 'example' => 'BW12345678', 'label' => 'Driver\'s License'],
-    'passport' => ['pattern' => '/^[A-Z0-9]{6,12}$/i', 'min_length' => 6, 'max_length' => 12, 'example' => 'BN123456', 'label' => 'Passport']
-];
-
-// Botswana-specific ID formats
-if ($systemCountry === 'Botswana' || $systemCountry === 'BW') {
-    $idValidationRules = [
-        'national_id' => ['pattern' => '/^[0-9]{9}$/', 'min_length' => 9, 'max_length' => 9, 'example' => '123456789', 'label' => 'Omang (National ID)'],
-        'drivers_license' => ['pattern' => '/^[A-Z0-9]{8,10}$/i', 'min_length' => 8, 'max_length' => 10, 'example' => 'BW12345678', 'label' => 'Driver\'s License'],
-        'passport' => ['pattern' => '/^[A-Z0-9]{6,9}$/i', 'min_length' => 6, 'max_length' => 9, 'example' => 'BN123456', 'label' => 'Passport']
-    ];
-}
-
-// Set timezone
 date_default_timezone_set($countryTimeZone);
 
 // ----------------------------------------
-// Database configuration bootstrap
+// Database connections
 // ----------------------------------------
 $allDbConfig = $config['db'];
 $swapDbConfig = $allDbConfig['swap'];
 $sourceDbConfig = $allDbConfig[$sourceKey];
 
-// Detect database type
 $dbDriver = $swapDbConfig['type'] ?? 'mysql';
 $isPostgres = ($dbDriver === 'pgsql');
 
-// Add connection options
 $swapDbConfig['options'] = [
     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -137,46 +115,21 @@ $sourceDbConfig['options'] = [
     PDO::ATTR_TIMEOUT => 30
 ];
 
-// ----------------------------------------
-// Database connections with retry logic
-// ----------------------------------------
-$maxRetries = 3;
-$retryDelay = 1;
-
-function connectWithRetry($config, $maxRetries, $retryDelay) {
-    $lastException = null;
-    
-    for ($i = 0; $i < $maxRetries; $i++) {
-        try {
-            $db = DBConnection::getInstance($config);
-            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-            $db->query("SELECT 1");
-            return $db;
-        } catch (Throwable $e) {
-            $lastException = $e;
-            error_log("Database connection attempt " . ($i + 1) . " failed: " . $e->getMessage());
-            if ($i < $maxRetries - 1) {
-                sleep($retryDelay);
-            }
-        }
-    }
-    
-    throw $lastException;
-}
-
 try {
-    $swapDb = connectWithRetry($swapDbConfig, $maxRetries, $retryDelay);
-    $sourceDb = connectWithRetry($sourceDbConfig, $maxRetries, $retryDelay);
+    $swapDb = DBConnection::getInstance($swapDbConfig);
+    $swapDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    
+    $sourceDb = DBConnection::getInstance($sourceDbConfig);
+    $sourceDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (Throwable $e) {
     error_log("REGISTER DB ERROR: " . $e->getMessage());
-    die("System initialisation failed: Unable to connect to database. Please try again later.");
+    die("System initialisation failed: Unable to connect to database.");
 }
 
 // ----------------------------------------
-// Create/update tables for multi-identifier support
+// Create/update tables
 // ----------------------------------------
 try {
-    // Get existing columns
     $columns = [];
     if ($isPostgres) {
         $colsResult = $swapDb->query("SELECT column_name FROM information_schema.columns WHERE table_name = 'users'");
@@ -190,27 +143,14 @@ try {
         }
     }
     
-    // Add missing columns for ID support
-    if (!in_array('national_id', $columns)) {
-        $swapDb->exec("ALTER TABLE users ADD COLUMN national_id VARCHAR(50) DEFAULT NULL");
-        $swapDb->exec("CREATE INDEX idx_national_id ON users(national_id)");
-    }
-    if (!in_array('drivers_license', $columns)) {
-        $swapDb->exec("ALTER TABLE users ADD COLUMN drivers_license VARCHAR(50) DEFAULT NULL");
-        $swapDb->exec("CREATE INDEX idx_drivers_license ON users(drivers_license)");
-    }
-    if (!in_array('passport', $columns)) {
-        $swapDb->exec("ALTER TABLE users ADD COLUMN passport VARCHAR(50) DEFAULT NULL");
-        $swapDb->exec("CREATE INDEX idx_passport ON users(passport)");
-    }
-    if (!in_array('id_type', $columns)) {
-        $swapDb->exec("ALTER TABLE users ADD COLUMN id_type VARCHAR(20) DEFAULT NULL");
-    }
-    if (!in_array('date_of_birth', $columns)) {
-        $swapDb->exec("ALTER TABLE users ADD COLUMN date_of_birth DATE DEFAULT NULL");
+    $idColumns = ['national_id', 'drivers_license', 'passport', 'id_type', 'date_of_birth', 'email'];
+    foreach ($idColumns as $col) {
+        if (!in_array($col, $columns)) {
+            $swapDb->exec("ALTER TABLE users ADD COLUMN {$col} VARCHAR(255) DEFAULT NULL");
+        }
     }
     
-    // Create otp_logs table if not exists (based on your structure)
+    // Create otp_logs table
     if ($isPostgres) {
         $swapDb->exec("
             CREATE TABLE IF NOT EXISTS otp_logs (
@@ -227,8 +167,6 @@ try {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_otp_identifier ON otp_logs(identifier)");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_otp_expires ON otp_logs(expires_at)");
     } else {
         $swapDb->exec("
             CREATE TABLE IF NOT EXISTS `otp_logs` (
@@ -243,70 +181,141 @@ try {
                 `ip_address` varchar(45) DEFAULT NULL,
                 `user_agent` text DEFAULT NULL,
                 `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (`otp_id`),
-                KEY `idx_otp_identifier` (`identifier`),
-                KEY `idx_otp_expires` (`expires_at`)
+                PRIMARY KEY (`otp_id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         ");
     }
-    
-    error_log("Database tables verified for {$systemCountry}");
 } catch (Throwable $e) {
-    error_log("Table creation/update warning: " . $e->getMessage());
+    error_log("Table creation warning: " . $e->getMessage());
 }
-
-// ----------------------------------------
-// Communication configuration
-// ----------------------------------------
-$clientPartnerKey = 'CAZACOM';
 
 // ----------------------------------------
 // Helper functions
 // ----------------------------------------
+$clientPartnerKey = 'CAZACOM';
+
 function normalizePhone(string $phoneInput, string $dialCode): string
 {
     $phoneInput = preg_replace('/[^\d+]/', '', trim($phoneInput));
-    
-    if ($phoneInput === '') {
-        return '';
-    }
-    
+    if ($phoneInput === '') return '';
     if (str_starts_with($phoneInput, '+')) {
         return '+' . preg_replace('/[^0-9]/', '', substr($phoneInput, 1));
     }
-    
     return $dialCode . ltrim($phoneInput, '0');
-}
-
-function validateIdentifier($value, $type, $rules): array
-{
-    $value = trim($value);
-    if (empty($value)) {
-        return ['valid' => false, 'message' => ucfirst(str_replace('_', ' ', $type)) . ' is required.'];
-    }
-    
-    $rule = $rules[$type] ?? null;
-    if (!$rule) {
-        return ['valid' => false, 'message' => 'Invalid identifier type.'];
-    }
-    
-    $length = strlen($value);
-    if ($length < $rule['min_length'] || $length > $rule['max_length']) {
-        return ['valid' => false, 'message' => sprintf('%s must be between %d and %d characters.', 
-            ucfirst(str_replace('_', ' ', $type)), $rule['min_length'], $rule['max_length'])];
-    }
-    
-    if (!preg_match($rule['pattern'], $value)) {
-        return ['valid' => false, 'message' => sprintf('Invalid %s format. Example: %s', 
-            ucfirst(str_replace('_', ' ', $type)), $rule['example'])];
-    }
-    
-    return ['valid' => true, 'value' => $value];
 }
 
 function generateOTP(): string
 {
     return str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+}
+
+// Simple email function (replace with PHPMailer in production)
+function sendEmailOTP($to, $otp, $countryName)
+{
+    $subject = "Your VouchMorph Verification Code";
+    $message = "
+        <html>
+        <head><title>Verification Code</title></head>
+        <body style='font-family: Arial, sans-serif;'>
+            <h2>Welcome to VouchMorph {$countryName}!</h2>
+            <p>Your verification code is: <strong style='font-size: 24px; color: #00F0FF;'>{$otp}</strong></p>
+            <p>This code expires in 5 minutes.</p>
+            <p><strong>Never share this code with anyone.</strong></p>
+            <hr>
+            <small>VouchMorph - Financial Revolution</small>
+        </body>
+        </html>
+    ";
+    
+    $headers = "MIME-Version: 1.0" . "\r\n";
+    $headers .= "Content-type:text/html;charset=UTF-8" . "\r\n";
+    $headers .= "From: VouchMorph <noreply@vouchmorph.com>" . "\r\n";
+    
+    return mail($to, $subject, $message, $headers);
+}
+
+// API function to verify identifier exists in source database
+function verifyIdentifierInSourceDB($sourceDb, $identifierType, $identifierValue, $countryDialCode)
+{
+    $userData = [];
+    $phoneNumber = null;
+    $emailAddress = null;
+    
+    switch ($identifierType) {
+        case 'phone':
+            $phoneNumber = normalizePhone($identifierValue, $countryDialCode);
+            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email FROM users WHERE phone_number = :value LIMIT 1");
+            $stmt->execute([':value' => $phoneNumber]);
+            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($userData) {
+                $phoneNumber = $userData['phone_number'];
+                $emailAddress = $userData['email'] ?? null;
+            }
+            break;
+            
+        case 'email':
+            $emailAddress = strtolower(trim($identifierValue));
+            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email FROM users WHERE email = :value LIMIT 1");
+            $stmt->execute([':value' => $emailAddress]);
+            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($userData) {
+                $phoneNumber = $userData['phone_number'] ?? null;
+                $emailAddress = $userData['email'];
+            }
+            break;
+            
+        case 'national_id':
+            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email, national_id FROM users WHERE national_id = :value LIMIT 1");
+            $stmt->execute([':value' => $identifierValue]);
+            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($userData) {
+                $phoneNumber = $userData['phone_number'] ?? null;
+                $emailAddress = $userData['email'] ?? null;
+            }
+            break;
+            
+        case 'drivers_license':
+            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email, drivers_license FROM users WHERE drivers_license = :value LIMIT 1");
+            $stmt->execute([':value' => $identifierValue]);
+            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($userData) {
+                $phoneNumber = $userData['phone_number'] ?? null;
+                $emailAddress = $userData['email'] ?? null;
+            }
+            break;
+            
+        case 'passport':
+            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email, passport FROM users WHERE passport = :value LIMIT 1");
+            $stmt->execute([':value' => $identifierValue]);
+            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($userData) {
+                $phoneNumber = $userData['phone_number'] ?? null;
+                $emailAddress = $userData['email'] ?? null;
+            }
+            break;
+            
+        default:
+            return ['valid' => false, 'message' => 'Invalid identifier type'];
+    }
+    
+    if (!$userData) {
+        $labels = [
+            'phone' => 'Phone number',
+            'email' => 'Email address',
+            'national_id' => 'National ID',
+            'drivers_license' => "Driver's license",
+            'passport' => 'Passport number'
+        ];
+        $label = $labels[$identifierType] ?? 'Identifier';
+        return ['valid' => false, 'message' => "{$label} not found in our records."];
+    }
+    
+    return [
+        'valid' => true, 
+        'userData' => $userData,
+        'phoneNumber' => $phoneNumber,
+        'emailAddress' => $emailAddress
+    ];
 }
 
 // ----------------------------------------
@@ -320,90 +329,78 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $inputValue = trim($_POST['identifier'] ?? '');
         $fullName = trim($_POST['full_name'] ?? '');
         $dateOfBirth = trim($_POST['date_of_birth'] ?? '');
+        $verificationMethod = $_POST['verification_method'] ?? 'sms';
         
         if (empty($inputValue)) {
             echo json_encode(['success' => false, 'message' => 'Please provide your identifier.']);
             exit;
         }
         
-        $userData = [];
-        $identifierValue = null;
-        $phoneNumber = null;
+        // Basic email validation if type is email
+        if ($inputType === 'email') {
+            if (!filter_var($inputValue, FILTER_VALIDATE_EMAIL)) {
+                echo json_encode(['success' => false, 'message' => 'Invalid email address format.']);
+                exit;
+            }
+        }
         
-        // Handle phone number
+        // For phone, basic cleaning
         if ($inputType === 'phone') {
-            $phoneNumber = normalizePhone($inputValue, $countryDialCode);
-            if ($phoneNumber === '') {
-                echo json_encode(['success' => false, 'message' => 'Invalid phone number format.']);
+            $inputValue = preg_replace('/[^\d+]/', '', $inputValue);
+            if (empty($inputValue)) {
+                echo json_encode(['success' => false, 'message' => 'Invalid phone number.']);
                 exit;
             }
-            
-            // Check in source DB
-            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email FROM users WHERE phone_number = :value LIMIT 1");
-            $stmt->execute([':value' => $phoneNumber]);
-            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$userData) {
-                echo json_encode(['success' => false, 'message' => "Phone number not found in our records."]);
-                exit;
-            }
-            
-            // Check if already registered
-            $stmt = $swapDb->prepare("SELECT user_id FROM users WHERE phone = :value LIMIT 1");
-            $stmt->execute([':value' => $phoneNumber]);
+        }
+        
+        // Verify identifier exists in source database via API/DB lookup
+        $verification = verifyIdentifierInSourceDB($sourceDb, $inputType, $inputValue, $countryDialCode);
+        
+        if (!$verification['valid']) {
+            echo json_encode(['success' => false, 'message' => $verification['message']]);
+            exit;
+        }
+        
+        $userData = $verification['userData'];
+        $phoneNumber = $verification['phoneNumber'];
+        $emailAddress = $verification['emailAddress'];
+        
+        // Determine identifier column for this type
+        $columnMap = [
+            'phone' => 'phone_number',
+            'email' => 'email',
+            'national_id' => 'national_id',
+            'drivers_license' => 'drivers_license',
+            'passport' => 'passport'
+        ];
+        $identifierColumn = $columnMap[$inputType];
+        $identifierValue = ($inputType === 'phone') ? normalizePhone($inputValue, $countryDialCode) : $inputValue;
+        
+        // Check if already registered in swap DB
+        $checkQuery = "SELECT user_id FROM users WHERE ";
+        $conditions = [];
+        $checkParams = [];
+        
+        if ($phoneNumber) {
+            $conditions[] = "phone = :phone";
+            $checkParams[':phone'] = $phoneNumber;
+        }
+        if ($emailAddress) {
+            $conditions[] = "email = :email";
+            $checkParams[':email'] = $emailAddress;
+        }
+        if ($identifierColumn && $identifierValue && !in_array($inputType, ['phone', 'email'])) {
+            $conditions[] = "{$identifierColumn} = :identifier";
+            $checkParams[':identifier'] = $identifierValue;
+        }
+        
+        if (!empty($conditions)) {
+            $checkQuery .= implode(" OR ", $conditions) . " LIMIT 1";
+            $stmt = $swapDb->prepare($checkQuery);
+            $stmt->execute($checkParams);
             if ($stmt->fetch()) {
-                echo json_encode(['success' => false, 'message' => 'Phone number already registered. Please login.']);
+                echo json_encode(['success' => false, 'message' => 'This identifier is already registered. Please login.']);
                 exit;
-            }
-            
-            $identifierValue = $phoneNumber;
-        } 
-        // Handle ID documents
-        else {
-            $validation = validateIdentifier($inputValue, $inputType, $idValidationRules);
-            if (!$validation['valid']) {
-                echo json_encode(['success' => false, 'message' => $validation['message']]);
-                exit;
-            }
-            
-            $identifierValue = $validation['value'];
-            
-            // Map to column name
-            $columnMap = [
-                'national_id' => 'national_id',
-                'drivers_license' => 'drivers_license',
-                'passport' => 'passport'
-            ];
-            $identifierColumn = $columnMap[$inputType];
-            
-            // Check in source DB for this ID
-            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email, {$identifierColumn} FROM users WHERE {$identifierColumn} = :value LIMIT 1");
-            $stmt->execute([':value' => $identifierValue]);
-            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$userData) {
-                $label = $idValidationRules[$inputType]['label'] ?? ucfirst(str_replace('_', ' ', $inputType));
-                echo json_encode(['success' => false, 'message' => "{$label} not found in our records."]);
-                exit;
-            }
-            
-            // Check if already registered in swap
-            $stmt = $swapDb->prepare("SELECT user_id FROM users WHERE {$identifierColumn} = :value LIMIT 1");
-            $stmt->execute([':value' => $identifierValue]);
-            if ($stmt->fetch()) {
-                $label = $idValidationRules[$inputType]['label'] ?? ucfirst(str_replace('_', ' ', $inputType));
-                echo json_encode(['success' => false, 'message' => "{$label} already registered. Please login."]);
-                exit;
-            }
-            
-            $phoneNumber = $userData['phone_number'] ?? null;
-            if ($phoneNumber) {
-                $stmt = $swapDb->prepare("SELECT user_id FROM users WHERE phone = :phone LIMIT 1");
-                $stmt->execute([':phone' => $phoneNumber]);
-                if ($stmt->fetch()) {
-                    echo json_encode(['success' => false, 'message' => 'Associated phone number already registered. Please login.']);
-                    exit;
-                }
             }
         }
         
@@ -412,26 +409,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $otpHash = password_hash($otpPlain, PASSWORD_DEFAULT);
         $expiresAt = date('Y-m-d H:i:s', time() + 300);
         
-        // Get IP and user agent
         $ipAddress = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
         $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? 'unknown';
         
-        // Invalidate any existing unused OTPs for this identifier
-        $stmt = $swapDb->prepare("
-            UPDATE otp_logs 
-            SET used_at = NOW() 
-            WHERE identifier = :identifier AND used_at IS NULL
-        ");
+        // Invalidate old OTPs
+        $stmt = $swapDb->prepare("UPDATE otp_logs SET used_at = NOW() WHERE identifier = :identifier AND used_at IS NULL");
         $stmt->execute([':identifier' => $identifierValue]);
         
-        // Insert new OTP
+        // Store OTP
         $stmt = $swapDb->prepare("
             INSERT INTO otp_logs 
             (identifier, identifier_type, code_hash, purpose, expires_at, attempts, ip_address, user_agent, created_at) 
             VALUES 
             (:identifier, :identifier_type, :code_hash, :purpose, :expires_at, 0, :ip_address, :user_agent, NOW())
         ");
-        
         $stmt->execute([
             ':identifier' => $identifierValue,
             ':identifier_type' => $inputType,
@@ -442,62 +433,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ':user_agent' => $userAgent
         ]);
         
-        $otpId = $swapDb->lastInsertId();
-        
-        // Store OTP in session for verification (since we need plain text to compare)
+        // Store OTP in session for verification
         $_SESSION['otp_verification'][$identifierValue] = $otpPlain;
         $_SESSION['otp_verification_expires'][$identifierValue] = time() + 300;
         
-        // Store registration data in session
+        // Store registration data
         $_SESSION['temp_registration'] = [
-            'otp_id' => $otpId,
             'identifier_type' => $inputType,
             'identifier_value' => $identifierValue,
-            'identifier_column' => $identifierColumn ?? null,
+            'identifier_column' => $identifierColumn,
             'full_name' => $fullName ?: ($userData['full_name'] ?? null),
             'date_of_birth' => $dateOfBirth,
             'source_user_id' => $userData['id'] ?? null,
             'phone_number' => $phoneNumber,
-            'email' => $userData['email'] ?? null
+            'email' => $emailAddress,
+            'verification_method' => $verificationMethod
         ];
         
-        // Send OTP via SMS if phone available
-        $smsSent = false;
+        // Send OTP via selected method(s)
+        $sentVia = [];
+        $otpSent = false;
         
-        if ($phoneNumber) {
-            try {
-                $comm = CommunicationFactory::create($clientPartnerKey);
-                $message = "Your {$countryName} SWAP registration verification code is: {$otpPlain}. Valid for 5 minutes. Do not share this code with anyone.";
-                $result = $comm->sendSMS($phoneNumber, $message);
-                $smsSent = ($result['success'] ?? false);
-                
-                if ($smsSent) {
-                    error_log("OTP sent via SMS to {$phoneNumber}");
+        if ($verificationMethod === 'sms' || $verificationMethod === 'both') {
+            if ($phoneNumber) {
+                try {
+                    $comm = CommunicationFactory::create($clientPartnerKey);
+                    $result = $comm->sendSMS($phoneNumber, "Your {$countryName} SWAP verification code: {$otpPlain}");
+                    if ($result['success'] ?? false) {
+                        $sentVia[] = 'SMS';
+                        $otpSent = true;
+                    }
+                } catch (Exception $e) {
+                    error_log("SMS failed: " . $e->getMessage());
                 }
-            } catch (Exception $e) {
-                error_log("SMS sending error: " . $e->getMessage());
             }
         }
         
-        // Return response
-        if ($smsSent) {
-            echo json_encode(['success' => true, 'message' => 'Verification code sent to your phone!', 'has_phone' => true]);
-        } else if ($phoneNumber) {
-            // For development, show OTP
-            if (getenv('APP_ENV') === 'development') {
-                echo json_encode(['success' => true, 'message' => "DEV MODE: Your code is {$otpPlain}", 'has_phone' => false, 'show_otp' => true, 'otp' => $otpPlain]);
-            } else {
-                echo json_encode(['success' => true, 'message' => "Please check your phone for the verification code.", 'has_phone' => true]);
+        if ($verificationMethod === 'email' || $verificationMethod === 'both') {
+            if ($emailAddress) {
+                try {
+                    if (sendEmailOTP($emailAddress, $otpPlain, $countryName)) {
+                        $sentVia[] = 'Email';
+                        $otpSent = true;
+                    }
+                } catch (Exception $e) {
+                    error_log("Email failed: " . $e->getMessage());
+                }
             }
+        }
+        
+        // Response
+        if ($otpSent) {
+            $message = "Verification code sent via " . implode(' & ', $sentVia) . "!";
+            echo json_encode(['success' => true, 'message' => $message, 'has_contact' => true]);
         } else {
-            // No phone on file, show OTP on screen
-            echo json_encode(['success' => true, 'message' => "Your verification code is: {$otpPlain}", 'show_otp' => true, 'otp' => $otpPlain, 'has_phone' => false]);
+            // Development mode fallback
+            if (getenv('APP_ENV') === 'development') {
+                echo json_encode(['success' => true, 'message' => "DEV MODE: Your code is {$otpPlain}", 'show_otp' => true, 'otp' => $otpPlain]);
+            } else {
+                echo json_encode(['success' => false, 'message' => 'Unable to send verification code. No valid contact method found.']);
+            }
         }
         exit;
         
     } catch (Throwable $e) {
         error_log("REGISTER POST ERROR: " . $e->getMessage());
-        error_log("Stack trace: " . $e->getTraceAsString());
         echo json_encode(['success' => false, 'message' => 'System error occurred. Please try again.']);
         exit;
     }
@@ -575,7 +575,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             position: relative;
             z-index: 2;
             width: 100%;
-            max-width: 520px;
+            max-width: 560px;
             background: rgba(5, 5, 5, 0.95);
             border: 1px solid rgba(255, 255, 255, 0.08);
             backdrop-filter: blur(10px);
@@ -715,6 +715,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             text-align: center;
         }
 
+        .verification-options {
+            display: flex;
+            gap: 1.5rem;
+            margin-top: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .verification-option {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            cursor: pointer;
+            font-size: 0.875rem;
+            color: #C0C0D0;
+        }
+
+        .verification-option input {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: #00F0FF;
+        }
+
         .btn {
             width: 100%;
             padding: 1rem;
@@ -730,17 +753,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             transition: all 0.2s ease;
             margin-top: 0.5rem;
             border-radius: 0px;
-            position: relative;
-            overflow: hidden;
         }
 
         .btn:hover {
             transform: translateY(-2px);
             box-shadow: 0 10px 30px -10px rgba(0, 240, 255, 0.4);
-        }
-
-        .btn:active {
-            transform: translateY(0);
         }
 
         .btn:disabled {
@@ -754,13 +771,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border: 1px solid rgba(255, 255, 255, 0.3);
             color: #FFFFFF;
             margin-top: 0;
-        }
-
-        .btn-secondary:hover {
-            border-color: #00F0FF;
-            background: rgba(0, 240, 255, 0.05);
-            transform: translateY(-2px);
-            box-shadow: none;
         }
 
         .message {
@@ -786,15 +796,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #00F0FF;
         }
 
-        .message.info {
-            background: rgba(255, 193, 7, 0.1);
-            border-left-color: #FFC107;
-            color: #FFC107;
-        }
-
         .otp-section {
             display: none;
-            margin-top: 0;
         }
 
         .otp-display {
@@ -868,6 +871,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 padding: 0.5rem 0.75rem;
                 font-size: 0.7rem;
             }
+            .verification-options {
+                gap: 1rem;
+            }
         }
     </style>
 </head>
@@ -889,6 +895,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <!-- Identifier Type Selector -->
         <div class="selector-tabs">
             <button class="selector-tab active" data-type="phone">📱 Phone</button>
+            <button class="selector-tab" data-type="email">✉️ Email</button>
             <button class="selector-tab" data-type="national_id">🆔 National ID</button>
             <button class="selector-tab" data-type="drivers_license">🚗 Driver's License</button>
             <button class="selector-tab" data-type="passport">📖 Passport</button>
@@ -901,7 +908,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <span class="input-prefix" id="input-prefix"><?= htmlspecialchars($countryDialCode) ?></span>
                     <input type="tel" id="identifier" class="form-control" placeholder="<?= htmlspecialchars($phonePlaceholder) ?>" autocomplete="off">
                 </div>
-                <div class="help-text" id="help-text">Enter <?= $localLength ?>-digit number without <?= htmlspecialchars($countryDialCode) ?></div>
+                <div class="help-text" id="help-text">Enter your phone number (e.g., 71 234 567)</div>
             </div>
             
             <div class="form-group" id="fullname-group" style="display: none;">
@@ -912,6 +919,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="form-group" id="dob-group" style="display: none;">
                 <label>DATE OF BIRTH (Optional)</label>
                 <input type="date" id="date_of_birth" class="form-control">
+            </div>
+            
+            <div class="form-group" id="verification-method-group">
+                <label>RECEIVE VERIFICATION CODE VIA</label>
+                <div class="verification-options">
+                    <label class="verification-option">
+                        <input type="radio" name="verification_method" value="sms" checked> 📱 SMS
+                    </label>
+                    <label class="verification-option">
+                        <input type="radio" name="verification_method" value="email"> ✉️ Email
+                    </label>
+                    <label class="verification-option">
+                        <input type="radio" name="verification_method" value="both"> 📱+✉️ Both
+                    </label>
+                </div>
             </div>
             
             <button class="btn" id="sendOtpBtn" onclick="sendOTP()">CONTINUE →</button>
@@ -937,10 +959,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </div>
 
 <script>
-// Configuration from PHP
+// Configuration
 const countryDialCode = '<?= $countryDialCode ?>';
 const localLength = <?= $localLength ?>;
-const idValidationRules = <?= json_encode($idValidationRules) ?>;
 
 let currentIdentifierType = 'phone';
 let resendTimerInterval = null;
@@ -968,21 +989,44 @@ function updateFormForIdentifierType(type) {
         labelEl.textContent = 'MOBILE NUMBER';
         prefixEl.style.display = 'flex';
         prefixEl.textContent = countryDialCode;
-        inputEl.placeholder = '7' + '0'.repeat(localLength - 1);
-        helpTextEl.textContent = `Enter ${localLength}-digit number without ${countryDialCode}`;
-        inputEl.maxLength = localLength;
+        inputEl.placeholder = '71 234 567';
+        helpTextEl.textContent = 'Enter your phone number (we\'ll verify it exists in our records)';
+        inputEl.maxLength = 20;
         inputEl.type = 'tel';
         fullnameGroup.style.display = 'none';
         dobGroup.style.display = 'none';
-    } else {
-        const rules = idValidationRules[type];
-        const label = rules?.label || type.replace('_', ' ').toUpperCase();
-        labelEl.textContent = label;
+    } else if (type === 'email') {
+        labelEl.textContent = 'EMAIL ADDRESS';
         prefixEl.style.display = 'none';
-        inputEl.placeholder = rules?.example || `Enter your ${label}`;
-        inputEl.maxLength = rules?.max_length || 50;
+        inputEl.placeholder = 'you@example.com';
+        helpTextEl.textContent = 'Enter your email address (we\'ll verify it exists in our records)';
+        inputEl.maxLength = 100;
+        inputEl.type = 'email';
+        fullnameGroup.style.display = 'none';
+        dobGroup.style.display = 'none';
+    } else {
+        const labels = {
+            'national_id': 'NATIONAL ID NUMBER',
+            'drivers_license': "DRIVER'S LICENSE NUMBER",
+            'passport': 'PASSPORT NUMBER'
+        };
+        const placeholders = {
+            'national_id': 'Enter your National ID number',
+            'drivers_license': "Enter your Driver's License number",
+            'passport': 'Enter your Passport number'
+        };
+        const helpTexts = {
+            'national_id': 'Enter your National ID as it appears on your records',
+            'drivers_license': "Enter your Driver's License number as it appears on your records",
+            'passport': 'Enter your Passport number as it appears on your records'
+        };
+        
+        labelEl.textContent = labels[type] || type.toUpperCase();
+        prefixEl.style.display = 'none';
+        inputEl.placeholder = placeholders[type] || 'Enter your identifier';
+        helpTextEl.textContent = helpTexts[type] || 'We\'ll verify this exists in our records';
+        inputEl.maxLength = 50;
         inputEl.type = 'text';
-        helpTextEl.textContent = `Format: ${rules?.example || 'Alphanumeric'}`;
         fullnameGroup.style.display = 'block';
         dobGroup.style.display = 'block';
     }
@@ -1007,6 +1051,7 @@ function sendOTP() {
     const identifier = document.getElementById('identifier').value.trim();
     const fullName = document.getElementById('full_name')?.value.trim() || '';
     const dateOfBirth = document.getElementById('date_of_birth')?.value || '';
+    const verificationMethod = document.querySelector('input[name="verification_method"]:checked')?.value || 'sms';
     
     if (!identifier) {
         showMessage('Please enter your identifier.', 'error');
@@ -1014,40 +1059,37 @@ function sendOTP() {
         return;
     }
     
-    // Validate based on type
-    if (currentIdentifierType === 'phone') {
-        const phoneClean = identifier.replace(/\D/g, '');
-        if (phoneClean.length !== localLength) {
-            showMessage(`Please enter a valid ${localLength}-digit phone number.`, 'error');
+    // Basic validation for email format
+    if (currentIdentifierType === 'email') {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(identifier)) {
+            showMessage('Please enter a valid email address.', 'error');
             return;
         }
-    } else {
-        const rules = idValidationRules[currentIdentifierType];
-        if (rules) {
-            const value = identifier;
-            if (value.length < rules.min_length || value.length > rules.max_length) {
-                showMessage(`${rules.label || currentIdentifierType} must be between ${rules.min_length} and ${rules.max_length} characters.`, 'error');
-                return;
-            }
-            if (!new RegExp(rules.pattern).test(value)) {
-                showMessage(`Invalid format. Example: ${rules.example}`, 'error');
-                return;
-            }
+    }
+    
+    // For phone, just clean it (no strict length validation)
+    if (currentIdentifierType === 'phone') {
+        const phoneClean = identifier.replace(/\D/g, '');
+        if (phoneClean.length < 5) {
+            showMessage('Please enter a valid phone number.', 'error');
+            return;
         }
     }
     
     const btn = document.getElementById('sendOtpBtn');
     const originalText = btn.textContent;
-    btn.textContent = 'SENDING...';
+    btn.textContent = 'VERIFYING...';
     btn.disabled = true;
     
-    showMessage('Verifying your details...', 'info');
+    showMessage('Verifying your details with our records...', 'info');
     
     const formData = new URLSearchParams();
     formData.append('input_type', currentIdentifierType);
     formData.append('identifier', identifier);
     formData.append('full_name', fullName);
     formData.append('date_of_birth', dateOfBirth);
+    formData.append('verification_method', verificationMethod);
     
     fetch(window.location.href, {
         method: 'POST',
@@ -1115,12 +1157,14 @@ function updateResendTimerDisplay(isExpired = false) {
 
 function resendOTP() {
     const identifier = document.getElementById('identifier').value.trim();
+    const verificationMethod = document.querySelector('input[name="verification_method"]:checked')?.value || 'sms';
     
     showMessage('Resending verification code...', 'info');
     
     const formData = new URLSearchParams();
     formData.append('input_type', currentIdentifierType);
     formData.append('identifier', identifier);
+    formData.append('verification_method', verificationMethod);
     formData.append('resend', '1');
     
     fetch(window.location.href, {
@@ -1213,13 +1257,6 @@ document.getElementById('identifier')?.addEventListener('keypress', function(e) 
 });
 document.getElementById('otp')?.addEventListener('keypress', function(e) {
     if (e.key === 'Enter') verifyOTP();
-});
-
-// Auto-format phone input
-document.getElementById('identifier')?.addEventListener('input', function(e) {
-    if (currentIdentifierType === 'phone') {
-        this.value = this.value.replace(/\D/g, '').slice(0, localLength);
-    }
 });
 
 // Focus on load
