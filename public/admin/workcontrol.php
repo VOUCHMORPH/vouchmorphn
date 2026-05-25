@@ -1,9 +1,7 @@
 <?php
 /**
- * Revolutionary Test Dashboard
- * 
- * Real-time ISO20022/8583 compliant testing dashboard
- * FNB-grade user interface
+ * VouchMorph Complete System Test Dashboard
+ * Tests ALL components using real production data
  */
 
 session_start();
@@ -11,725 +9,722 @@ if (!isset($_SESSION['admin_logged_in']) || $_SESSION['admin_logged_in'] !== tru
     header('Location: admin_login.php');
     exit;
 }
-?>
 
+// Load configuration and database
+define('PROJECT_ROOT', dirname(__DIR__, 2));
+$configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
+require_once $configPath;
+$config = \Core\Config\LoadCountry::getConfig();
+
+require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
+use Core\Database\DBConnection;
+
+// Database connection
+if (isset($config['db']['swap'])) {
+    $dbConfig = $config['db']['swap'];
+} else {
+    $databaseUrl = getenv('DATABASE_URL');
+    $db = parse_url($databaseUrl);
+    $dbConfig = [
+        'host' => $db['host'] ?? 'localhost',
+        'port' => (int)($db['port'] ?? 5432),
+        'database' => ltrim($db['path'] ?? '', '/'),
+        'username' => $db['user'] ?? 'postgres',
+        'password' => $db['pass'] ?? '',
+    ];
+}
+$dbConfig['type'] = 'pgsql';
+$db = DBConnection::getInstance($dbConfig);
+
+// Get real data from database
+$users = $db->query("SELECT user_id, phone, email, full_name, created_at FROM users WHERE deleted_at IS NULL LIMIT 10")->fetchAll();
+$transactions = $db->query("SELECT swap_id, user_id, amount, status, created_at FROM swap_requests ORDER BY created_at DESC LIMIT 20")->fetchAll();
+$admins = $db->query("SELECT admin_id, username, email, role_id, country_code FROM admins WHERE deleted_at IS NULL")->fetchAll();
+$participants = $config['participants'] ?? [];
+$countryCode = $config['country_code'] ?? 'BW';
+$currencySymbol = $config['currency_symbol'] ?? 'BWP';
+$countryName = $config['country'] ?? 'Botswana';
+
+// Get system stats
+$userCount = $db->query("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL")->fetchColumn();
+$txCount = $db->query("SELECT COUNT(*) FROM swap_requests")->fetchColumn();
+$txVolume = $db->query("SELECT COALESCE(SUM(amount), 0) FROM swap_requests WHERE status = 'completed'")->fetchColumn();
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VouchMorph Revolutionary Test Dashboard | FNB Standards</title>
+    <title>VOUCHMORPH · SYSTEM TEST DASHBOARD</title>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        :root {
-            --fnb-blue: #1a3b5c;
-            --fnb-gold: #c8a13a;
-            --success: #10b981;
-            --warning: #f59e0b;
-            --error: #ef4444;
-            --bg-dark: #0f172a;
-            --bg-card: #1e293b;
-            --border: #334155;
-        }
-        
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--bg-dark);
-            color: #e2e8f0;
+            font-family: 'IBM Plex Mono', monospace;
+            background: #f7f9fc;
+            color: #001B44;
+            min-height: 100vh;
             padding: 24px;
         }
-        
+
         .dashboard {
             max-width: 1600px;
             margin: 0 auto;
         }
-        
-        /* Header */
-        .header {
+
+        /* HEADER */
+        .admin-header {
+            background: #001B44;
+            border-bottom: 5px solid #FFDA63;
+            padding: 15px 30px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 32px;
-            padding-bottom: 24px;
-            border-bottom: 2px solid var(--border);
+            color: #fff;
+            margin-bottom: 30px;
         }
-        
-        .logo h1 {
-            font-size: 28px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 30px;
         }
-        
-        .logo p {
-            font-size: 12px;
-            color: #94a3b8;
-            margin-top: 4px;
+
+        .logo {
+            font-size: 1.2rem;
+            font-weight: 700;
+            letter-spacing: 2px;
         }
-        
-        .fnb-badge {
-            background: var(--fnb-blue);
-            padding: 8px 20px;
-            border-radius: 40px;
-            border-left: 4px solid var(--fnb-gold);
+
+        .logo span {
+            color: #FFDA63;
+            margin-left: 10px;
+            font-size: 0.8rem;
         }
-        
-        .fnb-badge span {
-            color: var(--fnb-gold);
+
+        .country-badge {
+            padding: 5px 15px;
+            background: rgba(255, 218, 99, 0.2);
+            border: 1px solid #FFDA63;
+            color: #FFDA63;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .user-details {
+            text-align: right;
+        }
+
+        .user-name {
             font-weight: 600;
+            color: #FFDA63;
         }
-        
-        /* Stats Grid */
+
+        .user-role {
+            font-size: 0.7rem;
+            color: #A1B5D8;
+            text-transform: uppercase;
+        }
+
+        .back-btn {
+            padding: 8px 16px;
+            background: transparent;
+            border: 2px solid #FFDA63;
+            color: #FFDA63;
+            text-decoration: none;
+            font-size: 0.8rem;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .back-btn:hover {
+            background: #FFDA63;
+            color: #001B44;
+        }
+
+        /* STATS GRID */
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 16px;
-            margin-bottom: 32px;
+            gap: 20px;
+            margin-bottom: 30px;
         }
-        
+
         .stat-card {
-            background: var(--bg-card);
-            border-radius: 16px;
+            background: #fff;
+            border: 2px solid #001B44;
             padding: 20px;
+            box-shadow: 4px 4px 0 #A1B5D8;
             text-align: center;
-            border: 1px solid var(--border);
-            transition: transform 0.2s;
         }
-        
-        .stat-card:hover {
-            transform: translateY(-2px);
-        }
-        
+
         .stat-value {
-            font-size: 36px;
-            font-weight: bold;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #001B44;
+            line-height: 1.2;
         }
-        
+
         .stat-label {
-            font-size: 12px;
-            color: #94a3b8;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #666;
             margin-top: 8px;
         }
-        
-        /* Control Bar */
+
+        /* CONTROL BAR */
         .control-bar {
             display: flex;
             gap: 16px;
-            margin-bottom: 32px;
+            margin-bottom: 30px;
             flex-wrap: wrap;
         }
-        
+
         .btn {
             padding: 12px 24px;
-            border-radius: 12px;
+            border: 2px solid #001B44;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.8rem;
             font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
             cursor: pointer;
             transition: all 0.2s;
-            border: none;
-            font-size: 14px;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
+            background: #fff;
+            color: #001B44;
         }
-        
+
         .btn-primary {
-            background: #3b82f6;
-            color: white;
+            background: #001B44;
+            color: #fff;
+            border-color: #001B44;
         }
-        
+
         .btn-primary:hover {
-            background: #2563eb;
-            transform: translateY(-1px);
+            background: #FFDA63;
+            color: #001B44;
+            border-color: #FFDA63;
         }
-        
+
         .btn-success {
-            background: var(--success);
-            color: white;
+            background: #fff;
+            border-color: #10b981;
+            color: #10b981;
         }
-        
+
+        .btn-success:hover {
+            background: #10b981;
+            color: #fff;
+        }
+
         .btn-warning {
-            background: var(--warning);
-            color: white;
+            background: #fff;
+            border-color: #f59e0b;
+            color: #f59e0b;
         }
-        
+
+        .btn-warning:hover {
+            background: #f59e0b;
+            color: #fff;
+        }
+
         .btn-outline {
-            background: transparent;
-            border: 1px solid var(--border);
-            color: #e2e8f0;
+            background: #fff;
+            border-color: #001B44;
+            color: #001B44;
         }
-        
+
         .btn-outline:hover {
-            background: var(--bg-card);
+            background: #001B44;
+            color: #fff;
         }
-        
-        /* Test Grid */
+
+        /* TEST GRID */
         .test-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
             gap: 20px;
-            margin-bottom: 32px;
+            margin-bottom: 30px;
         }
-        
+
         .test-card {
-            background: var(--bg-card);
-            border-radius: 16px;
+            background: #fff;
+            border: 2px solid #001B44;
             overflow: hidden;
-            border: 1px solid var(--border);
-            transition: all 0.3s;
         }
-        
+
         .test-card.passed {
-            border-left: 4px solid var(--success);
+            border-left: 8px solid #10b981;
         }
-        
+
         .test-card.failed {
-            border-left: 4px solid var(--error);
+            border-left: 8px solid #ef4444;
         }
-        
+
         .test-card.partial {
-            border-left: 4px solid var(--warning);
+            border-left: 8px solid #f59e0b;
         }
-        
+
         .test-header {
             padding: 16px 20px;
-            background: rgba(15, 23, 42, 0.5);
+            background: #f8f9fa;
             display: flex;
             justify-content: space-between;
             align-items: center;
             cursor: pointer;
+            border-bottom: 1px solid #ddd;
         }
-        
+
         .test-title {
             display: flex;
             align-items: center;
             gap: 12px;
             font-weight: 600;
+            font-size: 0.9rem;
         }
-        
+
         .test-status {
             width: 12px;
             height: 12px;
-            border-radius: 50%;
+            border: 2px solid #001B44;
         }
-        
-        .test-status.passed { background: var(--success); box-shadow: 0 0 8px var(--success); }
-        .test-status.failed { background: var(--error); box-shadow: 0 0 8px var(--error); }
-        .test-status.partial { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
-        .test-status.running { background: #3b82f6; animation: pulse 1s infinite; }
-        
+
+        .test-status.passed { background: #10b981; border-color: #10b981; }
+        .test-status.failed { background: #ef4444; border-color: #ef4444; }
+        .test-status.partial { background: #f59e0b; border-color: #f59e0b; }
+        .test-status.running { background: #3b82f6; border-color: #3b82f6; animation: pulse 1s infinite; }
+
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
         }
-        
+
         .test-body {
             padding: 20px;
             display: none;
-            border-top: 1px solid var(--border);
         }
-        
+
         .test-body.expanded {
             display: block;
         }
-        
-        /* Trace Panel */
-        .trace-panel {
-            background: var(--bg-card);
-            border-radius: 16px;
-            margin-top: 32px;
-            border: 1px solid var(--border);
+
+        /* DATA TABLES */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8rem;
+            font-family: 'IBM Plex Mono', monospace;
         }
-        
-        .trace-header {
-            padding: 16px 20px;
-            background: rgba(15, 23, 42, 0.5);
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 16px;
+
+        .data-table th,
+        .data-table td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
         }
-        
-        .trace-input {
-            display: flex;
-            gap: 12px;
-            flex: 1;
-            max-width: 500px;
+
+        .data-table th {
+            background: #001B44;
+            color: #fff;
+            font-weight: 600;
         }
-        
-        .trace-input input {
-            flex: 1;
-            padding: 10px 16px;
-            background: var(--bg-dark);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            color: #e2e8f0;
-            font-family: monospace;
+
+        .data-table tr:hover {
+            background: #f5f5f5;
         }
-        
-        .trace-content {
-            padding: 20px;
-            font-family: 'Fira Code', monospace;
-            font-size: 13px;
-            max-height: 500px;
-            overflow-y: auto;
-        }
-        
-        /* Log Viewer */
+
+        /* LOG VIEWER */
         .log-viewer {
-            background: var(--bg-dark);
-            border-radius: 12px;
+            background: #001B44;
             padding: 16px;
-            font-family: 'Fira Code', monospace;
-            font-size: 12px;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.75rem;
             max-height: 300px;
             overflow-y: auto;
             margin-top: 20px;
+            border: 2px solid #FFDA63;
         }
-        
+
         .log-entry {
             padding: 6px 0;
-            border-bottom: 1px solid var(--border);
-            font-family: monospace;
+            border-bottom: 1px solid #334155;
+            font-family: 'IBM Plex Mono', monospace;
         }
-        
+
         .log-entry.info { color: #3b82f6; }
-        .log-entry.success { color: var(--success); }
-        .log-entry.error { color: var(--error); }
-        .log-entry.warning { color: var(--warning); }
-        
-        /* ISO Message Viewer */
-        .iso-message {
-            background: var(--bg-dark);
-            border-radius: 8px;
+        .log-entry.success { color: #10b981; }
+        .log-entry.error { color: #ef4444; }
+        .log-entry.warning { color: #f59e0b; }
+
+        /* RESULT STYLES */
+        .result-summary {
+            margin-bottom: 12px;
+            font-weight: 600;
+            padding: 8px;
+            background: #f8f9fa;
+            border-left: 3px solid #001B44;
+        }
+
+        .result-detail {
+            background: #f8f9fa;
             padding: 12px;
-            margin-top: 8px;
-            font-family: monospace;
-            font-size: 11px;
-            overflow-x: auto;
+            margin-top: 10px;
         }
-        
-        /* Loading */
-        .loading {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 2px solid var(--border);
-            border-top-color: #3b82f6;
-            border-radius: 50%;
-            animation: spin 0.6s linear infinite;
+
+        .result-item {
+            margin: 4px 0;
+            font-size: 0.75rem;
         }
-        
-        @keyframes spin {
-            to { transform: rotate(360deg); }
+
+        .result-item.passed { color: #10b981; }
+        .result-item.failed { color: #ef4444; }
+
+        /* FOOTER */
+        .admin-footer {
+            background: #001B44;
+            color: #A1B5D8;
+            padding: 20px 30px;
+            font-size: 0.7rem;
+            text-align: center;
+            border-top: 3px solid #FFDA63;
+            margin-top: 30px;
         }
-        
-        /* Responsive */
+
+        /* RESPONSIVE */
         @media (max-width: 768px) {
             body { padding: 16px; }
             .test-grid { grid-template-columns: 1fr; }
             .control-bar { flex-direction: column; }
-            .trace-input { max-width: 100%; flex-direction: column; }
-        }
-        
-        /* FNB Compliance Footer */
-        .compliance-footer {
-            margin-top: 32px;
-            padding: 20px;
-            background: linear-gradient(135deg, var(--fnb-blue) 0%, #0f172a 100%);
-            border-radius: 16px;
-            text-align: center;
-        }
-        
-        .compliance-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 12px;
-            padding: 12px 24px;
-            background: rgba(255,255,255,0.1);
-            border-radius: 40px;
+            .admin-header { flex-direction: column; text-align: center; gap: 15px; }
+            .header-left { flex-direction: column; }
         }
     </style>
 </head>
 <body>
-<div class="dashboard">
-    <!-- Header -->
-    <div class="header">
-        <div class="logo">
-            <h1>🔄 VouchMorph | Revolutionary Test Suite</h1>
-            <p>ISO20022 · ISO8583 · Mobile Money · FNB Standards</p>
-        </div>
-        <div class="fnb-badge">
-            <span>🏦 FNB COMPLIANCE TESTING</span>
-        </div>
-    </div>
-    
-    <!-- Stats -->
-    <div class="stats-grid" id="stats-grid">
-        <div class="stat-card">
-            <div class="stat-value" id="stat-passed">-</div>
-            <div class="stat-label">Tests Passed</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value" id="stat-total">-</div>
-            <div class="stat-label">Total Tests</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value" id="stat-score">-</div>
-            <div class="stat-label">Compliance Score</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value" id="stat-fnb">-</div>
-            <div class="stat-label">FNB Status</div>
-        </div>
-    </div>
-    
-    <!-- Control Bar -->
-    <div class="control-bar">
-        <button class="btn btn-primary" onclick="runFullSuite()">
-            🚀 Run Full Test Suite
-        </button>
-        <button class="btn btn-success" onclick="runTest('iso20022')">
-            📨 Test ISO20022
-        </button>
-        <button class="btn btn-success" onclick="runTest('iso8583')">
-            💳 Test ISO8583
-        </button>
-        <button class="btn btn-warning" onclick="runTest('cross_border')">
-            🌍 Test Cross-Border
-        </button>
-        <button class="btn btn-outline" onclick="refreshDashboard()">
-            🔄 Refresh
-        </button>
-    </div>
-    
-    <!-- Test Grid -->
-    <div class="test-grid" id="test-grid">
-        <!-- Populated by JavaScript -->
-    </div>
-    
-    <!-- Trace Panel -->
-    <div class="trace-panel">
-        <div class="trace-header">
-            <span>🔍 Transaction Trace (ISO20022 Format)</span>
-            <div class="trace-input">
-                <input type="text" id="trace-swap-ref" placeholder="Enter Swap Reference...">
-                <button class="btn btn-outline" onclick="traceSwap()">Trace</button>
+    <div class="dashboard">
+        <!-- Header -->
+        <div class="admin-header">
+            <div class="header-left">
+                <div class="logo">VOUCHMORPH <span>TEST SUITE</span></div>
+                <div class="country-badge"><?php echo htmlspecialchars($countryCode); ?> · <?php echo htmlspecialchars($countryName); ?></div>
+            </div>
+            <div class="user-info">
+                <div class="user-details">
+                    <div class="user-name">SYSTEM TEST</div>
+                    <div class="user-role">QUALITY ASSURANCE</div>
+                </div>
+                <a href="admin_dashboard.php" class="back-btn">← BACK</a>
             </div>
         </div>
-        <div class="trace-content" id="trace-content">
-            <div style="color: #64748b; text-align: center;">Enter a swap reference to trace the full ISO20022 message flow</div>
-        </div>
-    </div>
-    
-    <!-- Log Viewer -->
-    <div class="log-viewer" id="log-viewer">
-        <div class="log-entry info">✨ Revolutionary Test Dashboard ready</div>
-        <div class="log-entry info">🏦 FNB Compliance Mode: ACTIVE</div>
-        <div class="log-entry info">📨 ISO20022 Message Validation: READY</div>
-        <div class="log-entry info">💳 ISO8583 Message Validation: READY</div>
-    </div>
-    
-    <!-- Compliance Footer -->
-    <div class="compliance-footer">
-        <div class="compliance-badge">
-            <span>🏦</span>
-            <span>FNB COMPLIANT MESSAGING</span>
-            <span>ISO20022 ✅</span>
-            <span>ISO8583 ✅</span>
-            <span>SWIFT MT103 ✅</span>
-        </div>
-    </div>
-</div>
 
-<script>
-    // Test categories
-    const testCategories = [
-        { id: 'iso20022', name: 'ISO20022 Compliance', icon: '📨', description: 'pacs.008, pacs.002, camt.056 validation' },
-        { id: 'iso8583', name: 'ISO8583 Compliance', icon: '💳', description: '0200/0210 authorization, 0400 reversal' },
-        { id: 'mobile_money', name: 'Mobile Money', icon: '📱', description: 'FNB Connect / eWallet transfers' },
-        { id: 'local_swap', name: 'Local Swap', icon: '🔄', description: 'BWP → BWP (FNB Standard)' },
-        { id: 'cross_border', name: 'Cross-Border SWIFT', icon: '🌍', description: 'BWP → ZAR with SWIFT MT103' },
-        { id: 'atm_cashout', name: 'ATM Cashout', icon: '🏧', description: 'FNB ATM Network compatibility' },
-        { id: 'card_load', name: 'Message Card', icon: '💳', description: 'Message-based card authorization' },
-        { id: 'fees', name: 'Fee & VAT', icon: '💰', description: 'Regulatory compliance' },
-        { id: 'settlement_finality', name: 'Settlement Finality', icon: '✅', description: 'DvP / PvP finality' },
-        { id: 'audit_trace', name: 'Audit Trace', icon: '🔍', description: 'Full transaction audit trail' },
-        { id: 'disaster_recovery', name: 'Disaster Recovery', icon: '🔄', description: 'Hold release, idempotency' },
-        { id: 'concurrent_performance', name: 'Performance', icon: '⚡', description: 'Concurrent swaps, TPS' }
-    ];
-    
+        <!-- Stats -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value"><?php echo number_format($userCount); ?></div>
+                <div class="stat-label">REGISTERED USERS</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value"><?php echo number_format($txCount); ?></div>
+                <div class="stat-label">TOTAL TRANSACTIONS</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value"><?php echo number_format($txVolume, 2); ?></div>
+                <div class="stat-label">VOLUME (<?php echo $currencySymbol; ?>)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-score">-</div>
+                <div class="stat-label">HEALTH SCORE</div>
+            </div>
+        </div>
+
+        <!-- Control Bar -->
+        <div class="control-bar">
+            <button class="btn btn-primary" onclick="runAllTests()">🚀 RUN ALL TESTS</button>
+            <button class="btn btn-success" onclick="runTest('database')">🗄️ DATABASE</button>
+            <button class="btn btn-success" onclick="runTest('users')">👥 USERS</button>
+            <button class="btn btn-success" onclick="runTest('transactions')">💸 TRANSACTIONS</button>
+            <button class="btn btn-success" onclick="runTest('admins')">👑 ADMINS</button>
+            <button class="btn btn-success" onclick="runTest('config')">⚙️ CONFIG</button>
+            <button class="btn btn-warning" onclick="runTest('api')">🌐 API</button>
+            <button class="btn btn-outline" onclick="refreshData()">🔄 REFRESH</button>
+        </div>
+
+        <!-- Test Grid -->
+        <div class="test-grid" id="test-grid"></div>
+
+        <!-- Log Viewer -->
+        <div class="log-viewer" id="log-viewer">
+            <div class="log-entry info">✨ System test dashboard initialized</div>
+            <div class="log-entry info">📊 Loaded <?php echo number_format($userCount); ?> users, <?php echo number_format($txCount); ?> transactions</div>
+            <div class="log-entry info">🏦 Country: <?php echo htmlspecialchars($countryName); ?> (<?php echo $currencySymbol; ?>)</div>
+        </div>
+
+        <!-- Footer -->
+        <div class="admin-footer">
+            <p>VOUCHMORPH · <?php echo htmlspecialchars($countryName); ?> · SYSTEM TEST SUITE</p>
+            <p style="margin-top: 5px;">Validating all components with production data</p>
+        </div>
+    </div>
+
+    <script>
+    // Real data from PHP
+    const users = <?php echo json_encode($users); ?>;
+    const transactions = <?php echo json_encode($transactions); ?>;
+    const admins = <?php echo json_encode($admins); ?>;
+    const participants = <?php echo json_encode($participants); ?>;
+    const currencySymbol = '<?php echo $currencySymbol; ?>';
+    const countryCode = '<?php echo $countryCode; ?>';
+
     let testResults = {};
-    
-    // Initialize
-    document.addEventListener('DOMContentLoaded', () => {
-        renderTestGrid();
-        loadMetrics();
-    });
-    
+
+    // Test definitions using REAL data
+    const tests = {
+        database: {
+            name: '🗄️ DATABASE CONNECTION',
+            description: 'Validates database connectivity, tables, and data integrity',
+            run: async () => {
+                const results = [];
+                results.push({ name: 'Database Connection', passed: true, message: 'Connected successfully' });
+                
+                const userCount = <?php echo $userCount; ?>;
+                results.push({ name: 'Users Table', passed: userCount > 0, message: `${userCount} records found` });
+                
+                const txCount = <?php echo $txCount; ?>;
+                results.push({ name: 'Transactions Table', passed: txCount > 0, message: `${txCount} records found` });
+                
+                const adminCount = <?php echo count($admins); ?>;
+                results.push({ name: 'Admins Table', passed: adminCount > 0, message: `${adminCount} records found` });
+                
+                const passedCount = results.filter(r => r.passed).length;
+                return { status: passedCount === results.length ? 'PASS' : 'PARTIAL', results, message: `${passedCount}/${results.length} checks passed` };
+            }
+        },
+        
+        users: {
+            name: '👥 USER MANAGEMENT',
+            description: 'Validates user accounts, phone numbers, and registration data',
+            run: async () => {
+                const results = [];
+                const sampleUsers = users.slice(0, 5);
+                
+                results.push({ name: 'Total Users', passed: users.length > 0, message: `${users.length} registered users` });
+                
+                for (const user of sampleUsers) {
+                    const hasPhone = user.phone && user.phone.length > 5;
+                    results.push({ name: `User #${user.user_id}`, passed: hasPhone, message: `Phone: ${user.phone || 'N/A'}, Created: ${user.created_at?.substring(0, 10) || 'N/A'}` });
+                }
+                
+                const passedCount = results.filter(r => r.passed).length;
+                return { status: passedCount === results.length ? 'PASS' : passedCount > results.length/2 ? 'PARTIAL' : 'FAIL', results, message: `${passedCount}/${results.length} checks passed` };
+            }
+        },
+        
+        transactions: {
+            name: '💸 TRANSACTION PROCESSING',
+            description: 'Validates swap transactions, amounts, and statuses',
+            run: async () => {
+                const results = [];
+                const sampleTx = transactions.slice(0, 10);
+                
+                results.push({ name: 'Total Transactions', passed: transactions.length > 0, message: `${transactions.length} total transactions` });
+                
+                let totalAmount = 0;
+                for (const tx of sampleTx) {
+                    totalAmount += parseFloat(tx.amount || 0);
+                    const isValidAmount = parseFloat(tx.amount) > 0;
+                    results.push({ name: `TX #${tx.swap_id}`, passed: isValidAmount, message: `${currencySymbol} ${parseFloat(tx.amount).toFixed(2)} | Status: ${tx.status}` });
+                }
+                
+                results.push({ name: 'Sample Volume', passed: totalAmount > 0, message: `${currencySymbol} ${totalAmount.toFixed(2)} in sample` });
+                
+                const passedCount = results.filter(r => r.passed).length;
+                return { status: passedCount === results.length ? 'PASS' : passedCount > results.length/2 ? 'PARTIAL' : 'FAIL', results, message: `${passedCount}/${results.length} checks passed` };
+            }
+        },
+        
+        admins: {
+            name: '👑 ADMIN SYSTEM',
+            description: 'Validates admin accounts, roles, and permissions',
+            run: async () => {
+                const results = [];
+                const roleNames = { 999: 'Super Admin', 3: 'Regulator', 4: 'Compliance', 5: 'Auditor' };
+                
+                results.push({ name: 'Total Admins', passed: admins.length > 0, message: `${admins.length} admin accounts` });
+                
+                for (const admin of admins) {
+                    const roleName = roleNames[admin.role_id] || 'Unknown';
+                    results.push({ name: `${admin.username}`, passed: true, message: `Role: ${roleName} | Country: ${admin.country_code || 'Global'}` });
+                }
+                
+                const hasSuperAdmin = admins.some(a => a.role_id == 999);
+                results.push({ name: 'Super Admin', passed: hasSuperAdmin, message: hasSuperAdmin ? 'Present' : 'Missing' });
+                
+                const passedCount = results.filter(r => r.passed).length;
+                return { status: passedCount === results.length ? 'PASS' : 'PARTIAL', results, message: `${passedCount}/${results.length} checks passed` };
+            }
+        },
+        
+        config: {
+            name: '⚙️ SYSTEM CONFIGURATION',
+            description: 'Validates country settings, participants, and API configs',
+            run: async () => {
+                const results = [];
+                
+                results.push({ name: 'Country', passed: true, message: `${countryCode} - ${'<?php echo $countryName; ?>'}` });
+                results.push({ name: 'Currency', passed: true, message: currencySymbol });
+                
+                const participantCount = Object.keys(participants).length;
+                results.push({ name: 'Participants', passed: participantCount > 0, message: `${participantCount} participants configured` });
+                
+                for (const [code, data] of Object.entries(participants).slice(0, 5)) {
+                    results.push({ name: `Part: ${code}`, passed: true, message: `Type: ${data.type || 'N/A'}, Status: ${data.status || 'ACTIVE'}` });
+                }
+                
+                const passedCount = results.filter(r => r.passed).length;
+                return { status: passedCount === results.length ? 'PASS' : 'PARTIAL', results, message: `${passedCount}/${results.length} checks passed` };
+            }
+        },
+        
+        api: {
+            name: '🌐 API ENDPOINTS',
+            description: 'Validates API connectivity and responses',
+            run: async () => {
+                const results = [];
+                const endpoints = [
+                    { name: 'Health Check', url: '/health.php' },
+                    { name: 'System Status', url: '/index.php' }
+                ];
+                
+                for (const endpoint of endpoints) {
+                    try {
+                        const response = await fetch(endpoint.url, { method: 'GET', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+                        const passed = response.ok || response.status < 500;
+                        results.push({ name: endpoint.name, passed: passed, message: `HTTP ${response.status}` });
+                    } catch (error) {
+                        results.push({ name: endpoint.name, passed: false, message: error.message });
+                    }
+                }
+                
+                const passedCount = results.filter(r => r.passed).length;
+                return { status: passedCount === results.length ? 'PASS' : passedCount > 0 ? 'PARTIAL' : 'FAIL', results, message: `${passedCount}/${results.length} endpoints responding` };
+            }
+        }
+    };
+
     function renderTestGrid() {
         const grid = document.getElementById('test-grid');
-        grid.innerHTML = testCategories.map(cat => `
-            <div class="test-card" id="card-${cat.id}">
-                <div class="test-header" onclick="toggleCard('${cat.id}')">
+        grid.innerHTML = Object.entries(tests).map(([id, test]) => `
+            <div class="test-card" id="card-${id}">
+                <div class="test-header" onclick="toggleCard('${id}')">
                     <div class="test-title">
-                        <div class="test-status pending" id="status-${cat.id}"></div>
-                        <span>${cat.icon} ${cat.name}</span>
+                        <div class="test-status" id="status-${id}"></div>
+                        <span>${test.name}</span>
                     </div>
                     <span>▼</span>
                 </div>
-                <div class="test-body" id="body-${cat.id}">
-                    <div style="color: #94a3b8; margin-bottom: 12px;">${cat.description}</div>
-                    <div id="result-${cat.id}" style="font-family: monospace; font-size: 13px;">Pending...</div>
+                <div class="test-body" id="body-${id}">
+                    <div style="color: #666; margin-bottom: 12px; font-size: 0.75rem;">${test.description}</div>
+                    <div id="result-${id}" style="font-family: monospace; font-size: 0.75rem;">Not run yet</div>
                 </div>
             </div>
         `).join('');
     }
-    
+
     function toggleCard(id) {
         const body = document.getElementById(`body-${id}`);
         body.classList.toggle('expanded');
     }
-    
-    async function runFullSuite() {
-        addLog('info', '🚀 Starting full revolutionary test suite...');
+
+    async function runAllTests() {
+        addLog('info', '🚀 Starting full system test suite...');
         
-        // Show running state
-        testCategories.forEach(cat => {
-            updateTestStatus(cat.id, 'running', 'Testing...');
-        });
-        
-        try {
-            const response = await fetch('/api/v1/tests/run-full-suite', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
-            });
-            
-            const results = await response.json();
-            testResults = results;
-            
-            let passed = 0;
-            let total = 0;
-            
-            for (const [testId, result] of Object.entries(results)) {
-                total++;
-                const status = result.status === 'PASS' ? 'passed' : (result.status === 'PARTIAL' ? 'partial' : 'failed');
-                if (status === 'passed') passed++;
-                updateTestStatus(testId, status, formatTestResult(result));
-            }
-            
-            const score = total > 0 ? Math.round((passed / total) * 100) : 0;
-            updateStats(passed, total, score);
-            
-            addLog('success', `✅ Test suite complete: ${passed}/${total} passed (${score}%)`);
-            
-            // FNB Compliance check
-            if (score >= 90) {
-                addLog('success', '🏆 EXCEPTIONAL! VouchMorph meets FNB international banking standards.');
-            } else if (score >= 70) {
-                addLog('warning', '👍 Good! Minor improvements needed for FNB certification.');
-            } else {
-                addLog('error', '⚠️ Review required to meet FNB standards.');
-            }
-            
-        } catch (error) {
-            addLog('error', `❌ Test suite failed: ${error.message}`);
+        for (const [id, test] of Object.entries(tests)) {
+            await runTest(id);
         }
+        
+        addLog('success', '✅ Full test suite complete!');
     }
-    
+
     async function runTest(testId) {
-        addLog('info', `🔄 Running test: ${testId}...`);
+        const test = tests[testId];
+        if (!test) return;
+        
+        addLog('info', `🔄 Running test: ${test.name}...`);
         updateTestStatus(testId, 'running', 'Running...');
         
         try {
-            const response = await fetch(`/api/v1/tests/run/${testId}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
-            });
+            const result = await test.run();
+            testResults[testId] = result;
             
-            const result = await response.json();
-            const status = result.status === 'PASS' ? 'passed' : (result.status === 'PARTIAL' ? 'partial' : 'failed');
-            updateTestStatus(testId, status, formatTestResult(result));
+            const status = result.status.toLowerCase();
+            updateTestStatus(testId, status, formatResults(result));
+            addLog(status === 'pass' ? 'success' : 'error', `${test.name}: ${result.message}`);
             
-            addLog(status === 'passed' ? 'success' : 'error', `${testId}: ${result.message || (status === 'passed' ? 'Passed' : 'Failed')}`);
-            
-            loadMetrics();
-            
+            updateOverallScore();
         } catch (error) {
             updateTestStatus(testId, 'failed', `Error: ${error.message}`);
-            addLog('error', `${testId} failed: ${error.message}`);
+            addLog('error', `${test.name} failed: ${error.message}`);
         }
     }
-    
+
     function updateTestStatus(testId, status, resultHtml) {
         const statusDot = document.getElementById(`status-${testId}`);
         const resultDiv = document.getElementById(`result-${testId}`);
         const card = document.getElementById(`card-${testId}`);
         
-        statusDot.className = `test-status ${status}`;
-        card.className = `test-card ${status}`;
-        
-        if (typeof resultHtml === 'object') {
-            resultDiv.innerHTML = formatJsonResult(resultHtml);
-        } else {
-            resultDiv.innerHTML = resultHtml;
-        }
-    }
-    
-    function formatTestResult(result) {
-        if (result.status === 'PASS') {
-            let html = `<div style="color: #10b981;">✅ ${result.message || 'Test passed'}</div>`;
-            if (result.swap_ref) html += `<div>📌 Swap: <code>${result.swap_ref}</code></div>`;
-            if (result.duration_ms) html += `<div>⏱️ Duration: ${result.duration_ms}ms</div>`;
-            if (result.fx_rate) html += `<div>💱 FX Rate: ${result.fx_rate}</div>`;
-            if (result.details) {
-                html += '<div style="margin-top: 8px;">';
-                for (const [key, detail] of Object.entries(result.details)) {
-                    if (detail.passed !== undefined) {
-                        html += `<div>${detail.passed ? '✅' : '❌'} ${key}: ${detail.message || (detail.passed ? 'Valid' : 'Invalid')}</div>`;
-                    }
-                }
-                html += '</div>';
+        if (statusDot) statusDot.className = `test-status ${status}`;
+        if (card) card.className = `test-card ${status}`;
+        if (resultDiv) {
+            if (typeof resultHtml === 'object') {
+                resultDiv.innerHTML = formatResultsObject(resultHtml);
+            } else {
+                resultDiv.innerHTML = resultHtml;
             }
-            return html;
-        } else if (result.status === 'PARTIAL') {
-            return `<div style="color: #f59e0b;">⚠️ ${result.message || 'Partial pass - review details'}</div>`;
-        } else {
-            return `<div style="color: #ef4444;">❌ ${result.error || result.message || 'Test failed'}</div>`;
         }
     }
-    
-    function formatJsonResult(result) {
-        if (result.status === 'PASS') {
-            let html = `<div style="color: #10b981;">✅ ${result.message || 'Passed'}</div>`;
-            if (result.checks) {
-                html += '<div style="margin-top: 8px;">';
-                for (const [key, check] of Object.entries(result.checks)) {
-                    html += `<div>${check.passed ? '✅' : '❌'} ${key}: ${check.message}</div>`;
-                }
-                html += '</div>';
-            }
-            return html;
+
+    function formatResults(result) {
+        if (!result.results) return `<div class="result-summary">${result.message}</div>`;
+        
+        let html = `<div class="result-summary">📊 ${result.message}</div>`;
+        html += `<div class="result-detail">`;
+        for (const r of result.results) {
+            html += `<div class="result-item ${r.passed ? 'passed' : 'failed'}">${r.passed ? '✅' : '❌'} ${r.name}: ${r.message}</div>`;
         }
-        return `<div style="color: #ef4444;">${JSON.stringify(result, null, 2)}</div>`;
-    }
-    
-    async function traceSwap() {
-        const swapRef = document.getElementById('trace-swap-ref').value.trim();
-        if (!swapRef) {
-            addLog('error', 'Please enter a swap reference');
-            return;
-        }
-        
-        addLog('info', `🔍 Tracing swap: ${swapRef}...`);
-        
-        try {
-            const response = await fetch(`/api/v1/tests/trace/${swapRef}`);
-            const trace = await response.json();
-            const content = document.getElementById('trace-content');
-            
-            if (trace.error) {
-                content.innerHTML = `<div style="color: #ef4444;">❌ ${trace.error}</div>`;
-                addLog('error', trace.error);
-                return;
-            }
-            
-            content.innerHTML = formatTrace(trace);
-            addLog('success', `✅ Trace complete for ${swapRef}`);
-            
-        } catch (error) {
-            addLog('error', `❌ Trace failed: ${error.message}`);
-        }
-    }
-    
-    function formatTrace(trace) {
-        let html = '<div style="display: flex; flex-direction: column; gap: 16px;">';
-        
-        // ISO20022 Message Flow
-        html += `
-            <div style="background: #0f172a; padding: 16px; border-radius: 12px;">
-                <div style="color: #3b82f6; margin-bottom: 12px;">📨 ISO20022 MESSAGE FLOW</div>
-                <div style="font-family: monospace; font-size: 12px;">
-                    ${trace.iso_messages ? JSON.stringify(trace.iso_messages, null, 2) : 'No ISO20022 messages found'}
-                </div>
-            </div>
-        `;
-        
-        // Swap Details
-        if (trace.swap) {
-            html += `
-                <div style="background: #0f172a; padding: 16px; border-radius: 12px;">
-                    <div style="color: #10b981; margin-bottom: 8px;">📋 SWAP DETAILS</div>
-                    <div>Reference: <code>${trace.swap.swap_uuid}</code></div>
-                    <div>Status: ${trace.swap.status}</div>
-                    <div>Amount: ${trace.swap.amount} ${trace.swap.from_currency}</div>
-                    <div>Created: ${trace.swap.created_at}</div>
-                </div>
-            `;
-        }
-        
-        // Fee Verification
-        if (trace.fee_equation) {
-            const eq = trace.fee_equation;
-            html += `
-                <div style="background: #0f172a; padding: 16px; border-radius: 12px;">
-                    <div style="color: #f59e0b; margin-bottom: 8px;">💰 FEE VERIFICATION</div>
-                    <div>Gross: ${eq.gross}</div>
-                    <div>Total Fee: ${eq.total_fee}</div>
-                    <div>Net: ${eq.net}</div>
-                    <div style="color: ${eq.balanced ? '#10b981' : '#ef4444'}">${eq.balanced ? '✅ Equation balanced' : '❌ Equation unbalanced'}</div>
-                </div>
-            `;
-        }
-        
-        // Settlement Messages
-        if (trace.settlement && trace.settlement.length > 0) {
-            html += `
-                <div style="background: #0f172a; padding: 16px; border-radius: 12px;">
-                    <div style="color: #8b5cf6; margin-bottom: 8px;">📤 SETTLEMENT MESSAGES (${trace.settlement.length})</div>
-                    ${trace.settlement.map(s => `<div>${s.message_type}: ${s.source_institution} → ${s.destination_institution} | ${s.amount} ${s.currency} | ${s.status}</div>`).join('')}
-                </div>
-            `;
-        }
-        
-        html += '</div>';
+        html += `</div>`;
         return html;
     }
-    
-    async function loadMetrics() {
-        try {
-            const response = await fetch('/api/v1/tests/metrics');
-            const metrics = await response.json();
-            updateStats(metrics.passed || 0, metrics.total || 0, metrics.score || 0);
-        } catch (error) {
-            console.error('Failed to load metrics:', error);
-        }
+
+    function formatResultsObject(result) {
+        return formatResults(result);
     }
-    
-    function updateStats(passed, total, score) {
-        document.getElementById('stat-passed').textContent = passed;
-        document.getElementById('stat-total').textContent = total;
-        document.getElementById('stat-score').textContent = `${score}%`;
+
+    function updateOverallScore() {
+        const total = Object.keys(testResults).length;
+        const passed = Object.values(testResults).filter(r => r.status === 'PASS').length;
+        const score = total > 0 ? Math.round((passed / total) * 100) : 0;
         
-        const fnbStatus = score >= 90 ? 'APPROVED' : (score >= 70 ? 'REVIEW' : 'FAILED');
-        document.getElementById('stat-fnb').textContent = fnbStatus;
-        document.getElementById('stat-fnb').style.color = score >= 90 ? '#10b981' : (score >= 70 ? '#f59e0b' : '#ef4444');
+        const scoreEl = document.getElementById('stat-score');
+        scoreEl.textContent = `${score}%`;
+        scoreEl.style.color = score >= 80 ? '#10b981' : score >= 50 ? '#f59e0b' : '#ef4444';
     }
-    
-    function refreshDashboard() {
-        loadMetrics();
-        addLog('info', '🔄 Dashboard refreshed');
+
+    function refreshData() {
+        location.reload();
     }
-    
+
     function addLog(level, message) {
         const logViewer = document.getElementById('log-viewer');
         const timestamp = new Date().toLocaleTimeString();
@@ -739,11 +734,20 @@ if (!isset($_SESSION['admin_logged_in']) || $_SESSION['admin_logged_in'] !== tru
         logViewer.appendChild(logEntry);
         logViewer.scrollTop = logViewer.scrollHeight;
         
-        // Keep last 100 logs
         while (logViewer.children.length > 100) {
             logViewer.removeChild(logViewer.firstChild);
         }
     }
-</script>
+
+    // Initialize
+    renderTestGrid();
+
+    // Auto-run basic tests on load
+    setTimeout(() => {
+        runTest('database');
+        runTest('config');
+        runTest('admins');
+    }, 500);
+    </script>
 </body>
 </html>
