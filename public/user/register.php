@@ -82,6 +82,22 @@ $countryName = $countryConfig['name'] ?? $systemCountry;
 $countryCurrency = $countryConfig['currency'] ?? 'BWP';
 $countryTimeZone = $countryConfig['timezone'] ?? 'Africa/Gaborone';
 
+// ID validation rules per country
+$idValidationRules = $countryConfig['id_validation'] ?? [
+    'national_id' => ['pattern' => '/^[0-9]{9,12}$/', 'min_length' => 9, 'max_length' => 12, 'example' => '123456789'],
+    'drivers_license' => ['pattern' => '/^[A-Z0-9]{8,15}$/i', 'min_length' => 8, 'max_length' => 15, 'example' => 'BW12345678'],
+    'passport' => ['pattern' => '/^[A-Z0-9]{6,12}$/i', 'min_length' => 6, 'max_length' => 12, 'example' => 'BN123456']
+];
+
+// Botswana-specific ID formats
+if ($systemCountry === 'Botswana' || $systemCountry === 'BW') {
+    $idValidationRules = [
+        'national_id' => ['pattern' => '/^[0-9]{9}$/', 'min_length' => 9, 'max_length' => 9, 'example' => '123456789', 'label' => 'Omang (National ID)'],
+        'drivers_license' => ['pattern' => '/^[A-Z0-9]{8,10}$/i', 'min_length' => 8, 'max_length' => 10, 'example' => 'BW12345678', 'label' => 'Driver\'s License'],
+        'passport' => ['pattern' => '/^[A-Z0-9]{6,9}$/i', 'min_length' => 6, 'max_length' => 9, 'example' => 'BN123456', 'label' => 'Passport']
+    ];
+}
+
 // Set timezone
 date_default_timezone_set($countryTimeZone);
 
@@ -91,6 +107,10 @@ date_default_timezone_set($countryTimeZone);
 $allDbConfig = $config['db'];
 $swapDbConfig = $allDbConfig['swap'];
 $sourceDbConfig = $allDbConfig[$sourceKey];
+
+// Convert for PostgreSQL if needed
+$dbDriver = $swapDbConfig['type'] ?? 'mysql';
+$isPostgres = ($dbDriver === 'pgsql');
 
 // Add connection pool settings
 $swapDbConfig['options'] = [
@@ -113,7 +133,7 @@ $sourceDbConfig['options'] = [
 // Database connections with retry logic
 // ----------------------------------------
 $maxRetries = 3;
-$retryDelay = 1; // seconds
+$retryDelay = 1;
 
 function connectWithRetry($config, $maxRetries, $retryDelay) {
     $lastException = null;
@@ -122,7 +142,6 @@ function connectWithRetry($config, $maxRetries, $retryDelay) {
         try {
             $db = DBConnection::getInstance($config);
             $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-            // Test connection
             $db->query("SELECT 1");
             return $db;
         } catch (Throwable $e) {
@@ -142,69 +161,88 @@ try {
     $sourceDb = connectWithRetry($sourceDbConfig, $maxRetries, $retryDelay);
 } catch (Throwable $e) {
     error_log("REGISTER DB ERROR [{$systemCountry}]: " . $e->getMessage());
-    error_log("Swap Config (hidden password): " . print_r(array_merge($swapDbConfig, ['password' => '***']), true));
-    error_log("Source Config (hidden password): " . print_r(array_merge($sourceDbConfig, ['password' => '***']), true));
-    
-    // Show user-friendly message
-    if (strpos($e->getMessage(), 'Unknown database') !== false) {
-        die("System initialisation failed: Database not found. Please contact support.");
-    } elseif (strpos($e->getMessage(), 'Access denied') !== false) {
-        die("System initialisation failed: Database access denied. Please contact support.");
-    } else {
-        die("System initialisation failed: Unable to connect to database. Please try again later.");
-    }
+    die("System initialisation failed: Unable to connect to database. Please try again later.");
 }
 
 // ----------------------------------------
-// Check and create required tables if missing
+// Create/Update tables for multi-identifier support
 // ----------------------------------------
 try {
-    // Check if otp_codes table exists
-    $tableCheck = $swapDb->query("SHOW TABLES LIKE 'otp_codes'");
-    if ($tableCheck->rowCount() === 0) {
-        // Create OTP codes table
+    // Check if we need to add identifier columns to users table
+    $columns = [];
+    try {
+        $colsResult = $swapDb->query("SELECT column_name FROM information_schema.columns WHERE table_name = 'users'");
+        while ($row = $colsResult->fetch(PDO::FETCH_ASSOC)) {
+            $columns[] = $row['column_name'];
+        }
+    } catch (Throwable $e) {
+        // MySQL fallback
+        $colsResult = $swapDb->query("SHOW COLUMNS FROM users");
+        while ($row = $colsResult->fetch(PDO::FETCH_ASSOC)) {
+            $columns[] = $row['Field'];
+        }
+    }
+    
+    // Add missing columns for ID support
+    if (!in_array('national_id', $columns)) {
+        $swapDb->exec("ALTER TABLE users ADD COLUMN national_id VARCHAR(50) DEFAULT NULL");
+        $swapDb->exec("CREATE INDEX idx_national_id ON users(national_id)");
+    }
+    if (!in_array('drivers_license', $columns)) {
+        $swapDb->exec("ALTER TABLE users ADD COLUMN drivers_license VARCHAR(50) DEFAULT NULL");
+        $swapDb->exec("CREATE INDEX idx_drivers_license ON users(drivers_license)");
+    }
+    if (!in_array('passport', $columns)) {
+        $swapDb->exec("ALTER TABLE users ADD COLUMN passport VARCHAR(50) DEFAULT NULL");
+        $swapDb->exec("CREATE INDEX idx_passport ON users(passport)");
+    }
+    if (!in_array('id_type', $columns)) {
+        $swapDb->exec("ALTER TABLE users ADD COLUMN id_type VARCHAR(20) DEFAULT NULL");
+    }
+    if (!in_array('full_name', $columns)) {
+        $swapDb->exec("ALTER TABLE users ADD COLUMN full_name VARCHAR(255) DEFAULT NULL");
+    }
+    if (!in_array('date_of_birth', $columns)) {
+        $swapDb->exec("ALTER TABLE users ADD COLUMN date_of_birth DATE DEFAULT NULL");
+    }
+    
+    // Create OTP table if not exists (PostgreSQL compatible)
+    if ($isPostgres) {
+        $swapDb->exec("
+            CREATE TABLE IF NOT EXISTS otp_codes (
+                id SERIAL PRIMARY KEY,
+                phone VARCHAR(20),
+                national_id VARCHAR(50),
+                identifier_type VARCHAR(20),
+                code VARCHAR(10) NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                used SMALLINT DEFAULT 0
+            )
+        ");
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_otp_identifier ON otp_codes(phone, national_id)");
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_otp_expires ON otp_codes(expires_at)");
+    } else {
         $swapDb->exec("
             CREATE TABLE IF NOT EXISTS `otp_codes` (
                 `id` int(11) NOT NULL AUTO_INCREMENT,
-                `phone` varchar(20) NOT NULL,
+                `phone` varchar(20) DEFAULT NULL,
+                `national_id` varchar(50) DEFAULT NULL,
+                `identifier_type` varchar(20) DEFAULT NULL,
                 `code` varchar(10) NOT NULL,
                 `expires_at` datetime NOT NULL,
                 `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 `used` tinyint(1) DEFAULT '0',
                 PRIMARY KEY (`id`),
-                KEY `phone` (`phone`),
+                KEY `idx_otp_identifier` (`phone`, `national_id`),
                 KEY `expires_at` (`expires_at`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         ");
-        error_log("Created otp_codes table for {$systemCountry}");
     }
     
-    // Check if users table exists in swap DB
-    $tableCheck = $swapDb->query("SHOW TABLES LIKE 'users'");
-    if ($tableCheck->rowCount() === 0) {
-        // Create users table
-        $swapDb->exec("
-            CREATE TABLE IF NOT EXISTS `users` (
-                `user_id` int(11) NOT NULL AUTO_INCREMENT,
-                `phone` varchar(20) NOT NULL,
-                `email` varchar(255) DEFAULT NULL,
-                `full_name` varchar(255) DEFAULT NULL,
-                `pin_code` varchar(255) DEFAULT NULL,
-                `is_verified` tinyint(1) DEFAULT '0',
-                `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                `updated_at` timestamp NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
-                `last_login` timestamp NULL DEFAULT NULL,
-                `status` enum('active','suspended','deleted') DEFAULT 'active',
-                PRIMARY KEY (`user_id`),
-                UNIQUE KEY `phone` (`phone`),
-                KEY `status` (`status`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        ");
-        error_log("Created users table for {$systemCountry}");
-    }
+    error_log("Database tables verified/updated for {$systemCountry}");
 } catch (Throwable $e) {
-    error_log("Table creation error: " . $e->getMessage());
-    // Don't die here - tables might already exist with different structure
+    error_log("Table creation/update error: " . $e->getMessage());
 }
 
 // ----------------------------------------
@@ -222,48 +260,45 @@ if (!$smsProvider) {
 // ----------------------------------------
 function normalizePhone(string $phoneInput, string $dialCode): string
 {
-    // Remove all non-digit characters except +
     $phoneInput = preg_replace('/[^\d+]/', '', trim($phoneInput));
     
     if ($phoneInput === '') {
         return '';
     }
     
-    // If already has +, return as is (but validate format)
     if (str_starts_with($phoneInput, '+')) {
-        // Remove any extra + signs
         $phoneInput = '+' . preg_replace('/[^0-9]/', '', substr($phoneInput, 1));
         return $phoneInput;
     }
     
-    // Remove leading zeros
     $phoneInput = ltrim($phoneInput, '0');
-    
-    // Add dial code
     return $dialCode . $phoneInput;
 }
 
-function getLocalPhonePart(string $fullPhone, string $dialCode): string
+function validateIdentifier($value, $type, $rules): array
 {
-    if (str_starts_with($fullPhone, $dialCode)) {
-        return substr($fullPhone, strlen($dialCode));
+    $value = trim($value);
+    if (empty($value)) {
+        return ['valid' => false, 'message' => ucfirst(str_replace('_', ' ', $type)) . ' is required.'];
     }
     
-    return ltrim($fullPhone, '0');
-}
-
-function validatePhoneFormat(string $phone, string $dialCode, int $localLength): bool
-{
-    // Remove + if present for validation
-    $phoneClean = ltrim($phone, '+');
-    
-    // Check if starts with dial code (without +)
-    if (str_starts_with($phoneClean, ltrim($dialCode, '+'))) {
-        $localPart = substr($phoneClean, strlen(ltrim($dialCode, '+')));
-        return (strlen($localPart) === $localLength && ctype_digit($localPart));
+    $rule = $rules[$type] ?? null;
+    if (!$rule) {
+        return ['valid' => false, 'message' => 'Invalid identifier type.'];
     }
     
-    return false;
+    $length = strlen($value);
+    if ($length < $rule['min_length'] || $length > $rule['max_length']) {
+        return ['valid' => false, 'message' => sprintf('%s must be between %d and %d characters.', 
+            ucfirst(str_replace('_', ' ', $type)), $rule['min_length'], $rule['max_length'])];
+    }
+    
+    if (!preg_match($rule['pattern'], $value)) {
+        return ['valid' => false, 'message' => sprintf('Invalid %s format. Example: %s', 
+            ucfirst(str_replace('_', ' ', $type)), $rule['example'])];
+    }
+    
+    return ['valid' => true, 'value' => $value];
 }
 
 function sanitizeInput($input) {
@@ -271,123 +306,179 @@ function sanitizeInput($input) {
 }
 
 // ----------------------------------------
-// AJAX POST: Send OTP
+// AJAX POST: Send OTP (supports phone OR ID)
 // ----------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json; charset=utf-8');
     
     try {
-        // Get and validate input
-        $phoneInput = trim($_POST['phone'] ?? '');
-        if (empty($phoneInput)) {
-            echo json_encode(['success' => false, 'message' => 'Phone number is required.']);
+        $inputType = $_POST['input_type'] ?? 'phone'; // 'phone', 'national_id', 'drivers_license', 'passport'
+        $inputValue = trim($_POST['identifier'] ?? '');
+        $fullName = trim($_POST['full_name'] ?? '');
+        $dateOfBirth = trim($_POST['date_of_birth'] ?? '');
+        
+        if (empty($inputValue)) {
+            echo json_encode(['success' => false, 'message' => 'Please provide your identifier.']);
             exit;
         }
         
-        $phone = normalizePhone($phoneInput, $countryDialCode);
+        // Track what we're validating
+        $identifierColumn = null;
+        $identifierValue = null;
+        $identifierType = null;
         
-        if ($phone === '') {
-            echo json_encode(['success' => false, 'message' => 'Invalid phone number format.']);
-            exit;
-        }
-        
-        // Validate phone format
-        if (!validatePhoneFormat($phone, $countryDialCode, $localLength)) {
-            echo json_encode(['success' => false, 'message' => "Please enter a valid {$localLength}-digit phone number."]);
-            exit;
-        }
-        
-        // Check if exists in source client DB
-        try {
-            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name FROM users WHERE phone_number = :phone LIMIT 1");
-            $stmt->execute([':phone' => $phone]);
-            $sourceUser = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$sourceUser) {
-                echo json_encode(['success' => false, 'message' => "Phone number not found in our records. Please ensure you're registered with {$clientPartnerKey}."]);
+        // Handle phone number
+        if ($inputType === 'phone') {
+            $phone = normalizePhone($inputValue, $countryDialCode);
+            if ($phone === '') {
+                echo json_encode(['success' => false, 'message' => 'Invalid phone number format.']);
                 exit;
             }
-        } catch (PDOException $e) {
-            error_log("Source DB query error: " . $e->getMessage());
-            echo json_encode(['success' => false, 'message' => 'Unable to verify phone number. Please try again.']);
-            exit;
-        }
-        
-        // Check if already registered in swap
-        try {
-            $stmt = $swapDb->prepare("SELECT user_id, phone FROM users WHERE phone = :phone LIMIT 1");
-            $stmt->execute([':phone' => $phone]);
             
-            if ($stmt->fetch(PDO::FETCH_ASSOC)) {
-                echo json_encode(['success' => false, 'message' => 'This phone number is already registered. Please login instead.']);
+            $identifierColumn = 'phone_number';
+            $identifierValue = $phone;
+            $identifierType = 'phone';
+            
+            // Check in source DB
+            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name FROM users WHERE phone_number = :value LIMIT 1");
+            $stmt->execute([':value' => $phone]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$user) {
+                echo json_encode(['success' => false, 'message' => "Phone number not found in our records."]);
                 exit;
             }
-        } catch (PDOException $e) {
-            error_log("Swap DB check error: " . $e->getMessage());
-            // Continue anyway - table might not exist yet
+            
+            // Check if already registered
+            $stmt = $swapDb->prepare("SELECT user_id FROM users WHERE phone = :value LIMIT 1");
+            $stmt->execute([':value' => $phone]);
+            if ($stmt->fetch()) {
+                echo json_encode(['success' => false, 'message' => 'Phone number already registered. Please login.']);
+                exit;
+            }
+        } 
+        // Handle ID documents
+        else {
+            $validation = validateIdentifier($inputValue, $inputType, $idValidationRules);
+            if (!$validation['valid']) {
+                echo json_encode(['success' => false, 'message' => $validation['message']]);
+                exit;
+            }
+            
+            $identifierValue = $validation['value'];
+            $identifierType = $inputType;
+            
+            // Map to column name
+            $columnMap = [
+                'national_id' => 'national_id',
+                'drivers_license' => 'drivers_license',
+                'passport' => 'passport'
+            ];
+            $identifierColumn = $columnMap[$inputType];
+            
+            // Check in source DB for this ID
+            try {
+                $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, {$identifierColumn} FROM users WHERE {$identifierColumn} = :value LIMIT 1");
+                $stmt->execute([':value' => $identifierValue]);
+                $user = $stmt->fetch(PDO::FETCH_ASSOC);
+                
+                if (!$user) {
+                    $label = $idValidationRules[$inputType]['label'] ?? ucfirst(str_replace('_', ' ', $inputType));
+                    echo json_encode(['success' => false, 'message' => "{$label} not found in our records."]);
+                    exit;
+                }
+                
+                // Check if already registered in swap
+                $stmt = $swapDb->prepare("SELECT user_id FROM users WHERE {$identifierColumn} = :value LIMIT 1");
+                $stmt->execute([':value' => $identifierValue]);
+                if ($stmt->fetch()) {
+                    $label = $idValidationRules[$inputType]['label'] ?? ucfirst(str_replace('_', ' ', $inputType));
+                    echo json_encode(['success' => false, 'message' => "{$label} already registered. Please login."]);
+                    exit;
+                }
+                
+                // Also check if phone is registered (if user has phone)
+                if (!empty($user['phone_number'])) {
+                    $stmt = $swapDb->prepare("SELECT user_id FROM users WHERE phone = :phone LIMIT 1");
+                    $stmt->execute([':phone' => $user['phone_number']]);
+                    if ($stmt->fetch()) {
+                        echo json_encode(['success' => false, 'message' => 'Associated phone number already registered. Please login.']);
+                        exit;
+                    }
+                }
+                
+            } catch (PDOException $e) {
+                error_log("Source DB query error for {$inputType}: " . $e->getMessage());
+                echo json_encode(['success' => false, 'message' => 'Unable to verify identity. Please try again.']);
+                exit;
+            }
         }
         
         // Generate OTP
         $otp = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-        $expiresAt = date('Y-m-d H:i:s', time() + 300); // 5 minutes expiry
+        $expiresAt = date('Y-m-d H:i:s', time() + 300);
         
-        // Store OTP in database
-        try {
-            // Delete any existing OTP for this phone
-            $swapDb->prepare("DELETE FROM otp_codes WHERE phone = :phone")->execute([':phone' => $phone]);
-            
-            // Insert new OTP
-            $stmt = $swapDb->prepare("INSERT INTO otp_codes (phone, code, expires_at) VALUES (:phone, :code, :expires_at)");
-            $stmt->execute([
-                ':phone' => $phone,
-                ':code' => $otp,
-                ':expires_at' => $expiresAt
-            ]);
-        } catch (PDOException $e) {
-            error_log("OTP storage error: " . $e->getMessage());
-            echo json_encode(['success' => false, 'message' => 'Unable to process request. Please try again.']);
-            exit;
-        }
+        // Store OTP - use phone if available, otherwise use ID
+        $phoneForOtp = ($inputType === 'phone') ? $identifierValue : ($user['phone_number'] ?? null);
         
-        // Send SMS with OTP
-        try {
-            $comm = CommunicationFactory::create($clientPartnerKey);
-            $message = "Your {$countryName} SWAP registration OTP is: {$otp}. Valid for 5 minutes. Do not share with anyone.";
-            
-            // Add transaction ID for tracking
-            $transactionId = uniqid('OTP_', true);
-            $message .= " Ref: {$transactionId}";
-            
-            $result = $comm->sendSMS($phone, $message);
-            
-            if (!($result['success'] ?? false)) {
-                // Log but don't fail - maybe email fallback?
-                error_log("SMS sending failed for {$phone}: " . ($result['message'] ?? 'Unknown error'));
+        $stmt = $swapDb->prepare("DELETE FROM otp_codes WHERE phone = :phone OR national_id = :id");
+        $stmt->execute([':phone' => $phoneForOtp, ':id' => ($inputType !== 'phone') ? $identifierValue : null]);
+        
+        $stmt = $swapDb->prepare("INSERT INTO otp_codes (phone, national_id, identifier_type, code, expires_at) VALUES (:phone, :national_id, :identifier_type, :code, :expires_at)");
+        $stmt->execute([
+            ':phone' => $phoneForOtp,
+            ':national_id' => ($inputType !== 'phone') ? $identifierValue : null,
+            ':identifier_type' => $inputType,
+            ':code' => $otp,
+            ':expires_at' => $expiresAt
+        ]);
+        
+        // Store registration data in session for later
+        $_SESSION['temp_registration'] = [
+            'identifier_type' => $inputType,
+            'identifier_value' => $identifierValue,
+            'identifier_column' => $identifierColumn,
+            'full_name' => $fullName ?: ($user['full_name'] ?? null),
+            'date_of_birth' => $dateOfBirth,
+            'source_user_id' => $user['id'] ?? null,
+            'phone_number' => $user['phone_number'] ?? ($inputType === 'phone' ? $identifierValue : null)
+        ];
+        
+        // Send OTP via SMS if phone available, otherwise show on screen
+        $smsSent = false;
+        if ($phoneForOtp) {
+            try {
+                $comm = CommunicationFactory::create($clientPartnerKey);
+                $message = "Your {$countryName} SWAP registration OTP is: {$otp}. Valid for 5 minutes. Do not share with anyone.";
+                $result = $comm->sendSMS($phoneForOtp, $message);
+                $smsSent = ($result['success'] ?? false);
                 
-                // For development, still return success
-                if (getenv('APP_ENV') === 'development') {
-                    echo json_encode(['success' => true, 'message' => "OTP sent: {$otp} (Development mode - SMS not actually sent)"]);
-                    exit;
+                if ($smsSent) {
+                    error_log("OTP sent via SMS to {$phoneForOtp}");
                 }
-                
-                throw new Exception($result['message'] ?? 'SMS provider failed to send message');
+            } catch (Exception $e) {
+                error_log("SMS sending error: " . $e->getMessage());
             }
-            
-            // Log successful OTP send
-            error_log("OTP sent successfully to {$phone} with ID: {$transactionId}");
-            
-            echo json_encode(['success' => true, 'message' => 'OTP sent successfully! Check your phone.']);
-            exit;
-            
-        } catch (Exception $e) {
-            error_log("SMS sending error: " . $e->getMessage());
-            echo json_encode(['success' => false, 'message' => 'Unable to send OTP at this time. Please try again later.']);
-            exit;
         }
+        
+        // Return response
+        if ($smsSent) {
+            echo json_encode(['success' => true, 'message' => 'OTP sent to your phone!', 'has_phone' => true]);
+        } else if ($phoneForOtp) {
+            // For development, show OTP
+            if (getenv('APP_ENV') === 'development') {
+                echo json_encode(['success' => true, 'message' => "DEV MODE: OTP is {$otp} (SMS failed)", 'has_phone' => true]);
+            } else {
+                echo json_encode(['success' => true, 'message' => "Please contact support to verify your identity.", 'has_phone' => false]);
+            }
+        } else {
+            // No phone on file, show OTP on screen (for web registration)
+            echo json_encode(['success' => true, 'message' => "Your OTP is: {$otp} (No phone on file - please write this down)", 'show_otp' => true, 'otp' => $otp]);
+        }
+        exit;
         
     } catch (Throwable $e) {
         error_log("REGISTER POST ERROR [{$systemCountry}]: " . $e->getMessage());
-        error_log("Stack trace: " . $e->getTraceAsString());
         echo json_encode(['success' => false, 'message' => 'System error occurred. Please try again.']);
         exit;
     }
@@ -465,7 +556,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             position: relative;
             z-index: 2;
             width: 100%;
-            max-width: 480px;
+            max-width: 520px;
             background: rgba(5, 5, 5, 0.95);
             border: 1px solid rgba(255, 255, 255, 0.08);
             backdrop-filter: blur(10px);
@@ -510,16 +601,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #00F0FF;
         }
 
-        .country-flag {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #00F0FF, #B000FF);
-            margin-right: 8px;
-            vertical-align: middle;
-        }
-
         .register-form {
             padding: 2rem;
         }
@@ -538,7 +619,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #C0C0D0;
         }
 
-        .phone-input-container {
+        .selector-tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            padding-bottom: 0.5rem;
+        }
+
+        .selector-tab {
+            padding: 0.5rem 1rem;
+            background: transparent;
+            border: none;
+            color: #808090;
+            font-size: 0.75rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-radius: 0px;
+        }
+
+        .selector-tab.active {
+            color: #00F0FF;
+            border-bottom: 2px solid #00F0FF;
+        }
+
+        .selector-tab:hover {
+            color: #00F0FF;
+        }
+
+        .input-container {
             display: flex;
             border: 1px solid rgba(255, 255, 255, 0.15);
             background: rgba(0, 0, 0, 0.5);
@@ -546,12 +658,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-radius: 0px;
         }
 
-        .phone-input-container:focus-within {
+        .input-container:focus-within {
             border-color: #00F0FF;
             box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.2);
         }
 
-        .phone-prefix {
+        .input-prefix {
             padding: 0.875rem 1rem;
             font-family: 'Space Grotesk', monospace;
             font-weight: 500;
@@ -607,46 +719,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             box-shadow: 0 10px 30px -10px rgba(0, 240, 255, 0.4);
         }
 
-        .btn:active {
-            transform: translateY(0);
-        }
-
-        .btn.loading {
-            opacity: 0.7;
-            cursor: not-allowed;
-        }
-
-        .btn.loading::after {
-            content: '';
-            position: absolute;
-            width: 20px;
-            height: 20px;
-            top: 50%;
-            left: 50%;
-            margin-left: -10px;
-            margin-top: -10px;
-            border: 2px solid rgba(0, 0, 0, 0.3);
-            border-top-color: #000;
-            border-radius: 50%;
-            animation: spin 0.6s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
         .btn-secondary {
             background: transparent;
             border: 1px solid rgba(255, 255, 255, 0.3);
             color: #FFFFFF;
             margin-top: 0;
-        }
-
-        .btn-secondary:hover {
-            border-color: #00F0FF;
-            background: rgba(0, 240, 255, 0.05);
-            transform: translateY(-2px);
-            box-shadow: none;
         }
 
         .message {
@@ -658,7 +735,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-left: 3px solid #00F0FF;
             color: #A0A0B0;
             min-height: 50px;
-            border-radius: 0px;
         }
 
         .message.error {
@@ -673,33 +749,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #00F0FF;
         }
 
-        .message.info {
-            background: rgba(255, 193, 7, 0.1);
-            border-left-color: #FFC107;
-            color: #FFC107;
-        }
-
         .otp-section {
             display: none;
             margin-top: 0;
         }
 
-        .resend-timer {
+        .otp-display {
+            background: rgba(0, 240, 255, 0.2);
+            padding: 1rem;
             text-align: center;
-            margin-top: 1rem;
-            font-size: 0.75rem;
-            color: #808090;
-        }
-
-        .resend-timer a {
-            color: #00F0FF;
-            text-decoration: none;
-            cursor: pointer;
-        }
-
-        .resend-timer a.disabled {
-            color: #505060;
-            cursor: not-allowed;
+            font-size: 1.5rem;
+            font-family: monospace;
+            letter-spacing: 0.5rem;
+            margin: 1rem 0;
+            border: 1px solid rgba(0, 240, 255, 0.3);
         }
 
         .register-footer {
@@ -719,6 +782,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         .register-footer a:hover {
             color: #00F0FF;
+        }
+
+        .help-text {
+            font-size: 0.7rem;
+            color: #606070;
+            margin-top: 0.5rem;
         }
 
         @keyframes fadeInUp {
@@ -749,9 +818,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             .register-form {
                 padding: 1.5rem;
             }
-            .register-footer {
-                padding: 1rem 1.5rem;
-            }
         }
     </style>
 </head>
@@ -765,34 +831,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <h1>VOUCHMORPH<sup style="font-size: 0.7rem;">™</sup></h1>
         <div class="subtitle">Join the Financial Revolution</div>
         <div class="system-badge">
-            <span class="country-flag"></span>
             <?= htmlspecialchars($countryName) ?> • <?= htmlspecialchars($countryCurrency) ?>
         </div>
     </div>
 
     <div class="register-form">
+        <!-- Identifier Type Selector -->
+        <div class="selector-tabs">
+            <button class="selector-tab active" data-type="phone">📱 Phone</button>
+            <button class="selector-tab" data-type="national_id">🆔 National ID</button>
+            <button class="selector-tab" data-type="drivers_license">🚗 Driver's License</button>
+            <button class="selector-tab" data-type="passport">📖 Passport</button>
+        </div>
+
         <div id="register-step">
-            <div class="form-group">
-                <label>MOBILE NUMBER</label>
-                <div class="phone-input-container">
-                    <span class="phone-prefix"><?= htmlspecialchars($countryDialCode) ?></span>
-                    <input type="tel" id="phone" class="form-control" placeholder="<?= htmlspecialchars($phonePlaceholder) ?>" autocomplete="off" maxlength="<?= $localLength ?>">
+            <div class="form-group" id="identifier-group">
+                <label id="identifier-label">MOBILE NUMBER</label>
+                <div class="input-container" id="input-container">
+                    <span class="input-prefix" id="input-prefix"><?= htmlspecialchars($countryDialCode) ?></span>
+                    <input type="text" id="identifier" class="form-control" placeholder="<?= htmlspecialchars($phonePlaceholder) ?>" autocomplete="off">
                 </div>
-                <div style="font-size: 0.7rem; color: #606070; margin-top: 0.5rem;">
-                    Enter <?= $localLength ?>-digit number without <?= htmlspecialchars($countryDialCode) ?>
-                </div>
+                <div class="help-text" id="help-text">Enter <?= $localLength ?>-digit number without <?= htmlspecialchars($countryDialCode) ?></div>
             </div>
-            <button class="btn" id="sendOtpBtn" onclick="sendOTP()">SEND OTP →</button>
+            
+            <div class="form-group" id="fullname-group" style="display: none;">
+                <label>FULL NAME (Optional)</label>
+                <input type="text" id="full_name" class="form-control" placeholder="Enter your full name" autocomplete="off">
+            </div>
+            
+            <div class="form-group" id="dob-group" style="display: none;">
+                <label>DATE OF BIRTH (Optional)</label>
+                <input type="date" id="date_of_birth" class="form-control">
+            </div>
+            
+            <button class="btn" id="sendOtpBtn" onclick="sendOTP()">CONTINUE →</button>
         </div>
 
         <div id="otp-section" class="otp-section">
             <div class="form-group">
-                <label>ENTER 6-DIGIT OTP</label>
-                <input type="text" id="otp" class="form-control otp-input" maxlength="6" placeholder="••••••" autocomplete="off" pattern="[0-9]{6}" inputmode="numeric">
+                <label>ENTER VERIFICATION CODE</label>
+                <input type="text" id="otp" class="form-control otp-input" maxlength="6" placeholder="••••••" autocomplete="off" inputmode="numeric">
             </div>
+            <div id="otp-display" class="otp-display" style="display: none;"></div>
             <button class="btn" id="verifyBtn" onclick="verifyOTP()">VERIFY & REGISTER →</button>
-            <button class="btn btn-secondary" onclick="backToPhone()">← BACK</button>
-            <div class="resend-timer" id="resendTimer"></div>
+            <button class="btn btn-secondary" onclick="backToIdentifier()">← BACK</button>
+            <div class="resend-timer" id="resendTimer" style="text-align: center; margin-top: 1rem; font-size: 0.75rem; color: #808090;"></div>
         </div>
 
         <div id="message" class="message"></div>
@@ -804,153 +887,160 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </div>
 
 <script>
-// Custom cursor effect
-const cursor = document.querySelector('.cursor');
-const follower = document.querySelector('.cursor-follower');
+// Configuration from PHP
+const countryDialCode = '<?= $countryDialCode ?>';
+const localLength = <?= $localLength ?>;
+const idValidationRules = <?= json_encode($idValidationRules) ?>;
 
-if (cursor && follower) {
-    document.addEventListener('mousemove', (e) => {
-        cursor.style.left = e.clientX + 'px';
-        cursor.style.top = e.clientY + 'px';
-        setTimeout(() => {
-            follower.style.left = e.clientX - 16 + 'px';
-            follower.style.top = e.clientY - 16 + 'px';
-        }, 50);
+let currentIdentifierType = 'phone';
+let storedOtp = null;
+let resendTimerInterval = null;
+let resendSecondsLeft = 0;
+
+// Tab switching
+document.querySelectorAll('.selector-tab').forEach(tab => {
+    tab.addEventListener('click', function() {
+        document.querySelectorAll('.selector-tab').forEach(t => t.classList.remove('active'));
+        this.classList.add('active');
+        currentIdentifierType = this.dataset.type;
+        updateFormForIdentifierType(currentIdentifierType);
     });
-}
+});
 
-// Message display function
-let messageTimeout = null;
+function updateFormForIdentifierType(type) {
+    const labelEl = document.getElementById('identifier-label');
+    const prefixEl = document.getElementById('input-prefix');
+    const inputEl = document.getElementById('identifier');
+    const helpTextEl = document.getElementById('help-text');
+    const fullnameGroup = document.getElementById('fullname-group');
+    const dobGroup = document.getElementById('dob-group');
+    
+    if (type === 'phone') {
+        labelEl.textContent = 'MOBILE NUMBER';
+        prefixEl.style.display = 'flex';
+        prefixEl.textContent = countryDialCode;
+        inputEl.placeholder = '7' + '0'.repeat(localLength - 1);
+        helpTextEl.textContent = `Enter ${localLength}-digit number without ${countryDialCode}`;
+        inputEl.maxLength = localLength;
+        inputEl.type = 'tel';
+        fullnameGroup.style.display = 'none';
+        dobGroup.style.display = 'none';
+    } else {
+        const rules = idValidationRules[type];
+        const label = rules?.label || type.replace('_', ' ').toUpperCase();
+        labelEl.textContent = label;
+        prefixEl.style.display = 'none';
+        inputEl.placeholder = rules?.example || `Enter your ${label}`;
+        inputEl.maxLength = rules?.max_length || 50;
+        inputEl.type = 'text';
+        helpTextEl.textContent = `Format: ${rules?.example || 'Alphanumeric'}`;
+        fullnameGroup.style.display = 'block';
+        dobGroup.style.display = 'block';
+    }
+    
+    // Clear input
+    inputEl.value = '';
+}
 
 function showMessage(text, type = 'info') {
     const msgEl = document.getElementById('message');
     msgEl.textContent = text;
     msgEl.className = 'message ' + type;
-    msgEl.style.display = 'block';
     
-    if (messageTimeout) {
-        clearTimeout(messageTimeout);
-    }
-    
-    if (type !== 'error') {
-        messageTimeout = setTimeout(() => {
-            if (document.getElementById('message').textContent === text) {
-                document.getElementById('message').textContent = '';
-                document.getElementById('message').className = 'message';
-                msgEl.style.display = 'none';
-            }
-        }, 5000);
-    }
+    setTimeout(() => {
+        if (document.getElementById('message').textContent === text) {
+            msgEl.textContent = '';
+            msgEl.className = 'message';
+        }
+    }, 5000);
 }
 
-// Loading state for buttons
-function setButtonLoading(buttonId, isLoading, originalText = null) {
-    const btn = document.getElementById(buttonId);
-    if (!btn) return;
-    
-    if (isLoading) {
-        btn.dataset.originalText = btn.textContent;
-        btn.textContent = '';
-        btn.classList.add('loading');
-        btn.disabled = true;
-    } else {
-        btn.textContent = btn.dataset.originalText || (originalText || btn.textContent);
-        btn.classList.remove('loading');
-        btn.disabled = false;
-    }
-}
-
-// Phone number validation
-function validatePhone(phone) {
-    const localLength = <?= $localLength ?>;
-    const phoneClean = phone.replace(/\D/g, '');
-    return phoneClean.length === localLength;
-}
-
-// Send OTP function
 function sendOTP() {
-    const phoneInput = document.getElementById('phone').value.trim();
-    const dialCode = '<?= $countryDialCode ?>';
-    const localLength = <?= $localLength ?>;
+    const identifier = document.getElementById('identifier').value.trim();
+    const fullName = document.getElementById('full_name')?.value.trim() || '';
+    const dateOfBirth = document.getElementById('date_of_birth')?.value || '';
     
-    if (!phoneInput) {
-        showMessage('Please enter your phone number.', 'error');
-        document.getElementById('phone').focus();
+    if (!identifier) {
+        showMessage('Please enter your identifier.', 'error');
+        document.getElementById('identifier').focus();
         return;
     }
-
-    const phoneClean = phoneInput.replace(/\D/g, '');
-    if (phoneClean.length !== localLength) {
-        showMessage(`Please enter a valid ${localLength}-digit phone number.`, 'error');
-        document.getElementById('phone').focus();
-        return;
-    }
-
-    const fullPhone = dialCode + phoneClean;
     
-    // Set loading state
-    setButtonLoading('sendOtpBtn', true);
-    showMessage('Sending OTP...', 'info');
-
+    // Validate based on type
+    if (currentIdentifierType === 'phone') {
+        const phoneClean = identifier.replace(/\D/g, '');
+        if (phoneClean.length !== localLength) {
+            showMessage(`Please enter a valid ${localLength}-digit phone number.`, 'error');
+            return;
+        }
+    } else {
+        const rules = idValidationRules[currentIdentifierType];
+        if (rules) {
+            const value = identifier;
+            if (value.length < rules.min_length || value.length > rules.max_length) {
+                showMessage(`${rules.label || currentIdentifierType} must be between ${rules.min_length} and ${rules.max_length} characters.`, 'error');
+                return;
+            }
+            if (!new RegExp(rules.pattern).test(value)) {
+                showMessage(`Invalid format. Example: ${rules.example}`, 'error');
+                return;
+            }
+        }
+    }
+    
+    const btn = document.getElementById('sendOtpBtn');
+    const originalText = btn.textContent;
+    btn.textContent = 'SENDING...';
+    btn.disabled = true;
+    
+    showMessage('Verifying your details...', 'info');
+    
     const formData = new URLSearchParams();
-    formData.append('phone', fullPhone);
-
+    formData.append('input_type', currentIdentifierType);
+    formData.append('identifier', identifier);
+    formData.append('full_name', fullName);
+    formData.append('date_of_birth', dateOfBirth);
+    
     fetch(window.location.href, {
         method: 'POST',
-        headers: { 
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'X-Requested-With': 'XMLHttpRequest'
-        },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: formData.toString()
     })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        return response.json();
-    })
+    .then(response => response.json())
     .then(data => {
-        setButtonLoading('sendOtpBtn', false);
+        btn.textContent = originalText;
+        btn.disabled = false;
         
         if (data.success) {
+            if (data.show_otp && data.otp) {
+                storedOtp = data.otp;
+                document.getElementById('otp-display').style.display = 'block';
+                document.getElementById('otp-display').innerHTML = `Your OTP is: <strong>${data.otp}</strong><br><small>Please write this down</small>`;
+            }
+            
             showMessage(data.message, 'success');
-            
-            // Show OTP section with animation
             document.getElementById('register-step').style.display = 'none';
-            const otpSection = document.getElementById('otp-section');
-            otpSection.style.display = 'block';
-            otpSection.classList.add('fade-in');
-            
-            // Focus on OTP input
+            document.getElementById('otp-section').style.display = 'block';
+            document.getElementById('otp-section').classList.add('fade-in');
             document.getElementById('otp').focus();
-            
-            // Start resend timer
             startResendTimer(60);
-            
-            // Store phone for verification
-            sessionStorage.setItem('register_phone', fullPhone);
         } else {
             showMessage(data.message, 'error');
         }
     })
     .catch(error => {
-        setButtonLoading('sendOtpBtn', false);
+        btn.textContent = originalText;
+        btn.disabled = false;
         console.error('Error:', error);
-        showMessage('Network error. Please check your connection and try again.', 'error');
+        showMessage('Network error. Please try again.', 'error');
     });
 }
-
-// Resend timer
-let resendTimerInterval = null;
-let resendSecondsLeft = 0;
 
 function startResendTimer(seconds) {
     resendSecondsLeft = seconds;
     updateResendTimerDisplay();
     
-    if (resendTimerInterval) {
-        clearInterval(resendTimerInterval);
-    }
+    if (resendTimerInterval) clearInterval(resendTimerInterval);
     
     resendTimerInterval = setInterval(() => {
         if (resendSecondsLeft <= 0) {
@@ -968,86 +1058,76 @@ function updateResendTimerDisplay(isExpired = false) {
     if (!timerDiv) return;
     
     if (isExpired) {
-        timerDiv.innerHTML = '<a onclick="resendOTP()" style="cursor: pointer;">Didn\'t receive OTP? Resend →</a>';
+        timerDiv.innerHTML = '<a onclick="resendOTP()" style="cursor: pointer; color: #00F0FF;">Didn\'t receive code? Resend →</a>';
     } else {
         timerDiv.innerHTML = `Resend available in ${resendSecondsLeft} seconds`;
     }
 }
 
 function resendOTP() {
-    const phoneInput = document.getElementById('phone').value.trim();
-    const dialCode = '<?= $countryDialCode ?>';
-    const phoneClean = phoneInput.replace(/\D/g, '');
-    const fullPhone = dialCode + phoneClean;
+    const identifier = document.getElementById('identifier').value.trim();
     
-    showMessage('Resending OTP...', 'info');
+    showMessage('Resending verification code...', 'info');
     
     const formData = new URLSearchParams();
-    formData.append('phone', fullPhone);
+    formData.append('input_type', currentIdentifierType);
+    formData.append('identifier', identifier);
+    formData.append('resend', '1');
     
     fetch(window.location.href, {
         method: 'POST',
-        headers: { 
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'X-Requested-With': 'XMLHttpRequest'
-        },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: formData.toString()
     })
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            showMessage('OTP resent successfully!', 'success');
+            if (data.show_otp && data.otp) {
+                storedOtp = data.otp;
+                document.getElementById('otp-display').style.display = 'block';
+                document.getElementById('otp-display').innerHTML = `Your OTP is: <strong>${data.otp}</strong>`;
+            }
+            showMessage('Verification code resent!', 'success');
             startResendTimer(60);
         } else {
             showMessage(data.message, 'error');
         }
     })
     .catch(error => {
-        console.error('Error:', error);
-        showMessage('Failed to resend OTP. Please try again.', 'error');
+        showMessage('Failed to resend code.', 'error');
     });
 }
 
-// Verify OTP function
 function verifyOTP() {
     const otp = document.getElementById('otp').value.trim();
-    const phone = sessionStorage.getItem('register_phone');
-    
-    if (!phone) {
-        showMessage('Session expired. Please go back and try again.', 'error');
-        backToPhone();
-        return;
-    }
+    const identifier = document.getElementById('identifier').value.trim();
     
     if (!otp || otp.length !== 6 || !/^\d+$/.test(otp)) {
-        showMessage('Please enter a valid 6-digit OTP.', 'error');
+        showMessage('Please enter a valid 6-digit verification code.', 'error');
         document.getElementById('otp').focus();
         return;
     }
     
-    setButtonLoading('verifyBtn', true);
-    showMessage('Verifying OTP...', 'info');
-
+    const btn = document.getElementById('verifyBtn');
+    btn.textContent = 'VERIFYING...';
+    btn.disabled = true;
+    showMessage('Verifying...', 'info');
+    
     const formData = new URLSearchParams();
-    formData.append('phone', phone);
+    formData.append('action', 'verify');
+    formData.append('input_type', currentIdentifierType);
+    formData.append('identifier', identifier);
     formData.append('otp', otp);
-
+    
     fetch('verify_otp.php', {
         method: 'POST',
-        headers: { 
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'X-Requested-With': 'XMLHttpRequest'
-        },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: formData.toString()
     })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        return response.json();
-    })
+    .then(response => response.json())
     .then(data => {
-        setButtonLoading('verifyBtn', false);
+        btn.textContent = 'VERIFY & REGISTER →';
+        btn.disabled = false;
         
         if (data.success) {
             showMessage('Registration successful! Redirecting to dashboard...', 'success');
@@ -1061,95 +1141,42 @@ function verifyOTP() {
         }
     })
     .catch(error => {
-        setButtonLoading('verifyBtn', false);
+        btn.textContent = 'VERIFY & REGISTER →';
+        btn.disabled = false;
         console.error('Error:', error);
         showMessage('Verification error. Please try again.', 'error');
     });
 }
 
-// Back to phone input
-function backToPhone() {
-    const otpSection = document.getElementById('otp-section');
-    const registerStep = document.getElementById('register-step');
-    
-    otpSection.style.display = 'none';
-    registerStep.style.display = 'block';
-    
-    // Clear OTP input
+function backToIdentifier() {
+    document.getElementById('otp-section').style.display = 'none';
+    document.getElementById('register-step').style.display = 'block';
     document.getElementById('otp').value = '';
-    
-    // Clear message
+    document.getElementById('otp-display').style.display = 'none';
     document.getElementById('message').textContent = '';
-    document.getElementById('message').className = 'message';
-    
-    // Clear resend timer
-    if (resendTimerInterval) {
-        clearInterval(resendTimerInterval);
-        resendTimerInterval = null;
-    }
-    
-    // Clear stored phone
-    sessionStorage.removeItem('register_phone');
-    
-    // Focus on phone input
-    document.getElementById('phone').focus();
+    if (resendTimerInterval) clearInterval(resendTimerInterval);
 }
 
 // Enter key handlers
-document.getElementById('phone')?.addEventListener('keypress', function(e) {
-    if (e.key === 'Enter') {
-        e.preventDefault();
-        sendOTP();
-    }
+document.getElementById('identifier')?.addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') sendOTP();
 });
-
 document.getElementById('otp')?.addEventListener('keypress', function(e) {
-    if (e.key === 'Enter') {
-        e.preventDefault();
-        verifyOTP();
+    if (e.key === 'Enter') verifyOTP();
+});
+
+// Auto-format phone input
+document.getElementById('identifier')?.addEventListener('input', function(e) {
+    if (currentIdentifierType === 'phone') {
+        this.value = this.value.replace(/\D/g, '').slice(0, localLength);
     }
 });
 
-// Auto-format phone input (digits only)
-document.getElementById('phone')?.addEventListener('input', function(e) {
-    this.value = this.value.replace(/\D/g, '').slice(0, <?= $localLength ?>);
-});
-
-// OTP input - numbers only
-document.getElementById('otp')?.addEventListener('input', function(e) {
-    this.value = this.value.replace(/\D/g, '').slice(0, 6);
-});
-
-// Prevent form submission on enter in OTP field
-document.getElementById('otp')?.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') {
-        e.preventDefault();
-        verifyOTP();
-    }
-});
-
-// Check if returning from OTP verification
+// Focus on load
 window.addEventListener('load', function() {
-    // Focus on phone input by default
-    document.getElementById('phone')?.focus();
-    
-    // Clear any stored data on page load
-    sessionStorage.removeItem('register_phone');
+    document.getElementById('identifier')?.focus();
+    updateFormForIdentifierType('phone');
 });
-
-// Add rate limiting for button clicks
-let lastOTPSend = 0;
-const originalSendOTP = sendOTP;
-window.sendOTP = function() {
-    const now = Date.now();
-    if (now - lastOTPSend < 30000) { // 30 second cooldown
-        const secondsLeft = Math.ceil((30000 - (now - lastOTPSend)) / 1000);
-        showMessage(`Please wait ${secondsLeft} seconds before requesting another OTP.`, 'error');
-        return;
-    }
-    lastOTPSend = now;
-    originalSendOTP();
-};
 </script>
 </body>
 </html>
