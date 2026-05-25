@@ -25,9 +25,16 @@ class SmsGatewayClient
     {
         $this->db = $db;
         $this->config = $config;
-        $this->apiUrl = $config['api_url'] ?? getenv('SMS_API_URL');
-        $this->apiKey = $config['api_key'] ?? getenv('SMS_API_KEY');
-        $this->senderId = $config['sender_id'] ?? getenv('SMS_SENDER_ID') ?? 'VOUCHMORPH';
+        
+        // FIX: Convert false to null for string type properties
+        $apiUrl = $config['api_url'] ?? getenv('SMS_API_URL');
+        $this->apiUrl = ($apiUrl === false) ? null : (string)$apiUrl;
+        
+        $apiKey = $config['api_key'] ?? getenv('SMS_API_KEY');
+        $this->apiKey = ($apiKey === false) ? null : (string)$apiKey;
+        
+        $senderId = $config['sender_id'] ?? getenv('SMS_SENDER_ID') ?? 'VOUCHMORPH';
+        $this->senderId = ($senderId === false) ? 'VOUCHMORPH' : (string)$senderId;
     }
     
     /**
