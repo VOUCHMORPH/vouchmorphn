@@ -1,13 +1,10 @@
 <?php
-/**
- * Complete ForexService with Profit Model
- * 
- * VouchMorph's FX Revenue Model:
- * 1. Partner with banks to get wholesale rates
- * 2. Mark up rates for clients
- * 3. Keep the spread as revenue
- * 4. Split revenue with partners (revenue share)
- */
+declare(strict_types=1);
+
+namespace Domain\Services;  // This should match
+
+use PDO;
+
 class ForexService
 {
     // ... existing code ...
