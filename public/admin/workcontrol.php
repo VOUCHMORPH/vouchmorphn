@@ -37,8 +37,7 @@ $dbConfig['type'] = 'pgsql';
 $db = DBConnection::getInstance($dbConfig);
 
 // Get real data from database
-$users = $db->query("SELECT user_id, phone, email, full_name, created_at FROM users WHERE deleted_at IS NULL LIMIT 10")->fetchAll();
-$transactions = $db->query("SELECT swap_id, user_id, amount, status, created_at FROM swap_requests ORDER BY created_at DESC LIMIT 20")->fetchAll();
+$users = $db->query("SELECT user_id, phone, email, full_name, created_at FROM users LIMIT 10")->fetchAll();
 $admins = $db->query("SELECT admin_id, username, email, role_id, country_code FROM admins WHERE deleted_at IS NULL")->fetchAll();
 $participants = $config['participants'] ?? [];
 $countryCode = $config['country_code'] ?? 'BW';
