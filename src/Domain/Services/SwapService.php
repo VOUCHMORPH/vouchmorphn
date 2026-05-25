@@ -3418,7 +3418,7 @@ class SwapService
             $errorMsg = 'Bank communication failed';
             if (isset($result['curl_error']) && !empty($result['curl_error'])) {
                 $errorMsg .= ': ' . $result['curl_error'];
-            } elseif (isset$result['status_code'])) {
+            } elseif (isset($result['status_code'])) {
                 $errorMsg .= ': HTTP ' . $result['status_code'];
             }
             throw new RuntimeException("Deposit failed: " . $errorMsg);
