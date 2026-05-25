@@ -20,6 +20,11 @@
                 "cashout_fee_earned_at": "cashout_completion",
                 "description": "Generate code fee earned immediately when code is generated. Cashout fee earned only when cashout is successfully completed."
             },
+            },
+            "retry_fee": {
+                "generate_code_fee": 0.45,
+                "description": "On retries, only generate code fee is charged"
+            },
             "swap_on_swap": {
                 "free_first": true,
                 "client_pays": 0,
