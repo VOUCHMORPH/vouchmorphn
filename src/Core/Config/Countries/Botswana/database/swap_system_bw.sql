@@ -4075,3 +4075,725 @@ CREATE INDEX IF NOT EXISTS idx_national_id ON users(national_id);
 CREATE INDEX IF NOT EXISTS idx_drivers_license ON users(drivers_license);
 CREATE INDEX IF NOT EXISTS idx_passport ON users(passport);
 
+
+
+CREATE TABLE IF NOT EXISTS organizations (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    tax_id VARCHAR(50),
+    registration_number VARCHAR(100),
+    country_code CHAR(2) DEFAULT 'BW',
+    default_currency VARCHAR(3) DEFAULT 'BWP',
+    status VARCHAR(20) DEFAULT 'ACTIVE',
+    api_key VARCHAR(255),
+    webhook_url VARCHAR(500),
+    webhook_events JSON,
+    timezone VARCHAR(50) DEFAULT 'Africa/Gaborone',
+    logo_url VARCHAR(500),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS organization_users (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    role VARCHAR(50) NOT NULL DEFAULT 'user',
+    permissions JSON,
+    is_active BOOLEAN DEFAULT TRUE,
+    invited_by BIGINT,
+    invited_at TIMESTAMP,
+    accepted_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(organization_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS organization_sources (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    source_name VARCHAR(200) NOT NULL,
+    source_type VARCHAR(50) NOT NULL,
+    provider VARCHAR(100) NOT NULL,
+    account_identifier VARCHAR(255) NOT NULL,
+    currency VARCHAR(3) DEFAULT 'BWP',
+    balance NUMERIC(18,2) DEFAULT 0,
+    is_primary BOOLEAN DEFAULT FALSE,
+    status VARCHAR(20) DEFAULT 'ACTIVE',
+    metadata JSONB,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS organization_beneficiaries (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    external_id VARCHAR(100),
+    national_id VARCHAR(50),
+    passport_number VARCHAR(50),
+    full_name VARCHAR(200) NOT NULL,
+    first_name VARCHAR(100),
+    last_name VARCHAR(100),
+    phone VARCHAR(20),
+    email VARCHAR(255),
+    account_number VARCHAR(50),
+    bank_code VARCHAR(20),
+    bank_name VARCHAR(100),
+    wallet_provider VARCHAR(50),
+    wallet_id VARCHAR(100),
+    card_number VARCHAR(50),
+    card_expiry DATE,
+    address TEXT,
+    city VARCHAR(100),
+    region VARCHAR(100),
+    country_code CHAR(2) DEFAULT 'BW',
+    currency VARCHAR(3),
+    preferred_destination_type VARCHAR(20),
+    is_active BOOLEAN DEFAULT TRUE,
+    tags JSON,
+    metadata JSONB,
+    verified_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS import_batches (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    batch_reference VARCHAR(100) UNIQUE NOT NULL,
+    batch_name VARCHAR(200),
+    original_filename VARCHAR(255),
+    file_size INT,
+    file_hash VARCHAR(64),
+    source_format VARCHAR(20),
+    total_rows INT DEFAULT 0,
+    valid_rows INT DEFAULT 0,
+    warning_rows INT DEFAULT 0,
+    invalid_rows INT DEFAULT 0,
+    total_amount NUMERIC(18,2) DEFAULT 0,
+    currency VARCHAR(3) DEFAULT 'BWP',
+    source_type VARCHAR(50),
+    source_id BIGINT REFERENCES organization_sources(id),
+    import_mapping JSON,
+    payment_mode VARCHAR(20) DEFAULT 'MANUAL',
+    scheduled_date DATE,
+    requires_approval BOOLEAN DEFAULT TRUE,
+    approved_by BIGINT,
+    approved_at TIMESTAMP,
+    successful_count INT DEFAULT 0,
+    failed_count INT DEFAULT 0,
+    pending_count INT DEFAULT 0,
+    rejection_reason TEXT,
+    status VARCHAR(30) DEFAULT 'DRAFT',
+    execution_mode VARCHAR(20) DEFAULT 'ONE_SOURCE_MANY_DEST',
+    uploaded_by BIGINT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    completed_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS import_rows (
+    id BIGSERIAL PRIMARY KEY,
+    batch_id BIGINT REFERENCES import_batches(id) ON DELETE CASCADE,
+    row_number INT NOT NULL,
+    raw_data JSON,
+    mapped_data JSON,
+    recipient_name VARCHAR(200),
+    recipient_phone VARCHAR(20),
+    recipient_email VARCHAR(255),
+    recipient_national_id VARCHAR(50),
+    recipient_account VARCHAR(50),
+    recipient_bank_code VARCHAR(20),
+    recipient_wallet_id VARCHAR(100),
+    amount NUMERIC(18,2) DEFAULT 0,
+    currency VARCHAR(3) DEFAULT 'BWP',
+    destination_type VARCHAR(20),
+    destination_provider VARCHAR(100),
+    destination_value VARCHAR(255),
+    payment_reference VARCHAR(100),
+    payment_purpose VARCHAR(200),
+    country_code CHAR(2) DEFAULT 'BW',
+    validation_status VARCHAR(20) DEFAULT 'PENDING',
+    validation_errors JSON,
+    validation_warnings JSON,
+    is_duplicate BOOLEAN DEFAULT FALSE,
+    duplicate_of BIGINT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS column_mapping_templates (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    template_name VARCHAR(100) NOT NULL,
+    description TEXT,
+    source_format VARCHAR(20),
+    column_mapping JSON NOT NULL,
+    skip_rows INT DEFAULT 0,
+    header_row INT DEFAULT 1,
+    delimiter VARCHAR(5) DEFAULT ',',
+    encoding VARCHAR(20) DEFAULT 'UTF-8',
+    is_default BOOLEAN DEFAULT FALSE,
+    created_by BIGINT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS payment_instructions (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    batch_id BIGINT REFERENCES import_batches(id) ON DELETE CASCADE,
+    import_row_id BIGINT REFERENCES import_rows(id),
+    beneficiary_id BIGINT REFERENCES organization_beneficiaries(id),
+    source_type VARCHAR(50),
+    source_id BIGINT REFERENCES organization_sources(id),
+    source_identifier VARCHAR(255),
+    destination_type VARCHAR(20),
+    destination_provider VARCHAR(100),
+    destination_value VARCHAR(255),
+    recipient_name VARCHAR(200),
+    recipient_phone VARCHAR(20),
+    recipient_email VARCHAR(255),
+    amount NUMERIC(18,2) NOT NULL,
+    currency VARCHAR(3) NOT NULL,
+    gross_amount NUMERIC(18,2),
+    fee_amount NUMERIC(10,2) DEFAULT 0,
+    net_amount NUMERIC(18,2),
+    fx_rate NUMERIC(10,6),
+    fx_quote_id VARCHAR(100),
+    swap_reference VARCHAR(100),
+    status VARCHAR(30) DEFAULT 'PENDING',
+    failure_reason TEXT,
+    retry_count INT DEFAULT 0,
+    max_retries INT DEFAULT 3,
+    reserved_at TIMESTAMP,
+    executed_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS batch_execution_summaries (
+    id BIGSERIAL PRIMARY KEY,
+    batch_id BIGINT REFERENCES import_batches(id) ON DELETE CASCADE,
+    total_instructions INT,
+    successful INT,
+    failed INT,
+    pending INT,
+    total_amount_sent NUMERIC(18,2),
+    total_fees NUMERIC(18,2),
+    total_fx_applied NUMERIC(18,2),
+    execution_time_seconds INT,
+    settlement_reference VARCHAR(100),
+    reconciliation_status VARCHAR(20) DEFAULT 'PENDING',
+    reconciliation_report JSON,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS sms_logs (
+    id BIGSERIAL PRIMARY KEY,
+    phone_number VARCHAR(20) NOT NULL,
+    message TEXT,
+    code_sent VARCHAR(10),
+    amount NUMERIC(12,2),
+    status VARCHAR(20) DEFAULT 'PENDING',
+    message_id VARCHAR(100),
+    error_message TEXT,
+    delivery_report JSON,
+    sent_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS organization_audit_logs (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id BIGINT REFERENCES organization_users(id),
+    action VARCHAR(100) NOT NULL,
+    entity_type VARCHAR(50),
+    entity_id BIGINT,
+    old_values JSON,
+    new_values JSON,
+    ip_address INET,
+    user_agent TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_organizations_status ON organizations(status);
+CREATE INDEX IF NOT EXISTS idx_organizations_country ON organizations(country_code);
+
+
+CREATE INDEX IF NOT EXISTS idx_org_users_org ON organization_users(organization_id);
+CREATE INDEX IF NOT EXISTS idx_org_users_user ON organization_users(user_id);
+CREATE INDEX IF NOT EXISTS idx_org_users_role ON organization_users(role);
+
+
+CREATE INDEX IF NOT EXISTS idx_org_sources_org ON organization_sources(organization_id);
+CREATE INDEX IF NOT EXISTS idx_org_sources_status ON organization_sources(status);
+CREATE INDEX IF NOT EXISTS idx_org_sources_primary ON organization_sources(is_primary);
+
+
+CREATE INDEX IF NOT EXISTS idx_beneficiaries_org ON organization_beneficiaries(organization_id);
+CREATE INDEX IF NOT EXISTS idx_beneficiaries_phone ON organization_beneficiaries(phone);
+CREATE INDEX IF NOT EXISTS idx_beneficiaries_national_id ON organization_beneficiaries(national_id);
+CREATE INDEX IF NOT EXISTS idx_beneficiaries_account ON organization_beneficiaries(account_number);
+
+
+CREATE INDEX IF NOT EXISTS idx_batches_org ON import_batches(organization_id);
+CREATE INDEX IF NOT EXISTS idx_batches_status ON import_batches(status);
+CREATE INDEX IF NOT EXISTS idx_batches_reference ON import_batches(batch_reference);
+CREATE INDEX IF NOT EXISTS idx_batches_created ON import_batches(created_at);
+CREATE INDEX IF NOT EXISTS idx_batches_org_status ON import_batches(organization_id, status);
+CREATE INDEX IF NOT EXISTS idx_rows_batch ON import_rows(batch_id);
+CREATE INDEX IF NOT EXISTS idx_rows_status ON import_rows(validation_status);
+CREATE INDEX IF NOT EXISTS idx_rows_phone ON import_rows(recipient_phone);
+CREATE INDEX IF NOT EXISTS idx_rows_national_id ON import_rows(recipient_national_id);
+
+
+CREATE INDEX IF NOT EXISTS idx_mappings_org ON column_mapping_templates(organization_id);
+CREATE INDEX IF NOT EXISTS idx_mappings_default ON column_mapping_templates(is_default);
+
+CREATE INDEX IF NOT EXISTS idx_payments_batch 
+ON payment_instructions(batch_id);
+
+CREATE INDEX IF NOT EXISTS idx_payments_org 
+ON payment_instructions(organization_id);
+
+CREATE INDEX IF NOT EXISTS idx_payments_status 
+ON payment_instructions(status);
+
+CREATE INDEX IF NOT EXISTS idx_payments_swap 
+ON payment_instructions(swap_reference);
+
+CREATE INDEX IF NOT EXISTS idx_payments_org_status 
+ON payment_instructions(organization_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_payments_batch_status 
+ON payment_instructions(batch_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_exec_batch
+ON batch_execution_summaries(batch_id);
+
+CREATE INDEX IF NOT EXISTS idx_exec_reconciliation
+ON batch_execution_summaries(reconciliation_status);
+
+CREATE INDEX IF NOT EXISTS idx_sms_logs_phone ON sms_logs(phone_number);
+CREATE INDEX IF NOT EXISTS idx_sms_logs_status ON sms_logs(status);
+CREATE INDEX IF NOT EXISTS idx_sms_logs_created ON sms_logs(created_at);
+
+
+CREATE INDEX IF NOT EXISTS idx_audit_org
+ON organization_audit_logs(organization_id);
+
+CREATE INDEX IF NOT EXISTS idx_audit_entity
+ON organization_audit_logs(entity_type, entity_id);
+
+CREATE INDEX IF NOT EXISTS idx_audit_action
+ON organization_audit_logs(action);
+
+CREATE INDEX IF NOT EXISTS idx_audit_created
+ON organization_audit_logs(created_at);
+
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+DROP TRIGGER IF EXISTS update_organizations_updated_at ON organizations;
+CREATE TRIGGER update_organizations_updated_at
+    BEFORE UPDATE ON organizations
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_organization_users_updated_at ON organization_users;
+CREATE TRIGGER update_organization_users_updated_at
+    BEFORE UPDATE ON organization_users
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_organization_sources_updated_at ON organization_sources;
+CREATE TRIGGER update_organization_sources_updated_at
+    BEFORE UPDATE ON organization_sources
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_organization_beneficiaries_updated_at ON organization_beneficiaries;
+CREATE TRIGGER update_organization_beneficiaries_updated_at
+    BEFORE UPDATE ON organization_beneficiaries
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_import_batches_updated_at ON import_batches;
+CREATE TRIGGER update_import_batches_updated_at
+    BEFORE UPDATE ON import_batches
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_import_rows_updated_at ON import_rows;
+CREATE TRIGGER update_import_rows_updated_at
+    BEFORE UPDATE ON import_rows
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_column_mapping_templates_updated_at ON column_mapping_templates;
+CREATE TRIGGER update_column_mapping_templates_updated_at
+    BEFORE UPDATE ON column_mapping_templates
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_payment_instructions_updated_at ON payment_instructions;
+CREATE TRIGGER update_payment_instructions_updated_at
+    BEFORE UPDATE ON payment_instructions
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+
+ALTER TABLE import_batches
+DROP CONSTRAINT IF EXISTS check_batch_status;
+
+ALTER TABLE import_batches DROP CONSTRAINT IF EXISTS check_batch_status;
+ALTER TABLE payment_instructions DROP CONSTRAINT IF EXISTS check_payment_status;
+ALTER TABLE organization_users DROP CONSTRAINT IF EXISTS check_user_role;
+
+
+-- =====================================================
+-- VOUCHMORPH ENTERPRISE - COMPLETE DATABASE SCHEMA
+-- =====================================================
+
+-- 1. Organizations (tenants)
+CREATE TABLE IF NOT EXISTS organizations (
+    id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    tax_id VARCHAR(50),
+    registration_number VARCHAR(100),
+    country_code CHAR(2) DEFAULT 'BW',
+    default_currency VARCHAR(3) DEFAULT 'BWP',
+    status VARCHAR(20) DEFAULT 'ACTIVE',
+    api_key VARCHAR(255),
+    webhook_url VARCHAR(500),
+    webhook_events JSON,
+    timezone VARCHAR(50) DEFAULT 'Africa/Gaborone',
+    logo_url VARCHAR(500),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 2. Organization users (links to existing users table)
+CREATE TABLE IF NOT EXISTS organization_users (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    role VARCHAR(50) NOT NULL DEFAULT 'user',
+    permissions JSON,
+    is_active BOOLEAN DEFAULT TRUE,
+    invited_by BIGINT,
+    invited_at TIMESTAMP,
+    accepted_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(organization_id, user_id)
+);
+
+-- 3. Source accounts (what the organization owns/spends from)
+CREATE TABLE IF NOT EXISTS organization_sources (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    source_name VARCHAR(200) NOT NULL,
+    source_type VARCHAR(50) NOT NULL,
+    provider VARCHAR(100) NOT NULL,
+    account_identifier VARCHAR(255) NOT NULL,
+    currency VARCHAR(3) DEFAULT 'BWP',
+    balance NUMERIC(18,2) DEFAULT 0,
+    is_primary BOOLEAN DEFAULT FALSE,
+    status VARCHAR(20) DEFAULT 'ACTIVE',
+    metadata JSONB,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 4. Beneficiary master table (reusable recipients)
+CREATE TABLE IF NOT EXISTS organization_beneficiaries (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    external_id VARCHAR(100),
+    national_id VARCHAR(50),
+    passport_number VARCHAR(50),
+    full_name VARCHAR(200) NOT NULL,
+    first_name VARCHAR(100),
+    last_name VARCHAR(100),
+    phone VARCHAR(20),
+    email VARCHAR(255),
+    account_number VARCHAR(50),
+    bank_code VARCHAR(20),
+    bank_name VARCHAR(100),
+    wallet_provider VARCHAR(50),
+    wallet_id VARCHAR(100),
+    card_number VARCHAR(50),
+    card_expiry DATE,
+    address TEXT,
+    city VARCHAR(100),
+    region VARCHAR(100),
+    country_code CHAR(2) DEFAULT 'BW',
+    currency VARCHAR(3),
+    preferred_destination_type VARCHAR(20),
+    is_active BOOLEAN DEFAULT TRUE,
+    tags JSON,
+    metadata JSONB,
+    verified_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 5. Import batches (the file uploads)
+CREATE TABLE IF NOT EXISTS import_batches (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    batch_reference VARCHAR(100) UNIQUE NOT NULL,
+    batch_name VARCHAR(200),
+    original_filename VARCHAR(255),
+    file_size INT,
+    file_hash VARCHAR(64),
+    source_format VARCHAR(20),
+    total_rows INT DEFAULT 0,
+    valid_rows INT DEFAULT 0,
+    warning_rows INT DEFAULT 0,
+    invalid_rows INT DEFAULT 0,
+    total_amount NUMERIC(18,2) DEFAULT 0,
+    currency VARCHAR(3) DEFAULT 'BWP',
+    source_type VARCHAR(50),
+    source_id BIGINT REFERENCES organization_sources(id),
+    import_mapping JSON,
+    payment_mode VARCHAR(20) DEFAULT 'MANUAL',
+    scheduled_date DATE,
+    requires_approval BOOLEAN DEFAULT TRUE,
+    approved_by BIGINT,
+    approved_at TIMESTAMP,
+    successful_count INT DEFAULT 0,
+    failed_count INT DEFAULT 0,
+    pending_count INT DEFAULT 0,
+    rejection_reason TEXT,
+    status VARCHAR(30) DEFAULT 'DRAFT',
+    execution_mode VARCHAR(20) DEFAULT 'ONE_SOURCE_MANY_DEST',
+    uploaded_by BIGINT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    completed_at TIMESTAMP
+);
+
+-- 6. Import rows (staging before transformation)
+CREATE TABLE IF NOT EXISTS import_rows (
+    id BIGSERIAL PRIMARY KEY,
+    batch_id BIGINT REFERENCES import_batches(id) ON DELETE CASCADE,
+    row_number INT NOT NULL,
+    raw_data JSON,
+    mapped_data JSON,
+    recipient_name VARCHAR(200),
+    recipient_phone VARCHAR(20),
+    recipient_email VARCHAR(255),
+    recipient_national_id VARCHAR(50),
+    recipient_account VARCHAR(50),
+    recipient_bank_code VARCHAR(20),
+    recipient_wallet_id VARCHAR(100),
+    amount NUMERIC(18,2) DEFAULT 0,
+    currency VARCHAR(3) DEFAULT 'BWP',
+    destination_type VARCHAR(20),
+    destination_provider VARCHAR(100),
+    destination_value VARCHAR(255),
+    payment_reference VARCHAR(100),
+    payment_purpose VARCHAR(200),
+    country_code CHAR(2) DEFAULT 'BW',
+    validation_status VARCHAR(20) DEFAULT 'PENDING',
+    validation_errors JSON,
+    validation_warnings JSON,
+    is_duplicate BOOLEAN DEFAULT FALSE,
+    duplicate_of BIGINT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 7. Column mapping templates (reusable)
+CREATE TABLE IF NOT EXISTS column_mapping_templates (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    template_name VARCHAR(100) NOT NULL,
+    description TEXT,
+    source_format VARCHAR(20),
+    column_mapping JSON NOT NULL,
+    skip_rows INT DEFAULT 0,
+    header_row INT DEFAULT 1,
+    delimiter VARCHAR(5) DEFAULT ',',
+    encoding VARCHAR(20) DEFAULT 'UTF-8',
+    is_default BOOLEAN DEFAULT FALSE,
+    created_by BIGINT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 8. Payment instructions (what gets sent to SwapService)
+CREATE TABLE IF NOT EXISTS payment_instructions (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    batch_id BIGINT REFERENCES import_batches(id) ON DELETE CASCADE,
+    import_row_id BIGINT REFERENCES import_rows(id),
+    beneficiary_id BIGINT REFERENCES organization_beneficiaries(id),
+    source_type VARCHAR(50),
+    source_id BIGINT REFERENCES organization_sources(id),
+    source_identifier VARCHAR(255),
+    destination_type VARCHAR(20),
+    destination_provider VARCHAR(100),
+    destination_value VARCHAR(255),
+    recipient_name VARCHAR(200),
+    recipient_phone VARCHAR(20),
+    recipient_email VARCHAR(255),
+    amount NUMERIC(18,2) NOT NULL,
+    currency VARCHAR(3) NOT NULL,
+    gross_amount NUMERIC(18,2),
+    fee_amount NUMERIC(10,2) DEFAULT 0,
+    net_amount NUMERIC(18,2),
+    fx_rate NUMERIC(10,6),
+    fx_quote_id VARCHAR(100),
+    swap_reference VARCHAR(100),
+    status VARCHAR(30) DEFAULT 'PENDING',
+    failure_reason TEXT,
+    retry_count INT DEFAULT 0,
+    max_retries INT DEFAULT 3,
+    reserved_at TIMESTAMP,
+    executed_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 9. Batch execution summary (for reporting)
+CREATE TABLE IF NOT EXISTS batch_execution_summaries (
+    id BIGSERIAL PRIMARY KEY,
+    batch_id BIGINT REFERENCES import_batches(id) ON DELETE CASCADE,
+    total_instructions INT,
+    successful INT,
+    failed INT,
+    pending INT,
+    total_amount_sent NUMERIC(18,2),
+    total_fees NUMERIC(18,2),
+    total_fx_applied NUMERIC(18,2),
+    execution_time_seconds INT,
+    settlement_reference VARCHAR(100),
+    reconciliation_status VARCHAR(20) DEFAULT 'PENDING',
+    reconciliation_report JSON,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 10. SMS logs (from SmsNotificationService)
+CREATE TABLE IF NOT EXISTS sms_logs (
+    id BIGSERIAL PRIMARY KEY,
+    phone_number VARCHAR(20) NOT NULL,
+    message TEXT,
+    code_sent VARCHAR(10),
+    amount NUMERIC(12,2),
+    status VARCHAR(20) DEFAULT 'PENDING',
+    message_id VARCHAR(100),
+    error_message TEXT,
+    delivery_report JSON,
+    sent_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 11. Organization audit logs (everything logged)
+CREATE TABLE IF NOT EXISTS organization_audit_logs (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id BIGINT REFERENCES organization_users(id),
+    action VARCHAR(100) NOT NULL,
+    entity_type VARCHAR(50),
+    entity_id BIGINT,
+    old_values JSON,
+    new_values JSON,
+    ip_address INET,
+    user_agent TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- =====================================================
+-- INDEXES FOR PERFORMANCE (NO LIMIT CLAUSE)
+-- =====================================================
+
+CREATE INDEX IF NOT EXISTS idx_organizations_status ON organizations(status);
+CREATE INDEX IF NOT EXISTS idx_organizations_country ON organizations(country_code);
+
+CREATE INDEX IF NOT EXISTS idx_org_users_org ON organization_users(organization_id);
+CREATE INDEX IF NOT EXISTS idx_org_users_user ON organization_users(user_id);
+CREATE INDEX IF NOT EXISTS idx_org_users_role ON organization_users(role);
+
+CREATE INDEX IF NOT EXISTS idx_org_sources_org ON organization_sources(organization_id);
+CREATE INDEX IF NOT EXISTS idx_org_sources_status ON organization_sources(status);
+CREATE INDEX IF NOT EXISTS idx_org_sources_primary ON organization_sources(is_primary);
+
+CREATE INDEX IF NOT EXISTS idx_beneficiaries_org ON organization_beneficiaries(organization_id);
+CREATE INDEX IF NOT EXISTS idx_beneficiaries_phone ON organization_beneficiaries(phone);
+CREATE INDEX IF NOT EXISTS idx_beneficiaries_national_id ON organization_beneficiaries(national_id);
+CREATE INDEX IF NOT EXISTS idx_beneficiaries_account ON organization_beneficiaries(account_number);
+
+CREATE INDEX IF NOT EXISTS idx_batches_org ON import_batches(organization_id);
+CREATE INDEX IF NOT EXISTS idx_batches_status ON import_batches(status);
+CREATE INDEX IF NOT EXISTS idx_batches_reference ON import_batches(batch_reference);
+CREATE INDEX IF NOT EXISTS idx_batches_created ON import_batches(created_at);
+CREATE INDEX IF NOT EXISTS idx_batches_org_status ON import_batches(organization_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_rows_batch ON import_rows(batch_id);
+CREATE INDEX IF NOT EXISTS idx_rows_status ON import_rows(validation_status);
+CREATE INDEX IF NOT EXISTS idx_rows_phone ON import_rows(recipient_phone);
+CREATE INDEX IF NOT EXISTS idx_rows_national_id ON import_rows(recipient_national_id);
+
+CREATE INDEX IF NOT EXISTS idx_mappings_org ON column_mapping_templates(organization_id);
+CREATE INDEX IF NOT EXISTS idx_mappings_default ON column_mapping_templates(is_default);
+
+CREATE INDEX IF NOT EXISTS idx_payments_batch ON payment_instructions(batch_id);
+CREATE INDEX IF NOT EXISTS idx_payments_org ON payment_instructions(organization_id);
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payment_instructions(status);
+CREATE INDEX IF NOT EXISTS idx_payments_swap ON payment_instructions(swap_reference);
+CREATE INDEX IF NOT EXISTS idx_payments_org_status ON payment_instructions(organization_id, status);
+CREATE INDEX IF NOT EXISTS idx_payments_batch_status ON payment_instructions(batch_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_exec_batch ON batch_execution_summaries(batch_id);
+CREATE INDEX IF NOT EXISTS idx_exec_reconciliation ON batch_execution_summaries(reconciliation_status);
+
+CREATE INDEX IF NOT EXISTS idx_sms_logs_phone ON sms_logs(phone_number);
+CREATE INDEX IF NOT EXISTS idx_sms_logs_status ON sms_logs(status);
+CREATE INDEX IF NOT EXISTS idx_sms_logs_created ON sms_logs(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_audit_org ON organization_audit_logs(organization_id);
+CREATE INDEX IF NOT EXISTS idx_audit_entity ON organization_audit_logs(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON organization_audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON organization_audit_logs(created_at);
+
+-- =====================================================
+-- INSERT DEFAULT ORGANIZATION FOR TESTING
+-- =====================================================
+
+INSERT INTO organizations (name, tax_id, status, api_key, country_code, default_currency)
+SELECT 'Government of Botswana', 'GOV-BW-001', 'ACTIVE', 'gov_test_api_key_2026', 'BW', 'BWP'
+WHERE NOT EXISTS (SELECT 1 FROM organizations WHERE name = 'Government of Botswana');
+
+INSERT INTO organization_sources (organization_id, source_name, source_type, provider, account_identifier, balance, is_primary)
+SELECT id, 'Government Treasury Main Account', 'BANK_ACCOUNT', 'ZURUBANK', 'GOV-TREASURY-001', 10000000.00, TRUE
+FROM organizations WHERE name = 'Government of Botswana'
+AND NOT EXISTS (SELECT 1 FROM organization_sources WHERE source_name = 'Government Treasury Main Account');
+
+-- =====================================================
+-- VALIDATION CONSTRAINTS
+-- =====================================================
+
+ALTER TABLE import_batches ADD CONSTRAINT IF NOT EXISTS check_batch_status CHECK (status IN (
+    'DRAFT', 'UPLOADED', 'MAPPED', 'VALIDATED', 'VALIDATED_WITH_ERRORS', 
+    'VALIDATION_FAILED', 'SOURCES_SELECTED', 'READY_FOR_APPROVAL', 
+    'APPROVED', 'REJECTED', 'PROCESSING', 'COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'
+));
+
+ALTER TABLE payment_instructions ADD CONSTRAINT IF NOT EXISTS check_payment_status CHECK (status IN (
+    'PENDING', 'RESERVED', 'PROCESSING', 'SUCCESS', 'FAILED', 'CANCELLED', 'RETRY'
+));
+
+ALTER TABLE organization_users ADD CONSTRAINT IF NOT EXISTS check_user_role CHECK (role IN (
+    'owner', 'admin', 'finance_manager', 'uploader', 'approver', 'viewer'
+));
