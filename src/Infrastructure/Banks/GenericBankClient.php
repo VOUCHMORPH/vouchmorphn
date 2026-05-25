@@ -5,15 +5,61 @@ namespace Infrastructure\Banks;
 require_once __DIR__ . '/Contracts/BankAPIInterface.php';
 
 use Infrastructure\Banks\Contracts\BankAPIInterface;
+use Infrastructure\MessageAdapters\MessageAdapterFactory;
 
 class GenericBankClient implements BankAPIInterface
 {
     protected array $config;
     protected $httpClient;
+    protected ?string $detectedFormat = null;
+    protected ?int $detectionConfidence = null;
+    protected ?string $detectionSource = null;
+    protected array $detectionDetails = [];
 
-    public function __construct(array $config)
+    public function __construct(array $config, ?array $requestPayload = null, ?array $headers = null, ?string $endpoint = null)
     {
         $this->config = $config;
+        
+        // Smart detection - determine message format without being told
+        $detection = MessageAdapterFactory::smartDetect(
+            $requestPayload ?? [],
+            $headers ?? [],
+            $endpoint,
+            $config,
+            $config['provider_code'] ?? null
+        );
+        
+        $this->detectedFormat = $detection['format'];
+        $this->detectionConfidence = $detection['confidence'];
+        $this->detectionSource = $detection['source'];
+        $this->detectionDetails = $detection['all_detections'] ?? [];
+        
+        error_log("=== GENERIC BANK CLIENT SMART DETECTION ===");
+        error_log("Bank: " . ($this->config['provider_code'] ?? 'unknown'));
+        error_log("Detected Format: {$this->detectedFormat}");
+        error_log("Confidence: {$this->detectionConfidence}%");
+        error_log("Source: {$this->detectionSource}");
+        error_log("All detections: " . json_encode($this->detectionDetails));
+    }
+    
+    public function getDetectedFormat(): ?string
+    {
+        return $this->detectedFormat;
+    }
+    
+    public function getDetectionConfidence(): ?int
+    {
+        return $this->detectionConfidence;
+    }
+    
+    public function getDetectionSource(): ?string
+    {
+        return $this->detectionSource;
+    }
+    
+    public function getDetectionDetails(): array
+    {
+        return $this->detectionDetails;
     }
 
     // ============================================================================
@@ -24,6 +70,7 @@ class GenericBankClient implements BankAPIInterface
     {
         error_log("=== GENERIC BANK CLIENT: verifyAsset ===");
         error_log("Bank: " . ($this->config['provider_code'] ?? 'unknown'));
+        error_log("Using message format: {$this->detectedFormat}");
         error_log("Original payload: " . json_encode($payload));
         return $this->send('verify_asset', $payload);
     }
@@ -31,6 +78,7 @@ class GenericBankClient implements BankAPIInterface
     public function placeHold(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: placeHold ===");
+        error_log("Using message format: {$this->detectedFormat}");
         return $this->send('place_hold', $payload);
     }
 
@@ -47,14 +95,14 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // ADD THIS NEW METHOD - debitHold (alias for debitFunds)
+    // DEBIT HOLD METHOD
     // ============================================================================
     
     public function debitHold(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: debitHold (maps to debitFunds) ===");
+        error_log("Using message format: {$this->detectedFormat}");
         
-        // Ensure we have the required fields
         if (!isset($payload['hold_reference'])) {
             error_log("ERROR: hold_reference is required for debitHold");
             return [
@@ -64,7 +112,6 @@ class GenericBankClient implements BankAPIInterface
             ];
         }
         
-        // Map to debitFunds format
         $debitPayload = [
             'reference' => $payload['reference'] ?? $payload['hold_reference'],
             'hold_reference' => $payload['hold_reference'],
@@ -135,12 +182,13 @@ class GenericBankClient implements BankAPIInterface
         error_log("=== GENERIC BANK CLIENT: transfer called ===");
         error_log("Type: " . ($type ?? 'none'));
         error_log("Action: " . ($payload['action'] ?? 'none'));
+        error_log("Using message format: {$this->detectedFormat}");
         
         $action = $payload['action'] ?? $type ?? '';
         
         switch ($action) {
             case 'GENERATE_ATM_TOKEN':
-            case 'generate_atm_code':  // FIX: ADD THIS CASE
+            case 'generate_atm_code':
                 error_log("Mapping to generateToken");
                 return $this->generateToken($payload);
                 
@@ -179,16 +227,11 @@ class GenericBankClient implements BankAPIInterface
         error_log("=== GENERIC BANK CLIENT SEND ===");
         error_log("Bank: " . ($this->config['provider_code'] ?? 'unknown'));
         error_log("Action: " . $action);
+        error_log("Message Format: {$this->detectedFormat}");
         error_log("Endpoint: " . ($endpoint ?? 'null'));
         error_log("Full URL: " . (rtrim($this->config['base_url'] ?? '', '/') . '/' . ltrim($endpoint ?? '', '/')));
 
-        // ADD THIS CRITICAL DEBUG
         error_log("🚨 FULL PAYLOAD BEING SENT TO BANK: " . json_encode($payload));
-        error_log("🚨 PHONE FIELDS IN PAYLOAD: " . 
-                  (isset($payload['ewallet_phone']) ? 'ewallet_phone=' . $payload['ewallet_phone'] : '') . ' ' .
-                  (isset($payload['wallet_phone']) ? 'wallet_phone=' . $payload['wallet_phone'] : '') . ' ' .
-                  (isset($payload['phone']) ? 'phone=' . $payload['phone'] : '') . ' ' .
-                  (isset($payload['claimant_phone']) ? 'claimant_phone=' . $payload['claimant_phone'] : ''));
         
         if (!$endpoint) {
             error_log("ERROR: No endpoint found for action: " . $action);
@@ -196,7 +239,6 @@ class GenericBankClient implements BankAPIInterface
             throw new \Exception("Endpoint {$action} not configured for " . ($this->config['provider_code'] ?? 'unknown bank'));
         }
 
-        // Construct full URL
         $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
         $endpoint = ltrim($endpoint, '/');
         $url = $baseUrl . '/' . $endpoint;
@@ -243,13 +285,14 @@ class GenericBankClient implements BankAPIInterface
             'status_code' => $httpCode,
             'data' => $decodedResponse ?? [],
             'raw_response' => $response,
-            'curl_error' => $curlError
+            'curl_error' => $curlError,
+            'detected_format' => $this->detectedFormat,
+            'detection_confidence' => $this->detectionConfidence
         ];
     }
 
     protected function getEndpoint(string $action): ?string
     {
-        // Map internal action names to endpoint keys in participants.json
         $endpointMap = [
             'verify_asset' => 'verify_asset',
             'place_hold' => 'place_hold',
@@ -264,7 +307,7 @@ class GenericBankClient implements BankAPIInterface
             'authorize' => 'place_hold',
             'transfer' => 'process_deposit',
             'reverse' => 'reverse_transaction',
-            'debit_hold' => 'debit_funds' // Map debit_hold to debit_funds endpoint
+            'debit_hold' => 'debit_funds'
         ];
 
         $endpointKey = $endpointMap[$action] ?? $action;
@@ -283,6 +326,12 @@ class GenericBankClient implements BankAPIInterface
     protected function buildHeaders(array $payload): array
     {
         $headers = ['Content-Type: application/json'];
+        
+        // Add detected format header for transparency
+        if ($this->detectedFormat) {
+            $headers[] = 'X-Detected-Format: ' . $this->detectedFormat;
+            $headers[] = 'X-Format-Confidence: ' . ($this->detectionConfidence ?? 0);
+        }
         
         if (isset($payload['reference'])) {
             $headers[] = 'X-Correlation-ID: ' . $payload['reference'];
