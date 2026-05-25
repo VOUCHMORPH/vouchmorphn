@@ -9,11 +9,17 @@ use RuntimeException;
 use Domain\Services\Settlement\HybridSettlementStrategy;
 use Infrastructure\Banks\GenericBankClient;
 use Infrastructure\SMS\SmsNotificationService;
+use Infrastructure\SMS\SmsGatewayClient;
 
+// Include required service files
 require_once __DIR__ . '/ForexService.php';
 require_once __DIR__ . '/FeeService.php';
 require_once __DIR__ . '/CardService.php';
 require_once __DIR__ . '/Settlement/HybridSettlementStrategy.php';
+
+// Include SMS files
+require_once __DIR__ . '/../../Infrastructure/SMS/SmsGatewayClient.php';
+require_once __DIR__ . '/../../Infrastructure/SMS/SmsNotificationService.php';
 
 class SwapService
 {
@@ -21,17 +27,14 @@ class SwapService
     private array $settings;
     private array $config;
     private array $participants;
-    private TokenEncryptor $encryptor;
-    private SwapStatusResolver $swapStatusResolver;
-    private string $countryCode;  // DECLARED PROPERTY (fixes deprecation)
+    private string $countryCode;
     private array $feesConfig = [];
-    private array $flowsConfig = [];
     private array $atmNotes = [];
     private array $cardConfig = [];
     private HybridSettlementStrategy $settlement;
     private ?SmsNotificationService $smsService = null;
     private ?CardService $cardService = null;
-    private ?ForexService $forexService = null;  // Make sure ForexService class exists
+    private ?ForexService $forexService = null;
     private ?array $fxContext = null;
     private ?FeeService $feeService = null;
 
@@ -60,6 +63,9 @@ class SwapService
         $this->participants = $config['participants'] ?? [];
         $this->participants = array_change_key_case($this->participants, CASE_LOWER);
         
+        // Load ATM notes
+        $this->atmNotes = $config['atm_notes'] ?? ['BWP' => [10, 20, 50, 100, 200]];
+        
         // Initialize fee service
         $this->feeService = new FeeService($config['fees'] ?? [], $config['currency'] ?? 'BWP');
         
@@ -70,11 +76,26 @@ class SwapService
         $this->forexService = new ForexService($this->swapDB, $config, $this->participants, $this->feeService);
         
         // Initialize card service
-        $this->cardService = new CardService($this->swapDB, $this->countryCode, $this->participants['vouchmorph'] ?? []);
+        $vouchmorphConfig = $this->participants['vouchmorph'] ?? [];
+        $this->cardService = new CardService($this->swapDB, $this->countryCode, $vouchmorphConfig);
         
-        // Initialize SMS if configured
-        if (isset($config['communication']['sms_gateway']['enabled']) && $config['communication']['sms_gateway']['enabled']) {
-            $this->smsService = new SmsNotificationService($this->swapDB, $config['communication']['sms_gateway']);
+        // Initialize SMS service if configured
+        try {
+            if (isset($config['communication']['sms_gateway']['enabled']) && $config['communication']['sms_gateway']['enabled']) {
+                $smsGatewayConfig = $config['communication']['sms_gateway'];
+                // Check if SmsNotificationService class exists
+                if (class_exists('Infrastructure\SMS\SmsNotificationService')) {
+                    $this->smsService = new SmsNotificationService($this->swapDB, $smsGatewayConfig);
+                    error_log("[SwapService] SMS Service initialized successfully");
+                } else {
+                    error_log("[SwapService] SmsNotificationService class not found, SMS disabled");
+                }
+            } else {
+                error_log("[SwapService] SMS service not enabled in config");
+            }
+        } catch (Exception $e) {
+            error_log("[SwapService] Failed to initialize SMS service: " . $e->getMessage());
+            $this->smsService = null;
         }
     }
 
@@ -85,10 +106,6 @@ class SwapService
         $originalSwapRef = $payload['original_swap_reference'] ?? null;
         $retryCount = $this->getRetryCount($originalSwapRef);
         
-        // Retry logic:
-        // retryCount = 0: First attempt
-        // retryCount = 1: First retry (FREE - VouchMorph pays generate code fee)
-        // retryCount >= 2: Subsequent retries (Client pays generate code fee)
         $isFirstAttempt = ($retryCount === 0);
         $isFreeRetry = ($retryCount === 1);
         $isPaidRetry = ($retryCount >= 2);
@@ -180,6 +197,11 @@ class SwapService
             // Step 10: Queue fee settlement
             $this->queueFeeSettlement($swapRef, $feeCalculation, $source['institution'], $destination['institution'], $isCashout, $isFreeRetry, $isPaidRetry, $originalSwapRef);
             
+            // Step 11: Send confirmation SMS if needed
+            if ($result && !empty($result['generated_code']) && isset($destination['cashout']['beneficiary_phone'])) {
+                $this->sendSmsConfirmation($destination['cashout']['beneficiary_phone'], $result['generated_code'], $netAmount, $destCurrency);
+            }
+            
             $this->swapDB->commit();
             
             return $this->buildResponse($swapRef, $holdResult, $result, $this->fxContext, $isFreeRetry, $isPaidRetry, $atmNotes);
@@ -188,7 +210,6 @@ class SwapService
             $this->swapDB->rollBack();
             $this->releaseHoldIfNeeded($holdResult ?? null);
             
-            // Store unearned cashout fee only on first attempt failure
             if ($isCashout && $isFirstAttempt) {
                 $this->storeUnearnedCashoutFee($swapRef, $source, $e->getMessage());
             } elseif ($isCashout && !$isFirstAttempt) {
@@ -200,11 +221,39 @@ class SwapService
     }
     
     /**
+     * Send SMS confirmation
+     */
+    private function sendSmsConfirmation(string $phoneNumber, string $code, float $amount, string $currency): void
+    {
+        if (!$this->smsService) {
+            error_log("[SwapService] SMS service not available, cannot send confirmation to {$phoneNumber}");
+            return;
+        }
+        
+        try {
+            $message = "Your VouchMorph withdrawal code is: {$code}\n";
+            $message .= "Amount: " . number_format($amount, 2) . " {$currency}\n";
+            $message .= "Valid for 24 hours.\n";
+            $message .= "Do not share this code with anyone.";
+            
+            $result = $this->smsService->sendSms($phoneNumber, $message, [
+                'priority' => 'high',
+                'reference' => 'WDL-' . uniqid(),
+                'type' => 'withdrawal_code'
+            ]);
+            
+            if ($result['success']) {
+                error_log("[SwapService] SMS sent successfully to {$phoneNumber}");
+            } else {
+                error_log("[SwapService] SMS failed to {$phoneNumber}: " . ($result['message'] ?? 'Unknown error'));
+            }
+        } catch (Exception $e) {
+            error_log("[SwapService] SMS exception: " . $e->getMessage());
+        }
+    }
+    
+    /**
      * Calculate fees with retry logic
-     * 
-     * First attempt: Client pays full fee (10.00)
-     * First retry (free): Client pays 0, VouchMorph pays generate code fee (0.45)
-     * Subsequent retries (paid): Client pays generate code fee only (0.45)
      */
     private function calculateFeesWithRetryLogic(
         float $amount,
@@ -220,36 +269,30 @@ class SwapService
     ): array {
         $transactionType = $this->getTransactionType($destination);
         
-        // Get base fee calculation
         $feeCalculation = $this->feeService->calculateAllFees(
             $amount, $transactionType, $sourceCurrency, $destCurrency,
             $this->getInstitutionCountry($sourceInstitution),
             $this->getInstitutionCountry($destinationInstitution)
         );
         
-        // For cashout with retry logic
         if ($transactionType === 'CASHOUT') {
             $feeConfig = $this->config['fees']['fees']['CASHOUT_SWAP_FEE'] ?? null;
             if ($feeConfig) {
                 $generateCodeFee = $feeConfig['retry_fee']['generate_code_fee'] ?? 0.45;
                 
                 if ($isFreeRetry) {
-                    // First retry: Client pays 0, VouchMorph pays generate code fee
                     $unearnedCashoutFee = $this->getUnearnedCashoutFee($originalSwapRef);
                     $feeCalculation['total_fees'] = 0;
                     $feeCalculation['client_pays'] = 0;
                     $feeCalculation['vouchmorph_pays_generate_code'] = $generateCodeFee;
                     $feeCalculation['unearned_fee_used'] = $unearnedCashoutFee;
                     $feeCalculation['is_free_retry'] = true;
-                    $feeCalculation['retry_type'] = 'free';
                 } elseif ($isPaidRetry) {
-                    // Subsequent retries: Client pays generate code fee only
                     $unearnedCashoutFee = $this->getUnearnedCashoutFee($originalSwapRef);
                     $feeCalculation['total_fees'] = $generateCodeFee;
                     $feeCalculation['client_pays'] = $generateCodeFee;
                     $feeCalculation['unearned_fee_used'] = $unearnedCashoutFee;
                     $feeCalculation['is_paid_retry'] = true;
-                    $feeCalculation['retry_type'] = 'paid';
                 }
             }
         }
@@ -258,14 +301,14 @@ class SwapService
     }
     
     /**
-     * Get retry count for original swap
+     * Get retry count
      */
     private function getRetryCount(?string $originalSwapRef): int
     {
         if (!$originalSwapRef) return 0;
         
         $stmt = $this->swapDB->prepare("
-            SELECT retry_count FROM cashout_retry_tracking 
+            SELECT COALESCE(retry_count, 0) FROM cashout_retry_tracking 
             WHERE original_swap_ref = :swap_ref
             ORDER BY id DESC LIMIT 1
         ");
@@ -275,14 +318,14 @@ class SwapService
     }
     
     /**
-     * Get unearned cashout fee from failed attempt
+     * Get unearned cashout fee
      */
     private function getUnearnedCashoutFee(?string $originalSwapRef): float
     {
         if (!$originalSwapRef) return 0;
         
         $stmt = $this->swapDB->prepare("
-            SELECT unearned_cashout_fee FROM cashout_retry_tracking 
+            SELECT COALESCE(unearned_cashout_fee, 0) FROM cashout_retry_tracking 
             WHERE original_swap_ref = :swap_ref AND used = false
             ORDER BY id DESC LIMIT 1
         ");
@@ -292,7 +335,7 @@ class SwapService
     }
     
     /**
-     * Store unearned cashout fee for future retry
+     * Store unearned cashout fee
      */
     private function storeUnearnedCashoutFee(string $swapRef, array $source, string $error): void
     {
@@ -322,7 +365,7 @@ class SwapService
     }
     
     /**
-     * Update retry count on failed retry attempt
+     * Update retry count
      */
     private function updateRetryCount(string $originalSwapRef, string $error): void
     {
@@ -335,7 +378,7 @@ class SwapService
     }
     
     /**
-     * Queue fee settlement - tells HybridSettlementStrategy who owes who
+     * Queue fee settlement
      */
     private function queueFeeSettlement(
         string $swapRef, 
@@ -355,11 +398,10 @@ class SwapService
         $swapLevy = $feeConfig['swap_levy'] ?? 0;
         $totalFee = $feeConfig['total_amount'] ?? ($isCashout ? 10.00 : 6.00);
         
-        // Adjust total fee based on retry status
         if ($isFreeRetry) {
-            $totalFee = 0;  // Client pays nothing
+            $totalFee = 0;
         } elseif ($isPaidRetry) {
-            $totalFee = $feeConfig['retry_fee']['generate_code_fee'] ?? 0.45;  // Client pays only generate code fee
+            $totalFee = $feeConfig['retry_fee']['generate_code_fee'] ?? 0.45;
         }
         
         $afterLevy = $totalFee - $swapLevy;
@@ -371,43 +413,33 @@ class SwapService
         
         $currency = $this->config['currency'] ?? 'BWP';
         
-        // VouchMorph gets platform share + swap levy (only on paid attempts)
-        if (($isFirstAttempt || $isPaidRetry) && ($swapLevy + $platformShare) > 0) {
+        if (($isFreeRetry || $isFirstAttempt || $isPaidRetry) && ($swapLevy + $platformShare) > 0) {
             $this->settlement->invoiceFee($swapRef, $sourceInstitution, 0, 'VOUCHMORPH_FEE', $swapLevy + $platformShare, $currency);
         }
         
-        // Source institution gets its share
         if ($sourceShare > 0) {
             $this->settlement->invoiceFee($swapRef, $sourceInstitution, 0, 'SOURCE_INSTITUTION_FEE', $sourceShare, $currency);
         }
         
-        // For cashout, handle generate code fee
         if ($isCashout && isset($feeConfig['destination_split'])) {
             $generateCodeFee = $destinationShare * ($feeConfig['destination_split']['generate_code_fee_percent'] / 100);
             $cashoutFee = $destinationShare * ($feeConfig['destination_split']['cashout_fee_percent'] / 100);
             
-            // Generate code fee - who pays?
             if ($generateCodeFee > 0) {
                 if ($isFreeRetry) {
-                    // First retry: VouchMorph pays generate code fee
                     $this->settlement->invoiceFee($swapRef, 'VOUCHMORPH', 0, 'GENERATE_CODE_FEE_PAID_BY_VM', $generateCodeFee, $currency);
                 } elseif ($isPaidRetry) {
-                    // Subsequent retries: Client pays generate code fee
                     $this->settlement->invoiceFee($swapRef, $sourceInstitution, 0, 'GENERATE_CODE_FEE_PAID_BY_CLIENT', $generateCodeFee, $currency);
                 } else {
-                    // First attempt: Destination gets generate code fee
                     $this->settlement->invoiceFee($swapRef, $destinationInstitution, 0, 'GENERATE_CODE_FEE', $generateCodeFee, $currency);
                 }
             }
             
-            // Cashout fee always comes from unearned fee (already tracked)
             if ($cashoutFee > 0 && ($isFreeRetry || $isPaidRetry)) {
                 $this->settlement->invoiceFee($swapRef, $destinationInstitution, 0, 'CASHOUT_FEE_FROM_UNEARNED', $cashoutFee, $currency);
             }
         }
     }
-    
-    // ... (rest of helper methods remain the same as before)
     
     private function getDispensableAmount(float $amount, string $currency): array
     {
@@ -559,7 +591,7 @@ class SwapService
         }
         
         $data = $result['data'] ?? [];
-        return ['verified' => true, 'currency' => $data['currency'] ?? null, 'asset_details' => $data];
+        return ['verified' => true, 'currency' => $data['currency'] ?? null];
     }
 
     private function placeHold(string $swapRef, array $source, array $participant): array
@@ -659,10 +691,6 @@ class SwapService
         
         if (!$code) {
             throw new RuntimeException("No withdrawal code received");
-        }
-        
-        if ($this->smsService && ($cashoutData['beneficiary_phone'] ?? false)) {
-            $this->smsService->send($cashoutData['beneficiary_phone'], "Your withdrawal code: {$code}\nAmount: {$netAmount} {$currency}");
         }
         
         return [
