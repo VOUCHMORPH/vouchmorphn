@@ -9,22 +9,26 @@ final class LoadCountry
     {
         $countryMeta = require __DIR__ . '/SystemCountry.php';
 
-        $country = defined('SYSTEM_COUNTRY')
+        // Get the country NAME (Botswana, Nigeria, etc.) for the directory
+        $countryName = defined('SYSTEM_COUNTRY')
             ? SYSTEM_COUNTRY
             : ($countryMeta['name'] ?? 'Botswana');
-
-        $countrySlug = defined('SYSTEM_COUNTRY_SLUG')
-            ? SYSTEM_COUNTRY_SLUG
-            : ($countryMeta['slug'] ?? strtolower($country));
         
+        // Get the country CODE (BW, NG, KE, etc.) for other uses
         $countryCode = defined('SYSTEM_COUNTRY_CODE')
             ? SYSTEM_COUNTRY_CODE
             : ($countryMeta['code'] ?? 'BW');
 
+        $countrySlug = defined('SYSTEM_COUNTRY_SLUG')
+            ? SYSTEM_COUNTRY_SLUG
+            : ($countryMeta['slug'] ?? strtolower($countryName));
+
         $projectRoot = dirname(__DIR__, 3);
         
-        // Country directory path
-        $countryDir = $projectRoot . "/src/Core/Config/Countries/{$country}";
+        // USE THE COUNTRY NAME (Botswana) not the code (BW)
+        $countryDir = $projectRoot . "/src/Core/Config/Countries/{$countryName}";
+        
+        error_log("[LoadCountry] Looking for config in: {$countryDir}");
         
         // All config files in the country directory
         $configFile       = $countryDir . "/config.php";
@@ -34,8 +38,6 @@ final class LoadCountry
         $atmNotesFile     = $countryDir . "/atm_notes.json";
         $cardsFile        = $countryDir . "/cards.json";
         $commFile         = $countryDir . "/communication.json";
-        $banksFile        = $countryDir . "/banks.json";
-        $mobileMoneyFile  = $countryDir . "/mobile_money.php";
 
         $countryConfig = [];
         
@@ -118,29 +120,11 @@ final class LoadCountry
             $countryConfig['communication'] = [];
         }
 
-        // 7. Load banks.json (optional)
-        if (file_exists($banksFile)) {
-            $banksConfig = json_decode(file_get_contents($banksFile), true);
-            if (json_last_error() === JSON_ERROR_NONE) {
-                $countryConfig['banks'] = $banksConfig;
-                error_log("[LoadCountry] Loaded banks from: {$banksFile}");
-            }
-        }
-
-        // 8. Load mobile_money.php (optional)
-        if (file_exists($mobileMoneyFile)) {
-            $mobileMoneyConfig = require $mobileMoneyFile;
-            if (is_array($mobileMoneyConfig)) {
-                $countryConfig['mobile_money'] = $mobileMoneyConfig;
-                error_log("[LoadCountry] Loaded mobile money config from: {$mobileMoneyFile}");
-            }
-        }
-
-        // 9. Database configuration
+        // 7. Database configuration
         if (file_exists($databaseFile)) {
             $dbConfig = require $databaseFile;
             $countryConfig['db']['swap'] = $dbConfig;
-            error_log("[LoadCountry] Loaded database for {$country} from: {$databaseFile}");
+            error_log("[LoadCountry] Loaded database for {$countryName} from: {$databaseFile}");
         } else {
             error_log("[LoadCountry] Database file not found: {$databaseFile}, using environment variables");
             
@@ -173,7 +157,12 @@ final class LoadCountry
             }
         }
 
-        // 10. Source providers configuration
+        // Add country code and name to config
+        $countryConfig['country_code'] = $countryCode;
+        $countryConfig['country'] = $countryName;
+        $countryConfig['currency'] = $countryConfig['currency'] ?? ($countryCode === 'BW' ? 'BWP' : 'USD');
+
+        // Source providers configuration
         $countryConfig['source_providers'] = [];
         
         if (isset($countryConfig['participants'])) {
@@ -270,7 +259,6 @@ final class LoadCountry
     }
 }
 
-// For direct inclusion
 if (!function_exists('loadCountryConfig')) {
     function loadCountryConfig(): array
     {
