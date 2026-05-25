@@ -33,17 +33,16 @@ define('SYSTEM_COUNTRY', $systemCountry);
 // Validate required configuration
 if (!isset($config['db']['swap']) || !is_array($config['db']['swap'])) {
     error_log("REGISTER ERROR: Swap database configuration missing for {$systemCountry}");
-    error_log("Available DB configs: " . print_r(array_keys($config['db'] ?? []), true));
-    die("System initialisation error: Swap database configuration missing. Please check your configuration.");
+    die("System initialisation error: Swap database configuration missing.");
 }
 
 $sourceKey = $config['db']['source_client_key'] ?? 'cazacom';
 if (!isset($config['db'][$sourceKey]) || !is_array($config['db'][$sourceKey])) {
     error_log("REGISTER ERROR: Source database configuration missing for key: {$sourceKey}");
-    die("System initialisation error: Source database configuration missing for {$sourceKey}.");
+    die("System initialisation error: Source database configuration missing.");
 }
 
-// Load required files with error checking
+// Load required files
 $requiredFiles = [
     'SessionManager' => PROJECT_ROOT . '/src/Application/Utils/SessionManager.php',
     'DBConnection' => PROJECT_ROOT . '/src/Core/Database/DBConnection.php',
@@ -84,9 +83,9 @@ $countryTimeZone = $countryConfig['timezone'] ?? 'Africa/Gaborone';
 
 // ID validation rules per country
 $idValidationRules = $countryConfig['id_validation'] ?? [
-    'national_id' => ['pattern' => '/^[0-9]{9,12}$/', 'min_length' => 9, 'max_length' => 12, 'example' => '123456789'],
-    'drivers_license' => ['pattern' => '/^[A-Z0-9]{8,15}$/i', 'min_length' => 8, 'max_length' => 15, 'example' => 'BW12345678'],
-    'passport' => ['pattern' => '/^[A-Z0-9]{6,12}$/i', 'min_length' => 6, 'max_length' => 12, 'example' => 'BN123456']
+    'national_id' => ['pattern' => '/^[0-9]{9,12}$/', 'min_length' => 9, 'max_length' => 12, 'example' => '123456789', 'label' => 'National ID'],
+    'drivers_license' => ['pattern' => '/^[A-Z0-9]{8,15}$/i', 'min_length' => 8, 'max_length' => 15, 'example' => 'BW12345678', 'label' => 'Driver\'s License'],
+    'passport' => ['pattern' => '/^[A-Z0-9]{6,12}$/i', 'min_length' => 6, 'max_length' => 12, 'example' => 'BN123456', 'label' => 'Passport']
 ];
 
 // Botswana-specific ID formats
@@ -98,162 +97,48 @@ if ($systemCountry === 'Botswana' || $systemCountry === 'BW') {
     ];
 }
 
-// Set timezone
 date_default_timezone_set($countryTimeZone);
 
 // ----------------------------------------
-// Database configuration bootstrap
+// Database configuration
 // ----------------------------------------
 $allDbConfig = $config['db'];
 $swapDbConfig = $allDbConfig['swap'];
 $sourceDbConfig = $allDbConfig[$sourceKey];
 
-// Convert for PostgreSQL if needed
-$dbDriver = $swapDbConfig['type'] ?? 'mysql';
-$isPostgres = ($dbDriver === 'pgsql');
-
-// Add connection pool settings
+// Add connection options
 $swapDbConfig['options'] = [
     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     PDO::ATTR_EMULATE_PREPARES => false,
-    PDO::ATTR_TIMEOUT => 30,
-    PDO::ATTR_PERSISTENT => false
+    PDO::ATTR_TIMEOUT => 30
 ];
 
 $sourceDbConfig['options'] = [
     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     PDO::ATTR_EMULATE_PREPARES => false,
-    PDO::ATTR_TIMEOUT => 30,
-    PDO::ATTR_PERSISTENT => false
+    PDO::ATTR_TIMEOUT => 30
 ];
 
 // ----------------------------------------
-// Database connections with retry logic
-// ----------------------------------------
-$maxRetries = 3;
-$retryDelay = 1;
-
-function connectWithRetry($config, $maxRetries, $retryDelay) {
-    $lastException = null;
-    
-    for ($i = 0; $i < $maxRetries; $i++) {
-        try {
-            $db = DBConnection::getInstance($config);
-            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-            $db->query("SELECT 1");
-            return $db;
-        } catch (Throwable $e) {
-            $lastException = $e;
-            error_log("Database connection attempt " . ($i + 1) . " failed: " . $e->getMessage());
-            if ($i < $maxRetries - 1) {
-                sleep($retryDelay);
-            }
-        }
-    }
-    
-    throw $lastException;
-}
-
-try {
-    $swapDb = connectWithRetry($swapDbConfig, $maxRetries, $retryDelay);
-    $sourceDb = connectWithRetry($sourceDbConfig, $maxRetries, $retryDelay);
-} catch (Throwable $e) {
-    error_log("REGISTER DB ERROR [{$systemCountry}]: " . $e->getMessage());
-    die("System initialisation failed: Unable to connect to database. Please try again later.");
-}
-
-// ----------------------------------------
-// Create/Update tables for multi-identifier support
+// Database connections
 // ----------------------------------------
 try {
-    // Check if we need to add identifier columns to users table
-    $columns = [];
-    try {
-        $colsResult = $swapDb->query("SELECT column_name FROM information_schema.columns WHERE table_name = 'users'");
-        while ($row = $colsResult->fetch(PDO::FETCH_ASSOC)) {
-            $columns[] = $row['column_name'];
-        }
-    } catch (Throwable $e) {
-        // MySQL fallback
-        $colsResult = $swapDb->query("SHOW COLUMNS FROM users");
-        while ($row = $colsResult->fetch(PDO::FETCH_ASSOC)) {
-            $columns[] = $row['Field'];
-        }
-    }
+    $swapDb = DBConnection::getInstance($swapDbConfig);
+    $swapDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
-    // Add missing columns for ID support
-    if (!in_array('national_id', $columns)) {
-        $swapDb->exec("ALTER TABLE users ADD COLUMN national_id VARCHAR(50) DEFAULT NULL");
-        $swapDb->exec("CREATE INDEX idx_national_id ON users(national_id)");
-    }
-    if (!in_array('drivers_license', $columns)) {
-        $swapDb->exec("ALTER TABLE users ADD COLUMN drivers_license VARCHAR(50) DEFAULT NULL");
-        $swapDb->exec("CREATE INDEX idx_drivers_license ON users(drivers_license)");
-    }
-    if (!in_array('passport', $columns)) {
-        $swapDb->exec("ALTER TABLE users ADD COLUMN passport VARCHAR(50) DEFAULT NULL");
-        $swapDb->exec("CREATE INDEX idx_passport ON users(passport)");
-    }
-    if (!in_array('id_type', $columns)) {
-        $swapDb->exec("ALTER TABLE users ADD COLUMN id_type VARCHAR(20) DEFAULT NULL");
-    }
-    if (!in_array('full_name', $columns)) {
-        $swapDb->exec("ALTER TABLE users ADD COLUMN full_name VARCHAR(255) DEFAULT NULL");
-    }
-    if (!in_array('date_of_birth', $columns)) {
-        $swapDb->exec("ALTER TABLE users ADD COLUMN date_of_birth DATE DEFAULT NULL");
-    }
-    
-    // Create OTP table if not exists (PostgreSQL compatible)
-    if ($isPostgres) {
-        $swapDb->exec("
-            CREATE TABLE IF NOT EXISTS otp_codes (
-                id SERIAL PRIMARY KEY,
-                phone VARCHAR(20),
-                national_id VARCHAR(50),
-                identifier_type VARCHAR(20),
-                code VARCHAR(10) NOT NULL,
-                expires_at TIMESTAMP NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                used SMALLINT DEFAULT 0
-            )
-        ");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_otp_identifier ON otp_codes(phone, national_id)");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_otp_expires ON otp_codes(expires_at)");
-    } else {
-        $swapDb->exec("
-            CREATE TABLE IF NOT EXISTS `otp_codes` (
-                `id` int(11) NOT NULL AUTO_INCREMENT,
-                `phone` varchar(20) DEFAULT NULL,
-                `national_id` varchar(50) DEFAULT NULL,
-                `identifier_type` varchar(20) DEFAULT NULL,
-                `code` varchar(10) NOT NULL,
-                `expires_at` datetime NOT NULL,
-                `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                `used` tinyint(1) DEFAULT '0',
-                PRIMARY KEY (`id`),
-                KEY `idx_otp_identifier` (`phone`, `national_id`),
-                KEY `expires_at` (`expires_at`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        ");
-    }
-    
-    error_log("Database tables verified/updated for {$systemCountry}");
+    $sourceDb = DBConnection::getInstance($sourceDbConfig);
+    $sourceDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (Throwable $e) {
-    error_log("Table creation/update error: " . $e->getMessage());
+    error_log("REGISTER DB ERROR: " . $e->getMessage());
+    die("System initialisation failed: Unable to connect to database.");
 }
 
 // ----------------------------------------
 // Communication configuration
 // ----------------------------------------
-$clientPartnerKey = $config['participants'][$sourceKey]['communication_key'] ?? 'CAZACOM';
-$smsProvider = $config['communication']['providers'][$clientPartnerKey] ?? null;
-
-if (!$smsProvider) {
-    error_log("SMS provider not configured for {$clientPartnerKey}");
-}
+$clientPartnerKey = 'CAZACOM';
 
 // ----------------------------------------
 // Helper functions
@@ -267,12 +152,10 @@ function normalizePhone(string $phoneInput, string $dialCode): string
     }
     
     if (str_starts_with($phoneInput, '+')) {
-        $phoneInput = '+' . preg_replace('/[^0-9]/', '', substr($phoneInput, 1));
-        return $phoneInput;
+        return '+' . preg_replace('/[^0-9]/', '', substr($phoneInput, 1));
     }
     
-    $phoneInput = ltrim($phoneInput, '0');
-    return $dialCode . $phoneInput;
+    return $dialCode . ltrim($phoneInput, '0');
 }
 
 function validateIdentifier($value, $type, $rules): array
@@ -301,18 +184,19 @@ function validateIdentifier($value, $type, $rules): array
     return ['valid' => true, 'value' => $value];
 }
 
-function sanitizeInput($input) {
-    return htmlspecialchars(strip_tags(trim($input)), ENT_QUOTES, 'UTF-8');
+function generateSimpleOTP(): string
+{
+    return str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
 }
 
 // ----------------------------------------
-// AJAX POST: Send OTP (supports phone OR ID)
+// AJAX POST: Send OTP
 // ----------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json; charset=utf-8');
     
     try {
-        $inputType = $_POST['input_type'] ?? 'phone'; // 'phone', 'national_id', 'drivers_license', 'passport'
+        $inputType = $_POST['input_type'] ?? 'phone';
         $inputValue = trim($_POST['identifier'] ?? '');
         $fullName = trim($_POST['full_name'] ?? '');
         $dateOfBirth = trim($_POST['date_of_birth'] ?? '');
@@ -322,10 +206,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
         
-        // Track what we're validating
         $identifierColumn = null;
         $identifierValue = null;
-        $identifierType = null;
+        $userData = [];
         
         // Handle phone number
         if ($inputType === 'phone') {
@@ -337,14 +220,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             $identifierColumn = 'phone_number';
             $identifierValue = $phone;
-            $identifierType = 'phone';
             
             // Check in source DB
-            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name FROM users WHERE phone_number = :value LIMIT 1");
+            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email FROM users WHERE phone_number = :value LIMIT 1");
             $stmt->execute([':value' => $phone]);
-            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
             
-            if (!$user) {
+            if (!$userData) {
                 echo json_encode(['success' => false, 'message' => "Phone number not found in our records."]);
                 exit;
             }
@@ -366,7 +248,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             
             $identifierValue = $validation['value'];
-            $identifierType = $inputType;
             
             // Map to column name
             $columnMap = [
@@ -377,84 +258,100 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $identifierColumn = $columnMap[$inputType];
             
             // Check in source DB for this ID
-            try {
-                $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, {$identifierColumn} FROM users WHERE {$identifierColumn} = :value LIMIT 1");
-                $stmt->execute([':value' => $identifierValue]);
-                $user = $stmt->fetch(PDO::FETCH_ASSOC);
-                
-                if (!$user) {
-                    $label = $idValidationRules[$inputType]['label'] ?? ucfirst(str_replace('_', ' ', $inputType));
-                    echo json_encode(['success' => false, 'message' => "{$label} not found in our records."]);
-                    exit;
-                }
-                
-                // Check if already registered in swap
-                $stmt = $swapDb->prepare("SELECT user_id FROM users WHERE {$identifierColumn} = :value LIMIT 1");
-                $stmt->execute([':value' => $identifierValue]);
-                if ($stmt->fetch()) {
-                    $label = $idValidationRules[$inputType]['label'] ?? ucfirst(str_replace('_', ' ', $inputType));
-                    echo json_encode(['success' => false, 'message' => "{$label} already registered. Please login."]);
-                    exit;
-                }
-                
-                // Also check if phone is registered (if user has phone)
-                if (!empty($user['phone_number'])) {
-                    $stmt = $swapDb->prepare("SELECT user_id FROM users WHERE phone = :phone LIMIT 1");
-                    $stmt->execute([':phone' => $user['phone_number']]);
-                    if ($stmt->fetch()) {
-                        echo json_encode(['success' => false, 'message' => 'Associated phone number already registered. Please login.']);
-                        exit;
-                    }
-                }
-                
-            } catch (PDOException $e) {
-                error_log("Source DB query error for {$inputType}: " . $e->getMessage());
-                echo json_encode(['success' => false, 'message' => 'Unable to verify identity. Please try again.']);
+            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email, {$identifierColumn} FROM users WHERE {$identifierColumn} = :value LIMIT 1");
+            $stmt->execute([':value' => $identifierValue]);
+            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$userData) {
+                $label = $idValidationRules[$inputType]['label'] ?? ucfirst(str_replace('_', ' ', $inputType));
+                echo json_encode(['success' => false, 'message' => "{$label} not found in our records."]);
                 exit;
+            }
+            
+            // Check if already registered in swap
+            $stmt = $swapDb->prepare("SELECT user_id FROM users WHERE {$identifierColumn} = :value LIMIT 1");
+            $stmt->execute([':value' => $identifierValue]);
+            if ($stmt->fetch()) {
+                $label = $idValidationRules[$inputType]['label'] ?? ucfirst(str_replace('_', ' ', $inputType));
+                echo json_encode(['success' => false, 'message' => "{$label} already registered. Please login."]);
+                exit;
+            }
+            
+            // Also check if phone is registered
+            if (!empty($userData['phone_number'])) {
+                $stmt = $swapDb->prepare("SELECT user_id FROM users WHERE phone = :phone LIMIT 1");
+                $stmt->execute([':phone' => $userData['phone_number']]);
+                if ($stmt->fetch()) {
+                    echo json_encode(['success' => false, 'message' => 'Associated phone number already registered. Please login.']);
+                    exit;
+                }
             }
         }
         
-        // Generate OTP
-        $otp = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-        $expiresAt = date('Y-m-d H:i:s', time() + 300);
+        // Generate OTP (simple 6-digit for storage)
+        $otpPlain = generateSimpleOTP();
+        $otpHash = password_hash($otpPlain, PASSWORD_DEFAULT);
+        $expiresAt = date('Y-m-d H:i:s', time() + 300); // 5 minutes
         
-        // Store OTP - use phone if available, otherwise use ID
-        $phoneForOtp = ($inputType === 'phone') ? $identifierValue : ($user['phone_number'] ?? null);
+        // Get IP address and user agent
+        $ipAddress = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+        $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? 'unknown';
         
-        $stmt = $swapDb->prepare("DELETE FROM otp_codes WHERE phone = :phone OR national_id = :id");
-        $stmt->execute([':phone' => $phoneForOtp, ':id' => ($inputType !== 'phone') ? $identifierValue : null]);
+        // Delete any existing unused OTPs for this identifier
+        $stmt = $swapDb->prepare("
+            UPDATE otp_logs 
+            SET used_at = NOW() 
+            WHERE identifier = :identifier AND used_at IS NULL
+        ");
+        $stmt->execute([':identifier' => $identifierValue]);
         
-        $stmt = $swapDb->prepare("INSERT INTO otp_codes (phone, national_id, identifier_type, code, expires_at) VALUES (:phone, :national_id, :identifier_type, :code, :expires_at)");
+        // Insert new OTP into otp_logs table
+        $stmt = $swapDb->prepare("
+            INSERT INTO otp_logs 
+            (identifier, identifier_type, code_hash, purpose, expires_at, attempts, ip_address, user_agent, created_at) 
+            VALUES 
+            (:identifier, :identifier_type, :code_hash, :purpose, :expires_at, :attempts, :ip_address, :user_agent, NOW())
+        ");
+        
         $stmt->execute([
-            ':phone' => $phoneForOtp,
-            ':national_id' => ($inputType !== 'phone') ? $identifierValue : null,
+            ':identifier' => $identifierValue,
             ':identifier_type' => $inputType,
-            ':code' => $otp,
-            ':expires_at' => $expiresAt
+            ':code_hash' => $otpHash,
+            ':purpose' => 'registration',
+            ':expires_at' => $expiresAt,
+            ':attempts' => 0,
+            ':ip_address' => $ipAddress,
+            ':user_agent' => $userAgent
         ]);
         
-        // Store registration data in session for later
+        $otpId = $swapDb->lastInsertId();
+        
+        // Store registration data in session
         $_SESSION['temp_registration'] = [
+            'otp_id' => $otpId,
             'identifier_type' => $inputType,
             'identifier_value' => $identifierValue,
             'identifier_column' => $identifierColumn,
-            'full_name' => $fullName ?: ($user['full_name'] ?? null),
+            'full_name' => $fullName ?: ($userData['full_name'] ?? null),
             'date_of_birth' => $dateOfBirth,
-            'source_user_id' => $user['id'] ?? null,
-            'phone_number' => $user['phone_number'] ?? ($inputType === 'phone' ? $identifierValue : null)
+            'source_user_id' => $userData['id'] ?? null,
+            'phone_number' => $userData['phone_number'] ?? ($inputType === 'phone' ? $identifierValue : null),
+            'email' => $userData['email'] ?? null
         ];
         
-        // Send OTP via SMS if phone available, otherwise show on screen
+        // Send OTP via SMS if phone available
         $smsSent = false;
-        if ($phoneForOtp) {
+        $phoneForSms = $userData['phone_number'] ?? ($inputType === 'phone' ? $identifierValue : null);
+        
+        if ($phoneForSms) {
             try {
                 $comm = CommunicationFactory::create($clientPartnerKey);
-                $message = "Your {$countryName} SWAP registration OTP is: {$otp}. Valid for 5 minutes. Do not share with anyone.";
-                $result = $comm->sendSMS($phoneForOtp, $message);
+                $message = "Your {$countryName} SWAP registration verification code is: {$otpPlain}. Valid for 5 minutes. Do not share this code with anyone.";
+                $result = $comm->sendSMS($phoneForSms, $message);
                 $smsSent = ($result['success'] ?? false);
                 
                 if ($smsSent) {
-                    error_log("OTP sent via SMS to {$phoneForOtp}");
+                    error_log("OTP sent via SMS to {$phoneForSms}");
                 }
             } catch (Exception $e) {
                 error_log("SMS sending error: " . $e->getMessage());
@@ -463,22 +360,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         // Return response
         if ($smsSent) {
-            echo json_encode(['success' => true, 'message' => 'OTP sent to your phone!', 'has_phone' => true]);
-        } else if ($phoneForOtp) {
+            echo json_encode(['success' => true, 'message' => 'Verification code sent to your phone!', 'has_phone' => true]);
+        } else if ($phoneForSms) {
             // For development, show OTP
             if (getenv('APP_ENV') === 'development') {
-                echo json_encode(['success' => true, 'message' => "DEV MODE: OTP is {$otp} (SMS failed)", 'has_phone' => true]);
+                echo json_encode(['success' => true, 'message' => "DEV MODE: Your code is {$otpPlain}", 'has_phone' => false, 'show_otp' => true, 'otp' => $otpPlain]);
             } else {
-                echo json_encode(['success' => true, 'message' => "Please contact support to verify your identity.", 'has_phone' => false]);
+                echo json_encode(['success' => true, 'message' => "Please check your phone for the verification code.", 'has_phone' => true]);
             }
         } else {
-            // No phone on file, show OTP on screen (for web registration)
-            echo json_encode(['success' => true, 'message' => "Your OTP is: {$otp} (No phone on file - please write this down)", 'show_otp' => true, 'otp' => $otp]);
+            // No phone on file, show OTP on screen
+            echo json_encode(['success' => true, 'message' => "Your verification code is: {$otpPlain}", 'show_otp' => true, 'otp' => $otpPlain, 'has_phone' => false]);
         }
         exit;
         
     } catch (Throwable $e) {
-        error_log("REGISTER POST ERROR [{$systemCountry}]: " . $e->getMessage());
+        error_log("REGISTER POST ERROR: " . $e->getMessage());
         echo json_encode(['success' => false, 'message' => 'System error occurred. Please try again.']);
         exit;
     }
@@ -625,6 +522,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-bottom: 1.5rem;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
             padding-bottom: 0.5rem;
+            flex-wrap: wrap;
         }
 
         .selector-tab {
@@ -717,6 +615,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .btn:hover {
             transform: translateY(-2px);
             box-shadow: 0 10px 30px -10px rgba(0, 240, 255, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
         }
 
         .btn-secondary {
@@ -818,6 +722,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             .register-form {
                 padding: 1.5rem;
             }
+            .selector-tabs {
+                gap: 0.25rem;
+            }
+            .selector-tab {
+                padding: 0.5rem 0.75rem;
+                font-size: 0.7rem;
+            }
         }
     </style>
 </head>
@@ -893,7 +804,6 @@ const localLength = <?= $localLength ?>;
 const idValidationRules = <?= json_encode($idValidationRules) ?>;
 
 let currentIdentifierType = 'phone';
-let storedOtp = null;
 let resendTimerInterval = null;
 let resendSecondsLeft = 0;
 
@@ -938,7 +848,6 @@ function updateFormForIdentifierType(type) {
         dobGroup.style.display = 'block';
     }
     
-    // Clear input
     inputEl.value = '';
 }
 
@@ -1013,9 +922,8 @@ function sendOTP() {
         
         if (data.success) {
             if (data.show_otp && data.otp) {
-                storedOtp = data.otp;
                 document.getElementById('otp-display').style.display = 'block';
-                document.getElementById('otp-display').innerHTML = `Your OTP is: <strong>${data.otp}</strong><br><small>Please write this down</small>`;
+                document.getElementById('otp-display').innerHTML = `Your verification code is: <strong>${data.otp}</strong><br><small>Please write this down</small>`;
             }
             
             showMessage(data.message, 'success');
@@ -1083,9 +991,8 @@ function resendOTP() {
     .then(data => {
         if (data.success) {
             if (data.show_otp && data.otp) {
-                storedOtp = data.otp;
                 document.getElementById('otp-display').style.display = 'block';
-                document.getElementById('otp-display').innerHTML = `Your OTP is: <strong>${data.otp}</strong>`;
+                document.getElementById('otp-display').innerHTML = `Your verification code is: <strong>${data.otp}</strong>`;
             }
             showMessage('Verification code resent!', 'success');
             startResendTimer(60);
