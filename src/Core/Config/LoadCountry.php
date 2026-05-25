@@ -17,80 +17,139 @@ final class LoadCountry
             ? SYSTEM_COUNTRY_SLUG
             : ($countryMeta['slug'] ?? strtolower($country));
         
-        // Get country code (BW, NG, KE, etc.)
         $countryCode = defined('SYSTEM_COUNTRY_CODE')
             ? SYSTEM_COUNTRY_CODE
             : ($countryMeta['code'] ?? 'BW');
 
-        // Project root path
         $projectRoot = dirname(__DIR__, 3);
         
-        // Config file paths - ALL in src/Core/Config/Countries/{country}/
-        $configFile       = $projectRoot . "/src/Core/Config/Countries/{$country}/config.php";
-        $databaseFile     = $projectRoot . "/src/Core/Config/Countries/{$country}/database.php";
-        $participantsFile = $projectRoot . "/src/Core/Config/Countries/{$country}/participants.json";
-        $feesFile         = $projectRoot . "/src/Core/Config/Countries/{$country}/fees.json";
+        // Country directory path
+        $countryDir = $projectRoot . "/src/Core/Config/Countries/{$country}";
+        
+        // All config files in the country directory
+        $configFile       = $countryDir . "/config.php";
+        $databaseFile     = $countryDir . "/database.php";
+        $participantsFile = $countryDir . "/participants.json";
+        $feesFile         = $countryDir . "/fees.json";
+        $atmNotesFile     = $countryDir . "/atm_notes.json";
+        $cardsFile        = $countryDir . "/cards.json";
+        $commFile         = $countryDir . "/communication.json";
+        $banksFile        = $countryDir . "/banks.json";
+        $mobileMoneyFile  = $countryDir . "/mobile_money.php";
 
         $countryConfig = [];
         
-        // Load main config
+        // 1. Load main config.php
         if (file_exists($configFile)) {
             $countryConfig = require $configFile;
-            error_log("Loaded config from: {$configFile}");
+            error_log("[LoadCountry] Loaded config from: {$configFile}");
         } else {
-            error_log("Config file not found: {$configFile}");
+            error_log("[LoadCountry] Config file not found: {$configFile}");
         }
 
-        // Load participants
+        // 2. Load participants.json
         if (file_exists($participantsFile)) {
-            $participantsConfig = json_decode((string) file_get_contents($participantsFile), true);
+            $participantsConfig = json_decode(file_get_contents($participantsFile), true);
             if (json_last_error() === JSON_ERROR_NONE) {
                 $countryConfig['participants'] = $participantsConfig['participants'] ?? [];
                 $countryConfig['api_keys']     = $participantsConfig['api_keys'] ?? [];
-                error_log("Loaded participants from: {$participantsFile}");
+                error_log("[LoadCountry] Loaded participants from: {$participantsFile}");
             } else {
-                error_log("JSON parse error in participants file: " . json_last_error_msg());
+                error_log("[LoadCountry] JSON parse error in participants file: " . json_last_error_msg());
             }
         } else {
-            error_log("Participants file not found: {$participantsFile}");
+            error_log("[LoadCountry] Participants file not found: {$participantsFile}");
             $countryConfig['participants'] = [];
-            $countryConfig['api_keys'] = [];
         }
 
-        // Load fees
+        // 3. Load fees.json
         if (file_exists($feesFile)) {
-            $feesConfig = json_decode((string) file_get_contents($feesFile), true);
+            $feesConfig = json_decode(file_get_contents($feesFile), true);
             if (json_last_error() === JSON_ERROR_NONE) {
                 $countryConfig['fees'] = self::resolveFees($feesConfig);
-                error_log("Loaded fees from: {$feesFile}");
+                error_log("[LoadCountry] Loaded fees from: {$feesFile}");
             } else {
-                error_log("JSON parse error in fees file: " . json_last_error_msg());
+                error_log("[LoadCountry] JSON parse error in fees file: " . json_last_error_msg());
             }
         } else {
-            error_log("Fees file not found: {$feesFile}");
+            error_log("[LoadCountry] Fees file not found: {$feesFile}");
             $countryConfig['fees'] = [];
         }
 
-        // ============================================================
-        // DATABASE CONFIGURATION - Each country has its own database
-        // ============================================================
-        // Load database configuration for this specific country
+        // 4. Load atm_notes.json
+        if (file_exists($atmNotesFile)) {
+            $atmNotesConfig = json_decode(file_get_contents($atmNotesFile), true);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                $countryConfig['atm_notes'] = $atmNotesConfig;
+                error_log("[LoadCountry] Loaded ATM notes from: {$atmNotesFile}");
+            } else {
+                error_log("[LoadCountry] JSON parse error in ATM notes file: " . json_last_error_msg());
+            }
+        } else {
+            error_log("[LoadCountry] ATM notes file not found: {$atmNotesFile}");
+            $countryConfig['atm_notes'] = [];
+        }
+
+        // 5. Load cards.json
+        if (file_exists($cardsFile)) {
+            $cardsConfig = json_decode(file_get_contents($cardsFile), true);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                $countryConfig['card_config'] = $cardsConfig;
+                error_log("[LoadCountry] Loaded card config from: {$cardsFile}");
+            } else {
+                error_log("[LoadCountry] JSON parse error in cards file: " . json_last_error_msg());
+            }
+        } else {
+            error_log("[LoadCountry] Cards file not found: {$cardsFile}");
+            $countryConfig['card_config'] = [];
+        }
+
+        // 6. Load communication.json
+        if (file_exists($commFile)) {
+            $commConfig = json_decode(file_get_contents($commFile), true);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                $countryConfig['communication'] = $commConfig;
+                error_log("[LoadCountry] Loaded communication config from: {$commFile}");
+            } else {
+                error_log("[LoadCountry] JSON parse error in communication file: " . json_last_error_msg());
+            }
+        } else {
+            error_log("[LoadCountry] Communication file not found: {$commFile}");
+            $countryConfig['communication'] = [];
+        }
+
+        // 7. Load banks.json (optional)
+        if (file_exists($banksFile)) {
+            $banksConfig = json_decode(file_get_contents($banksFile), true);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                $countryConfig['banks'] = $banksConfig;
+                error_log("[LoadCountry] Loaded banks from: {$banksFile}");
+            }
+        }
+
+        // 8. Load mobile_money.php (optional)
+        if (file_exists($mobileMoneyFile)) {
+            $mobileMoneyConfig = require $mobileMoneyFile;
+            if (is_array($mobileMoneyConfig)) {
+                $countryConfig['mobile_money'] = $mobileMoneyConfig;
+                error_log("[LoadCountry] Loaded mobile money config from: {$mobileMoneyFile}");
+            }
+        }
+
+        // 9. Database configuration
         if (file_exists($databaseFile)) {
             $dbConfig = require $databaseFile;
             $countryConfig['db']['swap'] = $dbConfig;
-            error_log("Loaded database for {$country} from: {$databaseFile}");
+            error_log("[LoadCountry] Loaded database for {$country} from: {$databaseFile}");
         } else {
-            error_log("Database file not found: {$databaseFile}, using environment variables for {$countryCode}");
+            error_log("[LoadCountry] Database file not found: {$databaseFile}, using environment variables");
             
-            // Fallback: Build database config from environment variables
-            // Each country should have its own environment variables
             $dbName = getenv("DB_NAME_{$countryCode}") ?: getenv('DB_NAME') ?: "swap_system_" . strtolower($countryCode);
             $dbHost = getenv("DB_HOST_{$countryCode}") ?: getenv('DB_HOST') ?: 'localhost';
             $dbPort = getenv("DB_PORT_{$countryCode}") ?: getenv('DB_PORT') ?: '5432';
             $dbUser = getenv("DB_USER_{$countryCode}") ?: getenv('DB_USER') ?: 'postgres';
             $dbPass = getenv("DB_PASS_{$countryCode}") ?: getenv('DB_PASSWORD') ?: '';
             
-            // Also check for DATABASE_URL specific to this country
             $databaseUrl = getenv("DATABASE_URL_{$countryCode}") ?: getenv('DATABASE_URL');
             if ($databaseUrl) {
                 $db = parse_url($databaseUrl);
@@ -114,13 +173,9 @@ final class LoadCountry
             }
         }
 
-        // ============================================================
-        // SOURCE PROVIDER CONFIGURATION (CazaCom, etc.) - API based
-        // ============================================================
-        // Source providers are accessed via API, not direct database
+        // 10. Source providers configuration
         $countryConfig['source_providers'] = [];
         
-        // Load source provider config from participants if available
         if (isset($countryConfig['participants'])) {
             foreach ($countryConfig['participants'] as $providerName => $providerData) {
                 if (isset($providerData['type']) && $providerData['type'] === 'SOURCE_PROVIDER') {
@@ -139,10 +194,8 @@ final class LoadCountry
             }
         }
         
-        // Default source provider (CazaCom for Botswana)
         $countryConfig['default_source_provider'] = 'CAZACOM';
         
-        // If no source providers configured, add default CazaCom API config
         if (empty($countryConfig['source_providers'])) {
             $countryConfig['source_providers']['CAZACOM'] = [
                 'type' => 'api',
@@ -217,7 +270,7 @@ final class LoadCountry
     }
 }
 
-// For direct inclusion (non-namespace usage)
+// For direct inclusion
 if (!function_exists('loadCountryConfig')) {
     function loadCountryConfig(): array
     {
@@ -225,7 +278,6 @@ if (!function_exists('loadCountryConfig')) {
     }
 }
 
-// If this file is included directly (not via namespace), return config
 if (__FILE__ === realpath($_SERVER['SCRIPT_FILENAME'] ?? '')) {
     return \Core\Config\LoadCountry::getConfig();
 }
