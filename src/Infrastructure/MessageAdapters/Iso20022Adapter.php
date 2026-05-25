@@ -1,7 +1,7 @@
 <?php
-namespace VouchMorph\Infrastructure\MessageAdapters;
+namespace Infrastructure\MessageAdapters;
 
-use VouchMorph\Core\Transaction\InternalTransaction;
+use Core\Transaction\InternalTransaction;
 
 class Iso20022Adapter implements MessageAdapterInterface {
     private string $countryCode;
