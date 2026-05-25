@@ -5,236 +5,273 @@ session_start();
 
 define('PROJECT_ROOT', dirname(__DIR__, 2));
 
-echo "<h1>🔐 Complete Admin Login Debug</h1>";
+echo "<h1>🔍 Pinpoint Login Issue</h1>";
 
-// Step 1: Load configuration
-echo "<h2>Step 1: Loading Configuration</h2>";
+// Load configuration
 $configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
-echo "Config path: " . $configPath . "<br>";
-echo "File exists: " . (file_exists($configPath) ? 'YES' : 'NO') . "<br>";
-
-if (!file_exists($configPath)) {
-    die("Configuration not found!");
-}
-
 require_once $configPath;
+$config = \Core\Config\LoadCountry::getConfig();
 
-try {
-    $config = \Core\Config\LoadCountry::getConfig();
-    echo "<span style='color:green'>✓ Configuration loaded</span><br>";
-} catch (Throwable $e) {
-    die("Config error: " . $e->getMessage());
-}
-
-// Step 2: Database connection
-echo "<h2>Step 2: Database Connection</h2>";
+// Database connection
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
-// Get database config
 if (isset($config['db']['swap'])) {
     $dbConfig = $config['db']['swap'];
-    echo "Using config['db']['swap']<br>";
 } else {
     $databaseUrl = getenv('DATABASE_URL');
-    if ($databaseUrl) {
-        $db = parse_url($databaseUrl);
-        $dbConfig = [
-            'host' => $db['host'] ?? 'localhost',
-            'port' => (int)($db['port'] ?? 5432),
-            'database' => ltrim($db['path'] ?? '', '/'),
-            'username' => $db['user'] ?? 'postgres',
-            'password' => $db['pass'] ?? '',
-        ];
-        echo "Using DATABASE_URL from environment<br>";
-    } else {
-        $dbConfig = [
-            'host' => getenv('DB_HOST') ?: 'localhost',
-            'port' => (int)(getenv('DB_PORT') ?: 5432),
-            'database' => getenv('DB_NAME') ?: 'swap_system_bw',
-            'username' => getenv('DB_USER') ?: 'postgres',
-            'password' => getenv('DB_PASSWORD') ?: '',
-        ];
-        echo "Using individual DB environment variables<br>";
-    }
+    $db = parse_url($databaseUrl);
+    $dbConfig = [
+        'host' => $db['host'] ?? 'localhost',
+        'port' => (int)($db['port'] ?? 5432),
+        'database' => ltrim($db['path'] ?? '', '/'),
+        'username' => $db['user'] ?? 'postgres',
+        'password' => $db['pass'] ?? '',
+    ];
 }
 
-try {
-    $dbConfig['type'] = 'pgsql';
-    $db = DBConnection::getInstance($dbConfig);
-    
-    // Test connection
-    $stmt = $db->query("SELECT 1 as test");
-    $result = $stmt->fetch();
-    echo "<span style='color:green'>✓ Database connected successfully</span><br>";
-} catch (Throwable $e) {
-    die("<span style='color:red'>✗ Database connection failed: " . $e->getMessage() . "</span>");
-}
+$dbConfig['type'] = 'pgsql';
+$db = DBConnection::getInstance($dbConfig);
 
-// Step 3: Check admins table
-echo "<h2>Step 3: Admin Table Check</h2>";
-try {
-    $stmt = $db->query("SELECT COUNT(*) as count FROM admins");
-    $count = $stmt->fetchColumn();
-    echo "Total admins in database: <strong>{$count}</strong><br>";
-} catch (Throwable $e) {
-    echo "<span style='color:red'>Error: " . $e->getMessage() . "</span><br>";
-}
-
-// Step 4: Display all admins with hash details
-echo "<h2>Step 4: Admin Accounts</h2>";
-echo "<table border='1' cellpadding='8' style='border-collapse: collapse;'>";
-echo "<tr style='background: #001B44; color: white;'>";
-echo "<th>ID</th><th>Username</th><th>Email</th><th>Role</th><th>Country</th><th>Hash Length</th><th>Starts With</th><th>Status</th>";
-echo "</tr>";
-
-$stmt = $db->query("SELECT admin_id, username, email, role_id, country_code, password_hash FROM admins WHERE deleted_at IS NULL ORDER BY admin_id");
-$admins = [];
-while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    $admins[] = $row;
-    $hashLen = strlen($row['password_hash']);
-    $startsWith = substr($row['password_hash'], 0, 7);
-    $isValid = ($hashLen === 60 && $startsWith === '$2y$12$');
-    
-    echo "<tr>";
-    echo "<td>{$row['admin_id']}</td>";
-    echo "<td><strong>{$row['username']}</strong></td>";
-    echo "<td>{$row['email']}</td>";
-    echo "<td>{$row['role_id']}</td>";
-    echo "<td>{$row['country_code']}</td>";
-    echo "<td style='color: " . ($hashLen === 60 ? 'green' : 'red') . ";'>{$hashLen}</td>";
-    echo "<td>{$startsWith}</td>";
-    echo "<td style='color: " . ($isValid ? 'green' : 'red') . ";'>" . ($isValid ? 'VALID' : 'INVALID') . "</td>";
-    echo "</tr>";
-}
-echo "</table>";
-
-// Step 5: Test login with provided credentials
-echo "<h2>Step 5: Test Login Function</h2>";
-
-// Load AdminAuth class
+// Load SessionManager
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
+use Application\Utils\SessionManager;
+
+echo "<h2>Testing Login Step by Step</h2>";
+
+$testUsername = 'global_admin';
+$testPassword = 'Admin@123456';
+$testCountry = 'BW';
+
+echo "<h3>Test Credentials:</h3>";
+echo "Username: {$testUsername}<br>";
+echo "Password: {$testPassword}<br>";
+echo "Country: {$testCountry}<br><br>";
+
+// STEP 1: Find user
+echo "<h3>STEP 1: Find user in database</h3>";
+$stmt = $db->prepare("
+    SELECT 
+        admin_id, 
+        username, 
+        email, 
+        password_hash, 
+        role_id, 
+        mfa_enabled,
+        mfa_secret,
+        full_name,
+        country_code,
+        deleted_at
+    FROM admins 
+    WHERE (username = :identifier OR email = :identifier)
+        AND deleted_at IS NULL
+    LIMIT 1
+");
+$stmt->execute([':identifier' => $testUsername]);
+$admin = $stmt->fetch(PDO::FETCH_ASSOC);
+
+if (!$admin) {
+    die("<span style='color:red'>✗ User not found!</span>");
+}
+echo "<span style='color:green'>✓ User found: {$admin['username']}</span><br>";
+echo "Admin ID: {$admin['admin_id']}<br>";
+echo "Role ID: {$admin['role_id']}<br>";
+echo "Country Code: {$admin['country_code']}<br>";
+
+// STEP 2: Verify password
+echo "<h3>STEP 2: Password verification</h3>";
+$passwordValid = password_verify($testPassword, $admin['password_hash']);
+if (!$passwordValid) {
+    die("<span style='color:red'>✗ Password verification failed!</span>");
+}
+echo "<span style='color:green'>✓ Password verified successfully</span><br>";
+
+// STEP 3: Check deleted_at
+echo "<h3>STEP 3: Check if account is deleted</h3>";
+if ($admin['deleted_at'] !== null) {
+    die("<span style='color:red'>✗ Account is deleted!</span>");
+}
+echo "<span style='color:green'>✓ Account is active</span><br>";
+
+// STEP 4: Check country access
+echo "<h3>STEP 4: Country access check</h3>";
+$isSuperAdmin = ($admin['role_id'] == 999);
+$hasCountryRestriction = !empty($admin['country_code']);
+$countryMatches = ($admin['country_code'] === $testCountry);
+
+echo "Is Super Admin: " . ($isSuperAdmin ? 'Yes' : 'No') . "<br>";
+echo "Has Country Restriction: " . ($hasCountryRestriction ? 'Yes' : 'No') . "<br>";
+echo "Country Matches: " . ($countryMatches ? 'Yes' : 'No') . "<br>";
+
+if (!$isSuperAdmin && $hasCountryRestriction && !$countryMatches) {
+    die("<span style='color:red'>✗ Country access denied!</span>");
+}
+echo "<span style='color:green'>✓ Country access granted</span><br>";
+
+// STEP 5: Update last login (the suspected culprit)
+echo "<h3>STEP 5: Update last login (TESTING - will be rolled back)</h3>";
+
+// First, check if columns exist
+$checkColumns = $db->query("
+    SELECT column_name 
+    FROM information_schema.columns 
+    WHERE table_name = 'admins' 
+    AND column_name IN ('last_login_at', 'last_login_ip')
+");
+$existingColumns = $checkColumns->fetchAll(PDO::FETCH_COLUMN);
+echo "Existing columns: " . implode(', ', $existingColumns) . "<br>";
+
+if (in_array('last_login_at', $existingColumns) && in_array('last_login_ip', $existingColumns)) {
+    echo "Attempting to update last_login...<br>";
+    
+    // Start transaction to test without committing
+    $db->beginTransaction();
+    
+    try {
+        $ipAddress = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+        
+        $updateStmt = $db->prepare("
+            UPDATE admins 
+            SET last_login_at = NOW(), 
+                last_login_ip = :ip 
+            WHERE admin_id = :admin_id
+        ");
+        $updateResult = $updateStmt->execute([
+            ':ip' => $ipAddress,
+            ':admin_id' => $admin['admin_id']
+        ]);
+        
+        if ($updateResult) {
+            echo "<span style='color:green'>✓ Last login update successful</span><br>";
+        } else {
+            echo "<span style='color:orange'>⚠ Last login update returned false but no exception</span><br>";
+        }
+        
+        // Rollback to not affect real data
+        $db->rollBack();
+        echo "<span style='color:blue'>ℹ Changes rolled back (test only)</span><br>";
+        
+    } catch (Throwable $e) {
+        $db->rollBack();
+        echo "<span style='color:red'>✗ Last login update FAILED: " . $e->getMessage() . "</span><br>";
+        echo "This is likely the problem! The login is failing because this update is throwing an exception.<br>";
+    }
+} else {
+    echo "<span style='color:orange'>⚠ Columns 'last_login_at' and/or 'last_login_ip' don't exist</span><br>";
+    echo "This would cause an error when trying to update them.<br>";
+}
+
+// STEP 6: Session storage
+echo "<h3>STEP 6: Session storage test</h3>";
+try {
+    // Clear existing
+    SessionManager::remove('admin_id');
+    SessionManager::remove('admin_logged_in');
+    
+    // Set test values
+    SessionManager::set('admin_id', (int)$admin['admin_id']);
+    SessionManager::set('admin_username', $admin['username']);
+    SessionManager::set('admin_role_id', (int)$admin['role_id']);
+    SessionManager::set('admin_country', $testCountry);
+    SessionManager::set('admin_logged_in', true);
+    
+    // Verify they were set
+    $retrievedId = SessionManager::get('admin_id');
+    $retrievedLoggedIn = SessionManager::get('admin_logged_in');
+    
+    if ($retrievedId == $admin['admin_id'] && $retrievedLoggedIn === true) {
+        echo "<span style='color:green'>✓ Session storage working</span><br>";
+    } else {
+        echo "<span style='color:red'>✗ Session storage failed!</span><br>";
+        echo "Retrieved ID: " . var_export($retrievedId, true) . "<br>";
+        echo "Retrieved LoggedIn: " . var_export($retrievedLoggedIn, true) . "<br>";
+    }
+} catch (Throwable $e) {
+    echo "<span style='color:red'>✗ Session error: " . $e->getMessage() . "</span><br>";
+}
+
+// STEP 7: Test MFA condition
+echo "<h3>STEP 7: MFA check</h3>";
+$mfaEnabled = ($admin['mfa_enabled'] === 't' || $admin['mfa_enabled'] === true || $admin['mfa_enabled'] === 1);
+echo "MFA Enabled: " . ($mfaEnabled ? 'Yes' : 'No') . "<br>";
+echo "MFA Secret: " . (empty($admin['mfa_secret']) ? 'Not set' : 'Set') . "<br>";
+
+// FINAL: Attempt full login and capture any exception
+echo "<h3>STEP 8: Full login attempt with detailed exception</h3>";
+
+// Load AdminAuth
 require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
 use Application\Admin\Auth\AdminAuth;
 
 $auth = new AdminAuth($db);
 
-// Test each admin
-foreach ($admins as $admin) {
-    // Try common passwords
-    $testPasswords = [
-        'Admin@123456',
-        'Regulator@123', 
-        'Compliance@123',
-        'Auditor@123',
-        'password123',
-        'admin123'
-    ];
-    
-    echo "<h3>Testing: {$admin['username']}</h3>";
-    echo "Stored hash length: " . strlen($admin['password_hash']) . "<br>";
-    
-    foreach ($testPasswords as $testPassword) {
-        $result = password_verify($testPassword, $admin['password_hash']);
-        if ($result) {
-            echo "<span style='color:green'>✓ MATCH FOUND! Password '{$testPassword}' works for {$admin['username']}</span><br>";
-            
-            // Test full login
-            $loginResult = $auth->login($admin['username'], $testPassword, 'BW');
-            echo "Full login result: " . ($loginResult['success'] ? 'SUCCESS' : 'FAILED') . "<br>";
-            echo "Message: " . $loginResult['message'] . "<br>";
-            break;
-        }
-    }
-    
-    // Also test if the stored hash itself is corrupt
-    if (strlen($admin['password_hash']) !== 60) {
-        echo "<span style='color:orange'>⚠ Hash length is " . strlen($admin['password_hash']) . " (should be 60) - Hash is truncated!</span><br>";
-        
-        // Generate correct hash for this admin
-        if ($admin['username'] === 'global_admin') {
-            $correctPassword = 'Admin@123456';
-            $newHash = password_hash($correctPassword, PASSWORD_BCRYPT, ['cost' => 12]);
-            echo "Correct hash for {$admin['username']} should be: <code>" . htmlspecialchars($newHash) . "</code><br>";
-            echo "<form method='POST' style='display:inline;'>";
-            echo "<input type='hidden' name='fix_username' value='{$admin['username']}'>";
-            echo "<input type='hidden' name='fix_hash' value='{$newHash}'>";
-            echo "<button type='submit' name='fix_password' value='1'>Fix {$admin['username']} Password</button>";
-            echo "</form><br>";
-        }
-    }
-}
-
-// Step 6: Handle password fix
-if (isset($_POST['fix_password']) && isset($_POST['fix_username']) && isset($_POST['fix_hash'])) {
-    echo "<h2>Step 6: Fixing Password</h2>";
-    $fixUsername = $_POST['fix_username'];
-    $fixHash = $_POST['fix_hash'];
-    
-    $stmt = $db->prepare("UPDATE admins SET password_hash = :hash, updated_at = NOW() WHERE username = :username");
-    $result = $stmt->execute([':hash' => $fixHash, ':username' => $fixUsername]);
-    
-    if ($result) {
-        echo "<span style='color:green'>✓ Password hash updated for {$fixUsername}</span><br>";
-        
-        // Verify
-        $verifyStmt = $db->prepare("SELECT password_hash FROM admins WHERE username = :username");
-        $verifyStmt->execute([':username' => $fixUsername]);
-        $newStoredHash = $verifyStmt->fetchColumn();
-        
-        if (strlen($newStoredHash) === 60) {
-            echo "<span style='color:green'>✓ New hash length is correct (60 characters)</span><br>";
-        }
-    } else {
-        echo "<span style='color:red'>✗ Failed to update</span><br>";
-    }
-}
-
-// Step 7: Direct SQL update option
-echo "<h2>Step 7: Direct SQL Fix (Run this in Railway Console)</h2>";
-echo "<pre style='background: #f5f5f5; padding: 15px; overflow-x: auto;'>";
-echo "-- Run these SQL commands to fix all passwords:\n\n";
-foreach ($admins as $admin) {
-    if ($admin['username'] === 'global_admin') {
-        $newHash = password_hash('Admin@123456', PASSWORD_BCRYPT, ['cost' => 12]);
-        echo "UPDATE admins SET password_hash = '{$newHash}' WHERE username = '{$admin['username']}';\n";
-    } elseif ($admin['username'] === 'regulator_bob') {
-        $newHash = password_hash('Regulator@123', PASSWORD_BCRYPT, ['cost' => 12]);
-        echo "UPDATE admins SET password_hash = '{$newHash}' WHERE username = '{$admin['username']}';\n";
-    } elseif ($admin['username'] === 'compliance_officer') {
-        $newHash = password_hash('Compliance@123', PASSWORD_BCRYPT, ['cost' => 12]);
-        echo "UPDATE admins SET password_hash = '{$newHash}' WHERE username = '{$admin['username']}';\n";
-    } elseif ($admin['username'] === 'auditor') {
-        $newHash = password_hash('Auditor@123', PASSWORD_BCRYPT, ['cost' => 12]);
-        echo "UPDATE admins SET password_hash = '{$newHash}' WHERE username = '{$admin['username']}';\n";
-    }
-}
-echo "\n-- Then verify:\n";
-echo "SELECT username, LENGTH(password_hash) FROM admins;\n";
-echo "</pre>";
-
-// Step 8: Test form
-echo "<h2>Step 8: Manual Login Test</h2>";
-echo "<form method='POST'>";
-echo "<input type='text' name='test_username' placeholder='Username' style='padding: 8px; margin: 5px; width: 200px;'>";
-echo "<input type='password' name='test_password' placeholder='Password' style='padding: 8px; margin: 5px; width: 200px;'>";
-echo "<button type='submit' name='test_login' style='padding: 8px 16px; background: #001B44; color: white; border: none; cursor: pointer;'>Test Login</button>";
-echo "</form>";
-
-if (isset($_POST['test_login'])) {
-    $testUser = $_POST['test_username'];
-    $testPass = $_POST['test_password'];
-    
-    echo "<h3>Test Result for {$testUser}:</h3>";
-    
-    $result = $auth->login($testUser, $testPass, 'BW');
+try {
+    $result = $auth->login($testUsername, $testPassword, $testCountry);
     echo "<pre>";
+    echo "Login result:\n";
     print_r($result);
     echo "</pre>";
+    
+    if ($result['success']) {
+        echo "<span style='color:green'>✓ LOGIN SUCCESSFUL!</span><br>";
+    } else {
+        echo "<span style='color:red'>✗ LOGIN FAILED: " . $result['message'] . "</span><br>";
+    }
+} catch (Throwable $e) {
+    echo "<span style='color:red'>✗ EXCEPTION CAUGHT: " . $e->getMessage() . "</span><br>";
+    echo "File: " . $e->getFile() . "<br>";
+    echo "Line: " . $e->getLine() . "<br>";
+    echo "<pre>" . $e->getTraceAsString() . "</pre>";
 }
 
-// Step 9: Session debug
-echo "<h2>Step 9: Session Data</h2>";
+// Show current session
+echo "<h3>Current Session Data:</h3>";
 echo "<pre>";
 print_r($_SESSION);
 echo "</pre>";
+
+// Suggested fixes based on findings
+echo "<h2>🔧 Suggested Fixes</h2>";
+
+// Check if last_login columns exist
+$missingColumns = [];
+if (!in_array('last_login_at', $existingColumns)) $missingColumns[] = 'last_login_at';
+if (!in_array('last_login_ip', $existingColumns)) $missingColumns[] = 'last_login_ip';
+
+if (!empty($missingColumns)) {
+    echo "<div style='background: #fff3cd; border: 1px solid #ffc107; padding: 15px; margin: 10px 0;'>";
+    echo "<strong>⚠ Missing columns detected!</strong><br>";
+    echo "Run this SQL to add them:<br>";
+    echo "<code style='background: #f5f5f5; display: block; padding: 10px; margin-top: 10px;'>";
+    foreach ($missingColumns as $col) {
+        if ($col === 'last_login_at') {
+            echo "ALTER TABLE admins ADD COLUMN last_login_at TIMESTAMP NULL;\n";
+        } elseif ($col === 'last_login_ip') {
+            echo "ALTER TABLE admins ADD COLUMN last_login_ip VARCHAR(100) NULL;\n";
+        }
+    }
+    echo "</code>";
+    echo "</div>";
+}
+
+echo "<div style='background: #d4edda; border: 1px solid #28a745; padding: 15px; margin: 10px 0;'>";
+echo "<strong>✅ Quick Fix for AdminAuth.php</strong><br>";
+echo "Wrap the last_login update in a try-catch block to prevent it from breaking login:<br>";
+echo "<code style='background: #f5f5f5; display: block; padding: 10px; margin-top: 10px;'>
+try {
+    \$updateStmt = \$this->db->prepare(\"
+        UPDATE admins 
+        SET last_login_at = NOW(), 
+            last_login_ip = :ip 
+        WHERE admin_id = :admin_id
+    \");
+    \$updateStmt->execute([
+        ':ip' => \$ipAddress,
+        ':admin_id' => \$admin['admin_id']
+    ]);
+} catch (\\Throwable \$e) {
+    error_log(\"Last login update skipped: \" . \$e->getMessage());
+    // Don't fail the login
+}
+</code>";
+echo "</div>";
