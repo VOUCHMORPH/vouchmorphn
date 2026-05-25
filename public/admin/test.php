@@ -2,92 +2,98 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-echo "<h1>Database Connection Test</h1>";
-
 define('PROJECT_ROOT', dirname(__DIR__, 2));
 
-// Test 1: Check if LoadCountry.php exists
+// Load configuration
 $configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
-echo "<p>Config path: " . $configPath . "</p>";
-echo "<p>File exists: " . (file_exists($configPath) ? 'YES' : 'NO') . "</p>";
-
-if (!file_exists($configPath)) {
-    die("LoadCountry.php not found!");
-}
-
 require_once $configPath;
+$config = \Core\Config\LoadCountry::getConfig();
 
-try {
-    $config = \Core\Config\LoadCountry::getConfig();
-    echo "<p style='color:green'>✓ Configuration loaded successfully</p>";
-    
-    // Check database config
-    echo "<h2>Database Configuration:</h2>";
-    echo "<pre>";
-    if (isset($config['db']['swap'])) {
-        echo "db['swap'] exists\n";
-        echo "Host: " . ($config['db']['swap']['host'] ?? 'N/A') . "\n";
-        echo "Database: " . ($config['db']['swap']['database'] ?? 'N/A') . "\n";
-        echo "User: " . ($config['db']['swap']['username'] ?? 'N/A') . "\n";
-    } elseif (isset($config['swap_db'])) {
-        echo "swap_db exists\n";
-        echo "Host: " . ($config['swap_db']['host'] ?? 'N/A') . "\n";
-        echo "Database: " . ($config['swap_db']['database'] ?? 'N/A') . "\n";
-    } else {
-        echo "No database configuration found in config!\n";
-        echo "Available keys: " . print_r(array_keys($config), true);
-    }
-    echo "</pre>";
-    
-    // Test 2: Try direct database connection
-    echo "<h2>Database Connection Test:</h2>";
-    
-    // Get database config
-    $dbConfig = null;
-    if (isset($config['db']['swap'])) {
-        $dbConfig = $config['db']['swap'];
-    } elseif (isset($config['swap_db'])) {
-        $dbConfig = $config['swap_db'];
-    }
-    
-    if ($dbConfig) {
-        try {
-            $dsn = sprintf(
-                "pgsql:host=%s;port=%d;dbname=%s",
-                $dbConfig['host'],
-                $dbConfig['port'],
-                $dbConfig['database']
-            );
-            echo "<p>DSN: " . $dsn . "</p>";
-            
-            $pdo = new PDO($dsn, $dbConfig['username'], $dbConfig['password']);
-            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-            
-            // Test query
-            $stmt = $pdo->query("SELECT COUNT(*) FROM admins");
-            $count = $stmt->fetchColumn();
-            
-            echo "<p style='color:green'>✓ Database connected successfully!</p>";
-            echo "<p>Number of admins: " . $count . "</p>";
-            
-        } catch (PDOException $e) {
-            echo "<p style='color:red'>✗ Database connection failed: " . $e->getMessage() . "</p>";
-        }
-    } else {
-        echo "<p style='color:red'>✗ No database configuration found!</p>";
-    }
-    
-    // Test 3: Check environment variables
-    echo "<h2>Environment Variables:</h2>";
-    echo "<pre>";
-    echo "DATABASE_URL: " . (getenv('DATABASE_URL') ? 'SET' : 'NOT SET') . "\n";
-    echo "DB_HOST: " . (getenv('DB_HOST') ?: 'NOT SET') . "\n";
-    echo "DB_NAME: " . (getenv('DB_NAME') ?: 'NOT SET') . "\n";
-    echo "DB_USER: " . (getenv('DB_USER') ?: 'NOT SET') . "\n";
-    echo "</pre>";
-    
-} catch (Throwable $e) {
-    echo "<p style='color:red'>Error: " . $e->getMessage() . "</p>";
-    echo "<p>File: " . $e->getFile() . "</p>";
-    echo "<p>Line: " . $e->getLine() . "</p>";
+// Load classes
+require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
+require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
+require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
+
+use Core\Database\DBConnection;
+use Application\Utils\SessionManager;
+use Application\Admin\Auth\AdminAuth;
+
+// Get database config
+if (isset($config['db']['swap'])) {
+    $dbConfig = $config['db']['swap'];
+} else {
+    $databaseUrl = getenv('DATABASE_URL');
+    $db = parse_url($databaseUrl);
+    $dbConfig = [
+        'host' => $db['host'] ?? 'localhost',
+        'port' => (int)($db['port'] ?? 5432),
+        'database' => ltrim($db['path'] ?? '', '/'),
+        'username' => $db['user'] ?? 'postgres',
+        'password' => $db['pass'] ?? '',
+    ];
 }
+
+$dbConfig['type'] = 'pgsql';
+$db = DBConnection::getInstance($dbConfig);
+$auth = new AdminAuth($db);
+
+$result = null;
+$testPassword = 'Admin@123456';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $username = $_POST['username'] ?? '';
+    $password = $_POST['password'] ?? '';
+    $country = $_POST['country'] ?? 'BW';
+    
+    $result = $auth->login($username, $password, $country);
+}
+?>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Admin Login</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #001B44; color: #fff; }
+        .container { max-width: 500px; margin: 0 auto; background: #fff; color: #001B44; padding: 30px; }
+        input, button { width: 100%; padding: 10px; margin: 10px 0; }
+        button { background: #001B44; color: #fff; cursor: pointer; }
+        .success { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Test Admin Login</h1>
+        
+        <form method="POST">
+            <input type="text" name="username" placeholder="Username" required>
+            <input type="password" name="password" placeholder="Password" required>
+            <input type="text" name="country" placeholder="Country (BW)" value="BW">
+            <button type="submit">Login</button>
+        </form>
+        
+        <?php if ($result !== null): ?>
+            <hr>
+            <h3>Result:</h3>
+            <pre>
+Success: <?php echo $result['success'] ? 'YES' : 'NO'; ?>
+Message: <?php echo $result['message']; ?>
+<?php if ($result['success'] && isset($result['admin_id'])): ?>
+Admin ID: <?php echo $result['admin_id']; ?>
+<?php endif; ?>
+            </pre>
+        <?php endif; ?>
+        
+        <hr>
+        <h3>Default Credentials (after reset):</h3>
+        <ul>
+            <li><strong>global_admin</strong> / Admin@123456</li>
+            <li><strong>regulator_bob</strong> / Regulator@123</li>
+            <li><strong>compliance_officer</strong> / Compliance@123</li>
+            <li><strong>auditor</strong> / Auditor@123</li>
+        </ul>
+        
+        <p><a href="reset_password.php">Click here to reset passwords first</a></p>
+    </div>
+</body>
+</html>
