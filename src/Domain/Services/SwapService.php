@@ -215,50 +215,76 @@ class SwapService
         error_log("Fee service status: " . ($this->feeService ? "ACTIVE" : "NOT AVAILABLE"));
     }
     
-    /**
-     * Get country data directory path - Compatible with LoadCountry paths
-     */
-    private function getCountryDataDir(): string
-    {
-        $systemCountryFile = __DIR__ . "/../../Core/Config/SystemCountry.php";
-        if (file_exists($systemCountryFile)) {
-            $countryMeta = require $systemCountryFile;
-            $countrySlug = $countryMeta['slug'] ?? 'botswana';
-            
-            $possibleLocations = [
-                dirname(__DIR__, 3) . "/config/countries/" . $countrySlug,
-                __DIR__ . "/../../../config/countries/" . $countrySlug,
-                __DIR__ . "/../../config/countries/" . $countrySlug,
-                getenv('APP_ROOT') . "/config/countries/" . $countrySlug,
-            ];
-            
-            foreach ($possibleLocations as $location) {
-                if (is_dir($location)) {
-                    error_log("[SwapService] Using country data dir: {$location}");
-                    return $location;
-                }
-            }
-        }
-        
-        $possiblePaths = [
-            dirname(__DIR__, 3) . "/config/countries/" . strtolower($this->countryCode),
-            __DIR__ . "/../../../config/countries/" . strtolower($this->countryCode),
-            __DIR__ . "/../../config/countries/" . strtolower($this->countryCode),
-            getenv('APP_ROOT') . "/config/countries/" . strtolower($this->countryCode),
-            __DIR__ . "/../../../../config/countries/" . strtolower($this->countryCode),
-        ];
-        
-        foreach ($possiblePaths as $path) {
-            if (is_dir($path)) {
-                error_log("[SwapService] Using country data dir (fallback): {$path}");
-                return $path;
-            }
-        }
-        
-        $fallback = dirname(__DIR__, 3) . "/config/countries/botswana";
-        error_log("[SwapService] WARNING: Using fallback country data dir: {$fallback}");
-        return $fallback;
+   /**
+ * Get country data directory path - Compatible with LoadCountry paths
+ */
+private function getCountryDataDir(): string
+{
+    // PRIORITY 1: Use the same path structure as LoadCountry
+    // Your actual config files are in src/Core/Config/Countries/{country}/
+    $coreConfigPath = __DIR__ . "/../Core/Config/Countries/" . ucfirst(strtolower($this->countryCode));
+    
+    if (is_dir($coreConfigPath)) {
+        error_log("[SwapService] Found country data dir in core config: {$coreConfigPath}");
+        return $coreConfigPath;
     }
+    
+    // PRIORITY 2: Try with country name (Botswana) not code (BW)
+    $systemCountryFile = __DIR__ . "/../Core/Config/SystemCountry.php";
+    if (file_exists($systemCountryFile)) {
+        $countryMeta = require $systemCountryFile;
+        $countryName = $countryMeta['name'] ?? 'Botswana';
+        $countryPath = __DIR__ . "/../Core/Config/Countries/" . $countryName;
+        
+        if (is_dir($countryPath)) {
+            error_log("[SwapService] Found country data dir using country name: {$countryPath}");
+            return $countryPath;
+        }
+    }
+    
+    // PRIORITY 3: Try with uppercase first letter (Botswana)
+    $upperFirstPath = __DIR__ . "/../Core/Config/Countries/" . ucfirst(strtolower($this->countryCode));
+    if (is_dir($upperFirstPath)) {
+        error_log("[SwapService] Found country data dir using uppercase: {$upperFirstPath}");
+        return $upperFirstPath;
+    }
+    
+    // PRIORITY 4: Try project root relative paths
+    $projectRoot = dirname(__DIR__, 3);
+    $projectPaths = [
+        $projectRoot . "/src/Core/Config/Countries/" . ucfirst(strtolower($this->countryCode)),
+        $projectRoot . "/src/Core/Config/Countries/Botswana",
+        $projectRoot . "/src/Core/Config/Countries/" . $this->countryCode,
+    ];
+    
+    foreach ($projectPaths as $path) {
+        if (is_dir($path)) {
+            error_log("[SwapService] Using country data dir from project root: {$path}");
+            return $path;
+        }
+    }
+    
+    // FALLBACK: Last resort - check all possible locations
+    $possiblePaths = [
+        __DIR__ . "/../Core/Config/Countries/Botswana",
+        __DIR__ . "/../../Core/Config/Countries/Botswana",
+        dirname(__DIR__, 2) . "/Core/Config/Countries/Botswana",
+        dirname(__DIR__, 3) . "/src/Core/Config/Countries/Botswana",
+    ];
+    
+    foreach ($possiblePaths as $path) {
+        if (is_dir($path)) {
+            error_log("[SwapService] Using fallback country data dir: {$path}");
+            return $path;
+        }
+    }
+    
+    // Final fallback - throw helpful error
+    $error = "Could not find country config directory for {$this->countryCode}. ";
+    $error .= "Checked paths: " . implode(', ', $possiblePaths);
+    error_log("[SwapService] ERROR: " . $error);
+    throw new RuntimeException($error);
+}
     
     /**
      * Load ATM notes from configuration
