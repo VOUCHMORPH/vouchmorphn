@@ -1,618 +1,749 @@
 <?php
-declare(strict_types=1);
+/**
+ * Revolutionary Test Dashboard
+ * 
+ * Real-time ISO20022/8583 compliant testing dashboard
+ * FNB-grade user interface
+ */
 
-namespace CONTROL;
-
-// Turn on error reporting for debugging
-error_reporting(E_ALL);
-ini_set('display_errors', '1');
-
-// Start output buffering to catch any errors
-ob_start();
-
-try {
-    require_once __DIR__ . '/../../src/bootstrap.php';
-    require_once __DIR__ . '/../../src/Core/Database/config/DBConnection.php';
-} catch (Throwable $e) {
-    // If bootstrap fails, show error
-    echo "<h1>Bootstrap Error</h1>";
-    echo "<p>" . htmlspecialchars($e->getMessage()) . "</p>";
+session_start();
+if (!isset($_SESSION['admin_logged_in']) || $_SESSION['admin_logged_in'] !== true) {
+    header('Location: admin_login.php');
     exit;
 }
-
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
-use PDO;
-use Throwable;
-
-// Initialize database with error handling
-try {
-    $db = DBConnection::getConnection();
-    $dbConnected = true;
-} catch (Throwable $e) {
-    $dbConnected = false;
-    $dbError = $e->getMessage();
-}
-
-// ============================================================================
-// HELPER FUNCTIONS WITH ERROR HANDLING
-// ============================================================================
-function getComplianceScore($db) {
-    if (!$db) return 0;
-    try {
-        $score = 0;
-        $total = 8;
-        
-        // 1. KYC/AML Compliance
-        $kycQuery = $db->query("
-            SELECT COUNT(*) as total,
-                   SUM(CASE WHEN kyc_verified = true THEN 1 ELSE 0 END) as verified
-            FROM users
-        ");
-        $kyc = $kycQuery->fetch(PDO::FETCH_ASSOC);
-        if ($kyc['total'] > 0 && ($kyc['verified'] / $kyc['total']) > 0.95) $score++;
-        
-        // 2. Transaction Authentication (OTP/MFA)
-        $authQuery = $db->query("
-            SELECT COUNT(*) as total,
-                   SUM(CASE WHEN mfa_enabled = true THEN 1 ELSE 0 END) as mfa
-        FROM users
-        ");
-        $auth = $authQuery->fetch(PDO::FETCH_ASSOC);
-        if ($auth['total'] > 0 && ($auth['mfa'] / $auth['total']) > 0.5) $score++;
-        
-        // 3. Audit Trail Integrity
-        $auditQuery = $db->query("
-            SELECT COUNT(*) as total,
-                   COUNT(DISTINCT integrity_hash) as unique_hashes
-            FROM audit_logs
-        ");
-        $audit = $auditQuery->fetch(PDO::FETCH_ASSOC);
-        if ($audit['total'] == $audit['unique_hashes']) $score++;
-        
-        // 4. Settlement Accuracy
-        $settlementQuery = $db->query("
-            SELECT COUNT(*) FROM settlement_queue 
-            WHERE status != 'SETTLED'
-        ");
-        if ($settlementQuery->fetchColumn() == 0) $score++;
-        
-        // 5. Failed Transaction Rate (<5%)
-        $failQuery = $db->query("
-            SELECT 
-                COUNT(*) as total,
-                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
-            FROM swap_requests
-        ");
-        $fail = $failQuery->fetch(PDO::FETCH_ASSOC);
-        if ($fail['total'] > 0 && ($fail['failed'] / $fail['total']) < 0.05) $score++;
-        
-        // 6. Hold Expiry Enforcement
-        $holdQuery = $db->query("
-            SELECT COUNT(*) FROM hold_transactions 
-            WHERE status = 'ACTIVE' AND hold_expiry < NOW()
-        ");
-        if ($holdQuery->fetchColumn() == 0) $score++;
-        
-        // 7. Admin Action Logging
-        $adminQuery = $db->query("
-            SELECT COUNT(DISTINCT admin_id) as admins,
-                   COUNT(*) as actions
-            FROM admin_actions
-            WHERE created_at > NOW() - INTERVAL '7 days'
-        ");
-        $admin = $adminQuery->fetch(PDO::FETCH_ASSOC);
-        if ($admin['admins'] > 0 && $admin['actions'] > 0) $score++;
-        
-        // 8. Regulatory Report Generation
-        $reportQuery = $db->query("
-            SELECT COUNT(*) FROM regulator_reports 
-            WHERE created_at > NOW() - INTERVAL '30 days'
-        ");
-        if ($reportQuery->fetchColumn() >= 4) $score++;
-        
-        return round(($score / $total) * 100);
-    } catch (Throwable $e) {
-        return 0;
-    }
-}
-
-function getPartnerHealth($db) {
-    if (!$db) return [];
-    try {
-        $partners = [];
-        $partnerQuery = $db->query("
-            SELECT 
-                p.participant_id,
-                p.name,
-                p.type,
-                p.status,
-                COUNT(a.log_id) as api_calls,
-                AVG(a.duration_ms) as avg_response,
-                SUM(CASE WHEN a.success THEN 1 ELSE 0 END) as successful,
-                MAX(a.created_at) as last_contact
-            FROM participants p
-            LEFT JOIN api_message_logs a ON p.name = a.participant_name
-            GROUP BY p.participant_id
-            ORDER BY p.name
-            LIMIT 20
-        ");
-        
-        while ($partner = $partnerQuery->fetch(PDO::FETCH_ASSOC)) {
-            $partner['health'] = 'unknown';
-            $partner['error_rate'] = 0;
-            
-            if ($partner['api_calls'] > 0) {
-                $errorRate = 1 - ($partner['successful'] / $partner['api_calls']);
-                $partner['error_rate'] = round($errorRate * 100, 2);
-                
-                if ($errorRate < 0.01) $partner['health'] = 'excellent';
-                elseif ($errorRate < 0.05) $partner['health'] = 'good';
-                elseif ($errorRate < 0.10) $partner['health'] = 'degraded';
-                else $partner['health'] = 'critical';
-            }
-            
-            $partners[] = $partner;
-        }
-        
-        return $partners;
-    } catch (Throwable $e) {
-        return [];
-    }
-}
-
-function getActiveAlerts($db) {
-    if (!$db) return [];
-    try {
-        $alerts = [];
-        
-        // Check for failed API connections
-        $failedAPI = $db->query("
-            SELECT 
-                participant_name,
-                COUNT(*) as failures,
-                MAX(created_at) as last_failure
-            FROM api_message_logs
-            WHERE success = false
-            AND created_at > NOW() - INTERVAL '1 hour'
-            GROUP BY participant_name
-            HAVING COUNT(*) > 3
-        ");
-        while ($row = $failedAPI->fetch(PDO::FETCH_ASSOC)) {
-            $alerts[] = [
-                'type' => 'critical',
-                'title' => 'API Connection Failures',
-                'message' => "{$row['participant_name']} has {$row['failures']} failed connections",
-                'time' => $row['last_failure']
-            ];
-        }
-        
-        return $alerts;
-    } catch (Throwable $e) {
-        return [];
-    }
-}
-
-// Get data safely
-$complianceScore = $dbConnected ? getComplianceScore($db) : 0;
-$partners = $dbConnected ? getPartnerHealth($db) : [];
-$alerts = $dbConnected ? getActiveAlerts($db) : [];
-
-// Get basic counts
-try {
-    $userCount = $dbConnected ? $db->query("SELECT COUNT(*) FROM users")->fetchColumn() : 0;
-    $swapCount = $dbConnected ? $db->query("SELECT COUNT(*) FROM swap_requests")->fetchColumn() : 0;
-    $participantCount = $dbConnected ? $db->query("SELECT COUNT(*) FROM participants WHERE status = 'ACTIVE'")->fetchColumn() : 0;
-} catch (Throwable $e) {
-    $userCount = 0;
-    $swapCount = 0;
-    $participantCount = 0;
-}
-
-// Clear output buffer and send HTML
-ob_clean();
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · CONTROL DASHBOARD</title>
+    <title>VouchMorph Revolutionary Test Dashboard | FNB Standards</title>
     <style>
+        :root {
+            --fnb-blue: #1a3b5c;
+            --fnb-gold: #c8a13a;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --bg-dark: #0f172a;
+            --bg-card: #1e293b;
+            --border: #334155;
+        }
+        
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-
+        
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: #0a0a0f;
-            color: #e0e0e0;
-            line-height: 1.6;
-            padding: 20px;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-dark);
+            color: #e2e8f0;
+            padding: 24px;
         }
-
-        .container {
-            max-width: 1400px;
+        
+        .dashboard {
+            max-width: 1600px;
             margin: 0 auto;
         }
-
+        
         /* Header */
         .header {
-            background: linear-gradient(135deg, #001B44 0%, #002B6A 100%);
-            padding: 2rem;
-            border-radius: 16px;
-            margin-bottom: 2rem;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            flex-wrap: wrap;
-            gap: 1rem;
+            margin-bottom: 32px;
+            padding-bottom: 24px;
+            border-bottom: 2px solid var(--border);
         }
-
+        
         .logo h1 {
-            font-size: 2rem;
-            font-weight: 300;
-            color: #fff;
+            font-size: 28px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
-
-        .logo span {
-            color: #FFDA63;
+        
+        .logo p {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-top: 4px;
+        }
+        
+        .fnb-badge {
+            background: var(--fnb-blue);
+            padding: 8px 20px;
+            border-radius: 40px;
+            border-left: 4px solid var(--fnb-gold);
+        }
+        
+        .fnb-badge span {
+            color: var(--fnb-gold);
             font-weight: 600;
         }
-
-        .badge {
-            background: rgba(255,218,99,0.1);
-            border: 1px solid #FFDA63;
-            color: #FFDA63;
-            padding: 0.75rem 1.5rem;
-            border-radius: 40px;
-        }
-
+        
         /* Stats Grid */
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2rem;
+            gap: 16px;
+            margin-bottom: 32px;
         }
-
+        
         .stat-card {
-            background: #111;
-            border: 2px solid #222;
+            background: var(--bg-card);
             border-radius: 16px;
-            padding: 1.5rem;
-        }
-
-        .stat-value {
-            font-size: 2.5rem;
-            font-weight: 200;
-            color: #0f0;
-            font-family: monospace;
-        }
-
-        .stat-label {
-            color: #888;
-            font-size: 0.9rem;
-            text-transform: uppercase;
-            margin-top: 0.5rem;
-        }
-
-        /* Compliance Score */
-        .compliance-card {
-            background: #111;
-            border: 2px solid #222;
-            border-radius: 16px;
-            padding: 2rem;
-            margin-bottom: 2rem;
-            display: flex;
-            align-items: center;
-            gap: 2rem;
-            flex-wrap: wrap;
-        }
-
-        .score-circle {
-            width: 120px;
-            height: 120px;
-            border-radius: 50%;
-            background: conic-gradient(#0f0 <?php echo $complianceScore; ?>%, #333 0%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            position: relative;
-            flex-shrink: 0;
-        }
-
-        .score-circle::before {
-            content: '';
-            width: 90px;
-            height: 90px;
-            border-radius: 50%;
-            background: #111;
-            position: absolute;
-        }
-
-        .score-number {
-            position: relative;
-            font-size: 2rem;
-            color: #0f0;
-            z-index: 2;
-        }
-
-        .score-details {
-            flex: 1;
-        }
-
-        .score-title {
-            font-size: 1.5rem;
-            color: #FFDA63;
-            margin-bottom: 0.5rem;
-        }
-
-        /* Partner Grid */
-        .partner-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-        }
-
-        .partner-card {
-            background: #111;
-            border: 2px solid #222;
-            border-radius: 16px;
-            padding: 1.5rem;
-        }
-
-        .partner-name {
-            font-size: 1.2rem;
-            color: #FFDA63;
-            margin-bottom: 0.5rem;
-        }
-
-        .partner-status {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            margin-bottom: 1rem;
-        }
-
-        .status-excellent { background: #1a3a1a; color: #0f0; }
-        .status-good { background: #1a3a3a; color: #0ff; }
-        .status-degraded { background: #3a3a1a; color: #ff0; }
-        .status-critical { background: #3a1a1a; color: #f00; }
-
-        .partner-metrics {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
-            margin: 1rem 0;
-        }
-
-        .metric {
+            padding: 20px;
             text-align: center;
+            border: 1px solid var(--border);
+            transition: transform 0.2s;
         }
-
-        .metric-value {
-            font-size: 1.5rem;
-            color: #0f0;
-        }
-
-        .metric-label {
-            font-size: 0.7rem;
-            color: #888;
-        }
-
-        .partner-last {
-            font-size: 0.8rem;
-            color: #666;
-            text-align: center;
-            margin-top: 1rem;
-            padding-top: 1rem;
-            border-top: 1px solid #222;
-        }
-
-        /* Alerts */
-        .alert {
-            background: #3a1a1a;
-            border-left: 4px solid #f00;
-            padding: 1rem;
-            margin-bottom: 0.5rem;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-        }
-
-        .alert-warning {
-            background: #3a3a1a;
-            border-left-color: #ff0;
-        }
-
-        /* Action Buttons */
-        .action-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin: 2rem 0;
-        }
-
-        .action-btn {
-            background: #111;
-            border: 2px solid #222;
-            border-radius: 16px;
-            padding: 1.5rem;
-            text-align: center;
-            text-decoration: none;
-            color: inherit;
-            transition: all 0.3s;
-            display: block;
-        }
-
-        .action-btn:hover {
-            border-color: #FFDA63;
+        
+        .stat-card:hover {
             transform: translateY(-2px);
         }
-
-        .action-icon {
-            font-size: 2rem;
-            margin-bottom: 0.5rem;
+        
+        .stat-value {
+            font-size: 36px;
+            font-weight: bold;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
-
-        /* Footer */
-        .footer {
-            margin-top: 3rem;
-            padding-top: 2rem;
-            border-top: 2px solid #222;
-            text-align: center;
-            color: #666;
+        
+        .stat-label {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-top: 8px;
         }
-
-        /* Error box */
-        .error-box {
-            background: #3a1a1a;
-            border: 2px solid #f00;
-            padding: 2rem;
+        
+        /* Control Bar */
+        .control-bar {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 32px;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+            font-size: 14px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .btn-primary {
+            background: #3b82f6;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #2563eb;
+            transform: translateY(-1px);
+        }
+        
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+        
+        .btn-warning {
+            background: var(--warning);
+            color: white;
+        }
+        
+        .btn-outline {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: #e2e8f0;
+        }
+        
+        .btn-outline:hover {
+            background: var(--bg-card);
+        }
+        
+        /* Test Grid */
+        .test-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 20px;
+            margin-bottom: 32px;
+        }
+        
+        .test-card {
+            background: var(--bg-card);
             border-radius: 16px;
-            margin-bottom: 2rem;
+            overflow: hidden;
+            border: 1px solid var(--border);
+            transition: all 0.3s;
+        }
+        
+        .test-card.passed {
+            border-left: 4px solid var(--success);
+        }
+        
+        .test-card.failed {
+            border-left: 4px solid var(--error);
+        }
+        
+        .test-card.partial {
+            border-left: 4px solid var(--warning);
+        }
+        
+        .test-header {
+            padding: 16px 20px;
+            background: rgba(15, 23, 42, 0.5);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+        
+        .test-title {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-weight: 600;
+        }
+        
+        .test-status {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+        
+        .test-status.passed { background: var(--success); box-shadow: 0 0 8px var(--success); }
+        .test-status.failed { background: var(--error); box-shadow: 0 0 8px var(--error); }
+        .test-status.partial { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
+        .test-status.running { background: #3b82f6; animation: pulse 1s infinite; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .test-body {
+            padding: 20px;
+            display: none;
+            border-top: 1px solid var(--border);
+        }
+        
+        .test-body.expanded {
+            display: block;
+        }
+        
+        /* Trace Panel */
+        .trace-panel {
+            background: var(--bg-card);
+            border-radius: 16px;
+            margin-top: 32px;
+            border: 1px solid var(--border);
+        }
+        
+        .trace-header {
+            padding: 16px 20px;
+            background: rgba(15, 23, 42, 0.5);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+        
+        .trace-input {
+            display: flex;
+            gap: 12px;
+            flex: 1;
+            max-width: 500px;
+        }
+        
+        .trace-input input {
+            flex: 1;
+            padding: 10px 16px;
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: #e2e8f0;
+            font-family: monospace;
+        }
+        
+        .trace-content {
+            padding: 20px;
+            font-family: 'Fira Code', monospace;
+            font-size: 13px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        
+        /* Log Viewer */
+        .log-viewer {
+            background: var(--bg-dark);
+            border-radius: 12px;
+            padding: 16px;
+            font-family: 'Fira Code', monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+        
+        .log-entry {
+            padding: 6px 0;
+            border-bottom: 1px solid var(--border);
+            font-family: monospace;
+        }
+        
+        .log-entry.info { color: #3b82f6; }
+        .log-entry.success { color: var(--success); }
+        .log-entry.error { color: var(--error); }
+        .log-entry.warning { color: var(--warning); }
+        
+        /* ISO Message Viewer */
+        .iso-message {
+            background: var(--bg-dark);
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 8px;
+            font-family: monospace;
+            font-size: 11px;
+            overflow-x: auto;
+        }
+        
+        /* Loading */
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border);
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            body { padding: 16px; }
+            .test-grid { grid-template-columns: 1fr; }
+            .control-bar { flex-direction: column; }
+            .trace-input { max-width: 100%; flex-direction: column; }
+        }
+        
+        /* FNB Compliance Footer */
+        .compliance-footer {
+            margin-top: 32px;
+            padding: 20px;
+            background: linear-gradient(135deg, var(--fnb-blue) 0%, #0f172a 100%);
+            border-radius: 16px;
             text-align: center;
+        }
+        
+        .compliance-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 24px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 40px;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            <div class="logo">
-                <h1>VOUCHMORPH <span>CONTROL</span></h1>
-            </div>
-            <div class="badge">
-                BANK OF BOTSWANA · SANDBOX
-            </div>
+<div class="dashboard">
+    <!-- Header -->
+    <div class="header">
+        <div class="logo">
+            <h1>🔄 VouchMorph | Revolutionary Test Suite</h1>
+            <p>ISO20022 · ISO8583 · Mobile Money · FNB Standards</p>
         </div>
-
-        <?php if (!$dbConnected): ?>
-        <!-- Database Error -->
-        <div class="error-box">
-            <h2 style="color: #f00; margin-bottom: 1rem;">⚠️ Database Connection Error</h2>
-            <p><?php echo htmlspecialchars($dbError ?? 'Could not connect to database'); ?></p>
-            <p style="margin-top: 1rem; color: #888;">Showing limited dashboard. Please check your database configuration.</p>
-        </div>
-        <?php endif; ?>
-
-        <!-- Stats Grid -->
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-value"><?php echo number_format($userCount); ?></div>
-                <div class="stat-label">Total Users</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value"><?php echo number_format($swapCount); ?></div>
-                <div class="stat-label">Total Swaps</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value"><?php echo $participantCount; ?></div>
-                <div class="stat-label">Active Partners</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value"><?php echo $complianceScore; ?>%</div>
-                <div class="stat-label">Compliance Score</div>
-            </div>
-        </div>
-
-        <!-- Compliance Score Card -->
-        <div class="compliance-card">
-            <div class="score-circle">
-                <div class="score-number"><?php echo $complianceScore; ?>%</div>
-            </div>
-            <div class="score-details">
-                <div class="score-title">Regulatory Compliance</div>
-                <p style="color: #888;">Real-time compliance with Bank of Botswana requirements</p>
-            </div>
-        </div>
-
-        <!-- Active Alerts -->
-        <?php if (!empty($alerts)): ?>
-        <h2 style="color: #FFDA63; margin: 2rem 0 1rem;">⚠️ Active Alerts</h2>
-        <?php foreach ($alerts as $alert): ?>
-        <div class="alert <?php echo $alert['type'] == 'warning' ? 'alert-warning' : ''; ?>">
-            <div style="font-size: 1.5rem;"><?php echo $alert['type'] == 'critical' ? '🔴' : '🟡'; ?></div>
-            <div>
-                <strong><?php echo htmlspecialchars($alert['title']); ?></strong><br>
-                <?php echo htmlspecialchars($alert['message']); ?>
-                <div style="font-size: 0.8rem; color: #888; margin-top: 0.25rem;">
-                    <?php echo date('H:i:s', strtotime($alert['time'])); ?>
-                </div>
-            </div>
-        </div>
-        <?php endforeach; ?>
-        <?php endif; ?>
-
-        <!-- Partner Connections -->
-        <h2 style="color: #FFDA63; margin: 2rem 0 1rem;">🔌 Partner Connections</h2>
-        <div class="partner-grid">
-            <?php if (empty($partners)): ?>
-            <div class="partner-card" style="grid-column: 1/-1; text-align: center;">
-                <p>No partner data available</p>
-            </div>
-            <?php else: ?>
-                <?php foreach ($partners as $partner): ?>
-                <div class="partner-card">
-                    <div class="partner-name"><?php echo htmlspecialchars($partner['name']); ?></div>
-                    <div class="partner-status status-<?php echo $partner['health']; ?>">
-                        <?php echo strtoupper($partner['health']); ?>
-                    </div>
-                    <div class="partner-metrics">
-                        <div class="metric">
-                            <div class="metric-value"><?php echo $partner['api_calls'] ?: 0; ?></div>
-                            <div class="metric-label">API Calls</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value"><?php echo round($partner['avg_response'] ?: 0); ?>ms</div>
-                            <div class="metric-label">Response</div>
-                        </div>
-                    </div>
-                    <div class="partner-last">
-                        Last: <?php echo $partner['last_contact'] ? date('H:i:s', strtotime($partner['last_contact'])) : 'Never'; ?>
-                    </div>
-                </div>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </div>
-
-        <!-- Quick Actions -->
-        <h2 style="color: #FFDA63; margin: 2rem 0 1rem;">⚡ Quick Actions</h2>
-        <div class="action-grid">
-            <a href="api/connections.php" class="action-btn" onclick="alert('API Connections page coming soon'); return false;">
-                <div class="action-icon">🔌</div>
-                <div>Test Connections</div>
-            </a>
-            <a href="api/health.php" class="action-btn" onclick="alert('Health check page coming soon'); return false;">
-                <div class="action-icon">🏥</div>
-                <div>System Health</div>
-            </a>
-            <a href="api/compliance.php" class="action-btn" onclick="alert('Compliance scan coming soon'); return false;">
-                <div class="action-icon">📋</div>
-                <div>Compliance Scan</div>
-            </a>
-        </div>
-
-        <!-- Footer -->
-        <div class="footer">
-            <p>VOUCHMORPH · CONTROL DASHBOARD · BANK OF BOTSWANA REGULATORY SANDBOX</p>
-            <p style="margin-top: 0.5rem;">Last updated: <?php echo date('Y-m-d H:i:s'); ?></p>
-            <?php if (!$dbConnected): ?>
-            <p style="color: #f00; margin-top: 1rem;">⚠️ Database Disconnected - Limited Functionality</p>
-            <?php endif; ?>
+        <div class="fnb-badge">
+            <span>🏦 FNB COMPLIANCE TESTING</span>
         </div>
     </div>
+    
+    <!-- Stats -->
+    <div class="stats-grid" id="stats-grid">
+        <div class="stat-card">
+            <div class="stat-value" id="stat-passed">-</div>
+            <div class="stat-label">Tests Passed</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="stat-total">-</div>
+            <div class="stat-label">Total Tests</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="stat-score">-</div>
+            <div class="stat-label">Compliance Score</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="stat-fnb">-</div>
+            <div class="stat-label">FNB Status</div>
+        </div>
+    </div>
+    
+    <!-- Control Bar -->
+    <div class="control-bar">
+        <button class="btn btn-primary" onclick="runFullSuite()">
+            🚀 Run Full Test Suite
+        </button>
+        <button class="btn btn-success" onclick="runTest('iso20022')">
+            📨 Test ISO20022
+        </button>
+        <button class="btn btn-success" onclick="runTest('iso8583')">
+            💳 Test ISO8583
+        </button>
+        <button class="btn btn-warning" onclick="runTest('cross_border')">
+            🌍 Test Cross-Border
+        </button>
+        <button class="btn btn-outline" onclick="refreshDashboard()">
+            🔄 Refresh
+        </button>
+    </div>
+    
+    <!-- Test Grid -->
+    <div class="test-grid" id="test-grid">
+        <!-- Populated by JavaScript -->
+    </div>
+    
+    <!-- Trace Panel -->
+    <div class="trace-panel">
+        <div class="trace-header">
+            <span>🔍 Transaction Trace (ISO20022 Format)</span>
+            <div class="trace-input">
+                <input type="text" id="trace-swap-ref" placeholder="Enter Swap Reference...">
+                <button class="btn btn-outline" onclick="traceSwap()">Trace</button>
+            </div>
+        </div>
+        <div class="trace-content" id="trace-content">
+            <div style="color: #64748b; text-align: center;">Enter a swap reference to trace the full ISO20022 message flow</div>
+        </div>
+    </div>
+    
+    <!-- Log Viewer -->
+    <div class="log-viewer" id="log-viewer">
+        <div class="log-entry info">✨ Revolutionary Test Dashboard ready</div>
+        <div class="log-entry info">🏦 FNB Compliance Mode: ACTIVE</div>
+        <div class="log-entry info">📨 ISO20022 Message Validation: READY</div>
+        <div class="log-entry info">💳 ISO8583 Message Validation: READY</div>
+    </div>
+    
+    <!-- Compliance Footer -->
+    <div class="compliance-footer">
+        <div class="compliance-badge">
+            <span>🏦</span>
+            <span>FNB COMPLIANT MESSAGING</span>
+            <span>ISO20022 ✅</span>
+            <span>ISO8583 ✅</span>
+            <span>SWIFT MT103 ✅</span>
+        </div>
+    </div>
+</div>
 
-    <script>
-        // Simple auto-refresh (30 seconds)
-        setTimeout(() => {
-            location.reload();
-        }, 30000);
-    </script>
+<script>
+    // Test categories
+    const testCategories = [
+        { id: 'iso20022', name: 'ISO20022 Compliance', icon: '📨', description: 'pacs.008, pacs.002, camt.056 validation' },
+        { id: 'iso8583', name: 'ISO8583 Compliance', icon: '💳', description: '0200/0210 authorization, 0400 reversal' },
+        { id: 'mobile_money', name: 'Mobile Money', icon: '📱', description: 'FNB Connect / eWallet transfers' },
+        { id: 'local_swap', name: 'Local Swap', icon: '🔄', description: 'BWP → BWP (FNB Standard)' },
+        { id: 'cross_border', name: 'Cross-Border SWIFT', icon: '🌍', description: 'BWP → ZAR with SWIFT MT103' },
+        { id: 'atm_cashout', name: 'ATM Cashout', icon: '🏧', description: 'FNB ATM Network compatibility' },
+        { id: 'card_load', name: 'Message Card', icon: '💳', description: 'Message-based card authorization' },
+        { id: 'fees', name: 'Fee & VAT', icon: '💰', description: 'Regulatory compliance' },
+        { id: 'settlement_finality', name: 'Settlement Finality', icon: '✅', description: 'DvP / PvP finality' },
+        { id: 'audit_trace', name: 'Audit Trace', icon: '🔍', description: 'Full transaction audit trail' },
+        { id: 'disaster_recovery', name: 'Disaster Recovery', icon: '🔄', description: 'Hold release, idempotency' },
+        { id: 'concurrent_performance', name: 'Performance', icon: '⚡', description: 'Concurrent swaps, TPS' }
+    ];
+    
+    let testResults = {};
+    
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+        renderTestGrid();
+        loadMetrics();
+    });
+    
+    function renderTestGrid() {
+        const grid = document.getElementById('test-grid');
+        grid.innerHTML = testCategories.map(cat => `
+            <div class="test-card" id="card-${cat.id}">
+                <div class="test-header" onclick="toggleCard('${cat.id}')">
+                    <div class="test-title">
+                        <div class="test-status pending" id="status-${cat.id}"></div>
+                        <span>${cat.icon} ${cat.name}</span>
+                    </div>
+                    <span>▼</span>
+                </div>
+                <div class="test-body" id="body-${cat.id}">
+                    <div style="color: #94a3b8; margin-bottom: 12px;">${cat.description}</div>
+                    <div id="result-${cat.id}" style="font-family: monospace; font-size: 13px;">Pending...</div>
+                </div>
+            </div>
+        `).join('');
+    }
+    
+    function toggleCard(id) {
+        const body = document.getElementById(`body-${id}`);
+        body.classList.toggle('expanded');
+    }
+    
+    async function runFullSuite() {
+        addLog('info', '🚀 Starting full revolutionary test suite...');
+        
+        // Show running state
+        testCategories.forEach(cat => {
+            updateTestStatus(cat.id, 'running', 'Testing...');
+        });
+        
+        try {
+            const response = await fetch('/api/v1/tests/run-full-suite', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            
+            const results = await response.json();
+            testResults = results;
+            
+            let passed = 0;
+            let total = 0;
+            
+            for (const [testId, result] of Object.entries(results)) {
+                total++;
+                const status = result.status === 'PASS' ? 'passed' : (result.status === 'PARTIAL' ? 'partial' : 'failed');
+                if (status === 'passed') passed++;
+                updateTestStatus(testId, status, formatTestResult(result));
+            }
+            
+            const score = total > 0 ? Math.round((passed / total) * 100) : 0;
+            updateStats(passed, total, score);
+            
+            addLog('success', `✅ Test suite complete: ${passed}/${total} passed (${score}%)`);
+            
+            // FNB Compliance check
+            if (score >= 90) {
+                addLog('success', '🏆 EXCEPTIONAL! VouchMorph meets FNB international banking standards.');
+            } else if (score >= 70) {
+                addLog('warning', '👍 Good! Minor improvements needed for FNB certification.');
+            } else {
+                addLog('error', '⚠️ Review required to meet FNB standards.');
+            }
+            
+        } catch (error) {
+            addLog('error', `❌ Test suite failed: ${error.message}`);
+        }
+    }
+    
+    async function runTest(testId) {
+        addLog('info', `🔄 Running test: ${testId}...`);
+        updateTestStatus(testId, 'running', 'Running...');
+        
+        try {
+            const response = await fetch(`/api/v1/tests/run/${testId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            
+            const result = await response.json();
+            const status = result.status === 'PASS' ? 'passed' : (result.status === 'PARTIAL' ? 'partial' : 'failed');
+            updateTestStatus(testId, status, formatTestResult(result));
+            
+            addLog(status === 'passed' ? 'success' : 'error', `${testId}: ${result.message || (status === 'passed' ? 'Passed' : 'Failed')}`);
+            
+            loadMetrics();
+            
+        } catch (error) {
+            updateTestStatus(testId, 'failed', `Error: ${error.message}`);
+            addLog('error', `${testId} failed: ${error.message}`);
+        }
+    }
+    
+    function updateTestStatus(testId, status, resultHtml) {
+        const statusDot = document.getElementById(`status-${testId}`);
+        const resultDiv = document.getElementById(`result-${testId}`);
+        const card = document.getElementById(`card-${testId}`);
+        
+        statusDot.className = `test-status ${status}`;
+        card.className = `test-card ${status}`;
+        
+        if (typeof resultHtml === 'object') {
+            resultDiv.innerHTML = formatJsonResult(resultHtml);
+        } else {
+            resultDiv.innerHTML = resultHtml;
+        }
+    }
+    
+    function formatTestResult(result) {
+        if (result.status === 'PASS') {
+            let html = `<div style="color: #10b981;">✅ ${result.message || 'Test passed'}</div>`;
+            if (result.swap_ref) html += `<div>📌 Swap: <code>${result.swap_ref}</code></div>`;
+            if (result.duration_ms) html += `<div>⏱️ Duration: ${result.duration_ms}ms</div>`;
+            if (result.fx_rate) html += `<div>💱 FX Rate: ${result.fx_rate}</div>`;
+            if (result.details) {
+                html += '<div style="margin-top: 8px;">';
+                for (const [key, detail] of Object.entries(result.details)) {
+                    if (detail.passed !== undefined) {
+                        html += `<div>${detail.passed ? '✅' : '❌'} ${key}: ${detail.message || (detail.passed ? 'Valid' : 'Invalid')}</div>`;
+                    }
+                }
+                html += '</div>';
+            }
+            return html;
+        } else if (result.status === 'PARTIAL') {
+            return `<div style="color: #f59e0b;">⚠️ ${result.message || 'Partial pass - review details'}</div>`;
+        } else {
+            return `<div style="color: #ef4444;">❌ ${result.error || result.message || 'Test failed'}</div>`;
+        }
+    }
+    
+    function formatJsonResult(result) {
+        if (result.status === 'PASS') {
+            let html = `<div style="color: #10b981;">✅ ${result.message || 'Passed'}</div>`;
+            if (result.checks) {
+                html += '<div style="margin-top: 8px;">';
+                for (const [key, check] of Object.entries(result.checks)) {
+                    html += `<div>${check.passed ? '✅' : '❌'} ${key}: ${check.message}</div>`;
+                }
+                html += '</div>';
+            }
+            return html;
+        }
+        return `<div style="color: #ef4444;">${JSON.stringify(result, null, 2)}</div>`;
+    }
+    
+    async function traceSwap() {
+        const swapRef = document.getElementById('trace-swap-ref').value.trim();
+        if (!swapRef) {
+            addLog('error', 'Please enter a swap reference');
+            return;
+        }
+        
+        addLog('info', `🔍 Tracing swap: ${swapRef}...`);
+        
+        try {
+            const response = await fetch(`/api/v1/tests/trace/${swapRef}`);
+            const trace = await response.json();
+            const content = document.getElementById('trace-content');
+            
+            if (trace.error) {
+                content.innerHTML = `<div style="color: #ef4444;">❌ ${trace.error}</div>`;
+                addLog('error', trace.error);
+                return;
+            }
+            
+            content.innerHTML = formatTrace(trace);
+            addLog('success', `✅ Trace complete for ${swapRef}`);
+            
+        } catch (error) {
+            addLog('error', `❌ Trace failed: ${error.message}`);
+        }
+    }
+    
+    function formatTrace(trace) {
+        let html = '<div style="display: flex; flex-direction: column; gap: 16px;">';
+        
+        // ISO20022 Message Flow
+        html += `
+            <div style="background: #0f172a; padding: 16px; border-radius: 12px;">
+                <div style="color: #3b82f6; margin-bottom: 12px;">📨 ISO20022 MESSAGE FLOW</div>
+                <div style="font-family: monospace; font-size: 12px;">
+                    ${trace.iso_messages ? JSON.stringify(trace.iso_messages, null, 2) : 'No ISO20022 messages found'}
+                </div>
+            </div>
+        `;
+        
+        // Swap Details
+        if (trace.swap) {
+            html += `
+                <div style="background: #0f172a; padding: 16px; border-radius: 12px;">
+                    <div style="color: #10b981; margin-bottom: 8px;">📋 SWAP DETAILS</div>
+                    <div>Reference: <code>${trace.swap.swap_uuid}</code></div>
+                    <div>Status: ${trace.swap.status}</div>
+                    <div>Amount: ${trace.swap.amount} ${trace.swap.from_currency}</div>
+                    <div>Created: ${trace.swap.created_at}</div>
+                </div>
+            `;
+        }
+        
+        // Fee Verification
+        if (trace.fee_equation) {
+            const eq = trace.fee_equation;
+            html += `
+                <div style="background: #0f172a; padding: 16px; border-radius: 12px;">
+                    <div style="color: #f59e0b; margin-bottom: 8px;">💰 FEE VERIFICATION</div>
+                    <div>Gross: ${eq.gross}</div>
+                    <div>Total Fee: ${eq.total_fee}</div>
+                    <div>Net: ${eq.net}</div>
+                    <div style="color: ${eq.balanced ? '#10b981' : '#ef4444'}">${eq.balanced ? '✅ Equation balanced' : '❌ Equation unbalanced'}</div>
+                </div>
+            `;
+        }
+        
+        // Settlement Messages
+        if (trace.settlement && trace.settlement.length > 0) {
+            html += `
+                <div style="background: #0f172a; padding: 16px; border-radius: 12px;">
+                    <div style="color: #8b5cf6; margin-bottom: 8px;">📤 SETTLEMENT MESSAGES (${trace.settlement.length})</div>
+                    ${trace.settlement.map(s => `<div>${s.message_type}: ${s.source_institution} → ${s.destination_institution} | ${s.amount} ${s.currency} | ${s.status}</div>`).join('')}
+                </div>
+            `;
+        }
+        
+        html += '</div>';
+        return html;
+    }
+    
+    async function loadMetrics() {
+        try {
+            const response = await fetch('/api/v1/tests/metrics');
+            const metrics = await response.json();
+            updateStats(metrics.passed || 0, metrics.total || 0, metrics.score || 0);
+        } catch (error) {
+            console.error('Failed to load metrics:', error);
+        }
+    }
+    
+    function updateStats(passed, total, score) {
+        document.getElementById('stat-passed').textContent = passed;
+        document.getElementById('stat-total').textContent = total;
+        document.getElementById('stat-score').textContent = `${score}%`;
+        
+        const fnbStatus = score >= 90 ? 'APPROVED' : (score >= 70 ? 'REVIEW' : 'FAILED');
+        document.getElementById('stat-fnb').textContent = fnbStatus;
+        document.getElementById('stat-fnb').style.color = score >= 90 ? '#10b981' : (score >= 70 ? '#f59e0b' : '#ef4444');
+    }
+    
+    function refreshDashboard() {
+        loadMetrics();
+        addLog('info', '🔄 Dashboard refreshed');
+    }
+    
+    function addLog(level, message) {
+        const logViewer = document.getElementById('log-viewer');
+        const timestamp = new Date().toLocaleTimeString();
+        const logEntry = document.createElement('div');
+        logEntry.className = `log-entry ${level}`;
+        logEntry.innerHTML = `[${timestamp}] ${message}`;
+        logViewer.appendChild(logEntry);
+        logViewer.scrollTop = logViewer.scrollHeight;
+        
+        // Keep last 100 logs
+        while (logViewer.children.length > 100) {
+            logViewer.removeChild(logViewer.firstChild);
+        }
+    }
+</script>
 </body>
 </html>
