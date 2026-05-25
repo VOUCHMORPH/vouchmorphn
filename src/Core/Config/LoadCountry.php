@@ -16,87 +16,153 @@ final class LoadCountry
         $countrySlug = defined('SYSTEM_COUNTRY_SLUG')
             ? SYSTEM_COUNTRY_SLUG
             : ($countryMeta['slug'] ?? strtolower($country));
+        
+        // Get country code (BW, NG, KE, etc.)
+        $countryCode = defined('SYSTEM_COUNTRY_CODE')
+            ? SYSTEM_COUNTRY_CODE
+            : ($countryMeta['code'] ?? 'BW');
 
-        $configFile       = dirname(__DIR__, 3) . "/src/Core/Config/Countries/{$country}/config.php";
-        $participantsFile = dirname(__DIR__, 3) . "/config/countries/{$countrySlug}/participants.json";
-        $feesFile         = dirname(__DIR__, 3) . "/config/countries/{$countrySlug}/fees.json";
+        // Project root path
+        $projectRoot = dirname(__DIR__, 3);
+        
+        // Config file paths - ALL in src/Core/Config/Countries/{country}/
+        $configFile       = $projectRoot . "/src/Core/Config/Countries/{$country}/config.php";
+        $databaseFile     = $projectRoot . "/src/Core/Config/Countries/{$country}/database.php";
+        $participantsFile = $projectRoot . "/src/Core/Config/Countries/{$country}/participants.json";
+        $feesFile         = $projectRoot . "/src/Core/Config/Countries/{$country}/fees.json";
 
         $countryConfig = [];
+        
+        // Load main config
         if (file_exists($configFile)) {
             $countryConfig = require $configFile;
+            error_log("Loaded config from: {$configFile}");
+        } else {
+            error_log("Config file not found: {$configFile}");
         }
 
-        // Check for participants file in alternative location
-        if (!file_exists($participantsFile)) {
-            // Try alternative path
-            $altParticipantsFile = dirname(__DIR__, 3) . "/src/Core/Config/Countries/{$country}/participants.json";
-            if (file_exists($altParticipantsFile)) {
-                $participantsFile = $altParticipantsFile;
-            } else {
-                error_log("Participants file error: Missing {$participantsFile}");
-                // Don't die, use default
-                $participantsConfig = ['participants' => [], 'api_keys' => []];
-            }
-        }
-
+        // Load participants
         if (file_exists($participantsFile)) {
             $participantsConfig = json_decode((string) file_get_contents($participantsFile), true);
-            if (json_last_error() !== JSON_ERROR_NONE) {
+            if (json_last_error() === JSON_ERROR_NONE) {
+                $countryConfig['participants'] = $participantsConfig['participants'] ?? [];
+                $countryConfig['api_keys']     = $participantsConfig['api_keys'] ?? [];
+                error_log("Loaded participants from: {$participantsFile}");
+            } else {
                 error_log("JSON parse error in participants file: " . json_last_error_msg());
-                $participantsConfig = ['participants' => [], 'api_keys' => []];
             }
-            $countryConfig['participants'] = $participantsConfig['participants'] ?? [];
-            $countryConfig['api_keys']     = $participantsConfig['api_keys'] ?? [];
         } else {
+            error_log("Participants file not found: {$participantsFile}");
             $countryConfig['participants'] = [];
             $countryConfig['api_keys'] = [];
         }
 
-        if (!file_exists($feesFile)) {
-            error_log("Fees file missing: {$feesFile}");
-            $feesConfig = ['fees' => []];
-        } else {
+        // Load fees
+        if (file_exists($feesFile)) {
             $feesConfig = json_decode((string) file_get_contents($feesFile), true);
-            if (json_last_error() !== JSON_ERROR_NONE) {
+            if (json_last_error() === JSON_ERROR_NONE) {
+                $countryConfig['fees'] = self::resolveFees($feesConfig);
+                error_log("Loaded fees from: {$feesFile}");
+            } else {
                 error_log("JSON parse error in fees file: " . json_last_error_msg());
-                $feesConfig = ['fees' => []];
+            }
+        } else {
+            error_log("Fees file not found: {$feesFile}");
+            $countryConfig['fees'] = [];
+        }
+
+        // ============================================================
+        // DATABASE CONFIGURATION - Each country has its own database
+        // ============================================================
+        // Load database configuration for this specific country
+        if (file_exists($databaseFile)) {
+            $dbConfig = require $databaseFile;
+            $countryConfig['db']['swap'] = $dbConfig;
+            error_log("Loaded database for {$country} from: {$databaseFile}");
+        } else {
+            error_log("Database file not found: {$databaseFile}, using environment variables for {$countryCode}");
+            
+            // Fallback: Build database config from environment variables
+            // Each country should have its own environment variables
+            $dbName = getenv("DB_NAME_{$countryCode}") ?: getenv('DB_NAME') ?: "swap_system_" . strtolower($countryCode);
+            $dbHost = getenv("DB_HOST_{$countryCode}") ?: getenv('DB_HOST') ?: 'localhost';
+            $dbPort = getenv("DB_PORT_{$countryCode}") ?: getenv('DB_PORT') ?: '5432';
+            $dbUser = getenv("DB_USER_{$countryCode}") ?: getenv('DB_USER') ?: 'postgres';
+            $dbPass = getenv("DB_PASS_{$countryCode}") ?: getenv('DB_PASSWORD') ?: '';
+            
+            // Also check for DATABASE_URL specific to this country
+            $databaseUrl = getenv("DATABASE_URL_{$countryCode}") ?: getenv('DATABASE_URL');
+            if ($databaseUrl) {
+                $db = parse_url($databaseUrl);
+                $countryConfig['db']['swap'] = [
+                    'type' => 'pgsql',
+                    'host' => $db['host'] ?? $dbHost,
+                    'port' => (int)($db['port'] ?? $dbPort),
+                    'database' => ltrim($db['path'] ?? '', '/'),
+                    'username' => $db['user'] ?? $dbUser,
+                    'password' => $db['pass'] ?? $dbPass,
+                ];
+            } else {
+                $countryConfig['db']['swap'] = [
+                    'type' => 'pgsql',
+                    'host' => $dbHost,
+                    'port' => (int)$dbPort,
+                    'database' => $dbName,
+                    'username' => $dbUser,
+                    'password' => $dbPass,
+                ];
             }
         }
 
-        $countryConfig['fees'] = self::resolveFees($feesConfig);
-
-        // Database configuration from environment or config file
-        if (!isset($countryConfig['db']['swap']) || empty($countryConfig['db']['swap'])) {
-            $dbName = getenv('PG_NAME') ?: getenv('PG_DB_CORE') ?: ('swap_system_' . strtolower($country));
-            
-            $countryConfig['db']['swap'] = [
-                'type'     => 'pgsql',
-                'name'     => $dbName,
-                'database' => $dbName,
-                'host'     => getenv('PG_HOST') ?: '127.0.0.1',
-                'port'     => (int) (getenv('PG_PORT') ?: 5432),
-                'user'     => getenv('PG_USER') ?: 'postgres',
-                'password' => getenv('PG_PASS') ?: '',
+        // ============================================================
+        // SOURCE PROVIDER CONFIGURATION (CazaCom, etc.) - API based
+        // ============================================================
+        // Source providers are accessed via API, not direct database
+        $countryConfig['source_providers'] = [];
+        
+        // Load source provider config from participants if available
+        if (isset($countryConfig['participants'])) {
+            foreach ($countryConfig['participants'] as $providerName => $providerData) {
+                if (isset($providerData['type']) && $providerData['type'] === 'SOURCE_PROVIDER') {
+                    $countryConfig['source_providers'][$providerName] = [
+                        'type' => 'api',
+                        'name' => $providerData['name'] ?? $providerName,
+                        'api_config' => [
+                            'base_url' => $providerData['base_url'] ?? getenv("{$providerName}_API_URL"),
+                            'api_key' => $providerData['api_key'] ?? getenv("{$providerName}_API_KEY"),
+                            'api_secret' => $providerData['api_secret'] ?? getenv("{$providerName}_API_SECRET"),
+                            'timeout' => $providerData['timeout'] ?? 30,
+                        ],
+                        'endpoints' => $providerData['endpoints'] ?? [],
+                    ];
+                }
+            }
+        }
+        
+        // Default source provider (CazaCom for Botswana)
+        $countryConfig['default_source_provider'] = 'CAZACOM';
+        
+        // If no source providers configured, add default CazaCom API config
+        if (empty($countryConfig['source_providers'])) {
+            $countryConfig['source_providers']['CAZACOM'] = [
+                'type' => 'api',
+                'name' => 'CazaCom Botswana',
+                'api_config' => [
+                    'base_url' => getenv('CAZACOM_API_URL') ?: 'https://api.cazacom.co.bw/v1',
+                    'api_key' => getenv('CAZACOM_API_KEY') ?: '',
+                    'api_secret' => getenv('CAZACOM_API_SECRET') ?: '',
+                    'timeout' => (int)(getenv('CAZACOM_API_TIMEOUT') ?: 30),
+                ],
+                'endpoints' => [
+                    'verify_user' => '/users/verify',
+                    'get_user_by_phone' => '/users/phone/{phone}',
+                    'get_user_by_id' => '/users/id/{id}',
+                    'get_user_by_email' => '/users/email/{email}',
+                ],
             ];
         }
 
-        if (!isset($countryConfig['db']['source_client_key'])) {
-            $countryConfig['db']['source_client_key'] = 'cazacom';
-        }
-
-        $sourceKey = $countryConfig['db']['source_client_key'];
-        if (!isset($countryConfig['db'][$sourceKey]) || empty($countryConfig['db'][$sourceKey])) {
-            $countryConfig['db'][$sourceKey] = [
-                'type'     => 'pgsql',
-                'name'     => getenv('SOURCE_DB_NAME') ?: 'cazacom_db',
-                'database' => getenv('SOURCE_DB_NAME') ?: 'cazacom_db',
-                'host'     => getenv('SOURCE_DB_HOST') ?: (getenv('PG_HOST') ?: '127.0.0.1'),
-                'port'     => (int) (getenv('SOURCE_DB_PORT') ?: (getenv('PG_PORT') ?: 5432)),
-                'user'     => getenv('SOURCE_DB_USER') ?: (getenv('PG_USER') ?: 'postgres'),
-                'password' => getenv('SOURCE_DB_PASS') ?: (getenv('PG_PASS') ?: ''),
-            ];
-        }
-
+        // Format decimal values
         if (isset($countryConfig['settings']['swap_fee'])) {
             $countryConfig['settings']['swap_fee'] = self::decimal($countryConfig['settings']['swap_fee']);
         }
@@ -119,7 +185,6 @@ final class LoadCountry
         if (!is_numeric($value)) {
             return is_bool($value) ? ($value ? 'true' : 'false') : (string) $value;
         }
-
         return number_format((float) $value, 6, '.', '');
     }
 
