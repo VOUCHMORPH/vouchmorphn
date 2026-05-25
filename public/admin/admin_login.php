@@ -2,85 +2,120 @@
 declare(strict_types=1);
 
 ob_start();
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
 
-// Define project root explicitly
-define('PROJECT_ROOT', dirname(__DIR__, 2)); // Goes up 2 levels: /public/admin/ -> /var/www/html/
+// ============================================================
+// ADMIN LOGIN - Updated for new configuration system
+// ============================================================
 
-// Debug
-error_log("[LOGIN] Starting login process");
-error_log("[LOGIN] PROJECT_ROOT: " . PROJECT_ROOT);
+// Define project root (goes up 2 levels: public/admin/ -> project root)
+define('PROJECT_ROOT', dirname(__DIR__, 2));
 
-// Load bootstrap FIRST - this initializes autoloader and database
-require_once PROJECT_ROOT . '/src/bootstrap.php';
+// Debug logging
+error_log("[ADMIN LOGIN] Starting login process");
+error_log("[ADMIN LOGIN] PROJECT_ROOT: " . PROJECT_ROOT);
 
-// Now use autoloader - NO require_once for these classes
-use ADMIN_LAYER\Auth\AdminAuth;
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
+// Load configuration using the new system
+$configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
 
-// Get country from URL or default to BW
-$countryCode = $_GET['country'] ?? $_POST['country'] ?? 'BW';
-$systemCountry = strtoupper($countryCode);
-error_log("[LOGIN] Country: " . $systemCountry);
+if (!file_exists($configPath)) {
+    die("Admin system configuration not found.");
+}
 
-// Initialize database connection - USE BOOTSTRAP'S CONNECTION
+require_once $configPath;
+
 try {
-    // First try to use bootstrap's global connection
-    if (isset($GLOBALS['databases']['primary']) && $GLOBALS['databases']['primary'] instanceof PDO) {
-        $db = $GLOBALS['databases']['primary'];
-        error_log("[LOGIN] Using bootstrap's global PDO connection");
+    $config = \Core\Config\LoadCountry::getConfig();
+    if (!is_array($config)) {
+        die("Configuration failed to load.");
+    }
+    error_log("[ADMIN LOGIN] Configuration loaded successfully");
+} catch (Throwable $e) {
+    error_log("[ADMIN LOGIN] Config error: " . $e->getMessage());
+    die("Admin system unavailable.");
+}
+
+// Get country from URL/Session/Config
+$countryCode = $_GET['country'] ?? $_POST['country'] ?? $_SESSION['admin_country'] ?? $config['country_code'] ?? 'BW';
+$systemCountry = strtoupper($countryCode);
+$systemCountryName = $config['country'] ?? 'Botswana';
+
+// Store in session
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+$_SESSION['admin_country'] = $systemCountry;
+
+error_log("[ADMIN LOGIN] Country: " . $systemCountry);
+
+// Load required classes
+require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
+require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
+require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
+
+use Core\Database\DBConnection;
+use Application\Utils\SessionManager;
+use ADMIN_LAYER\Auth\AdminAuth;
+
+// Initialize database connection from config
+try {
+    // Get database configuration for this country
+    if (isset($config['db']['swap']) && is_array($config['db']['swap'])) {
+        $dbConfig = $config['db']['swap'];
+        error_log("[ADMIN LOGIN] Using database config from LoadCountry");
     } else {
-        error_log("[LOGIN] WARNING: Global PDO not available, creating new connection");
-        
-        // Load country config
-        $configPath = PROJECT_ROOT . "/src/CORE_CONFIG/countries/{$systemCountry}/config_{$systemCountry}.php";
-        if (!file_exists($configPath)) {
-            throw new Exception("Configuration not found for country: {$systemCountry}");
-        }
-        $config = require $configPath;
-        
-        // Get database connection
-        $db = DBConnection::getInstance($config['db']['swap'] ?? $config['database'] ?? []);
+        // Fallback
+        error_log("[ADMIN LOGIN] WARNING: No db config found, using fallback");
+        $dbConfig = [
+            'type' => 'pgsql',
+            'host' => getenv('DB_HOST') ?: 'localhost',
+            'port' => (int)(getenv('DB_PORT') ?: 5432),
+            'database' => getenv('DB_NAME') ?: 'swap_system_bw',
+            'username' => getenv('DB_USER') ?: 'postgres',
+            'password' => getenv('DB_PASSWORD') ?: '',
+        ];
     }
     
-    // Initialize AdminAuth with the connection
+    // Add PDO options
+    $dbConfig['options'] = [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES => false,
+    ];
+    
+    $db = DBConnection::getInstance($dbConfig);
+    error_log("[ADMIN LOGIN] Database connected successfully");
+    
+    // Initialize AdminAuth
     $auth = new AdminAuth($db);
-    error_log("[LOGIN] AdminAuth initialized successfully");
+    error_log("[ADMIN LOGIN] AdminAuth initialized");
     
-} catch (Exception $e) {
-    error_log("[LOGIN CRITICAL] Failed to initialize: " . $e->getMessage());
-    error_log("[LOGIN CRITICAL] Trace: " . $e->getTraceAsString());
-    
-    // Show user-friendly error
+} catch (Throwable $e) {
+    error_log("[ADMIN LOGIN CRITICAL] " . $e->getMessage());
     $error = "Authentication service unavailable. Please try again later.";
     
-    // In development, show more details
     if (getenv('APP_ENV') === 'development') {
-        $error .= " (" . $e->getMessage() . ")";
+        $error .= " Debug: " . $e->getMessage();
     }
     
-    // Don't proceed with login form - show error page
+    // Show error page
     ?>
     <!DOCTYPE html>
     <html>
     <head>
         <title>System Error</title>
         <style>
-            body { font-family: 'IBM Plex Mono', monospace; background: #001B44; color: #fff; display: flex; align-items: center; justify-content: center; height: 100vh; }
+            body { font-family: monospace; background: #001B44; color: #fff; display: flex; align-items: center; justify-content: center; height: 100vh; }
             .error-box { background: #fff; color: #001B44; padding: 40px; border: 3px solid #FFDA63; max-width: 500px; }
-            h1 { color: #c62828; margin-bottom: 20px; }
-            .details { background: #f5f5f5; padding: 15px; margin-top: 20px; font-size: 0.8rem; }
+            h1 { color: #c62828; }
         </style>
     </head>
     <body>
         <div class="error-box">
             <h1>🔐 SYSTEM UNAVAILABLE</h1>
             <p><?php echo htmlspecialchars($error); ?></p>
-            <div class="details">
-                <strong>Debug Info:</strong><br>
-                Country: <?php echo $systemCountry; ?><br>
-                Time: <?php echo date('Y-m-d H:i:s'); ?>
-            </div>
-            <p style="margin-top: 20px;"><a href="?country=<?php echo $systemCountry; ?>" style="color: #001B44;">Retry</a></p>
+            <p><a href="?country=<?php echo $systemCountry; ?>">Retry</a></p>
         </div>
     </body>
     </html>
@@ -97,15 +132,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         if (isset($_POST['mfa_code'])) {
             // MFA verification
-            error_log("[LOGIN] Verifying MFA for admin");
+            error_log("[ADMIN LOGIN] Verifying MFA");
             $result = $auth->verifyMfa($_POST['mfa_code'], $systemCountry);
             if ($result['success']) {
-                error_log("[LOGIN] MFA verification successful, redirecting to dashboard");
-                header('Location: admin_dashboard.php');
+                error_log("[ADMIN LOGIN] MFA success, redirecting");
+                header('Location: admin_dashboard.php?country=' . $systemCountry);
                 exit;
             } else {
                 $error = $result['message'];
-                error_log("[LOGIN] MFA verification failed: " . $error);
+                error_log("[ADMIN LOGIN] MFA failed: " . $error);
             }
         } else {
             // Initial login
@@ -114,41 +149,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if (empty($username) || empty($password)) {
                 $error = 'Username and password are required';
-                error_log("[LOGIN] Empty credentials");
             } else {
-                error_log("[LOGIN] Attempting login for user: " . $username);
+                error_log("[ADMIN LOGIN] Login attempt: " . $username);
                 $result = $auth->login($username, $password, $systemCountry);
                 
                 if ($result['success']) {
-                    error_log("[LOGIN] Login successful for: " . $username);
-                    if (isset($result['mfa_required'])) {
-                        error_log("[LOGIN] MFA required");
+                    error_log("[ADMIN LOGIN] Login successful: " . $username);
+                    if (isset($result['mfa_required']) && $result['mfa_required']) {
+                        error_log("[ADMIN LOGIN] MFA required");
                         $mfaRequired = true;
                         $adminId = $result['admin_id'];
                     } else {
-                        error_log("[LOGIN] Redirecting to dashboard");
-                        header('Location: admin_dashboard.php');
+                        error_log("[ADMIN LOGIN] Redirecting to dashboard");
+                        header('Location: admin_dashboard.php?country=' . $systemCountry);
                         exit;
                     }
                 } else {
                     $error = $result['message'];
-                    error_log("[LOGIN] Login failed: " . $error);
+                    error_log("[ADMIN LOGIN] Login failed: " . $error);
                 }
             }
         }
-    } catch (Exception $e) {
-        error_log("[LOGIN EXCEPTION] " . $e->getMessage());
+    } catch (Throwable $e) {
+        error_log("[ADMIN LOGIN EXCEPTION] " . $e->getMessage());
         $error = "Authentication error occurred. Please try again.";
     }
 }
 
 // Get available countries from config
-$countriesDir = PROJECT_ROOT . '/src/CORE_CONFIG/countries/';
 $availableCountries = [];
+$countriesDir = PROJECT_ROOT . '/src/Core/Config/Countries/';
 if (is_dir($countriesDir)) {
     $availableCountries = array_filter(scandir($countriesDir), function($item) use ($countriesDir) {
-        return is_dir($countriesDir . $item) && !in_array($item, ['.', '..']);
+        return is_dir($countriesDir . $item) && !in_array($item, ['.', '..', 'Nigeria', 'Kenya', 'SouthAfrica']);
     });
+    // Add more countries if needed
+    if (empty($availableCountries)) {
+        $availableCountries = ['Botswana', 'Nigeria', 'Kenya'];
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -309,10 +347,6 @@ if (is_dir($countriesDir)) {
             text-decoration: none;
         }
 
-        .login-footer a:hover {
-            text-decoration: underline;
-        }
-
         .system-badge {
             display: inline-block;
             padding: 4px 12px;
@@ -331,6 +365,7 @@ if (is_dir($countriesDir)) {
             padding: 12px;
             margin-bottom: 20px;
             font-size: 0.85rem;
+            text-align: center;
         }
     </style>
 </head>
@@ -347,7 +382,10 @@ if (is_dir($countriesDir)) {
             <?php endif; ?>
 
             <?php if ($mfaRequired): ?>
-                <div class="mfa-info">Please enter your authentication code</div>
+                <div class="mfa-info">
+                    <strong>🔐 Two-Factor Authentication</strong><br>
+                    Please enter the authentication code from your authenticator app.
+                </div>
             <?php endif; ?>
 
             <form method="POST" action="">
@@ -360,10 +398,10 @@ if (is_dir($countriesDir)) {
                     </div>
                 <?php else: ?>
                     <div class="country-selector">
-                        <label>SYSTEM</label>
+                        <label>SYSTEM COUNTRY</label>
                         <select name="country" onchange="this.form.submit()">
                             <?php foreach ($availableCountries as $country): ?>
-                                <option value="<?php echo $country; ?>" <?php echo $country === $systemCountry ? 'selected' : ''; ?>>
+                                <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $systemCountryName ? 'selected' : ''; ?>>
                                     <?php echo strtoupper($country); ?> · VOUCHMORPH
                                 </option>
                             <?php endforeach; ?>
@@ -382,12 +420,14 @@ if (is_dir($countriesDir)) {
                 <?php endif; ?>
 
                 <button type="submit" class="login-btn">
-                    <?php echo $mfaRequired ? 'VERIFY CODE' : 'SIGN IN'; ?>
+                    <?php echo $mfaRequired ? 'VERIFY CODE' : 'SIGN IN →'; ?>
                 </button>
             </form>
 
             <div class="login-footer">
-                <div class="system-badge"><?php echo $systemCountry; ?> · PRODUCTION</div>
+                <div class="system-badge">
+                    <?php echo htmlspecialchars($systemCountry); ?> · <?php echo date('Y'); ?>
+                </div>
             </div>
         </div>
     </div>
