@@ -16,17 +16,20 @@ class MultiSourceSwapExecutor
     private HybridSettlementStrategy $settlement;
     
     public function __construct(
-        PDO $db,
-        SwapService $swapService,
-        HybridSettlementStrategy $settlement,
-        array $config
-    ) {
-        $this->db = $db;
-        $this->swapService = $swapService;
-        $this->settlement = $settlement;
-        $this->calculator = new ContributionCalculator();
-        $this->feeCalculator = new MultiSourceFeeCalculator();
-    }
+    PDO $db,
+    SwapService $swapService,
+    HybridSettlementStrategy $settlement,
+    array $config,  // This should be the full config including fees
+    string $countryCode = 'BW'
+) {
+    $this->db = $db;
+    $this->swapService = $swapService;
+    $this->settlement = $settlement;
+    $this->calculator = new ContributionCalculator();
+    
+    // Pass full config and country code to fee calculator
+    $this->feeCalculator = new MultiSourceFeeCalculator($config, $countryCode);
+}
     
     /**
      * Execute multi-source to single destination swap
