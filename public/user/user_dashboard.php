@@ -38,9 +38,26 @@ $systemCountry = $user['country'] ?? 'BW';
 $config = LoadCountry::getConfig();
 $dbConfig = $config['db']['swap'] ?? null;
 
+// Debug: log what we got
+error_log("=== DB CONFIG FROM LOADCOUNTRY ===");
+error_log(json_encode($dbConfig));
+
+// If dbConfig is empty or missing required fields, use fallback
+if (empty($dbConfig) || empty($dbConfig['host'])) {
+    error_log("DB Config missing, using environment fallback");
+    $dbConfig = null; // Let DBConnection use environment
+}
+
 try {
+    // Pass config to getInstance - NOW IT WILL BE RESPECTED!
     $db = DBConnection::getInstance($dbConfig);
+    
+    if (!$db) {
+        throw new \Exception("Failed to get database connection");
+    }
+    
     $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+    error_log("Database connection successful");
     
     // Ensure tables exist
     $db->exec("
