@@ -902,7 +902,7 @@ class SwapService
         $stmt->execute([':amount' => $amount, ':swap_ref' => $swapRef]);
     }
     
-    private function getParticipant(string $institution): array
+    public function getParticipant(string $institution): array
     {
         $key = $this->findInstitutionKey($institution);
         if (!$key || !isset($this->participants[$key])) {
