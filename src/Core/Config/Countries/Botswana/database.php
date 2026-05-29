@@ -48,15 +48,3 @@ return [
     ],
 ];
 
-// Keep connection function for other parts of the app
-function getDBConnection() {
-    try {
-        $dsn = "pgsql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME;
-        $pdo = new PDO($dsn, DB_USER, DB_PASSWORD);
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        return $pdo;
-    } catch (PDOException $e) {
-        error_log("Database connection failed: " . $e->getMessage());
-        throw $e;
-    }
-}
