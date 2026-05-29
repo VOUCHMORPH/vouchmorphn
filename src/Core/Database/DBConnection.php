@@ -10,6 +10,7 @@ class DBConnection
     private static ?PDO $connection = null;
     private static array $instances = [];
     private static bool $connectionAttempted = false;
+    private static ?array $currentConfig = null;
 
     /**
      * Parse Railway DATABASE_URL
@@ -41,9 +42,9 @@ class DBConnection
     }
 
     /**
-     * Get database configuration from environment
+     * Get database configuration from environment (fallback)
      */
-    private static function getDbConfig(): array
+    private static function getDbConfigFromEnv(): array
     {
         // First try Railway DATABASE_URL
         $railwayConfig = self::parseRailwayUrl();
@@ -62,14 +63,14 @@ class DBConnection
             return [
                 'host' => $host,
                 'port' => getenv('PG_PORT') ?: 5432,
-                'dbname' => 'railway', // FORCE railway database name
+                'dbname' => 'railway',
                 'user' => getenv('PG_USER') ?: 'postgres',
                 'password' => getenv('PG_PASS') ?: '',
                 'sslmode' => 'require'
             ];
         }
         
-        // Local development - use environment or default
+        // Local development
         $dbname = getenv('PG_NAME') ?: (getenv('PG_DB_SWAP') ?: (getenv('PG_DB_CORE') ?: 'swap_system_bw'));
         
         return [
@@ -83,10 +84,45 @@ class DBConnection
     }
 
     /**
-     * Get database connection
+     * Normalize config from different formats
      */
-    public static function getConnection(): ?PDO
+    private static function normalizeConfig(array $config): array
     {
+        // Handle different key names (username vs user)
+        $user = $config['username'] ?? $config['user'] ?? 'postgres';
+        $password = $config['password'] ?? $config['pass'] ?? '';
+        $host = $config['host'] ?? 'localhost';
+        $port = $config['port'] ?? 5432;
+        $dbname = $config['database'] ?? $config['dbname'] ?? 'vouchmorph';
+        $sslmode = $config['sslmode'] ?? 'prefer';
+        
+        // Handle type/driver
+        $driver = $config['type'] ?? $config['driver'] ?? 'pgsql';
+        
+        return [
+            'host' => $host,
+            'port' => (int)$port,
+            'dbname' => $dbname,
+            'user' => $user,
+            'password' => $password,
+            'sslmode' => $sslmode,
+            'driver' => $driver
+        ];
+    }
+
+    /**
+     * Get database connection with optional config
+     */
+    public static function getConnection(?array $config = null): ?PDO
+    {
+        // If config provided, use it (and reset connection)
+        if ($config !== null) {
+            self::$currentConfig = self::normalizeConfig($config);
+            self::$connection = null;
+            self::$connectionAttempted = false;
+        }
+        
+        // Return existing connection if available
         if (self::$connection !== null) {
             return self::$connection;
         }
@@ -96,14 +132,24 @@ class DBConnection
         }
 
         self::$connectionAttempted = true;
-        $config = self::getDbConfig();
+        
+        // Use provided config or fallback to environment
+        $dbConfig = self::$currentConfig ?? self::getDbConfigFromEnv();
 
         try {
-            // Build DSN
-            $dsn = "pgsql:host={$config['host']};port={$config['port']};dbname={$config['dbname']}";
+            // Build DSN based on driver
+            $driver = $dbConfig['driver'] ?? 'pgsql';
             
-            // Add SSL mode if required - this is the correct way to enable SSL
-            if (isset($config['sslmode']) && $config['sslmode'] === 'require') {
+            if ($driver === 'pgsql' || $driver === 'postgresql') {
+                $dsn = "pgsql:host={$dbConfig['host']};port={$dbConfig['port']};dbname={$dbConfig['dbname']}";
+            } elseif ($driver === 'mysql') {
+                $dsn = "mysql:host={$dbConfig['host']};port={$dbConfig['port']};dbname={$dbConfig['dbname']};charset=utf8mb4";
+            } else {
+                throw new PDOException("Unsupported driver: {$driver}");
+            }
+            
+            // Add SSL mode if required
+            if (isset($dbConfig['sslmode']) && $dbConfig['sslmode'] === 'require') {
                 $dsn .= ";sslmode=require";
             }
             
@@ -114,10 +160,16 @@ class DBConnection
                 PDO::ATTR_TIMEOUT => 5
             ];
             
-            self::$connection = new PDO($dsn, $config['user'], $config['password'], $options);
+            error_log("[DBConnection] Connecting to: {$dbConfig['host']}:{$dbConfig['port']}/{$dbConfig['dbname']}");
             
-            // Set search path
-            self::$connection->exec("SET search_path TO public");
+            self::$connection = new PDO($dsn, $dbConfig['user'], $dbConfig['password'], $options);
+            
+            // Set search path for PostgreSQL
+            if ($driver === 'pgsql' || $driver === 'postgresql') {
+                self::$connection->exec("SET search_path TO public");
+            }
+            
+            error_log("[DBConnection] Connection successful");
             
             return self::$connection;
 
@@ -129,10 +181,14 @@ class DBConnection
     }
 
     /**
-     * Get database connection instance
+     * Get database connection instance (alias for getConnection)
      */
     public static function getInstance(array $dbConfig = []): ?PDO
     {
+        // If config provided, use it
+        if (!empty($dbConfig)) {
+            return self::getConnection($dbConfig);
+        }
         return self::getConnection();
     }
 
@@ -141,7 +197,7 @@ class DBConnection
      */
     public function getConfig(): array
     {
-        return self::getDbConfig();
+        return self::$currentConfig ?? self::getDbConfigFromEnv();
     }
 
     /**
@@ -164,16 +220,24 @@ class DBConnection
     /**
      * Get connection for a specific database
      */
-    public static function getDatabaseConnection(string $dbName): ?PDO
+    public static function getDatabaseConnection(string $dbName, ?array $baseConfig = null): ?PDO
     {
-        $config = self::getDbConfig();
+        $config = $baseConfig ?? self::$currentConfig ?? self::getDbConfigFromEnv();
         $config['dbname'] = $dbName;
         
-        $key = $dbName;
+        $key = $dbName . serialize($config);
         
         if (!isset(self::$instances[$key])) {
             try {
-                $dsn = "pgsql:host={$config['host']};port={$config['port']};dbname={$config['dbname']}";
+                $driver = $config['driver'] ?? 'pgsql';
+                
+                if ($driver === 'pgsql' || $driver === 'postgresql') {
+                    $dsn = "pgsql:host={$config['host']};port={$config['port']};dbname={$config['dbname']}";
+                } elseif ($driver === 'mysql') {
+                    $dsn = "mysql:host={$config['host']};port={$config['port']};dbname={$config['dbname']};charset=utf8mb4";
+                } else {
+                    return null;
+                }
                 
                 if (isset($config['sslmode']) && $config['sslmode'] === 'require') {
                     $dsn .= ";sslmode=require";
@@ -281,10 +345,26 @@ class DBConnection
      */
     public static function getConnectionStatus(): array
     {
-        $config = self::getDbConfig();
+        $config = self::$currentConfig ?? self::getDbConfigFromEnv();
         return [
             'connected' => self::isConnected(),
-            'config' => $config
+            'config' => [
+                'host' => $config['host'],
+                'port' => $config['port'],
+                'database' => $config['dbname'],
+                'user' => $config['user']
+            ]
         ];
+    }
+    
+    /**
+     * Reset connection (useful for testing or reconfiguration)
+     */
+    public static function reset(): void
+    {
+        self::$connection = null;
+        self::$instances = [];
+        self::$connectionAttempted = false;
+        self::$currentConfig = null;
     }
 }
