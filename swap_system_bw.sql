@@ -4162,3 +4162,102 @@ ALTER TABLE swap_requests
 ADD COLUMN forex_rate DECIMAL(20,10) NOT NULL,
 ADD COLUMN rate_locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 ADD COLUMN expected_to_amount DECIMAL(20,8) GENERATED ALWAYS AS (amount * forex_rate) STORED;
+
+
+CREATE TABLE IF NOT EXISTS multi_source_swaps (
+    id BIGSERIAL PRIMARY KEY,
+    master_reference VARCHAR(50) UNIQUE NOT NULL,
+    destination_institution VARCHAR(100) NOT NULL,
+    destination_account VARCHAR(100),
+    destination_phone VARCHAR(50),
+    target_amount NUMERIC(24,2) NOT NULL,
+    destination_currency CHAR(3) NOT NULL,
+    delivery_mode VARCHAR(20) DEFAULT 'deposit',
+    total_contributed NUMERIC(24,2) DEFAULT 0,
+    total_fees NUMERIC(12,2) DEFAULT 0,
+    net_destination_amount NUMERIC(24,2) DEFAULT 0,
+    distribution_strategy VARCHAR(20) NOT NULL,
+    master_signature VARCHAR(128),
+    status VARCHAR(20) DEFAULT 'pending',
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    completed_at TIMESTAMP,
+    metadata JSONB
+);
+
+CREATE TABLE IF NOT EXISTS multi_source_contributions (
+    id BIGSERIAL PRIMARY KEY,
+    master_reference VARCHAR(50) REFERENCES multi_source_swaps(master_reference),
+    sub_reference VARCHAR(50) UNIQUE NOT NULL,
+    source_order INT NOT NULL,
+    institution VARCHAR(100) NOT NULL,
+    asset_type VARCHAR(30) NOT NULL,
+    source_identifier VARCHAR(255),
+    requested_amount NUMERIC(24,2) NOT NULL,
+    actual_amount NUMERIC(24,2),
+    source_currency CHAR(3) NOT NULL,
+    exchange_rate NUMERIC(24,10) DEFAULT 1,
+    converted_amount NUMERIC(24,2),
+    hold_reference VARCHAR(100),
+    hold_expires_at TIMESTAMP,
+    individual_fee NUMERIC(12,2) DEFAULT 0,
+    contribution_hash VARCHAR(128),
+    institution_signature VARCHAR(256),
+    status VARCHAR(20) DEFAULT 'pending',
+    error_message TEXT,
+    completed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS master_settlement_signatures (
+    id BIGSERIAL PRIMARY KEY,
+    master_reference VARCHAR(50) REFERENCES multi_source_swaps(master_reference),
+    master_signature VARCHAR(128) NOT NULL,
+    contributing_institutions JSONB,
+    contribution_hashes JSONB,
+    constructed_at TIMESTAMP DEFAULT NOW(),
+    verified_by_destination BOOLEAN DEFAULT FALSE,
+    verified_at TIMESTAMP
+);
+
+
+
+CREATE TABLE IF NOT EXISTS settlement_outbox (
+    message_id BIGSERIAL PRIMARY KEY,
+    message_uuid UUID UNIQUE NOT NULL,
+    swap_reference VARCHAR(100) NOT NULL,
+    source_institution VARCHAR(100) NOT NULL,
+    destination_institution VARCHAR(100) NOT NULL,
+    amount NUMERIC(24,2) NOT NULL,
+    currency CHAR(3) NOT NULL,
+    message_type VARCHAR(50) NOT NULL,
+    message_payload JSONB NOT NULL,
+    status VARCHAR(20) DEFAULT 'PENDING',
+    retry_count INT DEFAULT 0,
+    sent_at TIMESTAMP,
+    acknowledged_at TIMESTAMP,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_settlement_outbox_swap_ref ON settlement_outbox(swap_reference);
+CREATE INDEX IF NOT EXISTS idx_settlement_outbox_status ON settlement_outbox(status);
+CREATE INDEX IF NOT EXISTS idx_settlement_outbox_source ON settlement_outbox(source_institution);
+CREATE INDEX IF NOT EXISTS idx_settlement_outbox_destination ON settlement_outbox(destination_institution);
+CREATE INDEX IF NOT EXISTS idx_settlement_outbox_created ON settlement_outbox(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_settlement_outbox_pending ON settlement_outbox(status, created_at) WHERE status = 'PENDING';
+
+ALTER TABLE settlement_outbox 
+ADD COLUMN IF NOT EXISTS composite_signature JSONB,
+ADD COLUMN IF NOT EXISTS is_multi_source BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS master_reference VARCHAR(50);
+
+CREATE INDEX IF NOT EXISTS idx_settlement_outbox_master_ref ON settlement_outbox(master_reference) WHERE master_reference IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_settlement_outbox_multi_source ON settlement_outbox(is_multi_source) WHERE is_multi_source = TRUE;
+
+COMMENT ON TABLE settlement_outbox IS 'Outbox for settlement messages between participants. VouchMorph is non-custodial - only orchestrates settlement instructions.';
+COMMENT ON COLUMN settlement_outbox.message_type IS 'Message types: SETTLEMENT_INSTRUCTION, DEBIT_INSTRUCTION, CREDIT_INSTRUCTION, FEE_INVOICE, RECONCILIATION, CROSS_BORDER_SETTLEMENT, CORRIDOR_INSTRUCTION';
+COMMENT ON COLUMN settlement_outbox.status IS 'Status: PENDING, SENT, ACKNOWLEDGED, COMPLETED, FAILED';
+COMMENT ON COLUMN settlement_outbox.is_multi_source IS 'Indicates if this is part of a multi-source to single destination (MS1D) transaction';
+COMMENT ON COLUMN settlement_outbox.composite_signature IS 'Master signature for MS1D transactions combining all source contributions';
