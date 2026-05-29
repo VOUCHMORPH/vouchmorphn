@@ -4261,3 +4261,24 @@ COMMENT ON COLUMN settlement_outbox.message_type IS 'Message types: SETTLEMENT_I
 COMMENT ON COLUMN settlement_outbox.status IS 'Status: PENDING, SENT, ACKNOWLEDGED, COMPLETED, FAILED';
 COMMENT ON COLUMN settlement_outbox.is_multi_source IS 'Indicates if this is part of a multi-source to single destination (MS1D) transaction';
 COMMENT ON COLUMN settlement_outbox.composite_signature IS 'Master signature for MS1D transactions combining all source contributions';
+
+
+CREATE TABLE IF NOT EXISTS user_funding_sources (
+    source_id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    institution_code VARCHAR(100) NOT NULL,
+    institution_name VARCHAR(150),
+    source_type VARCHAR(30) NOT NULL,
+    source_label VARCHAR(100),
+    masked_identifier VARCHAR(100),
+    encrypted_identifier TEXT,
+    linked_phone VARCHAR(30),
+    status VARCHAR(20) DEFAULT 'ACTIVE',
+    is_default BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_funding_sources_user_id ON user_funding_sources(user_id);
+CREATE INDEX IF NOT EXISTS idx_funding_sources_status ON user_funding_sources(status);
+CREATE INDEX IF NOT EXISTS idx_funding_sources_institution ON user_funding_sources(institution_code);
