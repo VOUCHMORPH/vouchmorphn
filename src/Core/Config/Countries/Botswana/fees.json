@@ -20,7 +20,6 @@
                 "cashout_fee_earned_at": "cashout_completion",
                 "description": "Generate code fee earned immediately when code is generated. Cashout fee earned only when cashout is successfully completed."
             },
-            },
             "retry_fee": {
                 "generate_code_fee": 0.45,
                 "description": "On retries, only generate code fee is charged"
@@ -64,5 +63,11 @@
     "regulatory": {
         "vat_rate": 0.12,
         "reporting_currency": "BWP"
+    },
+    "multi_source": {
+        "extra_source_fee": 1.00,
+        "max_total_fee": 15.00,
+        "description": "Multi-source swap fees: Base fee from above + P1 per extra source, capped at P15",
+        "enabled": true
     }
 }
