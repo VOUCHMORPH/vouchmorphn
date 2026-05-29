@@ -1,5 +1,6 @@
 <?php
 // Database configuration for Railway and local development
+// src/Core/Config/Countries/Botswana/database.php
 
 // Parse DATABASE_URL if available
 $database_url = getenv('DATABASE_URL');
@@ -22,15 +23,15 @@ if ($database_url) {
     $password = getenv('DB_PASSWORD') ?: 'StrongPassword!';
 }
 
-// Define constants for backward compatibility
-define('DB_HOST', $host);
-define('DB_PORT', $port);
-define('DB_NAME', $database);
-define('DB_USER', $username);
-define('DB_PASSWORD', $password);
-define('DB_DRIVER', 'pgsql');
+// Define constants ONLY if not already defined
+if (!defined('DB_HOST')) define('DB_HOST', $host);
+if (!defined('DB_PORT')) define('DB_PORT', $port);
+if (!defined('DB_NAME')) define('DB_NAME', $database);
+if (!defined('DB_USER')) define('DB_USER', $username);
+if (!defined('DB_PASSWORD')) define('DB_PASSWORD', $password);
+if (!defined('DB_DRIVER')) define('DB_DRIVER', 'pgsql');
 
-// CRITICAL: Return array for bootstrap.php
+// Return configuration array
 return [
     'host' => $host,
     'port' => $port,
@@ -47,4 +48,3 @@ return [
         PDO::ATTR_EMULATE_PREPARES => false,
     ],
 ];
-
