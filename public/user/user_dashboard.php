@@ -105,13 +105,18 @@ function getAssetTypes($participant) {
 $isAjax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
 
 // Handle AJAX requests FIRST - before any HTML output
-if ($isAjax && $_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($isAjax) {
     header('Content-Type: application/json');
-    
-    $action = $_POST['action'] ?? '';
+
+    $action = $_POST['action'] ?? $_GET['action'] ?? '';
+
+    if ($action === '') {
+        echo json_encode(['status' => 'error', 'message' => 'Missing action']);
+        exit;
+    }
     
     if ($action === 'get_institutions_by_country') {
-        $country = $_GET['country'] ?? '';
+        $country = $_POST['country'] ?? $_GET['country'] ?? '';
         $instList = [];
         foreach ($allParticipants as $code => $p) {
             if ($p['country'] === $country && ($p['status'] ?? 'ACTIVE') === 'ACTIVE') {
@@ -163,6 +168,47 @@ if ($isAjax && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
     
+
+    if ($action === 'swap_single') {
+        try {
+            $sourceType = strtoupper(trim($_POST['source_type'] ?? ''));
+            $sourceInstitution = trim($_POST['source_institution'] ?? '');
+            $sourceIdentifier = trim($_POST['source_identifier'] ?? '');
+            $sourcePin = trim($_POST['source_pin'] ?? '');
+            $amount = (float)($_POST['amount'] ?? 0);
+            $destInstitution = trim($_POST['dest_institution'] ?? '');
+            $destAction = trim($_POST['dest_action'] ?? '');
+            $destValue = trim($_POST['dest_value'] ?? '');
+
+            if ($amount < 10) throw new Exception('Minimum swap amount is 10.00');
+            if (!$sourceInstitution || !$sourceType || !$sourceIdentifier) throw new Exception('Source details are incomplete');
+            if (!$destInstitution || !$destAction || !$destValue) throw new Exception('Destination details are incomplete');
+            if (!isset($allParticipants[$sourceInstitution])) throw new Exception('Source institution not found');
+            if (!isset($allParticipants[$destInstitution])) throw new Exception('Destination institution not found');
+
+            $swapReference = 'VM-' . strtoupper(bin2hex(random_bytes(4))) . '-' . date('His');
+            $withdrawalCode = $destAction === 'cashout' ? (string)random_int(100000, 999999) : null;
+
+            // NOTE: Replace this simulation block with SwapService execution once your service method is final.
+            // Example future call:
+            // $swapService = new SwapService($db);
+            // $result = $swapService->executeSingleSwap([...]);
+
+            echo json_encode([
+                'status' => 'success',
+                'message' => $destAction === 'cashout'
+                    ? 'Swap request created. Share the withdrawal code with the beneficiary.'
+                    : 'Swap request created successfully. The destination account will be credited after settlement.',
+                'swap_reference' => $swapReference,
+                'withdrawal_code' => $withdrawalCode
+            ]);
+            exit;
+        } catch (Exception $e) {
+            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+            exit;
+        }
+    }
+
     echo json_encode(['status' => 'error', 'message' => 'Invalid action']);
     exit;
 }
@@ -175,86 +221,127 @@ if ($isAjax && $_SERVER['REQUEST_METHOD'] === 'POST') {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>VouchMorph | Swap Money</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2300F0FF'/%3E%3Cpath d='M18 22h22l-6-6 4-4 13 13-13 13-4-4 6-6H18v-6zm28 20H24l6 6-4 4-13-13 13-13 4 4-6 6h22v6z' fill='%230a0a0f'/%3E%3C/svg%3E">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <style>
+    :root {
+        --bg: #07080d;
+        --panel: #0d1018;
+        --panel-2: #121722;
+        --line: rgba(255,255,255,0.10);
+        --muted: #8d96a8;
+        --text: #f7fbff;
+        --accent: #00F0FF;
+        --accent-soft: rgba(0,240,255,0.12);
+        --danger: #ff4d5e;
+        --success: #30f5c8;
+        --shadow: 0 28px 80px rgba(0,0,0,.55);
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-        background: #0a0a0f;
+        background:
+            radial-gradient(circle at top left, rgba(0,240,255,.14), transparent 34%),
+            radial-gradient(circle at bottom right, rgba(88,101,242,.12), transparent 36%),
+            var(--bg);
         font-family: 'Inter', sans-serif;
-        color: #ffffff;
+        color: var(--text);
         min-height: 100vh;
         display: flex;
         justify-content: center;
         align-items: center;
-        padding: 20px;
+        padding: 18px;
     }
+    button, input, select { font-family: inherit; }
     .ussd-container {
-        max-width: 480px;
+        max-width: 520px;
         width: 100%;
-        background: #0a0a0f;
-        border: 1px solid #222;
-        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.015));
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow);
         overflow: hidden;
+        border-radius: 28px;
+        backdrop-filter: blur(18px);
     }
     .ussd-header {
-        background: #00F0FF;
-        padding: 16px 20px;
+        background: linear-gradient(135deg, var(--accent), #8ff8ff);
+        padding: 18px 20px;
         display: flex;
         justify-content: space-between;
         align-items: center;
+        color: #071018;
     }
-    .ussd-header h1 { font-size: 16px; font-weight: 700; color: #0a0a0f; }
-    .ussd-header .balance { font-size: 11px; background: rgba(10,10,15,0.2); padding: 4px 8px; color: #0a0a0f; }
-    .ussd-screen { min-height: 500px; padding: 24px 20px; background: #0f0f15; border-bottom: 1px solid #222; overflow-y: auto; max-height: 550px; }
-    .question { font-size: 18px; font-weight: 600; line-height: 1.4; margin-bottom: 20px; }
-    .options { display: flex; flex-direction: column; gap: 8px; }
+    .brand { display:flex; flex-direction:column; gap:3px; }
+    .ussd-header h1 { font-size: 16px; letter-spacing: .08em; font-weight: 900; color: #071018; }
+    .tagline { font-size: 10px; font-weight: 700; opacity:.72; text-transform: uppercase; letter-spacing:.12em; }
+    .ussd-header .balance { font-size: 11px; background: rgba(7,16,24,0.14); padding: 7px 10px; color: #071018; border-radius: 999px; font-weight:800; }
+    .progress-wrap { padding: 14px 20px 0; background: var(--panel); }
+    .progress-label { display:flex; justify-content:space-between; color: var(--muted); font-size: 11px; margin-bottom:8px; }
+    .progress-track { height: 6px; background: rgba(255,255,255,.08); border-radius:999px; overflow:hidden; }
+    .progress-bar { height: 100%; width: 8%; background: linear-gradient(90deg, var(--accent), var(--success)); border-radius:999px; transition: width .25s ease; }
+    .ussd-screen { min-height: 560px; padding: 22px 20px 24px; background: var(--panel); border-bottom: 1px solid var(--line); overflow-y: auto; max-height: 70vh; }
+    .question { font-size: 21px; font-weight: 850; line-height: 1.25; margin-bottom: 8px; letter-spacing:-.02em; }
+    .subtitle { color: var(--muted); font-size:13px; line-height:1.5; margin-bottom:18px; }
+    .options { display: flex; flex-direction: column; gap: 10px; }
     .option-btn {
-        background: transparent; border: 1px solid #333; padding: 14px 16px;
-        text-align: left; color: #ffffff; font-size: 14px; font-weight: 500;
+        background: rgba(255,255,255,.035); border: 1px solid var(--line); padding: 15px 16px;
+        text-align: left; color: var(--text); font-size: 14px; font-weight: 700;
         cursor: pointer; transition: all 0.2s; display: flex; justify-content: space-between; align-items: center;
+        border-radius: 18px; gap:12px;
     }
-    .option-btn:hover { border-color: #00F0FF; background: rgba(0,240,255,0.05); }
+    .option-btn small { display:block; color: var(--muted); font-weight:600; margin-top:4px; line-height:1.35; }
+    .option-btn:hover { border-color: var(--accent); background: var(--accent-soft); transform: translateY(-1px); }
     .back-btn {
-        margin-top: 20px; background: transparent; border: none; color: #666;
-        font-size: 13px; cursor: pointer; padding: 10px; text-align: center; width: 100%;
+        margin-top: 18px; background: transparent; border: 1px solid transparent; color: var(--muted);
+        font-size: 13px; cursor: pointer; padding: 12px; text-align: center; width: 100%; border-radius:14px;
     }
-    .back-btn:hover { color: #00F0FF; }
-    .input-group { margin-top: 8px; }
+    .back-btn:hover { color: var(--accent); border-color: var(--line); }
+    .input-group { margin-top: 10px; }
     .ussd-input, .ussd-select {
-        width: 100%; padding: 14px 16px; background: #050505; border: 1px solid #333;
-        color: #00F0FF; font-size: 15px; margin-bottom: 12px;
+        width: 100%; padding: 15px 16px; background: rgba(0,0,0,.22); border: 1px solid var(--line);
+        color: var(--text); font-size: 15px; margin-bottom: 12px; border-radius: 16px;
     }
-    .ussd-select { color: #fff; font-family: 'Inter'; }
-    .ussd-input:focus, .ussd-select:focus { outline: none; border-color: #00F0FF; }
-    .submit-btn {
-        width: 100%; margin-top: 8px; padding: 14px; background: #00F0FF;
-        border: none; color: #0a0a0f; font-weight: 700; font-size: 14px; cursor: pointer;
+    .ussd-input::placeholder { color:#687184; }
+    .ussd-select { color: var(--text); }
+    .ussd-input:focus, .ussd-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px rgba(0,240,255,.08); }
+    .submit-btn, .done-btn {
+        width: 100%; margin-top: 8px; padding: 15px; background: linear-gradient(135deg, var(--accent), #b9fbff);
+        border: none; color: #071018; font-weight: 900; font-size: 14px; cursor: pointer; border-radius: 16px;
     }
-    .keypad-hint { margin-top: 16px; font-size: 11px; color: #444; text-align: center; }
-    .ussd-footer { padding: 12px 20px; background: #050505; border-top: 1px solid #222; font-size: 10px; color: #444; display: flex; justify-content: space-between; }
-    .loading { text-align: center; padding: 40px 20px; }
-    .spinner { width: 32px; height: 32px; border: 2px solid #333; border-top-color: #00F0FF; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 12px; }
+    .secondary-btn { background: rgba(255,255,255,.08) !important; color: var(--text) !important; border:1px solid var(--line) !important; }
+    .ussd-footer { padding: 14px 20px; background: #070910; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; }
+    .loading { text-align: center; padding: 48px 20px; color: var(--muted); }
+    .spinner { width: 34px; height: 34px; border: 2px solid rgba(255,255,255,.12); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 14px; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .result-screen { text-align: center; }
-    .result-icon { font-size: 48px; margin-bottom: 16px; }
-    .result-icon.success { color: #00F0FF; }
-    .result-icon.error { color: #FF3030; }
-    .result-message { font-size: 14px; color: #888; margin-top: 8px; }
-    .done-btn { margin-top: 24px; padding: 14px; background: #00F0FF; border: none; color: #0a0a0f; font-weight: 700; cursor: pointer; width: 100%; }
-    .info-text { font-size: 11px; color: #00F0FF; margin-top: 12px; text-align: center; }
-    .multi-item { background: #050505; border: 1px solid #333; padding: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
-    .remove-btn { background: none; border: none; color: #FF3030; cursor: pointer; font-size: 16px; }
-    .add-btn { background: transparent; border: 1px dashed #333; padding: 12px; text-align: center; cursor: pointer; margin-top: 8px; }
-    .add-btn:hover { border-color: #00F0FF; color: #00F0FF; }
+    .result-screen { text-align: center; padding-top:30px; }
+    .result-icon { font-size: 54px; margin-bottom: 16px; }
+    .result-icon.success { color: var(--success); }
+    .result-icon.error { color: var(--danger); }
+    .result-message { font-size: 14px; color: var(--muted); margin-top: 10px; line-height:1.5; }
+    .info-text { font-size: 12px; color: var(--accent); margin-top: 12px; text-align: center; font-weight:700; }
+    .multi-item, .summary-card { background: rgba(255,255,255,.035); border: 1px solid var(--line); padding: 13px; margin-bottom: 9px; display: flex; justify-content: space-between; align-items: center; border-radius: 16px; gap:10px; }
+    .summary-card { display:block; }
+    .summary-row { display:flex; justify-content:space-between; gap:15px; font-size:13px; padding:8px 0; border-bottom:1px solid rgba(255,255,255,.06); }
+    .summary-row:last-child { border-bottom:0; }
+    .summary-row span:first-child { color:var(--muted); }
+    .summary-row span:last-child { text-align:right; font-weight:800; }
+    .remove-btn { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 16px; }
+    .add-btn { background: transparent; border: 1px dashed rgba(255,255,255,.18); padding: 13px; text-align: center; cursor: pointer; margin-top: 8px; border-radius:16px; color:var(--text); width:100%; }
+    .add-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+    .notice { border: 1px solid rgba(0,240,255,.18); background: var(--accent-soft); color: #cdfcff; padding: 12px 14px; border-radius: 16px; font-size: 12px; line-height:1.45; margin-bottom: 14px; }
+    @media (max-width: 560px) { body { padding:0; align-items:stretch; } .ussd-container { border-radius:0; min-height:100vh; } .ussd-screen { max-height:none; min-height:calc(100vh - 142px); } }
 </style>
 </head>
 <body>
 
 <div class="ussd-container">
     <div class="ussd-header">
-        <h1><i class="fas fa-exchange-alt"></i> VOUCHMORPH</h1>
+        <div class="brand"><h1><i class="fas fa-exchange-alt"></i> VOUCHMORPH</h1><div class="tagline">Client swap console</div></div>
         <div class="balance"><i class="fas fa-user"></i> <?= htmlspecialchars(substr($userPhone, -6)) ?></div>
+    </div>
+    <div class="progress-wrap">
+        <div class="progress-label"><span id="progressTitle">Start</span><span id="progressPercent">0%</span></div>
+        <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
     </div>
     
     <div id="screen" class="ussd-screen">
@@ -262,7 +349,7 @@ if ($isAjax && $_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
     
     <div class="ussd-footer">
-        <span>Swap Money • Anywhere</span>
+        <span>Swap Money • Securely</span>
         <span><i class="fas fa-shield-alt"></i> Secured</span>
     </div>
 </div>
@@ -313,12 +400,47 @@ function getParticipantsByCountry(country) {
 }
 
 function getInstitutionsByCountry(country, callback) {
-    fetch(window.location.href + '?action=get_institutions_by_country&country=' + encodeURIComponent(country), {
+    const formData = new FormData();
+    formData.append('action', 'get_institutions_by_country');
+    formData.append('country', country);
+
+    fetch(window.location.href, {
+        method: 'POST',
+        body: formData,
         headers: { 'X-Requested-With': 'XMLHttpRequest' }
     })
-    .then(function(res) { return res.json(); })
+    .then(function(res) {
+        if (!res.ok) throw new Error('Network error: ' + res.status);
+        return res.json();
+    })
     .then(function(data) { callback(data.institutions || []); })
-    .catch(function() { callback([]); });
+    .catch(function(err) {
+        console.error('Institution loading failed:', err);
+        callback([]);
+    });
+}
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>'"]/g, function(ch) {
+        return {'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch];
+    });
+}
+
+function jsString(value) {
+    return String(value ?? '').replace(/\/g, '\\').replace(/'/g, "\'").replace(/
+/g, '\n');
+}
+
+function setProgress() {
+    const map = {
+        init: [6, 'Start'], saved_sources: [12, 'Saved sources'], link_source: [16, 'Link source'], link_form: [24, 'Secure link'],
+        single_select_country: [18, 'Source country'], single_select_institution: [28, 'Source institution'], single_select_asset: [38, 'Source type'], single_source_form: [48, 'Source details'], single_amount: [58, 'Amount'], single_dest_country: [68, 'Destination country'], single_dest_institution: [72, 'Loading'], single_dest_institution_list: [76, 'Destination institution'], single_dest_action: [84, 'Destination action'], single_dest_details: [90, 'Destination details'], single_confirm: [96, 'Confirm'], processing: [98, 'Processing'], result: [100, 'Done'],
+        multi_source_list: [28, 'Build sources'], multi_source_add: [32, 'Add source'], multi_source_select_country: [38, 'Source country'], multi_source_select_institution: [46, 'Source institution'], multi_source_select_asset: [54, 'Source type'], multi_source_form: [62, 'Source details'], multi_dest_country: [72, 'Destination country'], multi_dest_institution: [78, 'Loading'], multi_dest_institution_list: [82, 'Destination institution'], multi_dest_action: [88, 'Destination action'], multi_dest_details: [92, 'Destination details'], multi_dest_list: [96, 'Review split']
+    };
+    const item = map[state.step] || [10, 'Continue'];
+    document.getElementById('progressBar').style.width = item[0] + '%';
+    document.getElementById('progressTitle').textContent = item[1];
+    document.getElementById('progressPercent').textContent = item[0] + '%';
 }
 
 let state = {
@@ -332,17 +454,18 @@ let state = {
 };
 
 function render() {
+    setProgress();
     const screen = document.getElementById('screen');
     let html = '';
     
     switch(state.step) {
         case 'init':
-            html = '<div class="question">🔄 Choose Swap Type</div><div class="options">' +
-                '<button class="option-btn" onclick="startSwap(\'single\')"><span>➡️ 1 Source → 1 Destination</span><i class="fas fa-chevron-right"></i></button>' +
-                '<button class="option-btn" onclick="startSwap(\'multi_source\')"><span>🔄 Multiple Sources → 1 Destination</span><i class="fas fa-chevron-right"></i></button>' +
-                '<button class="option-btn" onclick="startSwap(\'multi_dest\')"><span>🔄 1 Source → Multiple Destinations</span><i class="fas fa-chevron-right"></i></button>' +
-                '<button class="option-btn" onclick="goTo(\'saved_sources\')"><span>🔗 My Saved Sources</span><i class="fas fa-chevron-right"></i></button>' +
-                '<button class="option-btn" onclick="goTo(\'link_source\')"><span>➕ Link New Source</span><i class="fas fa-chevron-right"></i></button>' +
+            html = '<div class="question">What would you like to do?</div><div class="subtitle">Move value from vouchers, wallets, cards, or accounts into a destination your client chooses.</div><div class="notice"><i class="fas fa-shield-alt"></i> Your details are encrypted and only used to process this swap request.</div><div class="options">' +
+                '<button class="option-btn" onclick="startSwap(\'single\')"><span>➡️ 1 Source → 1 Destination<small>Best for a simple transfer or cashout.</small></span><i class="fas fa-chevron-right"></i></button>' +
+                '<button class="option-btn" onclick="startSwap(\'multi_source\')"><span>🔄 Multiple Sources → 1 Destination<small>Combine several balances into one payout.</small></span><i class="fas fa-chevron-right"></i></button>' +
+                '<button class="option-btn" onclick="startSwap(\'multi_dest\')"><span>🧩 1 Source → Multiple Destinations<small>Split one balance to several recipients.</small></span><i class="fas fa-chevron-right"></i></button>' +
+                '<button class="option-btn" onclick="goTo(\'saved_sources\')"><span>🔗 My Saved Sources<small>Use a source you linked before.</small></span><i class="fas fa-chevron-right"></i></button>' +
+                '<button class="option-btn" onclick="goTo(\'link_source\')"><span>➕ Link New Source<small>Save a wallet, voucher, account, or card.</small></span><i class="fas fa-chevron-right"></i></button>' +
                 '</div>';
             break;
             
@@ -531,15 +654,15 @@ function render() {
             const srcInst2 = allParticipants.find(function(p) { return p.code === state.tempSource.code; });
             const dstInst2 = allParticipants.find(function(p) { return p.code === state.tempDest.institution; });
             html = '<div class="question">📋 Confirm Swap</div>' +
-                '<div class="options">' +
-                '<button class="option-btn" style="justify-content:space-between"><span>From</span><span>' + (srcInst2 ? srcInst2.name : '') + ' • ' + state.tempSource.asset_type + '</span></button>' +
-                '<button class="option-btn" style="justify-content:space-between"><span>Amount</span><span>' + parseFloat(state.tempSource.amount).toFixed(2) + '</span></button>' +
-                '<button class="option-btn" style="justify-content:space-between"><span>To</span><span>' + (dstInst2 ? dstInst2.name : '') + '</span></button>' +
-                '<button class="option-btn" style="justify-content:space-between"><span>Destination</span><span>' + (state.tempDest.action === 'cashout' ? '💰 Cashout to ' + state.tempDest.value : '🏦 ' + state.tempDest.value) + '</span></button>' +
+                '<div class="summary-card">' +
+                '<div class="summary-row"><span>From</span><span>' + (srcInst2 ? srcInst2.name : '') + ' • ' + state.tempSource.asset_type + '</span></div>' +
+                '<div class="summary-row"><span>Amount</span><span>' + parseFloat(state.tempSource.amount).toFixed(2) + '</span></div>' +
+                '<div class="summary-row"><span>To</span><span>' + (dstInst2 ? dstInst2.name : '') + '</span></div>' +
+                '<div class="summary-row"><span>Destination</span><span>' + (state.tempDest.action === 'cashout' ? '💰 Cashout to ' + escapeHtml(state.tempDest.value) : '🏦 ' + escapeHtml(state.tempDest.value)) + '</span></div>' +
                 '</div>' +
                 '<div style="display:flex; gap:12px; margin-top:20px;">' +
                 '<button class="submit-btn" style="flex:1;" onclick="executeSingleSwap(false)">✅ Swap</button>' +
-                '<button class="submit-btn" style="flex:1; background:#333;" onclick="executeSingleSwap(true)">💾 Swap & Save</button>' +
+                '<button class="submit-btn secondary-btn" style="flex:1;" onclick="executeSingleSwap(true)">💾 Swap & Save</button>' +
                 '</div>' +
                 '<button class="back-btn" onclick="goTo(\'single_dest_details\')">← Edit</button>';
             break;
