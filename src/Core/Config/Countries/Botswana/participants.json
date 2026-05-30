@@ -54,7 +54,7 @@
         "supports_realtime_processing": true,
         "supports_reversal": true,
         "supports_idempotency": true,
-        "wallet_types": [
+        "asset_types": [
           "ACCOUNT",
           "VOUCHER",
           "ATM"
@@ -150,7 +150,7 @@
         "supports_realtime_processing": true,
         "supports_reversal": true,
         "supports_idempotency": true,
-        "wallet_types": [
+        "asset_types": [
           "ACCOUNT",
           "E-WALLET",
           "ATM"
@@ -236,7 +236,7 @@
         "supports_realtime_processing": true,
         "supports_reversal": true,
         "supports_idempotency": true,
-        "wallet_types": [
+        "asset_types": [
           "CARD",
           "VOUCHER"
         ],
