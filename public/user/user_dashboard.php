@@ -2,11 +2,6 @@
 // public/user/user_dashboard.php
 ob_start();
 
-if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') {
-    error_reporting(0);
-    ini_set('display_errors', 0);
-}
-
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/bootstrap.php';
@@ -33,122 +28,161 @@ $systemCountry = $user['country'] ?? 'BW';
 $config = LoadCountry::getConfig();
 $dbConfig = $config['db']['swap'] ?? null;
 
-if (empty($dbConfig) || empty($dbConfig['host'])) {
-    $dbConfig = null;
-}
-
 try {
     $db = DBConnection::getInstance($dbConfig);
-    if (!$db) throw new \Exception("Failed to get database connection");
     $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
-    
-    $db->exec("
-        CREATE TABLE IF NOT EXISTS user_funding_sources (
-            source_id BIGSERIAL PRIMARY KEY,
-            user_id VARCHAR(100) NOT NULL,
-            institution_code VARCHAR(100) NOT NULL,
-            institution_name VARCHAR(150),
-            institution_country VARCHAR(5) DEFAULT 'BW',
-            source_type VARCHAR(30) NOT NULL,
-            source_label VARCHAR(100),
-            masked_identifier VARCHAR(100),
-            encrypted_identifier TEXT,
-            identifier_hash VARCHAR(255),
-            linked_phone VARCHAR(30),
-            is_default BOOLEAN DEFAULT FALSE,
-            status VARCHAR(20) DEFAULT 'ACTIVE',
-            created_at TIMESTAMP DEFAULT NOW(),
-            updated_at TIMESTAMP DEFAULT NOW(),
-            UNIQUE(user_id, institution_code, identifier_hash)
-        )
-    ");
-    
 } catch (\Throwable $e) {
-    error_log("USER DASHBOARD DB ERROR: " . $e->getMessage());
     die("System error");
 }
 
-function formatPhoneNumber($phoneNumber, $countryCode = 'BW') {
-    $cleanNumber = preg_replace('/[^0-9]/', '', $phoneNumber);
-    $countryCodes = ['BW' => '267', 'ZA' => '27', 'NG' => '234', 'KE' => '254', 'GH' => '233'];
-    $code = $countryCodes[$countryCode] ?? '267';
-    if (empty($cleanNumber)) return '';
-    if (substr($cleanNumber, 0, strlen($code)) === $code) return '+' . $cleanNumber;
-    if (substr($cleanNumber, 0, 1) === '0') $cleanNumber = substr($cleanNumber, 1);
-    return '+' . $code . $cleanNumber;
-}
-
-function maskIdentifier($value, $visible = 4) {
-    $value = trim($value);
-    if ($value === '') return '';
-    $len = strlen($value);
-    if ($len <= $visible) return str_repeat('*', $len);
-    return str_repeat('*', $len - $visible) . substr($value, -$visible);
-}
-
-// Load participants
-$stmt = $db->prepare("SELECT * FROM participants WHERE status = 'ACTIVE' ORDER BY name");
+// Load participants from database (synced with participants.json)
+$stmt = $db->prepare("SELECT * FROM participants WHERE status = 'ACTIVE'");
 $stmt->execute();
-$participants = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$dbParticipants = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-$participantConfig = [];
-foreach ($participants as $p) {
-    $participantConfig[$p['provider_code']] = $p;
+// Build complete participant config with asset types
+$participants = [];
+foreach ($dbParticipants as $p) {
+    $caps = json_decode($p['capabilities'] ?? '{}', true);
+    $walletTypes = $caps['wallet_types'] ?? [];
+    
+    $participants[$p['provider_code']] = [
+        'name' => $p['name'],
+        'provider_code' => $p['provider_code'],
+        'type' => $p['type'],
+        'category' => $p['category'],
+        'country_code' => $p['country_code'] ?? 'BW',
+        'wallet_types' => $walletTypes,
+        'base_url' => $p['base_url'],
+        'status' => $p['status']
+    ];
 }
 
 // Load user's saved sources
-$stmt = $db->prepare("SELECT * FROM user_funding_sources WHERE user_id = :user_id AND status = 'ACTIVE' ORDER BY is_default DESC");
+$stmt = $db->prepare("SELECT * FROM user_funding_sources WHERE user_id = :user_id AND status = 'ACTIVE'");
 $stmt->execute([':user_id' => $userId]);
 $fundingSources = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Load transactions for display
-$stmt = $db->prepare("
-    SELECT swap_uuid, amount, status, created_at, destination_details, source_details
-    FROM swap_requests 
-    WHERE CAST(metadata AS TEXT) LIKE :pattern 
-    ORDER BY created_at DESC LIMIT 20
-");
-$stmt->execute([':pattern' => '%' . $userPhone . '%']);
-$transactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-$isAjax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
-$error = null;
-$success = null;
-
-// Handle AJAX requests
-if ($isAjax && isset($_GET['action'])) {
-    header('Content-Type: application/json');
-    
-    if ($_GET['action'] === 'transactions') {
-        echo json_encode(['success' => true, 'transactions' => $transactions]);
-        exit;
-    }
-    
-    if ($_GET['action'] === 'rates') {
-        // Return exchange rates
-        echo json_encode(['success' => true, 'rates' => ['USD' => 0.075, 'ZAR' => 1.35, 'EUR' => 0.069]]);
-        exit;
-    }
-    
-    echo json_encode(['success' => false, 'message' => 'Invalid action']);
-    exit;
+// Helper to get asset type icon
+function getAssetIcon($type) {
+    return match(strtoupper($type)) {
+        'ACCOUNT' => '🏦',
+        'WALLET' => '📱',
+        'E-WALLET' => '📱',
+        'CARD' => '💳',
+        'VOUCHER' => '🎫',
+        'ATM' => '🏧',
+        default => '💰'
+    };
 }
 
-// Handle POST requests
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+// Handle AJAX
+$isAjax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
+
+if ($isAjax && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    header('Content-Type: application/json');
     $action = $_POST['action'] ?? '';
+    
+    if ($action === 'swap') {
+        try {
+            $sourceId = (int)($_POST['source_id'] ?? 0);
+            $sourceAssetType = $_POST['source_asset_type'] ?? '';
+            $destInstitution = trim($_POST['dest_institution'] ?? '');
+            $destAssetType = $_POST['dest_asset_type'] ?? '';
+            $destValue = trim($_POST['dest_value'] ?? '');
+            $amount = (float)($_POST['amount'] ?? 0);
+            $isCrossBorder = $_POST['is_cross_border'] ?? '0';
+            
+            // Get source
+            $stmt = $db->prepare("SELECT * FROM user_funding_sources WHERE source_id = ? AND user_id = ?");
+            $stmt->execute([$sourceId, $userId]);
+            $source = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$source) throw new Exception("Source not found");
+            
+            $encryptionKey = getenv('ENCRYPTION_KEY') ?: 'default-key-32-chars-long!!';
+            $decryptedIdentifier = openssl_decrypt(
+                base64_decode($source['encrypted_identifier']), 
+                'AES-256-CBC', 
+                $encryptionKey, 
+                0, 
+                substr($encryptionKey, 0, 16)
+            );
+            
+            $sourcePayload = [
+                'institution' => $source['institution_code'],
+                'asset_type' => $sourceAssetType,
+                'amount' => $amount,
+                'currency' => 'BWP'
+            ];
+            
+            if ($sourceAssetType === 'ACCOUNT') {
+                $sourcePayload['account_number'] = $decryptedIdentifier;
+            } elseif ($sourceAssetType === 'CARD') {
+                $sourcePayload['card_number'] = $decryptedIdentifier;
+            } else {
+                $sourcePayload['phone'] = $decryptedIdentifier;
+            }
+            
+            $destinationDetails = [];
+            if ($destAssetType === 'CASHOUT') {
+                $destinationDetails = ['cashout' => ['beneficiary_phone' => $destValue]];
+                $deliveryMode = 'cashout';
+            } elseif ($destAssetType === 'ACCOUNT') {
+                $destinationDetails = ['beneficiary_account' => $destValue];
+                $deliveryMode = 'deposit';
+            } else {
+                $destinationDetails = ['beneficiary_wallet' => $destValue];
+                $deliveryMode = 'deposit';
+            }
+            
+            $swapPayload = [
+                'source' => $sourcePayload,
+                'destination' => array_merge([
+                    'institution' => $destInstitution,
+                    'delivery_mode' => $deliveryMode,
+                    'amount' => $amount,
+                    'currency' => 'BWP'
+                ], $destinationDetails),
+                'metadata' => [
+                    'user_id' => $userId,
+                    'is_cross_border' => $isCrossBorder === '1',
+                    'source_country' => $source['institution_country'] ?? 'BW',
+                    'dest_country' => $participants[$destInstitution]['country_code'] ?? 'BW'
+                ]
+            ];
+            
+            $countryConfigPath = __DIR__ . "/../../src/Core/Config/Countries/{$systemCountry}/config.php";
+            $countryConfig = file_exists($countryConfigPath) ? require $countryConfigPath : [];
+            
+            $swapService = new SwapService($db, $countryConfig, $systemCountry, $encryptionKey, $participants);
+            $result = $swapService->executeSwap($swapPayload);
+            
+            echo json_encode($result);
+            exit;
+            
+        } catch (Exception $e) {
+            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+            exit;
+        }
+    }
     
     if ($action === 'link_source') {
         try {
             $institutionCode = trim($_POST['institution_code'] ?? '');
-            $sourceType = strtoupper(trim($_POST['source_type'] ?? ''));
+            $assetType = strtoupper(trim($_POST['asset_type'] ?? ''));
             $identifier = trim($_POST['identifier'] ?? '');
             
-            $participant = $participantConfig[$institutionCode] ?? null;
-            if (!$participant) throw new \Exception("Institution not found");
+            $participant = $participants[$institutionCode] ?? null;
+            if (!$participant) throw new Exception("Institution not found");
+            
+            // Validate asset type is supported
+            if (!in_array($assetType, $participant['wallet_types'])) {
+                throw new Exception("Institution does not support {$assetType}");
+            }
             
             $identifierHash = hash('sha256', $identifier);
-            $maskedId = maskIdentifier($identifier, 4);
+            $maskedId = strlen($identifier) > 4 ? '••••' . substr($identifier, -4) : '••••';
             $encryptionKey = getenv('ENCRYPTION_KEY') ?: 'default-key-32-chars-long!!';
             $encrypted = base64_encode(openssl_encrypt($identifier, 'AES-256-CBC', $encryptionKey, 0, substr($encryptionKey, 0, 16)));
             
@@ -156,126 +190,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 INSERT INTO user_funding_sources 
                 (user_id, institution_code, institution_name, institution_country, source_type, 
                  masked_identifier, encrypted_identifier, identifier_hash, linked_phone)
-                VALUES (:user_id, :inst_code, :inst_name, :inst_country, :type, 
-                        :masked, :encrypted, :hash, :phone)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             
             $stmt->execute([
-                ':user_id' => $userId,
-                ':inst_code' => $institutionCode,
-                ':inst_name' => $participant['name'],
-                ':inst_country' => $participant['country_code'] ?? 'BW',
-                ':type' => $sourceType,
-                ':masked' => $maskedId,
-                ':encrypted' => $encrypted,
-                ':hash' => $identifierHash,
-                ':phone' => $userPhone
+                $userId,
+                $institutionCode,
+                $participant['name'],
+                $participant['country_code'],
+                $assetType,
+                $maskedId,
+                $encrypted,
+                $identifierHash,
+                $userPhone
             ]);
             
-            $success = "Source linked successfully!";
-        } catch (\Exception $e) {
-            $error = $e->getMessage();
+            echo json_encode(['status' => 'success', 'message' => 'Source linked successfully']);
+            exit;
+            
+        } catch (Exception $e) {
+            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+            exit;
         }
     }
     
-    if ($action === 'unlink_source') {
-        $sourceId = (int)($_POST['source_id'] ?? 0);
-        $db->prepare("UPDATE user_funding_sources SET status = 'REMOVED' WHERE source_id = ? AND user_id = ?")
-            ->execute([$sourceId, $userId]);
-        $success = "Source removed";
+    if ($action === 'get_asset_types') {
+        $institutionCode = $_GET['institution'] ?? '';
+        $inst = $participants[$institutionCode] ?? null;
+        if ($inst) {
+            echo json_encode(['success' => true, 'wallet_types' => $inst['wallet_types']]);
+        } else {
+            echo json_encode(['success' => false, 'wallet_types' => []]);
+        }
+        exit;
     }
     
-    if ($action === 'swap') {
-        if ($isAjax) {
-            while (ob_get_level() > 0) ob_end_clean();
-            header('Content-Type: application/json');
-        }
-        
-        try {
-            $sourceId = (int)($_POST['source_id'] ?? 0);
-            $destinationInstitution = trim($_POST['dest_institution'] ?? '');
-            $destinationType = trim($_POST['dest_type'] ?? 'deposit');
-            $destinationValue = trim($_POST['dest_value'] ?? '');
-            $amount = (float)($_POST['amount'] ?? 0);
-            $isInternational = isset($_POST['is_international']) && $_POST['is_international'] === '1';
-            
-            // Get source details
-            $stmt = $db->prepare("SELECT * FROM user_funding_sources WHERE source_id = ? AND user_id = ?");
-            $stmt->execute([$sourceId, $userId]);
-            $source = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$source) throw new \Exception("Source not found");
-            
-            // Validate same institution + same asset type
-            $destParticipant = $participantConfig[$destinationInstitution] ?? null;
-            if ($source['institution_code'] === $destinationInstitution && !$isInternational) {
-                if ($source['source_type'] === $destinationType) {
-                    throw new \Exception("Cannot send to same institution with same asset type. Try sending to a wallet if you have an account, or use cross-border.");
-                }
-            }
-            
-            $encryptionKey = getenv('ENCRYPTION_KEY') ?: 'default-key-32-chars-long!!';
-            $decryptedIdentifier = openssl_decrypt(base64_decode($source['encrypted_identifier']), 'AES-256-CBC', $encryptionKey, 0, substr($encryptionKey, 0, 16));
-            
-            $sourcePayload = [
-                'institution' => $source['institution_code'],
-                'asset_type' => $source['source_type'],
-                'amount' => $amount,
-                'currency' => 'BWP'
-            ];
-            
-            if ($source['source_type'] === 'ACCOUNT') {
-                $sourcePayload['account_number'] = $decryptedIdentifier;
-            } elseif ($source['source_type'] === 'CARD') {
-                $sourcePayload['card_number'] = $decryptedIdentifier;
-            } else {
-                $sourcePayload['phone'] = formatPhoneNumber($decryptedIdentifier, $systemCountry);
-            }
-            
-            $destinationDetails = [];
-            if ($destinationType === 'cashout') {
-                $destinationDetails = ['cashout' => ['beneficiary_phone' => $destinationValue]];
-            } elseif ($destinationType === 'bank') {
-                $destinationDetails = ['beneficiary_account' => $destinationValue];
-            } else {
-                $destinationDetails = ['beneficiary_wallet' => $destinationValue];
-            }
-            
-            $swapPayload = [
-                'source' => $sourcePayload,
-                'destination' => array_merge([
-                    'institution' => $destinationInstitution,
-                    'delivery_mode' => $destinationType === 'cashout' ? 'cashout' : 'deposit',
-                    'amount' => $amount,
-                    'currency' => 'BWP'
-                ], $destinationDetails),
-                'metadata' => ['user_id' => $userId, 'user_phone' => $userPhone, 'is_international' => $isInternational]
-            ];
-            
-            $countryConfigPath = __DIR__ . "/../../src/Core/Config/Countries/{$systemCountry}/config.php";
-            $countryConfig = file_exists($countryConfigPath) ? require $countryConfigPath : [];
-            
-            $swapService = new SwapService($db, $countryConfig, $systemCountry, $encryptionKey, $participantConfig);
-            $result = $swapService->executeSwap($swapPayload);
-            
-            if ($isAjax) {
-                echo json_encode($result);
-                exit;
-            }
-            
-        } catch (\Exception $e) {
-            if ($isAjax) {
-                echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
-                exit;
-            }
-            $error = $e->getMessage();
-        }
-    }
-    
-    if (!$isAjax) {
-        header("Location: " . $_SERVER['PHP_SELF']);
-        exit();
-    }
+    echo json_encode(['status' => 'error', 'message' => 'Invalid action']);
+    exit;
 }
 
 ob_end_flush();
@@ -285,9 +236,8 @@ ob_end_flush();
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>VouchMorph – Send Money</title>
+<title>VouchMorph | eChenchela Ha!</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-<link href="https://api.fontshare.com/v2/css?f[]=clash-display@400,500,600,700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <style>
     * {
@@ -299,733 +249,674 @@ ob_end_flush();
     body {
         background: #0a0a0f;
         font-family: 'Inter', sans-serif;
-        color: #FFFFFF;
+        color: #ffffff;
         min-height: 100vh;
-    }
-    
-    /* Main layout */
-    .app {
-        max-width: 800px;
-        margin: 0 auto;
-        padding: 2rem 1.5rem;
-    }
-    
-    /* Sharp edges - Porsche design */
-    .card, button, input, select, .source-item, .tx-item {
-        border-radius: 0 !important;
-    }
-    
-    /* Header */
-    .header {
         display: flex;
-        justify-content: space-between;
+        justify-content: center;
         align-items: center;
-        margin-bottom: 2rem;
-        padding-bottom: 1rem;
-        border-bottom: 2px solid #00F0FF;
+        padding: 20px;
     }
     
-    .logo h1 {
-        font-family: 'Clash Display', sans-serif;
-        font-size: 1.5rem;
-        font-weight: 600;
-        letter-spacing: -0.02em;
-    }
-    
-    .logo p {
-        font-size: 0.65rem;
-        color: #666;
-        margin-top: 0.1rem;
-    }
-    
-    .user-info {
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-    }
-    
-    .phone {
-        font-family: monospace;
-        font-size: 0.8rem;
-        color: #00F0FF;
-        background: rgba(0,240,255,0.1);
-        padding: 0.4rem 0.8rem;
-        border: 1px solid rgba(0,240,255,0.3);
-    }
-    
-    .logout {
-        color: #666;
-        text-decoration: none;
-        font-size: 0.8rem;
-    }
-    
-    .logout:hover { color: #FF3030; }
-    
-    /* Amount display */
-    .amount-card {
-        background: #0f0f15;
-        border: 1px solid #222;
-        padding: 1.5rem;
-        margin-bottom: 1.5rem;
-        text-align: center;
-    }
-    
-    .amount-label {
-        font-size: 0.7rem;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        color: #666;
-        margin-bottom: 0.5rem;
-    }
-    
-    .amount-input {
+    .ussd-container {
+        max-width: 420px;
         width: 100%;
-        background: transparent;
-        border: none;
-        color: #00F0FF;
-        font-size: 3rem;
-        font-weight: 700;
-        text-align: center;
-        font-family: monospace;
-    }
-    
-    .amount-input:focus { outline: none; }
-    
-    .currency {
-        font-size: 1rem;
-        color: #666;
-        margin-left: 0.5rem;
-    }
-    
-    /* Source / Destination cards */
-    .flow-card {
-        background: #0f0f15;
+        background: #0a0a0f;
         border: 1px solid #222;
-        margin-bottom: 1rem;
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
         overflow: hidden;
     }
     
-    .flow-header {
-        padding: 1rem;
-        background: #0a0a0f;
-        border-bottom: 1px solid #222;
+    .ussd-header {
+        background: #00F0FF;
+        padding: 16px 20px;
         display: flex;
         justify-content: space-between;
         align-items: center;
-        cursor: pointer;
     }
     
-    .flow-header h3 {
-        font-size: 0.85rem;
+    .ussd-header h1 {
+        font-size: 16px;
+        font-weight: 700;
+        color: #0a0a0f;
+        letter-spacing: -0.5px;
+    }
+    
+    .ussd-header .tagline {
+        font-size: 10px;
+        font-weight: 500;
+        color: #0a0a0f;
+        background: rgba(10, 10, 15, 0.2);
+        padding: 4px 8px;
+    }
+    
+    .ussd-screen {
+        min-height: 400px;
+        padding: 24px 20px;
+        background: #0f0f15;
+        border-bottom: 1px solid #222;
+    }
+    
+    .question {
+        font-size: 18px;
         font-weight: 600;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
+        line-height: 1.4;
+        margin-bottom: 24px;
     }
     
-    .flow-header i:first-child { color: #00F0FF; }
-    .arrow-icon { color: #666; transition: transform 0.2s; }
-    .flow-header.collapsed .arrow-icon { transform: rotate(180deg); }
-    
-    .flow-body { padding: 1rem; }
-    .flow-body.collapsed { display: none; }
-    
-    /* Source selector */
-    .sources-list {
+    .options {
         display: flex;
         flex-direction: column;
-        gap: 0.5rem;
-        margin-bottom: 1rem;
+        gap: 10px;
     }
     
-    .source-item {
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-        padding: 0.75rem;
-        background: #050505;
-        border: 1px solid #222;
-        cursor: pointer;
-        transition: all 0.2s;
-    }
-    
-    .source-item:hover { border-color: #00F0FF; }
-    .source-item.selected { border: 2px solid #00F0FF; background: rgba(0,240,255,0.05); }
-    
-    .source-icon {
-        width: 40px;
-        height: 40px;
-        background: rgba(0,240,255,0.1);
-        display: flex;
-    align-items: center;
-        justify-content: center;
-    }
-    
-    .source-icon i { font-size: 1.2rem; color: #00F0FF; }
-    
-    .source-details {
-        flex: 1;
-    }
-    
-    .source-name {
-        font-weight: 600;
-        font-size: 0.9rem;
-    }
-    
-    .source-meta {
-        font-size: 0.7rem;
-        color: #666;
-        margin-top: 0.2rem;
-    }
-    
-    .source-badge {
-        font-size: 0.6rem;
-        padding: 0.2rem 0.4rem;
-        background: rgba(0,240,255,0.15);
-        color: #00F0FF;
-    }
-    
-    /* Add source button */
-    .add-btn {
-        width: 100%;
-        padding: 0.75rem;
+    .option-btn {
         background: transparent;
-        border: 1px dashed #333;
-        color: #666;
+        border: 1px solid #333;
+        padding: 14px 16px;
+        text-align: left;
+        color: #ffffff;
+        font-size: 14px;
+        font-weight: 500;
         cursor: pointer;
-        text-align: center;
         transition: all 0.2s;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
     }
     
-    .add-btn:hover {
+    .option-btn:hover {
         border-color: #00F0FF;
+        background: rgba(0, 240, 255, 0.05);
+    }
+    
+    .option-btn .icon {
+        font-size: 18px;
+        margin-right: 12px;
+    }
+    
+    .back-btn {
+        margin-top: 20px;
+        background: transparent;
+        border: none;
+        color: #666;
+        font-size: 13px;
+        cursor: pointer;
+        padding: 8px 0;
+        text-align: center;
+        width: 100%;
+    }
+    
+    .back-btn:hover {
         color: #00F0FF;
     }
     
-    /* Destination form */
-    .dest-row {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 1rem;
-        margin-bottom: 1rem;
+    .input-group {
+        margin-top: 16px;
     }
     
-    .form-group {
-        margin-bottom: 1rem;
-    }
-    
-    .form-group label {
-        display: block;
-        font-size: 0.65rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: #666;
-        margin-bottom: 0.3rem;
-    }
-    
-    select, .dest-input {
+    .ussd-input, .ussd-select {
         width: 100%;
-        padding: 0.75rem;
+        padding: 14px 16px;
         background: #050505;
-        border: 1px solid #222;
-        color: #fff;
-        font-size: 0.85rem;
+        border: 1px solid #333;
+        color: #00F0FF;
+        font-size: 16px;
+        font-family: monospace;
+        margin-bottom: 12px;
     }
     
-    select:focus, .dest-input:focus {
+    .ussd-select {
+        color: #fff;
+        font-family: 'Inter';
+    }
+    
+    .ussd-input:focus, .ussd-select:focus {
         outline: none;
         border-color: #00F0FF;
     }
     
-    /* International toggle */
-    .international-toggle {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 0.75rem;
-        background: #050505;
-        border: 1px solid #222;
-        margin-bottom: 1rem;
-    }
-    
-    .toggle-label {
-        font-size: 0.8rem;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-    
-    .toggle-switch {
-        width: 40px;
-        height: 20px;
-        background: #222;
-        border: none;
-        cursor: pointer;
-        position: relative;
-    }
-    
-    .toggle-switch.active {
-        background: #00F0FF;
-    }
-    
-    .toggle-switch::after {
-        content: '';
-        position: absolute;
-        width: 16px;
-        height: 16px;
-        background: #fff;
-        top: 2px;
-        left: 2px;
-        transition: left 0.2s;
-    }
-    
-    .toggle-switch.active::after {
-        left: 22px;
-        background: #0a0a0f;
-    }
-    
-    /* Rate info */
-    .rate-info {
-        font-size: 0.7rem;
-        color: #FFC107;
-        text-align: center;
-        padding: 0.5rem;
-        background: rgba(255,193,7,0.1);
-        margin-bottom: 1rem;
-    }
-    
-    /* Execute button */
-    .execute-btn {
+    .submit-btn {
         width: 100%;
-        padding: 1rem;
+        margin-top: 8px;
+        padding: 14px;
         background: #00F0FF;
         border: none;
         color: #0a0a0f;
         font-weight: 700;
-        font-size: 0.9rem;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
+        font-size: 14px;
         cursor: pointer;
-        transition: all 0.2s;
-        margin-top: 1rem;
     }
     
-    .execute-btn:hover {
-        background: #B000FF;
-        color: #fff;
-    }
-    
-    .execute-btn:disabled {
+    .submit-btn:disabled {
         opacity: 0.5;
         cursor: not-allowed;
     }
     
-    /* Recent transactions */
-    .tx-list {
-        max-height: 300px;
-        overflow-y: auto;
+    .keypad-hint {
+        margin-top: 16px;
+        font-size: 11px;
+        color: #444;
+        text-align: center;
     }
     
-    .tx-item {
+    .ussd-footer {
+        padding: 12px 20px;
+        background: #050505;
+        border-top: 1px solid #222;
+        font-size: 10px;
+        color: #444;
+        text-align: center;
         display: flex;
         justify-content: space-between;
-        align-items: center;
-        padding: 0.75rem;
-        border-bottom: 1px solid #222;
     }
     
-    .tx-date { font-size: 0.7rem; color: #666; }
-    .tx-amount { font-weight: 700; color: #00F0FF; }
-    .tx-status {
-        font-size: 0.6rem;
-        padding: 0.2rem 0.4rem;
-        border: 1px solid;
-    }
-    .status-completed { border-color: #00F0FF; color: #00F0FF; }
-    .status-pending { border-color: #FFC107; color: #FFC107; }
-    .status-failed { border-color: #FF3030; color: #FF3030; }
-    
-    .empty-state {
+    .loading {
         text-align: center;
-        padding: 2rem;
-        color: #666;
+        padding: 40px 20px;
     }
     
-    /* Modal */
-    .modal {
-        display: none;
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(0,0,0,0.95);
-        z-index: 1000;
-        align-items: center;
-        justify-content: center;
+    .spinner {
+        width: 32px;
+        height: 32px;
+        border: 2px solid #333;
+        border-top-color: #00F0FF;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 12px;
     }
     
-    .modal-content {
-        background: #0f0f15;
-        border: 2px solid #00F0FF;
-        max-width: 450px;
-        width: 90%;
-        padding: 1.5rem;
+    @keyframes spin {
+        to { transform: rotate(360deg); }
     }
     
-    .modal-content h3 {
-        font-family: 'Clash Display';
-        margin-bottom: 1rem;
+    .result-screen {
+        text-align: center;
     }
     
-    .modal-buttons {
-        display: flex;
-        gap: 1rem;
-        margin-top: 1rem;
+    .result-icon {
+        font-size: 48px;
+        margin-bottom: 16px;
     }
     
-    .btn-primary {
-        flex: 1;
-        padding: 0.75rem;
+    .result-icon.success { color: #00F0FF; }
+    .result-icon.error { color: #FF3030; }
+    
+    .result-message {
+        font-size: 14px;
+        color: #888;
+        margin-top: 8px;
+    }
+    
+    .done-btn {
+        margin-top: 24px;
+        padding: 14px;
         background: #00F0FF;
         border: none;
         color: #0a0a0f;
-        font-weight: 600;
+        font-weight: 700;
         cursor: pointer;
+        width: 100%;
     }
     
-    .btn-secondary {
-        flex: 1;
-        padding: 0.75rem;
-        background: transparent;
-        border: 1px solid #333;
-        color: #ccc;
-        cursor: pointer;
+    .info-text {
+        font-size: 12px;
+        color: #00F0FF;
+        margin-top: 8px;
+        text-align: center;
     }
     
-    /* Alert */
-    .alert {
-        padding: 0.75rem 1rem;
-        margin-bottom: 1rem;
-        border-left: 3px solid;
+    .hidden {
+        display: none;
     }
-    .alert-error { background: rgba(255,48,48,0.1); border-left-color: #FF3030; }
-    .alert-success { background: rgba(0,240,255,0.1); border-left-color: #00F0FF; }
     
-    /* Hidden */
-    .hidden { display: none; }
-    
-    @media (max-width: 600px) {
-        .app { padding: 1rem; }
-        .dest-row { grid-template-columns: 1fr; }
-        .header { flex-direction: column; text-align: center; gap: 1rem; }
+    .country-badge {
+        font-size: 10px;
+        color: #888;
+        margin-left: 8px;
     }
 </style>
 </head>
 <body>
 
-<div class="app">
-    <!-- Header -->
-    <div class="header">
-        <div class="logo">
-            <h1>VOUCHMORPH</h1>
-            <p>send · swap · settle</p>
-        </div>
-        <div class="user-info">
-            <div class="phone"><i class="fas fa-mobile-alt"></i> <?= htmlspecialchars(substr($userPhone, -8)) ?></div>
-            <a href="logout.php" class="logout"><i class="fas fa-sign-out-alt"></i></a>
-        </div>
+<div class="ussd-container">
+    <div class="ussd-header">
+        <h1><i class="fas fa-bolt"></i> VOUCHMORPH</h1>
+        <div class="tagline">🇧🇼 eChenchela Ha! • Send Money</div>
     </div>
-
-    <?php if ($error): ?>
-        <div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> <?= htmlspecialchars($error) ?></div>
-    <?php endif; ?>
     
-    <?php if ($success): ?>
-        <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?= htmlspecialchars($success) ?></div>
-    <?php endif; ?>
-
-    <!-- Amount Card -->
-    <div class="amount-card">
-        <div class="amount-label">How much?</div>
-        <input type="number" id="amount" class="amount-input" step="0.01" placeholder="0.00">
-        <span class="currency">BWP</span>
-    </div>
-
-    <!-- Source Card -->
-    <div class="flow-card">
-        <div class="flow-header" onclick="toggleCard(this)">
-            <h3><i class="fas fa-arrow-up"></i> From</h3>
-            <i class="fas fa-chevron-down arrow-icon"></i>
-        </div>
-        <div class="flow-body">
-            <div id="sourcesList" class="sources-list">
-                <?php if (empty($fundingSources)): ?>
-                    <div class="empty-state" style="padding: 1rem;">No saved sources. Add one below.</div>
-                <?php else: ?>
-                    <?php foreach ($fundingSources as $source): ?>
-                        <div class="source-item" data-source-id="<?= $source['source_id'] ?>" 
-                             data-institution="<?= htmlspecialchars($source['institution_code']) ?>"
-                             data-type="<?= $source['source_type'] ?>"
-                             data-country="<?= $source['institution_country'] ?>"
-                             onclick="selectSource(this)">
-                            <div class="source-icon">
-                                <i class="<?= $source['source_type'] === 'ACCOUNT' ? 'fas fa-building' : ($source['source_type'] === 'CARD' ? 'fas fa-credit-card' : 'fas fa-mobile-alt') ?>"></i>
-                            </div>
-                            <div class="source-details">
-                                <div class="source-name"><?= htmlspecialchars($source['institution_name']) ?></div>
-                                <div class="source-meta">
-                                    <?= $source['source_type'] ?> • <?= $source['masked_identifier'] ?>
-                                    <?php if ($source['is_default']): ?><span class="source-badge">DEFAULT</span><?php endif; ?>
-                                </div>
-                            </div>
-                            <i class="fas fa-check-circle" style="color: #00F0FF; display: none;"></i>
-                        </div>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </div>
-            <button class="add-btn" onclick="showLinkModal()">
-                <i class="fas fa-plus"></i> Link new account or wallet
-            </button>
+    <div id="screen" class="ussd-screen">
+        <div class="loading">
+            <div class="spinner"></div>
+            <div>Loading...</div>
         </div>
     </div>
-
-    <!-- Destination Card -->
-    <div class="flow-card">
-        <div class="flow-header" onclick="toggleCard(this)">
-            <h3><i class="fas fa-arrow-down"></i> To</h3>
-            <i class="fas fa-chevron-down arrow-icon"></i>
-        </div>
-        <div class="flow-body">
-            <div class="dest-row">
-                <div class="form-group">
-                    <label>Send to</label>
-                    <select id="destType">
-                        <option value="cashout">💰 Cashout (ATM)</option>
-                        <option value="bank">🏦 Bank Account</option>
-                        <option value="wallet">📱 Mobile Wallet</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Institution</label>
-                    <select id="destInstitution">
-                        <option value="">Select institution</option>
-                        <?php foreach ($participants as $p): ?>
-                            <option value="<?= htmlspecialchars($p['provider_code']) ?>" 
-                                    data-country="<?= $p['country_code'] ?? 'BW' ?>">
-                                <?= htmlspecialchars($p['name']) ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-            </div>
-            <div class="form-group">
-                <label>Destination details</label>
-                <input type="text" id="destValue" class="dest-input" placeholder="Phone number or account number">
-            </div>
-            
-            <!-- International toggle -->
-            <div class="international-toggle">
-                <div class="toggle-label">
-                    <i class="fas fa-globe"></i> Send to different country
-                </div>
-                <button type="button" id="internationalToggle" class="toggle-switch" onclick="toggleInternational()"></button>
-            </div>
-            <div id="rateInfo" class="rate-info hidden">
-                <i class="fas fa-chart-line"></i> <span id="rateText">Exchange rate applied</span>
-            </div>
-        </div>
-    </div>
-
-    <!-- Execute Button -->
-    <button class="execute-btn" id="executeBtn" onclick="executeSwap()">
-        <i class="fas fa-bolt"></i> SEND MONEY
-    </button>
-
-    <!-- Recent Transactions -->
-    <div class="flow-card" style="margin-top: 1.5rem;">
-        <div class="flow-header" onclick="toggleCard(this)">
-            <h3><i class="fas fa-history"></i> Recent</h3>
-            <i class="fas fa-chevron-down arrow-icon"></i>
-        </div>
-        <div class="flow-body">
-            <div id="transactionsList" class="tx-list">
-                <?php if (empty($transactions)): ?>
-                    <div class="empty-state">No transactions yet</div>
-                <?php else: ?>
-                    <?php foreach (array_slice($transactions, 0, 5) as $tx): ?>
-                        <div class="tx-item">
-                            <div>
-                                <div class="tx-date"><?= date('d M H:i', strtotime($tx['created_at'])) ?></div>
-                                <div style="font-size:0.7rem;"><?= $tx['status'] ?></div>
-                            </div>
-                            <div class="tx-amount"><?= number_format($tx['amount'], 2) ?> BWP</div>
-                            <div><span class="tx-status status-<?= strtolower($tx['status'] ?? 'pending') ?>"><?= $tx['status'] ?? 'PENDING' ?></span></div>
-                        </div>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </div>
-            <button class="add-btn" style="margin-top: 0.5rem;" onclick="loadMoreTransactions()">
-                <i class="fas fa-refresh"></i> Load more
-            </button>
-        </div>
-    </div>
-</div>
-
-<!-- Link Source Modal -->
-<div id="linkModal" class="modal">
-    <div class="modal-content">
-        <h3><i class="fas fa-link"></i> Link new source</h3>
-        <form method="POST" id="linkForm">
-            <input type="hidden" name="action" value="link_source">
-            <div class="form-group">
-                <label>Institution</label>
-                <select name="institution_code" class="form-select" required>
-                    <?php foreach ($participants as $p): ?>
-                        <option value="<?= htmlspecialchars($p['provider_code']) ?>"><?= htmlspecialchars($p['name']) ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>Type</label>
-                <select name="source_type" required>
-                    <option value="ACCOUNT">Bank Account</option>
-                    <option value="WALLET">Mobile Wallet</option>
-                    <option value="CARD">Card</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>Account/Phone/Card number</label>
-                <input type="text" name="identifier" class="dest-input" required>
-            </div>
-            <div class="modal-buttons">
-                <button type="submit" class="btn-primary">Link</button>
-                <button type="button" class="btn-secondary" onclick="closeModal()">Cancel</button>
-            </div>
-        </form>
+    
+    <div class="ussd-footer">
+        <span>Secured by VouchMorph</span>
+        <span><i class="fas fa-shield-alt"></i> ISO 27001</span>
     </div>
 </div>
 
 <script>
-let selectedSourceId = null;
-let isInternational = false;
-
-function toggleCard(header) {
-    header.classList.toggle('collapsed');
-    const body = header.nextElementSibling;
-    body.classList.toggle('collapsed');
-}
-
-function selectSource(element) {
-    // Remove selected from all
-    document.querySelectorAll('.source-item').forEach(item => {
-        item.classList.remove('selected');
-        item.querySelector('.fa-check-circle')?.setAttribute('style', 'display: none');
-    });
-    
-    // Add selected to current
-    element.classList.add('selected');
-    const checkIcon = element.querySelector('.fa-check-circle');
-    if (checkIcon) checkIcon.setAttribute('style', 'display: block');
-    
-    selectedSourceId = element.dataset.sourceId;
-    
-    // Check if same institution as destination
-    checkSameInstitution();
-}
-
-function checkSameInstitution() {
-    if (!selectedSourceId) return;
-    
-    const sourceItem = document.querySelector(`.source-item[data-source-id="${selectedSourceId}"]`);
-    const sourceInst = sourceItem?.dataset.institution;
-    const destInst = document.getElementById('destInstitution').value;
-    const sourceType = sourceItem?.dataset.type;
-    const destType = document.getElementById('destType').value;
-    
-    if (sourceInst === destInst && !isInternational) {
-        if (sourceType === destType || 
-            (sourceType === 'ACCOUNT' && destType === 'bank') ||
-            (sourceType === 'WALLET' && destType === 'wallet')) {
-            document.getElementById('executeBtn').disabled = true;
-            document.getElementById('executeBtn').style.opacity = '0.5';
-            alert('Cannot send to same institution with same asset type. Use a different destination or enable international.');
-        } else {
-            document.getElementById('executeBtn').disabled = false;
-            document.getElementById('executeBtn').style.opacity = '1';
-        }
-    } else {
-        document.getElementById('executeBtn').disabled = false;
-        document.getElementById('executeBtn').style.opacity = '1';
+// Participants data from PHP
+const participants = <?php 
+    $list = [];
+    foreach ($participants as $code => $p) {
+        $list[] = [
+            'code' => $code,
+            'name' => $p['name'],
+            'country' => $p['country_code'],
+            'wallet_types' => $p['wallet_types']
+        ];
     }
+    echo json_encode($list);
+?>;
+
+// Funding sources
+const fundingSources = <?php 
+    $sources = [];
+    foreach ($fundingSources as $fs) {
+        $sources[] = [
+            'id' => $fs['source_id'],
+            'name' => $fs['institution_name'],
+            'code' => $fs['institution_code'],
+            'type' => $fs['source_type'],
+            'masked' => $fs['masked_identifier'],
+            'country' => $fs['institution_country'] ?? 'BW'
+        ];
+    }
+    echo json_encode($sources);
+?>;
+
+// Country slogans
+const slogans = {
+    'BW': '🇧🇼 eChenchela Ha!',
+    'ZA': '🇿🇦 Yenza Inzinto!',
+    'NG': '🇳🇬 Gbanja!',
+    'KE': '🇰🇪 Chapaa!',
+    'GH': '🇬🇭 Faako!'
+};
+
+// State machine
+let state = {
+    step: 'init',
+    data: {
+        source_id: null,
+        source_code: null,
+        source_asset: null,
+        source_country: null,
+        amount: null,
+        dest_institution: null,
+        dest_asset: null,
+        dest_country: null,
+        dest_value: null,
+        is_cross_border: false
+    }
+};
+
+// Get country display
+function getCountryDisplay(code) {
+    const flag = code === 'BW' ? '🇧🇼' : code === 'ZA' ? '🇿🇦' : code === 'NG' ? '🇳🇬' : '🌍';
+    return `${flag} ${code}`;
 }
 
-function toggleInternational() {
-    const toggle = document.getElementById('internationalToggle');
-    isInternational = !isInternational;
-    
-    if (isInternational) {
-        toggle.classList.add('active');
-        document.getElementById('rateInfo').classList.remove('hidden');
-        fetchRates();
-    } else {
-        toggle.classList.remove('active');
-        document.getElementById('rateInfo').classList.add('hidden');
-    }
-    
-    checkSameInstitution();
+// Get institution by code
+function getInstitution(code) {
+    return participants.find(p => p.code === code);
 }
 
-async function fetchRates() {
-    const destCountry = document.getElementById('destInstitution').selectedOptions[0]?.dataset.country || 'BW';
-    const sourceCountry = 'BW';
+// Render screen
+function render() {
+    const screen = document.getElementById('screen');
+    let html = '';
     
-    if (sourceCountry !== destCountry) {
-        document.getElementById('rateText').innerHTML = `🌍 Cross-border transfer • Rates apply from ${sourceCountry} to ${destCountry}`;
-    } else {
-        document.getElementById('rateText').innerHTML = `📍 Same country transfer • No exchange fees`;
+    switch(state.step) {
+        case 'init':
+            html = `
+                <div class="question">📱 Choose service</div>
+                <div class="options">
+                    <button class="option-btn" onclick="goTo('select_source')">
+                        <span><span class="icon">💰</span> Send Money</span>
+                        <i class="fas fa-chevron-right"></i>
+                    </button>
+                    <button class="option-btn" onclick="goTo('link_source')">
+                        <span><span class="icon">🔗</span> Link Account/Wallet</span>
+                        <i class="fas fa-chevron-right"></i>
+                    </button>
+                    <button class="option-btn" onclick="goTo('history')">
+                        <span><span class="icon">📜</span> Recent Transactions</span>
+                        <i class="fas fa-chevron-right"></i>
+                    </button>
+                </div>
+                <div class="info-text">🇧🇼 ${slogans['BW'] || 'Send Money Anywhere'}</div>
+            `;
+            break;
+            
+        case 'select_source':
+            if (fundingSources.length === 0) {
+                html = `
+                    <div class="question">No saved sources</div>
+                    <div class="options">
+                        <button class="option-btn" onclick="goTo('link_source')">
+                            Link New Account <i class="fas fa-plus"></i>
+                        </button>
+                        <button class="option-btn" onclick="goTo('init')">
+                            Back <i class="fas fa-arrow-left"></i>
+                        </button>
+                    </div>
+                `;
+            } else {
+                let optionsHtml = '';
+                fundingSources.forEach(source => {
+                    const icon = source.type === 'ACCOUNT' ? '🏦' : (source.type === 'CARD' ? '💳' : '📱');
+                    optionsHtml += `
+                        <button class="option-btn" onclick="selectSource(${source.id}, '${source.code}', '${source.type}', '${source.country}')">
+                            <span>${icon} ${source.name} (${source.masked})</span>
+                            <i class="fas fa-chevron-right"></i>
+                        </button>
+                    `;
+                });
+                optionsHtml += `
+                    <button class="option-btn" onclick="goTo('link_source')">
+                        <span>🔗 Link New Source</span>
+                        <i class="fas fa-plus"></i>
+                    </button>
+                    <button class="option-btn" onclick="goTo('init')">
+                        <span>← Back</span>
+                    </button>
+                `;
+                html = `
+                    <div class="question">Select source</div>
+                    <div class="options">${optionsHtml}</div>
+                `;
+            }
+            break;
+            
+        case 'select_source_asset':
+            const sourceInst = getInstitution(state.data.source_code);
+            const assetOptions = sourceInst?.wallet_types || [];
+            
+            if (assetOptions.length === 0) {
+                html = `<div class="question">No asset types available</div><button class="back-btn" onclick="goTo('select_source')">Back</button>`;
+            } else {
+                let assetHtml = '';
+                assetOptions.forEach(asset => {
+                    const icon = asset === 'ACCOUNT' ? '🏦' : (asset === 'CARD' ? '💳' : (asset === 'VOUCHER' ? '🎫' : '📱'));
+                    assetHtml += `
+                        <button class="option-btn" onclick="selectSourceAsset('${asset}')">
+                            <span>${icon} ${asset}</span>
+                            <i class="fas fa-chevron-right"></i>
+                        </button>
+                    `;
+                });
+                assetHtml += `<button class="back-btn" onclick="goTo('select_source')">← Back</button>`;
+                html = `
+                    <div class="question">Select asset type at ${sourceInst?.name}</div>
+                    <div class="options">${assetHtml}</div>
+                `;
+            }
+            break;
+            
+        case 'enter_amount':
+            html = `
+                <div class="question">💰 Enter amount (BWP)</div>
+                <div class="input-group">
+                    <input type="number" id="amountInput" class="ussd-input" placeholder="0.00" step="0.01" min="10" autofocus>
+                    <button class="submit-btn" onclick="submitAmount()">Continue</button>
+                </div>
+                <button class="back-btn" onclick="goTo('select_source_asset')">← Back</button>
+                <div class="keypad-hint">Minimum BWP 10.00</div>
+            `;
+            break;
+            
+        case 'select_destination':
+            let destHtml = '<div class="question">Select destination institution</div><div class="options">';
+            participants.forEach(p => {
+                const countryFlag = p.country === 'BW' ? '🇧🇼' : (p.country === 'ZA' ? '🇿🇦' : '🌍');
+                destHtml += `
+                    <button class="option-btn" onclick="selectDestination('${p.code}', '${p.country}')">
+                        <span>${countryFlag} ${p.name}</span>
+                        <i class="fas fa-chevron-right"></i>
+                    </button>
+                `;
+            });
+            destHtml += `<button class="back-btn" onclick="goTo('enter_amount')">← Back</button></div>`;
+            html = destHtml;
+            break;
+            
+        case 'select_destination_asset':
+            const destInst = getInstitution(state.data.dest_institution);
+            const destAssetOptions = destInst?.wallet_types || [];
+            // Add CASHOUT option for ATM withdrawals
+            const allOptions = [...destAssetOptions];
+            if (!allOptions.includes('CASHOUT')) allOptions.push('CASHOUT');
+            
+            let assetHtml = '<div class="question">Select receiving method</div><div class="options">';
+            allOptions.forEach(asset => {
+                const icon = asset === 'ACCOUNT' ? '🏦' : (asset === 'CARD' ? '💳' : (asset === 'CASHOUT' ? '💰' : '📱'));
+                const label = asset === 'CASHOUT' ? 'Cashout (ATM)' : asset;
+                assetHtml += `
+                    <button class="option-btn" onclick="selectDestinationAsset('${asset}')">
+                        <span>${icon} ${label}</span>
+                        <i class="fas fa-chevron-right"></i>
+                    </button>
+                `;
+            });
+            
+            // Show cross-border notice if countries differ
+            if (state.data.source_country !== destInst?.country) {
+                assetHtml += `<div class="info-text" style="margin-top: 12px;">🌍 Cross-border transfer from ${state.data.source_country} to ${destInst?.country}</div>`;
+            }
+            
+            assetHtml += `<button class="back-btn" onclick="goTo('select_destination')">← Back</button></div>`;
+            html = assetHtml;
+            break;
+            
+        case 'enter_destination_details':
+            const destInstDetail = getInstitution(state.data.dest_institution);
+            let placeholder = '';
+            let inputType = 'text';
+            
+            if (state.data.dest_asset === 'CASHOUT') {
+                placeholder = 'Beneficiary phone number';
+                inputType = 'tel';
+            } else if (state.data.dest_asset === 'ACCOUNT') {
+                placeholder = 'Account number';
+            } else {
+                placeholder = 'Wallet phone number';
+                inputType = 'tel';
+            }
+            
+            html = `
+                <div class="question">Enter ${placeholder}</div>
+                <div class="input-group">
+                    <input type="${inputType}" id="destInput" class="ussd-input" placeholder="${placeholder}" autofocus>
+                    <button class="submit-btn" onclick="submitDestination()">Continue</button>
+                </div>
+                <button class="back-btn" onclick="goTo('select_destination_asset')">← Back</button>
+            `;
+            break;
+            
+        case 'confirm':
+            const sourceInstConfirm = getInstitution(state.data.source_code);
+            const destInstConfirm = getInstitution(state.data.dest_institution);
+            const amountFormatted = parseFloat(state.data.amount).toFixed(2);
+            const isCrossBorder = state.data.source_country !== state.data.dest_country;
+            const crossBorderNote = isCrossBorder ? '<div class="info-text" style="margin-top: 8px;">🌍 Cross-border fees may apply</div>' : '';
+            
+            html = `
+                <div class="question">📋 Confirm transaction</div>
+                <div class="options">
+                    <button class="option-btn" style="justify-content: space-between;">
+                        <span>From</span>
+                        <span>${sourceInstConfirm?.name} • ${state.data.source_asset}</span>
+                    </button>
+                    <button class="option-btn" style="justify-content: space-between;">
+                        <span>Amount</span>
+                        <span>BWP ${amountFormatted}</span>
+                    </button>
+                    <button class="option-btn" style="justify-content: space-between;">
+                        <span>To</span>
+                        <span>${destInstConfirm?.name}</span>
+                    </button>
+                    <button class="option-btn" style="justify-content: space-between;">
+                        <span>Receive as</span>
+                        <span>${state.data.dest_asset === 'CASHOUT' ? '💰 Cashout' : state.data.dest_asset}</span>
+                    </button>
+                    <button class="option-btn" style="justify-content: space-between;">
+                        <span>Destination</span>
+                        <span>${state.data.dest_value}</span>
+                    </button>
+                </div>
+                ${crossBorderNote}
+                <div style="display: flex; gap: 12px; margin-top: 20px;">
+                    <button class="submit-btn" style="flex:1;" onclick="executeSwap()">✅ Confirm</button>
+                    <button class="back-btn" style="flex:1; margin-top:0;" onclick="goTo('enter_destination_details')">✏️ Edit</button>
+                </div>
+            `;
+            break;
+            
+        case 'processing':
+            html = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <div>Processing transaction...</div>
+                    <div class="keypad-hint">Please wait</div>
+                </div>
+            `;
+            break;
+            
+        case 'result':
+            const isSuccess = state.result?.status === 'success';
+            const resultIcon = isSuccess ? '✅' : '❌';
+            const resultClass = isSuccess ? 'success' : 'error';
+            const resultMsg = isSuccess ? (state.result?.message || 'Transaction successful!') : (state.result?.message || 'Transaction failed');
+            const ref = state.result?.swap_reference || '';
+            const slogan = slogans[state.data.dest_country] || slogans['BW'];
+            html = `
+                <div class="result-screen">
+                    <div class="result-icon ${resultClass}">${resultIcon}</div>
+                    <div style="font-size: 20px; font-weight: 700;">${isSuccess ? 'COMPLETED' : 'FAILED'}</div>
+                    <div class="result-message">${resultMsg}</div>
+                    ${ref ? `<div style="font-size: 11px; color: #666; margin-top: 8px;">Ref: ${ref.substring(0, 16)}...</div>` : ''}
+                    <div class="info-text" style="margin-top: 16px;">${slogan}</div>
+                    <button class="done-btn" onclick="reset()">Done</button>
+                </div>
+            `;
+            break;
+            
+        case 'link_source':
+            html = `
+                <div class="question">🔗 Link new source</div>
+                <div class="input-group">
+                    <select id="linkInstitution" class="ussd-select" onchange="updateLinkAssetTypes()">
+                        <option value="">Select institution</option>
+                        ${participants.map(p => `<option value="${p.code}" data-wallet-types='${JSON.stringify(p.wallet_types)}'>${p.name} (${p.country})</option>`).join('')}
+                    </select>
+                    <select id="linkAssetType" class="ussd-select">
+                        <option value="">Select asset type</option>
+                    </select>
+                    <input type="text" id="linkIdentifier" class="ussd-input" placeholder="Account/Phone/Card number">
+                    <button class="submit-btn" onclick="linkSource()">Link Source</button>
+                </div>
+                <button class="back-btn" onclick="goTo('init')">← Back</button>
+            `;
+            break;
+            
+        case 'history':
+            html = `<div class="loading"><div class="spinner"></div><div>Loading transactions...</div></div>`;
+            loadTransactions();
+            break;
+            
+        case 'history_list':
+            let txHtml = '<div class="question">📜 Recent transactions</div><div class="options">';
+            if (state.transactions && state.transactions.length > 0) {
+                state.transactions.slice(0, 5).forEach(tx => {
+                    const statusIcon = tx.status === 'completed' ? '✅' : (tx.status === 'pending' ? '⏳' : '❌');
+                    txHtml += `
+                        <button class="option-btn" style="justify-content: space-between;">
+                            <span>${statusIcon} ${tx.amount} BWP</span>
+                            <span style="font-size: 11px; color:#666;">${tx.date}</span>
+                        </button>
+                    `;
+                });
+            } else {
+                txHtml += '<div style="padding: 20px; text-align: center; color: #666;">No transactions</div>';
+            }
+            txHtml += `<button class="back-btn" onclick="goTo('init')">← Back</button></div>`;
+            html = txHtml;
+            break;
+            
+        default:
+            html = `<div class="loading">Error: Unknown step</div>`;
     }
+    
+    screen.innerHTML = html;
+}
+
+// Navigation functions
+function goTo(step) {
+    state.step = step;
+    render();
+}
+
+function selectSource(id, code, type, country) {
+    state.data.source_id = id;
+    state.data.source_code = code;
+    state.data.source_asset = type;
+    state.data.source_country = country;
+    goTo('select_source_asset');
+}
+
+function selectSourceAsset(asset) {
+    state.data.source_asset = asset;
+    goTo('enter_amount');
+}
+
+function submitAmount() {
+    const amount = document.getElementById('amountInput')?.value;
+    if (!amount || parseFloat(amount) < 10) {
+        alert('Enter valid amount (minimum BWP 10)');
+        return;
+    }
+    state.data.amount = parseFloat(amount);
+    goTo('select_destination');
+}
+
+function selectDestination(code, country) {
+    state.data.dest_institution = code;
+    state.data.dest_country = country;
+    state.data.is_cross_border = (state.data.source_country !== country);
+    goTo('select_destination_asset');
+}
+
+function selectDestinationAsset(asset) {
+    state.data.dest_asset = asset;
+    goTo('enter_destination_details');
+}
+
+function submitDestination() {
+    const value = document.getElementById('destInput')?.value;
+    if (!value) {
+        alert('Enter destination details');
+        return;
+    }
+    state.data.dest_value = value;
+    goTo('confirm');
 }
 
 async function executeSwap() {
-    if (!selectedSourceId) {
-        alert('Please select a source');
-        return;
-    }
-    
-    const amount = parseFloat(document.getElementById('amount').value);
-    if (!amount || amount <= 0) {
-        alert('Please enter amount');
-        return;
-    }
-    
-    const destInstitution = document.getElementById('destInstitution').value;
-    if (!destInstitution) {
-        alert('Please select destination institution');
-        return;
-    }
-    
-    const destValue = document.getElementById('destValue').value;
-    if (!destValue) {
-        alert('Please enter destination details');
-        return;
-    }
-    
-    const destType = document.getElementById('destType').value;
+    goTo('processing');
     
     const formData = new FormData();
     formData.append('action', 'swap');
-    formData.append('source_id', selectedSourceId);
-    formData.append('amount', amount);
-    formData.append('dest_institution', destInstitution);
-    formData.append('dest_type', destType);
-    formData.append('dest_value', destValue);
-    formData.append('is_international', isInternational ? '1' : '0');
-    
-    const btn = document.getElementById('executeBtn');
-    const originalText = btn.innerHTML;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> PROCESSING...';
-    btn.disabled = true;
+    formData.append('source_id', state.data.source_id);
+    formData.append('source_asset_type', state.data.source_asset);
+    formData.append('amount', state.data.amount);
+    formData.append('dest_institution', state.data.dest_institution);
+    formData.append('dest_asset_type', state.data.dest_asset);
+    formData.append('dest_value', state.data.dest_value);
+    formData.append('is_cross_border', state.data.is_cross_border ? '1' : '0');
     
     try {
         const response = await fetch(window.location.href, {
@@ -1033,75 +924,101 @@ async function executeSwap() {
             body: formData,
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
-        const data = await response.json();
-        
-        if (data.status === 'success') {
-            alert('✅ Money sent successfully!\nReference: ' + (data.swap_reference || 'OK'));
-            location.reload();
-        } else {
-            alert('❌ Failed: ' + (data.message || 'Unknown error'));
-        }
+        const result = await response.json();
+        state.result = result;
+        goTo('result');
     } catch (error) {
-        alert('Error: ' + error.message);
-    } finally {
-        btn.innerHTML = originalText;
-        btn.disabled = false;
+        state.result = { status: 'error', message: error.message };
+        goTo('result');
     }
 }
 
-function showLinkModal() {
-    document.getElementById('linkModal').style.display = 'flex';
+function reset() {
+    state = {
+        step: 'init',
+        data: {
+            source_id: null,
+            source_code: null,
+            source_asset: null,
+            source_country: null,
+            amount: null,
+            dest_institution: null,
+            dest_asset: null,
+            dest_country: null,
+            dest_value: null,
+            is_cross_border: false
+        }
+    };
+    render();
 }
 
-function closeModal() {
-    document.getElementById('linkModal').style.display = 'none';
-}
-
-async function loadMoreTransactions() {
-    const container = document.getElementById('transactionsList');
-    container.innerHTML = '<div class="empty-state"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+function updateLinkAssetTypes() {
+    const select = document.getElementById('linkInstitution');
+    const code = select.value;
+    const inst = participants.find(p => p.code === code);
+    const assetSelect = document.getElementById('linkAssetType');
     
+    if (inst && inst.wallet_types) {
+        assetSelect.innerHTML = '<option value="">Select asset type</option>';
+        inst.wallet_types.forEach(type => {
+            assetSelect.innerHTML += `<option value="${type}">${type}</option>`;
+        });
+    } else {
+        assetSelect.innerHTML = '<option value="">No asset types available</option>';
+    }
+}
+
+async function linkSource() {
+    const institution = document.getElementById('linkInstitution').value;
+    const assetType = document.getElementById('linkAssetType').value;
+    const identifier = document.getElementById('linkIdentifier').value;
+    
+    if (!institution || !assetType || !identifier) {
+        alert('Please fill all fields');
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('action', 'link_source');
+    formData.append('institution_code', institution);
+    formData.append('asset_type', assetType);
+    formData.append('identifier', identifier);
+    
+    try {
+        const response = await fetch(window.location.href, {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const result = await response.json();
+        
+        if (result.status === 'success') {
+            alert('Source linked successfully!');
+            location.reload();
+        } else {
+            alert('Error: ' + result.message);
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+async function loadTransactions() {
     try {
         const response = await fetch(window.location.href + '?action=transactions', {
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
         const data = await response.json();
-        
-        if (data.success && data.transactions.length > 0) {
-            let html = '';
-            for (const tx of data.transactions) {
-                const statusClass = (tx.status || 'pending').toLowerCase();
-                html += `
-                    <div class="tx-item">
-                        <div>
-                            <div class="tx-date">${new Date(tx.created_at).toLocaleDateString()} ${new Date(tx.created_at).toLocaleTimeString()}</div>
-                            <div style="font-size:0.7rem;">${tx.status || 'PENDING'}</div>
-                        </div>
-                        <div class="tx-amount">${parseFloat(tx.amount).toFixed(2)} BWP</div>
-                        <div><span class="tx-status status-${statusClass}">${tx.status || 'PENDING'}</span></div>
-                    </div>
-                `;
-            }
-            container.innerHTML = html;
-        } else {
-            container.innerHTML = '<div class="empty-state">No transactions found</div>';
-        }
+        state.transactions = data.transactions || [];
+        goTo('history_list');
     } catch (error) {
-        container.innerHTML = '<div class="empty-state">Failed to load</div>';
+        state.transactions = [];
+        goTo('history_list');
     }
 }
 
-// Event listeners
-document.getElementById('destInstitution').addEventListener('change', () => {
-    if (isInternational) fetchRates();
-    checkSameInstitution();
-});
-document.getElementById('destType').addEventListener('change', checkSameInstitution);
-
-// Handle form submission for linking
-document.getElementById('linkForm')?.addEventListener('submit', function(e) {
-    // Form submits normally - page will reload
-});
+// Initialize
+render();
 </script>
 </body>
 </html>
