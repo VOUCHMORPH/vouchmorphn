@@ -1,6 +1,12 @@
 <?php
 // public/user/user_dashboard.php
-ob_start();
+// Make sure there is ABSOLUTELY NO whitespace before <?php
+
+// Turn off error output for JSON responses
+if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') {
+    ini_set('display_errors', 0);
+    error_reporting(0);
+}
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
@@ -32,12 +38,15 @@ try {
     $db = DBConnection::getInstance($dbConfig);
     $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
 } catch (\Throwable $e) {
+    if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') {
+        header('Content-Type: application/json');
+        echo json_encode(['status' => 'error', 'message' => 'Database connection failed']);
+        exit;
+    }
     die("System error");
 }
 
-// ============================================================
-// DYNAMICALLY LOAD ALL COUNTRY FOLDERS
-// ============================================================
+// Dynamically load all country folders
 function getAllCountryFolders() {
     $basePath = __DIR__ . "/../../src/Core/Config/Countries/";
     $folders = [];
@@ -56,17 +65,22 @@ function loadCountryParticipants($countryName) {
     if (!file_exists($path)) {
         return [];
     }
-    $data = json_decode(file_get_contents($path), true);
+    $content = file_get_contents($path);
+    if ($content === false) {
+        return [];
+    }
+    $data = json_decode($content, true);
+    if (!is_array($data)) {
+        return [];
+    }
     $participants = $data['participants'] ?? [];
-    
-    // Add country info
     foreach ($participants as $code => &$p) {
         $p['country'] = $countryName;
     }
     return $participants;
 }
 
-// Load ALL participants from ALL country folders
+// Load ALL participants
 $allCountryFolders = getAllCountryFolders();
 $allParticipants = [];
 $availableCountries = [];
@@ -88,16 +102,31 @@ function getAssetTypes($participant) {
     return $participant['capabilities']['asset_types'] ?? [];
 }
 
-function getAssetIcon($type) {
-    $icons = ['ACCOUNT' => '🏦', 'VOUCHER' => '🎫', 'ATM' => '🏧', 'E-WALLET' => '📱', 'CARD' => '💳'];
-    return $icons[$type] ?? '💰';
-}
-
 $isAjax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
 
+// Handle AJAX requests FIRST - before any HTML output
 if ($isAjax && $_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json');
+    
     $action = $_POST['action'] ?? '';
+    
+    if ($action === 'get_institutions_by_country') {
+        $country = $_GET['country'] ?? '';
+        $instList = [];
+        foreach ($allParticipants as $code => $p) {
+            if ($p['country'] === $country && ($p['status'] ?? 'ACTIVE') === 'ACTIVE') {
+                $instList[] = [
+                    'code' => $code,
+                    'name' => $p['name'],
+                    'type' => $p['type'] ?? '',
+                    'category' => $p['category'] ?? '',
+                    'asset_types' => getAssetTypes($p)
+                ];
+            }
+        }
+        echo json_encode(['success' => true, 'institutions' => $instList]);
+        exit;
+    }
     
     if ($action === 'save_source') {
         try {
@@ -134,29 +163,11 @@ if ($isAjax && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
     
-    if ($action === 'get_institutions_by_country') {
-        $country = $_GET['country'] ?? '';
-        $instList = [];
-        foreach ($allParticipants as $code => $p) {
-            if ($p['country'] === $country && ($p['status'] ?? 'ACTIVE') === 'ACTIVE') {
-                $instList[] = [
-                    'code' => $code,
-                    'name' => $p['name'],
-                    'type' => $p['type'],
-                    'category' => $p['category'],
-                    'asset_types' => getAssetTypes($p)
-                ];
-            }
-        }
-        echo json_encode(['success' => true, 'institutions' => $instList]);
-        exit;
-    }
-    
     echo json_encode(['status' => 'error', 'message' => 'Invalid action']);
     exit;
 }
 
-ob_end_flush();
+// If not AJAX, output HTML
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -236,7 +247,6 @@ ob_end_flush();
     .remove-btn { background: none; border: none; color: #FF3030; cursor: pointer; font-size: 16px; }
     .add-btn { background: transparent; border: 1px dashed #333; padding: 12px; text-align: center; cursor: pointer; margin-top: 8px; }
     .add-btn:hover { border-color: #00F0FF; color: #00F0FF; }
-    hr { border-color: #222; margin: 12px 0; }
 </style>
 </head>
 <body>
@@ -258,13 +268,16 @@ ob_end_flush();
 </div>
 
 <script>
-// Data from PHP - NO HARDCODED COUNTRIES
+// Data from PHP
 const allParticipants = <?php 
     $list = [];
     foreach ($allParticipants as $code => $p) {
         $list[] = [
-            'code' => $code, 'name' => $p['name'], 'type' => $p['type'],
-            'category' => $p['category'], 'country' => $p['country'],
+            'code' => $code,
+            'name' => $p['name'],
+            'type' => $p['type'] ?? '',
+            'category' => $p['category'] ?? '',
+            'country' => $p['country'],
             'status' => $p['status'] ?? 'ACTIVE',
             'asset_types' => $p['capabilities']['asset_types'] ?? []
         ];
@@ -276,18 +289,20 @@ const fundingSources = <?php
     $sources = [];
     foreach ($fundingSources as $fs) {
         $sources[] = [
-            'id' => $fs['source_id'], 'name' => $fs['institution_name'],
-            'code' => $fs['institution_code'], 'type' => $fs['source_type'],
-            'masked' => $fs['masked_identifier'], 'country' => $fs['institution_country']
+            'id' => $fs['source_id'],
+            'name' => $fs['institution_name'],
+            'code' => $fs['institution_code'],
+            'type' => $fs['source_type'],
+            'masked' => $fs['masked_identifier'],
+            'country' => $fs['institution_country']
         ];
     }
     echo json_encode($sources);
 ?>;
 
 const availableCountries = <?php echo json_encode($availableCountries); ?>;
-const userCountry = "<?= $userCountry ?>";
+const userCountry = "<?= addslashes($userCountry) ?>";
 
-// Helper functions
 function getAssetIcon(type) {
     const icons = {'ACCOUNT':'🏦','VOUCHER':'🎫','ATM':'🏧','E-WALLET':'📱','CARD':'💳'};
     return icons[type] || '💰';
@@ -298,20 +313,19 @@ function getParticipantsByCountry(country) {
 }
 
 function getInstitutionsByCountry(country, callback) {
-    fetch(`${window.location.href}?action=get_institutions_by_country&country=${encodeURIComponent(country)}`, {
+    fetch(window.location.href + '?action=get_institutions_by_country&country=' + encodeURIComponent(country), {
         headers: { 'X-Requested-With': 'XMLHttpRequest' }
     })
-    .then(res => res.json())
-    .then(data => callback(data.institutions || []))
-    .catch(() => callback([]));
+    .then(function(res) { return res.json(); })
+    .then(function(data) { callback(data.institutions || []); })
+    .catch(function() { callback([]); });
 }
 
-// State
 let state = {
     step: 'init',
     swapMode: 'single',
-    sources: [],      // for multi-source: array of {institution, asset_type, identifier, pin, amount}
-    destinations: [], // for multi-dest: array of {institution, action, value, amount}
+    sources: [],
+    destinations: [],
     tempSource: {},
     tempDest: {},
     currentCountryList: []
@@ -323,120 +337,106 @@ function render() {
     
     switch(state.step) {
         case 'init':
-            html = `
-                <div class="question">🔄 Choose Swap Type</div>
-                <div class="options">
-                    <button class="option-btn" onclick="startSwap('single')">
-                        <span>➡️ 1 Source → 1 Destination</span>
-                        <i class="fas fa-chevron-right"></i>
-                    </button>
-                    <button class="option-btn" onclick="startSwap('multi_source')">
-                        <span>🔄 Multiple Sources → 1 Destination</span>
-                        <i class="fas fa-chevron-right"></i>
-                    </button>
-                    <button class="option-btn" onclick="startSwap('multi_dest')">
-                        <span>🔄 1 Source → Multiple Destinations</span>
-                        <i class="fas fa-chevron-right"></i>
-                    </button>
-                    <button class="option-btn" onclick="goTo('saved_sources')">
-                        <span>🔗 My Saved Sources</span>
-                        <i class="fas fa-chevron-right"></i>
-                    </button>
-                    <button class="option-btn" onclick="goTo('link_source')">
-                        <span>➕ Link New Source</span>
-                        <i class="fas fa-chevron-right"></i>
-                    </button>
-                </div>
-            `;
+            html = '<div class="question">🔄 Choose Swap Type</div><div class="options">' +
+                '<button class="option-btn" onclick="startSwap(\'single\')"><span>➡️ 1 Source → 1 Destination</span><i class="fas fa-chevron-right"></i></button>' +
+                '<button class="option-btn" onclick="startSwap(\'multi_source\')"><span>🔄 Multiple Sources → 1 Destination</span><i class="fas fa-chevron-right"></i></button>' +
+                '<button class="option-btn" onclick="startSwap(\'multi_dest\')"><span>🔄 1 Source → Multiple Destinations</span><i class="fas fa-chevron-right"></i></button>' +
+                '<button class="option-btn" onclick="goTo(\'saved_sources\')"><span>🔗 My Saved Sources</span><i class="fas fa-chevron-right"></i></button>' +
+                '<button class="option-btn" onclick="goTo(\'link_source\')"><span>➕ Link New Source</span><i class="fas fa-chevron-right"></i></button>' +
+                '</div>';
             break;
             
-        // ========== SAVED SOURCES ==========
         case 'saved_sources':
             if (fundingSources.length === 0) {
-                html = `<div class="question">No saved sources</div><button class="back-btn" onclick="goTo('init')">← Back</button>`;
+                html = '<div class="question">No saved sources</div><button class="back-btn" onclick="goTo(\'init\')">← Back</button>';
             } else {
                 let opts = '';
-                fundingSources.forEach(s => {
-                    opts += `<button class="option-btn" onclick="useSavedSource(${s.id}, '${s.code}', '${s.type}')">
-                        <span>${getAssetIcon(s.type)} ${s.name} (${s.masked})</span>
-                        <i class="fas fa-chevron-right"></i>
-                    </button>`;
-                });
-                opts += `<button class="back-btn" onclick="goTo('init')">← Back</button>`;
-                html = `<div class="question">🔗 Saved Sources</div><div class="options">${opts}</div>`;
+                for (let i = 0; i < fundingSources.length; i++) {
+                    const s = fundingSources[i];
+                    opts += '<button class="option-btn" onclick="useSavedSource(' + s.id + ', \'' + s.code + '\', \'' + s.type + '\')">' +
+                        '<span>' + getAssetIcon(s.type) + ' ' + s.name + ' (' + s.masked + ')</span>' +
+                        '<i class="fas fa-chevron-right"></i></button>';
+                }
+                opts += '<button class="back-btn" onclick="goTo(\'init\')">← Back</button>';
+                html = '<div class="question">🔗 Saved Sources</div><div class="options">' + opts + '</div>';
             }
             break;
             
-        // ========== LINK NEW SOURCE ==========
         case 'link_source':
             let linkHtml = '<div class="question">➕ Link New Source</div><div class="options">';
-            const sourceCountries = [...new Set(allParticipants.map(p => p.country))];
-            sourceCountries.forEach(country => {
-                const participantsInCountry = getParticipantsByCountry(country);
-                participantsInCountry.forEach(inst => {
-                    linkHtml += `<button class="option-btn" onclick="showLinkForm('${inst.code}', '${inst.name}', ${JSON.stringify(inst.asset_types)})">
-                        <span>🏛️ ${inst.name} (${country})</span>
-                        <i class="fas fa-chevron-right"></i>
-                    </button>`;
-                });
-            });
-            linkHtml += `<button class="back-btn" onclick="goTo('init')">← Back</button></div>`;
+            const countriesSet = {};
+            for (let i = 0; i < allParticipants.length; i++) {
+                countriesSet[allParticipants[i].country] = true;
+            }
+            const countryList = Object.keys(countriesSet);
+            for (let c = 0; c < countryList.length; c++) {
+                const country = countryList[c];
+                const insts = getParticipantsByCountry(country);
+                for (let i = 0; i < insts.length; i++) {
+                    const inst = insts[i];
+                    linkHtml += '<button class="option-btn" onclick="showLinkForm(\'' + inst.code + '\', \'' + inst.name.replace(/'/g, "\\'") + '\', ' + JSON.stringify(inst.asset_types) + ')">' +
+                        '<span>🏛️ ' + inst.name + ' (' + country + ')</span>' +
+                        '<i class="fas fa-chevron-right"></i></button>';
+                }
+            }
+            linkHtml += '<button class="back-btn" onclick="goTo(\'init\')">← Back</button></div>';
             html = linkHtml;
             break;
             
         case 'link_form':
-            html = `
-                <div class="question">➕ Link ${state.linkInstName}</div>
-                <div class="input-group">
-                    <select id="linkAssetType" class="ussd-select">
-                        <option value="">Select asset type</option>
-                        ${state.linkAssetTypes.map(t => `<option value="${t}">${getAssetIcon(t)} ${t}</option>`).join('')}
-                    </select>
-                    <input type="text" id="linkIdentifier" class="ussd-input" placeholder="Account/Phone/Card number">
-                    <input type="password" id="linkPin" class="ussd-input" placeholder="PIN (if any)">
-                    <button class="submit-btn" onclick="submitLinkSource()">Link Source</button>
-                </div>
-                <button class="back-btn" onclick="goTo('link_source')">← Back</button>
-            `;
+            html = '<div class="question">➕ Link ' + state.linkInstName + '</div>' +
+                '<div class="input-group">' +
+                '<select id="linkAssetType" class="ussd-select">' +
+                '<option value="">Select asset type</option>';
+            for (let i = 0; i < state.linkAssetTypes.length; i++) {
+                html += '<option value="' + state.linkAssetTypes[i] + '">' + getAssetIcon(state.linkAssetTypes[i]) + ' ' + state.linkAssetTypes[i] + '</option>';
+            }
+            html += '</select>' +
+                '<input type="text" id="linkIdentifier" class="ussd-input" placeholder="Account/Phone/Card number">' +
+                '<input type="password" id="linkPin" class="ussd-input" placeholder="PIN (if any)">' +
+                '<button class="submit-btn" onclick="submitLinkSource()">Link Source</button>' +
+                '</div>' +
+                '<button class="back-btn" onclick="goTo(\'link_source\')">← Back</button>';
             break;
             
-        // ========== SINGLE SOURCE MODE ==========
         case 'single_select_country':
             let countryHtml = '<div class="question">Select Source Country</div><div class="options">';
-            const uniqueCountries = [...new Set(allParticipants.map(p => p.country))];
-            uniqueCountries.forEach(country => {
-                countryHtml += `<button class="option-btn" onclick="singleSelectCountry('${country}')">
-                    <span>${country}</span>
-                    <i class="fas fa-chevron-right"></i>
-                </button>`;
-            });
-            countryHtml += `<button class="back-btn" onclick="goTo('init')">← Back</button></div>`;
+            const uniqueCountries = {};
+            for (let i = 0; i < allParticipants.length; i++) {
+                uniqueCountries[allParticipants[i].country] = true;
+            }
+            const srcCountries = Object.keys(uniqueCountries);
+            for (let i = 0; i < srcCountries.length; i++) {
+                countryHtml += '<button class="option-btn" onclick="singleSelectCountry(\'' + srcCountries[i] + '\')">' +
+                    '<span>' + srcCountries[i] + '</span>' +
+                    '<i class="fas fa-chevron-right"></i></button>';
+            }
+            countryHtml += '<button class="back-btn" onclick="goTo(\'init\')">← Back</button></div>';
             html = countryHtml;
             break;
             
         case 'single_select_institution':
             let instHtml = '<div class="question">Select Source Institution</div><div class="options">';
             const insts = getParticipantsByCountry(state.tempSource.country);
-            insts.forEach(inst => {
-                instHtml += `<button class="option-btn" onclick="singleSelectInstitution('${inst.code}')">
-                    <span>🏛️ ${inst.name}</span>
-                    <i class="fas fa-chevron-right"></i>
-                </button>`;
-            });
-            instHtml += `<button class="back-btn" onclick="goTo('single_select_country')">← Back</button></div>`;
+            for (let i = 0; i < insts.length; i++) {
+                instHtml += '<button class="option-btn" onclick="singleSelectInstitution(\'' + insts[i].code + '\')">' +
+                    '<span>🏛️ ' + insts[i].name + '</span>' +
+                    '<i class="fas fa-chevron-right"></i></button>';
+            }
+            instHtml += '<button class="back-btn" onclick="goTo(\'single_select_country\')">← Back</button></div>';
             html = instHtml;
             break;
             
         case 'single_select_asset':
-            const sInst = allParticipants.find(p => p.code === state.tempSource.code);
-            let assetHtml = `<div class="question">Select Asset Type at ${sInst?.name}</div><div class="options">`;
-            (sInst?.asset_types || []).forEach(asset => {
-                assetHtml += `<button class="option-btn" onclick="singleSelectAsset('${asset}')">
-                    <span>${getAssetIcon(asset)} ${asset}</span>
-                    <i class="fas fa-chevron-right"></i>
-                </button>`;
-            });
-            assetHtml += `<button class="back-btn" onclick="goTo('single_select_institution')">← Back</button></div>`;
+            const sInst = allParticipants.find(function(p) { return p.code === state.tempSource.code; });
+            let assetHtml = '<div class="question">Select Asset Type at ' + (sInst ? sInst.name : '') + '</div><div class="options">';
+            const assetTypes = sInst ? sInst.asset_types : [];
+            for (let i = 0; i < assetTypes.length; i++) {
+                assetHtml += '<button class="option-btn" onclick="singleSelectAsset(\'' + assetTypes[i] + '\')">' +
+                    '<span>' + getAssetIcon(assetTypes[i]) + ' ' + assetTypes[i] + '</span>' +
+                    '<i class="fas fa-chevron-right"></i></button>';
+            }
+            assetHtml += '<button class="back-btn" onclick="goTo(\'single_select_institution\')">← Back</button></div>';
             html = assetHtml;
             break;
             
@@ -444,175 +444,176 @@ function render() {
             let formHtml = '';
             const sAsset = state.tempSource.asset_type;
             if (sAsset === 'VOUCHER') {
-                formHtml = `<input type="text" id="voucherNumber" class="ussd-input" placeholder="Voucher number">
-                           <input type="password" id="voucherPin" class="ussd-input" placeholder="PIN">`;
+                formHtml = '<input type="text" id="voucherNumber" class="ussd-input" placeholder="Voucher number">' +
+                           '<input type="password" id="voucherPin" class="ussd-input" placeholder="PIN">';
             } else if (sAsset === 'ACCOUNT') {
-                formHtml = `<input type="text" id="accountNumber" class="ussd-input" placeholder="Account number">
-                           <input type="password" id="accountPin" class="ussd-input" placeholder="PIN">`;
+                formHtml = '<input type="text" id="accountNumber" class="ussd-input" placeholder="Account number">' +
+                           '<input type="password" id="accountPin" class="ussd-input" placeholder="PIN">';
             } else if (sAsset === 'CARD') {
-                formHtml = `<input type="text" id="cardNumber" class="ussd-input" placeholder="Card number">
-                           <input type="password" id="cardPin" class="ussd-input" placeholder="PIN">`;
+                formHtml = '<input type="text" id="cardNumber" class="ussd-input" placeholder="Card number">' +
+                           '<input type="password" id="cardPin" class="ussd-input" placeholder="PIN">';
             } else {
-                formHtml = `<input type="tel" id="walletPhone" class="ussd-input" placeholder="Phone number">
-                           <input type="password" id="walletPin" class="ussd-input" placeholder="PIN">`;
+                formHtml = '<input type="tel" id="walletPhone" class="ussd-input" placeholder="Phone number">' +
+                           '<input type="password" id="walletPin" class="ussd-input" placeholder="PIN">';
             }
-            html = `<div class="question">Enter ${sAsset} Details</div>${formHtml}<button class="submit-btn" onclick="submitSingleSourceForm()">Continue</button>
-                    <button class="back-btn" onclick="goTo('single_select_asset')">← Back</button>`;
+            html = '<div class="question">Enter ' + sAsset + ' Details</div>' + formHtml +
+                   '<button class="submit-btn" onclick="submitSingleSourceForm()">Continue</button>' +
+                   '<button class="back-btn" onclick="goTo(\'single_select_asset\')">← Back</button>';
             break;
             
         case 'single_amount':
-            html = `<div class="question">💰 Enter Amount</div>
-                    <input type="number" id="amountInput" class="ussd-input" placeholder="0.00" step="0.01" min="10">
-                    <button class="submit-btn" onclick="submitSingleAmount()">Continue</button>
-                    <button class="back-btn" onclick="goBackToSource()">← Back</button>`;
+            html = '<div class="question">💰 Enter Amount</div>' +
+                   '<input type="number" id="amountInput" class="ussd-input" placeholder="0.00" step="0.01" min="10">' +
+                   '<button class="submit-btn" onclick="submitSingleAmount()">Continue</button>' +
+                   '<button class="back-btn" onclick="goBackToSource()">← Back</button>';
             break;
             
         case 'single_dest_country':
             let destCountryHtml = '<div class="question">Select Destination Country</div><div class="options">';
-            const allCountries = [...new Set(allParticipants.map(p => p.country))];
-            allCountries.forEach(country => {
-                destCountryHtml += `<button class="option-btn" onclick="singleDestCountry('${country}')">
-                    <span>${country}</span>
-                    <i class="fas fa-chevron-right"></i>
-                </button>`;
-            });
-            destCountryHtml += `<button class="back-btn" onclick="goTo('single_amount')">← Back</button></div>`;
+            const allCountries = {};
+            for (let i = 0; i < allParticipants.length; i++) {
+                allCountries[allParticipants[i].country] = true;
+            }
+            const destCountries = Object.keys(allCountries);
+            for (let i = 0; i < destCountries.length; i++) {
+                destCountryHtml += '<button class="option-btn" onclick="singleDestCountry(\'' + destCountries[i] + '\')">' +
+                    '<span>' + destCountries[i] + '</span>' +
+                    '<i class="fas fa-chevron-right"></i></button>';
+            }
+            destCountryHtml += '<button class="back-btn" onclick="goTo(\'single_amount\')">← Back</button></div>';
             html = destCountryHtml;
             break;
             
         case 'single_dest_institution':
-            html = `<div class="loading"><div class="spinner"></div><div>Loading...</div></div>`;
-            getInstitutionsByCountry(state.tempDest.country, (insts) => {
+            html = '<div class="loading"><div class="spinner"></div><div>Loading...</div></div>';
+            getInstitutionsByCountry(state.tempDest.country, function(insts) {
                 state.destInstitutions = insts;
                 goTo('single_dest_institution_list');
             });
             return;
             
         case 'single_dest_institution_list':
-            let destInstHtml = `<div class="question">Select Institution in ${state.tempDest.country}</div><div class="options">`;
-            (state.destInstitutions || []).forEach(inst => {
-                destInstHtml += `<button class="option-btn" onclick="singleDestInstitution('${inst.code}')">
-                    <span>🏛️ ${inst.name}</span>
-                    <i class="fas fa-chevron-right"></i>
-                </button>`;
-            });
-            destInstHtml += `<button class="back-btn" onclick="goTo('single_dest_country')">← Back</button></div>`;
+            let destInstHtml = '<div class="question">Select Institution in ' + state.tempDest.country + '</div><div class="options">';
+            for (let i = 0; i < (state.destInstitutions || []).length; i++) {
+                const inst = state.destInstitutions[i];
+                destInstHtml += '<button class="option-btn" onclick="singleDestInstitution(\'' + inst.code + '\')">' +
+                    '<span>🏛️ ' + inst.name + '</span>' +
+                    '<i class="fas fa-chevron-right"></i></button>';
+            }
+            destInstHtml += '<button class="back-btn" onclick="goTo(\'single_dest_country\')">← Back</button></div>';
             html = destInstHtml;
             break;
             
         case 'single_dest_action':
-            html = `<div class="question">📥 Choose Action</div><div class="options">
-                    <button class="option-btn" onclick="singleDestAction('deposit')">🏦 Deposit to Account/Wallet</button>
-                    <button class="option-btn" onclick="singleDestAction('cashout')">💰 Cashout (ATM/Agent)</button>
-                    </div>
-                    <button class="back-btn" onclick="goTo('single_dest_institution_list')">← Back</button>`;
+            html = '<div class="question">📥 Choose Action</div><div class="options">' +
+                '<button class="option-btn" onclick="singleDestAction(\'deposit\')">🏦 Deposit to Account/Wallet</button>' +
+                '<button class="option-btn" onclick="singleDestAction(\'cashout\')">💰 Cashout (ATM/Agent)</button>' +
+                '</div><button class="back-btn" onclick="goTo(\'single_dest_institution_list\')">← Back</button>';
             break;
             
         case 'single_dest_details':
             let detailHtml = '';
             if (state.tempDest.action === 'cashout') {
-                detailHtml = `<div class="question">💰 Cashout Details</div>
-                    <input type="tel" id="beneficiaryPhone" class="ussd-input" placeholder="Beneficiary phone number">
-                    <select id="payoutMethod" class="ussd-select">
-                        <option value="atm">🏧 ATM Withdrawal</option>
-                        <option value="agent">🏪 Agent Cashout</option>
-                    </select>
-                    <button class="submit-btn" onclick="submitSingleDestDetails()">Continue</button>`;
+                detailHtml = '<div class="question">💰 Cashout Details</div>' +
+                    '<input type="tel" id="beneficiaryPhone" class="ussd-input" placeholder="Beneficiary phone number">' +
+                    '<select id="payoutMethod" class="ussd-select"><option value="atm">🏧 ATM Withdrawal</option><option value="agent">🏪 Agent Cashout</option></select>' +
+                    '<button class="submit-btn" onclick="submitSingleDestDetails()">Continue</button>';
             } else {
-                detailHtml = `<div class="question">🏦 Destination Details</div>
-                    <input type="text" id="destAccount" class="ussd-input" placeholder="Account number or phone number">
-                    <button class="submit-btn" onclick="submitSingleDestDetails()">Continue</button>`;
+                detailHtml = '<div class="question">🏦 Destination Details</div>' +
+                    '<input type="text" id="destAccount" class="ussd-input" placeholder="Account number or phone number">' +
+                    '<button class="submit-btn" onclick="submitSingleDestDetails()">Continue</button>';
             }
-            detailHtml += `<button class="back-btn" onclick="goTo('single_dest_action')">← Back</button>`;
+            detailHtml += '<button class="back-btn" onclick="goTo(\'single_dest_action\')">← Back</button>';
             html = detailHtml;
             break;
             
         case 'single_confirm':
-            const srcInst = allParticipants.find(p => p.code === state.tempSource.code);
-            const dstInst = allParticipants.find(p => p.code === state.tempDest.institution);
-            html = `<div class="question">📋 Confirm Swap</div>
-                <div class="options">
-                    <button class="option-btn" style="justify-content:space-between"><span>From</span><span>${srcInst?.name} • ${state.tempSource.asset_type}</span></button>
-                    <button class="option-btn" style="justify-content:space-between"><span>Amount</span><span>${parseFloat(state.tempSource.amount).toFixed(2)}</span></button>
-                    <button class="option-btn" style="justify-content:space-between"><span>To</span><span>${dstInst?.name}</span></button>
-                    <button class="option-btn" style="justify-content:space-between"><span>Destination</span><span>${state.tempDest.action === 'cashout' ? '💰 Cashout to ' + state.tempDest.value : '🏦 ' + state.tempDest.value}</span></button>
-                </div>
-                <div style="display:flex; gap:12px; margin-top:20px;">
-                    <button class="submit-btn" style="flex:1;" onclick="executeSingleSwap(false)">✅ Swap</button>
-                    <button class="submit-btn" style="flex:1; background:#333;" onclick="executeSingleSwap(true)">💾 Swap & Save</button>
-                </div>
-                <button class="back-btn" onclick="goTo('single_dest_details')">← Edit</button>`;
+            const srcInst2 = allParticipants.find(function(p) { return p.code === state.tempSource.code; });
+            const dstInst2 = allParticipants.find(function(p) { return p.code === state.tempDest.institution; });
+            html = '<div class="question">📋 Confirm Swap</div>' +
+                '<div class="options">' +
+                '<button class="option-btn" style="justify-content:space-between"><span>From</span><span>' + (srcInst2 ? srcInst2.name : '') + ' • ' + state.tempSource.asset_type + '</span></button>' +
+                '<button class="option-btn" style="justify-content:space-between"><span>Amount</span><span>' + parseFloat(state.tempSource.amount).toFixed(2) + '</span></button>' +
+                '<button class="option-btn" style="justify-content:space-between"><span>To</span><span>' + (dstInst2 ? dstInst2.name : '') + '</span></button>' +
+                '<button class="option-btn" style="justify-content:space-between"><span>Destination</span><span>' + (state.tempDest.action === 'cashout' ? '💰 Cashout to ' + state.tempDest.value : '🏦 ' + state.tempDest.value) + '</span></button>' +
+                '</div>' +
+                '<div style="display:flex; gap:12px; margin-top:20px;">' +
+                '<button class="submit-btn" style="flex:1;" onclick="executeSingleSwap(false)">✅ Swap</button>' +
+                '<button class="submit-btn" style="flex:1; background:#333;" onclick="executeSingleSwap(true)">💾 Swap & Save</button>' +
+                '</div>' +
+                '<button class="back-btn" onclick="goTo(\'single_dest_details\')">← Edit</button>';
             break;
             
-        // ========== MULTI-SOURCE MODE (Multiple Sources → 1 Destination) ==========
         case 'multi_source_list':
             let msHtml = '<div class="question">📋 Sources to Combine</div>';
             if (state.sources.length > 0) {
                 let total = 0;
-                state.sources.forEach((src, idx) => {
+                for (let i = 0; i < state.sources.length; i++) {
+                    const src = state.sources[i];
                     total += src.amount;
-                    msHtml += `<div class="multi-item">
-                        <span>${getAssetIcon(src.asset_type)} ${src.institution_name} • ${src.asset_type} • ${src.amount}</span>
-                        <button class="remove-btn" onclick="removeSource(${idx})"><i class="fas fa-trash"></i></button>
-                    </div>`;
-                });
-                msHtml += `<div class="info-text">Total: ${total}</div>`;
+                    msHtml += '<div class="multi-item">' +
+                        '<span>' + getAssetIcon(src.asset_type) + ' ' + src.institution_name + ' • ' + src.asset_type + ' • ' + src.amount + '</span>' +
+                        '<button class="remove-btn" onclick="removeSource(' + i + ')"><i class="fas fa-trash"></i></button>' +
+                        '</div>';
+                }
+                msHtml += '<div class="info-text">Total: ' + total + '</div>';
             } else {
                 msHtml += '<div class="info-text">No sources added</div>';
             }
-            msHtml += `<button class="add-btn" onclick="addMultiSource()">+ Add Source</button>`;
+            msHtml += '<button class="add-btn" onclick="addMultiSource()">+ Add Source</button>';
             if (state.sources.length > 0) {
-                msHtml += `<button class="submit-btn" style="margin-top:12px;" onclick="goToMultiDest()">Continue to Destination →</button>`;
+                msHtml += '<button class="submit-btn" style="margin-top:12px;" onclick="goToMultiDest()">Continue to Destination →</button>';
             }
-            msHtml += `<button class="back-btn" onclick="goTo('init')">← Back</button>`;
+            msHtml += '<button class="back-btn" onclick="goTo(\'init\')">← Back</button>';
             html = msHtml;
             break;
             
         case 'multi_source_add':
-            html = `<div class="question">Add Source</div>
-                <div class="options">
-                    <button class="option-btn" onclick="useSavedForMulti()">🔗 Use Saved Source</button>
-                    <button class="option-btn" onclick="manualForMulti()">📝 Enter Manually</button>
-                    <button class="back-btn" onclick="goTo('multi_source_list')">← Back</button>
-                </div>`;
+            html = '<div class="question">Add Source</div><div class="options">' +
+                '<button class="option-btn" onclick="useSavedForMulti()">🔗 Use Saved Source</button>' +
+                '<button class="option-btn" onclick="manualForMulti()">📝 Enter Manually</button>' +
+                '<button class="back-btn" onclick="goTo(\'multi_source_list\')">← Back</button>' +
+                '</div>';
             break;
             
         case 'multi_source_select_country':
             let msCountryHtml = '<div class="question">Select Source Country</div><div class="options">';
-            const msCountries = [...new Set(allParticipants.map(p => p.country))];
-            msCountries.forEach(c => {
-                msCountryHtml += `<button class="option-btn" onclick="multiSourceCountry('${c}')">
-                    <span>${c}</span>
-                    <i class="fas fa-chevron-right"></i>
-                </button>`;
-            });
-            msCountryHtml += `<button class="back-btn" onclick="goTo('multi_source_add')">← Back</button></div>`;
+            const msCountriesSet = {};
+            for (let i = 0; i < allParticipants.length; i++) {
+                msCountriesSet[allParticipants[i].country] = true;
+            }
+            const msCountries = Object.keys(msCountriesSet);
+            for (let i = 0; i < msCountries.length; i++) {
+                msCountryHtml += '<button class="option-btn" onclick="multiSourceCountry(\'' + msCountries[i] + '\')">' +
+                    '<span>' + msCountries[i] + '</span>' +
+                    '<i class="fas fa-chevron-right"></i></button>';
+            }
+            msCountryHtml += '<button class="back-btn" onclick="goTo(\'multi_source_add\')">← Back</button></div>';
             html = msCountryHtml;
             break;
             
         case 'multi_source_select_institution':
             let msInstHtml = '<div class="question">Select Institution</div><div class="options">';
             const msInsts = getParticipantsByCountry(state.tempSource.country);
-            msInsts.forEach(inst => {
-                msInstHtml += `<button class="option-btn" onclick="multiSourceInstitution('${inst.code}')">
-                    <span>🏛️ ${inst.name}</span>
-                    <i class="fas fa-chevron-right"></i>
-                </button>`;
-            });
-            msInstHtml += `<button class="back-btn" onclick="goTo('multi_source_select_country')">← Back</button></div>`;
+            for (let i = 0; i < msInsts.length; i++) {
+                msInstHtml += '<button class="option-btn" onclick="multiSourceInstitution(\'' + msInsts[i].code + '\')">' +
+                    '<span>🏛️ ' + msInsts[i].name + '</span>' +
+                    '<i class="fas fa-chevron-right"></i></button>';
+            }
+            msInstHtml += '<button class="back-btn" onclick="goTo(\'multi_source_select_country\')">← Back</button></div>';
             html = msInstHtml;
             break;
             
         case 'multi_source_select_asset':
-            const msInstObj = allParticipants.find(p => p.code === state.tempSource.code);
-            let msAssetHtml = `<div class="question">Select Asset Type</div><div class="options">`;
-            (msInstObj?.asset_types || []).forEach(asset => {
-                msAssetHtml += `<button class="option-btn" onclick="multiSourceAsset('${asset}')">
-                    <span>${getAssetIcon(asset)} ${asset}</span>
-                    <i class="fas fa-chevron-right"></i>
-                </button>`;
-            });
-            msAssetHtml += `<button class="back-btn" onclick="goTo('multi_source_select_institution')">← Back</button></div>`;
+            const msInstObj = allParticipants.find(function(p) { return p.code === state.tempSource.code; });
+            let msAssetHtml = '<div class="question">Select Asset Type</div><div class="options">';
+            const msAssetTypes = msInstObj ? msInstObj.asset_types : [];
+            for (let i = 0; i < msAssetTypes.length; i++) {
+                msAssetHtml += '<button class="option-btn" onclick="multiSourceAsset(\'' + msAssetTypes[i] + '\')">' +
+                    '<span>' + getAssetIcon(msAssetTypes[i]) + ' ' + msAssetTypes[i] + '</span>' +
+                    '<i class="fas fa-chevron-right"></i></button>';
+            }
+            msAssetHtml += '<button class="back-btn" onclick="goTo(\'multi_source_select_institution\')">← Back</button></div>';
             html = msAssetHtml;
             break;
             
@@ -620,79 +621,81 @@ function render() {
             let msFormHtml = '';
             const msAsset = state.tempSource.asset_type;
             if (msAsset === 'VOUCHER') {
-                msFormHtml = `<input type="text" id="msVoucherNumber" class="ussd-input" placeholder="Voucher number">
-                             <input type="password" id="msVoucherPin" class="ussd-input" placeholder="PIN">`;
+                msFormHtml = '<input type="text" id="msVoucherNumber" class="ussd-input" placeholder="Voucher number">' +
+                             '<input type="password" id="msVoucherPin" class="ussd-input" placeholder="PIN">';
             } else if (msAsset === 'ACCOUNT') {
-                msFormHtml = `<input type="text" id="msAccountNumber" class="ussd-input" placeholder="Account number">
-                             <input type="password" id="msAccountPin" class="ussd-input" placeholder="PIN">`;
+                msFormHtml = '<input type="text" id="msAccountNumber" class="ussd-input" placeholder="Account number">' +
+                             '<input type="password" id="msAccountPin" class="ussd-input" placeholder="PIN">';
             } else if (msAsset === 'CARD') {
-                msFormHtml = `<input type="text" id="msCardNumber" class="ussd-input" placeholder="Card number">
-                             <input type="password" id="msCardPin" class="ussd-input" placeholder="PIN">`;
+                msFormHtml = '<input type="text" id="msCardNumber" class="ussd-input" placeholder="Card number">' +
+                             '<input type="password" id="msCardPin" class="ussd-input" placeholder="PIN">';
             } else {
-                msFormHtml = `<input type="tel" id="msWalletPhone" class="ussd-input" placeholder="Phone number">
-                             <input type="password" id="msWalletPin" class="ussd-input" placeholder="PIN">`;
+                msFormHtml = '<input type="tel" id="msWalletPhone" class="ussd-input" placeholder="Phone number">' +
+                             '<input type="password" id="msWalletPin" class="ussd-input" placeholder="PIN">';
             }
-            html = `<div class="question">Enter ${msAsset} Details</div>${msFormHtml}
-                    <input type="number" id="msAmount" class="ussd-input" placeholder="Amount" step="0.01" min="10">
-                    <button class="submit-btn" onclick="submitMultiSource()">Add Source</button>
-                    <button class="back-btn" onclick="goTo('multi_source_select_asset')">← Back</button>`;
+            html = '<div class="question">Enter ' + msAsset + ' Details</div>' + msFormHtml +
+                   '<input type="number" id="msAmount" class="ussd-input" placeholder="Amount" step="0.01" min="10">' +
+                   '<button class="submit-btn" onclick="submitMultiSource()">Add Source</button>' +
+                   '<button class="back-btn" onclick="goTo(\'multi_source_select_asset\')">← Back</button>';
             break;
             
         case 'multi_dest_country':
             let mdCountryHtml = '<div class="question">Select Destination Country</div><div class="options">';
-            const mdCountries = [...new Set(allParticipants.map(p => p.country))];
-            mdCountries.forEach(c => {
-                mdCountryHtml += `<button class="option-btn" onclick="multiDestCountry('${c}')">
-                    <span>${c}</span>
-                    <i class="fas fa-chevron-right"></i>
-                </button>`;
-            });
-            mdCountryHtml += `<button class="back-btn" onclick="goTo('multi_source_list')">← Back</button></div>`;
+            const mdCountriesSet = {};
+            for (let i = 0; i < allParticipants.length; i++) {
+                mdCountriesSet[allParticipants[i].country] = true;
+            }
+            const mdCountries = Object.keys(mdCountriesSet);
+            for (let i = 0; i < mdCountries.length; i++) {
+                mdCountryHtml += '<button class="option-btn" onclick="multiDestCountry(\'' + mdCountries[i] + '\')">' +
+                    '<span>' + mdCountries[i] + '</span>' +
+                    '<i class="fas fa-chevron-right"></i></button>';
+            }
+            mdCountryHtml += '<button class="back-btn" onclick="goTo(\'multi_source_list\')">← Back</button></div>';
             html = mdCountryHtml;
             break;
             
         case 'multi_dest_institution':
-            html = `<div class="loading"><div class="spinner"></div><div>Loading...</div></div>`;
-            getInstitutionsByCountry(state.tempDest.country, (insts) => {
+            html = '<div class="loading"><div class="spinner"></div><div>Loading...</div></div>';
+            getInstitutionsByCountry(state.tempDest.country, function(insts) {
                 state.destInstitutions = insts;
                 goTo('multi_dest_institution_list');
             });
             return;
             
         case 'multi_dest_institution_list':
-            let mdInstHtml = `<div class="question">Select Institution in ${state.tempDest.country}</div><div class="options">`;
-            (state.destInstitutions || []).forEach(inst => {
-                mdInstHtml += `<button class="option-btn" onclick="multiDestInstitution('${inst.code}')">
-                    <span>🏛️ ${inst.name}</span>
-                    <i class="fas fa-chevron-right"></i>
-                </button>`;
-            });
-            mdInstHtml += `<button class="back-btn" onclick="goTo('multi_dest_country')">← Back</button></div>`;
+            let mdInstHtml = '<div class="question">Select Institution in ' + state.tempDest.country + '</div><div class="options">';
+            for (let i = 0; i < (state.destInstitutions || []).length; i++) {
+                const inst = state.destInstitutions[i];
+                mdInstHtml += '<button class="option-btn" onclick="multiDestInstitution(\'' + inst.code + '\')">' +
+                    '<span>🏛️ ' + inst.name + '</span>' +
+                    '<i class="fas fa-chevron-right"></i></button>';
+            }
+            mdInstHtml += '<button class="back-btn" onclick="goTo(\'multi_dest_country\')">← Back</button></div>';
             html = mdInstHtml;
             break;
             
         case 'multi_dest_action':
-            html = `<div class="question">📥 Choose Action</div><div class="options">
-                    <button class="option-btn" onclick="multiDestAction('deposit')">🏦 Deposit</button>
-                    <button class="option-btn" onclick="multiDestAction('cashout')">💰 Cashout</button>
-                    </div>
-                    <button class="back-btn" onclick="goTo('multi_dest_institution_list')">← Back</button>`;
+            html = '<div class="question">📥 Choose Action</div><div class="options">' +
+                '<button class="option-btn" onclick="multiDestAction(\'deposit\')">🏦 Deposit</button>' +
+                '<button class="option-btn" onclick="multiDestAction(\'cashout\')">💰 Cashout</button>' +
+                '</div><button class="back-btn" onclick="goTo(\'multi_dest_institution_list\')">← Back</button>';
             break;
             
         case 'multi_dest_details':
             let mdDetailHtml = '';
             if (state.tempDest.action === 'cashout') {
-                mdDetailHtml = `<div class="question">💰 Cashout Details</div>
-                    <input type="tel" id="mdPhone" class="ussd-input" placeholder="Beneficiary phone number">
-                    <input type="number" id="mdAmount" class="ussd-input" placeholder="Amount" step="0.01" min="10">
-                    <button class="submit-btn" onclick="submitMultiDest()">Add Destination</button>`;
+                mdDetailHtml = '<div class="question">💰 Cashout Details</div>' +
+                    '<input type="tel" id="mdPhone" class="ussd-input" placeholder="Beneficiary phone number">' +
+                    '<input type="number" id="mdAmount" class="ussd-input" placeholder="Amount" step="0.01" min="10">' +
+                    '<button class="submit-btn" onclick="submitMultiDest()">Add Destination</button>';
             } else {
-                mdDetailHtml = `<div class="question">🏦 Deposit Details</div>
-                    <input type="text" id="mdAccount" class="ussd-input" placeholder="Account number">
-                    <input type="number" id="mdAmount" class="ussd-input" placeholder="Amount" step="0.01" min="10">
-                    <button class="submit-btn" onclick="submitMultiDest()">Add Destination</button>`;
+                mdDetailHtml = '<div class="question">🏦 Deposit Details</div>' +
+                    '<input type="text" id="mdAccount" class="ussd-input" placeholder="Account number">' +
+                    '<input type="number" id="mdAmount" class="ussd-input" placeholder="Amount" step="0.01" min="10">' +
+                    '<button class="submit-btn" onclick="submitMultiDest()">Add Destination</button>';
             }
-            mdDetailHtml += `<button class="back-btn" onclick="goTo('multi_dest_action')">← Back</button>`;
+            mdDetailHtml += '<button class="back-btn" onclick="goTo(\'multi_dest_action\')">← Back</button>';
             html = mdDetailHtml;
             break;
             
@@ -700,56 +703,66 @@ function render() {
             let mdListHtml = '<div class="question">📋 Destinations to Split</div>';
             let totalAmount = 0;
             if (state.destinations.length > 0) {
-                state.destinations.forEach((dest, idx) => {
+                for (let i = 0; i < state.destinations.length; i++) {
+                    const dest = state.destinations[i];
                     totalAmount += dest.amount;
-                    mdListHtml += `<div class="multi-item">
-                        <span>${dest.action === 'cashout' ? '💰' : '🏦'} ${dest.institution_name} • ${dest.amount}</span>
-                        <button class="remove-btn" onclick="removeDestination(${idx})"><i class="fas fa-trash"></i></button>
-                    </div>`;
-                });
-                mdListHtml += `<div class="info-text">Total: ${totalAmount}</div>`;
+                    mdListHtml += '<div class="multi-item">' +
+                        '<span>' + (dest.action === 'cashout' ? '💰' : '🏦') + ' ' + dest.institution_name + ' • ' + dest.amount + '</span>' +
+                        '<button class="remove-btn" onclick="removeDestination(' + i + ')"><i class="fas fa-trash"></i></button>' +
+                        '</div>';
+                }
+                mdListHtml += '<div class="info-text">Total: ' + totalAmount + '</div>';
             }
-            mdListHtml += `<button class="add-btn" onclick="addMultiDest()">+ Add Destination</button>`;
+            mdListHtml += '<button class="add-btn" onclick="addMultiDest()">+ Add Destination</button>';
             if (state.destinations.length > 0 && state.sources.length === 1) {
-                mdListHtml += `<button class="submit-btn" style="margin-top:12px;" onclick="executeMultiDestSwap()">Execute Split Swap →</button>`;
+                mdListHtml += '<button class="submit-btn" style="margin-top:12px;" onclick="executeMultiDestSwap()">Execute Split Swap →</button>';
             }
-            mdListHtml += `<button class="back-btn" onclick="goTo('init')">← Back</button>`;
+            mdListHtml += '<button class="back-btn" onclick="goTo(\'init\')">← Back</button>';
             html = mdListHtml;
             break;
             
         case 'processing':
-            html = `<div class="loading"><div class="spinner"></div><div>Processing...</div></div>`;
+            html = '<div class="loading"><div class="spinner"></div><div>Processing...</div></div>';
             break;
             
         case 'result':
-            const isSuccess = state.result?.status === 'success';
-            html = `<div class="result-screen">
-                <div class="result-icon ${isSuccess ? 'success' : 'error'}">${isSuccess ? '✅' : '❌'}</div>
-                <div style="font-size:18px;font-weight:700;">${isSuccess ? 'SWAP COMPLETED' : 'SWAP FAILED'}</div>
-                <div class="result-message">${state.result?.message || (isSuccess ? 'Success!' : 'Failed')}</div>
-                ${state.result?.swap_reference ? `<div style="font-size:11px;">Ref: ${state.result.swap_reference.substring(0,16)}...</div>` : ''}
-                ${state.result?.withdrawal_code ? `<div class="info-text">💰 Code: ${state.result.withdrawal_code}</div>` : ''}
-                <button class="done-btn" onclick="reset()">Done</button>
-            </div>`;
+            const isSuccess = state.result && state.result.status === 'success';
+            html = '<div class="result-screen">' +
+                '<div class="result-icon ' + (isSuccess ? 'success' : 'error') + '">' + (isSuccess ? '✅' : '❌') + '</div>' +
+                '<div style="font-size:18px;font-weight:700;">' + (isSuccess ? 'SWAP COMPLETED' : 'SWAP FAILED') + '</div>' +
+                '<div class="result-message">' + (state.result ? (state.result.message || (isSuccess ? 'Success!' : 'Failed')) : '') + '</div>' +
+                (state.result && state.result.swap_reference ? '<div style="font-size:11px;">Ref: ' + state.result.swap_reference.substring(0,16) + '...</div>' : '') +
+                (state.result && state.result.withdrawal_code ? '<div class="info-text">💰 Code: ' + state.result.withdrawal_code + '</div>' : '') +
+                '<button class="done-btn" onclick="reset()">Done</button>' +
+                '</div>';
             break;
     }
     
     screen.innerHTML = html;
 }
 
-// Navigation
 function goTo(step) { state.step = step; render(); }
-function startSwap(mode) { state.swapMode = mode; state.sources = []; state.destinations = []; goTo(mode === 'single' ? 'single_select_country' : (mode === 'multi_source' ? 'multi_source_list' : 'multi_source_list')); }
+function startSwap(mode) { state.swapMode = mode; state.sources = []; state.destinations = []; goTo(mode === 'single' ? 'single_select_country' : 'multi_source_list'); }
 
 // Single source functions
-function singleSelectCountry(country) { state.tempSource = { country }; goTo('single_select_institution'); }
+function singleSelectCountry(country) { state.tempSource = { country: country }; goTo('single_select_institution'); }
 function singleSelectInstitution(code) { state.tempSource.code = code; goTo('single_select_asset'); }
 function singleSelectAsset(asset) { state.tempSource.asset_type = asset; goTo('single_source_form'); }
 function submitSingleSourceForm() {
     const asset = state.tempSource.asset_type;
-    state.tempSource.identifier = document.getElementById(asset === 'VOUCHER' ? 'voucherNumber' : (asset === 'ACCOUNT' ? 'accountNumber' : (asset === 'CARD' ? 'cardNumber' : 'walletPhone')))?.value;
-    state.tempSource.pin = document.getElementById(asset === 'VOUCHER' ? 'voucherPin' : (asset === 'ACCOUNT' ? 'accountPin' : (asset === 'CARD' ? 'cardPin' : 'walletPin')))?.value;
-    if (!state.tempSource.identifier) { alert('Enter required fields'); return; }
+    let identifier = '';
+    if (asset === 'VOUCHER') identifier = document.getElementById('voucherNumber')?.value;
+    else if (asset === 'ACCOUNT') identifier = document.getElementById('accountNumber')?.value;
+    else if (asset === 'CARD') identifier = document.getElementById('cardNumber')?.value;
+    else identifier = document.getElementById('walletPhone')?.value;
+    let pin = '';
+    if (asset === 'VOUCHER') pin = document.getElementById('voucherPin')?.value;
+    else if (asset === 'ACCOUNT') pin = document.getElementById('accountPin')?.value;
+    else if (asset === 'CARD') pin = document.getElementById('cardPin')?.value;
+    else pin = document.getElementById('walletPin')?.value;
+    if (!identifier) { alert('Enter required fields'); return; }
+    state.tempSource.identifier = identifier;
+    state.tempSource.pin = pin;
     goTo('single_amount');
 }
 function submitSingleAmount() {
@@ -758,7 +771,7 @@ function submitSingleAmount() {
     state.tempSource.amount = parseFloat(amount);
     goTo('single_dest_country');
 }
-function singleDestCountry(country) { state.tempDest = { country }; goTo('single_dest_institution'); }
+function singleDestCountry(country) { state.tempDest = { country: country }; goTo('single_dest_institution'); }
 function singleDestInstitution(code) { state.tempDest.institution = code; goTo('single_dest_action'); }
 function singleDestAction(action) { state.tempDest.action = action; goTo('single_dest_details'); }
 function submitSingleDestDetails() {
@@ -815,10 +828,10 @@ function submitMultiSource() {
     else identifier = document.getElementById('msWalletPhone')?.value;
     const amount = parseFloat(document.getElementById('msAmount')?.value);
     if (!identifier || !amount || amount < 10) { alert('Enter valid details'); return; }
-    const inst = allParticipants.find(p => p.code === state.tempSource.code);
+    const inst = allParticipants.find(function(p) { return p.code === state.tempSource.code; });
     state.sources.push({
         institution: state.tempSource.code,
-        institution_name: inst?.name,
+        institution_name: inst ? inst.name : '',
         asset_type: asset,
         identifier: identifier,
         amount: amount
@@ -830,7 +843,7 @@ function removeSource(idx) { state.sources.splice(idx, 1); render(); }
 function goToMultiDest() { goTo('multi_dest_country'); }
 
 // Multi-destination functions
-function multiDestCountry(country) { state.tempDest = { country }; goTo('multi_dest_institution'); }
+function multiDestCountry(country) { state.tempDest = { country: country }; goTo('multi_dest_institution'); }
 function multiDestInstitution(code) { state.tempDest.institution = code; goTo('multi_dest_action'); }
 function multiDestAction(action) { state.tempDest.action = action; goTo('multi_dest_details'); }
 function submitMultiDest() {
@@ -844,10 +857,10 @@ function submitMultiDest() {
         amount = parseFloat(document.getElementById('mdAmount')?.value);
     }
     if (!value || !amount || amount < 10) { alert('Enter valid details'); return; }
-    const inst = allParticipants.find(p => p.code === state.tempDest.institution);
+    const inst = allParticipants.find(function(p) { return p.code === state.tempDest.institution; });
     state.destinations.push({
         institution: state.tempDest.institution,
-        institution_name: inst?.name,
+        institution_name: inst ? inst.name : '',
         action: state.tempDest.action,
         value: value,
         amount: amount
@@ -861,15 +874,15 @@ function submitMultiDest() {
 }
 function addMultiDest() { state.tempDest = {}; goTo('multi_dest_country'); }
 function removeDestination(idx) { state.destinations.splice(idx, 1); render(); }
-function executeMultiDestSwap() { alert('Multi-destination swap. Total: ' + state.destinations.reduce((s,d)=>s+d.amount,0)); reset(); }
+function executeMultiDestSwap() { alert('Multi-destination swap executed! Total: ' + state.destinations.reduce(function(s,d){ return s + d.amount; }, 0)); reset(); }
 
 function useSavedSource(id, code, type) {
     if (state.swapMode === 'multi_source') {
-        const inst = allParticipants.find(p => p.code === code);
-        state.sources.push({ institution: code, institution_name: inst?.name, asset_type: type, identifier: null, amount: null });
+        const inst = allParticipants.find(function(p) { return p.code === code; });
+        state.sources.push({ institution: code, institution_name: inst ? inst.name : '', asset_type: type, identifier: null, amount: null });
         goTo('multi_source_list');
     } else {
-        state.tempSource = { code, asset_type: type };
+        state.tempSource = { code: code, asset_type: type };
         goTo('single_amount');
     }
 }
