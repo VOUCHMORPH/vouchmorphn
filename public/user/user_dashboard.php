@@ -1,6 +1,5 @@
 <?php
 // public/user/user_dashboard.php
-// MUST be the very first thing - no whitespace before this!
 ob_start();
 
 // Disable error reporting for AJAX requests
@@ -8,13 +7,11 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
     error_reporting(0);
     ini_set('display_errors', 0);
 }
+
 if (!defined('DASHBOARD_LOADED')) {
     define('DASHBOARD_LOADED', true);
-} else {
-    // Already loaded, skip
 }
 
-// Include files AFTER output buffering starts
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/bootstrap.php';
@@ -26,7 +23,6 @@ use Core\Database\DBConnection;
 use Domain\Services\SwapService;
 use Core\Config\LoadCountry;
 
-// Start session
 SessionManager::start();
 
 if (!SessionManager::isLoggedIn()) {
@@ -39,32 +35,18 @@ $userPhone = $user['phone'] ?? '';
 $userId = $user['user_id'] ?? $user['id'] ?? null;
 $systemCountry = $user['country'] ?? 'BW';
 
-// Load country configuration
 $config = LoadCountry::getConfig();
 $dbConfig = $config['db']['swap'] ?? null;
 
-// Debug: log what we got
-error_log("=== DB CONFIG FROM LOADCOUNTRY ===");
-error_log(json_encode($dbConfig));
-
-// If dbConfig is empty or missing required fields, use fallback
 if (empty($dbConfig) || empty($dbConfig['host'])) {
-    error_log("DB Config missing, using environment fallback");
-    $dbConfig = null; // Let DBConnection use environment
+    $dbConfig = null;
 }
 
 try {
-    // Pass config to getInstance - NOW IT WILL BE RESPECTED!
     $db = DBConnection::getInstance($dbConfig);
-    
-    if (!$db) {
-        throw new \Exception("Failed to get database connection");
-    }
-    
+    if (!$db) throw new \Exception("Failed to get database connection");
     $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
-    error_log("Database connection successful");
     
-    // Ensure tables exist
     $db->exec("
         CREATE TABLE IF NOT EXISTS user_funding_sources (
             source_id BIGSERIAL PRIMARY KEY,
@@ -130,7 +112,6 @@ function maskValue(string $value, int $visible = 4): string {
 }
 
 function encryptIdentifier(string $identifier, string $key): string {
-    // Simple encryption - in production use proper encryption
     return base64_encode(openssl_encrypt($identifier, 'AES-256-CBC', $key, 0, substr($key, 0, 16)));
 }
 
@@ -152,7 +133,6 @@ $stmt = $db->prepare("
 $stmt->execute();
 $participants = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Build participant config
 $participantConfig = [];
 foreach ($participants as $p) {
     $participantConfig[$p['provider_code']] = [
@@ -182,30 +162,44 @@ $stmt = $db->prepare("
 $stmt->execute([':user_id' => $userId]);
 $fundingSources = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Load user's recent transactions
-$stmt = $db->prepare("
-    SELECT swap_id, swap_uuid, from_currency, to_currency, amount, 
-           source_details, destination_details, status, created_at, metadata
-    FROM swap_requests
-    WHERE CAST(metadata AS TEXT) LIKE :phone_pattern 
-    ORDER BY created_at DESC
-    LIMIT 30
-");
-$stmt->execute([':phone_pattern' => '%' . $userPhone . '%']);
-$userTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-/* =========================
-   HANDLE REQUESTS
-========================= */
 $isAjax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && 
           strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
 $error = null;
 $success = null;
 
+// Handle AJAX for fetching transactions
+if ($isAjax && isset($_GET['ajax']) && $_GET['ajax'] === 'transactions') {
+    header('Content-Type: application/json');
+    
+    $stmt = $db->prepare("
+        SELECT swap_id, swap_uuid, from_currency, to_currency, amount, 
+               source_details, destination_details, status, created_at, metadata
+        FROM swap_requests
+        WHERE CAST(metadata AS TEXT) LIKE :phone_pattern 
+        ORDER BY created_at DESC
+        LIMIT 30
+    ");
+    $stmt->execute([':phone_pattern' => '%' . $userPhone . '%']);
+    $transactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    $formatted = [];
+    foreach ($transactions as $tx) {
+        $formatted[] = [
+            'id' => $tx['swap_uuid'],
+            'amount' => number_format((float)($tx['amount'] ?? 0), 2),
+            'status' => $tx['status'] ?? 'PENDING',
+            'date' => date('d M Y H:i', strtotime($tx['created_at'])),
+            'type' => $tx['delivery_mode'] ?? 'swap'
+        ];
+    }
+    
+    echo json_encode(['success' => true, 'transactions' => $formatted]);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     
-    // Handle adding funding source
     if ($action === 'add_source') {
         try {
             $institutionCode = trim($_POST['institution_code'] ?? '');
@@ -216,15 +210,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $linkedPhone = trim($_POST['linked_phone'] ?? $userPhone);
             $isDefault = isset($_POST['is_default']) ? 1 : 0;
             
-            // Validate institution exists
             if (!isset($participantConfig[$institutionCode])) {
                 throw new \Exception("Institution not found");
             }
             
-            // Verify the account exists before saving
             $participant = $participantConfig[$institutionCode];
             $tempRef = 'VERIFY_' . bin2hex(random_bytes(8));
-            
             $bankClient = new \Infrastructure\Banks\GenericBankClient($participant);
             $verifyPayload = [
                 'reference' => $tempRef,
@@ -242,12 +233,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             
             $verifyResult = $bankClient->verifyAsset($verifyPayload);
-            
             if (!($verifyResult['success'] ?? false)) {
                 throw new \Exception("Cannot verify account. Please check your details.");
             }
             
-            // Check if already exists
             $identifierHash = hash('sha256', $identifier);
             $checkStmt = $db->prepare("
                 SELECT source_id FROM user_funding_sources 
@@ -263,17 +252,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new \Exception("Account already linked");
             }
             
-            // If default, remove other defaults
             if ($isDefault) {
                 $db->prepare("UPDATE user_funding_sources SET is_default = FALSE WHERE user_id = ?")->execute([$userId]);
             }
             
-            // Encrypt identifier
             $encryptionKey = getenv('ENCRYPTION_KEY') ?: 'default-key-32-chars-long!!';
             $encryptedIdentifier = encryptIdentifier($identifier, $encryptionKey);
             $maskedIdentifier = maskValue($identifier, 4);
             
-            // Insert
             $stmt = $db->prepare("
                 INSERT INTO user_funding_sources 
                 (user_id, institution_code, institution_name, source_type, source_label,
@@ -310,7 +296,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
     
-    // Handle removing source
     if ($action === 'remove_source') {
         $sourceId = (int)($_POST['source_id'] ?? 0);
         $stmt = $db->prepare("
@@ -326,7 +311,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
     
-    // Handle swap execution
     if ($action === 'swap') {
         if ($isAjax) {
             while (ob_get_level() > 0) ob_end_clean();
@@ -335,9 +319,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         try {
             $isMultiSource = isset($_POST['is_multi_source']) && $_POST['is_multi_source'] === '1';
-            $result = null;
             
-            // Initialize SwapService
             $countryConfigPath = __DIR__ . "/../../src/Core/Config/Countries/{$systemCountry}/config.php";
             $countryConfig = file_exists($countryConfigPath) ? require $countryConfigPath : [];
             $encryptionKey = $config['encryption']['key'] ?? getenv('ENCRYPTION_KEY') ?: 'default-key-32-chars-long!!';
@@ -351,7 +333,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             );
             
             if ($isMultiSource) {
-                // Multi-source swap
                 $sources = json_decode($_POST['sources'] ?? '[]', true);
                 $destinationInstitution = trim($_POST['destination_institution'] ?? '');
                 $destinationType = trim($_POST['destination_type'] ?? '');
@@ -384,9 +365,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ];
                 
                 $result = $swapService->executeMultiSourceSwap($multiSourcePayload);
-                
             } else {
-                // Single source swap
                 $sourceId = (int)($_POST['source_id'] ?? 0);
                 $sourceType = trim($_POST['source_type'] ?? '');
                 $sourceInstitution = trim($_POST['source_institution'] ?? '');
@@ -395,7 +374,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $destinationType = trim($_POST['destination_type'] ?? '');
                 $destinationValue = trim($_POST['destination_value'] ?? '');
                 
-                // Build source payload
                 $sourcePayload = [
                     'institution' => $sourceInstitution,
                     'asset_type' => $sourceType,
@@ -403,7 +381,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'currency' => 'BWP'
                 ];
                 
-                // If using saved source, decrypt identifier
                 if ($sourceId > 0) {
                     $stmt = $db->prepare("SELECT * FROM user_funding_sources WHERE source_id = :id AND user_id = :user_id");
                     $stmt->execute([':id' => $sourceId, ':user_id' => $userId]);
@@ -421,11 +398,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $sourcePayload['phone'] = formatPhoneNumberForSwap($decryptedIdentifier, $systemCountry);
                         }
                         
-                        // Update last used
                         $db->prepare("UPDATE user_funding_sources SET last_used_at = NOW() WHERE source_id = ?")->execute([$sourceId]);
                     }
                 } else {
-                    // Manual entry
                     $identifier = trim($_POST['identifier'] ?? '');
                     if ($sourceType === 'ACCOUNT') {
                         $sourcePayload['account_number'] = $identifier;
@@ -436,7 +411,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
                 
-                // Destination details
                 $destinationDetails = [];
                 switch ($destinationType) {
                     case 'cashout':
@@ -495,7 +469,7 @@ ob_end_flush();
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>VouchMorph™ – Command Center</title>
+<title>VouchMorph – Command Center</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <link href="https://api.fontshare.com/v2/css?f[]=clash-display@400,500,600,700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -507,143 +481,190 @@ ob_end_flush();
         font-family: 'Inter', sans-serif;
         color: #FFFFFF;
         min-height: 100vh;
-        padding: 1.5rem;
+        padding: 2rem;
     }
     
-    .container { max-width: 1200px; margin: 0 auto; }
+    .container { max-width: 900px; margin: 0 auto; }
     
-    /* Sharp edges - no rounded corners on containers */
-    .header, .flow-panel, .action-card, .source-card, .alert, .modal-content {
+    /* Sharp edges - Porsche design language */
+    .header, .card, .modal-content, button, input, select {
         border-radius: 0 !important;
     }
     
-    /* Header with sharp edges */
+    /* Header - Clean and minimal */
     .header {
         background: #0a0a0f;
-        border: 1px solid #00F0FF;
-        padding: 1.5rem;
+        border-bottom: 2px solid #00F0FF;
+        padding: 1.5rem 0;
         margin-bottom: 2rem;
         display: flex;
         justify-content: space-between;
         align-items: center;
         flex-wrap: wrap;
         gap: 1rem;
-        box-shadow: 8px 8px 0 rgba(0, 240, 255, 0.1);
     }
     
-    .user-info { display: flex; align-items: center; gap: 1rem; }
+    .logo-area {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
     
-    .avatar {
-        width: 56px; height: 56px;
-        background: linear-gradient(135deg, #00F0FF, #B000FF);
+    .logo-icon {
+        width: 48px;
+        height: 48px;
+        background: #00F0FF;
         display: flex;
         align-items: center;
         justify-content: center;
     }
-    .avatar i { font-size: 1.5rem; color: #050505; }
-    .user-name h2 { font-family: 'Clash Display', sans-serif; font-size: 1.25rem; margin-bottom: 0.25rem; }
-    .user-phone { color: #00F0FF; font-family: monospace; font-size: 0.875rem; }
+    
+    .logo-icon i { font-size: 1.5rem; color: #0a0a0f; }
+    
+    .logo-text h1 {
+        font-family: 'Clash Display', sans-serif;
+        font-size: 1.5rem;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+    }
+    
+    .logo-text p { font-size: 0.7rem; color: #666; margin-top: 0.1rem; }
+    
+    .user-badge {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+    
+    .phone-badge {
+        font-family: monospace;
+        font-size: 0.875rem;
+        color: #00F0FF;
+        background: rgba(0, 240, 255, 0.1);
+        padding: 0.5rem 1rem;
+        border: 1px solid rgba(0, 240, 255, 0.3);
+    }
     
     .logout-btn {
         padding: 0.5rem 1rem;
         background: transparent;
-        border: 1px solid #00F0FF;
-        color: #00F0FF;
+        border: 1px solid #333;
+        color: #ccc;
         text-decoration: none;
         transition: all 0.2s;
     }
-    .logout-btn:hover { background: #00F0FF; color: #050505; }
     
-    /* Action Grid - Sharp edges */
-    .action-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-        gap: 1rem;
-        margin-bottom: 2rem;
-    }
+    .logout-btn:hover { border-color: #FF3030; color: #FF3030; }
     
-    .action-card {
-        background: #0f0f15;
-        border: 1px solid #333;
-        padding: 1.25rem;
-        text-align: left;
-        cursor: pointer;
-        transition: all 0.2s;
-        position: relative;
-    }
-    .action-card::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 4px;
-        height: 100%;
-        background: #00F0FF;
-        opacity: 0;
-        transition: opacity 0.2s;
-    }
-    .action-card:hover {
-        border-color: #00F0FF;
-        transform: translateX(4px);
-        background: #12121a;
-    }
-    .action-card:hover::before { opacity: 1; }
-    .action-card i { font-size: 1.5rem; color: #00F0FF; margin-bottom: 0.75rem; display: block; }
-    .action-card strong { display: block; font-family: 'Clash Display', sans-serif; font-size: 1rem; margin-bottom: 0.25rem; }
-    .action-card span { color: #888; font-size: 0.75rem; }
-    
-    /* Flow Panels - Sharp edges */
-    .flow-panel {
+    /* Card styles */
+    .card {
         background: #0f0f15;
         border: 1px solid #222;
-        padding: 1.5rem;
-        margin-bottom: 2rem;
+        margin-bottom: 1.5rem;
+        overflow: hidden;
     }
-    .flow-panel.hidden { display: none; }
     
-    .panel-header {
+    .card-header {
+        padding: 1.25rem 1.5rem;
+        background: #0a0a0f;
+        border-bottom: 1px solid #222;
         display: flex;
         justify-content: space-between;
         align-items: center;
+        cursor: pointer;
+    }
+    
+    .card-header h3 {
+        font-family: 'Clash Display', sans-serif;
+        font-size: 1rem;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    
+    .card-header i:first-child { color: #00F0FF; }
+    .toggle-icon { transition: transform 0.2s; color: #666; }
+    .card-header.collapsed .toggle-icon { transform: rotate(-90deg); }
+    
+    .card-body { padding: 1.5rem; }
+    .card-body.collapsed { display: none; }
+    
+    /* Quick action buttons - Large, clear */
+    .action-buttons {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1rem;
         margin-bottom: 1.5rem;
-        padding-bottom: 1rem;
-        border-bottom: 2px solid #00F0FF;
     }
-    .panel-header h3 { font-family: 'Clash Display', sans-serif; font-size: 1.1rem; display: flex; align-items: center; gap: 0.5rem; }
-    .close-panel {
-        background: none; border: none; color: #666; cursor: pointer; font-size: 1.25rem;
-    }
-    .close-panel:hover { color: #FF3030; }
     
-    /* Form Styles - Sharp edges */
-    .form-group { margin-bottom: 1rem; }
-    .form-group label { display: block; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem; color: #888; }
-    .form-control, .form-select {
-        width: 100%;
-        padding: 0.75rem 1rem;
-        background: #050505;
-        border: 1px solid #222;
-        color: #FFFFFF;
-        font-size: 0.875rem;
-    }
-    .form-control:focus, .form-select:focus { outline: none; border-color: #00F0FF; }
-    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-    
-    /* Buttons - Sharp edges */
-    .btn-primary {
-        width: 100%;
-        padding: 0.875rem;
-        background: #00F0FF;
-        border: none;
-        color: #050505;
-        font-weight: 700;
+    .action-btn {
+        background: #0f0f15;
+        border: 1px solid #333;
+        padding: 1.25rem;
+        text-align: center;
         cursor: pointer;
         transition: all 0.2s;
+    }
+    
+    .action-btn:hover {
+        border-color: #00F0FF;
+        transform: translateY(-2px);
+        background: #12121a;
+    }
+    
+    .action-btn i { font-size: 1.75rem; color: #00F0FF; margin-bottom: 0.5rem; display: block; }
+    .action-btn .label { font-size: 0.8rem; font-weight: 600; }
+    .action-btn .desc { font-size: 0.65rem; color: #666; margin-top: 0.25rem; display: block; }
+    
+    /* Form styles */
+    .form-group { margin-bottom: 1rem; }
+    .form-group label {
+        display: block;
+        font-size: 0.7rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.5rem;
+        color: #888;
+    }
+    
+    .form-control, .form-select {
+        width: 100%;
+        padding: 0.875rem 1rem;
+        background: #050505;
+        border: 1px solid #222;
+        color: #fff;
+        font-size: 0.875rem;
+        transition: all 0.2s;
+    }
+    
+    .form-control:focus, .form-select:focus {
+        outline: none;
+        border-color: #00F0FF;
+    }
+    
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    
+    /* Primary button - Porsche style */
+    .btn-primary {
+        width: 100%;
+        padding: 1rem;
+        background: #00F0FF;
+        border: none;
+        color: #0a0a0f;
+        font-weight: 700;
+        font-size: 0.875rem;
         text-transform: uppercase;
         letter-spacing: 0.1em;
-        font-size: 0.75rem;
+        cursor: pointer;
+        transition: all 0.2s;
     }
-    .btn-primary:hover { background: #B000FF; color: #FFFFFF; }
+    
+    .btn-primary:hover {
+        background: #B000FF;
+        color: #fff;
+    }
     
     .btn-secondary {
         padding: 0.5rem 1rem;
@@ -654,34 +675,25 @@ ob_end_flush();
         font-size: 0.75rem;
         transition: all 0.2s;
     }
+    
     .btn-secondary:hover { border-color: #00F0FF; color: #00F0FF; }
     
-    .btn-danger { border-color: #FF3030; color: #FF6060; }
-    .btn-danger:hover { background: #FF3030; color: #050505; border-color: #FF3030; }
-    
-    /* Source Cards - Sharp edges */
-    .sources-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-        gap: 1rem;
-        margin-top: 1rem;
-    }
-    
-    .source-card {
+    /* Source chips */
+    .source-chip {
+        padding: 0.5rem 1rem;
         background: #050505;
-        border: 1px solid #222;
-        padding: 1rem;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
+        border: 1px solid #333;
+        font-size: 0.75rem;
+        cursor: pointer;
     }
-    .source-card.default { border: 2px solid #00F0FF; background: #0a0a12; }
-    .source-info .source-name { font-weight: 600; margin-bottom: 0.25rem; }
-    .source-info .source-detail { font-size: 0.7rem; color: #666; font-family: monospace; }
-    .source-badge { font-size: 0.6rem; padding: 0.15rem 0.5rem; background: #00F0FF; color: #050505; margin-left: 0.5rem; }
     
-    /* Contribution List */
-    .contribution-list { margin: 1rem 0; }
+    .source-chip.selected {
+        background: #00F0FF;
+        color: #0a0a0f;
+        border-color: #00F0FF;
+    }
+    
+    /* Contribution list */
     .contribution-item {
         display: flex;
         justify-content: space-between;
@@ -691,57 +703,84 @@ ob_end_flush();
         border: 1px solid #222;
         margin-bottom: 0.5rem;
     }
-    .remove-contribution { color: #FF6060; background: none; border: none; cursor: pointer; font-size: 1rem; }
-    .remove-contribution:hover { color: #FF3030; }
     
-    /* Source Chips */
-    .source-chip {
-        padding: 0.5rem 1rem;
-        background: #050505;
-        border: 1px solid #333;
-        font-size: 0.75rem;
+    .remove-contribution {
+        color: #FF6060;
+        background: none;
+        border: none;
         cursor: pointer;
-        transition: all 0.2s;
     }
-    .source-chip.selected { background: #00F0FF; color: #050505; border-color: #00F0FF; }
-    .source-chip:hover:not(.selected) { border-color: #00F0FF; }
     
-    /* Alerts - Sharp edges */
-    .alert { padding: 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.75rem; border-left: 4px solid; }
-    .alert-error { background: rgba(255,48,48,0.1); border-left-color: #FF3030; }
-    .alert-success { background: rgba(0,240,255,0.1); border-left-color: #00F0FF; }
-    
-    /* Status Badges */
-    .status-badge {
-        font-size: 0.6rem;
-        padding: 0.2rem 0.5rem;
-        display: inline-block;
-        border: 1px solid;
-    }
-    .status-pending { border-color: #FFC107; color: #FFC107; background: rgba(255,193,7,0.05); }
-    .status-completed { border-color: #00F0FF; color: #00F0FF; background: rgba(0,240,255,0.05); }
-    .status-pending_auth { border-color: #FFC107; color: #FFC107; background: rgba(255,193,7,0.05); }
-    
-    /* Info Box */
+    /* Info box */
     .info-box {
         background: rgba(0, 240, 255, 0.05);
-        border-left: 4px solid #00F0FF;
-        padding: 1rem;
+        border-left: 3px solid #00F0FF;
+        padding: 0.75rem 1rem;
+        margin-bottom: 1rem;
+        font-size: 0.75rem;
+        color: #aaa;
     }
     
-    /* Modal - Sharp edges */
-    #addSourceModal > div, #manualSourceModal > div, #voucherModal > div {
+    /* Transaction list */
+    .transaction-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 1rem;
+        border-bottom: 1px solid #222;
+    }
+    
+    .transaction-item:last-child { border-bottom: none; }
+    
+    .transaction-amount { font-weight: 700; color: #00F0FF; }
+    .transaction-status {
+        font-size: 0.65rem;
+        padding: 0.2rem 0.5rem;
+        border: 1px solid;
+    }
+    .status-pending { border-color: #FFC107; color: #FFC107; }
+    .status-completed { border-color: #00F0FF; color: #00F0FF; }
+    
+    /* Empty state */
+    .empty-state {
+        text-align: center;
+        padding: 2rem;
+        color: #666;
+    }
+    
+    /* Modal */
+    .modal {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0,0,0,0.95);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+    }
+    
+    .modal-content {
         background: #0f0f15;
         border: 2px solid #00F0FF;
+        max-width: 500px;
+        width: 90%;
         padding: 1.5rem;
-        box-shadow: 12px 12px 0 rgba(0, 240, 255, 0.2);
     }
+    
+    .modal-content h3 { margin-bottom: 1rem; font-family: 'Clash Display'; }
+    
+    /* Hidden panels */
+    .hidden { display: none; }
     
     /* Responsive */
     @media (max-width: 640px) {
         body { padding: 1rem; }
         .form-row { grid-template-columns: 1fr; }
-        .action-grid { grid-template-columns: 1fr; }
+        .action-buttons { grid-template-columns: 1fr; }
+        .header { flex-direction: column; text-align: center; }
     }
 </style>
 </head>
@@ -750,367 +789,319 @@ ob_end_flush();
 <div class="container">
     <!-- Header -->
     <div class="header">
-        <div class="user-info">
-            <div class="avatar"><i class="fas fa-user"></i></div>
-            <div class="user-name">
-                <h2>Command Center</h2>
-                <div class="user-phone"><i class="fas fa-mobile-alt"></i> <?= htmlspecialchars($userPhone) ?></div>
+        <div class="logo-area">
+            <div class="logo-icon"><i class="fas fa-bolt"></i></div>
+            <div class="logo-text">
+                <h1>VOUCHMORPH</h1>
+                <p>command center</p>
             </div>
         </div>
-        <a href="logout.php" class="logout-btn"><i class="fas fa-sign-out-alt"></i> Exit</a>
+        <div class="user-badge">
+            <div class="phone-badge"><i class="fas fa-mobile-alt"></i> <?= htmlspecialchars($userPhone) ?></div>
+            <a href="logout.php" class="logout-btn"><i class="fas fa-sign-out-alt"></i> Exit</a>
+        </div>
     </div>
 
     <?php if ($error): ?>
-        <div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> <?= htmlspecialchars($error) ?></div>
+        <div class="info-box" style="border-left-color: #FF3030; background: rgba(255,48,48,0.1);">
+            <i class="fas fa-exclamation-circle"></i> <?= htmlspecialchars($error) ?>
+        </div>
     <?php endif; ?>
+    
     <?php if ($success): ?>
-        <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?= htmlspecialchars($success) ?></div>
+        <div class="info-box" style="border-left-color: #00F0FF;">
+            <i class="fas fa-check-circle"></i> <?= htmlspecialchars($success) ?>
+        </div>
     <?php endif; ?>
 
-    <!-- Action Grid -->
-    <div class="action-grid">
-        <button class="action-card" onclick="showPanel('singleSwapPanel')">
+    <!-- Quick Actions -->
+    <div class="action-buttons">
+        <div class="action-btn" onclick="showPanel('singlePanel')">
             <i class="fas fa-arrow-right"></i>
-            <strong>Single Source Swap</strong>
-            <span>Use one account, wallet, or voucher</span>
-        </button>
-        <button class="action-card" onclick="showPanel('multiSourcePanel')">
+            <span class="label">Single Source</span>
+            <span class="desc">Use one account or wallet</span>
+        </div>
+        <div class="action-btn" onclick="showPanel('multiPanel')">
             <i class="fas fa-layer-group"></i>
-            <strong>Multi-Source Swap</strong>
-            <span>Combine multiple accounts & wallets</span>
-        </button>
-        <button class="action-card" onclick="showPanel('sourcesPanel')">
+            <span class="label">Multi-Source</span>
+            <span class="desc">Combine multiple sources</span>
+        </div>
+        <div class="action-btn" onclick="showPanel('sourcesPanel')">
             <i class="fas fa-link"></i>
-            <strong>Manage Sources</strong>
-            <span>Tie accounts & wallets to dashboard</span>
-        </button>
+            <span class="label">My Sources</span>
+            <span class="desc">Manage linked accounts</span>
+        </div>
     </div>
 
-    <!-- SINGLE SOURCE SWAP PANEL -->
-    <div id="singleSwapPanel" class="flow-panel hidden">
-        <div class="panel-header">
-            <h3><i class="fas fa-arrow-right"></i> Single Source Swap</h3>
-            <button class="close-panel" onclick="hideAllPanels()"><i class="fas fa-times"></i></button>
+    <!-- SINGLE SOURCE PANEL -->
+    <div id="singlePanel" class="card hidden">
+        <div class="card-header" onclick="toggleCard(this)">
+            <h3><i class="fas fa-arrow-right"></i> Send Money</h3>
+            <i class="fas fa-chevron-down toggle-icon"></i>
         </div>
-        
-        <form id="singleSwapForm">
-            <input type="hidden" name="action" value="swap">
-            <input type="hidden" name="is_multi_source" value="0">
-            
-            <div class="form-row">
+        <div class="card-body">
+            <form id="singleSwapForm">
+                <input type="hidden" name="action" value="swap">
+                <input type="hidden" name="is_multi_source" value="0">
+                
                 <div class="form-group">
-                    <label>Use Saved Source</label>
+                    <label>From (Source)</label>
                     <select id="savedSourceSelect" class="form-select" onchange="useSavedSource()">
-                        <option value="">-- Manual Entry --</option>
+                        <option value="">-- Choose saved source --</option>
                         <?php foreach ($fundingSources as $source): ?>
-                            <option value="<?= $source['source_id'] ?>" 
-                                    data-type="<?= $source['source_type'] ?>"
-                                    data-institution="<?= htmlspecialchars($source['institution_code']) ?>"
-                                    data-masked="<?= htmlspecialchars($source['masked_identifier']) ?>">
-                                <?= htmlspecialchars($source['institution_name']) ?> • <?= $source['source_type'] ?> • <?= $source['masked_identifier'] ?>
-                                <?= $source['is_default'] ? ' ★' : '' ?>
-                            </option>
+                            <option value="<?= $source['source_id'] ?>"><?= htmlspecialchars($source['institution_name']) ?> • <?= $source['masked_identifier'] ?></option>
                         <?php endforeach; ?>
+                        <option value="manual">-- Enter manually --</option>
                     </select>
                 </div>
+                
+                <div id="manualFieldsContainer"></div>
+                
                 <div class="form-group">
-                    <label>Or Source Type</label>
-                    <select id="manualSourceType" class="form-select" onchange="updateManualFields()">
-                        <option value="ACCOUNT">🏦 Bank Account</option>
-                        <option value="WALLET">📱 Mobile Wallet</option>
-                        <option value="CARD">💳 Card</option>
-                        <option value="VOUCHER">🎫 Voucher (Temporary)</option>
-                    </select>
-                </div>
-            </div>
-            
-            <div id="manualFieldsContainer"></div>
-            
-            <div class="form-row">
-                <div class="form-group">
-                    <label>Destination Institution</label>
+                    <label>To (Destination)</label>
                     <select id="destInstitution" class="form-select" required>
                         <option value="">Select institution</option>
                         <?php foreach ($participants as $p): ?>
-                            <option value="<?= htmlspecialchars($p['provider_code'] ?: $p['name']) ?>">
-                                <?= participantIcon($p) ?> <?= htmlspecialchars($p['name']) ?>
-                            </option>
+                            <option value="<?= htmlspecialchars($p['provider_code'] ?: $p['name']) ?>"><?= participantIcon($p) ?> <?= htmlspecialchars($p['name']) ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Send to</label>
+                        <select id="destType" class="form-select">
+                            <option value="cashout">Cashout (ATM)</option>
+                            <option value="bank">Bank Account</option>
+                            <option value="wallet">Mobile Wallet</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Amount (BWP)</label>
+                        <input type="number" id="swapAmount" class="form-control" step="0.01" placeholder="0.00" required>
+                    </div>
+                </div>
+                
                 <div class="form-group">
-                    <label>Destination Type</label>
-                    <select id="destType" class="form-select" onchange="updateDestPlaceholder()">
-                        <option value="cashout">💰 Cashout (ATM/Agent)</option>
-                        <option value="bank">🏦 Bank Account Deposit</option>
-                        <option value="wallet">📱 Mobile Wallet Transfer</option>
+                    <label>Destination Details</label>
+                    <input type="text" id="destValue" class="form-control" placeholder="Phone number or account number" required>
+                </div>
+                
+                <button type="submit" class="btn-primary" id="singleSubmitBtn">
+                    <i class="fas fa-bolt"></i> EXECUTE SWAP
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- MULTI-SOURCE PANEL -->
+    <div id="multiPanel" class="card hidden">
+        <div class="card-header" onclick="toggleCard(this)">
+            <h3><i class="fas fa-layer-group"></i> Combine Sources</h3>
+            <i class="fas fa-chevron-down toggle-icon"></i>
+        </div>
+        <div class="card-body">
+            <div class="info-box">
+                <i class="fas fa-info-circle"></i> Combine multiple wallets/accounts to send one payment
+            </div>
+            
+            <div class="form-group">
+                <label>Distribution</label>
+                <select id="distStrategy" class="form-select">
+                    <option value="drain_smallest">Drain smallest first (recommended)</option>
+                    <option value="ratio">Proportional to balance</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label>Sources</label>
+                <div id="sourceSelector" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                    <?php foreach ($fundingSources as $source): ?>
+                        <button type="button" class="source-chip" data-source='<?= json_encode($source) ?>' onclick="toggleSource(this)">
+                            <?= $source['source_type'] === 'ACCOUNT' ? '🏦' : ($source['source_type'] === 'WALLET' ? '📱' : '💳') ?>
+                            <?= htmlspecialchars($source['institution_name']) ?>
+                        </button>
+                    <?php endforeach; ?>
+                    <button type="button" class="source-chip" onclick="showManualSourceModal()">+ Manual</button>
+                    <button type="button" class="source-chip" onclick="showVoucherModal()">+ Voucher</button>
+                </div>
+            </div>
+            
+            <div id="contributionList" class="contribution-list"></div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Total Amount (BWP)</label>
+                    <input type="number" id="multiTargetAmount" class="form-control" step="0.01" placeholder="0.00">
+                </div>
+                <div class="form-group">
+                    <label>Send to</label>
+                    <select id="multiDestType" class="form-select">
+                        <option value="cashout">Cashout</option>
+                        <option value="bank">Bank</option>
+                        <option value="wallet">Wallet</option>
                     </select>
                 </div>
             </div>
             
             <div class="form-group">
-                <label>Destination Value</label>
-                <input type="text" id="destValue" class="form-control" placeholder="Phone number or account number" required>
-            </div>
-            
-            <div class="form-group">
-                <label>Amount (BWP)</label>
-                <input type="number" id="swapAmount" class="form-control" step="0.01" placeholder="0.00" required>
-            </div>
-            
-            <button type="submit" class="btn-primary" id="singleSubmitBtn">
-                <i class="fas fa-bolt"></i> EXECUTE SWAP
-            </button>
-        </form>
-    </div>
-
-    <!-- MULTI-SOURCE SWAP PANEL -->
-    <div id="multiSourcePanel" class="flow-panel hidden">
-        <div class="panel-header">
-            <h3><i class="fas fa-layer-group"></i> Multi-Source Swap</h3>
-            <button class="close-panel" onclick="hideAllPanels()"><i class="fas fa-times"></i></button>
-        </div>
-        
-        <div class="info-box" style="background: rgba(0,240,255,0.05); padding: 1rem; border-radius: 10px; margin-bottom: 1rem;">
-            <i class="fas fa-info-circle"></i> Combine multiple sources to fund one destination
-        </div>
-        
-        <div class="form-group">
-            <label>Distribution Strategy</label>
-            <select id="distStrategy" class="form-select">
-                <option value="drain_smallest">🥤 Drain Smallest First (Recommended)</option>
-                <option value="ratio">📊 Proportional to Balance</option>
-                <option value="user_specified">✏️ User Specified</option>
-            </select>
-        </div>
-        
-        <div class="form-group">
-            <label>Select Sources</label>
-            <div id="sourceSelector" class="source-selector" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                <?php foreach ($fundingSources as $source): ?>
-                    <button type="button" class="source-chip" data-source='<?= json_encode($source) ?>' onclick="toggleSource(this)">
-                        <?= $source['source_type'] === 'ACCOUNT' ? '🏦' : ($source['source_type'] === 'WALLET' ? '📱' : '💳') ?>
-                        <?= htmlspecialchars($source['institution_name']) ?> • <?= $source['masked_identifier'] ?>
-                    </button>
-                <?php endforeach; ?>
-                <button type="button" class="source-chip" onclick="showManualSourceModal()">
-                    <i class="fas fa-plus"></i> Add Manual
-                </button>
-                <button type="button" class="source-chip" onclick="showVoucherModal()">
-                    <i class="fas fa-ticket-alt"></i> Add Voucher
-                </button>
-            </div>
-        </div>
-        
-        <div id="contributionList" class="contribution-list"></div>
-        
-        <div class="form-row">
-            <div class="form-group">
-                <label>Target Amount (BWP)</label>
-                <input type="number" id="multiTargetAmount" class="form-control" step="0.01" placeholder="0.00">
-            </div>
-            <div class="form-group">
-                <label>Destination Type</label>
-                <select id="multiDestType" class="form-select">
-                    <option value="cashout">💰 Cashout</option>
-                    <option value="bank">🏦 Bank Account</option>
-                    <option value="wallet">📱 Mobile Wallet</option>
+                <label>Destination Institution</label>
+                <select id="multiDestInstitution" class="form-select">
+                    <option value="">Select institution</option>
+                    <?php foreach ($participants as $p): ?>
+                        <option value="<?= htmlspecialchars($p['provider_code'] ?: $p['name']) ?>"><?= participantIcon($p) ?> <?= htmlspecialchars($p['name']) ?></option>
+                    <?php endforeach; ?>
                 </select>
             </div>
+            
+            <div class="form-group">
+                <label>Destination Details</label>
+                <input type="text" id="multiDestValue" class="form-control" placeholder="Phone or account number">
+            </div>
+            
+            <button class="btn-primary" onclick="executeMultiSourceSwap()">
+                <i class="fas fa-bolt"></i> EXECUTE COMBINED SWAP
+            </button>
         </div>
-        
-        <div class="form-group">
-            <label>Destination Institution</label>
-            <select id="multiDestInstitution" class="form-select">
-                <option value="">Select institution</option>
-                <?php foreach ($participants as $p): ?>
-                    <option value="<?= htmlspecialchars($p['provider_code'] ?: $p['name']) ?>">
-                        <?= participantIcon($p) ?> <?= htmlspecialchars($p['name']) ?>
-                    </option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        
-        <div class="form-group">
-            <label>Destination Details</label>
-            <input type="text" id="multiDestValue" class="form-control" placeholder="Phone number or account number">
-        </div>
-        
-        <button class="btn-primary" onclick="executeMultiSourceSwap()">
-            <i class="fas fa-bolt"></i> EXECUTE MULTI-SOURCE SWAP
-        </button>
     </div>
 
     <!-- MANAGE SOURCES PANEL -->
-    <div id="sourcesPanel" class="flow-panel hidden">
-        <div class="panel-header">
-            <h3><i class="fas fa-link"></i> Manage Funding Sources</h3>
-            <button class="close-panel" onclick="hideAllPanels()"><i class="fas fa-times"></i></button>
+    <div id="sourcesPanel" class="card hidden">
+        <div class="card-header" onclick="toggleCard(this)">
+            <h3><i class="fas fa-link"></i> My Linked Sources</h3>
+            <i class="fas fa-chevron-down toggle-icon"></i>
         </div>
-        
-        <div class="sources-grid">
-            <?php foreach ($fundingSources as $source): ?>
-                <div class="source-card <?= $source['is_default'] ? 'default' : '' ?>">
-                    <div class="source-info">
-                        <div class="source-name">
-                            <?= htmlspecialchars($source['institution_name']) ?>
-                            <?php if ($source['is_default']): ?><span class="source-badge">DEFAULT</span><?php endif; ?>
-                        </div>
-                        <div class="source-detail">
-                            <?= $source['source_type'] ?> • <?= $source['masked_identifier'] ?>
-                            <?php if ($source['source_label']): ?> • <?= htmlspecialchars($source['source_label']) ?><?php endif; ?>
-                        </div>
-                    </div>
-                    <div>
-                        <button class="btn-secondary" style="margin-right: 0.5rem;" onclick="setDefaultSource(<?= $source['source_id'] ?>)">
-                            <i class="fas fa-star"></i>
-                        </button>
-                        <button class="btn-secondary btn-danger" onclick="removeSource(<?= $source['source_id'] ?>)">
-                            <i class="fas fa-trash"></i>
-                        </button>
-                    </div>
+        <div class="card-body">
+            <?php if (empty($fundingSources)): ?>
+                <div class="empty-state">
+                    <i class="fas fa-plug" style="font-size: 2rem; margin-bottom: 0.5rem; display: block;"></i>
+                    <p>No linked sources yet</p>
+                    <p style="font-size: 0.7rem;">Link your bank accounts or wallets for quick access</p>
                 </div>
-            <?php endforeach; ?>
+            <?php else: ?>
+                <?php foreach ($fundingSources as $source): ?>
+                    <div class="contribution-item" style="<?= $source['is_default'] ? 'border-left: 3px solid #00F0FF;' : '' ?>">
+                        <div>
+                            <strong><?= htmlspecialchars($source['institution_name']) ?></strong>
+                            <?php if ($source['is_default']): ?> <span style="color:#00F0FF; font-size:0.6rem;">DEFAULT</span><?php endif; ?>
+                            <div style="font-size: 0.7rem; color: #666;"><?= $source['source_type'] ?> • <?= $source['masked_identifier'] ?></div>
+                        </div>
+                        <div>
+                            <button class="btn-secondary" style="margin-right: 0.5rem;" onclick="setDefaultSource(<?= $source['source_id'] ?>)">★</button>
+                            <button class="btn-secondary" style="border-color:#FF3030;" onclick="removeSource(<?= $source['source_id'] ?>)">🗑</button>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
             
-            <div class="source-card" style="border-style: dashed; justify-content: center;">
-                <button class="btn-secondary" onclick="showAddSourceModal()" style="width: 100%;">
-                    <i class="fas fa-plus"></i> Link New Source
-                </button>
-            </div>
+            <button class="btn-secondary" style="width: 100%; margin-top: 1rem;" onclick="showAddSourceModal()">
+                <i class="fas fa-plus"></i> Link New Source
+            </button>
         </div>
     </div>
 
-    <!-- RECENT TRANSACTIONS -->
-    <div class="flow-panel" style="margin-top: 1rem;">
-        <div class="panel-header">
+    <!-- TRANSACTIONS BUTTON & CONTAINER -->
+    <div class="card">
+        <div class="card-header" onclick="toggleCard(this)">
             <h3><i class="fas fa-history"></i> Recent Transactions</h3>
+            <i class="fas fa-chevron-down toggle-icon"></i>
         </div>
-        <?php if (empty($userTransactions)): ?>
-            <div style="text-align: center; padding: 2rem; color: #606070;">
-                <i class="fas fa-history" style="font-size: 2rem; margin-bottom: 0.5rem; display: block;"></i>
-                <p>No transactions yet</p>
-            </div>
-        <?php else: ?>
-            <?php foreach (array_slice($userTransactions, 0, 10) as $tx): ?>
-                <div style="padding: 0.75rem 0; border-bottom: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between;">
-                    <div>
-                        <div style="font-size: 0.7rem; color: #606070;"><?= date('d M Y H:i', strtotime($tx['created_at'])) ?></div>
-                        <div style="font-size: 0.8rem;"><?= number_format((float)($tx['amount'] ?? 0), 2) ?> BWP</div>
-                    </div>
-                    <div><span class="status-badge status-<?= strtolower($tx['status'] ?? 'pending') ?>"><?= $tx['status'] ?? 'PENDING' ?></span></div>
+        <div class="card-body">
+            <button class="btn-secondary" id="loadTransactionsBtn" style="width: 100%; margin-bottom: 1rem;">
+                <i class="fas fa-refresh"></i> Load Transactions
+            </button>
+            <div id="transactionsContainer">
+                <div class="empty-state">
+                    <i class="fas fa-history"></i>
+                    <p>Click "Load Transactions" to see your history</p>
                 </div>
-            <?php endforeach; ?>
-        <?php endif; ?>
+            </div>
+        </div>
     </div>
 </div>
 
-<!-- Add Source Modal -->
-<div id="addSourceModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.95); z-index: 1000; align-items: center; justify-content: center;">
-    <div style="background: #0A0A0F; border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; max-width: 500px; width: 90%; padding: 1.5rem;">
-        <h3 style="margin-bottom: 1rem;">Link New Source</h3>
+<!-- Modals -->
+<div id="addSourceModal" class="modal">
+    <div class="modal-content">
+        <h3>Link New Source</h3>
         <form method="POST">
             <input type="hidden" name="action" value="add_source">
             <div class="form-group">
                 <label>Institution</label>
                 <select name="institution_code" class="form-select" required>
                     <?php foreach ($participants as $p): ?>
-                        <option value="<?= htmlspecialchars($p['provider_code'] ?: $p['name']) ?>">
-                            <?= participantIcon($p) ?> <?= htmlspecialchars($p['name']) ?>
-                        </option>
+                        <option value="<?= htmlspecialchars($p['provider_code'] ?: $p['name']) ?>"><?= participantIcon($p) ?> <?= htmlspecialchars($p['name']) ?></option>
                     <?php endforeach; ?>
                 </select>
-                <input type="hidden" name="institution_name" id="instName">
             </div>
             <div class="form-group">
-                <label>Source Type</label>
+                <label>Type</label>
                 <select name="source_type" class="form-select" required>
-                    <option value="ACCOUNT">🏦 Bank Account</option>
-                    <option value="WALLET">📱 Mobile Wallet</option>
-                    <option value="CARD">💳 Card</option>
+                    <option value="ACCOUNT">Bank Account</option>
+                    <option value="WALLET">Mobile Wallet</option>
+                    <option value="CARD">Card</option>
                 </select>
             </div>
             <div class="form-group">
-                <label>Identifier (Account number / Phone / Card number)</label>
-                <input type="text" name="identifier" class="form-control" required>
+                <label>Identifier</label>
+                <input type="text" name="identifier" class="form-control" placeholder="Account/Phone/Card number" required>
             </div>
             <div class="form-group">
-                <label>Label (Optional)</label>
-                <input type="text" name="source_label" class="form-control" placeholder="e.g., My Salary Account">
-            </div>
-            <div class="form-group">
-                <label><input type="checkbox" name="is_default" value="1"> Set as default source</label>
+                <label><input type="checkbox" name="is_default" value="1"> Set as default</label>
             </div>
             <div style="display: flex; gap: 1rem;">
-                <button type="submit" class="btn-primary" style="flex: 1;">Link Source</button>
-                <button type="button" class="btn-secondary" onclick="closeModal()">Cancel</button>
+                <button type="submit" class="btn-primary" style="flex: 1;">Link</button>
+                <button type="button" class="btn-secondary" onclick="closeModal('addSourceModal')">Cancel</button>
             </div>
         </form>
     </div>
 </div>
 
-<!-- Manual Source Modal for Multi-Source -->
-<div id="manualSourceModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.95); z-index: 1000; align-items: center; justify-content: center;">
-    <div style="background: #0A0A0F; border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; max-width: 500px; width: 90%; padding: 1.5rem;">
-        <h3 style="margin-bottom: 1rem;">Add Manual Source</h3>
+<div id="manualSourceModal" class="modal">
+    <div class="modal-content">
+        <h3>Add Manual Source</h3>
         <div class="form-group">
-            <label>Source Type</label>
+            <label>Type</label>
             <select id="manualType" class="form-select">
-                <option value="ACCOUNT">🏦 Bank Account</option>
-                <option value="WALLET">📱 Mobile Wallet</option>
-                <option value="CARD">💳 Card</option>
+                <option value="ACCOUNT">Bank Account</option>
+                <option value="WALLET">Mobile Wallet</option>
+                <option value="CARD">Card</option>
             </select>
         </div>
         <div class="form-group">
             <label>Institution</label>
             <select id="manualInst" class="form-select">
                 <?php foreach ($participants as $p): ?>
-                    <option value="<?= htmlspecialchars($p['provider_code'] ?: $p['name']) ?>">
-                        <?= participantIcon($p) ?> <?= htmlspecialchars($p['name']) ?>
-                    </option>
+                    <option value="<?= htmlspecialchars($p['provider_code'] ?: $p['name']) ?>"><?= participantIcon($p) ?> <?= htmlspecialchars($p['name']) ?></option>
                 <?php endforeach; ?>
             </select>
         </div>
         <div class="form-group">
             <label>Identifier</label>
-            <input type="text" id="manualIdentifier" class="form-control" placeholder="Account number / Phone / Card number">
-        </div>
-        <div class="form-group">
-            <label>Amount (Optional)</label>
-            <input type="number" id="manualAmount" class="form-control" step="0.01" placeholder="Auto-distribute">
+            <input type="text" id="manualIdentifier" class="form-control" placeholder="Account/Phone/Card number">
         </div>
         <div style="display: flex; gap: 1rem;">
-            <button class="btn-primary" style="flex: 1;" onclick="addManualSource()">Add Source</button>
-            <button class="btn-secondary" onclick="closeManualModal()">Cancel</button>
+            <button class="btn-primary" style="flex: 1;" onclick="addManualSource()">Add</button>
+            <button class="btn-secondary" onclick="closeModal('manualSourceModal')">Cancel</button>
         </div>
     </div>
 </div>
 
-<!-- Voucher Modal -->
-<div id="voucherModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.95); z-index: 1000; align-items: center; justify-content: center;">
-    <div style="background: #0A0A0F; border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; max-width: 500px; width: 90%; padding: 1.5rem;">
-        <h3 style="margin-bottom: 1rem;">Add Voucher (Temporary)</h3>
-        <div class="info-box" style="margin-bottom: 1rem; padding: 0.75rem; background: rgba(255,193,7,0.1); border-radius: 8px;">
-            <i class="fas fa-info-circle"></i> Vouchers are temporary and will not be saved to your dashboard
-        </div>
+<div id="voucherModal" class="modal">
+    <div class="modal-content">
+        <h3>Add Voucher</h3>
+        <div class="info-box" style="margin-bottom: 1rem;">Vouchers are temporary - not saved</div>
         <div class="form-group">
             <label>Voucher Number</label>
-            <input type="text" id="voucherNumber" class="form-control" placeholder="Enter voucher number">
-        </div>
-        <div class="form-group">
-            <label>Voucher PIN (if required)</label>
-            <input type="password" id="voucherPin" class="form-control" placeholder="Enter PIN">
+            <input type="text" id="voucherNumber" class="form-control">
         </div>
         <div class="form-group">
             <label>Claimant Phone</label>
             <input type="text" id="voucherPhone" class="form-control" value="<?= $userPhone ?>">
         </div>
-        <div class="form-group">
-            <label>Amount (Optional)</label>
-            <input type="number" id="voucherAmount" class="form-control" step="0.01" placeholder="Full voucher amount">
-        </div>
         <div style="display: flex; gap: 1rem;">
-            <button class="btn-primary" style="flex: 1;" onclick="addVoucher()">Add Voucher</button>
-            <button class="btn-secondary" onclick="closeVoucherModal()">Cancel</button>
+            <button class="btn-primary" style="flex: 1;" onclick="addVoucher()">Add</button>
+            <button class="btn-secondary" onclick="closeModal('voucherModal')">Cancel</button>
         </div>
     </div>
 </div>
@@ -1119,66 +1110,64 @@ ob_end_flush();
 let selectedSources = [];
 
 function showPanel(panelId) {
-    document.querySelectorAll('.flow-panel').forEach(panel => {
+    document.querySelectorAll('.card').forEach(panel => {
         panel.classList.add('hidden');
     });
     document.getElementById(panelId).classList.remove('hidden');
     document.getElementById(panelId).scrollIntoView({ behavior: 'smooth' });
 }
 
-function hideAllPanels() {
-    document.querySelectorAll('.flow-panel').forEach(panel => {
-        panel.classList.add('hidden');
-    });
+function toggleCard(header) {
+    header.classList.toggle('collapsed');
+    const body = header.nextElementSibling;
+    body.classList.toggle('collapsed');
+}
+
+function closeModal(modalId) {
+    document.getElementById(modalId).style.display = 'none';
+}
+
+function showAddSourceModal() {
+    document.getElementById('addSourceModal').style.display = 'flex';
+}
+
+function showManualSourceModal() {
+    document.getElementById('manualSourceModal').style.display = 'flex';
+}
+
+function showVoucherModal() {
+    document.getElementById('voucherModal').style.display = 'flex';
 }
 
 function updateManualFields() {
-    const type = document.getElementById('manualSourceType').value;
+    const select = document.getElementById('savedSourceSelect');
     const container = document.getElementById('manualFieldsContainer');
     
-    if (type === 'ACCOUNT') {
-        container.innerHTML = `<div class="form-group"><label>Account Number</label><input type="text" name="identifier" class="form-control" placeholder="Enter account number"></div>`;
-    } else if (type === 'CARD') {
-        container.innerHTML = `<div class="form-group"><label>Card Number</label><input type="text" name="identifier" class="form-control" placeholder="Enter card number"></div>`;
-    } else if (type === 'VOUCHER') {
+    if (select.value === 'manual') {
         container.innerHTML = `
-            <div class="form-group"><label>Voucher Number</label><input type="text" name="identifier" class="form-control" placeholder="Enter voucher number"></div>
-            <div class="form-group"><label>Claimant Phone</label><input type="text" name="voucher_phone" class="form-control" value="<?= $userPhone ?>"></div>
+            <div class="form-group">
+                <label>Source Type</label>
+                <select id="manualSourceType" class="form-select">
+                    <option value="ACCOUNT">Bank Account</option>
+                    <option value="WALLET">Mobile Wallet</option>
+                    <option value="CARD">Card</option>
+                    <option value="VOUCHER">Voucher</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Identifier</label>
+                <input type="text" name="identifier" class="form-control" placeholder="Account/Phone/Card number">
+            </div>
         `;
     } else {
-        container.innerHTML = `<div class="form-group"><label>Phone Number</label><input type="text" name="identifier" class="form-control" placeholder="Enter phone number"></div>`;
+        container.innerHTML = '';
     }
 }
 
 function useSavedSource() {
-    const select = document.getElementById('savedSourceSelect');
-    const option = select.options[select.selectedIndex];
-    const sourceId = select.value;
-    
-    if (sourceId) {
-        document.getElementById('manualSourceType').disabled = true;
-        document.getElementById('manualFieldsContainer').innerHTML = `
-            <div class="form-group">
-                <label>Using Saved Source</label>
-                <input type="hidden" name="source_id" value="${sourceId}">
-                <input type="text" class="form-control" value="${option.dataset.masked}" readonly disabled>
-            </div>
-        `;
-    } else {
-        document.getElementById('manualSourceType').disabled = false;
-        updateManualFields();
-    }
+    updateManualFields();
 }
 
-function updateDestPlaceholder() {
-    const type = document.getElementById('destType').value;
-    const input = document.getElementById('destValue');
-    if (type === 'cashout') input.placeholder = 'Beneficiary phone number';
-    else if (type === 'bank') input.placeholder = 'Beneficiary account number';
-    else input.placeholder = 'Wallet phone number';
-}
-
-// Multi-source functions
 function toggleSource(btn) {
     btn.classList.toggle('selected');
     const sourceData = JSON.parse(btn.dataset.source);
@@ -1199,14 +1188,14 @@ function toggleSource(btn) {
 function updateContributionList() {
     const container = document.getElementById('contributionList');
     if (selectedSources.length === 0) {
-        container.innerHTML = '<div style="text-align: center; padding: 1rem; color: #606070;">No sources selected</div>';
+        container.innerHTML = '<div class="empty-state">No sources selected</div>';
         return;
     }
     
-    let html = '<div style="margin-bottom: 0.5rem; font-size: 0.75rem;">Selected Sources:</div>';
+    let html = '';
     selectedSources.forEach((source, idx) => {
         html += `<div class="contribution-item">
-            <div><strong>${source.asset_type}</strong> • ${source.institution}<br><span style="font-size: 0.7rem;">${source.identifier}</span></div>
+            <div>${source.asset_type} • ${source.institution}<br><span style="font-size:0.7rem;">${source.identifier}</span></div>
             <button class="remove-contribution" onclick="removeContribution(${idx})"><i class="fas fa-trash"></i></button>
         </div>`;
     });
@@ -1216,108 +1205,57 @@ function updateContributionList() {
 function removeContribution(index) {
     selectedSources.splice(index, 1);
     updateContributionList();
-    // Also update the source chips
-    document.querySelectorAll('.source-chip.selected').forEach(btn => {
-        btn.classList.remove('selected');
-    });
-    selectedSources.forEach(s => {
-        document.querySelectorAll('.source-chip').forEach(btn => {
-            if (btn.dataset.source && JSON.parse(btn.dataset.source).source_id === s.source_id) {
-                btn.classList.add('selected');
-            }
-        });
-    });
-}
-
-function showManualSourceModal() {
-    document.getElementById('manualSourceModal').style.display = 'flex';
-}
-
-function closeManualModal() {
-    document.getElementById('manualSourceModal').style.display = 'none';
+    document.querySelectorAll('.source-chip.selected').forEach(btn => btn.classList.remove('selected'));
 }
 
 function addManualSource() {
     const type = document.getElementById('manualType').value;
     const institution = document.getElementById('manualInst').value;
     const identifier = document.getElementById('manualIdentifier').value;
-    const amount = document.getElementById('manualAmount').value;
     
-    if (!identifier) {
-        alert('Please enter identifier');
-        return;
-    }
+    if (!identifier) { alert('Enter identifier'); return; }
     
     selectedSources.push({
         institution: institution,
         asset_type: type,
         identifier: identifier,
-        amount: amount ? parseFloat(amount) : null,
         is_manual: true
     });
     
     updateContributionList();
-    closeManualModal();
+    closeModal('manualSourceModal');
     document.getElementById('manualIdentifier').value = '';
-    document.getElementById('manualAmount').value = '';
-}
-
-function showVoucherModal() {
-    document.getElementById('voucherModal').style.display = 'flex';
-}
-
-function closeVoucherModal() {
-    document.getElementById('voucherModal').style.display = 'none';
 }
 
 function addVoucher() {
     const voucherNumber = document.getElementById('voucherNumber').value;
-    const voucherPin = document.getElementById('voucherPin').value;
     const voucherPhone = document.getElementById('voucherPhone').value;
-    const amount = document.getElementById('voucherAmount').value;
     
-    if (!voucherNumber) {
-        alert('Please enter voucher number');
-        return;
-    }
+    if (!voucherNumber) { alert('Enter voucher number'); return; }
     
     selectedSources.push({
         asset_type: 'VOUCHER',
-        institution: 'VOUCHER_ISSUER',
+        institution: 'VOUCHER',
         identifier: voucherNumber,
-        voucher_pin: voucherPin,
         claimant_phone: voucherPhone,
-        amount: amount ? parseFloat(amount) : null,
         is_voucher: true
     });
     
     updateContributionList();
-    closeVoucherModal();
+    closeModal('voucherModal');
     document.getElementById('voucherNumber').value = '';
-    document.getElementById('voucherPin').value = '';
-    document.getElementById('voucherAmount').value = '';
 }
 
 async function executeMultiSourceSwap() {
-    if (selectedSources.length === 0) {
-        alert('Please select at least one source');
-        return;
-    }
+    if (selectedSources.length === 0) { alert('Select sources'); return; }
     
     const targetAmount = parseFloat(document.getElementById('multiTargetAmount').value);
     const destType = document.getElementById('multiDestType').value;
     const destInstitution = document.getElementById('multiDestInstitution').value;
     const destValue = document.getElementById('multiDestValue').value;
-    const strategy = document.getElementById('distStrategy').value;
     
-    if (!targetAmount || targetAmount <= 0) {
-        alert('Please enter target amount');
-        return;
-    }
-    if (!destInstitution || !destValue) {
-        alert('Please enter destination details');
-        return;
-    }
+    if (!targetAmount || targetAmount <= 0) { alert('Enter amount'); return; }
+    if (!destInstitution || !destValue) { alert('Enter destination'); return; }
     
     const formData = new FormData();
     formData.append('action', 'swap');
@@ -1326,7 +1264,6 @@ async function executeMultiSourceSwap() {
     formData.append('destination_type', destType);
     formData.append('destination_institution', destInstitution);
     formData.append('destination_value', destValue);
-    formData.append('distribution_strategy', strategy);
     formData.append('sources', JSON.stringify(selectedSources));
     
     const btn = event.target;
@@ -1343,15 +1280,7 @@ async function executeMultiSourceSwap() {
         const data = await response.json();
         
         if (data.status === 'success') {
-            alert('✅ Multi-source swap executed!\nReference: ' + (data.master_reference || data.swap_reference));
-            if (data.withdrawal_code) {
-                alert('💰 Withdrawal Code: ' + data.withdrawal_code);
-            }
-            selectedSources = [];
-            updateContributionList();
-            document.getElementById('multiTargetAmount').value = '';
-            document.getElementById('multiDestValue').value = '';
-            document.querySelectorAll('.source-chip.selected').forEach(btn => btn.classList.remove('selected'));
+            alert('✅ Swap successful!');
             location.reload();
         } else {
             alert('❌ Error: ' + (data.message || 'Unknown error'));
@@ -1364,7 +1293,6 @@ async function executeMultiSourceSwap() {
     }
 }
 
-// Manage sources functions
 function setDefaultSource(sourceId) {
     fetch(window.location.href, {
         method: 'POST',
@@ -1383,13 +1311,39 @@ function removeSource(sourceId) {
     }
 }
 
-function showAddSourceModal() {
-    document.getElementById('addSourceModal').style.display = 'flex';
-}
-
-function closeModal() {
-    document.getElementById('addSourceModal').style.display = 'none';
-}
+// Load transactions on button click
+document.getElementById('loadTransactionsBtn')?.addEventListener('click', async function() {
+    const container = document.getElementById('transactionsContainer');
+    container.innerHTML = '<div class="empty-state"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+    
+    try {
+        const response = await fetch(window.location.href + '?ajax=transactions', {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const data = await response.json();
+        
+        if (data.success && data.transactions.length > 0) {
+            let html = '';
+            for (const tx of data.transactions) {
+                html += `
+                    <div class="transaction-item">
+                        <div>
+                            <div style="font-size:0.7rem; color:#666;">${tx.date}</div>
+                            <div>${tx.type}</div>
+                        </div>
+                        <div class="transaction-amount">${tx.amount} BWP</div>
+                        <div><span class="transaction-status status-${tx.status.toLowerCase()}">${tx.status}</span></div>
+                    </div>
+                `;
+            }
+            container.innerHTML = html;
+        } else {
+            container.innerHTML = '<div class="empty-state"><i class="fas fa-history"></i><p>No transactions found</p></div>';
+        }
+    } catch (error) {
+        container.innerHTML = '<div class="empty-state"><i class="fas fa-exclamation-triangle"></i><p>Failed to load</p></div>';
+    }
+});
 
 // Single source form submission
 document.getElementById('singleSwapForm')?.addEventListener('submit', async function(e) {
@@ -1399,14 +1353,13 @@ document.getElementById('singleSwapForm')?.addEventListener('submit', async func
     formData.append('action', 'swap');
     formData.append('is_multi_source', '0');
     
-    // Check if using saved source
     const sourceId = document.querySelector('input[name="source_id"]')?.value;
     if (sourceId) {
         formData.append('source_id', sourceId);
     } else {
-        const sourceType = document.getElementById('manualSourceType').value;
+        const sourceType = document.getElementById('manualSourceType')?.value || 'WALLET';
         formData.append('source_type', sourceType);
-        formData.append('source_institution', document.querySelector('select[name="source_institution"]')?.value || '');
+        formData.append('source_institution', document.getElementById('destInstitution')?.value || '');
         const identifier = document.querySelector('input[name="identifier"]')?.value;
         if (identifier) formData.append('identifier', identifier);
     }
@@ -1430,8 +1383,7 @@ document.getElementById('singleSwapForm')?.addEventListener('submit', async func
         const data = await response.json();
         
         if (data.status === 'success') {
-            alert('✅ Swap successful!\nReference: ' + data.swap_reference);
-            if (data.withdrawal_code) alert('💰 Withdrawal Code: ' + data.withdrawal_code);
+            alert('✅ Swap successful!\nReference: ' + (data.swap_reference || 'OK'));
             location.reload();
         } else {
             alert('❌ Error: ' + (data.message || 'Unknown error'));
@@ -1445,7 +1397,6 @@ document.getElementById('singleSwapForm')?.addEventListener('submit', async func
 });
 
 updateManualFields();
-updateDestPlaceholder();
 </script>
 </body>
 </html>
