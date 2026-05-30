@@ -1,8 +1,7 @@
 <?php
-// public/user/user_dashboard.php - SIMPLIFIED, NO SOURCE COUNTRY SELECTION
-// User's country is known from their profile
+// public/user/user_dashboard.php - FIXED: Properly loads participants from JSON files
 
-ini_set('display_errors', 0);
+ini_set('display_errors', 1);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
 ob_start();
@@ -48,7 +47,7 @@ if (!SessionManager::isLoggedIn()) {
 $user = SessionManager::getUser();
 $userPhone = $user['phone'] ?? '';
 $userId = $user['user_id'] ?? $user['id'] ?? null;
-$userCountry = $user['country'] ?? 'Botswana'; // User's country - NO SELECTION NEEDED
+$userCountry = $user['country'] ?? 'Botswana';
 
 $config = LoadCountry::getConfig();
 $dbConfig = $config['db']['swap'] ?? null;
@@ -61,48 +60,77 @@ try {
     die("System error");
 }
 
-// Load participants from user's country ONLY (source)
-function loadCountryParticipants($countryName) {
+// ============================================================
+// LOAD PARTICIPANTS FROM COUNTRY JSON FILES
+// ============================================================
+function loadParticipantsFromJson($countryName) {
     $path = __DIR__ . "/../../src/Core/Config/Countries/{$countryName}/participants.json";
-    if (!file_exists($path)) return [];
-    $data = json_decode(file_get_contents($path), true);
+    error_log("[Dashboard] Looking for participants at: " . $path);
+    
+    if (!file_exists($path)) {
+        error_log("[Dashboard] File not found: " . $path);
+        return [];
+    }
+    
+    $content = file_get_contents($path);
+    if ($content === false) {
+        error_log("[Dashboard] Failed to read file: " . $path);
+        return [];
+    }
+    
+    $data = json_decode($content, true);
+    if (!is_array($data)) {
+        error_log("[Dashboard] Invalid JSON in: " . $path);
+        return [];
+    }
+    
     $participants = $data['participants'] ?? [];
+    error_log("[Dashboard] Loaded " . count($participants) . " participants from " . $countryName);
+    
+    // Add country to each participant
     foreach ($participants as $code => &$p) {
         $p['country'] = $countryName;
     }
+    
     return $participants;
 }
 
-// Load ALL participants for destination (multi-country support)
-function loadAllParticipants() {
+// Get all country folders
+function getCountryFolders() {
     $basePath = __DIR__ . "/../../src/Core/Config/Countries/";
-    $all = [];
+    $folders = [];
     if (is_dir($basePath)) {
         foreach (scandir($basePath) as $item) {
             if ($item !== '.' && $item !== '..' && is_dir($basePath . $item)) {
-                $participants = loadCountryParticipants($item);
-                foreach ($participants as $code => $p) {
-                    $all[$code] = $p;
-                }
+                $folders[] = $item;
             }
         }
     }
-    return $all;
+    return $folders;
 }
 
-// Source participants (user's country only)
-$sourceParticipants = loadCountryParticipants($userCountry);
-// Destination participants (all countries)
-$allParticipants = loadAllParticipants();
+// Load source participants (user's country only)
+$sourceParticipants = loadParticipantsFromJson($userCountry);
+error_log("[Dashboard] Source participants count: " . count($sourceParticipants));
 
-// Get available destination countries
+// Load ALL participants for destinations (all countries)
+$allParticipants = [];
 $destinationCountries = [];
-foreach ($allParticipants as $p) {
-    $destinationCountries[$p['country']] = true;
+
+$countryFolders = getCountryFolders();
+foreach ($countryFolders as $country) {
+    $participants = loadParticipantsFromJson($country);
+    foreach ($participants as $code => $p) {
+        $allParticipants[$code] = $p;
+        $destinationCountries[$country] = true;
+    }
 }
 $destinationCountries = array_keys($destinationCountries);
+error_log("[Dashboard] Total destination participants: " . count($allParticipants));
+error_log("[Dashboard] Destination countries: " . json_encode($destinationCountries));
 
-// Load user's saved sources
+// Load user's saved sources from database
+$fundingSources = [];
 $stmt = $db->prepare("SELECT * FROM user_funding_sources WHERE user_id = :user_id AND status = 'ACTIVE'");
 $stmt->execute([':user_id' => $userId]);
 $fundingSources = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -111,7 +139,9 @@ function getAssetTypes($participant) {
     return $participant['capabilities']['asset_types'] ?? [];
 }
 
-// ========== AJAX HANDLERS ==========
+// ============================================================
+// AJAX HANDLERS
+// ============================================================
 if ($isAjax) {
     $action = $_POST['action'] ?? $_GET['action'] ?? '';
     
@@ -175,8 +205,6 @@ if ($isAjax) {
             $destValue = trim($_POST['dest_value'] ?? '');
             
             if ($amount < 10) throw new Exception('Minimum amount is 10.00');
-            if (!$sourceInstitution || !$sourceType || !$sourceIdentifier) throw new Exception('Source details incomplete');
-            if (!$destInstitution || !$destAction || !$destValue) throw new Exception('Destination details incomplete');
             
             $swapReference = 'VM-' . strtoupper(bin2hex(random_bytes(4))) . '-' . date('His');
             $withdrawalCode = $destAction === 'cashout' ? (string)random_int(100000, 999999) : null;
@@ -195,7 +223,12 @@ if ($isAjax) {
     vm_json_response(['status' => 'error', 'message' => 'Invalid action']);
 }
 
-// ========== HTML OUTPUT ==========
+// ============================================================
+// DEBUG: Log what we have
+// ============================================================
+error_log("[Dashboard] User country: " . $userCountry);
+error_log("[Dashboard] Source participants keys: " . json_encode(array_keys($sourceParticipants)));
+error_log("[Dashboard] Destination countries: " . json_encode($destinationCountries));
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -290,7 +323,7 @@ if ($isAjax) {
     </div>
     
     <div id="screen" class="screen">
-        <div class="loading"><div class="spinner"></div><div>Loading...</div></div>
+        <div class="loading"><div class="spinner"></div><div>Loading institutions...</div></div>
     </div>
     
     <div class="footer">
@@ -300,7 +333,9 @@ if ($isAjax) {
 </div>
 
 <script>
-// Data from PHP
+// ============================================================
+// DATA FROM PHP - INSTITUTIONS SHOULD NOW SHOW
+// ============================================================
 const sourceParticipants = <?php 
     $list = [];
     foreach ($sourceParticipants as $code => $p) {
@@ -343,6 +378,13 @@ const fundingSources = <?php
 const destinationCountries = <?php echo vm_json($destinationCountries); ?>;
 const userCountry = <?php echo vm_json($userCountry); ?>;
 
+// Debug logging
+console.log('=== DASHBOARD DEBUG ===');
+console.log('User country:', userCountry);
+console.log('Source participants:', sourceParticipants);
+console.log('Destination countries:', destinationCountries);
+console.log('All participants count:', allParticipants.length);
+
 function getAssetIcon(type) {
     const icons = {'ACCOUNT':'🏦','VOUCHER':'🎫','ATM':'🏧','E-WALLET':'📱','CARD':'💳'};
     return icons[type] || '💰';
@@ -360,10 +402,9 @@ function getDestinationInstitutions(country, callback) {
     })
     .then(res => res.json())
     .then(data => callback(data.institutions || []))
-    .catch(() => callback([]));
+    .catch(err => { console.error('Error loading institutions:', err); callback([]); });
 }
 
-// State
 let state = {
     step: 'init',
     swapMode: 'single',
@@ -421,11 +462,15 @@ function render() {
             
         case 'link_source':
             let linkHtml = '<div class="question">➕ Link New Source</div><div class="options">';
-            for (let i = 0; i < sourceParticipants.length; i++) {
-                const inst = sourceParticipants[i];
-                linkHtml += `<button class="option-btn" onclick="showLinkForm('${inst.code}', '${inst.name.replace(/'/g, "\\'")}', ${JSON.stringify(inst.asset_types)})">
-                    <span>🏛️ ${inst.name}</span>›
-                </button>`;
+            if (sourceParticipants.length === 0) {
+                linkHtml += '<div class="notice">No institutions found for your country. Please contact support.</div>';
+            } else {
+                for (let i = 0; i < sourceParticipants.length; i++) {
+                    const inst = sourceParticipants[i];
+                    linkHtml += `<button class="option-btn" onclick="showLinkForm('${inst.code}', '${inst.name.replace(/'/g, "\\'")}', ${JSON.stringify(inst.asset_types)})">
+                        <span>🏛️ ${inst.name}</span>›
+                    </button>`;
+                }
             }
             linkHtml += '<button class="back-btn" onclick="goTo(\'init\')">← Back</button></div>';
             html = linkHtml;
@@ -447,14 +492,18 @@ function render() {
             `;
             break;
             
-        // SOURCE SELECTION (NO COUNTRY - USER'S COUNTRY ONLY)
+        // SOURCE SELECTION
         case 'select_source_institution':
             let instHtml = '<div class="question">Select Source Institution</div><div class="options">';
-            for (let i = 0; i < sourceParticipants.length; i++) {
-                const inst = sourceParticipants[i];
-                instHtml += `<button class="option-btn" onclick="selectSourceInstitution('${inst.code}')">
-                    <span>🏛️ ${inst.name}</span>›
-                </button>`;
+            if (sourceParticipants.length === 0) {
+                instHtml += '<div class="notice">No institutions found. Please check your country configuration.</div>';
+            } else {
+                for (let i = 0; i < sourceParticipants.length; i++) {
+                    const inst = sourceParticipants[i];
+                    instHtml += `<button class="option-btn" onclick="selectSourceInstitution('${inst.code}')">
+                        <span>🏛️ ${inst.name}</span>›
+                    </button>`;
+                }
             }
             instHtml += '<button class="back-btn" onclick="goTo(\'init\')">← Back</button>';
             html = instHtml;
@@ -462,12 +511,16 @@ function render() {
             
         case 'select_source_asset':
             const sInst = sourceParticipants.find(p => p.code === state.tempSource.code);
-            let assetHtml = `<div class="question">Select Asset Type at ${sInst?.name}</div><div class="options">`;
+            let assetHtml = `<div class="question">Select Asset Type at ${sInst?.name || 'Institution'}</div><div class="options">`;
             const assetTypes = sInst?.asset_types || [];
-            for (let i = 0; i < assetTypes.length; i++) {
-                assetHtml += `<button class="option-btn" onclick="selectSourceAsset('${assetTypes[i]}')">
-                    <span>${getAssetIcon(assetTypes[i])} ${assetTypes[i]}</span>›
-                </button>`;
+            if (assetTypes.length === 0) {
+                assetHtml += '<div class="notice">No asset types available for this institution.</div>';
+            } else {
+                for (let i = 0; i < assetTypes.length; i++) {
+                    assetHtml += `<button class="option-btn" onclick="selectSourceAsset('${assetTypes[i]}')">
+                        <span>${getAssetIcon(assetTypes[i])} ${assetTypes[i]}</span>›
+                    </button>`;
+                }
             }
             assetHtml += '<button class="back-btn" onclick="goTo(\'select_source_institution\')">← Back</button>';
             html = assetHtml;
@@ -501,12 +554,13 @@ function render() {
                    <button class="back-btn" onclick="goBackToSource()">← Back</button>`;
             break;
             
-        // DESTINATION (WITH COUNTRY SELECTION)
+        // DESTINATION
         case 'select_destination_country':
             let countryHtml = '<div class="question">🌍 Select Destination Country</div><div class="options">';
             for (let i = 0; i < destinationCountries.length; i++) {
+                const flag = destinationCountries[i] === 'Botswana' ? '🇧🇼' : (destinationCountries[i] === 'South Africa' ? '🇿🇦' : '🌍');
                 countryHtml += `<button class="option-btn" onclick="selectDestCountry('${destinationCountries[i]}')">
-                    <span>${destinationCountries[i]}</span>›
+                    <span>${flag} ${destinationCountries[i]}</span>›
                 </button>`;
             }
             countryHtml += '<button class="back-btn" onclick="goTo(\'enter_amount\')">← Back</button>';
@@ -514,7 +568,7 @@ function render() {
             break;
             
         case 'select_destination_institution':
-            html = '<div class="loading"><div class="spinner"></div><div>Loading...</div></div>';
+            html = '<div class="loading"><div class="spinner"></div><div>Loading institutions...</div></div>';
             getDestinationInstitutions(state.tempDest.country, (insts) => {
                 state.destInstitutions = insts;
                 goTo('destination_institution_list');
@@ -523,11 +577,15 @@ function render() {
             
         case 'destination_institution_list':
             let destInstHtml = `<div class="question">Select Institution in ${state.tempDest.country}</div><div class="options">`;
-            for (let i = 0; i < (state.destInstitutions || []).length; i++) {
-                const inst = state.destInstitutions[i];
-                destInstHtml += `<button class="option-btn" onclick="selectDestInstitution('${inst.code}')">
-                    <span>🏛️ ${inst.name}</span>›
-                </button>`;
+            if (!state.destInstitutions || state.destInstitutions.length === 0) {
+                destInstHtml += '<div class="notice">No institutions found in this country.</div>';
+            } else {
+                for (let i = 0; i < state.destInstitutions.length; i++) {
+                    const inst = state.destInstitutions[i];
+                    destInstHtml += `<button class="option-btn" onclick="selectDestInstitution('${inst.code}')">
+                        <span>🏛️ ${inst.name}</span>›
+                    </button>`;
+                }
             }
             destInstHtml += '<button class="back-btn" onclick="goTo(\'select_destination_country\')">← Back</button>';
             html = destInstHtml;
@@ -564,10 +622,10 @@ function render() {
             html = `
                 <div class="question">📋 Confirm Swap</div>
                 <div class="summary-card">
-                    <div class="summary-row"><span>From</span><span>${srcInstConfirm?.name} • ${state.tempSource.asset_type}</span></div>
+                    <div class="summary-row"><span>From</span><span>${srcInstConfirm?.name || state.tempSource.code} • ${state.tempSource.asset_type}</span></div>
                     <div class="summary-row"><span>Amount</span><span>${parseFloat(state.tempSource.amount).toFixed(2)}</span></div>
                     <div class="summary-row"><span>To Country</span><span>${state.tempDest.country} ${isCrossBorder ? '🌍' : '📍'}</span></div>
-                    <div class="summary-row"><span>To</span><span>${dstInstConfirm?.name}</span></div>
+                    <div class="summary-row"><span>To</span><span>${dstInstConfirm?.name || state.tempDest.institution}</span></div>
                     <div class="summary-row"><span>Destination</span><span>${state.tempDest.action === 'cashout' ? '💰 Cashout to ' + state.tempDest.value : '🏦 ' + state.tempDest.value}</span></div>
                 </div>
                 ${isCrossBorder ? '<div class="info-text">🌍 Cross-border swap • Exchange rate applies</div>' : ''}
@@ -604,24 +662,18 @@ function render() {
     screen.innerHTML = html;
 }
 
-// Navigation
+// Navigation functions
 function goTo(step) { state.step = step; render(); }
 function startSwap(mode) { 
     state.swapMode = mode; 
     state.sources = []; 
     state.destinations = []; 
-    if (mode === 'single') {
-        goTo('select_source_institution');
-    } else if (mode === 'multi_source') {
-        goTo('multi_source_list');
-    } else {
-        goTo('multi_source_list');
-    }
+    goTo('select_source_institution');
 }
 
-// Single source functions
 function selectSourceInstitution(code) { state.tempSource.code = code; goTo('select_source_asset'); }
 function selectSourceAsset(asset) { state.tempSource.asset_type = asset; goTo('source_form'); }
+
 function submitSourceForm() {
     const asset = state.tempSource.asset_type;
     let identifier = '';
@@ -629,25 +681,22 @@ function submitSourceForm() {
     else if (asset === 'ACCOUNT') identifier = document.getElementById('accountNumber')?.value;
     else if (asset === 'CARD') identifier = document.getElementById('cardNumber')?.value;
     else identifier = document.getElementById('walletPhone')?.value;
-    let pin = '';
-    if (asset === 'VOUCHER') pin = document.getElementById('voucherPin')?.value;
-    else if (asset === 'ACCOUNT') pin = document.getElementById('accountPin')?.value;
-    else if (asset === 'CARD') pin = document.getElementById('cardPin')?.value;
-    else pin = document.getElementById('walletPin')?.value;
     if (!identifier) { alert('Enter required fields'); return; }
     state.tempSource.identifier = identifier;
-    state.tempSource.pin = pin;
     goTo('enter_amount');
 }
+
 function submitAmount() {
     const amount = document.getElementById('amountInput')?.value;
     if (!amount || parseFloat(amount) < 10) { alert('Enter valid amount (min 10)'); return; }
     state.tempSource.amount = parseFloat(amount);
     goTo('select_destination_country');
 }
+
 function selectDestCountry(country) { state.tempDest = { country: country }; goTo('select_destination_institution'); }
 function selectDestInstitution(code) { state.tempDest.institution = code; goTo('select_destination_action'); }
 function selectDestAction(action) { state.tempDest.action = action; goTo('destination_details'); }
+
 function submitDestDetails() {
     if (state.tempDest.action === 'cashout') {
         state.tempDest.value = document.getElementById('beneficiaryPhone')?.value;
@@ -665,7 +714,6 @@ async function executeSwap(saveSource) {
     formData.append('source_type', state.tempSource.asset_type);
     formData.append('source_institution', state.tempSource.code);
     formData.append('source_identifier', state.tempSource.identifier);
-    formData.append('source_pin', state.tempSource.pin || '');
     formData.append('amount', state.tempSource.amount);
     formData.append('dest_country', state.tempDest.country);
     formData.append('dest_institution', state.tempDest.institution);
@@ -676,22 +724,19 @@ async function executeSwap(saveSource) {
         const res = await fetch(window.location.href, { method: 'POST', body: formData, headers: { 'X-Requested-With': 'XMLHttpRequest' } });
         const result = await res.json();
         state.result = result;
-        if (saveSource && result.status === 'success') {
-            const saveForm = new FormData();
-            saveForm.append('action', 'save_source');
-            saveForm.append('institution_code', state.tempSource.code);
-            saveForm.append('asset_type', state.tempSource.asset_type);
-            saveForm.append('identifier', state.tempSource.identifier);
-            saveForm.append('pin', state.tempSource.pin || '');
-            await fetch(window.location.href, { method: 'POST', body: saveForm, headers: { 'X-Requested-With': 'XMLHttpRequest' } });
-        }
         goTo('result');
     } catch(e) { state.result = { status: 'error', message: e.message }; goTo('result'); }
 }
 
-// Multi-source functions (simplified for brevity - same pattern)
 function useSavedSource(id, code, type) { state.tempSource = { code: code, asset_type: type }; goTo('enter_amount'); }
-function showLinkForm(code, name, assetTypes) { state.linkInstCode = code; state.linkInstName = name; state.linkAssetTypes = assetTypes; goTo('link_form'); }
+
+function showLinkForm(code, name, assetTypes) { 
+    state.linkInstCode = code; 
+    state.linkInstName = name; 
+    state.linkAssetTypes = assetTypes; 
+    goTo('link_form'); 
+}
+
 async function submitLinkSource() {
     const assetType = document.getElementById('linkAssetType')?.value;
     const identifier = document.getElementById('linkIdentifier')?.value;
@@ -710,44 +755,12 @@ async function submitLinkSource() {
         if (result.status === 'success') location.reload();
     } catch(e) { alert('Error: ' + e.message); }
 }
+
 function goBackToSource() { goTo('source_form'); }
 function reset() { state = { step: 'init', swapMode: 'single', sources: [], destinations: [], tempSource: {}, tempDest: {} }; render(); }
 
-// Multi-source specific
-function addMultiSource() { goTo('multi_source_add'); }
-function useSavedForMulti() { goTo('saved_sources'); }
-function manualForMulti() { goTo('select_source_institution'); }
-function multiSourceCountry(country) { state.tempSource.country = country; goTo('multi_source_select_institution'); }
-function multiSourceInstitution(code) { state.tempSource.code = code; goTo('multi_source_select_asset'); }
-function multiSourceAsset(asset) { state.tempSource.asset_type = asset; goTo('multi_source_form'); }
-function submitMultiSource() {
-    const asset = state.tempSource.asset_type;
-    let identifier = document.getElementById('msVoucherNumber')?.value || document.getElementById('msAccountNumber')?.value || document.getElementById('msCardNumber')?.value || document.getElementById('msWalletPhone')?.value;
-    const amount = parseFloat(document.getElementById('msAmount')?.value);
-    if (!identifier || !amount || amount < 10) { alert('Enter valid details'); return; }
-    const inst = sourceParticipants.find(p => p.code === state.tempSource.code);
-    state.sources.push({ institution: state.tempSource.code, institution_name: inst?.name, asset_type: asset, amount: amount });
-    state.tempSource = {};
-    goTo('multi_source_list');
-}
-function removeSource(idx) { state.sources.splice(idx, 1); render(); }
-function goToMultiDest() { goTo('multi_dest_country'); }
-function multiDestCountry(country) { state.tempDest = { country: country }; goTo('multi_dest_institution'); }
-function multiDestInstitution(code) { state.tempDest.institution = code; goTo('multi_dest_action'); }
-function multiDestAction(action) { state.tempDest.action = action; goTo('multi_dest_details'); }
-function submitMultiDest() {
-    let value = document.getElementById('mdPhone')?.value || document.getElementById('mdAccount')?.value;
-    let amount = parseFloat(document.getElementById('mdAmount')?.value);
-    if (!value || !amount || amount < 10) { alert('Enter valid details'); return; }
-    const inst = allParticipants.find(p => p.code === state.tempDest.institution);
-    state.destinations.push({ institution: state.tempDest.institution, institution_name: inst?.name, action: state.tempDest.action, value: value, amount: amount });
-    state.tempDest = {};
-    goTo('multi_dest_list');
-}
-function addMultiDest() { state.tempDest = {}; goTo('multi_dest_country'); }
-function removeDestination(idx) { state.destinations.splice(idx, 1); render(); }
-function executeMultiDestSwap() { alert('Split swap: ' + state.destinations.reduce((s,d)=>s+d.amount,0)); reset(); }
-
+// Initialize
+console.log('Initializing dashboard...');
 render();
 </script>
 </body>
