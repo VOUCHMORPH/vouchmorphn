@@ -1,5 +1,5 @@
 <?php
-// public/user/user_dashboard.php - FIXED: Properly loads participants from JSON files
+// public/user/user_dashboard.php - FIXED: Properly loads participants from JSON files with fallback names
 
 ini_set('display_errors', 1);
 ini_set('log_errors', 1);
@@ -87,9 +87,13 @@ function loadParticipantsFromJson($countryName) {
     $participants = $data['participants'] ?? [];
     error_log("[Dashboard] Loaded " . count($participants) . " participants from " . $countryName);
     
-    // Add country to each participant
+    // Add country to each participant and ensure name exists
     foreach ($participants as $code => &$p) {
         $p['country'] = $countryName;
+        // If name doesn't exist, use the code as the display name
+        if (!isset($p['name']) || empty($p['name'])) {
+            $p['name'] = $code;
+        }
     }
     
     return $participants;
@@ -152,7 +156,7 @@ if ($isAjax) {
             if ($p['country'] === $country && ($p['status'] ?? 'ACTIVE') === 'ACTIVE') {
                 $instList[] = [
                     'code' => $code,
-                    'name' => $p['name'],
+                    'name' => $p['name'] ?? $code,  // FIXED: Use code as fallback
                     'asset_types' => getAssetTypes($p)
                 ];
             }
@@ -174,6 +178,9 @@ if ($isAjax) {
             $encryptionKey = getenv('ENCRYPTION_KEY') ?: 'default-key-32-chars-long!!';
             $encrypted = base64_encode(openssl_encrypt($identifier . '|' . $pin, 'AES-256-CBC', $encryptionKey, 0, substr($encryptionKey, 0, 16)));
             
+            // FIXED: Use code as fallback for institution name
+            $institutionName = $participant['name'] ?? $institutionCode;
+            
             $stmt = $db->prepare("
                 INSERT INTO user_funding_sources 
                 (user_id, institution_code, institution_name, institution_country, source_type, 
@@ -182,7 +189,7 @@ if ($isAjax) {
             ");
             
             $stmt->execute([
-                $userId, $institutionCode, $participant['name'], $userCountry,
+                $userId, $institutionCode, $institutionName, $userCountry,
                 $assetType, $maskedId, $encrypted, $userPhone
             ]);
             
@@ -334,14 +341,14 @@ error_log("[Dashboard] Destination countries: " . json_encode($destinationCountr
 
 <script>
 // ============================================================
-// DATA FROM PHP - INSTITUTIONS SHOULD NOW SHOW
+// DATA FROM PHP - FIXED: Handles participants without 'name' field
 // ============================================================
 const sourceParticipants = <?php 
     $list = [];
     foreach ($sourceParticipants as $code => $p) {
         $list[] = [
             'code' => $code,
-            'name' => $p['name'],
+            'name' => $p['name'] ?? $code,  // FIXED: Use code as fallback
             'asset_types' => $p['capabilities']['asset_types'] ?? []
         ];
     }
@@ -353,8 +360,8 @@ const allParticipants = <?php
     foreach ($allParticipants as $code => $p) {
         $list[] = [
             'code' => $code,
-            'name' => $p['name'],
-            'country' => $p['country'],
+            'name' => $p['name'] ?? $code,  // FIXED: Use code as fallback
+            'country' => $p['country'] ?? '',
             'asset_types' => $p['capabilities']['asset_types'] ?? []
         ];
     }
