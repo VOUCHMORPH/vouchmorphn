@@ -4797,3 +4797,10 @@ ALTER TABLE payment_instructions ADD CONSTRAINT IF NOT EXISTS check_payment_stat
 ALTER TABLE organization_users ADD CONSTRAINT IF NOT EXISTS check_user_role CHECK (role IN (
     'owner', 'admin', 'finance_manager', 'uploader', 'approver', 'viewer'
 ));
+
+
+ALTER TABLE users 
+ADD COLUMN IF NOT EXISTS transaction_pin_hash VARCHAR(255) NULL,
+ADD COLUMN IF NOT EXISTS has_transaction_pin BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS pin_attempts INTEGER DEFAULT 0,
+ADD COLUMN IF NOT EXISTS pin_locked_until TIMESTAMP NULL;
