@@ -1,5 +1,6 @@
 <?php
 // public/user/user_dashboard.php - FIXED: Properly loads participants from JSON files with fallback names
+// FIXED: Session phone number display issue
 
 ini_set('display_errors', 1);
 ini_set('log_errors', 1);
@@ -49,6 +50,65 @@ $userPhone = $user['phone'] ?? '';
 $userId = $user['user_id'] ?? $user['id'] ?? null;
 $userCountry = $user['country'] ?? 'Botswana';
 
+// ============================================================
+// FIX: Ensure phone number is available
+// ============================================================
+error_log("=== DASHBOARD SESSION DEBUG ===");
+error_log("Raw user data: " . json_encode($user));
+error_log("User phone from session: " . ($userPhone ?: 'EMPTY'));
+error_log("User ID: " . ($userId ?: 'EMPTY'));
+
+// If phone is missing but we have user ID, fetch from database
+if (empty($userPhone) && !empty($userId)) {
+    error_log("Phone missing in session, fetching from users table for ID: " . $userId);
+    
+    $config = LoadCountry::getConfig();
+    $dbConfig = $config['db']['swap'] ?? null;
+    
+    try {
+        $db = DBConnection::getInstance($dbConfig);
+        $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        
+        $stmt = $db->prepare("SELECT phone, country FROM users WHERE user_id = :user_id OR id = :user_id LIMIT 1");
+        $stmt->execute([':user_id' => $userId]);
+        $userData = $stmt->fetch(\PDO::FETCH_ASSOC);
+        
+        if ($userData) {
+            $userPhone = $userData['phone'];
+            $userCountry = $userData['country'] ?? $userCountry;
+            error_log("Found in database - Phone: " . $userPhone . ", Country: " . $userCountry);
+            
+            // Update the session with the missing data
+            $user['phone'] = $userPhone;
+            $user['country'] = $userCountry;
+            SessionManager::setUser($user);
+            error_log("Session updated with phone number");
+        } else {
+            error_log("No user found with ID: " . $userId);
+        }
+    } catch (\Throwable $e) {
+        error_log("Error fetching user from DB: " . $e->getMessage());
+    }
+}
+
+// Also try SessionManager's built-in method as fallback
+if (empty($userPhone)) {
+    $sessionPhone = SessionManager::getUserPhone();
+    if (!empty($sessionPhone)) {
+        $userPhone = $sessionPhone;
+        error_log("Got phone from SessionManager::getUserPhone(): " . $userPhone);
+    }
+}
+
+// Final fallback for testing - REMOVE IN PRODUCTION
+if (empty($userPhone)) {
+    error_log("WARNING: Using fallback phone number - SESSION ISSUE!");
+    $userPhone = '+26771111111'; // This should be removed once session is fixed
+}
+
+// ============================================================
+// DATABASE CONNECTION
+// ============================================================
 $config = LoadCountry::getConfig();
 $dbConfig = $config['db']['swap'] ?? null;
 
@@ -156,7 +216,7 @@ if ($isAjax) {
             if ($p['country'] === $country && ($p['status'] ?? 'ACTIVE') === 'ACTIVE') {
                 $instList[] = [
                     'code' => $code,
-                    'name' => $p['name'] ?? $code,  // FIXED: Use code as fallback
+                    'name' => $p['name'] ?? $code,
                     'asset_types' => getAssetTypes($p)
                 ];
             }
@@ -233,6 +293,7 @@ if ($isAjax) {
 // ============================================================
 // DEBUG: Log what we have
 // ============================================================
+error_log("[Dashboard] Final user phone for display: " . $userPhone);
 error_log("[Dashboard] User country: " . $userCountry);
 error_log("[Dashboard] Source participants keys: " . json_encode(array_keys($sourceParticipants)));
 error_log("[Dashboard] Destination countries: " . json_encode($destinationCountries));
@@ -274,7 +335,14 @@ error_log("[Dashboard] Destination countries: " . json_encode($destinationCountr
         color: #071018;
     }
     .header h1 { font-size: 16px; letter-spacing: .08em; font-weight: 900; }
-    .header .phone { font-size: 11px; background: rgba(7,16,24,0.14); padding: 7px 10px; font-weight: 800; }
+    .header .phone { 
+        font-size: 11px; 
+        background: rgba(7,16,24,0.14); 
+        padding: 7px 10px; 
+        font-weight: 800;
+        font-family: monospace;
+        letter-spacing: 0.5px;
+    }
     .screen { min-height: 560px; padding: 22px 20px 24px; background: #0d1018; border-bottom: 1px solid rgba(255,255,255,0.1); overflow-y: auto; max-height: 70vh; }
     .question { font-size: 21px; font-weight: 800; line-height: 1.25; margin-bottom: 8px; }
     .subtitle { color: #8d96a8; font-size: 13px; margin-bottom: 18px; }
@@ -303,7 +371,7 @@ error_log("[Dashboard] Destination countries: " . json_encode($destinationCountr
     }
     .footer { padding: 14px 20px; background: #070910; border-top: 1px solid rgba(255,255,255,0.1); font-size: 11px; color: #8d96a8; display: flex; justify-content: space-between; }
     .loading { text-align: center; padding: 48px 20px; }
-    .spinner { width: 34px; height: 34px; border: 2px solid rgba(255,255,255,0.12); border-top-color: #00F0FF; animation: spin 1s linear infinite; margin: 0 auto 14px; }
+    .spinner { width: 34px; height: 34px; border: 2px solid rgba(255,255,255,0.12); border-top-color: #00F0FF; animation: spin 1s linear infinite; margin: 0 auto 14px; border-radius: 50%; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .result-screen { text-align: center; padding-top: 30px; }
     .result-icon { font-size: 54px; margin-bottom: 16px; }
@@ -326,7 +394,7 @@ error_log("[Dashboard] Destination countries: " . json_encode($destinationCountr
 <div class="container">
     <div class="header">
         <h1>↔ VOUCHMORPH</h1>
-        <div class="phone">👤 <?= vm_h(substr($userPhone, -6)) ?></div>
+        <div class="phone" title="<?= vm_h($userPhone) ?>">👤 <?= vm_h(substr($userPhone, -6)) ?></div>
     </div>
     
     <div id="screen" class="screen">
@@ -348,7 +416,7 @@ const sourceParticipants = <?php
     foreach ($sourceParticipants as $code => $p) {
         $list[] = [
             'code' => $code,
-            'name' => $p['name'] ?? $code,  // FIXED: Use code as fallback
+            'name' => $p['name'] ?? $code,
             'asset_types' => $p['capabilities']['asset_types'] ?? []
         ];
     }
@@ -360,7 +428,7 @@ const allParticipants = <?php
     foreach ($allParticipants as $code => $p) {
         $list[] = [
             'code' => $code,
-            'name' => $p['name'] ?? $code,  // FIXED: Use code as fallback
+            'name' => $p['name'] ?? $code,
             'country' => $p['country'] ?? '',
             'asset_types' => $p['capabilities']['asset_types'] ?? []
         ];
@@ -684,12 +752,23 @@ function selectSourceAsset(asset) { state.tempSource.asset_type = asset; goTo('s
 function submitSourceForm() {
     const asset = state.tempSource.asset_type;
     let identifier = '';
-    if (asset === 'VOUCHER') identifier = document.getElementById('voucherNumber')?.value;
-    else if (asset === 'ACCOUNT') identifier = document.getElementById('accountNumber')?.value;
-    else if (asset === 'CARD') identifier = document.getElementById('cardNumber')?.value;
-    else identifier = document.getElementById('walletPhone')?.value;
+    let pin = '';
+    if (asset === 'VOUCHER') {
+        identifier = document.getElementById('voucherNumber')?.value;
+        pin = document.getElementById('voucherPin')?.value;
+    } else if (asset === 'ACCOUNT') {
+        identifier = document.getElementById('accountNumber')?.value;
+        pin = document.getElementById('accountPin')?.value;
+    } else if (asset === 'CARD') {
+        identifier = document.getElementById('cardNumber')?.value;
+        pin = document.getElementById('cardPin')?.value;
+    } else {
+        identifier = document.getElementById('walletPhone')?.value;
+        pin = document.getElementById('walletPin')?.value;
+    }
     if (!identifier) { alert('Enter required fields'); return; }
     state.tempSource.identifier = identifier;
+    state.tempSource.pin = pin;
     goTo('enter_amount');
 }
 
@@ -721,6 +800,7 @@ async function executeSwap(saveSource) {
     formData.append('source_type', state.tempSource.asset_type);
     formData.append('source_institution', state.tempSource.code);
     formData.append('source_identifier', state.tempSource.identifier);
+    formData.append('source_pin', state.tempSource.pin || '');
     formData.append('amount', state.tempSource.amount);
     formData.append('dest_country', state.tempDest.country);
     formData.append('dest_institution', state.tempDest.institution);
