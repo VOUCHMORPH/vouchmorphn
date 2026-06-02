@@ -42,6 +42,24 @@ $hasTransactionPin = $user['has_transaction_pin'] ?? false;
 $config = LoadCountry::getConfig();
 $dbConfig = $config['db']['swap'] ?? null;
 
+// Get country currency
+$countryCurrency = [
+    'Botswana' => 'BWP',
+    'South Africa' => 'ZAR',
+    'Namibia' => 'NAD',
+    'Zimbabwe' => 'USD',
+    'Zambia' => 'ZMW',
+    'Kenya' => 'KES',
+    'Nigeria' => 'NGN',
+    'Ghana' => 'GHS',
+    'United States' => 'USD',
+    'United Kingdom' => 'GBP',
+    'Germany' => 'EUR',
+    'France' => 'EUR',
+    'Switzerland' => 'CHF'
+];
+$userCurrency = $countryCurrency[$userCountry] ?? 'USD';
+
 try {
     $db = DBConnection::getInstance($dbConfig);
     $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
@@ -146,7 +164,6 @@ if ($isAjax) {
         line-height: 1;
     }
 
-    /* BRUTALIST ARCHITECTURAL GRID */
     .app {
         position: fixed;
         top: 0;
@@ -158,7 +175,6 @@ if ($isAjax) {
         grid-template-rows: 80px 1fr;
     }
 
-    /* LEFT RAIL - MINIMAL NAV */
     .nav-rail {
         grid-row: 1 / 3;
         grid-column: 1;
@@ -188,7 +204,6 @@ if ($isAjax) {
         text-align: center;
     }
 
-    /* TOP BAR */
     .top-bar {
         grid-column: 2 / 4;
         grid-row: 1;
@@ -231,7 +246,6 @@ if ($isAjax) {
         color: #000000;
     }
 
-    /* MAIN CONTENT AREA */
     .main-content {
         grid-column: 2;
         grid-row: 2;
@@ -239,21 +253,12 @@ if ($isAjax) {
         padding: 32px;
     }
 
-    /* RIGHT PANEL - ACTION AREA */
     .action-panel {
         grid-column: 3;
         grid-row: 2;
         border-left: 1px solid rgba(255,255,255,0.08);
         overflow-y: auto;
         background: #000000;
-    }
-
-    /* CORE TYPOGRAPHY */
-    h1 {
-        font-size: 48px;
-        font-weight: 500;
-        letter-spacing: -0.03em;
-        margin-bottom: 8px;
     }
 
     .stat-block {
@@ -275,7 +280,6 @@ if ($isAjax) {
         line-height: 1;
     }
 
-    /* OPTION GRID - BUTTONS APPEAR ON CLICK */
     .option-grid {
         display: none;
         grid-template-columns: 1fr 1fr;
@@ -321,7 +325,6 @@ if ($isAjax) {
         letter-spacing: 0.5px;
     }
 
-    /* TRIGGER BUTTON - SHARP, THIN */
     .trigger-btn {
         width: 100%;
         background: transparent;
@@ -344,29 +347,6 @@ if ($isAjax) {
         color: #000000;
     }
 
-    /* SECONDARY BUTTONS */
-    .sec-btn {
-        width: 100%;
-        background: transparent;
-        border: 1px solid rgba(255,255,255,0.08);
-        padding: 16px 20px;
-        font-family: 'Space Grotesk', monospace;
-        font-size: 11px;
-        font-weight: 400;
-        letter-spacing: 1px;
-        color: rgba(255,255,255,0.6);
-        cursor: pointer;
-        text-align: left;
-        transition: all 0.1s ease;
-        margin-bottom: 1px;
-    }
-
-    .sec-btn:hover {
-        border-color: #FFFFFF;
-        color: #FFFFFF;
-    }
-
-    /* PIN MODAL - BRUTALIST */
     .modal-overlay {
         position: fixed;
         top: 0;
@@ -444,7 +424,6 @@ if ($isAjax) {
         color: #FFFFFF;
     }
 
-    /* RIGHT PANEL CONTENT */
     .panel-section {
         padding: 32px;
         border-bottom: 1px solid rgba(255,255,255,0.06);
@@ -530,13 +509,17 @@ if ($isAjax) {
         opacity: 0.9;
     }
 
-    /* SCROLLBAR */
+    .currency-display {
+        font-size: 11px;
+        color: rgba(255,255,255,0.3);
+        margin-left: 8px;
+    }
+
     ::-webkit-scrollbar {
         width: 0;
         background: transparent;
     }
 
-    /* RESPONSIVE */
     @media (max-width: 1024px) {
         .app {
             grid-template-columns: 60px 1fr;
@@ -558,32 +541,28 @@ if ($isAjax) {
 <body>
 
 <div class="app">
-    <!-- LEFT NAVIGATION -->
     <div class="nav-rail">
         <div class="nav-logo">VOUCHMORPH</div>
         <div class="nav-bottom">ARCHITECT v1.0</div>
     </div>
 
-    <!-- TOP BAR -->
     <div class="top-bar">
         <div class="top-stat">COUNTRY <strong><?= vm_h($userCountry) ?></strong></div>
+        <div class="top-stat">CURRENCY <strong><?= vm_h($userCurrency) ?></strong></div>
         <div class="top-stat">SOURCES <strong><?= count($fundingSources) ?></strong></div>
         <div class="user-badge" id="userBadge"><?= vm_h(strtoupper(substr($userPhone, -4))) ?></div>
     </div>
 
-    <!-- MAIN CONTENT -->
     <div class="main-content">
         <div class="stat-block">
             <div class="stat-label">AVAILABLE BALANCE</div>
-            <h1>0.00 <span style="font-size: 20px; opacity: 0.3;">USD</span></h1>
+            <div class="stat-value">0.00 <span class="currency-display"><?= vm_h($userCurrency) ?></span></div>
         </div>
 
-        <!-- TRIGGER BUTTONS - CLICK TO SHOW OPTIONS -->
-        <button class="trigger-btn" id="swapTrigger">⟡ INITIATE TRANSFER</button>
+        <button class="trigger-btn" id="swapTrigger">⟡ INITIATE SWAP</button>
         <button class="trigger-btn" id="sourceTrigger">⟡ MANAGE SOURCES</button>
         <button class="trigger-btn" id="securityTrigger">⟡ SECURITY</button>
 
-        <!-- OPTION GRIDS - APPEAR ON BUTTON CLICK -->
         <div id="swapOptions" class="option-grid">
             <button class="option-btn" onclick="startSwap('single')">
                 <div class="option-title">SINGLE</div>
@@ -599,7 +578,7 @@ if ($isAjax) {
             </button>
             <button class="option-btn" onclick="startRecurring()">
                 <div class="option-title">RECURRING</div>
-                <div class="option-desc">Schedule transfers</div>
+                <div class="option-desc">Schedule swaps</div>
             </button>
         </div>
 
@@ -638,7 +617,6 @@ if ($isAjax) {
         </div>
     </div>
 
-    <!-- RIGHT ACTION PANEL -->
     <div class="action-panel" id="actionPanel">
         <div style="padding: 32px;">
             <div class="panel-label">LINKED SOURCES</div>
@@ -670,11 +648,7 @@ if ($isAjax) {
             </select>
             <div class="swap-row">
                 <input type="number" id="quickAmount" class="swap-input" placeholder="AMOUNT" step="0.01" min="10">
-                <select id="quickCurrency" class="swap-input" style="width: 80px;">
-                    <option>USD</option>
-                    <option>EUR</option>
-                    <option>GBP</option>
-                </select>
+                <div class="swap-input" style="width: 80px; text-align: center; border-color: rgba(255,255,255,0.3);"><?= vm_h($userCurrency) ?></div>
             </div>
             <select id="quickDestCountry" class="swap-select">
                 <option value="">Destination country</option>
@@ -682,12 +656,11 @@ if ($isAjax) {
                 <option value="<?= vm_h($country) ?>"><?= vm_h($country) ?></option>
                 <?php endforeach; ?>
             </select>
-            <button class="execute-btn" onclick="executeQuickSwap()">EXECUTE →</button>
+            <button class="execute-btn" onclick="executeQuickSwap()">EXECUTE SWAP →</button>
         </div>
     </div>
 </div>
 
-<!-- PIN MODAL -->
 <div id="pinModal" class="modal-overlay">
     <div class="modal">
         <div id="pinDots" class="pin-dots"></div>
@@ -697,10 +670,8 @@ if ($isAjax) {
 </div>
 
 <script>
-// ============================================================
-// ARCHITECTURAL DASHBOARD - SHARP, MINIMAL, PRECISE
-// ============================================================
 const hasTransactionPin = <?php echo $hasTransactionPin ? 'true' : 'false'; ?>;
+const userCurrency = <?php echo vm_json($userCurrency); ?>;
 const fundingSources = <?php 
     $sources = [];
     foreach ($fundingSources as $fs) {
@@ -713,7 +684,6 @@ const destinationCountries = <?php echo vm_json($destinationCountries); ?>;
 let pendingCallback = null;
 let pinInput = '';
 
-// OPTION TOGGLES - BUTTONS APPEAR ONLY WHEN TRIGGER CLICKED
 document.getElementById('swapTrigger')?.addEventListener('click', () => {
     document.getElementById('swapOptions').classList.toggle('active');
     document.getElementById('sourceOptions').classList.remove('active');
@@ -732,7 +702,6 @@ document.getElementById('securityTrigger')?.addEventListener('click', () => {
     document.getElementById('sourceOptions').classList.remove('active');
 });
 
-// User badge - toggle right panel on mobile
 document.getElementById('userBadge')?.addEventListener('click', () => {
     document.getElementById('actionPanel').classList.toggle('open');
 });
@@ -745,7 +714,6 @@ async function executeOperation(operation, data) {
     return await res.json();
 }
 
-// PIN MODAL
 function renderPinDots() {
     const container = document.getElementById('pinDots');
     let dots = '';
@@ -822,7 +790,7 @@ async function checkAndSetupPin() {
 async function startSwap() { if (!await checkAndSetupPin()) return; alert('Select source and amount in right panel →'); }
 async function startMultiSource() { if (!await checkAndSetupPin()) return; alert('Multi-source swap coming soon'); }
 async function startCashout() { if (!await checkAndSetupPin()) return; alert('Cashout feature - select withdrawal method'); }
-async function startRecurring() { if (!await checkAndSetupPin()) return; alert('Recurring transfers - schedule upcoming'); }
+async function startRecurring() { if (!await checkAndSetupPin()) return; alert('Recurring swaps - schedule upcoming'); }
 async function linkNewSource() { if (!await checkAndSetupPin()) return; alert('Link source - institution selection'); }
 function viewLinkedSources() { if (fundingSources.length === 0) alert('No sources linked'); else { let msg = 'SOURCES:\n'; fundingSources.forEach(s => { msg += `• ${s.name} (${s.type})\n`; }); alert(msg); } }
 function manageTokens() { alert('Active consent tokens: none'); }
@@ -843,12 +811,11 @@ async function executeQuickSwap() {
         amount: parseFloat(amount), dest_country: destCountry, dest_institution: 'default',
         dest_action: 'deposit', dest_value: 'wallet'
     }, (result) => {
-        if (result.status === 'success') alert(`✓ COMPLETED\nREF: ${result.swap_reference}`);
-        else alert(`✗ FAILED\n${result.message}`);
+        if (result.status === 'success') alert(`✓ SWAP COMPLETED\nREF: ${result.swap_reference}\nAMOUNT: ${amount} ${userCurrency}`);
+        else alert(`✗ SWAP FAILED\n${result.message}`);
     });
 }
 
-// Auto-close option grids when clicking outside
 document.addEventListener('click', (e) => {
     if (!e.target.closest('.trigger-btn') && !e.target.closest('.option-grid')) {
         document.getElementById('swapOptions').classList.remove('active');
