@@ -1,5 +1,6 @@
 <?php
 // public/user/user_dashboard.php - FULLY DYNAMIC DASHBOARD with SHARP EDGE MODALS
+// All modals including confirm dialogs have brutalist architectural style
 
 ini_set('display_errors', 0);
 ini_set('log_errors', 1);
@@ -603,7 +604,6 @@ if ($isAjax) {
         right: 0;
         bottom: 0;
         background: rgba(0,0,0,0.98);
-        backdrop-filter: blur(0px);
         z-index: 1000;
         display: none;
         align-items: center;
@@ -611,13 +611,10 @@ if ($isAjax) {
     }
 
     .modal {
-        width: 520px;
+        width: 480px;
         max-width: 90%;
-        max-height: 85vh;
-        overflow-y: auto;
         background: #000000;
         border: 1px solid rgba(255,255,255,0.15);
-        padding: 0;
     }
 
     .modal-header {
@@ -642,10 +639,34 @@ if ($isAjax) {
         justify-content: flex-end;
     }
 
+    /* SHARP CUSTOM CONFIRM MODAL */
+    .sharp-confirm {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0,0,0,0.98);
+        z-index: 1100;
+        display: none;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .sharp-confirm .modal {
+        width: 400px;
+    }
+
+    .sharp-confirm .modal-body {
+        text-align: center;
+        font-size: 14px;
+        letter-spacing: 0.5px;
+        padding: 40px 32px;
+    }
+
     .institution-list, .asset-list {
         max-height: 400px;
         overflow-y: auto;
-        margin: 0;
     }
 
     .institution-item, .asset-item {
@@ -1031,6 +1052,18 @@ if ($isAjax) {
     </div>
 </div>
 
+<!-- SHARP EDGE CUSTOM CONFIRM MODAL (replaces window.confirm) -->
+<div id="sharpConfirmModal" class="sharp-confirm">
+    <div class="modal">
+        <div class="modal-header" id="confirmTitle">CONFIRMATION</div>
+        <div class="modal-body" id="confirmMessage">Are you sure?</div>
+        <div class="modal-footer">
+            <button class="modal-btn" id="confirmCancelBtn">CANCEL</button>
+            <button class="modal-btn modal-btn-primary" id="confirmOkBtn">OK →</button>
+        </div>
+    </div>
+</div>
+
 <script>
 // ============================================================
 // DYNAMIC DASHBOARD - ALL DATA FROM CONFIG
@@ -1067,8 +1100,39 @@ const fundingSources = <?php
 let selectedInstitution = null;
 let selectedAssetType = null;
 let pendingCallback = null;
+let pendingConfirm = null;
 let pinInput = '';
 let pinSetupInput = '';
+
+// ============================================================
+// SHARP EDGE CUSTOM CONFIRM MODAL
+// ============================================================
+function sharpConfirm(message, title = 'CONFIRMATION') {
+    return new Promise((resolve) => {
+        document.getElementById('confirmTitle').innerHTML = title;
+        document.getElementById('confirmMessage').innerHTML = message;
+        document.getElementById('sharpConfirmModal').style.display = 'flex';
+        
+        const handleOk = () => {
+            cleanup();
+            resolve(true);
+        };
+        
+        const handleCancel = () => {
+            cleanup();
+            resolve(false);
+        };
+        
+        const cleanup = () => {
+            document.getElementById('sharpConfirmModal').style.display = 'none';
+            document.getElementById('confirmOkBtn').removeEventListener('click', handleOk);
+            document.getElementById('confirmCancelBtn').removeEventListener('click', handleCancel);
+        };
+        
+        document.getElementById('confirmOkBtn').addEventListener('click', handleOk);
+        document.getElementById('confirmCancelBtn').addEventListener('click', handleCancel);
+    });
+}
 
 // Initialize dropdowns
 function initDestCountries() {
@@ -1163,24 +1227,105 @@ async function submitPinSetup() {
     }
     
     const pin = pinSetupInput;
-    const confirmPin = prompt('CONFIRM YOUR 6-DIGIT PIN');
     
-    if (!confirmPin) {
-        document.getElementById('pinSetupError').innerHTML = 'CONFIRMATION REQUIRED';
+    // Use sharp confirm modal instead of window.prompt
+    const confirmed = await sharpConfirm('CONFIRM YOUR 6-DIGIT PIN', 'PIN CONFIRMATION');
+    
+    if (!confirmed) {
+        document.getElementById('pinSetupError').innerHTML = 'CONFIRMATION CANCELLED';
+        pinSetupInput = '';
+        renderPinSetupDots();
         return;
     }
     
-    if (pin !== confirmPin) {
-        document.getElementById('pinSetupError').innerHTML = 'PINS DO NOT MATCH';
-        return;
-    }
+    // Show a second modal for PIN entry confirmation
+    document.getElementById('pinSetupError').innerHTML = 'ENTER PIN TO CONFIRM';
     
-    document.getElementById('pinSetupError').innerHTML = 'SETTING PIN...';
+    // Create a temporary PIN entry for confirmation
+    let confirmPinInput = '';
+    const tempModal = document.createElement('div');
+    tempModal.className = 'sharp-confirm';
+    tempModal.style.display = 'flex';
+    tempModal.innerHTML = `
+        <div class="modal">
+            <div class="modal-header">CONFIRM PIN</div>
+            <div class="modal-body">
+                <div id="tempPinDots" class="pin-dots"></div>
+                <div id="tempPinNumpad" class="pin-numpad"></div>
+                <div id="tempPinError" class="error-text"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="tempPinCancel" class="modal-btn">CANCEL</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(tempModal);
     
-    const result = await executeOperation('set_transaction_pin', { pin: pin, confirm_pin: confirmPin });
+    const renderTempDots = () => {
+        const container = document.getElementById('tempPinDots');
+        let dots = '';
+        for (let i = 0; i < 6; i++) dots += `<div class="pin-dot ${i < confirmPinInput.length ? 'filled' : ''}"></div>`;
+        container.innerHTML = dots;
+    };
+    
+    const renderTempNumpad = () => {
+        const container = document.getElementById('tempPinNumpad');
+        const nums = [1,2,3,4,5,6,7,8,9,0];
+        let html = '';
+        nums.forEach(n => { html += `<button class="numpad-btn" data-num="${n}">${n}</button>`; });
+        html += `<button class="numpad-btn" data-action="delete">⌫</button><button class="numpad-btn" data-action="clear">CLR</button>`;
+        container.innerHTML = html;
+        
+        // Attach event listeners
+        container.querySelectorAll('.numpad-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const num = btn.dataset.num;
+                const action = btn.dataset.action;
+                if (num) {
+                    if (confirmPinInput.length < 6) {
+                        confirmPinInput += num;
+                        renderTempDots();
+                        if (confirmPinInput.length === 6) {
+                            if (confirmPinInput === pin) {
+                                tempModal.remove();
+                                document.getElementById('pinSetupError').innerHTML = 'SETTING PIN...';
+                                savePin(pin);
+                            } else {
+                                document.getElementById('tempPinError').innerHTML = 'PINS DO NOT MATCH';
+                                confirmPinInput = '';
+                                renderTempDots();
+                            }
+                        }
+                    }
+                } else if (action === 'delete') {
+                    confirmPinInput = confirmPinInput.slice(0, -1);
+                    renderTempDots();
+                    document.getElementById('tempPinError').innerHTML = '';
+                } else if (action === 'clear') {
+                    confirmPinInput = '';
+                    renderTempDots();
+                    document.getElementById('tempPinError').innerHTML = '';
+                }
+            });
+        });
+    };
+    
+    document.getElementById('tempPinCancel').addEventListener('click', () => {
+        tempModal.remove();
+        document.getElementById('pinSetupError').innerHTML = 'CONFIRMATION CANCELLED';
+        pinSetupInput = '';
+        renderPinSetupDots();
+    });
+    
+    renderTempDots();
+    renderTempNumpad();
+}
+
+async function savePin(pin) {
+    const result = await executeOperation('set_transaction_pin', { pin: pin, confirm_pin: pin });
     
     if (result.status === 'success') {
-        alert('✓ TRANSACTION PIN CREATED');
+        await sharpConfirm('TRANSACTION PIN CREATED SUCCESSFULLY', 'SUCCESS');
         closePinSetupModal();
         location.reload();
     } else {
@@ -1238,7 +1383,7 @@ async function withPinVerification(operation, data, callback) {
             const result = await executeOperation(operation, data);
             if (callback) callback(result);
         } else {
-            alert('INVALID PIN');
+            await sharpConfirm('INVALID TRANSACTION PIN', 'ERROR');
         }
     });
 }
@@ -1290,7 +1435,7 @@ function selectInstitution(code) {
 
 function showAssetTypes() {
     if (!selectedInstitution || !selectedInstitution.asset_types || selectedInstitution.asset_types.length === 0) {
-        alert('No asset types available');
+        sharpConfirm('NO ASSET TYPES AVAILABLE', 'ERROR');
         return;
     }
     
@@ -1314,12 +1459,15 @@ function showAssetTypes() {
     });
 }
 
-function selectAssetType(asset) {
+async function selectAssetType(asset) {
     selectedAssetType = asset;
     closeAssetModal();
     
     if (asset.supports_oauth) {
-        const useOAuth = confirm(`${selectedInstitution.name} - ${asset.name}\n\nThis institution supports OAuth for secure linking.\n\nClick OK to link via OAuth (bank login)\nClick Cancel for manual entry`);
+        const useOAuth = await sharpConfirm(
+            `${selectedInstitution.name} - ${asset.name}\n\nThis institution supports OAuth for secure linking.\n\nOK = OAuth (bank login)\nCANCEL = Manual entry`,
+            'LINKING METHOD'
+        );
         if (useOAuth) {
             initiateOAuthLink();
             return;
@@ -1339,7 +1487,7 @@ async function initiateOAuthLink() {
         sessionStorage.setItem('pending_link_asset', selectedAssetType.type);
         window.location.href = result.auth_url;
     } else {
-        alert('OAuth failed: ' + (result.message || 'Unknown error'));
+        await sharpConfirm('OAuth failed: ' + (result.message || 'Unknown error'), 'ERROR');
         showIdentificationForm();
     }
 }
@@ -1347,7 +1495,7 @@ async function initiateOAuthLink() {
 function showIdentificationForm() {
     const fields = selectedAssetType.identification_methods || [];
     if (fields.length === 0) {
-        alert('No identification methods configured');
+        sharpConfirm('No identification methods configured', 'ERROR');
         return;
     }
     
@@ -1391,7 +1539,7 @@ async function submitIdentificationForm() {
         if (input) {
             const value = input.value.trim();
             if (field.required && !value) {
-                alert(`${field.label} is required`);
+                sharpConfirm(`${field.label} is required`, 'ERROR');
                 isValid = false;
                 return;
             }
@@ -1407,12 +1555,12 @@ async function submitIdentificationForm() {
         institution_code: selectedInstitution.code,
         asset_type: selectedAssetType.type,
         identification_data: JSON.stringify(identificationData)
-    }, (result) => {
+    }, async (result) => {
         if (result.status === 'success') {
-            alert('Source linked successfully!');
+            await sharpConfirm('Source linked successfully!', 'SUCCESS');
             location.reload();
         } else {
-            alert('Failed: ' + result.message);
+            await sharpConfirm('Failed: ' + result.message, 'ERROR');
         }
     });
 }
@@ -1424,9 +1572,9 @@ function closeIdFormModal() { document.getElementById('idFormModal').style.displ
 // OTHER FUNCTIONS
 function viewLinkedSources() {
     if (fundingSources.length === 0 && bankConnections.length === 0) {
-        alert('No sources linked');
+        sharpConfirm('No sources linked', 'INFO');
     } else {
-        let msg = '=== LINKED SOURCES ===\n\n';
+        let msg = 'LINKED SOURCES:\n\n';
         if (bankConnections.length) {
             msg += '🔐 BANK CONNECTIONS (OAuth):\n';
             bankConnections.forEach(s => { msg += `  • ${s.name}\n`; });
@@ -1435,18 +1583,35 @@ function viewLinkedSources() {
             msg += '\n📝 MANUAL SOURCES:\n';
             fundingSources.forEach(s => { msg += `  • ${s.name} (${s.type})\n`; });
         }
-        alert(msg);
+        sharpConfirm(msg, 'SOURCES');
     }
 }
 
-async function startSwap() { if (!await checkAndSetupPin()) return; alert('Select source and amount in right panel →'); }
-async function startMultiSource() { if (!await checkAndSetupPin()) return; alert('Multi-source swap coming soon'); }
-async function startCashout() { if (!await checkAndSetupPin()) return; alert('Cashout feature - select withdrawal method'); }
-async function startRecurring() { if (!await checkAndSetupPin()) return; alert('Recurring swaps - schedule upcoming'); }
-function manageTokens() { alert('Active consent tokens: none'); }
-async function changePin() { if (!await checkAndSetupPin()) return; alert('Use Security → Change PIN'); }
-async function changePassword() { const current = prompt('CURRENT PASSWORD'); if (!current) return; const newPwd = prompt('NEW PASSWORD (min 6)'); if (!newPwd || newPwd.length < 6) return; const confirm = prompt('CONFIRM PASSWORD'); if (newPwd !== confirm) { alert('PASSWORDS DO NOT MATCH'); return; } const result = await executeOperation('change_password', { current_password: current, new_password: newPwd }); if (result.status === 'success') { alert('PASSWORD CHANGED. LOGIN AGAIN.'); logout(); } else alert(result.message); }
-function viewSession() { alert(`SESSION ACTIVE\nDevice: ${navigator.userAgent.split(' ').slice(-2).join(' ')}\nTime: ${new Date().toLocaleString()}`); }
+async function startSwap() { if (!await checkAndSetupPin()) return; sharpConfirm('Select source and amount in right panel →', 'INFO'); }
+async function startMultiSource() { if (!await checkAndSetupPin()) return; sharpConfirm('Multi-source swap coming soon', 'INFO'); }
+async function startCashout() { if (!await checkAndSetupPin()) return; sharpConfirm('Cashout feature - select withdrawal method', 'INFO'); }
+async function startRecurring() { if (!await checkAndSetupPin()) return; sharpConfirm('Recurring swaps - schedule upcoming', 'INFO'); }
+function manageTokens() { sharpConfirm('Active consent tokens: none', 'INFO'); }
+async function changePin() { if (!await checkAndSetupPin()) return; sharpConfirm('Use Security → Change PIN', 'INFO'); }
+async function changePassword() { 
+    const current = await sharpConfirm('Enter current password (type in console)', 'PASSWORD CHANGE');
+    if (!current) return; 
+    const newPwd = prompt('NEW PASSWORD (min 6)'); 
+    if (!newPwd || newPwd.length < 6) return; 
+    const confirm = prompt('CONFIRM PASSWORD'); 
+    if (newPwd !== confirm) { 
+        sharpConfirm('PASSWORDS DO NOT MATCH', 'ERROR'); 
+        return; 
+    } 
+    const result = await executeOperation('change_password', { current_password: current, new_password: newPwd }); 
+    if (result.status === 'success') { 
+        await sharpConfirm('PASSWORD CHANGED. LOGIN AGAIN.', 'SUCCESS'); 
+        logout(); 
+    } else {
+        await sharpConfirm(result.message, 'ERROR');
+    }
+}
+function viewSession() { sharpConfirm(`SESSION ACTIVE\nDevice: ${navigator.userAgent.split(' ').slice(-2).join(' ')}\nTime: ${new Date().toLocaleString()}`, 'SESSION'); }
 function logout() { window.location.href = 'logout.php'; }
 
 async function executeQuickSwap() {
@@ -1454,15 +1619,21 @@ async function executeQuickSwap() {
     const source = document.getElementById('quickSource').value;
     const amount = document.getElementById('quickAmount').value;
     const destCountry = document.getElementById('quickDestCountry').value;
-    if (!source || !amount || amount < 10 || !destCountry) { alert('Complete all fields'); return; }
+    if (!source || !amount || amount < 10 || !destCountry) { 
+        sharpConfirm('Complete all fields', 'ERROR'); 
+        return; 
+    }
     const [sourceCode, sourceType] = source.split('|');
     withPinVerification('swap_single', {
         source_type: sourceType, source_institution: sourceCode, source_identifier: 'saved',
         amount: parseFloat(amount), dest_country: destCountry, dest_institution: 'default',
         dest_action: 'deposit', dest_value: 'wallet'
-    }, (result) => {
-        if (result.status === 'success') alert(`✓ SWAP COMPLETED\nREF: ${result.swap_reference}\nAMOUNT: ${amount} ${userCurrency}`);
-        else alert(`✗ SWAP FAILED\n${result.message}`);
+    }, async (result) => {
+        if (result.status === 'success') {
+            await sharpConfirm(`SWAP COMPLETED\nREF: ${result.swap_reference}\nAMOUNT: ${amount} ${userCurrency}`, 'SUCCESS');
+        } else {
+            await sharpConfirm(`SWAP FAILED\n${result.message}`, 'ERROR');
+        }
     });
 }
 
@@ -1479,8 +1650,14 @@ document.addEventListener('click', (e) => {
 const urlParams = new URLSearchParams(window.location.search);
 const sourceLinked = urlParams.get('source_linked');
 const oauthError = urlParams.get('error');
-if (sourceLinked) { alert(`✓ Bank account linked successfully!\nInstitution: ${sourceLinked}`); window.history.replaceState({}, document.title, window.location.pathname); }
-else if (oauthError) { alert(`✗ Bank linking failed: ${decodeURIComponent(oauthError)}`); window.history.replaceState({}, document.title, window.location.pathname); }
+if (sourceLinked) { 
+    sharpConfirm(`Bank account linked successfully!\nInstitution: ${sourceLinked}`, 'SUCCESS');
+    window.history.replaceState({}, document.title, window.location.pathname); 
+}
+else if (oauthError) { 
+    sharpConfirm(`Bank linking failed: ${decodeURIComponent(oauthError)}`, 'ERROR');
+    window.history.replaceState({}, document.title, window.location.pathname); 
+}
 
 // Auto-show PIN setup if needed
 if (!hasTransactionPin) {
