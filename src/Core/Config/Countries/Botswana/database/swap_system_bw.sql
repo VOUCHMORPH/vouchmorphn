@@ -4804,3 +4804,22 @@ ADD COLUMN IF NOT EXISTS transaction_pin_hash VARCHAR(255) NULL,
 ADD COLUMN IF NOT EXISTS has_transaction_pin BOOLEAN DEFAULT FALSE,
 ADD COLUMN IF NOT EXISTS pin_attempts INTEGER DEFAULT 0,
 ADD COLUMN IF NOT EXISTS pin_locked_until TIMESTAMP NULL;
+
+
+ALTER TABLE user_funding_sources ADD COLUMN IF NOT EXISTS metadata JSONB;
+
+CREATE TABLE IF NOT EXISTS user_bank_connections (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(user_id),
+    institution_code VARCHAR(50) NOT NULL,
+    institution_name VARCHAR(255) NOT NULL,
+    asset_type VARCHAR(50),
+    access_token TEXT NOT NULL,
+    refresh_token TEXT,
+    token_expires_at TIMESTAMP,
+    bank_user_id VARCHAR(100),
+    bank_accounts JSONB,
+    status VARCHAR(20) DEFAULT 'ACTIVE',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
