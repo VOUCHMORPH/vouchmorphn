@@ -1,6 +1,5 @@
 <?php
-// public/user/user_dashboard.php - FULLY DYNAMIC DASHBOARD
-// Everything loaded from country configuration files
+// public/user/user_dashboard.php - FULLY DYNAMIC DASHBOARD with SHARP EDGE MODALS
 
 ini_set('display_errors', 0);
 ini_set('log_errors', 1);
@@ -59,7 +58,7 @@ try {
 
 if (empty($userPhone) && !empty($userId)) {
     try {
-        $stmt = $db->prepare("SELECT phone, country, has_transaction_pin, full_name, id_number FROM users WHERE user_id = :user_id OR id = :user_id LIMIT 1");
+        $stmt = $db->prepare("SELECT phone, country, has_transaction_pin, full_name, id_number FROM users WHERE user_id = :user_id LIMIT 1");
         $stmt->execute([':user_id' => $userId]);
         $userData = $stmt->fetch(\PDO::FETCH_ASSOC);
         if ($userData) {
@@ -120,7 +119,6 @@ foreach (getCountryFolders() as $country) {
         $allParticipants[$code] = $p; 
         $destinationCountries[$country] = true;
         
-        // Collect all asset types for linking UI
         foreach ($p['asset_types'] ?? [] as $asset) {
             $assetKey = $asset['type'];
             if (!isset($allAssetTypes[$assetKey])) {
@@ -151,6 +149,7 @@ $stmt = $db->prepare("SELECT * FROM user_bank_connections WHERE user_id = :user_
 $stmt->execute([':user_id' => $userId]);
 $bankConnections = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
+// PIN Functions
 function userHasTransactionPin($db, $userId) { 
     $stmt = $db->prepare("SELECT transaction_pin_hash FROM users WHERE user_id = :user_id LIMIT 1"); 
     $stmt->execute([':user_id' => $userId]); 
@@ -168,14 +167,16 @@ function verifyTransactionPin($db, $userId, $pin) {
 
 function setTransactionPin($db, $userId, $pin) { 
     $hash = password_hash($pin, PASSWORD_DEFAULT); 
-    $stmt = $db->prepare("UPDATE users SET transaction_pin_hash = :hash, has_transaction_pin = 1 WHERE user_id = :user_id"); 
+    $stmt = $db->prepare("UPDATE users SET transaction_pin_hash = :hash, has_transaction_pin = true WHERE user_id = :user_id"); 
     return $stmt->execute([':hash' => $hash, ':user_id' => $userId]); 
 }
 
 if ($isAjax) {
     $action = $_POST['action'] ?? $_GET['action'] ?? '';
     
-    if ($action === 'check_transaction_pin') { vm_json_response(['has_pin' => userHasTransactionPin($db, $userId)]); }
+    if ($action === 'check_transaction_pin') { 
+        vm_json_response(['has_pin' => userHasTransactionPin($db, $userId)]); 
+    }
     
     if ($action === 'set_transaction_pin') {
         try { 
@@ -230,7 +231,6 @@ if ($isAjax) {
         vm_json_response(['success' => true, 'institutions' => $instList]); 
     }
     
-    // Get asset types for an institution
     if ($action === 'get_asset_types') {
         $institutionCode = $_POST['institution_code'] ?? '';
         $participant = $allParticipants[$institutionCode] ?? $sourceParticipants[$institutionCode] ?? null;
@@ -241,7 +241,6 @@ if ($isAjax) {
         }
     }
     
-    // Get identification fields for an asset type
     if ($action === 'get_identification_fields') {
         $institutionCode = $_POST['institution_code'] ?? '';
         $assetType = $_POST['asset_type'] ?? '';
@@ -266,7 +265,6 @@ if ($isAjax) {
         }
     }
     
-    // Get OAuth URL
     if ($action === 'get_oauth_url') {
         try {
             $institutionCode = trim($_POST['institution_code'] ?? '');
@@ -274,7 +272,6 @@ if ($isAjax) {
             $participant = $allParticipants[$institutionCode] ?? $sourceParticipants[$institutionCode] ?? null;
             if (!$participant) throw new Exception("Institution not found");
             
-            // Find if this asset type supports OAuth
             $assetTypes = $participant['asset_types'] ?? [];
             $supportsOAuth = false;
             foreach ($assetTypes as $asset) {
@@ -320,7 +317,6 @@ if ($isAjax) {
         }
     }
     
-    // Save manual source
     if ($action === 'save_manual_source') {
         try { 
             $consentToken = $_POST['consent_token'] ?? ''; 
@@ -336,7 +332,6 @@ if ($isAjax) {
             $participant = $sourceParticipants[$institutionCode] ?? $allParticipants[$institutionCode] ?? null;
             if (!$participant) throw new Exception("Institution not found");
             
-            // Build identifier string from fields
             $identifierParts = [];
             foreach ($identificationData as $key => $value) {
                 if ($value) $identifierParts[] = "$key:$value";
@@ -362,7 +357,6 @@ if ($isAjax) {
         }
     }
     
-    // Execute swap
     if ($action === 'swap_single') {
         try { 
             $consentToken = $_POST['consent_token'] ?? ''; 
@@ -405,7 +399,12 @@ if ($isAjax) {
 <title>VOUCHMORPH | ARCHITECT</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+    }
+
     body {
         background: #000000;
         font-family: 'Space Grotesk', monospace;
@@ -413,6 +412,7 @@ if ($isAjax) {
         letter-spacing: -0.02em;
         line-height: 1;
     }
+
     .app {
         position: fixed;
         top: 0;
@@ -423,6 +423,7 @@ if ($isAjax) {
         grid-template-columns: 80px 1fr 380px;
         grid-template-rows: 80px 1fr;
     }
+
     .nav-rail {
         grid-row: 1 / 3;
         grid-column: 1;
@@ -432,6 +433,7 @@ if ($isAjax) {
         justify-content: space-between;
         padding: 24px 0 32px;
     }
+
     .nav-logo {
         writing-mode: vertical-rl;
         transform: rotate(180deg);
@@ -441,6 +443,7 @@ if ($isAjax) {
         color: rgba(255,255,255,0.3);
         text-align: center;
     }
+
     .nav-bottom {
         writing-mode: vertical-rl;
         transform: rotate(180deg);
@@ -449,6 +452,7 @@ if ($isAjax) {
         color: rgba(255,255,255,0.15);
         text-align: center;
     }
+
     .top-bar {
         grid-column: 2 / 4;
         grid-row: 1;
@@ -459,16 +463,19 @@ if ($isAjax) {
         padding: 0 32px;
         gap: 24px;
     }
+
     .top-stat {
         font-size: 11px;
         letter-spacing: 1px;
         color: rgba(255,255,255,0.3);
     }
+
     .top-stat strong {
         color: #FFFFFF;
         font-weight: 500;
         margin-left: 8px;
     }
+
     .user-badge {
         width: 32px;
         height: 32px;
@@ -481,17 +488,20 @@ if ($isAjax) {
         cursor: pointer;
         transition: all 0.1s ease;
     }
+
     .user-badge:hover {
         border-color: #FFFFFF;
         background: #FFFFFF;
         color: #000000;
     }
+
     .main-content {
         grid-column: 2;
         grid-row: 2;
         overflow-y: auto;
         padding: 32px;
     }
+
     .action-panel {
         grid-column: 3;
         grid-row: 2;
@@ -499,9 +509,11 @@ if ($isAjax) {
         overflow-y: auto;
         background: #000000;
     }
+
     .stat-block {
         margin-bottom: 48px;
     }
+
     .stat-label {
         font-size: 10px;
         letter-spacing: 2px;
@@ -509,17 +521,20 @@ if ($isAjax) {
         text-transform: uppercase;
         margin-bottom: 8px;
     }
+
     .stat-value {
         font-size: 64px;
         font-weight: 500;
         letter-spacing: -0.04em;
         line-height: 1;
     }
+
     .currency-display {
         font-size: 11px;
         color: rgba(255,255,255,0.3);
         margin-left: 8px;
     }
+
     .option-grid {
         display: none;
         grid-template-columns: 1fr 1fr;
@@ -527,7 +542,9 @@ if ($isAjax) {
         background: rgba(255,255,255,0.08);
         margin-bottom: 48px;
     }
+
     .option-grid.active { display: grid; }
+
     .option-btn {
         background: #000000;
         padding: 32px 24px;
@@ -536,9 +553,11 @@ if ($isAjax) {
         cursor: pointer;
         transition: all 0.1s ease;
     }
+
     .option-btn:hover { background: #FFFFFF; }
     .option-btn:hover .option-title,
     .option-btn:hover .option-desc { color: #000000; }
+
     .option-title {
         font-size: 14px;
         font-weight: 500;
@@ -547,11 +566,13 @@ if ($isAjax) {
         margin-bottom: 4px;
         text-transform: uppercase;
     }
+
     .option-desc {
         font-size: 10px;
         color: rgba(255,255,255,0.3);
         letter-spacing: 0.5px;
     }
+
     .trigger-btn {
         width: 100%;
         background: transparent;
@@ -567,76 +588,118 @@ if ($isAjax) {
         transition: all 0.1s ease;
         margin-bottom: 16px;
     }
+
     .trigger-btn:hover {
         border-color: #FFFFFF;
         background: #FFFFFF;
         color: #000000;
     }
+
+    /* SHARP EDGE MODALS - BRUTALIST STYLE */
     .modal-overlay {
         position: fixed;
         top: 0;
         left: 0;
         right: 0;
         bottom: 0;
-        background: #000000;
+        background: rgba(0,0,0,0.98);
+        backdrop-filter: blur(0px);
         z-index: 1000;
         display: none;
         align-items: center;
         justify-content: center;
     }
+
     .modal {
         width: 520px;
         max-width: 90%;
         max-height: 85vh;
         overflow-y: auto;
-        text-align: center;
+        background: #000000;
+        border: 1px solid rgba(255,255,255,0.15);
+        padding: 0;
     }
+
+    .modal-header {
+        padding: 28px 32px 16px 32px;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        font-size: 18px;
+        font-weight: 500;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        color: #FFFFFF;
+    }
+
+    .modal-body {
+        padding: 32px;
+    }
+
+    .modal-footer {
+        padding: 20px 32px 32px 32px;
+        border-top: 1px solid rgba(255,255,255,0.08);
+        display: flex;
+        gap: 12px;
+        justify-content: flex-end;
+    }
+
     .institution-list, .asset-list {
         max-height: 400px;
         overflow-y: auto;
-        margin: 20px 0;
+        margin: 0;
     }
+
     .institution-item, .asset-item {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 16px;
-        border: 1px solid rgba(255,255,255,0.08);
-        margin-bottom: 8px;
+        padding: 20px 24px;
+        border-bottom: 1px solid rgba(255,255,255,0.06);
         cursor: pointer;
         transition: all 0.1s ease;
         text-align: left;
     }
+
     .institution-item:hover, .asset-item:hover {
-        border-color: #FFFFFF;
-        background: rgba(255,255,255,0.05);
+        background: rgba(255,255,255,0.03);
+        border-left: 2px solid #FFFFFF;
+        padding-left: 22px;
     }
+
     .institution-name, .asset-name {
         font-weight: 500;
         font-size: 14px;
+        letter-spacing: 0.5px;
     }
+
     .institution-country, .asset-icon {
         font-size: 10px;
         color: rgba(255,255,255,0.3);
         margin-top: 4px;
+        letter-spacing: 0.5px;
     }
+
     .oauth-badge {
         font-size: 9px;
         color: #FFFFFF;
         border: 1px solid rgba(255,255,255,0.3);
-        padding: 2px 6px;
+        padding: 4px 8px;
+        letter-spacing: 1px;
     }
+
     .form-field {
-        margin-bottom: 16px;
+        margin-bottom: 20px;
         text-align: left;
     }
+
     .form-label {
         font-size: 10px;
         letter-spacing: 1px;
         color: rgba(255,255,255,0.5);
-        margin-bottom: 6px;
+        margin-bottom: 8px;
         display: block;
+        text-transform: uppercase;
     }
+
     .form-input {
         width: 100%;
         background: transparent;
@@ -645,36 +708,44 @@ if ($isAjax) {
         font-family: 'Space Grotesk', monospace;
         font-size: 13px;
         color: #FFFFFF;
+        transition: all 0.1s ease;
     }
+
     .form-input:focus {
         outline: none;
         border-color: #FFFFFF;
     }
+
     .pin-dots {
         display: flex;
         justify-content: center;
         gap: 16px;
-        margin: 48px 0;
+        margin: 32px 0 40px 0;
     }
+
     .pin-dot {
         width: 12px;
         height: 12px;
         border: 1px solid rgba(255,255,255,0.3);
+        transition: all 0.1s ease;
     }
+
     .pin-dot.filled {
         background: #FFFFFF;
         border-color: #FFFFFF;
     }
+
     .pin-numpad {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
-        gap: 8px;
+        gap: 10px;
         margin-bottom: 24px;
     }
+
     .numpad-btn {
         background: transparent;
         border: 1px solid rgba(255,255,255,0.1);
-        padding: 20px;
+        padding: 18px;
         font-size: 20px;
         font-family: 'Space Grotesk', monospace;
         font-weight: 400;
@@ -682,25 +753,103 @@ if ($isAjax) {
         cursor: pointer;
         transition: all 0.05s linear;
     }
+
     .numpad-btn:active {
         background: #FFFFFF;
         color: #000000;
     }
-    .modal-close {
+
+    .modal-btn {
         background: transparent;
-        border: 1px solid rgba(255,255,255,0.15);
+        border: 1px solid rgba(255,255,255,0.2);
         padding: 12px 24px;
         font-family: 'Space Grotesk', monospace;
         font-size: 10px;
         letter-spacing: 2px;
-        color: rgba(255,255,255,0.4);
+        color: rgba(255,255,255,0.6);
         cursor: pointer;
-        margin-top: 16px;
+        transition: all 0.1s ease;
     }
-    .modal-close:hover {
+
+    .modal-btn:hover {
         border-color: #FFFFFF;
         color: #FFFFFF;
     }
+
+    .modal-btn-primary {
+        background: #FFFFFF;
+        border: 1px solid #FFFFFF;
+        color: #000000;
+    }
+
+    .modal-btn-primary:hover {
+        opacity: 0.9;
+    }
+
+    .error-text {
+        color: #ff4444;
+        font-size: 11px;
+        letter-spacing: 0.5px;
+        margin-top: 12px;
+        text-align: center;
+    }
+
+    .source-item {
+        padding: 12px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.04);
+        font-size: 12px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .bank-connection {
+        background: rgba(255,255,255,0.03);
+        padding: 12px;
+        margin-bottom: 8px;
+        border-left: 2px solid #FFFFFF;
+    }
+
+    .swap-select {
+        width: 100%;
+        background: transparent;
+        border: 1px solid rgba(255,255,255,0.1);
+        padding: 14px 16px;
+        font-family: 'Space Grotesk', monospace;
+        font-size: 13px;
+        color: #FFFFFF;
+        margin-bottom: 16px;
+        cursor: pointer;
+    }
+
+    .swap-select option { background: #000000; }
+
+    .swap-row {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+
+    .swap-input {
+        flex: 1;
+        background: transparent;
+        border: 1px solid rgba(255,255,255,0.1);
+        padding: 14px 16px;
+        font-family: 'Space Grotesk', monospace;
+        font-size: 13px;
+        color: #FFFFFF;
+    }
+
+    .swap-input:focus { outline: none; border-color: #FFFFFF; }
+
+    .panel-label {
+        font-size: 9px;
+        letter-spacing: 2px;
+        color: rgba(255,255,255,0.2);
+        text-transform: uppercase;
+        margin-bottom: 16px;
+    }
+
     .execute-btn {
         width: 100%;
         background: #FFFFFF;
@@ -713,56 +862,13 @@ if ($isAjax) {
         color: #000000;
         cursor: pointer;
         margin-top: 16px;
+        transition: all 0.1s ease;
     }
-    .source-item {
-        padding: 12px 0;
-        border-bottom: 1px solid rgba(255,255,255,0.04);
-        font-size: 12px;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-    }
-    .bank-connection {
-        background: rgba(255,255,255,0.03);
-        padding: 12px;
-        margin-bottom: 8px;
-        border-left: 2px solid #FFFFFF;
-    }
-    .swap-select {
-        width: 100%;
-        background: transparent;
-        border: 1px solid rgba(255,255,255,0.1);
-        padding: 14px 16px;
-        font-family: 'Space Grotesk', monospace;
-        font-size: 13px;
-        color: #FFFFFF;
-        margin-bottom: 16px;
-        cursor: pointer;
-    }
-    .swap-select option { background: #000000; }
-    .swap-row {
-        display: flex;
-        gap: 12px;
-        margin-bottom: 16px;
-    }
-    .swap-input {
-        flex: 1;
-        background: transparent;
-        border: 1px solid rgba(255,255,255,0.1);
-        padding: 14px 16px;
-        font-family: 'Space Grotesk', monospace;
-        font-size: 13px;
-        color: #FFFFFF;
-    }
-    .swap-input:focus { outline: none; border-color: #FFFFFF; }
-    .panel-label {
-        font-size: 9px;
-        letter-spacing: 2px;
-        color: rgba(255,255,255,0.2);
-        text-transform: uppercase;
-        margin-bottom: 16px;
-    }
+
+    .execute-btn:hover { opacity: 0.9; }
+
     ::-webkit-scrollbar { width: 0; background: transparent; }
+
     @media (max-width: 1024px) {
         .app { grid-template-columns: 60px 1fr; }
         .action-panel {
@@ -858,33 +964,71 @@ if ($isAjax) {
     </div>
 </div>
 
+<!-- SHARP EDGE MODALS -->
+
 <!-- Institution Selection Modal -->
 <div id="institutionModal" class="modal-overlay">
-    <div class="modal"><div style="font-size: 18px; font-weight: 500; margin-bottom: 20px;">SELECT INSTITUTION</div>
-    <div id="institutionList" class="institution-list"><div style="text-align: center; padding: 20px;">Loading...</div></div>
-    <button class="modal-close" onclick="closeInstitutionModal()">CANCEL</button></div>
+    <div class="modal">
+        <div class="modal-header">SELECT INSTITUTION</div>
+        <div id="institutionList" class="institution-list"><div style="text-align: center; padding: 40px;">LOADING...</div></div>
+        <div class="modal-footer">
+            <button class="modal-btn" onclick="closeInstitutionModal()">CANCEL</button>
+        </div>
+    </div>
 </div>
 
 <!-- Asset Type Selection Modal -->
 <div id="assetModal" class="modal-overlay">
-    <div class="modal"><div style="font-size: 18px; font-weight: 500; margin-bottom: 20px;" id="assetModalTitle">SELECT ASSET TYPE</div>
-    <div id="assetList" class="asset-list"></div>
-    <button class="modal-close" onclick="closeAssetModal()">CANCEL</button></div>
+    <div class="modal">
+        <div id="assetModalHeader" class="modal-header">SELECT ASSET TYPE</div>
+        <div id="assetList" class="asset-list"></div>
+        <div class="modal-footer">
+            <button class="modal-btn" onclick="closeAssetModal()">CANCEL</button>
+        </div>
+    </div>
 </div>
 
 <!-- Identification Form Modal -->
 <div id="idFormModal" class="modal-overlay">
-    <div class="modal"><div style="font-size: 18px; font-weight: 500; margin-bottom: 20px;" id="formModalTitle">ENTER DETAILS</div>
-    <div id="formFields" class="form-fields"></div>
-    <button class="execute-btn" onclick="submitIdentificationForm()">LINK SOURCE →</button>
-    <button class="modal-close" onclick="closeIdFormModal()">CANCEL</button></div>
+    <div class="modal">
+        <div id="formModalHeader" class="modal-header">ENTER DETAILS</div>
+        <div class="modal-body">
+            <div id="formFields"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="modal-btn" onclick="closeIdFormModal()">CANCEL</button>
+            <button class="modal-btn modal-btn-primary" onclick="submitIdentificationForm()">LINK SOURCE →</button>
+        </div>
+    </div>
 </div>
 
-<!-- PIN Modal -->
+<!-- PIN Setup Modal -->
+<div id="pinSetupModal" class="modal-overlay">
+    <div class="modal">
+        <div class="modal-header">CREATE TRANSACTION PIN</div>
+        <div class="modal-body">
+            <div id="pinSetupDots" class="pin-dots"></div>
+            <div id="pinSetupNumpad" class="pin-numpad"></div>
+            <div id="pinSetupError" class="error-text"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="modal-btn" onclick="closePinSetupModal()">CANCEL</button>
+        </div>
+    </div>
+</div>
+
+<!-- PIN Verification Modal -->
 <div id="pinModal" class="modal-overlay">
-    <div class="modal"><div id="pinDots" class="pin-dots"></div>
-    <div id="pinNumpad" class="pin-numpad"></div>
-    <button class="modal-close" onclick="closePinModal()">CANCEL</button></div>
+    <div class="modal">
+        <div class="modal-header">ENTER TRANSACTION PIN</div>
+        <div class="modal-body">
+            <div id="pinDots" class="pin-dots"></div>
+            <div id="pinNumpad" class="pin-numpad"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="modal-btn" onclick="closePinModal()">CANCEL</button>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -911,18 +1055,6 @@ const allParticipants = <?php
     echo vm_json($list);
 ?>;
 
-const sourceParticipants = <?php 
-    $list = [];
-    foreach ($sourceParticipants as $code => $p) {
-        $list[] = [
-            'code' => $code,
-            'name' => $p['name'] ?? $code,
-            'asset_types' => $p['asset_types'] ?? []
-        ];
-    }
-    echo vm_json($list);
-?>;
-
 const destinationCountries = <?php echo vm_json($destinationCountries); ?>;
 const fundingSources = <?php 
     $sources = [];
@@ -936,8 +1068,9 @@ let selectedInstitution = null;
 let selectedAssetType = null;
 let pendingCallback = null;
 let pinInput = '';
+let pinSetupInput = '';
 
-// Initialize destination countries dropdown
+// Initialize dropdowns
 function initDestCountries() {
     const select = document.getElementById('quickDestCountry');
     select.innerHTML = '<option value="">Destination country</option>';
@@ -947,7 +1080,6 @@ function initDestCountries() {
 }
 initDestCountries();
 
-// Initialize quick source dropdown
 function initQuickSources() {
     const select = document.getElementById('quickSource');
     select.innerHTML = '<option value="">Select source</option>';
@@ -957,9 +1089,7 @@ function initQuickSources() {
 }
 initQuickSources();
 
-// ============================================================
 // UI Helpers
-// ============================================================
 document.getElementById('swapTrigger')?.addEventListener('click', () => {
     document.getElementById('swapOptions').classList.toggle('active');
     document.getElementById('sourceOptions').classList.remove('active');
@@ -987,15 +1117,85 @@ async function executeOperation(operation, data) {
     return await res.json();
 }
 
-// ============================================================
-// PIN Management
-// ============================================================
+// PIN SETUP MODAL
+function renderPinSetupDots() {
+    const container = document.getElementById('pinSetupDots');
+    let dots = '';
+    for (let i = 0; i < 6; i++) dots += `<div class="pin-dot ${i < pinSetupInput.length ? 'filled' : ''}"></div>`;
+    container.innerHTML = dots;
+}
+
+function renderPinSetupNumpad() {
+    const container = document.getElementById('pinSetupNumpad');
+    const nums = [1,2,3,4,5,6,7,8,9,0];
+    let html = '';
+    nums.forEach(n => { html += `<button class="numpad-btn" onclick="pinSetupAdd(${n})">${n}</button>`; });
+    html += `<button class="numpad-btn" onclick="pinSetupDelete()">⌫</button><button class="numpad-btn" onclick="pinSetupClear()">CLR</button>`;
+    container.innerHTML = html;
+}
+
+function pinSetupAdd(d) { 
+    if (pinSetupInput.length < 6) { 
+        pinSetupInput += d.toString(); 
+        renderPinSetupDots(); 
+        if (pinSetupInput.length === 6) submitPinSetup();
+    } 
+}
+function pinSetupDelete() { pinSetupInput = pinSetupInput.slice(0, -1); renderPinSetupDots(); document.getElementById('pinSetupError').innerHTML = ''; }
+function pinSetupClear() { pinSetupInput = ''; renderPinSetupDots(); document.getElementById('pinSetupError').innerHTML = ''; }
+
+function showPinSetupModal() {
+    pinSetupInput = '';
+    renderPinSetupDots();
+    renderPinSetupNumpad();
+    document.getElementById('pinSetupModal').style.display = 'flex';
+}
+
+function closePinSetupModal() {
+    document.getElementById('pinSetupModal').style.display = 'none';
+    pinSetupInput = '';
+}
+
+async function submitPinSetup() {
+    if (pinSetupInput.length !== 6) {
+        document.getElementById('pinSetupError').innerHTML = 'PIN MUST BE 6 DIGITS';
+        return;
+    }
+    
+    const pin = pinSetupInput;
+    const confirmPin = prompt('CONFIRM YOUR 6-DIGIT PIN');
+    
+    if (!confirmPin) {
+        document.getElementById('pinSetupError').innerHTML = 'CONFIRMATION REQUIRED';
+        return;
+    }
+    
+    if (pin !== confirmPin) {
+        document.getElementById('pinSetupError').innerHTML = 'PINS DO NOT MATCH';
+        return;
+    }
+    
+    document.getElementById('pinSetupError').innerHTML = 'SETTING PIN...';
+    
+    const result = await executeOperation('set_transaction_pin', { pin: pin, confirm_pin: confirmPin });
+    
+    if (result.status === 'success') {
+        alert('✓ TRANSACTION PIN CREATED');
+        closePinSetupModal();
+        location.reload();
+    } else {
+        document.getElementById('pinSetupError').innerHTML = result.message;
+    }
+}
+
+// PIN VERIFICATION MODAL
 function renderPinDots() {
     const container = document.getElementById('pinDots');
     let dots = '';
     for (let i = 0; i < 6; i++) dots += `<div class="pin-dot ${i < pinInput.length ? 'filled' : ''}"></div>`;
     container.innerHTML = dots;
 }
+
 function renderPinNumpad() {
     const container = document.getElementById('pinNumpad');
     const nums = [1,2,3,4,5,6,7,8,9,0];
@@ -1004,12 +1204,31 @@ function renderPinNumpad() {
     html += `<button class="numpad-btn" onclick="pinDelete()">⌫</button><button class="numpad-btn" onclick="pinClear()">CLR</button>`;
     container.innerHTML = html;
 }
+
 function pinAdd(d) { if (pinInput.length < 6) { pinInput += d.toString(); renderPinDots(); if (pinInput.length === 6) submitPin(); } }
 function pinDelete() { pinInput = pinInput.slice(0, -1); renderPinDots(); }
 function pinClear() { pinInput = ''; renderPinDots(); }
-function showPinModal(callback) { pinInput = ''; pendingCallback = callback; renderPinDots(); renderPinNumpad(); document.getElementById('pinModal').style.display = 'flex'; }
-function closePinModal() { document.getElementById('pinModal').style.display = 'none'; pinInput = ''; pendingCallback = null; }
-async function submitPin() { if (pinInput.length !== 6) return; const pin = pinInput; closePinModal(); if (pendingCallback) await pendingCallback(pin); }
+
+function showPinModal(callback) { 
+    pinInput = ''; 
+    pendingCallback = callback; 
+    renderPinDots(); 
+    renderPinNumpad(); 
+    document.getElementById('pinModal').style.display = 'flex'; 
+}
+
+function closePinModal() { 
+    document.getElementById('pinModal').style.display = 'none'; 
+    pinInput = ''; 
+    pendingCallback = null; 
+}
+
+async function submitPin() { 
+    if (pinInput.length !== 6) return; 
+    const pin = pinInput; 
+    closePinModal(); 
+    if (pendingCallback) await pendingCallback(pin); 
+}
 
 async function withPinVerification(operation, data, callback) {
     showPinModal(async (pin) => {
@@ -1018,42 +1237,32 @@ async function withPinVerification(operation, data, callback) {
             data.consent_token = verify.consent_token;
             const result = await executeOperation(operation, data);
             if (callback) callback(result);
-        } else alert('INVALID PIN');
+        } else {
+            alert('INVALID PIN');
+        }
     });
 }
 
 async function checkAndSetupPin() {
     if (!hasTransactionPin) {
-        const newPin = prompt('CREATE 6-DIGIT TRANSACTION PIN');
-        if (newPin && newPin.length === 6 && /^\d+$/.test(newPin)) {
-            const confirmPin = prompt('CONFIRM PIN');
-            if (newPin === confirmPin) {
-                const result = await executeOperation('set_transaction_pin', { pin: newPin, confirm_pin: confirmPin });
-                if (result.status === 'success') { alert('PIN SET'); location.reload(); }
-                else alert(result.message);
-            } else alert('PINS DO NOT MATCH');
-        } else alert('PIN MUST BE 6 DIGITS');
+        showPinSetupModal();
         return false;
     }
     return true;
 }
 
-// ============================================================
-// SOURCE LINKING FLOW - FULLY DYNAMIC FROM PARTICIPANTS
-// ============================================================
-
+// SOURCE LINKING FLOW
 async function showLinkInstitutions() {
     if (!await checkAndSetupPin()) return;
     
     const container = document.getElementById('institutionList');
-    container.innerHTML = '<div style="text-align: center; padding: 20px;">Loading institutions...</div>';
+    container.innerHTML = '<div style="text-align: center; padding: 40px;">LOADING...</div>';
     document.getElementById('institutionModal').style.display = 'flex';
     
-    // Show institutions from all participants (source country only for linking as source)
     const institutions = allParticipants.filter(p => p.country === userCountry);
     
     if (institutions.length === 0) {
-        container.innerHTML = '<div style="text-align: center; padding: 20px;">No institutions available in your country</div>';
+        container.innerHTML = '<div style="text-align: center; padding: 40px;">NO INSTITUTIONS AVAILABLE</div>';
         return;
     }
     
@@ -1062,8 +1271,10 @@ async function showLinkInstitutions() {
         const div = document.createElement('div');
         div.className = 'institution-item';
         div.innerHTML = `
-            <div><div class="institution-name">${inst.name}</div>
-            <div class="institution-country">${inst.country} • ${inst.currency}</div></div>
+            <div>
+                <div class="institution-name">${inst.name}</div>
+                <div class="institution-country">${inst.country} • ${inst.currency}</div>
+            </div>
             <div class="oauth-badge">${inst.asset_types.length} ASSETS</div>
         `;
         div.onclick = () => selectInstitution(inst.code);
@@ -1079,21 +1290,23 @@ function selectInstitution(code) {
 
 function showAssetTypes() {
     if (!selectedInstitution || !selectedInstitution.asset_types || selectedInstitution.asset_types.length === 0) {
-        alert('No asset types available for this institution');
+        alert('No asset types available');
         return;
     }
     
     const container = document.getElementById('assetList');
     container.innerHTML = '';
-    document.getElementById('assetModalTitle').innerHTML = `${selectedInstitution.name} • SELECT ASSET`;
+    document.getElementById('assetModalHeader').innerHTML = `${selectedInstitution.name} • SELECT ASSET`;
     document.getElementById('assetModal').style.display = 'flex';
     
     selectedInstitution.asset_types.forEach(asset => {
         const div = document.createElement('div');
         div.className = 'asset-item';
         div.innerHTML = `
-            <div><div class="asset-name">${asset.icon || '📄'} ${asset.name}</div>
-            <div class="asset-icon">${asset.type}</div></div>
+            <div>
+                <div class="asset-name">${asset.icon || '📄'} ${asset.name}</div>
+                <div class="asset-icon">${asset.type}</div>
+            </div>
             <div class="oauth-badge">${asset.supports_oauth ? 'OAUTH' : 'MANUAL'}</div>
         `;
         div.onclick = () => selectAssetType(asset);
@@ -1106,8 +1319,7 @@ function selectAssetType(asset) {
     closeAssetModal();
     
     if (asset.supports_oauth) {
-        // Show OAuth vs Manual choice
-        const useOAuth = confirm(`${selectedInstitution.name} - ${asset.name}\n\nThis institution supports OAuth for secure linking.\n\nClick OK to link via OAuth (bank login)\nClick Cancel for manual entry (account number/PIN)`);
+        const useOAuth = confirm(`${selectedInstitution.name} - ${asset.name}\n\nThis institution supports OAuth for secure linking.\n\nClick OK to link via OAuth (bank login)\nClick Cancel for manual entry`);
         if (useOAuth) {
             initiateOAuthLink();
             return;
@@ -1135,13 +1347,13 @@ async function initiateOAuthLink() {
 function showIdentificationForm() {
     const fields = selectedAssetType.identification_methods || [];
     if (fields.length === 0) {
-        alert('No identification methods configured for this asset type');
+        alert('No identification methods configured');
         return;
     }
     
     const container = document.getElementById('formFields');
     container.innerHTML = '';
-    document.getElementById('formModalTitle').innerHTML = `${selectedInstitution.name} • ${selectedAssetType.name}`;
+    document.getElementById('formModalHeader').innerHTML = `${selectedInstitution.name} • ${selectedAssetType.name}`;
     document.getElementById('idFormModal').style.display = 'flex';
     
     fields.forEach(field => {
@@ -1209,10 +1421,7 @@ function closeInstitutionModal() { document.getElementById('institutionModal').s
 function closeAssetModal() { document.getElementById('assetModal').style.display = 'none'; }
 function closeIdFormModal() { document.getElementById('idFormModal').style.display = 'none'; }
 
-// ============================================================
 // OTHER FUNCTIONS
-// ============================================================
-
 function viewLinkedSources() {
     if (fundingSources.length === 0 && bankConnections.length === 0) {
         alert('No sources linked');
@@ -1272,6 +1481,11 @@ const sourceLinked = urlParams.get('source_linked');
 const oauthError = urlParams.get('error');
 if (sourceLinked) { alert(`✓ Bank account linked successfully!\nInstitution: ${sourceLinked}`); window.history.replaceState({}, document.title, window.location.pathname); }
 else if (oauthError) { alert(`✗ Bank linking failed: ${decodeURIComponent(oauthError)}`); window.history.replaceState({}, document.title, window.location.pathname); }
+
+// Auto-show PIN setup if needed
+if (!hasTransactionPin) {
+    setTimeout(() => { showPinSetupModal(); }, 500);
+}
 </script>
 </body>
 </html>
