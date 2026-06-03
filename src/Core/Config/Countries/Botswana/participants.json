@@ -63,7 +63,7 @@
         "supports_idempotency": true,
         "asset_types": [
           "ACCOUNT",
-          "VOUCHER",
+          "CASHOUT-VOUCHER",
           "ATM"
         ]
       },
@@ -159,7 +159,7 @@
         "supports_idempotency": true,
         "asset_types": [
           "ACCOUNT",
-          "E-WALLET",
+          "BANK-WALLET",
           "ATM"
         ]
       },
@@ -245,7 +245,7 @@
         "supports_idempotency": true,
         "asset_types": [
           "CARD",
-          "VOUCHER"
+          "CASHOUT-VOUCHER"
         ],
         "services": [
           "card_issuance",
