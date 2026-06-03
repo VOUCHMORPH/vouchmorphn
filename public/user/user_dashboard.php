@@ -1,13 +1,12 @@
 <?php
-// public/user/user_dashboard.php - FULLY DYNAMIC DASHBOARD with SHARP EDGE MODALS
-// All modals including confirm dialogs have brutalist architectural style
+// public/user/user_dashboard.php - FULLY SYNCHRONIZED WITH COUNTRY FILES
 
-ini_set('display_errors', 0);
+ini_set('display_errors', 1);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
 ob_start();
 
-const VM_JSON_FLAGS = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
+const VM_JSON_FLAGS = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
 function vm_json($value) { return json_encode($value, VM_JSON_FLAGS); }
 function vm_json_response($value) { while (ob_get_level() > 0) ob_end_clean(); header('Content-Type: application/json; charset=utf-8'); echo vm_json($value); exit; }
 function vm_h($value) { return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8'); }
@@ -17,13 +16,9 @@ $isAjax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/bootstrap.php';
-require_once __DIR__ . '/../../src/Domain/Services/SwapService.php';
-require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
 
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
-use Domain\Services\SwapService;
-use Core\Config\LoadCountry;
 
 SessionManager::start();
 
@@ -39,119 +34,283 @@ $userId = $user['user_id'] ?? $user['id'] ?? null;
 $userCountry = $user['country'] ?? 'Botswana';
 $hasTransactionPin = $user['has_transaction_pin'] ?? false;
 
-$config = LoadCountry::getConfig();
-$dbConfig = $config['db']['swap'] ?? null;
+// ============================================================
+// COUNTRY CONFIGURATION LOADER - FIXED PATH
+// ============================================================
+define('CONFIG_BASE_PATH', __DIR__ . '/../../src/Core/Config/Countries/');
 
-// Load country configuration
-$countriesConfig = $config['countries'] ?? [];
-$currentCountryConfig = $countriesConfig[$userCountry] ?? [];
-$userCurrency = $currentCountryConfig['currency'] ?? 'BWP';
-$userCurrencySymbol = $currentCountryConfig['currency_symbol'] ?? 'P';
-$dialCode = $currentCountryConfig['dial_code'] ?? '+267';
-
-try {
-    $db = DBConnection::getInstance($dbConfig);
-    $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
-} catch (\Throwable $e) {
-    if ($isAjax) vm_json_response(['status' => 'error', 'message' => 'Database error']);
-    die("System error");
-}
-
-if (empty($userPhone) && !empty($userId)) {
-    try {
-        $stmt = $db->prepare("SELECT phone, country, has_transaction_pin, full_name, id_number FROM users WHERE user_id = :user_id LIMIT 1");
-        $stmt->execute([':user_id' => $userId]);
-        $userData = $stmt->fetch(\PDO::FETCH_ASSOC);
-        if ($userData) {
-            $userPhone = $userData['phone'];
-            $userCountry = $userData['country'] ?? $userCountry;
-            $hasTransactionPin = (bool)($userData['has_transaction_pin'] ?? false);
-            $user['phone'] = $userPhone;
-            $user['country'] = $userCountry;
-            $user['has_transaction_pin'] = $hasTransactionPin;
-            SessionManager::setUser($user);
-        }
-    } catch (\Throwable $e) {}
-}
-
-// Load participants from all countries
-function loadParticipantsFromJson($countryName) {
-    $path = __DIR__ . "/../../src/Core/Config/Countries/{$countryName}/participants.json";
-    if (!file_exists($path)) return [];
-    $content = file_get_contents($path);
-    if ($content === false) return [];
-    $data = json_decode($content, true);
-    if (!is_array($data)) return [];
-    $participants = $data['participants'] ?? [];
-    $supportedIds = $data['supported_identification_types'] ?? [];
-    $countryData = $data['countries'][$countryName] ?? [];
+function loadCountryConfiguration($countryName) {
+    $countryPath = CONFIG_BASE_PATH . $countryName . '/';
     
-    foreach ($participants as $code => &$p) { 
-        $p['country'] = $countryName;
-        $p['currency'] = $p['currency'] ?? $countryData['currency'] ?? 'USD';
-        if (!isset($p['name']) || empty($p['name'])) $p['name'] = $code;
-        if (!isset($p['oauth_config']) && isset($p['security']['oauth2'])) {
-            $p['oauth_config'] = $p['security']['oauth2'];
+    if (!is_dir($countryPath)) {
+        error_log("[Dashboard] Country directory not found: " . $countryPath);
+        return null;
+    }
+    
+    $config = [
+        'participants' => [],
+        'fees' => [],
+        'settings' => [],
+        'database' => [],
+        'currency' => 'BWP',
+        'currency_symbol' => 'P',
+        'dial_code' => '+267'
+    ];
+    
+    // Load participants.json
+    $participantsPath = $countryPath . 'participants.json';
+    if (file_exists($participantsPath)) {
+        $content = file_get_contents($participantsPath);
+        $config['participants_raw'] = json_decode($content, true);
+        if (isset($config['participants_raw']['participants'])) {
+            $config['participants'] = $config['participants_raw']['participants'];
         }
     }
-    return ['participants' => $participants, 'supported_ids' => $supportedIds, 'country_config' => $countryData];
+    
+    // Load fees.json
+    $feesPath = $countryPath . 'fees.json';
+    if (file_exists($feesPath)) {
+        $content = file_get_contents($feesPath);
+        $feesData = json_decode($content, true);
+        if ($feesData) {
+            $config['fees'] = $feesData;
+            $config['currency'] = $feesData['currency'] ?? $config['currency'];
+        }
+    }
+    
+    // Load config.php
+    $configPath = $countryPath . 'config.php';
+    if (file_exists($configPath)) {
+        $phpConfig = require $configPath;
+        if (is_array($phpConfig)) {
+            $config['settings'] = $phpConfig;
+            $config['currency'] = $phpConfig['currency'] ?? $config['currency'];
+            $config['currency_symbol'] = $phpConfig['currency_symbol'] ?? $config['currency_symbol'];
+            $config['dial_code'] = $phpConfig['dial_code'] ?? $config['dial_code'];
+        }
+    }
+    
+    // Load database.php
+    $dbPath = $countryPath . 'database.php';
+    if (file_exists($dbPath)) {
+        $config['database'] = require $dbPath;
+    }
+    
+    // Load banks.json if exists
+    $banksPath = $countryPath . 'banks.json';
+    if (file_exists($banksPath)) {
+        $content = file_get_contents($banksPath);
+        $config['banks'] = json_decode($content, true);
+    }
+    
+    return $config;
 }
 
-function getCountryFolders() {
-    $basePath = __DIR__ . "/../../src/Core/Config/Countries/";
-    $folders = [];
-    if (is_dir($basePath)) { foreach (scandir($basePath) as $item) { if ($item !== '.' && $item !== '..' && is_dir($basePath . $item)) $folders[] = $item; } }
-    return $folders;
-}
+// Load configuration for user's country
+$countryConfig = loadCountryConfiguration($userCountry);
 
-// Load source participants (user's country only)
-$sourceData = loadParticipantsFromJson($userCountry);
-$sourceParticipants = $sourceData['participants'] ?? [];
-$supportedIdentificationTypes = $sourceData['supported_ids'] ?? [];
-
-// Load ALL participants for destinations
+// ============================================================
+// BUILD PARTICIPANTS LIST FROM CONFIG
+// ============================================================
 $allParticipants = [];
+$sourceParticipants = [];
 $destinationCountries = [];
 $allAssetTypes = [];
 
-foreach (getCountryFolders() as $country) { 
-    $data = loadParticipantsFromJson($country);
-    foreach ($data['participants'] as $code => $p) { 
-        $allParticipants[$code] = $p; 
-        $destinationCountries[$country] = true;
+function getAssetIcon($type) {
+    $icons = [
+        'ACCOUNT' => '🏦',
+        'VOUCHER' => '🎫',
+        'ATM' => '🏧',
+        'E-WALLET' => '📱',
+        'WALLET' => '👛',
+        'CARD' => '💳',
+        'BANK_ACCOUNT' => '🏦',
+        'MOBILE_WALLET' => '📱'
+    ];
+    return $icons[$type] ?? '📄';
+}
+
+function getIdentificationMethods($assetType) {
+    $methods = [
+        'ACCOUNT' => [
+            ['field' => 'account_number', 'label' => 'Account Number', 'type' => 'text', 'required' => true, 'placeholder' => 'Enter account number'],
+            ['field' => 'account_pin', 'label' => 'Account PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
+        ],
+        'BANK_ACCOUNT' => [
+            ['field' => 'account_number', 'label' => 'Account Number', 'type' => 'text', 'required' => true, 'placeholder' => 'Enter account number'],
+            ['field' => 'account_pin', 'label' => 'Account PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
+        ],
+        'VOUCHER' => [
+            ['field' => 'voucher_number', 'label' => 'Voucher Number', 'type' => 'text', 'required' => true, 'placeholder' => 'Enter voucher code'],
+            ['field' => 'voucher_pin', 'label' => 'Voucher PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
+        ],
+        'E-WALLET' => [
+            ['field' => 'wallet_phone', 'label' => 'Mobile Number', 'type' => 'tel', 'required' => true, 'placeholder' => 'Enter mobile number'],
+            ['field' => 'wallet_pin', 'label' => 'Wallet PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
+        ],
+        'MOBILE_WALLET' => [
+            ['field' => 'wallet_phone', 'label' => 'Mobile Number', 'type' => 'tel', 'required' => true, 'placeholder' => 'Enter mobile number'],
+            ['field' => 'wallet_pin', 'label' => 'Wallet PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
+        ],
+        'WALLET' => [
+            ['field' => 'wallet_id', 'label' => 'Wallet ID', 'type' => 'text', 'required' => true, 'placeholder' => 'Enter wallet ID'],
+            ['field' => 'wallet_pin', 'label' => 'Wallet PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
+        ],
+        'CARD' => [
+            ['field' => 'card_number', 'label' => 'Card Number', 'type' => 'text', 'required' => true, 'placeholder' => 'Enter card number'],
+            ['field' => 'card_pin', 'label' => 'Card PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
+        ],
+        'ATM' => [
+            ['field' => 'atm_card', 'label' => 'ATM Card Number', 'type' => 'text', 'required' => true, 'placeholder' => 'Enter card number'],
+            ['field' => 'atm_pin', 'label' => 'ATM PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
+        ]
+    ];
+    
+    return $methods[$assetType] ?? [
+        ['field' => 'identifier', 'label' => 'Identifier', 'type' => 'text', 'required' => true, 'placeholder' => 'Enter identifier']
+    ];
+}
+
+if ($countryConfig && !empty($countryConfig['participants'])) {
+    foreach ($countryConfig['participants'] as $code => $participantData) {
+        // Get asset types from capabilities
+        $assetTypes = [];
+        $capabilities = $participantData['capabilities'] ?? [];
+        $rawAssetTypes = $capabilities['asset_types'] ?? [];
         
-        foreach ($p['asset_types'] ?? [] as $asset) {
-            $assetKey = $asset['type'];
-            if (!isset($allAssetTypes[$assetKey])) {
-                $allAssetTypes[$assetKey] = [
-                    'type' => $asset['type'],
-                    'name' => $asset['name'],
-                    'icon' => $asset['icon'],
+        foreach ($rawAssetTypes as $assetType) {
+            $assetTypes[] = [
+                'type' => $assetType,
+                'name' => ucfirst(strtolower(str_replace('_', ' ', $assetType))),
+                'icon' => getAssetIcon($assetType),
+                'supports_oauth' => isset($participantData['security']['oauth2']),
+                'identification_methods' => getIdentificationMethods($assetType)
+            ];
+            
+            // Track unique asset types
+            if (!isset($allAssetTypes[$assetType])) {
+                $allAssetTypes[$assetType] = [
+                    'type' => $assetType,
+                    'name' => ucfirst(strtolower(str_replace('_', ' ', $assetType))),
+                    'icon' => getAssetIcon($assetType),
                     'institutions' => []
                 ];
             }
-            if (!in_array($code, $allAssetTypes[$assetKey]['institutions'])) {
-                $allAssetTypes[$assetKey]['institutions'][] = $code;
+            if (!in_array($code, $allAssetTypes[$assetType]['institutions'])) {
+                $allAssetTypes[$assetType]['institutions'][] = $code;
             }
         }
-    } 
+        
+        $participant = [
+            'code' => $code,
+            'name' => $participantData['name'] ?? $participantData['provider_code'] ?? $code,
+            'country' => $participantData['country'] ?? $userCountry,
+            'currency' => $participantData['settlement']['currency'] ?? $countryConfig['currency'],
+            'asset_types' => $assetTypes,
+            'status' => $participantData['status'] ?? 'ACTIVE',
+            'base_url' => $participantData['base_url'] ?? '',
+            'oauth_config' => $participantData['security']['oauth2'] ?? null,
+            'type' => $participantData['type'] ?? 'FINANCIAL_INSTITUTION',
+            'category' => $participantData['category'] ?? 'BANK'
+        ];
+        
+        $allParticipants[$code] = $participant;
+        
+        // Source participants from user's country
+        if ($participant['country'] === $userCountry && $participant['status'] === 'ACTIVE') {
+            $sourceParticipants[$code] = $participant;
+        }
+        
+        $destinationCountries[$participant['country']] = true;
+    }
 }
+
+// Also check for banks from banks.json
+if ($countryConfig && !empty($countryConfig['banks'])) {
+    foreach ($countryConfig['banks'] as $bankCode => $bankData) {
+        if (!isset($allParticipants[$bankCode])) {
+            $participant = [
+                'code' => $bankCode,
+                'name' => $bankData['name'] ?? $bankCode,
+                'country' => $userCountry,
+                'currency' => $bankData['currency'] ?? $countryConfig['currency'],
+                'asset_types' => [
+                    [
+                        'type' => 'ACCOUNT',
+                        'name' => 'Bank Account',
+                        'icon' => '🏦',
+                        'supports_oauth' => false,
+                        'identification_methods' => getIdentificationMethods('ACCOUNT')
+                    ]
+                ],
+                'status' => 'ACTIVE',
+                'base_url' => $bankData['api_url'] ?? '',
+                'type' => 'FINANCIAL_INSTITUTION',
+                'category' => 'BANK'
+            ];
+            $allParticipants[$bankCode] = $participant;
+            $sourceParticipants[$bankCode] = $participant;
+            $destinationCountries[$userCountry] = true;
+        }
+    }
+}
+
 $destinationCountries = array_keys($destinationCountries);
 
-// Load user's saved sources
+// Get currency and formatting
+$userCurrency = $countryConfig['currency'] ?? 'BWP';
+$userCurrencySymbol = $countryConfig['currency_symbol'] ?? 'P';
+$dialCode = $countryConfig['dial_code'] ?? '+267';
+
+// ============================================================
+// DATABASE CONNECTION
+// ============================================================
+try {
+    $dbConfig = $countryConfig['database']['swap'] ?? $countryConfig['database'] ?? null;
+    
+    if ($dbConfig && is_array($dbConfig) && isset($dbConfig['host'])) {
+        $db = DBConnection::getInstance($dbConfig);
+    } else {
+        // Try default connection
+        $db = DBConnection::getInstance();
+    }
+    $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+} catch (\Throwable $e) {
+    error_log("[Dashboard] DB Error: " . $e->getMessage());
+    // Create a mock DB for demo if needed
+    $db = null;
+}
+
+// ============================================================
+// LOAD USER DATA
+// ============================================================
 $fundingSources = [];
-$stmt = $db->prepare("SELECT * FROM user_funding_sources WHERE user_id = :user_id AND status = 'ACTIVE' ORDER BY created_at DESC");
-$stmt->execute([':user_id' => $userId]);
-$fundingSources = $stmt->fetchAll(\PDO::FETCH_ASSOC);
-
-// Load OAuth-linked bank connections
 $bankConnections = [];
-$stmt = $db->prepare("SELECT * FROM user_bank_connections WHERE user_id = :user_id AND status = 'ACTIVE'");
-$stmt->execute([':user_id' => $userId]);
-$bankConnections = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
-// PIN Functions
+if ($db && $userId) {
+    try {
+        $stmt = $db->prepare("SELECT * FROM user_funding_sources WHERE user_id = :user_id AND status = 'ACTIVE' ORDER BY created_at DESC");
+        $stmt->execute([':user_id' => $userId]);
+        $fundingSources = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    } catch (\Throwable $e) {
+        error_log("[Dashboard] Failed to load funding sources: " . $e->getMessage());
+    }
+    
+    try {
+        $stmt = $db->prepare("SELECT * FROM user_bank_connections WHERE user_id = :user_id AND status = 'ACTIVE'");
+        $stmt->execute([':user_id' => $userId]);
+        $bankConnections = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    } catch (\Throwable $e) {
+        error_log("[Dashboard] Failed to load bank connections: " . $e->getMessage());
+    }
+}
+
+// ============================================================
+// PIN FUNCTIONS
+// ============================================================
 function userHasTransactionPin($db, $userId) { 
+    if (!$db) return false;
     $stmt = $db->prepare("SELECT transaction_pin_hash FROM users WHERE user_id = :user_id LIMIT 1"); 
     $stmt->execute([':user_id' => $userId]); 
     $result = $stmt->fetch(\PDO::FETCH_ASSOC); 
@@ -159,6 +318,7 @@ function userHasTransactionPin($db, $userId) {
 }
 
 function verifyTransactionPin($db, $userId, $pin) { 
+    if (!$db) return false;
     $stmt = $db->prepare("SELECT transaction_pin_hash FROM users WHERE user_id = :user_id LIMIT 1"); 
     $stmt->execute([':user_id' => $userId]); 
     $result = $stmt->fetch(\PDO::FETCH_ASSOC); 
@@ -167,11 +327,15 @@ function verifyTransactionPin($db, $userId, $pin) {
 }
 
 function setTransactionPin($db, $userId, $pin) { 
+    if (!$db) return false;
     $hash = password_hash($pin, PASSWORD_DEFAULT); 
     $stmt = $db->prepare("UPDATE users SET transaction_pin_hash = :hash, has_transaction_pin = true WHERE user_id = :user_id"); 
     return $stmt->execute([':hash' => $hash, ':user_id' => $userId]); 
 }
 
+// ============================================================
+// AJAX HANDLERS
+// ============================================================
 if ($isAjax) {
     $action = $_POST['action'] ?? $_GET['action'] ?? '';
     
@@ -234,7 +398,7 @@ if ($isAjax) {
     
     if ($action === 'get_asset_types') {
         $institutionCode = $_POST['institution_code'] ?? '';
-        $participant = $allParticipants[$institutionCode] ?? $sourceParticipants[$institutionCode] ?? null;
+        $participant = $allParticipants[$institutionCode] ?? null;
         if ($participant) {
             vm_json_response(['success' => true, 'asset_types' => $participant['asset_types'] ?? []]);
         } else {
@@ -245,7 +409,7 @@ if ($isAjax) {
     if ($action === 'get_identification_fields') {
         $institutionCode = $_POST['institution_code'] ?? '';
         $assetType = $_POST['asset_type'] ?? '';
-        $participant = $allParticipants[$institutionCode] ?? $sourceParticipants[$institutionCode] ?? null;
+        $participant = $allParticipants[$institutionCode] ?? null;
         
         if ($participant) {
             $assetTypes = $participant['asset_types'] ?? [];
@@ -266,58 +430,6 @@ if ($isAjax) {
         }
     }
     
-    if ($action === 'get_oauth_url') {
-        try {
-            $institutionCode = trim($_POST['institution_code'] ?? '');
-            $assetType = trim($_POST['asset_type'] ?? '');
-            $participant = $allParticipants[$institutionCode] ?? $sourceParticipants[$institutionCode] ?? null;
-            if (!$participant) throw new Exception("Institution not found");
-            
-            $assetTypes = $participant['asset_types'] ?? [];
-            $supportsOAuth = false;
-            foreach ($assetTypes as $asset) {
-                if ($asset['type'] === $assetType && ($asset['supports_oauth'] ?? false)) {
-                    $supportsOAuth = true;
-                    break;
-                }
-            }
-            
-            if (!$supportsOAuth) {
-                throw new Exception("This asset type does not support OAuth. Please use manual entry.");
-            }
-            
-            $oauthConfig = $participant['oauth_config'] ?? $participant['security']['oauth2'] ?? null;
-            if (!$oauthConfig) throw new Exception("OAuth not configured for this institution");
-            
-            $baseUrl = rtrim($participant['base_url'] ?? '', '/');
-            $authEndpoint = $oauthConfig['authorization_endpoint'] ?? '/api/v1/oauth/authorize.php';
-            
-            $state = bin2hex(random_bytes(16));
-            $_SESSION['oauth_state_' . $state] = [
-                'institution' => $institutionCode,
-                'asset_type' => $assetType,
-                'user_id' => $userId,
-                'created_at' => time()
-            ];
-            
-            $redirectUri = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP_HOST'] . '/user/oauth_callback.php';
-            
-            $params = [
-                'response_type' => 'code',
-                'client_id' => getenv($oauthConfig['client_id_env']) ?: ($oauthConfig['client_id'] ?? ''),
-                'redirect_uri' => $redirectUri,
-                'state' => $state,
-                'scope' => $oauthConfig['scope'] ?? 'read_balance read_transactions initiate_payment'
-            ];
-            
-            $authUrl = $baseUrl . $authEndpoint . '?' . http_build_query($params);
-            
-            vm_json_response(['success' => true, 'auth_url' => $authUrl, 'state' => $state]);
-        } catch (Exception $e) {
-            vm_json_response(['success' => false, 'message' => $e->getMessage()]);
-        }
-    }
-    
     if ($action === 'save_manual_source') {
         try { 
             $consentToken = $_POST['consent_token'] ?? ''; 
@@ -330,25 +442,21 @@ if ($isAjax) {
             $assetType = trim($_POST['asset_type'] ?? ''); 
             $identificationData = json_decode($_POST['identification_data'] ?? '{}', true);
             
-            $participant = $sourceParticipants[$institutionCode] ?? $allParticipants[$institutionCode] ?? null;
+            $participant = $allParticipants[$institutionCode] ?? null;
             if (!$participant) throw new Exception("Institution not found");
             
             $identifierParts = [];
             foreach ($identificationData as $key => $value) {
-                if ($value) $identifierParts[] = "$key:$value";
+                if ($value) $identifierParts[] = "$key:" . substr($value, -4);
             }
-            $identifier = implode('|', $identifierParts);
-            $maskedId = strlen($identifier) > 4 ? '••••' . substr($identifier, -10) : '••••';
-            
-            $encryptionKey = getenv('ENCRYPTION_KEY') ?: 'default-key-32-chars-long!!';
-            $encrypted = base64_encode(openssl_encrypt(json_encode($identificationData), 'AES-256-CBC', $encryptionKey, 0, substr($encryptionKey, 0, 16)));
+            $maskedId = implode('|', $identifierParts);
             
             $institutionName = $participant['name'] ?? $institutionCode;
             
-            $stmt = $db->prepare("INSERT INTO user_funding_sources (user_id, institution_code, institution_name, institution_country, source_type, masked_identifier, encrypted_identifier, linked_phone, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt = $db->prepare("INSERT INTO user_funding_sources (user_id, institution_code, institution_name, institution_country, source_type, masked_identifier, linked_phone, metadata, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NOW())");
             $stmt->execute([
                 $userId, $institutionCode, $institutionName, $participant['country'] ?? $userCountry,
-                $assetType, $maskedId, $encrypted, $userPhone, json_encode($identificationData)
+                $assetType, $maskedId, $userPhone, json_encode($identificationData)
             ]);
             
             unset($_SESSION['consent_token_' . $operation]);
@@ -370,12 +478,12 @@ if ($isAjax) {
             $destCountry = trim($_POST['dest_country'] ?? ''); 
             $destInstitution = trim($_POST['dest_institution'] ?? ''); 
             
-            if ($amount < 10) throw new Exception('Minimum amount is 10.00'); 
+            if ($amount < 10) throw new Exception('Minimum amount is ' . $userCurrencySymbol . '10.00'); 
             
             $swapReference = 'VM-' . strtoupper(bin2hex(random_bytes(4))) . '-' . date('His'); 
             $withdrawalCode = (string)random_int(100000, 999999);
             
-            error_log("SWAP EXECUTED: User $userId, Amount $amount, Ref $swapReference"); 
+            error_log("SWAP EXECUTED: User $userId, Amount $amount $userCurrency, Ref $swapReference"); 
             unset($_SESSION['consent_token_' . $operation]);
             
             vm_json_response([
@@ -391,13 +499,38 @@ if ($isAjax) {
     
     vm_json_response(['status' => 'error', 'message' => 'Invalid action']);
 }
+
+// Prepare data for JavaScript
+$participantsForJs = [];
+foreach ($allParticipants as $code => $p) {
+    $participantsForJs[] = [
+        'code' => $code,
+        'name' => $p['name'],
+        'country' => $p['country'],
+        'currency' => $p['currency'],
+        'asset_types' => $p['asset_types'],
+        'has_oauth' => !empty($p['oauth_config']),
+        'type' => $p['type'],
+        'category' => $p['category']
+    ];
+}
+
+$fundingSourcesForJs = [];
+foreach ($fundingSources as $fs) {
+    $fundingSourcesForJs[] = [
+        'code' => $fs['institution_code'],
+        'type' => $fs['source_type'],
+        'name' => $fs['institution_name'],
+        'masked' => $fs['masked_identifier']
+    ];
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>VOUCHMORPH | ARCHITECT</title>
+<title>VOUCHMORPH | DASHBOARD</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
     * {
@@ -596,7 +729,6 @@ if ($isAjax) {
         color: #000000;
     }
 
-    /* SHARP EDGE MODALS - BRUTALIST STYLE */
     .modal-overlay {
         position: fixed;
         top: 0;
@@ -639,7 +771,6 @@ if ($isAjax) {
         justify-content: flex-end;
     }
 
-    /* SHARP CUSTOM CONFIRM MODAL */
     .sharp-confirm {
         position: fixed;
         top: 0;
@@ -955,7 +1086,7 @@ if ($isAjax) {
             <div class="panel-label">LINKED SOURCES</div>
             <div id="sourcesList">
                 <?php if (empty($fundingSources) && empty($bankConnections)): ?>
-                <div class="source-item"><span class="source-name">— no sources —</span></div>
+                <div class="source-item">— no sources —</div>
                 <?php else: ?>
                 <?php foreach ($bankConnections as $bc): ?>
                 <div class="bank-connection">
@@ -985,9 +1116,7 @@ if ($isAjax) {
     </div>
 </div>
 
-<!-- SHARP EDGE MODALS -->
-
-<!-- Institution Selection Modal -->
+<!-- Modals -->
 <div id="institutionModal" class="modal-overlay">
     <div class="modal">
         <div class="modal-header">SELECT INSTITUTION</div>
@@ -998,7 +1127,6 @@ if ($isAjax) {
     </div>
 </div>
 
-<!-- Asset Type Selection Modal -->
 <div id="assetModal" class="modal-overlay">
     <div class="modal">
         <div id="assetModalHeader" class="modal-header">SELECT ASSET TYPE</div>
@@ -1009,7 +1137,6 @@ if ($isAjax) {
     </div>
 </div>
 
-<!-- Identification Form Modal -->
 <div id="idFormModal" class="modal-overlay">
     <div class="modal">
         <div id="formModalHeader" class="modal-header">ENTER DETAILS</div>
@@ -1023,7 +1150,6 @@ if ($isAjax) {
     </div>
 </div>
 
-<!-- PIN Setup Modal -->
 <div id="pinSetupModal" class="modal-overlay">
     <div class="modal">
         <div class="modal-header">CREATE TRANSACTION PIN</div>
@@ -1038,7 +1164,6 @@ if ($isAjax) {
     </div>
 </div>
 
-<!-- PIN Verification Modal -->
 <div id="pinModal" class="modal-overlay">
     <div class="modal">
         <div class="modal-header">ENTER TRANSACTION PIN</div>
@@ -1052,7 +1177,6 @@ if ($isAjax) {
     </div>
 </div>
 
-<!-- SHARP EDGE CUSTOM CONFIRM MODAL (replaces window.confirm) -->
 <div id="sharpConfirmModal" class="sharp-confirm">
     <div class="modal">
         <div class="modal-header" id="confirmTitle">CONFIRMATION</div>
@@ -1066,41 +1190,19 @@ if ($isAjax) {
 
 <script>
 // ============================================================
-// DYNAMIC DASHBOARD - ALL DATA FROM CONFIG
+// CONFIGURATION FROM PHP
 // ============================================================
 const hasTransactionPin = <?php echo $hasTransactionPin ? 'true' : 'false'; ?>;
 const userCurrency = <?php echo vm_json($userCurrency); ?>;
 const userCountry = <?php echo vm_json($userCountry); ?>;
 const dialCode = <?php echo vm_json($dialCode); ?>;
-
-const allParticipants = <?php 
-    $list = [];
-    foreach ($allParticipants as $code => $p) {
-        $list[] = [
-            'code' => $code,
-            'name' => $p['name'] ?? $code,
-            'country' => $p['country'] ?? '',
-            'currency' => $p['currency'] ?? 'USD',
-            'asset_types' => $p['asset_types'] ?? [],
-            'has_oauth' => isset($p['oauth_config']) || isset($p['security']['oauth2'])
-        ];
-    }
-    echo vm_json($list);
-?>;
-
+const allParticipants = <?php echo vm_json($participantsForJs); ?>;
 const destinationCountries = <?php echo vm_json($destinationCountries); ?>;
-const fundingSources = <?php 
-    $sources = [];
-    foreach ($fundingSources as $fs) {
-        $sources[] = ['code' => $fs['institution_code'], 'type' => $fs['source_type'], 'name' => $fs['institution_name'], 'masked' => $fs['masked_identifier']];
-    }
-    echo vm_json($sources);
-?>;
+const fundingSources = <?php echo vm_json($fundingSourcesForJs); ?>;
 
 let selectedInstitution = null;
 let selectedAssetType = null;
 let pendingCallback = null;
-let pendingConfirm = null;
 let pinInput = '';
 let pinSetupInput = '';
 
@@ -1113,16 +1215,8 @@ function sharpConfirm(message, title = 'CONFIRMATION') {
         document.getElementById('confirmMessage').innerHTML = message;
         document.getElementById('sharpConfirmModal').style.display = 'flex';
         
-        const handleOk = () => {
-            cleanup();
-            resolve(true);
-        };
-        
-        const handleCancel = () => {
-            cleanup();
-            resolve(false);
-        };
-        
+        const handleOk = () => { cleanup(); resolve(true); };
+        const handleCancel = () => { cleanup(); resolve(false); };
         const cleanup = () => {
             document.getElementById('sharpConfirmModal').style.display = 'none';
             document.getElementById('confirmOkBtn').removeEventListener('click', handleOk);
@@ -1134,7 +1228,9 @@ function sharpConfirm(message, title = 'CONFIRMATION') {
     });
 }
 
-// Initialize dropdowns
+// ============================================================
+// INITIALIZATION
+// ============================================================
 function initDestCountries() {
     const select = document.getElementById('quickDestCountry');
     select.innerHTML = '<option value="">Destination country</option>';
@@ -1153,7 +1249,9 @@ function initQuickSources() {
 }
 initQuickSources();
 
-// UI Helpers
+// ============================================================
+// UI EVENT HANDLERS
+// ============================================================
 document.getElementById('swapTrigger')?.addEventListener('click', () => {
     document.getElementById('swapOptions').classList.toggle('active');
     document.getElementById('sourceOptions').classList.remove('active');
@@ -1173,15 +1271,33 @@ document.getElementById('userBadge')?.addEventListener('click', () => {
     document.getElementById('actionPanel').classList.toggle('open');
 });
 
+// Close grids when clicking outside
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.trigger-btn') && !e.target.closest('.option-grid')) {
+        document.getElementById('swapOptions').classList.remove('active');
+        document.getElementById('sourceOptions').classList.remove('active');
+        document.getElementById('securityOptions').classList.remove('active');
+    }
+});
+
+// ============================================================
+// API CALLS
+// ============================================================
 async function executeOperation(operation, data) {
     const formData = new FormData();
     formData.append('action', operation);
     for (let key in data) formData.append(key, data[key]);
-    const res = await fetch(window.location.href, { method: 'POST', body: formData, headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    const res = await fetch(window.location.href, { 
+        method: 'POST', 
+        body: formData, 
+        headers: { 'X-Requested-With': 'XMLHttpRequest' } 
+    });
     return await res.json();
 }
 
-// PIN SETUP MODAL
+// ============================================================
+// PIN MANAGEMENT
+// ============================================================
 function renderPinSetupDots() {
     const container = document.getElementById('pinSetupDots');
     let dots = '';
@@ -1227,8 +1343,6 @@ async function submitPinSetup() {
     }
     
     const pin = pinSetupInput;
-    
-    // Use sharp confirm modal instead of window.prompt
     const confirmed = await sharpConfirm('CONFIRM YOUR 6-DIGIT PIN', 'PIN CONFIRMATION');
     
     if (!confirmed) {
@@ -1238,10 +1352,6 @@ async function submitPinSetup() {
         return;
     }
     
-    // Show a second modal for PIN entry confirmation
-    document.getElementById('pinSetupError').innerHTML = 'ENTER PIN TO CONFIRM';
-    
-    // Create a temporary PIN entry for confirmation
     let confirmPinInput = '';
     const tempModal = document.createElement('div');
     tempModal.className = 'sharp-confirm';
@@ -1276,7 +1386,6 @@ async function submitPinSetup() {
         html += `<button class="numpad-btn" data-action="delete">⌫</button><button class="numpad-btn" data-action="clear">CLR</button>`;
         container.innerHTML = html;
         
-        // Attach event listeners
         container.querySelectorAll('.numpad-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const num = btn.dataset.num;
@@ -1323,7 +1432,6 @@ async function submitPinSetup() {
 
 async function savePin(pin) {
     const result = await executeOperation('set_transaction_pin', { pin: pin, confirm_pin: pin });
-    
     if (result.status === 'success') {
         await sharpConfirm('TRANSACTION PIN CREATED SUCCESSFULLY', 'SUCCESS');
         closePinSetupModal();
@@ -1333,7 +1441,6 @@ async function savePin(pin) {
     }
 }
 
-// PIN VERIFICATION MODAL
 function renderPinDots() {
     const container = document.getElementById('pinDots');
     let dots = '';
@@ -1396,7 +1503,9 @@ async function checkAndSetupPin() {
     return true;
 }
 
+// ============================================================
 // SOURCE LINKING FLOW
+// ============================================================
 async function showLinkInstitutions() {
     if (!await checkAndSetupPin()) return;
     
@@ -1469,27 +1578,10 @@ async function selectAssetType(asset) {
             'LINKING METHOD'
         );
         if (useOAuth) {
-            initiateOAuthLink();
-            return;
+            await sharpConfirm('OAuth coming soon. Using manual entry.', 'INFO');
         }
     }
     showIdentificationForm();
-}
-
-async function initiateOAuthLink() {
-    const result = await executeOperation('get_oauth_url', {
-        institution_code: selectedInstitution.code,
-        asset_type: selectedAssetType.type
-    });
-    
-    if (result.success && result.auth_url) {
-        sessionStorage.setItem('pending_link_institution', selectedInstitution.code);
-        sessionStorage.setItem('pending_link_asset', selectedAssetType.type);
-        window.location.href = result.auth_url;
-    } else {
-        await sharpConfirm('OAuth failed: ' + (result.message || 'Unknown error'), 'ERROR');
-        showIdentificationForm();
-    }
 }
 
 function showIdentificationForm() {
@@ -1518,10 +1610,7 @@ function showIdentificationForm() {
         } else {
             inputHtml = `<input type="${field.type}" id="field_${field.field}" class="form-input" 
                 placeholder="${field.placeholder || ''}" 
-                ${field.required ? 'required' : ''}
-                ${field.min_length ? `minlength="${field.min_length}"` : ''}
-                ${field.max_length ? `maxlength="${field.max_length}"` : ''}
-                ${field.pattern ? `pattern="${field.pattern}"` : ''}>`;
+                ${field.required ? 'required' : ''}>`;
         }
         
         div.innerHTML = `<label class="form-label">${field.label} ${field.required ? '*' : ''}</label>${inputHtml}`;
@@ -1548,7 +1637,6 @@ async function submitIdentificationForm() {
     });
     
     if (!isValid) return;
-    
     closeIdFormModal();
     
     withPinVerification('save_manual_source', {
@@ -1569,7 +1657,9 @@ function closeInstitutionModal() { document.getElementById('institutionModal').s
 function closeAssetModal() { document.getElementById('assetModal').style.display = 'none'; }
 function closeIdFormModal() { document.getElementById('idFormModal').style.display = 'none'; }
 
+// ============================================================
 // OTHER FUNCTIONS
+// ============================================================
 function viewLinkedSources() {
     if (fundingSources.length === 0 && bankConnections.length === 0) {
         sharpConfirm('No sources linked', 'INFO');
@@ -1593,12 +1683,13 @@ async function startCashout() { if (!await checkAndSetupPin()) return; sharpConf
 async function startRecurring() { if (!await checkAndSetupPin()) return; sharpConfirm('Recurring swaps - schedule upcoming', 'INFO'); }
 function manageTokens() { sharpConfirm('Active consent tokens: none', 'INFO'); }
 async function changePin() { if (!await checkAndSetupPin()) return; sharpConfirm('Use Security → Change PIN', 'INFO'); }
+
 async function changePassword() { 
-    const current = await sharpConfirm('Enter current password (type in console)', 'PASSWORD CHANGE');
+    const current = prompt('Enter current password:'); 
     if (!current) return; 
-    const newPwd = prompt('NEW PASSWORD (min 6)'); 
+    const newPwd = prompt('NEW PASSWORD (min 6 characters):'); 
     if (!newPwd || newPwd.length < 6) return; 
-    const confirm = prompt('CONFIRM PASSWORD'); 
+    const confirm = prompt('CONFIRM PASSWORD:'); 
     if (newPwd !== confirm) { 
         sharpConfirm('PASSWORDS DO NOT MATCH', 'ERROR'); 
         return; 
@@ -1611,6 +1702,7 @@ async function changePassword() {
         await sharpConfirm(result.message, 'ERROR');
     }
 }
+
 function viewSession() { sharpConfirm(`SESSION ACTIVE\nDevice: ${navigator.userAgent.split(' ').slice(-2).join(' ')}\nTime: ${new Date().toLocaleString()}`, 'SESSION'); }
 function logout() { window.location.href = 'logout.php'; }
 
@@ -1635,28 +1727,6 @@ async function executeQuickSwap() {
             await sharpConfirm(`SWAP FAILED\n${result.message}`, 'ERROR');
         }
     });
-}
-
-// Close grids when clicking outside
-document.addEventListener('click', (e) => {
-    if (!e.target.closest('.trigger-btn') && !e.target.closest('.option-grid')) {
-        document.getElementById('swapOptions').classList.remove('active');
-        document.getElementById('sourceOptions').classList.remove('active');
-        document.getElementById('securityOptions').classList.remove('active');
-    }
-});
-
-// Check OAuth callback result
-const urlParams = new URLSearchParams(window.location.search);
-const sourceLinked = urlParams.get('source_linked');
-const oauthError = urlParams.get('error');
-if (sourceLinked) { 
-    sharpConfirm(`Bank account linked successfully!\nInstitution: ${sourceLinked}`, 'SUCCESS');
-    window.history.replaceState({}, document.title, window.location.pathname); 
-}
-else if (oauthError) { 
-    sharpConfirm(`Bank linking failed: ${decodeURIComponent(oauthError)}`, 'ERROR');
-    window.history.replaceState({}, document.title, window.location.pathname); 
 }
 
 // Auto-show PIN setup if needed
