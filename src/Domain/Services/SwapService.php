@@ -57,7 +57,7 @@ class SwapService
 
     // Supported asset types
     private const ASSET_TYPES = [
-        'ACCOUNT', 'VOUCHER', 'E-WALLET', 'WALLET', 'CARD', 'ATM', 'ATM_VOUCHER'
+        'ACCOUNT', 'BANK-WALLET', 'MNO-WALLET', 'CARD', 'ATM', 'CASHOUT-VOUCHER'
     ];
 
     public function __construct(
@@ -226,11 +226,11 @@ class SwapService
             ];
             
             switch ($assetType) {
-                case 'VOUCHER':
-                    $voucher = $source['voucher'] ?? [];
-                    $payload['voucher_number'] = $voucher['voucher_number'] ?? $source['identifier'] ?? null;
+                case 'CASHOUT-VOUCHER':
+                    $CASHOUT-VOUCHER = $source['CASHOUT-VOUCHER'] ?? [];
+                    $payload['CASHOUT-VOUCHER_number'] = $CASHOUT-VOUCHER['CASHOUT-VOUCHER_number'] ?? $source['identifier'] ?? null;
                     $payload['claimant_phone'] = $this->formatPhoneForInstitution(
-                        $voucher['claimant_phone'] ?? $source['phone'] ?? null, 
+                        $CASHOUT-VOUCHER['claimant_phone'] ?? $source['phone'] ?? null, 
                         $participant
                     );
                     break;
@@ -238,14 +238,14 @@ class SwapService
                     $account = $source['account'] ?? [];
                     $payload['account_number'] = $account['account_number'] ?? $source['identifier'] ?? null;
                     break;
-                case 'WALLET':
-                    $wallet = $source['wallet'] ?? [];
+                case 'MNO-WALLET':
+                    $wallet = $source['MNO-WALLET'] ?? [];
                     $payload['wallet_phone'] = $this->formatPhoneForInstitution(
                         $wallet['wallet_phone'] ?? $source['identifier'] ?? null, 
                         $participant
                     );
                     break;
-                case 'E-WALLET':
+                case 'BANK-WALLET':
                     $ewallet = $source['ewallet'] ?? [];
                     $payload['ewallet_phone'] = $this->formatPhoneForInstitution(
                         $ewallet['ewallet_phone'] ?? $source['identifier'] ?? null, 
@@ -256,10 +256,10 @@ class SwapService
                     $card = $source['card'] ?? [];
                     $payload['card_number'] = $card['card_number'] ?? $source['identifier'] ?? null;
                     break;
-                case 'ATM_VOUCHER':
-                    $voucherCode = $source['voucher_code'] ?? $source['identifier'] ?? null;
-                    if ($voucherCode) {
-                        return $this->getVoucherBalance($voucherCode);
+                case 'CASHOUT-VOUCHER':
+                    $CASHOUT-VOUCHERCode = $source['CASHOUT-VOUCHER_code'] ?? $source['identifier'] ?? null;
+                    if ($CASHOUT-VOUCHERCode) {
+                        return $this->getCASHOUT-VOUCHERBalance($CASHOUT-VOUCHERCode);
                     }
                     return 0;
                 default:
@@ -282,44 +282,44 @@ class SwapService
     }
 
     /**
-     * Get voucher balance from database
+     * Get CASHOUT-VOUCHER balance from database
      */
-    private function getVoucherBalance(string $voucherCode): float
+    private function getCASHOUT-VOUCHERBalance(string $CASHOUT-VOUCHERCode): float
     {
         try {
             $stmt = $this->swapDB->prepare("
-                SELECT amount FROM atm_vouchers 
-                WHERE voucher_code = :code AND status = 'active' 
+                SELECT amount FROM CASHOUT-VOUCHERs 
+                WHERE CASHOUT-VOUCHER_code = :code AND status = 'active' 
                 AND (expires_at IS NULL OR expires_at > NOW())
             ");
-            $stmt->execute([':code' => $voucherCode]);
+            $stmt->execute([':code' => $CASHOUT-VOUCHERCode]);
             $result = $stmt->fetch(PDO::FETCH_ASSOC);
             return $result ? (float)$result['amount'] : 0;
         } catch (Exception $e) {
-            error_log("[SwapService] Failed to get voucher balance: " . $e->getMessage());
+            error_log("[SwapService] Failed to get CASHOUT-VOUCHER balance: " . $e->getMessage());
             return 0;
         }
     }
 
     /**
-     * Use voucher for contribution
+     * Use CASHOUT-VOUCHER for contribution
      */
-    public function useVoucher(string $voucherCode, string $swapReference, float $amount): bool
+    public function useCASHOUT-VOUCHER(string $CASHOUT-VOUCHERCode, string $swapReference, float $amount): bool
     {
         try {
             $stmt = $this->swapDB->prepare("
-                UPDATE atm_vouchers 
+                UPDATE CASHOUT-VOUCHERs 
                 SET status = 'used', 
                     used_in_swap = :swap_ref, 
                     used_at = NOW()
-                WHERE voucher_code = :code 
+                WHERE CASHOUT-VOUCHER_code = :code 
                 AND status = 'active' 
                 AND amount >= :amount
                 AND (expires_at IS NULL OR expires_at > NOW())
-                RETURNING voucher_id
+                RETURNING CASHOUT-VOUCHER_id
             ");
             $stmt->execute([
-                ':code' => $voucherCode,
+                ':code' => $CASHOUT-VOUCHERCode,
                 ':swap_ref' => $swapReference,
                 ':amount' => $amount
             ]);
@@ -327,24 +327,24 @@ class SwapService
             return $stmt->fetchColumn() !== false;
             
         } catch (Exception $e) {
-            error_log("[SwapService] Failed to use voucher: " . $e->getMessage());
+            error_log("[SwapService] Failed to use CASHOUT-VOUCHER: " . $e->getMessage());
             return false;
         }
     }
 
     /**
-     * Create ATM voucher
+     * Create ATM CASHOUT-VOUCHER
      */
-    public function createAtmVoucher(string $voucherCode, float $amount, string $currency, string $issuingInstitution, int $expiryDays = 30): bool
+    public function createAtmCASHOUT-VOUCHER(string $CASHOUT-VOUCHERCode, float $amount, string $currency, string $issuingInstitution, int $expiryDays = 30): bool
     {
         try {
             $stmt = $this->swapDB->prepare("
-                INSERT INTO atm_vouchers 
-                (voucher_code, amount, currency, issuing_institution, expires_at, created_at)
+                INSERT INTO CASHOUT-VOUCHERs 
+                (CASHOUT-VOUCHER_code, amount, currency, issuing_institution, expires_at, created_at)
                 VALUES (:code, :amount, :currency, :issuer, NOW() + INTERVAL ':days DAY', NOW())
             ");
             $stmt->execute([
-                ':code' => $voucherCode,
+                ':code' => $CASHOUT-VOUCHERCode,
                 ':amount' => $amount,
                 ':currency' => $currency,
                 ':issuer' => $issuingInstitution,
@@ -354,7 +354,7 @@ class SwapService
             return true;
             
         } catch (Exception $e) {
-            error_log("[SwapService] Failed to create voucher: " . $e->getMessage());
+            error_log("[SwapService] Failed to create CASHOUT-VOUCHER: " . $e->getMessage());
             return false;
         }
     }
@@ -387,7 +387,7 @@ class SwapService
             
             $source = $this->sanitizePhones($source, $sourceParticipant);
             
-            // Handle different asset types including VOUCHER
+            // Handle different asset types including CASHOUT-VOUCHER
             $this->prepareSourceAsset($source, $swapRef);
             
             // Step 1: Verify source asset
@@ -499,35 +499,35 @@ class SwapService
     }
 
     /**
-     * Prepare source asset based on type (handle vouchers, etc.)
+     * Prepare source asset based on type (handle CASHOUT-VOUCHERs, etc.)
      */
     private function prepareSourceAsset(array &$source, string $swapRef): void
     {
         $assetType = strtoupper($source['asset_type'] ?? '');
         
         switch ($assetType) {
-            case 'VOUCHER':
-                $voucher = $source['voucher'] ?? [];
-                if (isset($voucher['voucher_number'])) {
-                    // Verify voucher with issuing institution (e.g., Zurubank)
-                    $this->logEvent($swapRef, 'VOUCHER_DETECTED', [
-                        'voucher_number' => substr($voucher['voucher_number'], -8),
+            case 'CASHOUT-VOUCHER':
+                $CASHOUT-VOUCHER = $source['CASHOUT-VOUCHER'] ?? [];
+                if (isset($CASHOUT-VOUCHER['CASHOUT-VOUCHER_number'])) {
+                    // Verify CASHOUT-VOUCHER with issuing institution (e.g., Zurubank)
+                    $this->logEvent($swapRef, 'CASHOUT-VOUCHER_DETECTED', [
+                        'CASHOUT-VOUCHER_number' => substr($CASHOUT-VOUCHER['CASHOUT-VOUCHER_number'], -8),
                         'amount' => $source['amount'] ?? 'unknown'
                     ]);
                 }
                 break;
                 
-            case 'ATM_VOUCHER':
-                if (isset($source['voucher_code'])) {
-                    $voucherAmount = $this->getVoucherBalance($source['voucher_code']);
-                    if ($voucherAmount < ($source['amount'] ?? 0)) {
-                        throw new RuntimeException("Insufficient voucher balance: {$voucherAmount} available");
+            case 'CASHOUT-VOUCHER':
+                if (isset($source['CASHOUT-VOUCHER_code'])) {
+                    $CASHOUT-VOUCHERAmount = $this->getCASHOUT-VOUCHERBalance($source['CASHOUT-VOUCHER_code']);
+                    if ($CASHOUT-VOUCHERAmount < ($source['amount'] ?? 0)) {
+                        throw new RuntimeException("Insufficient CASHOUT-VOUCHER balance: {$CASHOUT-VOUCHERAmount} available");
                     }
-                    if (!$this->useVoucher($source['voucher_code'], $swapRef, $source['amount'])) {
-                        throw new RuntimeException("Failed to use voucher: {$source['voucher_code']}");
+                    if (!$this->useCASHOUT-VOUCHER($source['CASHOUT-VOUCHER_code'], $swapRef, $source['amount'])) {
+                        throw new RuntimeException("Failed to use CASHOUT-VOUCHER: {$source['CASHOUT-VOUCHER_code']}");
                     }
-                    $this->logEvent($swapRef, 'ATM_VOUCHER_USED', [
-                        'voucher_code' => $source['voucher_code'],
+                    $this->logEvent($swapRef, 'CASHOUT-VOUCHER_USED', [
+                        'CASHOUT-VOUCHER_code' => $source['CASHOUT-VOUCHER_code'],
                         'amount' => $source['amount']
                     ]);
                 }
@@ -876,8 +876,8 @@ class SwapService
             }
         }
         
-        // Check nested structures for VOUCHER, ACCOUNT, etc.
-        $nestedTypes = ['voucher', 'account', 'wallet', 'ewallet', 'card'];
+        // Check nested structures for CASHOUT-VOUCHER, ACCOUNT, etc.
+        $nestedTypes = ['CASHOUT-VOUCHER', 'account', 'MNO-WALLET', 'ewallet', 'card'];
         foreach ($nestedTypes as $type) {
             if (isset($source[$type])) {
                 foreach ($fields as $field) {
@@ -976,14 +976,14 @@ class SwapService
             'amount' => $source['amount'] ?? 0
         ];
         
-        // Handle all asset types including VOUCHER
+        // Handle all asset types including CASHOUT-VOUCHER
         switch ($assetType) {
-            case 'VOUCHER':
-                $voucher = $source['voucher'] ?? [];
-                $payload['voucher_number'] = $voucher['voucher_number'] ?? null;
-                $payload['voucher_pin'] = $voucher['voucher_pin'] ?? null;
+            case 'CASHOUT-VOUCHER':
+                $CASHOUT-VOUCHER = $source['CASHOUT-VOUCHER'] ?? [];
+                $payload['CASHOUT-VOUCHER_number'] = $CASHOUT-VOUCHER['CASHOUT-VOUCHER_number'] ?? null;
+                $payload['CASHOUT-VOUCHER_pin'] = $CASHOUT-VOUCHER['CASHOUT-VOUCHER_pin'] ?? null;
                 $payload['claimant_phone'] = $this->formatPhoneForInstitution(
-                    $voucher['claimant_phone'] ?? $source['claimant_phone'] ?? null, 
+                    $CASHOUT-VOUCHER['claimant_phone'] ?? $source['claimant_phone'] ?? null, 
                     $participant
                 );
                 break;
@@ -995,8 +995,8 @@ class SwapService
                 $payload['account_holder'] = $account['account_holder'] ?? null;
                 break;
                 
-            case 'WALLET':
-                $wallet = $source['wallet'] ?? [];
+            case 'MNO-WALLET':
+                $wallet = $source['MNO-WALLET'] ?? [];
                 $payload['wallet_phone'] = $this->formatPhoneForInstitution(
                     $wallet['wallet_phone'] ?? $source['wallet_phone'] ?? null, 
                     $participant
@@ -1004,7 +1004,7 @@ class SwapService
                 $payload['wallet_pin'] = $wallet['wallet_pin'] ?? null;
                 break;
                 
-            case 'E-WALLET':
+            case 'BANK-WALLET':
                 $ewallet = $source['ewallet'] ?? [];
                 $payload['ewallet_phone'] = $this->formatPhoneForInstitution(
                     $ewallet['ewallet_phone'] ?? $source['ewallet_phone'] ?? null, 
@@ -1019,8 +1019,8 @@ class SwapService
                 $payload['card_holder'] = $card['card_holder'] ?? null;
                 break;
                 
-            case 'ATM_VOUCHER':
-                $payload['voucher_code'] = $source['voucher_code'] ?? null;
+            case 'CASHOUT-VOUCHER':
+                $payload['CASHOUT-VOUCHER_code'] = $source['CASHOUT-VOUCHER_code'] ?? null;
                 break;
                 
             default:
@@ -1067,24 +1067,24 @@ class SwapService
         
         // Add asset-specific fields
         switch ($assetType) {
-            case 'VOUCHER':
-                $voucher = $source['voucher'] ?? [];
-                $holdPayload['voucher_number'] = $voucher['voucher_number'] ?? null;
+            case 'CASHOUT-VOUCHER':
+                $CASHOUT-VOUCHER = $source['CASHOUT-VOUCHER'] ?? [];
+                $holdPayload['CASHOUT-VOUCHER_number'] = $CASHOUT-VOUCHER['CASHOUT-VOUCHER_number'] ?? null;
                 $holdPayload['claimant_phone'] = $this->formatPhoneForInstitution(
-                    $voucher['claimant_phone'] ?? null, $participant
+                    $CASHOUT-VOUCHER['claimant_phone'] ?? null, $participant
                 );
                 break;
             case 'ACCOUNT':
                 $account = $source['account'] ?? [];
                 $holdPayload['account_number'] = $account['account_number'] ?? $source['account_number'] ?? null;
                 break;
-            case 'WALLET':
-                $wallet = $source['wallet'] ?? [];
+            case 'MNO-WALLET':
+                $wallet = $source['MNO-WALLET'] ?? [];
                 $holdPayload['wallet_phone'] = $this->formatPhoneForInstitution(
                     $wallet['wallet_phone'] ?? $source['wallet_phone'] ?? null, $participant
                 );
                 break;
-            case 'E-WALLET':
+            case 'BANK-WALLET':
                 $ewallet = $source['ewallet'] ?? [];
                 $holdPayload['ewallet_phone'] = $this->formatPhoneForInstitution(
                     $ewallet['ewallet_phone'] ?? $source['ewallet_phone'] ?? null, $participant
@@ -1094,8 +1094,8 @@ class SwapService
                 $card = $source['card'] ?? [];
                 $holdPayload['card_number'] = $card['card_number'] ?? $source['card_number'] ?? null;
                 break;
-            case 'ATM_VOUCHER':
-                $holdPayload['voucher_code'] = $source['voucher_code'] ?? null;
+            case 'CASHOUT-VOUCHER':
+                $holdPayload['CASHOUT-VOUCHER_code'] = $source['CASHOUT-VOUCHER_code'] ?? null;
                 break;
         }
         
@@ -1360,7 +1360,7 @@ class SwapService
             if (isset($payload[$field])) {
                 $payload[$field] = $this->formatPhoneForInstitution($payload[$field], $participant);
             }
-            foreach (['ewallet', 'wallet', 'cashout', 'voucher'] as $nested) {
+            foreach (['ewallet', 'MNO-WALLET', 'cashout', 'CASHOUT-VOUCHER'] as $nested) {
                 if (isset($payload[$nested][$field])) {
                     $payload[$nested][$field] = $this->formatPhoneForInstitution($payload[$nested][$field], $participant);
                 }
