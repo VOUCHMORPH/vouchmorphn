@@ -34,10 +34,17 @@
           "header_name": "X-API-KEY"
         },
         "oauth2": {
-          "token_endpoint": "/oauth2/token",
+          "enabled": true,
+          "authorization_endpoint": "/api/v1/oauth/authorize.php",
+          "token_endpoint": "/api/v1/oauth/token.php",
+          "revoke_endpoint": "/api/v1/oauth/revoke.php",
+          "userinfo_endpoint": "/api/v1/oauth/userinfo.php",
           "client_id_env": "ZURUBANK_CLIENT_ID",
           "client_secret_env": "ZURUBANK_CLIENT_SECRET",
-          "scope": "payments settlement"
+          "scope": "read_balance read_transactions initiate_payment",
+          "response_type": "code",
+          "grant_type": "authorization_code",
+          "code_challenge_method": "S256"
         },
         "request_signing": {
           "algorithm": "RSA-SHA256",
