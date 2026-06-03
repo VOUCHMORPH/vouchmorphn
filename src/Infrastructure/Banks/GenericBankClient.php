@@ -1,4 +1,5 @@
 <?php
+// Infrastructure/Banks/GenericBankClient.php
 
 namespace Infrastructure\Banks;
 
@@ -15,12 +16,13 @@ class GenericBankClient implements BankAPIInterface
     protected ?int $detectionConfidence = null;
     protected ?string $detectionSource = null;
     protected array $detectionDetails = [];
+    protected ?string $cachedAccessToken = null;
+    protected ?int $tokenExpiresAt = null;
 
     public function __construct(array $config, ?array $requestPayload = null, ?array $headers = null, ?string $endpoint = null)
     {
         $this->config = $config;
         
-        // Smart detection - determine message format without being told
         $detection = MessageAdapterFactory::smartDetect(
             $requestPayload ?? [],
             $headers ?? [],
@@ -34,32 +36,253 @@ class GenericBankClient implements BankAPIInterface
         $this->detectionSource = $detection['source'];
         $this->detectionDetails = $detection['all_detections'] ?? [];
         
-        error_log("=== GENERIC BANK CLIENT SMART DETECTION ===");
+        error_log("=== GENERIC BANK CLIENT INIT ===");
         error_log("Bank: " . ($this->config['provider_code'] ?? 'unknown'));
         error_log("Detected Format: {$this->detectedFormat}");
-        error_log("Confidence: {$this->detectionConfidence}%");
-        error_log("Source: {$this->detectionSource}");
-        error_log("All detections: " . json_encode($this->detectionDetails));
     }
     
-    public function getDetectedFormat(): ?string
+    public function getDetectedFormat(): ?string { return $this->detectedFormat; }
+    public function getDetectionConfidence(): ?int { return $this->detectionConfidence; }
+    public function getDetectionSource(): ?string { return $this->detectionSource; }
+    public function getDetectionDetails(): array { return $this->detectionDetails; }
+
+    // ============================================================================
+    // OAUTH METHODS
+    // ============================================================================
+
+    public function getAuthorizationUrl(string $redirectUri, string $state, array $scope = []): string
     {
-        return $this->detectedFormat;
+        $oauthConfig = $this->config['security']['oauth2'] ?? null;
+        if (!$oauthConfig) {
+            throw new \RuntimeException("OAuth2 not configured for " . ($this->config['provider_code'] ?? 'unknown'));
+        }
+        
+        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $authEndpoint = $oauthConfig['authorization_endpoint'] ?? '/oauth/authorize';
+        
+        $params = [
+            'response_type' => 'code',
+            'client_id' => getenv($oauthConfig['client_id_env']) ?: $oauthConfig['client_id'] ?? '',
+            'redirect_uri' => $redirectUri,
+            'state' => $state,
+            'scope' => implode(' ', $scope ?: explode(' ', $oauthConfig['scope'] ?? 'read_balance')),
+            'code_challenge_method' => $oauthConfig['code_challenge_method'] ?? 'S256'
+        ];
+        
+        // Generate PKCE code verifier and challenge
+        $codeVerifier = bin2hex(random_bytes(32));
+        $codeChallenge = rtrim(strtr(base64_encode(hash('sha256', $codeVerifier, true)), '+/', '-_'), '=');
+        
+        $_SESSION['oauth_code_verifier_' . $state] = $codeVerifier;
+        $params['code_challenge'] = $codeChallenge;
+        
+        return $baseUrl . $authEndpoint . '?' . http_build_query($params);
     }
-    
-    public function getDetectionConfidence(): ?int
+
+    public function exchangeCodeForToken(string $code, string $redirectUri): array
     {
-        return $this->detectionConfidence;
+        $oauthConfig = $this->config['security']['oauth2'] ?? null;
+        if (!$oauthConfig) {
+            throw new \RuntimeException("OAuth2 not configured");
+        }
+        
+        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $tokenEndpoint = $oauthConfig['token_endpoint'] ?? '/oauth/token';
+        
+        $payload = [
+            'grant_type' => 'authorization_code',
+            'code' => $code,
+            'redirect_uri' => $redirectUri,
+            'client_id' => getenv($oauthConfig['client_id_env']) ?: $oauthConfig['client_id'] ?? '',
+            'client_secret' => getenv($oauthConfig['client_secret_env']) ?: $oauthConfig['client_secret'] ?? ''
+        ];
+        
+        $ch = curl_init($baseUrl . $tokenEndpoint);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => http_build_query($payload),
+            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+            CURLOPT_TIMEOUT => 30
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($httpCode !== 200) {
+            error_log("Token exchange failed: HTTP $httpCode, Response: $response");
+            throw new \RuntimeException("Failed to exchange code for token");
+        }
+        
+        $data = json_decode($response, true);
+        
+        $this->cachedAccessToken = $data['access_token'] ?? null;
+        $this->tokenExpiresAt = time() + ($data['expires_in'] ?? 3600);
+        
+        return [
+            'access_token' => $data['access_token'] ?? '',
+            'refresh_token' => $data['refresh_token'] ?? '',
+            'expires_in' => $data['expires_in'] ?? 3600,
+            'token_type' => $data['token_type'] ?? 'Bearer',
+            'scope' => $data['scope'] ?? ''
+        ];
     }
-    
-    public function getDetectionSource(): ?string
+
+    public function refreshAccessToken(string $refreshToken): array
     {
-        return $this->detectionSource;
+        $oauthConfig = $this->config['security']['oauth2'] ?? null;
+        if (!$oauthConfig) {
+            throw new \RuntimeException("OAuth2 not configured");
+        }
+        
+        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $tokenEndpoint = $oauthConfig['token_endpoint'] ?? '/oauth/token';
+        
+        $payload = [
+            'grant_type' => 'refresh_token',
+            'refresh_token' => $refreshToken,
+            'client_id' => getenv($oauthConfig['client_id_env']) ?: $oauthConfig['client_id'] ?? '',
+            'client_secret' => getenv($oauthConfig['client_secret_env']) ?: $oauthConfig['client_secret'] ?? ''
+        ];
+        
+        $ch = curl_init($baseUrl . $tokenEndpoint);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => http_build_query($payload),
+            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+            CURLOPT_TIMEOUT => 30
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($httpCode !== 200) {
+            throw new \RuntimeException("Failed to refresh token");
+        }
+        
+        $data = json_decode($response, true);
+        
+        $this->cachedAccessToken = $data['access_token'] ?? null;
+        $this->tokenExpiresAt = time() + ($data['expires_in'] ?? 3600);
+        
+        return [
+            'access_token' => $data['access_token'] ?? '',
+            'expires_in' => $data['expires_in'] ?? 3600
+        ];
     }
-    
-    public function getDetectionDetails(): array
+
+    public function revokeToken(string $token, string $tokenType = 'access_token'): bool
     {
-        return $this->detectionDetails;
+        $oauthConfig = $this->config['security']['oauth2'] ?? null;
+        if (!$oauthConfig) {
+            return false;
+        }
+        
+        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $revokeEndpoint = $oauthConfig['revoke_endpoint'] ?? '/oauth/revoke';
+        
+        $payload = [
+            'token' => $token,
+            'token_type_hint' => $tokenType,
+            'client_id' => getenv($oauthConfig['client_id_env']) ?: $oauthConfig['client_id'] ?? '',
+            'client_secret' => getenv($oauthConfig['client_secret_env']) ?: $oauthConfig['client_secret'] ?? ''
+        ];
+        
+        $ch = curl_init($baseUrl . $revokeEndpoint);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => http_build_query($payload),
+            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+            CURLOPT_TIMEOUT => 30
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        return $httpCode === 200;
+    }
+
+    public function getUserInfo(string $accessToken): array
+    {
+        $oauthConfig = $this->config['security']['oauth2'] ?? null;
+        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $userinfoEndpoint = $oauthConfig['userinfo_endpoint'] ?? '/oauth/userinfo';
+        
+        $ch = curl_init($baseUrl . $userinfoEndpoint);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $accessToken, 'Content-Type: application/json'],
+            CURLOPT_TIMEOUT => 30
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($httpCode !== 200) {
+            throw new \RuntimeException("Failed to get user info");
+        }
+        
+        return json_decode($response, true);
+    }
+
+    public function getAccountBalance(string $accessToken, string $accountId): array
+    {
+        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $balanceEndpoint = $this->config['resource_endpoints']['account_balance'] ?? '/api/v1/accounts/balance.php';
+        
+        $ch = curl_init($baseUrl . $balanceEndpoint . '?account_id=' . urlencode($accountId));
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $accessToken, 'Content-Type: application/json'],
+            CURLOPT_TIMEOUT => 30
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($httpCode !== 200) {
+            throw new \RuntimeException("Failed to get account balance");
+        }
+        
+        $data = json_decode($response, true);
+        return $data['data'] ?? $data;
+    }
+
+    public function getTransactions(string $accessToken, string $accountId, int $limit = 50, int $offset = 0): array
+    {
+        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $transactionsEndpoint = $this->config['resource_endpoints']['transactions'] ?? '/api/v1/accounts/transactions.php';
+        
+        $url = $baseUrl . $transactionsEndpoint . '?' . http_build_query([
+            'account_id' => $accountId,
+            'limit' => $limit,
+            'offset' => $offset
+        ]);
+        
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $accessToken, 'Content-Type: application/json'],
+            CURLOPT_TIMEOUT => 30
+        ]);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($httpCode !== 200) {
+            throw new \RuntimeException("Failed to get transactions");
+        }
+        
+        $data = json_decode($response, true);
+        return $data['data'] ?? $data;
     }
 
     // ============================================================================
@@ -69,17 +292,13 @@ class GenericBankClient implements BankAPIInterface
     public function verifyAsset(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: verifyAsset ===");
-        error_log("Bank: " . ($this->config['provider_code'] ?? 'unknown'));
-        error_log("Using message format: {$this->detectedFormat}");
-        error_log("Original payload: " . json_encode($payload));
-        return $this->send('verify_asset', $payload);
+        return $this->send('verify_asset', $payload, $payload['access_token'] ?? null);
     }
 
     public function placeHold(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: placeHold ===");
-        error_log("Using message format: {$this->detectedFormat}");
-        return $this->send('place_hold', $payload);
+        return $this->send('place_hold', $payload, $payload['access_token'] ?? null);
     }
 
     public function releaseHold(array $payload): array
@@ -91,25 +310,14 @@ class GenericBankClient implements BankAPIInterface
     public function debitFunds(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: debitFunds ===");
-        return $this->send('debit_funds', $payload);
+        return $this->send('debit_funds', $payload, $payload['access_token'] ?? null);
     }
 
-    // ============================================================================
-    // DEBIT HOLD METHOD
-    // ============================================================================
-    
     public function debitHold(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: debitHold (maps to debitFunds) ===");
-        error_log("Using message format: {$this->detectedFormat}");
-        
         if (!isset($payload['hold_reference'])) {
-            error_log("ERROR: hold_reference is required for debitHold");
-            return [
-                'success' => false,
-                'message' => 'hold_reference is required',
-                'data' => []
-            ];
+            return ['success' => false, 'message' => 'hold_reference is required', 'data' => []];
         }
         
         $debitPayload = [
@@ -124,12 +332,12 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // DESTINATION ROLE METHODS
+    // DESTINATION ROLE METHODS - CASHOUT TOKEN (NOT OAUTH)
     // ============================================================================
 
     public function generateToken(array $payload): array
     {
-        error_log("=== GENERIC BANK CLIENT: generateToken ===");
+        error_log("=== GENERIC BANK CLIENT: generateToken (CASHOUT TOKEN) ===");
         return $this->send('generate_token', $payload);
     }
 
@@ -148,7 +356,7 @@ class GenericBankClient implements BankAPIInterface
     public function processDeposit(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: processDeposit ===");
-        return $this->send('process_deposit', $payload);
+        return $this->send('process_deposit', $payload, $payload['access_token'] ?? null);
     }
 
     // ============================================================================
@@ -167,129 +375,40 @@ class GenericBankClient implements BankAPIInterface
         return $this->send('reverse_transaction', $payload);
     }
 
-    // ============================================================================
-    // LEGACY METHODS (used by SwapService)
-    // ============================================================================
-
     public function authorize(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: authorize (maps to place_hold) ===");
         return $this->placeHold($payload);
     }
 
-    public function transfer(array $payload, string $type = null): array
+    public function transfer(array $payload, ?string $type = null): array
     {
         error_log("=== GENERIC BANK CLIENT: transfer called ===");
-        error_log("Type: " . ($type ?? 'none'));
-        error_log("Action: " . ($payload['action'] ?? 'none'));
-        error_log("Using message format: {$this->detectedFormat}");
-        
         $action = $payload['action'] ?? $type ?? '';
         
         switch ($action) {
             case 'GENERATE_ATM_TOKEN':
             case 'generate_atm_code':
-                error_log("Mapping to generateToken");
                 return $this->generateToken($payload);
-                
             case 'PROCESS_DEPOSIT':
-                error_log("Mapping to processDeposit");
                 return $this->processDeposit($payload);
-                
             case 'AUTHORIZE_CASHOUT':
-                error_log("Mapping to authorize");
                 return $this->authorize($payload);
-                
             case 'DEBIT_HOLD':
-                error_log("Mapping to debitHold");
                 return $this->debitHold($payload);
-                
             default:
-                error_log("Unknown action: $action, defaulting to processDeposit");
                 return $this->processDeposit($payload);
         }
     }
 
     public function reverse(array $payload): array
     {
-        error_log("=== GENERIC BANK CLIENT: reverse ===");
         return $this->reverseTransaction($payload);
     }
 
     // ============================================================================
-    // HELPER METHODS
+    // PROTECTED HELPERS
     // ============================================================================
-
-    protected function send(string $action, array $payload): array
-    {
-        $endpoint = $this->getEndpoint($action);
-        
-        error_log("=== GENERIC BANK CLIENT SEND ===");
-        error_log("Bank: " . ($this->config['provider_code'] ?? 'unknown'));
-        error_log("Action: " . $action);
-        error_log("Message Format: {$this->detectedFormat}");
-        error_log("Endpoint: " . ($endpoint ?? 'null'));
-        error_log("Full URL: " . (rtrim($this->config['base_url'] ?? '', '/') . '/' . ltrim($endpoint ?? '', '/')));
-
-        error_log("🚨 FULL PAYLOAD BEING SENT TO BANK: " . json_encode($payload));
-        
-        if (!$endpoint) {
-            error_log("ERROR: No endpoint found for action: " . $action);
-            error_log("Available endpoints: " . json_encode($this->config['resource_endpoints'] ?? []));
-            throw new \Exception("Endpoint {$action} not configured for " . ($this->config['provider_code'] ?? 'unknown bank'));
-        }
-
-        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
-        $endpoint = ltrim($endpoint, '/');
-        $url = $baseUrl . '/' . $endpoint;
-        
-        error_log("Base URL: " . ($this->config['base_url'] ?? 'NOT SET'));
-        error_log("Endpoint path: " . $endpoint);
-        error_log("Full URL: " . $url);
-        error_log("Payload being sent: " . json_encode($payload));
-
-        $headers = $this->buildHeaders($payload);
-        error_log("Headers: " . json_encode($headers));
-        
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode($payload),
-            CURLOPT_HTTPHEADER => $headers,
-            CURLOPT_TIMEOUT => 30,
-            CURLOPT_VERBOSE => true
-        ]);
-
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlError = curl_error($ch);
-        
-        if (curl_errno($ch)) {
-            error_log("CURL Error: " . curl_error($ch));
-        }
-        
-        curl_close($ch);
-
-        error_log("HTTP Code: " . $httpCode);
-        error_log("Response: " . ($response ?: 'EMPTY'));
-        
-        if ($curlError) {
-            error_log("CURL Error: " . $curlError);
-        }
-
-        $decodedResponse = json_decode($response, true);
-        
-        return [
-            'success' => $httpCode >= 200 && $httpCode < 300,
-            'status_code' => $httpCode,
-            'data' => $decodedResponse ?? [],
-            'raw_response' => $response,
-            'curl_error' => $curlError,
-            'detected_format' => $this->detectedFormat,
-            'detection_confidence' => $this->detectionConfidence
-        ];
-    }
 
     protected function getEndpoint(string $action): ?string
     {
@@ -304,50 +423,78 @@ class GenericBankClient implements BankAPIInterface
             'process_deposit' => 'process_deposit',
             'check_status' => 'check_status',
             'reverse_transaction' => 'reverse_transaction',
-            'authorize' => 'place_hold',
-            'transfer' => 'process_deposit',
-            'reverse' => 'reverse_transaction',
-            'debit_hold' => 'debit_funds'
+            'account_balance' => 'account_balance',
+            'transactions' => 'transactions'
         ];
 
         $endpointKey = $endpointMap[$action] ?? $action;
-        
-        error_log("getEndpoint() - Action: $action, Mapped to key: $endpointKey");
-        error_log("Available endpoints: " . json_encode($this->config['resource_endpoints'] ?? []));
-        
-        $endpoint = $this->config['resource_endpoints'][$endpointKey] ?? 
-                    $this->config['endpoints'][$endpointKey] ?? null;
-        
-        error_log("Found endpoint: " . ($endpoint ?? 'null'));
-        
-        return $endpoint;
+        return $this->config['resource_endpoints'][$endpointKey] ?? null;
     }
 
-    protected function buildHeaders(array $payload): array
+    protected function send(string $action, array $payload, ?string $accessToken = null): array
+    {
+        $endpoint = $this->getEndpoint($action);
+        
+        if (!$endpoint) {
+            throw new \Exception("Endpoint {$action} not configured for " . ($this->config['provider_code'] ?? 'unknown'));
+        }
+
+        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $endpoint = ltrim($endpoint, '/');
+        $url = $baseUrl . '/' . $endpoint;
+        
+        $headers = $this->buildHeaders($payload, $accessToken);
+        
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($payload),
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_TIMEOUT => $this->config['timeout_ms'] ?? 30000,
+            CURLOPT_VERBOSE => false
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        
+        $decodedResponse = json_decode($response, true);
+        
+        return [
+            'success' => $httpCode >= 200 && $httpCode < 300,
+            'status_code' => $httpCode,
+            'data' => $decodedResponse ?? [],
+            'raw_response' => $response,
+            'curl_error' => $curlError,
+            'detected_format' => $this->detectedFormat
+        ];
+    }
+
+    protected function buildHeaders(array $payload, ?string $accessToken = null): array
     {
         $headers = ['Content-Type: application/json'];
         
-        // Add detected format header for transparency
         if ($this->detectedFormat) {
             $headers[] = 'X-Detected-Format: ' . $this->detectedFormat;
-            $headers[] = 'X-Format-Confidence: ' . ($this->detectionConfidence ?? 0);
+        }
+        
+        // Add OAuth Bearer token if provided
+        if ($accessToken) {
+            $headers[] = 'Authorization: Bearer ' . $accessToken;
         }
         
         if (isset($payload['reference'])) {
             $headers[] = 'X-Correlation-ID: ' . $payload['reference'];
         }
         
-        if (isset($this->config['security'])) {
-            $security = $this->config['security'];
-            
-            if (isset($security['api_key'])) {
-                $key = getenv($security['api_key']['value_env'] ?? '');
-                if ($key) {
-                    $headers[] = ($security['api_key']['header_name'] ?? 'X-API-Key') . ': ' . $key;
-                    error_log("Added API Key header");
-                } else {
-                    error_log("WARNING: API Key env var not set: " . ($security['api_key']['value_env'] ?? 'unknown'));
-                }
+        // Add API key if configured (for fallback/non-OAuth endpoints)
+        if (isset($this->config['security']['api_key'])) {
+            $apiKey = $this->config['security']['api_key'];
+            $keyValue = getenv($apiKey['value_env'] ?? '');
+            if ($keyValue) {
+                $headers[] = ($apiKey['header_name'] ?? 'X-API-Key') . ': ' . $keyValue;
             }
         }
         
