@@ -1,7 +1,7 @@
 <?php
 /**
  * VouchMorph System Introspection & Diagnostics Center
- * Complete working version with all fixes
+ * Complete working version with API Key Testing & Environment Viewer
  */
 
 session_start();
@@ -13,12 +13,12 @@ if (!isset($_SESSION['admin_logged_in']) || $_SESSION['admin_logged_in'] !== tru
 define('PROJECT_ROOT', dirname(__DIR__, 2));
 
 // ============================================================
-// COMPOSER AUTOLOADER (MUST BE AT TOP)
+// COMPOSER AUTOLOADER
 // ============================================================
 require_once PROJECT_ROOT . '/vendor/autoload.php';
 
 // ============================================================
-// USE STATEMENTS - ONLY AT TOP LEVEL
+// USE STATEMENTS
 // ============================================================
 use Core\Database\DBConnection;
 
@@ -31,7 +31,33 @@ $allowedTables = [
 ];
 
 // ============================================================
-// AJAX HANDLER - Must return JSON and exit
+// LOAD .env FILE FROM COUNTRY FOLDER
+// ============================================================
+function loadEnvFile($filePath) {
+    if (!file_exists($filePath)) return false;
+    $lines = file($filePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if (empty($line) || strpos($line, '#') === 0) continue;
+        $parts = explode('=', $line, 2);
+        if (count($parts) === 2) {
+            $key = trim($parts[0]);
+            $value = trim($parts[1]);
+            $value = trim($value, '"\'');
+            putenv("$key=$value");
+            $_ENV[$key] = $value;
+            $_SERVER[$key] = $value;
+        }
+    }
+    return true;
+}
+
+// Load .env from Botswana folder
+$botswanaEnv = PROJECT_ROOT . '/src/Core/Config/Countries/Botswana/.env';
+loadEnvFile($botswanaEnv);
+
+// ============================================================
+// AJAX HANDLER
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH'])) {
     header('Content-Type: application/json');
@@ -82,24 +108,102 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // Test endpoint
+    // Test endpoint with API key support
     if ($action === 'test_endpoint') {
         $url = $_POST['url'] ?? '';
         $method = $_POST['method'] ?? 'GET';
         $payload = json_decode($_POST['payload'] ?? '{}', true);
+        $apiKey = $_POST['api_key'] ?? null;
+        $apiKeyHeader = $_POST['api_key_header'] ?? 'X-API-Key';
         
         $ch = curl_init($url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_MAXREDIRS, 5);
+        
+        $headers = ['Content-Type: application/json'];
+        if ($apiKey) {
+            $headers[] = "$apiKeyHeader: $apiKey";
+        }
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
         
         if ($method === 'POST') {
             curl_setopt($ch, CURLOPT_POST, true);
             if (!empty($payload)) {
                 curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
-                curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
             }
         }
+        
+        $start = microtime(true);
+        $response = curl_exec($ch);
+        $time = round((microtime(true) - $start) * 1000, 2);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $redirectUrl = curl_getinfo($ch, CURLINFO_REDIRECT_URL);
+        $error = curl_error($ch);
+        curl_close($ch);
+        
+        $result = [
+            'status' => 'success',
+            'url' => $url,
+            'method' => $method,
+            'http_code' => $httpCode,
+            'response_time' => $time,
+            'redirect_url' => $redirectUrl,
+            'response' => $response ? json_decode($response, true) : null,
+            'error' => $error
+        ];
+        echo json_encode($result);
+        exit;
+    }
+    
+    // Get environment variables (API keys)
+    if ($action === 'get_env_vars') {
+        $envVars = [];
+        $keyNames = [
+            'API_KEY_SYSTEM', 'API_KEY_VOUCHMORPH', 'API_KEY_CAZACOM',
+            'API_KEY_ZURUBANK', 'API_KEY_SACCUSSALIS', 'API_KEY_PARTNER_1',
+            'API_KEY_PARTNER_2', 'API_KEY_PARTNER_3', 'API_KEY_PARTNER_4',
+            'APP_ENV', 'APP_DEBUG', 'APP_URL', 'PG_HOST', 'PG_NAME'
+        ];
+        
+        foreach ($keyNames as $key) {
+            $value = getenv($key);
+            if ($value !== false) {
+                $envVars[$key] = $value;
+            }
+        }
+        
+        // Also check $_ENV and $_SERVER
+        foreach ($_ENV as $key => $value) {
+            if (strpos($key, 'API_KEY') === 0 && !isset($envVars[$key])) {
+                $envVars[$key] = $value;
+            }
+        }
+        
+        $result = ['status' => 'success', 'env_vars' => $envVars];
+        echo json_encode($result);
+        exit;
+    }
+    
+    // Test API connection with key
+    if ($action === 'test_api_with_key') {
+        $url = $_POST['url'] ?? '';
+        $apiKey = $_POST['api_key'] ?? '';
+        $payload = json_decode($_POST['payload'] ?? '{}', true);
+        
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'X-API-Key: ' . $apiKey,
+            'X-Country-Code: BW'
+        ]);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
         
         $start = microtime(true);
         $response = curl_exec($ch);
@@ -110,8 +214,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         
         $result = [
             'status' => 'success',
-            'url' => $url,
-            'method' => $method,
             'http_code' => $httpCode,
             'response_time' => $time,
             'response' => $response ? json_decode($response, true) : null,
@@ -144,7 +246,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // Get table data - WITH WHITELIST
+    // Get table data
     if ($action === 'get_table_data') {
         global $allowedTables;
         $table = $_POST['table'] ?? '';
@@ -188,7 +290,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // Fix dashboard - create backup
+    // Fix dashboard
     if ($action === 'fix_dashboard') {
         $dashboardPath = PROJECT_ROOT . '/public/user/user_dashboard.php';
         $backupPath = $dashboardPath . '.backup_' . date('Ymd_His');
@@ -203,7 +305,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // Test swap linked (mock for testing)
+    // Test swap linked
     if ($action === 'swap_linked') {
         $result = [
             'status' => 'success',
@@ -219,7 +321,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
 }
 
 // ============================================================
-// LOAD ALL CONFIGURATIONS FOR INITIAL DISPLAY
+// LOAD ALL CONFIGURATIONS
 // ============================================================
 $configBasePath = PROJECT_ROOT . '/src/Core/Config/Countries/';
 $availableCountries = [];
@@ -235,7 +337,8 @@ if (is_dir($configBasePath)) {
                 'participants.json' => file_exists($countryPath . '/participants.json'),
                 'fees.json' => file_exists($countryPath . '/fees.json'),
                 'config.php' => file_exists($countryPath . '/config.php'),
-                'database.php' => file_exists($countryPath . '/database.php')
+                'database.php' => file_exists($countryPath . '/database.php'),
+                '.env' => file_exists($countryPath . '/.env')
             ];
             
             $participantsFile = $countryPath . '/participants.json';
@@ -257,7 +360,7 @@ try {
     $dbConnected = true;
 } catch (Exception $e) {}
 
-// Get table list (only whitelisted)
+// Get table list
 $tables = [];
 if ($dbConnected) {
     try {
@@ -267,7 +370,7 @@ if ($dbConnected) {
     } catch (Exception $e) {}
 }
 
-// Discover routes - scan multiple paths
+// Discover routes
 $apiRoutes = [];
 function scanForRoutes($dir, $basePath, $baseUrl = '') {
     $routes = [];
@@ -290,11 +393,20 @@ function scanForRoutes($dir, $basePath, $baseUrl = '') {
     return $routes;
 }
 
-// Scan both API locations
 $apiRoutes = scanForRoutes(PROJECT_ROOT . '/public/api', PROJECT_ROOT, '/api');
 $apiRoutes2 = scanForRoutes(PROJECT_ROOT . '/api', PROJECT_ROOT, '/api');
 $apiRoutes = array_merge($apiRoutes, $apiRoutes2);
 $srcRoutes = scanForRoutes(PROJECT_ROOT . '/src/Application/Controllers', PROJECT_ROOT, '/src');
+
+// Get API keys from environment
+$apiKeys = [];
+$keyNames = ['API_KEY_SYSTEM', 'API_KEY_VOUCHMORPH', 'API_KEY_CAZACOM', 'API_KEY_ZURUBANK', 'API_KEY_SACCUSSALIS'];
+foreach ($keyNames as $key) {
+    $value = getenv($key);
+    if ($value) {
+        $apiKeys[$key] = substr($value, 0, 20) . (strlen($value) > 20 ? '...' : '');
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -433,9 +545,6 @@ $srcRoutes = scanForRoutes(PROJECT_ROOT . '/src/Application/Controllers', PROJEC
             max-height: 500px;
             overflow-y: auto;
         }
-        .ajax-request { color: #FFDA63; margin: 8px 0; padding: 8px; background: #0a2a5a; }
-        .ajax-response { color: #10b981; margin-left: 20px; padding: 8px; background: #0a2a2a; }
-        .ajax-error { color: #ef4444; }
         
         .metric { font-size: 28px; font-weight: 700; }
         .metric-label { font-size: 10px; color: #888; margin-top: 4px; }
@@ -474,6 +583,18 @@ $srcRoutes = scanForRoutes(PROJECT_ROOT . '/src/Application/Controllers', PROJEC
         .trace-step.info { border-left-color: #3b82f6; }
         
         .log-entry { padding: 6px 0; border-bottom: 1px solid #1a1a1a; font-size: 11px; }
+        .log-success { color: #10b981; }
+        .log-error { color: #ef4444; }
+        .log-warning { color: #f59e0b; }
+        .log-info { color: #3b82f6; }
+        
+        .api-key-card {
+            background: #0a2a2a;
+            padding: 12px;
+            margin-bottom: 8px;
+            font-family: monospace;
+            font-size: 11px;
+        }
         
         @media (max-width: 1024px) {
             .grid-2, .grid-3 { grid-template-columns: 1fr; }
@@ -493,6 +614,7 @@ $srcRoutes = scanForRoutes(PROJECT_ROOT . '/src/Application/Controllers', PROJEC
     <div class="tabs">
         <button class="tab active" onclick="showPanel('explorer')">📁 SYSTEM EXPLORER</button>
         <button class="tab" onclick="showPanel('participants')">🏦 PARTICIPANT INSPECTOR</button>
+        <button class="tab" onclick="showPanel('keys')">🔑 API KEYS & ENV</button>
         <button class="tab" onclick="showPanel('routes')">🔄 SYSTEM ROUTES</button>
         <button class="tab" onclick="showPanel('database')">🗄️ DATABASE EXPLORER</button>
         <button class="tab" onclick="showPanel('dashboard')">📊 DASHBOARD DEBUG</button>
@@ -532,6 +654,7 @@ $srcRoutes = scanForRoutes(PROJECT_ROOT . '/src/Application/Controllers', PROJEC
             <div class="card-body">
                 <select id="testParticipantSelect"></select>
                 <select id="testEndpointSelect"></select>
+                <input type="text" id="testApiKey" placeholder="API Key (optional)">
                 <textarea id="testPayload" rows="4" placeholder='{"test": true}'></textarea>
                 <button class="btn" onclick="testEndpointLive()">TEST ENDPOINT →</button>
                 <div id="testResult" class="json-viewer" style="margin-top: 12px;"></div>
@@ -539,7 +662,36 @@ $srcRoutes = scanForRoutes(PROJECT_ROOT . '/src/Application/Controllers', PROJEC
         </div>
     </div>
     
-    <!-- PANEL 3: SYSTEM ROUTES -->
+    <!-- PANEL 3: API KEYS & ENVIRONMENT -->
+    <div id="panel-keys" class="panel">
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-header" onclick="toggleCard(this)">🔑 API KEYS LOADED</div>
+                <div class="card-body">
+                    <div id="apiKeysList"></div>
+                    <button class="btn" onclick="refreshEnvVars()" style="margin-top: 12px;">⟳ REFRESH</button>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header" onclick="toggleCard(this)">🧪 TEST API CONNECTION</div>
+                <div class="card-body">
+                    <input type="text" id="testApiUrl" placeholder="API URL" value="https://vouchmorphn-production.up.railway.app/api/v1/swap/execute.php">
+                    <input type="text" id="testApiKeyField" placeholder="API Key">
+                    <textarea id="testApiPayload" rows="4" placeholder='{"source":{"institution":"CAZACOM","asset_type":"MNO-WALLET","amount":100},"destination":{"institution":"ZURUBANK","delivery_mode":"deposit","identifier":"10000001"}}'></textarea>
+                    <button class="btn" onclick="testApiConnection()">TEST API →</button>
+                    <div id="testApiResult" class="json-viewer" style="margin-top: 12px;"></div>
+                </div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header" onclick="toggleCard(this)">📋 ENVIRONMENT VARIABLES</div>
+            <div class="card-body">
+                <div id="envVarsList"></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- PANEL 4: SYSTEM ROUTES -->
     <div id="panel-routes" class="panel">
         <div class="card">
             <div class="card-header" onclick="toggleCard(this)">🔗 API ROUTES</div>
@@ -549,7 +701,7 @@ $srcRoutes = scanForRoutes(PROJECT_ROOT . '/src/Application/Controllers', PROJEC
         </div>
     </div>
     
-    <!-- PANEL 4: DATABASE EXPLORER -->
+    <!-- PANEL 5: DATABASE EXPLORER -->
     <div id="panel-database" class="panel">
         <div class="grid-3" id="dbStats"></div>
         <div class="card">
@@ -567,7 +719,7 @@ $srcRoutes = scanForRoutes(PROJECT_ROOT . '/src/Application/Controllers', PROJEC
         </div>
     </div>
     
-    <!-- PANEL 5: DASHBOARD DEBUG -->
+    <!-- PANEL 6: DASHBOARD DEBUG -->
     <div id="panel-dashboard" class="panel">
         <div class="grid-2">
             <div class="card">
@@ -586,14 +738,14 @@ $srcRoutes = scanForRoutes(PROJECT_ROOT . '/src/Application/Controllers', PROJEC
         </div>
     </div>
     
-    <!-- PANEL 6: AJAX MONITOR -->
+    <!-- PANEL 7: AJAX MONITOR -->
     <div id="panel-ajax" class="panel">
         <div class="card">
             <div class="card-header" onclick="toggleCard(this)">📡 LIVE AJAX MONITOR</div>
             <div class="card-body">
                 <div class="ajax-monitor" id="ajaxMonitor">
-                    <div class="log-entry info">✨ AJAX Monitor ready</div>
-                    <div class="log-entry info">📡 Intercepting dashboard requests...</div>
+                    <div class="log-entry log-info">✨ AJAX Monitor ready</div>
+                    <div class="log-entry log-info">📡 Intercepting dashboard requests...</div>
                 </div>
                 <button class="btn" onclick="testDashboardGetParticipants()" style="margin-top: 12px;">TEST get_participants</button>
                 <button class="btn" onclick="testDashboardSwap()">TEST swap_linked</button>
@@ -601,7 +753,7 @@ $srcRoutes = scanForRoutes(PROJECT_ROOT . '/src/Application/Controllers', PROJEC
         </div>
     </div>
     
-    <!-- PANEL 7: SWAP TRACE -->
+    <!-- PANEL 8: SWAP TRACE -->
     <div id="panel-trace" class="panel">
         <div class="card">
             <div class="card-header" onclick="toggleCard(this)">🔍 SWAP EXECUTION TRACE</div>
@@ -622,7 +774,7 @@ function showPanel(panelId) {
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.getElementById(`panel-${panelId}`).classList.add('active');
-    event.target.classList.add('active');
+    if (event && event.target) event.target.classList.add('active');
 }
 
 function toggleCard(header) {
@@ -767,6 +919,7 @@ document.getElementById('testParticipantSelect')?.addEventListener('change', asy
 async function testEndpointLive() {
     const participant = document.getElementById('testParticipantSelect').value;
     const endpoint = document.getElementById('testEndpointSelect').value;
+    const apiKey = document.getElementById('testApiKey').value;
     const payload = document.getElementById('testPayload').value;
     const resultDiv = document.getElementById('testResult');
     
@@ -794,12 +947,14 @@ async function testEndpointLive() {
     }
     
     resultDiv.innerHTML = '<div class="info">Testing...</div>';
-    addLog('info', `Testing endpoint: ${url}`, 'ajaxMonitor');
+    addLog('info', `Testing endpoint: ${url} with API key: ${apiKey ? 'Yes' : 'No'}`, 'ajaxMonitor');
     
     const testResult = await apiCall('test_endpoint', {
         url: url,
         method: 'POST',
-        payload: payload || '{}'
+        payload: payload || '{}',
+        api_key: apiKey,
+        api_key_header: 'X-API-Key'
     });
     
     if (testResult.http_code === 200) {
@@ -809,13 +964,89 @@ async function testEndpointLive() {
             <pre style="margin-top: 8px;">${JSON.stringify(testResult.response, null, 2)}</pre>
         `;
         addLog('success', `Endpoint test passed: ${url}`, 'ajaxMonitor');
+    } else if (testResult.http_code === 401) {
+        resultDiv.innerHTML = `
+            <div class="error">❌ UNAUTHORIZED (401)</div>
+            <div>Invalid or missing API key</div>
+            <div>Try using API key: ${apiKey ? 'Current key rejected' : 'No key provided'}</div>
+        `;
+        addLog('error', `Endpoint unauthorized: ${url} - Check API key`, 'ajaxMonitor');
     } else {
         resultDiv.innerHTML = `
             <div class="error">❌ FAILED</div>
             <div>HTTP ${testResult.http_code || 'N/A'}</div>
             <div>Error: ${testResult.error || 'Unknown'}</div>
+            ${testResult.redirect_url ? `<div>Redirected to: ${testResult.redirect_url}</div>` : ''}
         `;
         addLog('error', `Endpoint test failed: ${url} - ${testResult.error}`, 'ajaxMonitor');
+    }
+}
+
+// ============================================================
+// API KEYS & ENVIRONMENT
+// ============================================================
+async function refreshEnvVars() {
+    const result = await apiCall('get_env_vars');
+    if (result.status === 'success') {
+        const container = document.getElementById('envVarsList');
+        const keysContainer = document.getElementById('apiKeysList');
+        
+        let envHtml = '<div style="font-family: monospace; font-size: 11px;">';
+        for (const [key, value] of Object.entries(result.env_vars)) {
+            envHtml += `<div><strong>${key}</strong>: ${value}</div>`;
+        }
+        envHtml += '</div>';
+        container.innerHTML = envHtml;
+        
+        let keysHtml = '';
+        const apiKeys = ['API_KEY_SYSTEM', 'API_KEY_VOUCHMORPH', 'API_KEY_CAZACOM', 'API_KEY_ZURUBANK', 'API_KEY_SACCUSSALIS'];
+        for (const key of apiKeys) {
+            const value = result.env_vars[key];
+            keysHtml += `<div class="api-key-card"><strong>${key}</strong><br><span style="color: #FFDA63;">${value || 'NOT SET'}</span></div>`;
+        }
+        keysContainer.innerHTML = keysHtml;
+        
+        addLog('info', 'Environment variables refreshed', 'ajaxMonitor');
+    }
+}
+
+async function testApiConnection() {
+    const url = document.getElementById('testApiUrl').value;
+    const apiKey = document.getElementById('testApiKeyField').value;
+    const payload = document.getElementById('testApiPayload').value;
+    const resultDiv = document.getElementById('testApiResult');
+    
+    if (!url) {
+        resultDiv.innerHTML = '<div class="error">Enter API URL</div>';
+        return;
+    }
+    
+    resultDiv.innerHTML = '<div class="info">Testing...</div>';
+    addLog('info', `Testing API: ${url}`, 'ajaxMonitor');
+    
+    let payloadObj = {};
+    try {
+        payloadObj = JSON.parse(payload || '{}');
+    } catch(e) {}
+    
+    const testResult = await apiCall('test_api_with_key', {
+        url: url,
+        api_key: apiKey,
+        payload: JSON.stringify(payloadObj)
+    });
+    
+    if (testResult.http_code === 200) {
+        resultDiv.innerHTML = `
+            <div class="success">✅ API RESPONSE (${testResult.response_time}ms)</div>
+            <pre style="margin-top: 8px;">${JSON.stringify(testResult.response, null, 2)}</pre>
+        `;
+        addLog('success', `API test passed: ${url}`, 'ajaxMonitor');
+    } else {
+        resultDiv.innerHTML = `
+            <div class="error">❌ FAILED (HTTP ${testResult.http_code})</div>
+            <div>Error: ${testResult.error || 'Unknown'}</div>
+        `;
+        addLog('error', `API test failed: ${url} - ${testResult.error}`, 'ajaxMonitor');
     }
 }
 
@@ -832,7 +1063,7 @@ function displayRoutes() {
     }
     
     let html = '<table style="width: 100%; border-collapse: collapse;">';
-    html += '<tr style="background: #1a1a1a;"><th style="padding: 8px; text-align: left;">Method</th><th style="padding: 8px; text-align: left;">URL</th><th style="padding: 8px; text-align: left;">File</th></tr>';
+    html += '<tr style="background: #1a1a1a;"><th style="padding: 8px; text-align: left;">Method</th><th style="padding: 8px; text-align: left;">URL</th><th style="padding: 8px; text-align: left;">File</th></table>';
     
     for (const route of routes) {
         const methodClass = route.method === 'POST' ? 'success' : (route.method === 'GET' ? 'info' : 'warning');
@@ -1017,7 +1248,7 @@ async function traceSwap() {
             <div class="trace-step success">✅ SWAP FOUND: ${result.swap.swap_reference}</div>
             <div class="trace-step info">📤 Source: ${result.swap.source_institution} (${result.swap.source_asset_type || 'N/A'})</div>
             <div class="trace-step info">📥 Destination: ${result.swap.destination_institution} → ${result.swap.destination_identifier}</div>
-            <div class="trace-step info">💰 Amount: ${result.swap.amount} BWP</div>
+            <div class="trace-step info">💰 Amount: ${result.swap.amount} ${result.swap.currency || 'BWP'}</div>
             <div class="trace-step info">📅 Created: ${result.swap.created_at}</div>
             <div class="trace-step ${result.swap.status === 'completed' ? 'success' : 'warning'}">📊 Status: ${result.swap.status}</div>
             ${result.settlement ? `<div class="trace-step success">🏦 Settlement: ${result.settlement.from_participant} → ${result.settlement.to_participant} (${result.settlement.amount} BWP)</div>` : ''}
@@ -1034,7 +1265,7 @@ async function traceSwap() {
 // ============================================================
 async function calculateHealthScore() {
     let score = 0;
-    let total = 6;
+    let total = 7;
     
     // Database connected
     <?php if ($dbConnected): ?>score++;<?php endif; ?>
@@ -1057,6 +1288,13 @@ async function calculateHealthScore() {
     const routesCount = <?php echo count($apiRoutes); ?>;
     if (routesCount > 0) score++;
     
+    // API Keys configured
+    const envResult = await apiCall('get_env_vars');
+    if (envResult.status === 'success') {
+        const hasApiKeys = envResult.env_vars['API_KEY_SYSTEM'] || envResult.env_vars['API_KEY_CAZACOM'];
+        if (hasApiKeys) score++;
+    }
+    
     const percentage = Math.round((score / total) * 100);
     document.getElementById('scoreValue').textContent = `${percentage}%`;
     document.getElementById('scoreValue').style.color = percentage >= 70 ? '#10b981' : (percentage >= 40 ? '#f59e0b' : '#ef4444');
@@ -1066,31 +1304,24 @@ async function calculateHealthScore() {
 // INITIALIZATION
 // ============================================================
 async function init() {
-    // Load VouchMorph tree
     await loadFolder('', 'vouchmorphTree');
     
-    // Load config files display
     const configHtml = `<?php 
         foreach ($availableCountries as $country) {
             echo "<div style='margin-bottom: 16px;'><strong>{$country}</strong><div style='margin-left: 16px;'>";
             foreach ($countryFiles[$country] as $file => $exists) {
-                echo "<div>" . ($exists ? '✅' : '❌') . " {$file}</div>";
+                $icon = $exists ? '✅' : '❌';
+                echo "<div>{$icon} {$file}</div>";
             }
             echo "</div></div>";
         }
     ?>`;
     document.getElementById('configFiles').innerHTML = configHtml;
     
-    // Load participants
     await loadParticipants();
-    
-    // Display routes
     displayRoutes();
-    
-    // Load dashboard state
     await loadDashboardState();
-    
-    // Calculate health score
+    await refreshEnvVars();
     await calculateHealthScore();
     
     addLog('info', '✨ Diagnostics Center ready', 'ajaxMonitor');
