@@ -1,8 +1,7 @@
 <?php
 /**
  * VouchMorph System Introspection & Diagnostics Center
- * Complete: Config Explorer, Participant Inspector, Route Discovery, 
- * Dashboard Debugger, AJAX Monitor, Database Explorer, Swap Trace, Folder Browser
+ * Complete working version with all fixes
  */
 
 session_start();
@@ -14,6 +13,24 @@ if (!isset($_SESSION['admin_logged_in']) || $_SESSION['admin_logged_in'] !== tru
 define('PROJECT_ROOT', dirname(__DIR__, 2));
 
 // ============================================================
+// COMPOSER AUTOLOADER (MUST BE AT TOP)
+// ============================================================
+require_once PROJECT_ROOT . '/vendor/autoload.php';
+
+// ============================================================
+// USE STATEMENTS - ONLY AT TOP LEVEL
+// ============================================================
+use Core\Database\DBConnection;
+
+// ============================================================
+// WHITELISTED TABLES FOR SECURITY
+// ============================================================
+$allowedTables = [
+    'users', 'user_funding_sources', 'swap_transactions', 'settlement_obligations',
+    'sessions', 'audit_logs', 'wallets', 'accounts', 'transactions'
+];
+
+// ============================================================
 // AJAX HANDLER - Must return JSON and exit
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH'])) {
@@ -21,6 +38,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     $action = $_POST['action'] ?? $_GET['action'] ?? '';
     $result = ['status' => 'error', 'message' => 'Unknown action'];
     
+    // Get file contents
     if ($action === 'get_file') {
         $file = $_POST['file'] ?? '';
         $fullPath = PROJECT_ROOT . '/' . ltrim($file, '/');
@@ -39,6 +57,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
+    // Get folder contents
     if ($action === 'get_folder') {
         $folder = $_POST['folder'] ?? '';
         $fullPath = PROJECT_ROOT . '/' . ltrim($folder, '/');
@@ -57,12 +76,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             }
             $result = ['status' => 'success', 'files' => $files, 'path' => $fullPath];
         } else {
-            $result = ['status' => 'error', 'message' => 'Folder not found'];
+            $result = ['status' => 'error', 'message' => 'Folder not found: ' . $fullPath];
         }
         echo json_encode($result);
         exit;
     }
     
+    // Test endpoint
     if ($action === 'test_endpoint') {
         $url = $_POST['url'] ?? '';
         $method = $_POST['method'] ?? 'GET';
@@ -101,6 +121,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
+    // Get participants live from config
     if ($action === 'get_participants_live') {
         $participants = [];
         $configBasePath = PROJECT_ROOT . '/src/Core/Config/Countries/';
@@ -123,13 +144,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
+    // Get table data - WITH WHITELIST
     if ($action === 'get_table_data') {
-        require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
-        use Core\Database\DBConnection;
+        global $allowedTables;
         $table = $_POST['table'] ?? '';
-        $db = DBConnection::getInstance();
+        
+        if (!in_array($table, $allowedTables)) {
+            $result = ['status' => 'error', 'message' => 'Table not allowed: ' . $table];
+            echo json_encode($result);
+            exit;
+        }
         
         try {
+            $db = DBConnection::getInstance();
             $stmt = $db->query("SELECT * FROM $table LIMIT 50");
             $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
             $result = ['status' => 'success', 'data' => $data, 'count' => count($data)];
@@ -140,13 +167,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
+    // Trace swap
     if ($action === 'trace_swap') {
         $swapRef = $_POST['swap_ref'] ?? '';
-        require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
-        use Core\Database\DBConnection;
-        $db = DBConnection::getInstance();
-        
         try {
+            $db = DBConnection::getInstance();
             $stmt = $db->prepare("SELECT * FROM swap_transactions WHERE swap_reference = :ref");
             $stmt->execute(['ref' => $swapRef]);
             $swap = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -163,6 +188,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
+    // Fix dashboard - create backup
+    if ($action === 'fix_dashboard') {
+        $dashboardPath = PROJECT_ROOT . '/public/user/user_dashboard.php';
+        $backupPath = $dashboardPath . '.backup_' . date('Ymd_His');
+        
+        if (file_exists($dashboardPath)) {
+            copy($dashboardPath, $backupPath);
+            $result = ['status' => 'backup_created', 'backup_path' => $backupPath, 'message' => 'Backup created'];
+        } else {
+            $result = ['status' => 'error', 'message' => 'Dashboard file not found'];
+        }
+        echo json_encode($result);
+        exit;
+    }
+    
+    // Test swap linked (mock for testing)
+    if ($action === 'swap_linked') {
+        $result = [
+            'status' => 'success',
+            'swap_reference' => 'VM-TEST-' . date('YmdHis'),
+            'message' => 'Test swap completed (mock)'
+        ];
+        echo json_encode($result);
+        exit;
+    }
+    
     echo json_encode($result);
     exit;
 }
@@ -170,9 +221,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
 // ============================================================
 // LOAD ALL CONFIGURATIONS FOR INITIAL DISPLAY
 // ============================================================
-require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
-use Core\Database\DBConnection;
-
 $configBasePath = PROJECT_ROOT . '/src/Core/Config/Countries/';
 $availableCountries = [];
 $countryFiles = [];
@@ -203,23 +251,23 @@ if (is_dir($configBasePath)) {
 }
 
 // Database connection status
-$db = null;
 $dbConnected = false;
 try {
     $db = DBConnection::getInstance();
     $dbConnected = true;
 } catch (Exception $e) {}
 
-// Get table list
+// Get table list (only whitelisted)
 $tables = [];
 if ($dbConnected) {
     try {
         $stmt = $db->query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
-        $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        $allDbTables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        $tables = array_intersect($allDbTables, $allowedTables);
     } catch (Exception $e) {}
 }
 
-// Discover routes
+// Discover routes - scan multiple paths
 $apiRoutes = [];
 function scanForRoutes($dir, $basePath, $baseUrl = '') {
     $routes = [];
@@ -235,13 +283,17 @@ function scanForRoutes($dir, $basePath, $baseUrl = '') {
             $content = file_get_contents($path);
             $method = 'GET';
             if (strpos($content, '$_POST') !== false || strpos($content, 'POST') !== false) $method = 'POST';
-            if (strpos($content, '$_GET') !== false || strpos($content, 'GET') !== false && $method === 'GET') $method = 'BOTH';
+            if (strpos($content, '$_GET') !== false && $method === 'GET') $method = 'BOTH';
             $routes[] = ['url' => $urlPath, 'method' => $method, 'file' => str_replace($basePath, '', $path)];
         }
     }
     return $routes;
 }
+
+// Scan both API locations
 $apiRoutes = scanForRoutes(PROJECT_ROOT . '/public/api', PROJECT_ROOT, '/api');
+$apiRoutes2 = scanForRoutes(PROJECT_ROOT . '/api', PROJECT_ROOT, '/api');
+$apiRoutes = array_merge($apiRoutes, $apiRoutes2);
 $srcRoutes = scanForRoutes(PROJECT_ROOT . '/src/Application/Controllers', PROJECT_ROOT, '/src');
 ?>
 <!DOCTYPE html>
@@ -459,9 +511,7 @@ $srcRoutes = scanForRoutes(PROJECT_ROOT . '/src/Application/Controllers', PROJEC
             </div>
             <div class="card">
                 <div class="card-header" onclick="toggleCard(this)">⚙️ CONFIGURATION FILES</div>
-                <div class="card-body">
-                    <div id="configFiles"></div>
-                </div>
+                <div class="card-body" id="configFiles"></div>
             </div>
         </div>
         <div class="card">
@@ -693,20 +743,24 @@ async function loadParticipants() {
             `;
         }
         grid.innerHTML = html;
+        addLog('info', `Loaded ${Object.keys(participants).length} participants`, 'ajaxMonitor');
     }
 }
 
-document.getElementById('testParticipantSelect')?.addEventListener('change', function() {
-    const selected = this.options[this.selectedIndex];
+document.getElementById('testParticipantSelect')?.addEventListener('change', async function() {
     const code = this.value;
     const endpointSelect = document.getElementById('testEndpointSelect');
     
     if (code) {
-        endpointSelect.innerHTML = '<option value="">Select endpoint...</option>';
-        // Would need to load endpoints from participant config
-        endpointSelect.innerHTML += `<option value="health">Health Check</option>`;
-        endpointSelect.innerHTML += `<option value="verify_asset">Verify Asset</option>`;
-        endpointSelect.innerHTML += `<option value="place_hold">Place Hold</option>`;
+        const result = await apiCall('get_participants_live');
+        const participant = result.participants[code];
+        endpointSelect.innerHTML = '<option value="health">Health Check</option>';
+        
+        if (participant && participant.resource_endpoints) {
+            for (const [name, url] of Object.entries(participant.resource_endpoints)) {
+                endpointSelect.innerHTML += `<option value="${name}">${name}</option>`;
+            }
+        }
     }
 });
 
@@ -721,7 +775,6 @@ async function testEndpointLive() {
         return;
     }
     
-    // Get participant data
     const partsResult = await apiCall('get_participants_live');
     const participantData = partsResult.participants[participant];
     
@@ -730,14 +783,18 @@ async function testEndpointLive() {
         return;
     }
     
-    let url = participantData.base_url;
+    let url = participantData.base_url.replace(/\/$/, '');
     if (endpoint === 'health') {
         url += '/health';
     } else if (participantData.resource_endpoints && participantData.resource_endpoints[endpoint]) {
         url += participantData.resource_endpoints[endpoint];
+    } else {
+        resultDiv.innerHTML = '<div class="error">Unknown endpoint</div>';
+        return;
     }
     
     resultDiv.innerHTML = '<div class="info">Testing...</div>';
+    addLog('info', `Testing endpoint: ${url}`, 'ajaxMonitor');
     
     const testResult = await apiCall('test_endpoint', {
         url: url,
@@ -751,7 +808,7 @@ async function testEndpointLive() {
             <div>HTTP ${testResult.http_code} (${testResult.response_time}ms)</div>
             <pre style="margin-top: 8px;">${JSON.stringify(testResult.response, null, 2)}</pre>
         `;
-        addLog('success', `Endpoint test: ${url} - ${testResult.http_code}`, 'ajaxMonitor');
+        addLog('success', `Endpoint test passed: ${url}`, 'ajaxMonitor');
     } else {
         resultDiv.innerHTML = `
             <div class="error">❌ FAILED</div>
@@ -768,6 +825,11 @@ async function testEndpointLive() {
 function displayRoutes() {
     const routes = <?php echo json_encode(array_merge($apiRoutes, $srcRoutes)); ?>;
     const container = document.getElementById('routesList');
+    
+    if (!routes.length) {
+        container.innerHTML = '<div class="warning">No routes discovered</div>';
+        return;
+    }
     
     let html = '<table style="width: 100%; border-collapse: collapse;">';
     html += '<tr style="background: #1a1a1a;"><th style="padding: 8px; text-align: left;">Method</th><th style="padding: 8px; text-align: left;">URL</th><th style="padding: 8px; text-align: left;">File</th></tr>';
@@ -799,8 +861,10 @@ async function loadTableData() {
             <div class="success">✅ Loaded ${result.count} records</div>
             <pre style="margin-top: 8px; white-space: pre-wrap;">${JSON.stringify(result.data, null, 2)}</pre>
         `;
+        addLog('success', `Loaded ${result.count} records from ${table}`, 'ajaxMonitor');
     } else {
         container.innerHTML = `<div class="error">${result.message}</div>`;
+        addLog('error', `Failed to load ${table}: ${result.message}`, 'ajaxMonitor');
     }
 }
 
@@ -810,24 +874,15 @@ async function loadTableData() {
 async function loadDashboardState() {
     const container = document.getElementById('dashboardState');
     
-    // Check participants.json
-    const participantsResult = await apiCall('get_file', { file: 'src/Core/Config/Countries/Botswana/participants.json' });
+    const participantsResult = await apiCall('get_participants_live');
     const participantsLoaded = participantsResult.status === 'success';
-    let participantsCount = 0;
-    if (participantsLoaded) {
-        try {
-            const data = JSON.parse(participantsResult.content);
-            participantsCount = Object.keys(data.participants || data || {}).length;
-        } catch(e) {}
-    }
+    const participantsCount = participantsLoaded ? Object.keys(participantsResult.participants).length : 0;
     
-    // Check database sources
     const sourcesResult = await apiCall('get_table_data', { table: 'user_funding_sources' });
-    const sourcesCount = sourcesResult.status === 'success' ? sourcesResult.data.length : 0;
+    const sourcesCount = sourcesResult.status === 'success' ? sourcesResult.count : 0;
     
-    // Check swaps
     const swapsResult = await apiCall('get_table_data', { table: 'swap_transactions' });
-    const swapsCount = swapsResult.status === 'success' ? swapsResult.data.length : 0;
+    const swapsCount = swapsResult.status === 'success' ? swapsResult.count : 0;
     
     container.innerHTML = `
         <div style="margin-bottom: 16px;">
@@ -862,14 +917,14 @@ async function repairDashboard() {
         addLog('success', `Dashboard backup created`, 'ajaxMonitor');
     } else {
         container.innerHTML = `<div class="error">${result.message}</div>`;
+        addLog('error', `Dashboard backup failed: ${result.message}`, 'ajaxMonitor');
     }
 }
 
 async function checkParticipantsPath() {
     const paths = [
         'src/Core/Config/Countries/Botswana/participants.json',
-        'src/Core/Config/countries/Botswana/participants.json',
-        'src/CORE_CONFIG/countries/Botswana/participants.json'
+        'src/Core/Config/countries/Botswana/participants.json'
     ];
     const container = document.getElementById('repairResult');
     let html = '<div><strong>Checking participants.json paths:</strong></div>';
@@ -877,6 +932,13 @@ async function checkParticipantsPath() {
     for (const path of paths) {
         const result = await apiCall('get_file', { file: path });
         html += `<div style="margin-top: 8px;">${result.status === 'success' ? '✅' : '❌'} ${path}</div>`;
+        if (result.status === 'success') {
+            try {
+                const data = JSON.parse(result.content);
+                const participantCount = Object.keys(data.participants || data || {}).length;
+                html += `<div style="margin-left: 20px; font-size: 11px;">→ ${participantCount} participants found</div>`;
+            } catch(e) {}
+        }
     }
     container.innerHTML = html;
 }
@@ -885,18 +947,14 @@ async function testDashboardApi() {
     const container = document.getElementById('repairResult');
     container.innerHTML = '<div class="info">Testing dashboard API endpoints...</div>';
     
-    // Test get_participants
     const participantsResult = await apiCall('get_participants_live');
     if (participantsResult.status === 'success') {
         addLog('success', `get_participants: ${Object.keys(participantsResult.participants).length} participants found`, 'ajaxMonitor');
+        container.innerHTML = `<div class="success">✅ API test successful</div>`;
     } else {
         addLog('error', `get_participants failed`, 'ajaxMonitor');
+        container.innerHTML = `<div class="error">❌ API test failed</div>`;
     }
-    
-    container.innerHTML = `
-        <div class="success">✅ API tests complete</div>
-        <div>Check the AJAX Monitor for details</div>
-    `;
 }
 
 // ============================================================
@@ -904,12 +962,13 @@ async function testDashboardApi() {
 // ============================================================
 async function testDashboardGetParticipants() {
     addLog('info', 'Testing get_participants...', 'ajaxMonitor');
-    addLog('info', '📤 AJAX REQUEST: action=get_participants', 'ajaxMonitor');
+    addLog('info', '📤 AJAX REQUEST: action=get_participants_live', 'ajaxMonitor');
     
     const result = await apiCall('get_participants_live');
     
     if (result.status === 'success') {
-        addLog('success', `📥 AJAX RESPONSE: ${Object.keys(result.participants).length} participants loaded`, 'ajaxMonitor');
+        const count = Object.keys(result.participants).length;
+        addLog('success', `📥 AJAX RESPONSE: ${count} participants loaded`, 'ajaxMonitor');
         addLog('info', `Participants: ${Object.keys(result.participants).join(', ')}`, 'ajaxMonitor');
     } else {
         addLog('error', `📥 AJAX ERROR: ${result.message}`, 'ajaxMonitor');
@@ -949,6 +1008,7 @@ async function traceSwap() {
     }
     
     container.innerHTML = '<div class="info">Tracing...</div>';
+    addLog('info', `Tracing swap: ${swapRef}`, 'ajaxMonitor');
     
     const result = await apiCall('trace_swap', { swap_ref: swapRef });
     
@@ -977,17 +1037,17 @@ async function calculateHealthScore() {
     let total = 6;
     
     // Database connected
-    <?php if ($dbConnected): $score++; ?> <?php endif; ?>
+    <?php if ($dbConnected): ?>score++;<?php endif; ?>
     
     // Participants loaded
     const participants = await apiCall('get_participants_live');
     if (participants.status === 'success' && Object.keys(participants.participants).length > 0) score++;
     
     // Database has tables
-    <?php if (!empty($tables)): $score++; ?> <?php endif; ?>
+    <?php if (!empty($tables)): ?>score++;<?php endif; ?>
     
     // Session active
-    <?php if (session_status() === PHP_SESSION_ACTIVE): $score++; ?> <?php endif; ?>
+    <?php if (session_status() === PHP_SESSION_ACTIVE): ?>score++;<?php endif; ?>
     
     // Config files exist
     const configCheck = await apiCall('get_file', { file: 'src/Core/Config/Countries/Botswana/participants.json' });
@@ -1010,7 +1070,7 @@ async function init() {
     await loadFolder('', 'vouchmorphTree');
     
     // Load config files display
-    const configFilesHtml = `<?php 
+    const configHtml = `<?php 
         foreach ($availableCountries as $country) {
             echo "<div style='margin-bottom: 16px;'><strong>{$country}</strong><div style='margin-left: 16px;'>";
             foreach ($countryFiles[$country] as $file => $exists) {
@@ -1019,7 +1079,7 @@ async function init() {
             echo "</div></div>";
         }
     ?>`;
-    document.getElementById('configFiles').innerHTML = configFilesHtml;
+    document.getElementById('configFiles').innerHTML = configHtml;
     
     // Load participants
     await loadParticipants();
@@ -1034,7 +1094,7 @@ async function init() {
     await calculateHealthScore();
     
     addLog('info', '✨ Diagnostics Center ready', 'ajaxMonitor');
-    addLog('info', `📊 Found ${Object.keys(<?php echo json_encode($allParticipants); ?>).length} participants`, 'ajaxMonitor');
+    addLog('info', `📊 Found <?php echo count($allParticipants); ?> participants`, 'ajaxMonitor');
     addLog('info', `🔗 Discovered <?php echo count($apiRoutes); ?> API routes`, 'ajaxMonitor');
     addLog('info', `🗄️ Database: <?php echo $dbConnected ? 'Connected' : 'Disconnected'; ?>`, 'ajaxMonitor');
 }
