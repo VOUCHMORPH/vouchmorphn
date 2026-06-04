@@ -1,5 +1,5 @@
 <?php
-// public/user/user_dashboard.php - COMPLETE UPDATED VERSION
+// public/user/user_dashboard.php - COMPLETE FIXED VERSION
 
 ini_set('display_errors', 1);
 ini_set('log_errors', 1);
@@ -230,6 +230,25 @@ try {
     $db = null;
 }
 
+// ============================================================
+// PIN REFRESH - MOVED HERE AFTER DATABASE IS CONNECTED
+// ============================================================
+if ($db && $userId) {
+    try {
+        $stmt = $db->prepare("SELECT has_transaction_pin FROM users WHERE user_id = :user_id LIMIT 1");
+        $stmt->execute([':user_id' => $userId]);
+        $dbPinStatus = $stmt->fetch(\PDO::FETCH_ASSOC);
+        if ($dbPinStatus) {
+            $hasTransactionPin = (bool)$dbPinStatus['has_transaction_pin'];
+            // Update session to match database
+            $user['has_transaction_pin'] = $hasTransactionPin;
+            SessionManager::setUser($user);
+        }
+    } catch (\Throwable $e) {
+        error_log("Failed to refresh PIN status: " . $e->getMessage());
+    }
+}
+
 $fundingSources = [];
 $bankConnections = [];
 
@@ -412,7 +431,7 @@ if ($isAjax) {
             
             $stmt = $db->prepare("SELECT * FROM user_funding_sources WHERE id = :id AND user_id = :user_id AND status = 'ACTIVE'");
             $stmt->execute(['id' => $sourceId, 'user_id' => $userId]);
-            $source = $stmt->fetch(PDO::FETCH_ASSOC);
+            $source = $stmt->fetch(\PDO::FETCH_ASSOC);
             if (!$source) throw new Exception('Source not found');
             
             $sourceParticipant = $allParticipants[$source['institution_code']] ?? null;
@@ -706,7 +725,6 @@ foreach ($fundingSources as $fs) {
     </div>
 
     <div class="action-panel" id="actionPanel">
-        <!-- LINKED SOURCES SECTION -->
         <div style="padding: 32px;">
             <div class="panel-label">🔗 LINKED SOURCES <span class="mode-badge badge-linked">VM PIN ONLY</span></div>
             <div id="sourcesList">
@@ -729,7 +747,6 @@ foreach ($fundingSources as $fs) {
             </div>
         </div>
         
-        <!-- LINKED SWAP FORM -->
         <div id="linkedSwapForm" style="display: none; padding: 32px; border-top: 1px solid rgba(255,255,255,0.06);">
             <div class="panel-label">⟡ LINKED SWAP <span class="mode-badge badge-linked">VM PIN ONLY</span></div>
             <div id="selectedSourceInfo" class="source-item" style="margin-bottom: 16px; background: rgba(255,255,255,0.03);"></div>
@@ -743,7 +760,6 @@ foreach ($fundingSources as $fs) {
             <button class="execute-btn" onclick="executeLinkedSwap()">EXECUTE SWAP (VM PIN) →</button>
         </div>
         
-        <!-- AD-HOC SWAP SECTION -->
         <div style="padding: 32px; border-top: 1px solid rgba(255,255,255,0.06);">
             <div class="panel-label">⚡ AD-HOC SWAP <span class="mode-badge badge-adhoc">INSTITUTION PIN ONLY</span></div>
             <div class="section-divider"></div>
