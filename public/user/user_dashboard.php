@@ -34,9 +34,6 @@ $userId = $user['user_id'] ?? $user['id'] ?? null;
 $userCountry = $user['country'] ?? 'Botswana';
 $hasTransactionPin = $user['has_transaction_pin'] ?? false;
 
-// ============================================================
-// COUNTRY CONFIGURATION LOADER
-// ============================================================
 define('CONFIG_BASE_PATH', __DIR__ . '/../../src/Core/Config/Countries/');
 
 function loadCountryConfiguration($countryName) {
@@ -103,9 +100,6 @@ function loadCountryConfiguration($countryName) {
 
 $countryConfig = loadCountryConfiguration($userCountry);
 
-// ============================================================
-// BUILD PARTICIPANTS LIST
-// ============================================================
 $allParticipants = [];
 $sourceParticipants = [];
 $destinationCountries = [];
@@ -115,7 +109,7 @@ function getAssetIcon($type) {
     $icons = [
         'ACCOUNT' => '🏦', 'VOUCHER' => '🎫', 'ATM' => '🏧', 'E-WALLET' => '📱',
         'WALLET' => '👛', 'CARD' => '💳', 'BANK_ACCOUNT' => '🏦', 'MOBILE_WALLET' => '📱',
-        'MNO-WALLET' => '📱'
+        'MNO-WALLET' => '📱', 'BANK-WALLET' => '🏦', 'CASHOUT-VOUCHER' => '🎫', 'AIRTIME' => '📞'
     ];
     return $icons[$type] ?? '📄';
 }
@@ -130,6 +124,21 @@ function getIdentificationMethods($assetType) {
             ['field' => 'phone', 'label' => 'Mobile Number', 'type' => 'tel', 'required' => true, 'placeholder' => 'Enter mobile number'],
             ['field' => 'pin', 'label' => 'Wallet PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
         ],
+        'BANK-WALLET' => [
+            ['field' => 'wallet_id', 'label' => 'Wallet ID', 'type' => 'text', 'required' => true, 'placeholder' => 'Enter wallet ID'],
+            ['field' => 'wallet_pin', 'label' => 'Wallet PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
+        ],
+        'CASHOUT-VOUCHER' => [
+            ['field' => 'voucher_code', 'label' => 'Voucher Code', 'type' => 'text', 'required' => true, 'placeholder' => 'Enter voucher code'],
+            ['field' => 'voucher_pin', 'label' => 'Voucher PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
+        ],
+        'AIRTIME' => [
+            ['field' => 'phone', 'label' => 'Mobile Number', 'type' => 'tel', 'required' => true, 'placeholder' => 'Enter mobile number']
+        ],
+        'ATM' => [
+            ['field' => 'card_number', 'label' => 'ATM Card Number', 'type' => 'text', 'required' => true, 'placeholder' => 'Enter card number'],
+            ['field' => 'atm_pin', 'label' => 'ATM PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
+        ],
         'E-WALLET' => [
             ['field' => 'wallet_phone', 'label' => 'Mobile Number', 'type' => 'tel', 'required' => true, 'placeholder' => 'Enter mobile number'],
             ['field' => 'wallet_pin', 'label' => 'Wallet PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
@@ -143,12 +152,15 @@ function getIdentificationMethods($assetType) {
             ['field' => 'card_pin', 'label' => 'Card PIN', 'type' => 'password', 'required' => true, 'placeholder' => 'Enter PIN']
         ]
     ];
-    return $methods[$assetType] ?? [['field' => 'identifier', 'label' => 'Identifier', 'type' => 'text', 'required' => true, 'placeholder' => 'Enter identifier']];
+    return $methods[$assetType] ?? [
+        ['field' => 'identifier', 'label' => 'Identifier', 'type' => 'text', 'required' => true, 'placeholder' => 'Enter identifier']
+    ];
 }
 
 if ($countryConfig && !empty($countryConfig['participants'])) {
     foreach ($countryConfig['participants'] as $code => $participantData) {
         $assetTypes = [];
+        
         $capabilities = $participantData['capabilities'] ?? [];
         $rawAssetTypes = $capabilities['asset_types'] ?? [];
         
@@ -162,17 +174,24 @@ if ($countryConfig && !empty($countryConfig['participants'])) {
             ];
             
             if (!isset($allAssetTypes[$assetType])) {
-                $allAssetTypes[$assetType] = ['type' => $assetType, 'name' => ucfirst(strtolower(str_replace('_', ' ', $assetType))), 'icon' => getAssetIcon($assetType), 'institutions' => []];
+                $allAssetTypes[$assetType] = [
+                    'type' => $assetType,
+                    'name' => ucfirst(strtolower(str_replace('_', ' ', $assetType))),
+                    'icon' => getAssetIcon($assetType),
+                    'institutions' => []
+                ];
             }
             if (!in_array($code, $allAssetTypes[$assetType]['institutions'])) {
                 $allAssetTypes[$assetType]['institutions'][] = $code;
             }
         }
         
+        $participantCountry = $participantData['country'] ?? $userCountry;
+        
         $participant = [
             'code' => $code,
             'name' => $participantData['name'] ?? $participantData['provider_code'] ?? $code,
-            'country' => $participantData['country'] ?? $userCountry,
+            'country' => $participantCountry,
             'currency' => $participantData['settlement']['currency'] ?? $countryConfig['currency'],
             'asset_types' => $assetTypes,
             'status' => $participantData['status'] ?? 'ACTIVE',
@@ -185,10 +204,11 @@ if ($countryConfig && !empty($countryConfig['participants'])) {
         
         $allParticipants[$code] = $participant;
         
-        if ($participant['country'] === $userCountry && $participant['status'] === 'ACTIVE') {
+        if ($participantCountry === $userCountry && $participant['status'] === 'ACTIVE') {
             $sourceParticipants[$code] = $participant;
         }
-        $destinationCountries[$participant['country']] = true;
+        
+        $destinationCountries[$participantCountry] = true;
     }
 }
 
@@ -197,9 +217,6 @@ $userCurrency = $countryConfig['currency'] ?? 'BWP';
 $userCurrencySymbol = $countryConfig['currency_symbol'] ?? 'P';
 $dialCode = $countryConfig['dial_code'] ?? '+267';
 
-// ============================================================
-// DATABASE CONNECTION
-// ============================================================
 try {
     $dbConfig = $countryConfig['database']['swap'] ?? $countryConfig['database'] ?? null;
     if ($dbConfig && is_array($dbConfig) && isset($dbConfig['host'])) {
@@ -213,9 +230,6 @@ try {
     $db = null;
 }
 
-// ============================================================
-// LOAD USER DATA
-// ============================================================
 $fundingSources = [];
 $bankConnections = [];
 
@@ -233,9 +247,6 @@ if ($db && $userId) {
     } catch (\Throwable $e) {}
 }
 
-// ============================================================
-// PIN FUNCTIONS
-// ============================================================
 function userHasTransactionPin($db, $userId) { 
     if (!$db) return false;
     $stmt = $db->prepare("SELECT transaction_pin_hash FROM users WHERE user_id = :user_id LIMIT 1"); 
@@ -260,7 +271,6 @@ function setTransactionPin($db, $userId, $pin) {
     return $stmt->execute([':hash' => $hash, ':user_id' => $userId]); 
 }
 
-// Helper function to call participant APIs
 function callParticipantApi($url, $data) {
     $ch = curl_init($url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -286,9 +296,6 @@ function callParticipantApi($url, $data) {
     return $decoded ?: ['status' => 'error', 'message' => 'Invalid response'];
 }
 
-// ============================================================
-// AJAX HANDLERS
-// ============================================================
 if ($isAjax) {
     $action = $_POST['action'] ?? $_GET['action'] ?? '';
     
@@ -384,7 +391,6 @@ if ($isAjax) {
         }
     }
     
-    // LINKED SWAP - Uses VouchMorph PIN only
     if ($action === 'swap_linked') {
         try { 
             $consentToken = $_POST['consent_token'] ?? ''; 
@@ -404,7 +410,6 @@ if ($isAjax) {
             if (!$destInstitution) throw new Exception('Destination institution required');
             if (!$destIdentifier) throw new Exception('Destination identifier required');
             
-            // Get saved source
             $stmt = $db->prepare("SELECT * FROM user_funding_sources WHERE id = :id AND user_id = :user_id AND status = 'ACTIVE'");
             $stmt->execute(['id' => $sourceId, 'user_id' => $userId]);
             $source = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -415,7 +420,6 @@ if ($isAjax) {
             if (!$sourceParticipant) throw new Exception('Source institution not configured');
             if (!$destParticipant) throw new Exception('Destination institution not configured');
             
-            // Use stored credentials
             $storedCredentials = json_decode($source['metadata'], true);
             
             $verifyPayload = [
@@ -471,7 +475,6 @@ if ($isAjax) {
         }
     }
     
-    // AD-HOC SWAP - Uses institution credentials only (NO VM PIN)
     if ($action === 'swap_adhoc') {
         try { 
             $sourceInstitution = trim($_POST['source_institution'] ?? '');
@@ -546,7 +549,6 @@ if ($isAjax) {
     vm_json_response(['status' => 'error', 'message' => 'Invalid action']);
 }
 
-// Prepare data for JavaScript
 $participantsForJs = [];
 foreach ($allParticipants as $code => $p) {
     $participantsForJs[] = [
@@ -584,7 +586,7 @@ foreach ($fundingSources as $fs) {
 <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #000000; font-family: 'Space Grotesk', monospace; color: #FFFFFF; letter-spacing: -0.02em; line-height: 1; }
-    .app { position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: 80px 1fr 380px; grid-template-rows: 80px 1fr; }
+    .app { position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: 80px 1fr 420px; grid-template-rows: 80px 1fr; }
     .nav-rail { grid-row: 1 / 3; grid-column: 1; border-right: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; justify-content: space-between; padding: 24px 0 32px; }
     .nav-logo { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 12px; font-weight: 400; letter-spacing: 4px; color: rgba(255,255,255,0.3); text-align: center; }
     .nav-bottom { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 10px; letter-spacing: 2px; color: rgba(255,255,255,0.15); text-align: center; }
@@ -639,7 +641,8 @@ foreach ($fundingSources as $fs) {
     .error-text { color: #ff4444; font-size: 11px; letter-spacing: 0.5px; margin-top: 12px; text-align: center; }
     .source-item { padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 12px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
     .source-item:hover { background: rgba(255,255,255,0.03); }
-    .bank-connection { background: rgba(255,255,255,0.03); padding: 12px; margin-bottom: 8px; border-left: 2px solid #FFFFFF; }
+    .bank-connection { background: rgba(255,255,255,0.03); padding: 12px; margin-bottom: 8px; border-left: 2px solid #FFFFFF; cursor: pointer; }
+    .bank-connection:hover { background: rgba(255,255,255,0.08); }
     .swap-select { width: 100%; background: transparent; border: 1px solid rgba(255,255,255,0.1); padding: 14px 16px; font-family: 'Space Grotesk', monospace; font-size: 13px; color: #FFFFFF; margin-bottom: 16px; cursor: pointer; }
     .swap-select option { background: #000000; }
     .swap-row { display: flex; gap: 12px; margin-bottom: 16px; }
@@ -651,9 +654,9 @@ foreach ($fundingSources as $fs) {
     .mode-badge { font-size: 9px; padding: 4px 8px; border-radius: 0; margin-left: 8px; }
     .badge-linked { background: rgba(76, 175, 80, 0.2); border: 1px solid #4CAF50; color: #4CAF50; }
     .badge-adhoc { background: rgba(255, 152, 0, 0.2); border: 1px solid #FF9800; color: #FF9800; }
-    ::-webkit-scrollbar { width: 0; background: transparent; }
-    @media (max-width: 1024px) { .app { grid-template-columns: 60px 1fr; } .action-panel { position: fixed; right: -100%; width: 100%; max-width: 400px; transition: right 0.2s ease; z-index: 100; } .action-panel.open { right: 0; } }
     .section-divider { margin: 24px 0 16px 0; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.08); }
+    ::-webkit-scrollbar { width: 0; background: transparent; }
+    @media (max-width: 1024px) { .app { grid-template-columns: 60px 1fr; } .action-panel { position: fixed; right: -100%; width: 100%; max-width: 420px; transition: right 0.2s ease; z-index: 100; } .action-panel.open { right: 0; } }
 </style>
 </head>
 <body>
@@ -726,7 +729,7 @@ foreach ($fundingSources as $fs) {
             </div>
         </div>
         
-        <!-- LINKED SWAP FORM (shows when source selected) -->
+        <!-- LINKED SWAP FORM -->
         <div id="linkedSwapForm" style="display: none; padding: 32px; border-top: 1px solid rgba(255,255,255,0.06);">
             <div class="panel-label">⟡ LINKED SWAP <span class="mode-badge badge-linked">VM PIN ONLY</span></div>
             <div id="selectedSourceInfo" class="source-item" style="margin-bottom: 16px; background: rgba(255,255,255,0.03);"></div>
@@ -775,7 +778,6 @@ foreach ($fundingSources as $fs) {
     </div>
 </div>
 
-<!-- Modals -->
 <div id="institutionModal" class="modal-overlay">
     <div class="modal">
         <div class="modal-header">SELECT INSTITUTION</div>
@@ -848,9 +850,6 @@ foreach ($fundingSources as $fs) {
 </div>
 
 <script>
-// ============================================================
-// CONFIGURATION FROM PHP
-// ============================================================
 const hasTransactionPin = <?php echo $hasTransactionPin ? 'true' : 'false'; ?>;
 const userCurrency = <?php echo vm_json($userCurrency); ?>;
 const userCountry = <?php echo vm_json($userCountry); ?>;
@@ -867,15 +866,11 @@ let pendingCallback = null;
 let pinInput = '';
 let pinSetupInput = '';
 
-// ============================================================
-// SHARP EDGE CUSTOM CONFIRM MODAL
-// ============================================================
 function sharpConfirm(message, title = 'CONFIRMATION') {
     return new Promise((resolve) => {
         document.getElementById('confirmTitle').innerHTML = title;
         document.getElementById('confirmMessage').innerHTML = message;
         document.getElementById('sharpConfirmModal').style.display = 'flex';
-        
         const handleOk = () => { cleanup(); resolve(true); };
         const handleCancel = () => { cleanup(); resolve(false); };
         const cleanup = () => {
@@ -883,22 +878,17 @@ function sharpConfirm(message, title = 'CONFIRMATION') {
             document.getElementById('confirmOkBtn').removeEventListener('click', handleOk);
             document.getElementById('confirmCancelBtn').removeEventListener('click', handleCancel);
         };
-        
         document.getElementById('confirmOkBtn').addEventListener('click', handleOk);
         document.getElementById('confirmCancelBtn').addEventListener('click', handleCancel);
     });
 }
 
-// ============================================================
-// INITIALIZATION
-// ============================================================
 function initDestCountries() {
     const select = document.getElementById('linkedDestCountry');
     select.innerHTML = '<option value="">Destination country</option>';
     destinationCountries.forEach(country => {
         select.innerHTML += `<option value="${country}">${country}</option>`;
     });
-    
     const adhocSelect = document.getElementById('adhocDestCountry');
     adhocSelect.innerHTML = '<option value="">Destination country</option>';
     destinationCountries.forEach(country => {
@@ -917,12 +907,12 @@ function loadAdhocSourceInstitutions() {
 }
 loadAdhocSourceInstitutions();
 
-// Load asset types for ad-hoc
 document.getElementById('adhocSourceInstitution')?.addEventListener('change', () => {
     const institutionCode = document.getElementById('adhocSourceInstitution').value;
     const assetSelect = document.getElementById('adhocAssetType');
     if (!institutionCode) {
         assetSelect.innerHTML = '<option value="">Select Asset Type</option>';
+        document.getElementById('adhocIdentifierFields').innerHTML = '';
         return;
     }
     const institution = allParticipants.find(p => p.code === institutionCode);
@@ -934,7 +924,6 @@ document.getElementById('adhocSourceInstitution')?.addEventListener('change', ()
     document.getElementById('adhocIdentifierFields').innerHTML = '';
 });
 
-// Load identification fields for ad-hoc
 document.getElementById('adhocAssetType')?.addEventListener('change', () => {
     const institutionCode = document.getElementById('adhocSourceInstitution').value;
     const assetType = document.getElementById('adhocAssetType').value;
@@ -962,7 +951,6 @@ document.getElementById('adhocAssetType')?.addEventListener('change', () => {
     });
 });
 
-// Load destination institutions when country selected
 document.getElementById('linkedDestCountry')?.addEventListener('change', async () => {
     const country = document.getElementById('linkedDestCountry').value;
     const destSelect = document.getElementById('linkedDestInstitution');
@@ -995,9 +983,6 @@ document.getElementById('adhocDestCountry')?.addEventListener('change', async ()
     }
 });
 
-// ============================================================
-// UI EVENT HANDLERS
-// ============================================================
 document.getElementById('swapTrigger')?.addEventListener('click', () => {
     document.getElementById('swapOptions').classList.toggle('active');
     document.getElementById('sourceOptions').classList.remove('active');
@@ -1047,9 +1032,6 @@ function selectLinkedSource(id, name) {
     document.getElementById('actionPanel').classList.add('open');
 }
 
-// ============================================================
-// API CALLS
-// ============================================================
 async function executeOperation(operation, data) {
     const formData = new FormData();
     formData.append('action', operation);
@@ -1062,9 +1044,6 @@ async function executeOperation(operation, data) {
     return await res.json();
 }
 
-// ============================================================
-// PIN MANAGEMENT (Only for Linked Swap)
-// ============================================================
 function renderPinSetupDots() {
     const container = document.getElementById('pinSetupDots');
     let dots = '';
@@ -1262,9 +1241,6 @@ async function checkAndSetupPin() {
     return true;
 }
 
-// ============================================================
-// LINKED SWAP EXECUTION (Uses VM PIN only)
-// ============================================================
 async function executeLinkedSwap() {
     if (!await checkAndSetupPin()) return;
     if (!selectedLinkedSourceId) {
@@ -1299,9 +1275,6 @@ async function executeLinkedSwap() {
     });
 }
 
-// ============================================================
-// AD-HOC SWAP EXECUTION (Uses Institution PIN only - NO VM PIN)
-// ============================================================
 async function executeAdhocSwap() {
     const sourceInstitution = document.getElementById('adhocSourceInstitution').value;
     const assetType = document.getElementById('adhocAssetType').value;
@@ -1357,9 +1330,6 @@ async function executeAdhocSwap() {
     }
 }
 
-// ============================================================
-// SOURCE LINKING FLOW
-// ============================================================
 async function showLinkInstitutions() {
     if (!await checkAndSetupPin()) return;
     const container = document.getElementById('institutionList');
@@ -1478,9 +1448,6 @@ function closeInstitutionModal() { document.getElementById('institutionModal').s
 function closeAssetModal() { document.getElementById('assetModal').style.display = 'none'; }
 function closeIdFormModal() { document.getElementById('idFormModal').style.display = 'none'; }
 
-// ============================================================
-// OTHER FUNCTIONS
-// ============================================================
 function viewLinkedSources() {
     if (fundingSources.length === 0 && bankConnections.length === 0) {
         sharpConfirm('No sources linked', 'INFO');
