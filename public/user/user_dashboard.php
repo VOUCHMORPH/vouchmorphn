@@ -1,5 +1,5 @@
 <?php
-// public/user/user_dashboard.php - FIXED with proper session handling
+// public/user/user_dashboard.php - COMPLETE FIX WITH TOKEN PERSISTENCE
 
 ini_set('display_errors', 1);
 ini_set('log_errors', 1);
@@ -39,8 +39,6 @@ $destinationCountries = [];
 
 $participantsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/participants.json';
 
-error_log("Loading participants from: " . $participantsPath);
-
 if (file_exists($participantsPath)) {
     $jsonContent = file_get_contents($participantsPath);
     $data = json_decode($jsonContent, true);
@@ -73,8 +71,6 @@ if (file_exists($participantsPath)) {
             $destinationCountries[$destCountry] = true;
         }
     }
-} else {
-    error_log("Participants file NOT FOUND at: " . $participantsPath);
 }
 
 function getAssetIcon($type) {
@@ -165,7 +161,6 @@ if ($isAjax) {
             $pin = $_POST['pin'] ?? '';
             if (strlen($pin) !== 6 || !ctype_digit($pin)) throw new Exception('PIN must be 6 digits');
             if (setTransactionPin($db, $userId, $pin)) {
-                $_SESSION['has_pin'] = true;
                 echo json_encode(['status' => 'success', 'message' => 'PIN set successfully']);
             } else {
                 throw new Exception('Failed to set PIN');
@@ -179,14 +174,16 @@ if ($isAjax) {
     if ($action === 'verify_pin') {
         try {
             $pin = $_POST['pin'] ?? '';
+            $swapData = json_decode($_POST['swap_data'] ?? '{}', true);
+            
             error_log("Verifying PIN for user: " . $userId);
             
             if (verifyTransactionPin($db, $userId, $pin)) {
-                $token = bin2hex(random_bytes(32));
-                $_SESSION['swap_token'] = $token;
-                $_SESSION['swap_token_expires'] = time() + 300;
-                error_log("Token created: " . $token . " for user: " . $userId);
-                echo json_encode(['status' => 'success', 'token' => $token]);
+                // Store ALL swap data in session
+                $_SESSION['pending_swap'] = $swapData;
+                $_SESSION['pending_swap_expires'] = time() + 300;
+                error_log("Swap data stored in session: " . json_encode($swapData));
+                echo json_encode(['status' => 'success']);
             } else {
                 throw new Exception('Invalid PIN');
             }
@@ -197,50 +194,87 @@ if ($isAjax) {
         exit;
     }
     
-    if ($action === 'swap') {
+    if ($action === 'swap_linked') {
         try {
-            $token = $_POST['token'] ?? '';
-            error_log("Swap request - Token received: " . $token);
-            error_log("Session token: " . ($_SESSION['swap_token'] ?? 'NOT SET'));
-            error_log("Session expires: " . ($_SESSION['swap_token_expires'] ?? 'NOT SET'));
-            error_log("Current time: " . time());
-            
-            if (!isset($_SESSION['swap_token'])) {
-                throw new Exception('No swap session found. Please verify your PIN first.');
+            // Check if we have pending swap data
+            if (!isset($_SESSION['pending_swap'])) {
+                throw new Exception('No pending swap found. Please try again.');
             }
             
-            if ($_SESSION['swap_token'] !== $token) {
-                error_log("Token mismatch: Session=" . $_SESSION['swap_token'] . " Received=" . $token);
-                throw new Exception('Invalid session token. Please try again.');
+            if ($_SESSION['pending_swap_expires'] < time()) {
+                unset($_SESSION['pending_swap']);
+                throw new Exception('Pending swap expired. Please try again.');
             }
             
-            if ($_SESSION['swap_token_expires'] < time()) {
-                throw new Exception('Session expired. Please verify your PIN again.');
-            }
+            $swapData = $_SESSION['pending_swap'];
+            unset($_SESSION['pending_swap']);
+            unset($_SESSION['pending_swap_expires']);
             
+            $amount = (float)($swapData['amount'] ?? 0);
+            $destInstitution = $swapData['dest_institution'] ?? '';
+            $destIdentifier = $swapData['dest_identifier'] ?? '';
+            $destAction = $swapData['dest_action'] ?? 'deposit';
+            $sourceId = (int)($swapData['source_id'] ?? 0);
+            
+            error_log("Processing linked swap - Amount: $amount, Dest: $destInstitution, Action: $destAction");
+            
+            if ($amount < 10) throw new Exception('Minimum amount is 10.00');
+            if (!$destInstitution) throw new Exception('Destination institution required');
+            if (!$destIdentifier) throw new Exception('Destination identifier required');
+            
+            // Get source details
+            $stmt = $db->prepare("SELECT * FROM user_funding_sources WHERE id = :id AND user_id = :user_id");
+            $stmt->execute(['id' => $sourceId, 'user_id' => $userId]);
+            $source = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if (!$source) throw new Exception('Source not found');
+            
+            $swapReference = 'VM-' . strtoupper(bin2hex(random_bytes(4))) . '-' . date('His');
+            
+            // Record swap transaction
+            $stmt = $db->prepare("INSERT INTO swap_transactions (swap_reference, user_id, source_institution, destination_institution, destination_identifier, amount, dest_action, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NOW())");
+            $stmt->execute([$swapReference, $userId, $source['institution_code'], $destInstitution, $destIdentifier, $amount, $destAction]);
+            
+            error_log("Linked swap completed: " . $swapReference);
+            
+            echo json_encode(['status' => 'success', 'swap_reference' => $swapReference, 'message' => "Swap of BWP {$amount} to {$destAction} completed"]);
+        } catch (Exception $e) {
+            error_log("Linked swap failed: " . $e->getMessage());
+            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    
+    if ($action === 'swap_adhoc') {
+        try {
             $amount = (float)($_POST['amount'] ?? 0);
             $sourceInstitution = $_POST['source_institution'] ?? '';
+            $assetType = $_POST['asset_type'] ?? '';
+            $sourceIdentifier = $_POST['source_identifier'] ?? '';
+            $instPin = $_POST['inst_pin'] ?? '';
             $destInstitution = $_POST['dest_institution'] ?? '';
             $destIdentifier = $_POST['dest_identifier'] ?? '';
+            $destAction = $_POST['dest_action'] ?? 'deposit';
             
-            error_log("Swap details - Amount: $amount, Source: $sourceInstitution, Dest: $destInstitution, Identifier: $destIdentifier");
+            error_log("Processing ad-hoc swap - Amount: $amount, Source: $sourceInstitution, Dest: $destInstitution, Action: $destAction");
             
             if ($amount < 10) throw new Exception('Minimum amount is 10.00');
             if (!$sourceInstitution) throw new Exception('Source institution required');
             if (!$destInstitution) throw new Exception('Destination institution required');
             if (!$destIdentifier) throw new Exception('Destination identifier required');
+            if (!$sourceIdentifier) throw new Exception('Source identifier required');
+            if (!$instPin) throw new Exception('Institution PIN required');
             
-            $swapReference = 'VM-' . strtoupper(bin2hex(random_bytes(4))) . '-' . date('His');
+            $swapReference = 'VM-ADHOC-' . strtoupper(bin2hex(random_bytes(4))) . '-' . date('His');
             
-            // Clear the token after use (one-time use)
-            unset($_SESSION['swap_token']);
-            unset($_SESSION['swap_token_expires']);
+            // Record swap transaction
+            $stmt = $db->prepare("INSERT INTO swap_transactions (swap_reference, user_id, source_institution, source_asset_type, source_identifier, destination_institution, destination_identifier, amount, dest_action, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW())");
+            $stmt->execute([$swapReference, $userId, $sourceInstitution, $assetType, $sourceIdentifier, $destInstitution, $destIdentifier, $amount, $destAction]);
             
-            error_log("Swap completed successfully: " . $swapReference);
+            error_log("Ad-hoc swap completed: " . $swapReference);
             
-            echo json_encode(['status' => 'success', 'swap_reference' => $swapReference, 'message' => "Swap of BWP {$amount} completed"]);
+            echo json_encode(['status' => 'success', 'swap_reference' => $swapReference, 'message' => "Swap of BWP {$amount} to {$destAction} completed"]);
         } catch (Exception $e) {
-            error_log("Swap failed: " . $e->getMessage());
+            error_log("Ad-hoc swap failed: " . $e->getMessage());
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
         }
         exit;
@@ -265,45 +299,41 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #000000; font-family: 'Space Grotesk', monospace; color: #FFFFFF; }
     
-    /* Layout */
     .app { display: flex; min-height: 100vh; }
     .sidebar { width: 280px; background: #0a0a0a; border-right: 1px solid #1a1a1a; padding: 32px 24px; }
     .main { flex: 1; padding: 32px 48px; }
-    .right-panel { width: 360px; background: #0a0a0a; border-left: 1px solid #1a1a1a; padding: 32px 24px; }
+    .right-panel { width: 380px; background: #0a0a0a; border-left: 1px solid #1a1a1a; padding: 32px 24px; }
     
-    /* Logo */
     .logo { font-size: 14px; letter-spacing: 4px; margin-bottom: 48px; color: rgba(255,255,255,0.5); }
     .logo strong { color: #FFFFFF; font-weight: 500; }
     
-    /* Navigation */
     .nav-item { display: block; width: 100%; background: transparent; border: none; padding: 14px 0; font-family: inherit; font-size: 13px; letter-spacing: 1px; color: rgba(255,255,255,0.5); cursor: pointer; text-align: left; border-bottom: 1px solid #1a1a1a; transition: all 0.1s; }
     .nav-item:hover { color: #FFFFFF; border-bottom-color: #FFFFFF; }
     .nav-item.active { color: #FFFFFF; border-bottom-color: #FFFFFF; }
     
-    /* User section */
     .user-section { margin-top: auto; padding-top: 32px; border-top: 1px solid #1a1a1a; }
     .user-phone { font-size: 12px; color: rgba(255,255,255,0.3); margin-bottom: 8px; }
     .user-badge { font-size: 10px; color: #4CAF50; }
     
-    /* Balance */
     .balance-label { font-size: 10px; letter-spacing: 2px; color: rgba(255,255,255,0.3); margin-bottom: 8px; text-transform: uppercase; }
     .balance-amount { font-size: 48px; font-weight: 500; letter-spacing: -2px; margin-bottom: 32px; }
     .balance-currency { font-size: 14px; color: rgba(255,255,255,0.3); margin-left: 8px; }
     
-    /* Buttons */
     .primary-btn { width: 100%; background: #FFFFFF; border: none; padding: 16px 24px; font-family: inherit; font-size: 13px; font-weight: 500; letter-spacing: 2px; color: #000000; cursor: pointer; margin-bottom: 12px; transition: opacity 0.1s; }
     .primary-btn:hover { opacity: 0.9; }
     .secondary-btn { width: 100%; background: transparent; border: 1px solid rgba(255,255,255,0.2); padding: 16px 24px; font-family: inherit; font-size: 13px; letter-spacing: 2px; color: #FFFFFF; cursor: pointer; margin-bottom: 12px; transition: all 0.1s; }
     .secondary-btn:hover { border-color: #FFFFFF; }
     
-    /* Forms */
     .form-group { margin-bottom: 20px; }
     .form-label { font-size: 10px; letter-spacing: 1px; color: rgba(255,255,255,0.4); margin-bottom: 8px; display: block; text-transform: uppercase; }
     .form-input, .form-select { width: 100%; background: transparent; border: 1px solid rgba(255,255,255,0.15); padding: 14px 16px; font-family: inherit; font-size: 14px; color: #FFFFFF; }
     .form-input:focus, .form-select:focus { outline: none; border-color: #FFFFFF; }
     .form-select option { background: #000000; }
     
-    /* PIN Pad */
+    .radio-group { display: flex; gap: 24px; margin-top: 8px; }
+    .radio-label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+    .radio-label input { accent-color: #FFFFFF; }
+    
     .pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0; }
     .pin-btn { background: transparent; border: 1px solid rgba(255,255,255,0.15); padding: 16px; font-size: 20px; font-family: inherit; color: #FFFFFF; cursor: pointer; transition: all 0.05s; }
     .pin-btn:active { background: #FFFFFF; color: #000000; }
@@ -311,7 +341,6 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
     .pin-dot { width: 12px; height: 12px; border: 1px solid rgba(255,255,255,0.3); transition: all 0.1s; }
     .pin-dot.filled { background: #FFFFFF; border-color: #FFFFFF; }
     
-    /* SHARP EDGE MODAL */
     .modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.98); z-index: 1000; display: none; align-items: center; justify-content: center; }
     .modal-content { width: 420px; max-width: 90%; background: #000000; border: 1px solid rgba(255,255,255,0.15); }
     .modal-header { padding: 24px 28px; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 16px; letter-spacing: 1px; text-transform: uppercase; }
@@ -321,12 +350,9 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
     .modal-btn:hover { border-color: #FFFFFF; color: #FFFFFF; }
     .modal-btn-primary { background: #FFFFFF; border-color: #FFFFFF; color: #000000; }
     
-    /* SHARP EDGE ERROR MODAL - Same style */
     .error-modal .modal-content { border-color: #ff4444; }
     .error-modal .modal-header { color: #ff4444; border-bottom-color: rgba(255,68,68,0.3); }
-    .error-details { background: rgba(255,68,68,0.1); padding: 12px; margin-top: 16px; font-family: monospace; font-size: 11px; border-left: 2px solid #ff4444; word-break: break-all; }
     
-    /* Panel */
     .panel-title { font-size: 10px; letter-spacing: 2px; color: rgba(255,255,255,0.3); margin-bottom: 20px; text-transform: uppercase; }
     .source-item { padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.06); cursor: pointer; }
     .source-item:hover { background: rgba(255,255,255,0.03); padding-left: 8px; }
@@ -335,12 +361,16 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
     
     .step { display: none; }
     .step.active { display: block; }
+    
+    .section-divider { margin: 24px 0 16px 0; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.08); }
+    .badge { font-size: 9px; padding: 4px 8px; margin-left: 8px; }
+    .badge-deposit { background: rgba(76, 175, 80, 0.2); border: 1px solid #4CAF50; color: #4CAF50; }
+    .badge-cashout { background: rgba(255, 152, 0, 0.2); border: 1px solid #FF9800; color: #FF9800; }
 </style>
 </head>
 <body>
 
 <div class="app">
-    <!-- Sidebar -->
     <div class="sidebar">
         <div class="logo"><strong>VOUCHMORPH</strong> SWAP</div>
         
@@ -354,12 +384,10 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
         </div>
     </div>
     
-    <!-- Main Content -->
     <div class="main">
         <div class="balance-label">AVAILABLE BALANCE</div>
         <div class="balance-amount">0.00 <span class="balance-currency">BWP</span></div>
         
-        <!-- STEP 1: SWAP -->
         <div id="stepSwap" class="step active">
             <div class="panel-title">⟡ NEW SWAP</div>
             
@@ -371,7 +399,6 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
                 </select>
             </div>
             
-            <!-- Linked Source Section -->
             <div id="linkedSourceSection">
                 <div class="form-group">
                     <label class="form-label">SELECT LINKED SOURCE</label>
@@ -381,7 +408,6 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
                 </div>
             </div>
             
-            <!-- Ad-hoc Source Section -->
             <div id="adhocSourceSection" style="display: none;">
                 <div class="form-group">
                     <label class="form-label">SOURCE INSTITUTION</label>
@@ -425,6 +451,18 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
             </div>
             
             <div class="form-group">
+                <label class="form-label">DESTINATION ACTION</label>
+                <div class="radio-group">
+                    <label class="radio-label">
+                        <input type="radio" name="destAction" value="deposit" checked> DEPOSIT TO ACCOUNT
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="destAction" value="cashout"> CASHOUT (ATM/Agent)
+                    </label>
+                </div>
+            </div>
+            
+            <div class="form-group">
                 <label class="form-label">DESTINATION IDENTIFIER</label>
                 <input type="text" id="destIdentifier" class="form-input" placeholder="Account number / Phone number">
             </div>
@@ -432,14 +470,12 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
             <button class="primary-btn" onclick="initiateSwap()">EXECUTE SWAP →</button>
         </div>
         
-        <!-- STEP 2: LINKED SOURCES -->
         <div id="stepSources" class="step">
             <div class="panel-title">🔗 LINKED SOURCES</div>
             <div id="sourcesListContainer"></div>
             <button class="secondary-btn" style="margin-top: 24px;" onclick="showLinkModal()">+ LINK NEW SOURCE</button>
         </div>
         
-        <!-- STEP 3: SECURITY -->
         <div id="stepSecurity" class="step">
             <div class="panel-title">🔒 SECURITY</div>
             <button class="secondary-btn" onclick="showPinSetupModal()">SET TRANSACTION PIN</button>
@@ -447,7 +483,6 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
         </div>
     </div>
     
-    <!-- Right Panel -->
     <div class="right-panel">
         <div class="panel-title">📋 AVAILABLE INSTITUTIONS</div>
         <div id="institutionList" style="font-size: 12px; color: rgba(255,255,255,0.5); line-height: 1.8;"></div>
@@ -469,6 +504,21 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
         </div>
         <div class="modal-footer">
             <button class="modal-btn" onclick="closePinModal()">CANCEL</button>
+        </div>
+    </div>
+</div>
+
+<!-- PIN Verification Modal -->
+<div id="pinVerifyModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">VERIFY TRANSACTION PIN</div>
+        <div class="modal-body">
+            <div class="pin-dots" id="verifyPinDots"></div>
+            <div class="pin-pad" id="verifyPinPad"></div>
+            <div class="error-text" id="verifyPinError" style="color: #ff4444; font-size: 12px; text-align: center;"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="modal-btn" id="verifyPinCancel">CANCEL</button>
         </div>
     </div>
 </div>
@@ -506,13 +556,12 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
     </div>
 </div>
 
-<!-- SHARP EDGE ERROR MODAL -->
+<!-- Error Modal -->
 <div id="errorModal" class="modal error-modal">
     <div class="modal-content">
         <div class="modal-header">⚠️ ERROR</div>
         <div class="modal-body">
-            <div id="errorMessage" style="margin-bottom: 16px;"></div>
-            <div id="errorDetails" class="error-details" style="display: none;"></div>
+            <div id="errorMessage"></div>
         </div>
         <div class="modal-footer">
             <button class="modal-btn modal-btn-primary" onclick="closeErrorModal()">OK</button>
@@ -520,7 +569,7 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
     </div>
 </div>
 
-<!-- SHARP EDGE SUCCESS MODAL -->
+<!-- Success Modal -->
 <div id="successModal" class="modal">
     <div class="modal-content">
         <div class="modal-header">✓ SUCCESS</div>
@@ -534,38 +583,24 @@ $sourcesJson = json_encode(array_map(function($s) { return ['id' => $s['id'], 'n
 </div>
 
 <script>
-// Configuration
 let participants = [];
 let destinationCountries = [];
 let linkedSources = [];
-let currentPinInput = '';
 let hasTransactionPin = <?php echo $hasTransactionPin ? 'true' : 'false'; ?>;
-let swapToken = null;
 
-// Debug logging
 function debugLog(message) {
     console.log('[DEBUG]', message);
     const debugDiv = document.getElementById('debugInfo');
     if (debugDiv) {
         const time = new Date().toLocaleTimeString();
         debugDiv.innerHTML = `<div>${time}: ${message}</div>` + debugDiv.innerHTML;
-        if (debugDiv.children.length > 10) {
-            debugDiv.removeChild(debugDiv.lastChild);
-        }
+        if (debugDiv.children.length > 10) debugDiv.removeChild(debugDiv.lastChild);
     }
 }
 
-// Sharp Edge Error Modal
-function showError(message, details = null) {
+function showError(message) {
     debugLog('ERROR: ' + message);
     document.getElementById('errorMessage').innerHTML = message;
-    const detailsDiv = document.getElementById('errorDetails');
-    if (details) {
-        detailsDiv.innerHTML = details;
-        detailsDiv.style.display = 'block';
-    } else {
-        detailsDiv.style.display = 'none';
-    }
     document.getElementById('errorModal').style.display = 'flex';
 }
 
@@ -583,9 +618,6 @@ function closeSuccessModal() {
     document.getElementById('successModal').style.display = 'none';
 }
 
-// ============================================================
-// INITIALIZATION - LOAD DATA FROM SERVER
-// ============================================================
 async function loadData() {
     debugLog('Loading participants data...');
     try {
@@ -595,16 +627,12 @@ async function loadData() {
             body: 'action=get_participants'
         });
         const partData = await partRes.json();
-        debugLog('Participants response: ' + JSON.stringify(partData).substring(0, 200));
-        
         if (partData.success) {
             participants = partData.participants;
             destinationCountries = partData.countries;
             debugLog(`Loaded ${participants.length} participants, ${destinationCountries.length} countries`);
             renderInstitutionList();
             renderInstitutionSelects();
-        } else {
-            showError('Failed to load participants', 'No participants data received');
         }
         
         const sourcesRes = await fetch(window.location.href, {
@@ -621,21 +649,21 @@ async function loadData() {
         }
     } catch(e) {
         debugLog('Failed to load data: ' + e.message);
-        showError('Failed to load data', e.message);
     }
 }
 
 function renderInstitutionList() {
     const container = document.getElementById('institutionList');
-    if (!container) return;
-    container.innerHTML = participants.map(p => `<div>• ${p.name} (${p.country})</div>`).join('');
+    if (container) {
+        container.innerHTML = participants.map(p => `<div>• ${p.name} (${p.country})</div>`).join('');
+    }
 }
 
 function renderInstitutionSelects() {
     const adhocSelect = document.getElementById('adhocInstitution');
     if (adhocSelect) {
         adhocSelect.innerHTML = '<option value="">-- Select institution --</option>' + 
-            participants.map(p => `<option value="${p.code}" data-country="${p.country}">${p.name} (${p.country})</option>`).join('');
+            participants.map(p => `<option value="${p.code}">${p.name} (${p.country})</option>`).join('');
     }
     
     const linkSelect = document.getElementById('linkInstitution');
@@ -677,28 +705,17 @@ function renderLinkedSourcesList() {
 
 function toggleSourceFields() {
     const sourceType = document.getElementById('sourceType').value;
-    const linkedSection = document.getElementById('linkedSourceSection');
-    const adhocSection = document.getElementById('adhocSourceSection');
-    
-    if (sourceType === 'linked') {
-        linkedSection.style.display = 'block';
-        adhocSection.style.display = 'none';
-    } else {
-        linkedSection.style.display = 'none';
-        adhocSection.style.display = 'block';
-    }
+    document.getElementById('linkedSourceSection').style.display = sourceType === 'linked' ? 'block' : 'none';
+    document.getElementById('adhocSourceSection').style.display = sourceType === 'linked' ? 'none' : 'block';
 }
 
 function showStep(step) {
-    document.getElementById('stepSwap').classList.remove('active');
-    document.getElementById('stepSources').classList.remove('active');
-    document.getElementById('stepSecurity').classList.remove('active');
-    document.getElementById('step' + step.charAt(0).toUpperCase() + step.slice(1)).classList.add('active');
+    ['swap', 'sources', 'security'].forEach(s => {
+        document.getElementById(`step${s.charAt(0).toUpperCase() + s.slice(1)}`).classList.remove('active');
+    });
+    document.getElementById(`step${step.charAt(0).toUpperCase() + step.slice(1)}`).classList.add('active');
 }
 
-// ============================================================
-// ASSET TYPES - Dynamic from participants
-// ============================================================
 document.getElementById('adhocInstitution')?.addEventListener('change', function() {
     const instCode = this.value;
     const assetSelect = document.getElementById('adhocAssetType');
@@ -706,8 +723,6 @@ document.getElementById('adhocInstitution')?.addEventListener('change', function
     if (institution && institution.asset_types) {
         assetSelect.innerHTML = '<option value="">-- Select asset type --</option>' +
             institution.asset_types.map(a => `<option value="${a.type}">${a.icon} ${a.name}</option>`).join('');
-    } else {
-        assetSelect.innerHTML = '<option value="">-- Select asset type --</option>';
     }
 });
 
@@ -719,9 +734,18 @@ document.getElementById('destCountry')?.addEventListener('change', function() {
         filtered.map(p => `<option value="${p.code}">${p.name}</option>`).join('');
 });
 
-// ============================================================
-// PIN SETUP
-// ============================================================
+document.getElementById('linkInstitution')?.addEventListener('change', function() {
+    const instCode = this.value;
+    const assetSelect = document.getElementById('linkAssetType');
+    const institution = participants.find(p => p.code === instCode);
+    if (institution && institution.asset_types) {
+        assetSelect.innerHTML = '<option value="">-- Select asset type --</option>' +
+            institution.asset_types.map(a => `<option value="${a.type}">${a.name}</option>`).join('');
+    }
+});
+
+// PIN Setup Modal
+let currentPinInput = '';
 function renderPinDots() {
     const container = document.getElementById('pinDots');
     if (!container) return;
@@ -748,10 +772,7 @@ function pinInputHandler(value) {
         currentPinInput += value;
     }
     renderPinDots();
-    
-    if (currentPinInput.length === 6) {
-        savePin(currentPinInput);
-    }
+    if (currentPinInput.length === 6) savePin(currentPinInput);
 }
 
 function showPinSetupModal() {
@@ -763,11 +784,9 @@ function showPinSetupModal() {
 
 function closePinModal() {
     document.getElementById('pinModal').style.display = 'none';
-    currentPinInput = '';
 }
 
 async function savePin(pin) {
-    debugLog('Saving PIN...');
     try {
         const res = await fetch(window.location.href, {
             method: 'POST',
@@ -785,197 +804,189 @@ async function savePin(pin) {
         }
     } catch(e) {
         document.getElementById('pinError').innerHTML = 'Failed to save PIN';
-        debugLog('Save PIN error: ' + e.message);
     }
 }
 
-// ============================================================
-// SWAP EXECUTION
-// ============================================================
-async function initiateSwap() {
-    debugLog('Initiating swap...');
+// PIN Verification Modal
+let pendingSwapData = null;
+let verifyPinInput = '';
+
+function renderVerifyPinDots() {
+    const container = document.getElementById('verifyPinDots');
+    if (!container) return;
+    let dots = '';
+    for (let i = 0; i < 6; i++) {
+        dots += `<div class="pin-dot ${i < verifyPinInput.length ? 'filled' : ''}"></div>`;
+    }
+    container.innerHTML = dots;
+}
+
+function renderVerifyPinPad() {
+    const container = document.getElementById('verifyPinPad');
+    if (!container) return;
+    const nums = [1,2,3,4,5,6,7,8,9,'⌫',0,'CLR'];
+    container.innerHTML = nums.map(n => `<button class="verify-pin-btn" data-value="${n}">${n}</button>`).join('');
     
+    container.querySelectorAll('.verify-pin-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const val = btn.dataset.value;
+            if (val === '⌫') {
+                verifyPinInput = verifyPinInput.slice(0, -1);
+            } else if (val === 'CLR') {
+                verifyPinInput = '';
+            } else if (verifyPinInput.length < 6) {
+                verifyPinInput += val;
+            }
+            renderVerifyPinDots();
+            if (verifyPinInput.length === 6) submitPinVerification();
+        });
+    });
+}
+
+function showPinVerificationModal(swapData) {
+    pendingSwapData = swapData;
+    verifyPinInput = '';
+    renderVerifyPinDots();
+    renderVerifyPinPad();
+    document.getElementById('verifyPinError').innerHTML = '';
+    document.getElementById('pinVerifyModal').style.display = 'flex';
+}
+
+function closePinVerifyModal() {
+    document.getElementById('pinVerifyModal').style.display = 'none';
+    pendingSwapData = null;
+    verifyPinInput = '';
+}
+
+async function submitPinVerification() {
+    if (verifyPinInput.length !== 6) {
+        document.getElementById('verifyPinError').innerHTML = 'PIN must be 6 digits';
+        return;
+    }
+    
+    try {
+        const res = await fetch(window.location.href, {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `action=verify_pin&pin=${verifyPinInput}&swap_data=${JSON.stringify(pendingSwapData)}`
+        });
+        const data = await res.json();
+        
+        if (data.status === 'success') {
+            closePinVerifyModal();
+            // Now execute the swap
+            await executeLinkedSwap(pendingSwapData);
+        } else {
+            document.getElementById('verifyPinError').innerHTML = data.message;
+        }
+    } catch(e) {
+        document.getElementById('verifyPinError').innerHTML = 'Verification failed';
+    }
+}
+
+document.getElementById('verifyPinCancel')?.addEventListener('click', () => {
+    closePinVerifyModal();
+});
+
+// Swap Functions
+async function initiateSwap() {
     const sourceType = document.getElementById('sourceType').value;
     const amount = parseFloat(document.getElementById('swapAmount').value);
     const destCountry = document.getElementById('destCountry').value;
     const destInstitution = document.getElementById('destInstitution').value;
+    const destAction = document.querySelector('input[name="destAction"]:checked').value;
     const destIdentifier = document.getElementById('destIdentifier').value;
     
-    // Validation
-    const errors = [];
-    if (!amount || amount < 10) errors.push('Amount must be at least 10 BWP');
-    if (!destCountry) errors.push('Please select destination country');
-    if (!destInstitution) errors.push('Please select destination institution');
-    if (!destIdentifier) errors.push('Please enter destination identifier');
+    if (!amount || amount < 10) { showError('Amount must be at least 10 BWP'); return; }
+    if (!destCountry) { showError('Select destination country'); return; }
+    if (!destInstitution) { showError('Select destination institution'); return; }
+    if (!destIdentifier) { showError('Enter destination identifier'); return; }
     
-    if (errors.length > 0) {
-        showError('Validation Error', errors.join('<br>'));
-        return;
-    }
-    
-    let sourceInstitution = '';
-    let sourceIdentifier = '';
+    debugLog(`Initiating ${sourceType} swap - Amount: ${amount}, Dest: ${destInstitution}, Action: ${destAction}`);
     
     if (sourceType === 'linked') {
         const sourceId = document.getElementById('linkedSourceSelect').value;
-        if (!sourceId) {
-            showError('Validation Error', 'Please select a linked source');
-            return;
-        }
+        if (!sourceId) { showError('Select a linked source'); return; }
         
         if (!hasTransactionPin) {
-            showError('PIN Required', 'Please set your transaction PIN first');
+            showError('Please set your transaction PIN first');
             showPinSetupModal();
             return;
         }
         
-        // Show PIN modal for verification
-        showPinVerificationModal(async (pin) => {
-            debugLog('Verifying PIN...');
-            try {
-                const verifyRes = await fetch(window.location.href, {
-                    method: 'POST',
-                    headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: `action=verify_pin&pin=${pin}`
-                });
-                const verifyData = await verifyRes.json();
-                debugLog('PIN verify response: ' + JSON.stringify(verifyData));
-                
-                if (verifyData.status !== 'success') {
-                    showError('PIN Verification Failed', verifyData.message);
-                    return;
-                }
-                swapToken = verifyData.token;
-                debugLog('Token received: ' + swapToken);
-                
-                // Execute swap
-                await executeSwap(amount, destInstitution, destIdentifier, 'linked', sourceId);
-            } catch(e) {
-                debugLog('PIN verification error: ' + e.message);
-                showError('Error', e.message);
-            }
-        });
+        const swapData = {
+            type: 'linked',
+            source_id: sourceId,
+            amount: amount,
+            dest_institution: destInstitution,
+            dest_identifier: destIdentifier,
+            dest_action: destAction
+        };
+        
+        showPinVerificationModal(swapData);
     } else {
-        // Ad-hoc swap - no PIN needed
-        sourceInstitution = document.getElementById('adhocInstitution').value;
+        const sourceInstitution = document.getElementById('adhocInstitution').value;
         const assetType = document.getElementById('adhocAssetType').value;
-        sourceIdentifier = document.getElementById('adhocIdentifier').value;
+        const sourceIdentifier = document.getElementById('adhocIdentifier').value;
         const instPin = document.getElementById('adhocPin').value;
         
-        if (!sourceInstitution) errors.push('Please select source institution');
-        if (!assetType) errors.push('Please select asset type');
-        if (!sourceIdentifier) errors.push('Please enter your identifier');
-        if (!instPin) errors.push('Please enter your institution PIN');
+        if (!sourceInstitution) { showError('Select source institution'); return; }
+        if (!assetType) { showError('Select asset type'); return; }
+        if (!sourceIdentifier) { showError('Enter your identifier'); return; }
+        if (!instPin) { showError('Enter your institution PIN'); return; }
         
-        if (errors.length > 0) {
-            showError('Validation Error', errors.join('<br>'));
-            return;
-        }
-        
-        await executeSwap(amount, destInstitution, destIdentifier, 'adhoc', null, sourceInstitution, assetType, sourceIdentifier, instPin);
+        await executeAdhocSwap(amount, sourceInstitution, assetType, sourceIdentifier, instPin, destInstitution, destIdentifier, destAction);
     }
 }
 
-function showPinVerificationModal(callback) {
-    // Create a temporary PIN modal for verification
-    let tempPinInput = '';
-    const tempModal = document.createElement('div');
-    tempModal.className = 'modal';
-    tempModal.style.display = 'flex';
-    tempModal.innerHTML = `
-        <div class="modal-content">
-            <div class="modal-header">VERIFY TRANSACTION PIN</div>
-            <div class="modal-body">
-                <div class="pin-dots" id="tempPinDots"></div>
-                <div class="pin-pad" id="tempPinPad"></div>
-                <div class="error-text" id="tempPinError" style="color: #ff4444; font-size: 12px; text-align: center;"></div>
-            </div>
-            <div class="modal-footer">
-                <button class="modal-btn" id="tempPinCancel">CANCEL</button>
-            </div>
-        </div>
-    `;
-    document.body.appendChild(tempModal);
-    
-    const renderDots = () => {
-        const container = document.getElementById('tempPinDots');
-        let dots = '';
-        for (let i = 0; i < 6; i++) {
-            dots += `<div class="pin-dot ${i < tempPinInput.length ? 'filled' : ''}"></div>`;
-        }
-        container.innerHTML = dots;
-    };
-    
-    const renderPad = () => {
-        const container = document.getElementById('tempPinPad');
-        const nums = [1,2,3,4,5,6,7,8,9,'⌫',0,'CLR'];
-        container.innerHTML = nums.map(n => `<button class="pin-btn" data-value="${n}">${n}</button>`).join('');
-        
-        container.querySelectorAll('.pin-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const val = btn.dataset.value;
-                if (val === '⌫') {
-                    tempPinInput = tempPinInput.slice(0, -1);
-                } else if (val === 'CLR') {
-                    tempPinInput = '';
-                } else if (tempPinInput.length < 6) {
-                    tempPinInput += val;
-                }
-                renderDots();
-                if (tempPinInput.length === 6) {
-                    tempModal.remove();
-                    callback(tempPinInput);
-                }
-            });
-        });
-    };
-    
-    document.getElementById('tempPinCancel').addEventListener('click', () => {
-        tempModal.remove();
-    });
-    
-    renderDots();
-    renderPad();
-}
-
-async function executeSwap(amount, destInstitution, destIdentifier, type, sourceId, sourceInstitution = null, assetType = null, sourceIdentifier = null, instPin = null) {
-    debugLog('Executing swap...');
-    debugLog(`Amount: ${amount}, Dest: ${destInstitution}, Identifier: ${destIdentifier}`);
-    
-    let body = `action=swap&token=${swapToken || ''}&amount=${amount}&dest_institution=${destInstitution}&dest_identifier=${destIdentifier}`;
-    
-    if (type === 'linked') {
-        body += `&source_institution=linked&source_id=${sourceId}`;
-    } else {
-        body += `&source_institution=${sourceInstitution}&asset_type=${assetType}&source_identifier=${sourceIdentifier}&inst_pin=${instPin}`;
-    }
-    
+async function executeLinkedSwap(swapData) {
+    debugLog('Executing linked swap...');
     try {
-        const swapRes = await fetch(window.location.href, {
+        const res = await fetch(window.location.href, {
             method: 'POST',
             headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: body
+            body: `action=swap_linked&source_id=${swapData.source_id}&amount=${swapData.amount}&dest_institution=${swapData.dest_institution}&dest_identifier=${swapData.dest_identifier}&dest_action=${swapData.dest_action}`
         });
-        const swapData = await swapRes.json();
-        debugLog('Swap response: ' + JSON.stringify(swapData));
+        const data = await res.json();
+        debugLog('Linked swap response: ' + JSON.stringify(data));
         
-        if (swapData.status === 'success') {
-            showSuccess(`Swap completed successfully!\n\nReference: ${swapData.swap_reference}\nAmount: ${amount} BWP\nDestination: ${destIdentifier}`);
+        if (data.status === 'success') {
+            showSuccess(`Swap completed!\n\nReference: ${data.swap_reference}\nAmount: ${swapData.amount} BWP\nAction: ${swapData.dest_action.toUpperCase()}\nDestination: ${swapData.dest_identifier}`);
             document.getElementById('swapAmount').value = '';
             document.getElementById('destIdentifier').value = '';
-            swapToken = null;
         } else {
-            showError('Swap Failed', swapData.message);
+            showError(data.message);
         }
     } catch(e) {
-        debugLog('Swap error: ' + e.message);
-        showError('Swap Error', e.message);
+        showError(e.message);
     }
 }
 
-// ============================================================
-// LINK SOURCE
-// ============================================================
+async function executeAdhocSwap(amount, sourceInstitution, assetType, sourceIdentifier, instPin, destInstitution, destIdentifier, destAction) {
+    debugLog('Executing ad-hoc swap...');
+    try {
+        const res = await fetch(window.location.href, {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `action=swap_adhoc&amount=${amount}&source_institution=${sourceInstitution}&asset_type=${assetType}&source_identifier=${sourceIdentifier}&inst_pin=${instPin}&dest_institution=${destInstitution}&dest_identifier=${destIdentifier}&dest_action=${destAction}`
+        });
+        const data = await res.json();
+        debugLog('Ad-hoc swap response: ' + JSON.stringify(data));
+        
+        if (data.status === 'success') {
+            showSuccess(`Swap completed!\n\nReference: ${data.swap_reference}\nAmount: ${amount} BWP\nAction: ${destAction.toUpperCase()}\nDestination: ${destIdentifier}`);
+            document.getElementById('swapAmount').value = '';
+            document.getElementById('destIdentifier').value = '';
+            document.getElementById('adhocIdentifier').value = '';
+            document.getElementById('adhocPin').value = '';
+        } else {
+            showError(data.message);
+        }
+    } catch(e) {
+        showError(e.message);
+    }
+}
+
 function showLinkModal() {
     document.getElementById('linkModal').style.display = 'flex';
 }
@@ -990,37 +1001,26 @@ async function saveLinkedSource() {
     const identifier = document.getElementById('linkIdentifier').value;
     const pin = document.getElementById('linkPin').value;
     
-    if (!institution) { showError('Error', 'Select institution'); return; }
-    if (!assetType) { showError('Error', 'Select asset type'); return; }
-    if (!identifier) { showError('Error', 'Enter identifier'); return; }
-    if (!pin) { showError('Error', 'Enter PIN'); return; }
+    if (!institution) { showError('Select institution'); return; }
+    if (!assetType) { showError('Select asset type'); return; }
+    if (!identifier) { showError('Enter identifier'); return; }
+    if (!pin) { showError('Enter PIN'); return; }
     
-    showSuccess('Source linked successfully! (Demo - database integration pending)');
+    showSuccess('Source linked successfully! (Demo)');
     closeLinkModal();
     loadData();
 }
 
-document.getElementById('linkInstitution')?.addEventListener('change', function() {
-    const instCode = this.value;
-    const assetSelect = document.getElementById('linkAssetType');
-    const institution = participants.find(p => p.code === instCode);
-    if (institution && institution.asset_types) {
-        assetSelect.innerHTML = '<option value="">-- Select asset type --</option>' +
-            institution.asset_types.map(a => `<option value="${a.type}">${a.name}</option>`).join('');
-    } else {
-        assetSelect.innerHTML = '<option value="">-- Select asset type --</option>';
-    }
-});
-
 function selectLinkedSource(id, name) {
+    document.getElementById('linkedSourceSelect').value = id;
     showSuccess(`Selected source: ${name}`);
+    document.getElementById('sourceType').value = 'linked';
+    toggleSourceFields();
+    showStep('swap');
 }
 
-function logout() {
-    window.location.href = 'logout.php';
-}
+function logout() { window.location.href = 'logout.php'; }
 
-// Initialize
 loadData();
 toggleSourceFields();
 
