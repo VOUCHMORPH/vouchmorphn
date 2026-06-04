@@ -1,8 +1,8 @@
 <?php
 /**
- * VouchMorph Swap Test Control Dashboard
- * Tests: Local swaps, FX, Cross-border, Fees, Traceability, Mojaloop, Failure cases,
- *        MESSAGE ADAPTERS, AUTO DETECTION, CASHOUT RETRY, FEE SPLITTING, API CONNECTIONS
+ * VouchMorph System Introspection & Diagnostics Center
+ * Complete: Config Explorer, Participant Inspector, Route Discovery, 
+ * Dashboard Debugger, AJAX Monitor, Database Explorer, Swap Trace, Folder Browser
  */
 
 session_start();
@@ -13,776 +13,1033 @@ if (!isset($_SESSION['admin_logged_in']) || $_SESSION['admin_logged_in'] !== tru
 
 define('PROJECT_ROOT', dirname(__DIR__, 2));
 
-// Load configuration
-$configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
-require_once $configPath;
-$config = \Core\Config\LoadCountry::getConfig();
-
-require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
-use Core\Database\DBConnection;
-
-// Database connection
-if (isset($config['db']['swap'])) {
-    $dbConfig = $config['db']['swap'];
-} else {
-    $databaseUrl = getenv('DATABASE_URL');
-    $db = parse_url($databaseUrl);
-    $dbConfig = [
-        'host' => $db['host'] ?? 'localhost',
-        'port' => (int)($db['port'] ?? 5432),
-        'database' => ltrim($db['path'] ?? '', '/'),
-        'username' => $db['user'] ?? 'postgres',
-        'password' => $db['pass'] ?? '',
-    ];
-}
-$dbConfig['type'] = 'pgsql';
-$db = DBConnection::getInstance($dbConfig);
-
-// Load required services
-require_once PROJECT_ROOT . '/src/Domain/Services/SwapService.php';
-require_once PROJECT_ROOT . '/src/Domain/Services/Settlement/HybridSettlementStrategy.php';
-require_once PROJECT_ROOT . '/src/Domain/Services/ForexService.php';
-require_once PROJECT_ROOT . '/src/Domain/Services/FeeService.php';
-require_once PROJECT_ROOT . '/src/Domain/Services/CardService.php';
-require_once PROJECT_ROOT . '/src/Infrastructure/Banks/GenericBankClient.php';
-
 // ============================================================
-// MESSAGE ADAPTERS - Safe loading with error handling
+// AJAX HANDLER - Must return JSON and exit
 // ============================================================
-
-$interfacePath = PROJECT_ROOT . '/src/Infrastructure/MessageAdapters/MessageAdapterInterface.php';
-$messageAdaptersLoaded = false;
-
-if (file_exists($interfacePath)) {
-    try {
-        require_once $interfacePath;
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH'])) {
+    header('Content-Type: application/json');
+    $action = $_POST['action'] ?? $_GET['action'] ?? '';
+    $result = ['status' => 'error', 'message' => 'Unknown action'];
+    
+    if ($action === 'get_file') {
+        $file = $_POST['file'] ?? '';
+        $fullPath = PROJECT_ROOT . '/' . ltrim($file, '/');
+        if (file_exists($fullPath) && is_file($fullPath)) {
+            $ext = pathinfo($fullPath, PATHINFO_EXTENSION);
+            $content = file_get_contents($fullPath);
+            if (in_array($ext, ['json', 'php', 'sql', 'txt', 'md', 'html', 'css', 'js'])) {
+                $result = ['status' => 'success', 'content' => $content, 'path' => $fullPath];
+            } else {
+                $result = ['status' => 'success', 'content' => '[Binary file]', 'path' => $fullPath];
+            }
+        } else {
+            $result = ['status' => 'error', 'message' => 'File not found: ' . $fullPath];
+        }
+        echo json_encode($result);
+        exit;
+    }
+    
+    if ($action === 'get_folder') {
+        $folder = $_POST['folder'] ?? '';
+        $fullPath = PROJECT_ROOT . '/' . ltrim($folder, '/');
+        if (is_dir($fullPath)) {
+            $items = scandir($fullPath);
+            $files = [];
+            foreach ($items as $item) {
+                if ($item !== '.' && $item !== '..') {
+                    $itemPath = $fullPath . '/' . $item;
+                    $files[] = [
+                        'name' => $item,
+                        'type' => is_dir($itemPath) ? 'dir' : 'file',
+                        'path' => str_replace(PROJECT_ROOT, '', $itemPath)
+                    ];
+                }
+            }
+            $result = ['status' => 'success', 'files' => $files, 'path' => $fullPath];
+        } else {
+            $result = ['status' => 'error', 'message' => 'Folder not found'];
+        }
+        echo json_encode($result);
+        exit;
+    }
+    
+    if ($action === 'test_endpoint') {
+        $url = $_POST['url'] ?? '';
+        $method = $_POST['method'] ?? 'GET';
+        $payload = json_decode($_POST['payload'] ?? '{}', true);
         
-        $adapters = [
-            'Iso20022Adapter.php',
-            'Iso8583Adapter.php',
-            'MobileMoneyAdapter.php',
-            'RTGSAdapter.php',
-            'LegacyAdapter.php'
-        ];
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         
-        foreach ($adapters as $adapter) {
-            $adapterPath = PROJECT_ROOT . '/src/Infrastructure/MessageAdapters/' . $adapter;
-            if (file_exists($adapterPath)) {
-                require_once $adapterPath;
+        if ($method === 'POST') {
+            curl_setopt($ch, CURLOPT_POST, true);
+            if (!empty($payload)) {
+                curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+                curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
             }
         }
         
-        $factoryPath = PROJECT_ROOT . '/src/Infrastructure/MessageAdapters/MessageAdapterFactory.php';
-        if (!file_exists($factoryPath)) {
-            $factoryPath = PROJECT_ROOT . '/src/Infrastructure/MessageAdapters/MassageAdapterFactory.php';
-        }
-        if (file_exists($factoryPath)) {
-            require_once $factoryPath;
-        }
+        $start = microtime(true);
+        $response = curl_exec($ch);
+        $time = round((microtime(true) - $start) * 1000, 2);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
         
-        $messageAdaptersLoaded = true;
-        error_log("[workcontrol] Message adapters loaded successfully");
-        
-    } catch (Throwable $e) {
-        $messageAdaptersLoaded = false;
-        error_log("[workcontrol] Failed to load message adapters: " . $e->getMessage());
+        $result = [
+            'status' => 'success',
+            'url' => $url,
+            'method' => $method,
+            'http_code' => $httpCode,
+            'response_time' => $time,
+            'response' => $response ? json_decode($response, true) : null,
+            'error' => $error
+        ];
+        echo json_encode($result);
+        exit;
     }
-} else {
-    error_log("[workcontrol] MessageAdapterInterface.php not found, skipping message adapter tests");
+    
+    if ($action === 'get_participants_live') {
+        $participants = [];
+        $configBasePath = PROJECT_ROOT . '/src/Core/Config/Countries/';
+        if (is_dir($configBasePath)) {
+            foreach (scandir($configBasePath) as $country) {
+                if ($country !== '.' && $country !== '..' && is_dir($configBasePath . $country)) {
+                    $participantsFile = $configBasePath . $country . '/participants.json';
+                    if (file_exists($participantsFile)) {
+                        $data = json_decode(file_get_contents($participantsFile), true);
+                        $parts = $data['participants'] ?? $data ?? [];
+                        foreach ($parts as $code => $p) {
+                            $participants[$code] = array_merge($p, ['country' => $country]);
+                        }
+                    }
+                }
+            }
+        }
+        $result = ['status' => 'success', 'participants' => $participants];
+        echo json_encode($result);
+        exit;
+    }
+    
+    if ($action === 'get_table_data') {
+        require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
+        use Core\Database\DBConnection;
+        $table = $_POST['table'] ?? '';
+        $db = DBConnection::getInstance();
+        
+        try {
+            $stmt = $db->query("SELECT * FROM $table LIMIT 50");
+            $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $result = ['status' => 'success', 'data' => $data, 'count' => count($data)];
+        } catch (Exception $e) {
+            $result = ['status' => 'error', 'message' => $e->getMessage()];
+        }
+        echo json_encode($result);
+        exit;
+    }
+    
+    if ($action === 'trace_swap') {
+        $swapRef = $_POST['swap_ref'] ?? '';
+        require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
+        use Core\Database\DBConnection;
+        $db = DBConnection::getInstance();
+        
+        try {
+            $stmt = $db->prepare("SELECT * FROM swap_transactions WHERE swap_reference = :ref");
+            $stmt->execute(['ref' => $swapRef]);
+            $swap = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            $stmt = $db->prepare("SELECT * FROM settlement_obligations WHERE swap_reference = :ref");
+            $stmt->execute(['ref' => $swapRef]);
+            $settlement = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            $result = ['status' => 'success', 'swap' => $swap, 'settlement' => $settlement];
+        } catch (Exception $e) {
+            $result = ['status' => 'error', 'message' => $e->getMessage()];
+        }
+        echo json_encode($result);
+        exit;
+    }
+    
+    echo json_encode($result);
+    exit;
 }
-
-use Domain\Services\SwapService;
-use Domain\Services\Settlement\HybridSettlementStrategy;
-use Infrastructure\Banks\GenericBankClient;
 
 // ============================================================
-// CORRECTED TEST ACCOUNTS (Based on actual data)
+// LOAD ALL CONFIGURATIONS FOR INITIAL DISPLAY
 // ============================================================
-$testAccounts = [
-    'saccussalis_ewallet' => [
-        'institution' => 'SACCUSSALIS',
-        'asset_type' => 'E-WALLET',
-        'phone' => '+26770000000',
-        'account_number' => '10000001',
-        'currency' => 'BWP',
-        'country' => 'BW'
-    ],
-    'zurubank_account' => [
-        'institution' => 'ZURUBANK',
-        'asset_type' => 'ACCOUNT',
-        'account_number' => '10000001',
-        'currency' => 'BWP',
-        'country' => 'BW'
-    ],
-    'zurubank_cashout' => [
-        'institution' => 'ZURUBANK',
-        'delivery_mode' => 'cashout',
-        'beneficiary_phone' => '+26770000000',
-        'currency' => 'BWP',
-        'country' => 'BW'
-    ],
-    'southafrica_account' => [
-        'institution' => 'ZURUBANK',
-        'asset_type' => 'ACCOUNT',
-        'account_number' => '20000002',
-        'currency' => 'ZAR',
-        'country' => 'ZA'
-    ],
-    'southafrica_cashout' => [
-        'institution' => 'ZURUBANK',
-        'delivery_mode' => 'cashout',
-        'beneficiary_phone' => '+2770000000',
-        'currency' => 'ZAR',
-        'country' => 'ZA'
-    ]
-];
+require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
+use Core\Database\DBConnection;
 
-// Initialize services
-$swapService = null;
-$initErrors = [];
+$configBasePath = PROJECT_ROOT . '/src/Core/Config/Countries/';
+$availableCountries = [];
+$countryFiles = [];
+$allParticipants = [];
 
+if (is_dir($configBasePath)) {
+    foreach (scandir($configBasePath) as $country) {
+        if ($country !== '.' && $country !== '..' && is_dir($configBasePath . $country)) {
+            $availableCountries[] = $country;
+            $countryPath = $configBasePath . $country;
+            $countryFiles[$country] = [
+                'participants.json' => file_exists($countryPath . '/participants.json'),
+                'fees.json' => file_exists($countryPath . '/fees.json'),
+                'config.php' => file_exists($countryPath . '/config.php'),
+                'database.php' => file_exists($countryPath . '/database.php')
+            ];
+            
+            $participantsFile = $countryPath . '/participants.json';
+            if (file_exists($participantsFile)) {
+                $data = json_decode(file_get_contents($participantsFile), true);
+                $parts = $data['participants'] ?? $data ?? [];
+                foreach ($parts as $code => $p) {
+                    $allParticipants[$code] = array_merge($p, ['country' => $country, 'code' => $code]);
+                }
+            }
+        }
+    }
+}
+
+// Database connection status
+$db = null;
+$dbConnected = false;
 try {
-    $encryptionKey = getenv('APP_ENCRYPTION_KEY') ?: 'test-key-32-chars-long-here!!!';
-    $swapService = new SwapService($db, [], 'BW', $encryptionKey, $config);
-    $initErrors[] = ['component' => 'SwapService', 'status' => 'success', 'message' => 'Initialized successfully'];
-} catch (Exception $e) {
-    $initErrors[] = ['component' => 'SwapService', 'status' => 'error', 'message' => $e->getMessage()];
+    $db = DBConnection::getInstance();
+    $dbConnected = true;
+} catch (Exception $e) {}
+
+// Get table list
+$tables = [];
+if ($dbConnected) {
+    try {
+        $stmt = $db->query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
+        $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    } catch (Exception $e) {}
 }
 
-$settlement = null;
-try {
-    $settlement = new HybridSettlementStrategy($db);
-    $initErrors[] = ['component' => 'HybridSettlementStrategy', 'status' => 'success', 'message' => 'Initialized successfully'];
-} catch (Exception $e) {
-    $initErrors[] = ['component' => 'HybridSettlementStrategy', 'status' => 'error', 'message' => $e->getMessage()];
+// Discover routes
+$apiRoutes = [];
+function scanForRoutes($dir, $basePath, $baseUrl = '') {
+    $routes = [];
+    if (!is_dir($dir)) return $routes;
+    $items = scandir($dir);
+    foreach ($items as $item) {
+        if ($item === '.' || $item === '..') continue;
+        $path = $dir . '/' . $item;
+        $urlPath = $baseUrl . '/' . $item;
+        if (is_dir($path)) {
+            $routes = array_merge($routes, scanForRoutes($path, $basePath, $urlPath));
+        } elseif (pathinfo($item, PATHINFO_EXTENSION) === 'php') {
+            $content = file_get_contents($path);
+            $method = 'GET';
+            if (strpos($content, '$_POST') !== false || strpos($content, 'POST') !== false) $method = 'POST';
+            if (strpos($content, '$_GET') !== false || strpos($content, 'GET') !== false && $method === 'GET') $method = 'BOTH';
+            $routes[] = ['url' => $urlPath, 'method' => $method, 'file' => str_replace($basePath, '', $path)];
+        }
+    }
+    return $routes;
 }
-
-// Get participants for API testing
-$participants = $config['participants'] ?? [];
-
-// Add message adapters loaded status
-if (!$messageAdaptersLoaded) {
-    $initErrors[] = ['component' => 'MessageAdapters', 'status' => 'warning', 'message' => 'Message adapter tests disabled - interface not found'];
-} else {
-    $initErrors[] = ['component' => 'MessageAdapters', 'status' => 'success', 'message' => 'Loaded successfully'];
-}
+$apiRoutes = scanForRoutes(PROJECT_ROOT . '/public/api', PROJECT_ROOT, '/api');
+$srcRoutes = scanForRoutes(PROJECT_ROOT . '/src/Application/Controllers', PROJECT_ROOT, '/src');
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · SWAP TEST CONTROL</title>
+    <title>VOUCHMORPH · DIAGNOSTICS CENTER</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: 'IBM Plex Mono', monospace;
-            background: #f7f9fc;
-            color: #001B44;
-            padding: 24px;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            padding: 20px;
         }
-        .dashboard { max-width: 1600px; margin: 0 auto; }
+        .container { max-width: 1600px; margin: 0 auto; }
         
-        .admin-header {
+        .header {
             background: #001B44;
-            border-bottom: 5px solid #FFDA63;
-            padding: 15px 30px;
+            border-bottom: 3px solid #FFDA63;
+            padding: 20px 30px;
+            margin-bottom: 30px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 30px;
             flex-wrap: wrap;
             gap: 15px;
         }
         .logo { font-size: 1.2rem; font-weight: 700; color: #fff; }
         .logo span { color: #FFDA63; }
-        .back-btn { padding: 8px 16px; border: 2px solid #FFDA63; color: #FFDA63; text-decoration: none; }
         
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        .stat-card {
-            background: #fff;
-            border: 2px solid #001B44;
-            padding: 20px;
-            box-shadow: 4px 4px 0 #A1B5D8;
-            text-align: center;
-        }
-        .stat-value { font-size: 2rem; font-weight: 700; color: #001B44; }
-        .stat-label { font-size: 0.65rem; text-transform: uppercase; color: #666; margin-top: 8px; }
-        
-        .control-bar {
+        .health-score {
             display: flex;
-            gap: 16px;
-            margin-bottom: 30px;
+            align-items: center;
+            gap: 15px;
+            background: #1a1a1a;
+            padding: 10px 20px;
+        }
+        .score-value { font-size: 28px; font-weight: 700; }
+        .score-label { font-size: 10px; color: #888; }
+        
+        .tabs {
+            display: flex;
+            gap: 4px;
+            background: #1a1a1a;
+            padding: 8px;
+            margin-bottom: 24px;
             flex-wrap: wrap;
         }
-        .btn {
+        .tab {
             padding: 12px 24px;
-            border: 2px solid #001B44;
-            font-family: monospace;
-            font-weight: 600;
+            background: #0a0a0a;
+            border: none;
+            color: #888;
             cursor: pointer;
-            background: #fff;
+            font-family: monospace;
+            font-size: 13px;
             transition: all 0.2s;
         }
-        .btn-primary { background: #001B44; color: #fff; }
-        .btn-primary:hover { background: #FFDA63; color: #001B44; border-color: #FFDA63; }
-        .btn-success { border-color: #10b981; color: #10b981; }
-        .btn-success:hover { background: #10b981; color: #fff; }
-        .btn-warning { border-color: #f59e0b; color: #f59e0b; }
-        .btn-warning:hover { background: #f59e0b; color: #fff; }
+        .tab.active { background: #001B44; color: #FFDA63; border-bottom: 2px solid #FFDA63; }
+        .tab:hover { background: #1a1a1a; color: #fff; }
         
-        .test-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(550px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        .test-card {
-            background: #fff;
-            border: 2px solid #001B44;
+        .panel { display: none; }
+        .panel.active { display: block; }
+        
+        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-bottom: 20px; }
+        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 20px; }
+        
+        .card {
+            background: #111;
+            border: 1px solid #333;
             overflow: hidden;
         }
-        .test-card.passed { border-left: 8px solid #10b981; }
-        .test-card.failed { border-left: 8px solid #ef4444; }
-        .test-card.partial { border-left: 8px solid #f59e0b; }
-        .test-header {
-            padding: 16px 20px;
-            background: #f8f9fa;
+        .card-header {
+            background: #1a1a1a;
+            padding: 14px 18px;
+            border-bottom: 1px solid #333;
+            font-weight: 600;
             display: flex;
             justify-content: space-between;
             align-items: center;
             cursor: pointer;
-            border-bottom: 1px solid #ddd;
         }
-        .test-title { display: flex; align-items: center; gap: 12px; font-weight: 600; }
-        .test-status { width: 12px; height: 12px; border-radius: 50%; }
-        .test-status.passed { background: #10b981; }
-        .test-status.failed { background: #ef4444; }
-        .test-status.partial { background: #f59e0b; }
-        .test-status.running { background: #3b82f6; animation: pulse 1s infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .test-body { padding: 20px; display: none; }
-        .test-body.expanded { display: block; }
+        .card-header:hover { background: #222; }
+        .card-body { padding: 18px; display: none; }
+        .card-body.expanded { display: block; }
         
-        .trace-panel {
-            background: #fff;
-            border: 2px solid #001B44;
-            margin-top: 20px;
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            font-size: 10px;
+            font-weight: 600;
         }
-        .trace-header {
+        .success { background: #10b981; color: #000; }
+        .error { background: #ef4444; color: #fff; }
+        .warning { background: #f59e0b; color: #000; }
+        .info { background: #3b82f6; color: #fff; }
+        
+        .file-tree {
+            font-family: monospace;
+            font-size: 12px;
+            line-height: 1.8;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .folder { color: #FFDA63; cursor: pointer; }
+        .file { color: #888; cursor: pointer; margin-left: 20px; }
+        .file:hover { color: #fff; }
+        
+        .json-viewer {
+            background: #0a0a0a;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 11px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .participant-card {
+            background: #0a0a0a;
+            padding: 12px;
+            margin-bottom: 12px;
+            border-left: 3px solid;
+        }
+        .participant-card.online { border-left-color: #10b981; }
+        .participant-card.offline { border-left-color: #ef4444; }
+        
+        .ajax-monitor {
             background: #001B44;
-            color: #fff;
-            padding: 15px 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 15px;
+            padding: 16px;
+            font-family: monospace;
+            font-size: 11px;
+            max-height: 500px;
+            overflow-y: auto;
         }
-        .trace-input { display: flex; gap: 10px; }
-        .trace-input input { padding: 8px 12px; border: 1px solid #FFDA63; background: #fff; font-family: monospace; width: 300px; }
-        .trace-content { padding: 20px; font-family: monospace; font-size: 13px; max-height: 600px; overflow-y: auto; }
+        .ajax-request { color: #FFDA63; margin: 8px 0; padding: 8px; background: #0a2a5a; }
+        .ajax-response { color: #10b981; margin-left: 20px; padding: 8px; background: #0a2a2a; }
+        .ajax-error { color: #ef4444; }
+        
+        .metric { font-size: 28px; font-weight: 700; }
+        .metric-label { font-size: 10px; color: #888; margin-top: 4px; }
+        
+        .btn {
+            padding: 8px 16px;
+            background: transparent;
+            border: 1px solid #FFDA63;
+            color: #FFDA63;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 11px;
+            transition: all 0.2s;
+        }
+        .btn:hover { background: #FFDA63; color: #000; }
+        .btn-primary { background: #001B44; border-color: #001B44; color: #fff; }
+        
+        input, select, textarea {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            color: #e0e0e0;
+            padding: 8px 12px;
+            font-family: monospace;
+            width: 100%;
+            margin-bottom: 12px;
+        }
+        
         .trace-step {
             padding: 12px;
             margin: 8px 0;
             border-left: 3px solid;
-            background: #f8f9fa;
+            background: #1a1a1a;
         }
         .trace-step.success { border-left-color: #10b981; }
         .trace-step.error { border-left-color: #ef4444; }
         .trace-step.info { border-left-color: #3b82f6; }
         
-        .log-viewer {
-            background: #001B44;
-            color: #FFDA63;
-            padding: 16px;
-            font-family: monospace;
-            font-size: 12px;
-            max-height: 300px;
-            overflow-y: auto;
-            margin-top: 20px;
-        }
-        .log-entry { padding: 6px 0; border-bottom: 1px solid #334155; }
-        .log-entry.info { color: #3b82f6; }
-        .log-entry.success { color: #10b981; }
-        .log-entry.error { color: #ef4444; }
-        .log-entry.warning { color: #f59e0b; }
+        .log-entry { padding: 6px 0; border-bottom: 1px solid #1a1a1a; font-size: 11px; }
         
-        .retry-flow {
-            background: #fef3c7;
-            border-left: 4px solid #f59e0b;
-            padding: 15px;
-            margin: 15px 0;
-            font-family: monospace;
-            font-size: 12px;
-        }
-        
-        .admin-footer {
-            background: #001B44;
-            color: #A1B5D8;
-            padding: 20px;
-            text-align: center;
-            margin-top: 30px;
-            border-top: 3px solid #FFDA63;
-        }
-        @media (max-width: 768px) {
-            body { padding: 16px; }
-            .test-grid { grid-template-columns: 1fr; }
-            .trace-input { width: 100%; flex-direction: column; }
-            .trace-input input { width: 100%; }
+        @media (max-width: 1024px) {
+            .grid-2, .grid-3 { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
-<div class="dashboard">
-    <div class="admin-header">
-        <div class="logo">VOUCHMORPH <span>SWAP TEST CONTROL</span></div>
-        <a href="admin_dashboard.php" class="back-btn">← BACK</a>
+<div class="container">
+    <div class="header">
+        <div class="logo">VOUCHMORPH <span>DIAGNOSTICS CENTER</span></div>
+        <div class="health-score" id="healthScore">
+            <div class="score-value" id="scoreValue">0%</div>
+            <div class="score-label">HEALTH SCORE</div>
+        </div>
     </div>
-
-    <div class="stats-grid" id="stats-grid">
-        <div class="stat-card"><div class="stat-value" id="stat-total">0</div><div class="stat-label">TESTS RUN</div></div>
-        <div class="stat-card"><div class="stat-value" id="stat-passed">0</div><div class="stat-label">PASSED</div></div>
-        <div class="stat-card"><div class="stat-value" id="stat-failed">0</div><div class="stat-label">FAILED</div></div>
-        <div class="stat-card"><div class="stat-value" id="stat-score">0%</div><div class="stat-label">HEALTH SCORE</div></div>
+    
+    <div class="tabs">
+        <button class="tab active" onclick="showPanel('explorer')">📁 SYSTEM EXPLORER</button>
+        <button class="tab" onclick="showPanel('participants')">🏦 PARTICIPANT INSPECTOR</button>
+        <button class="tab" onclick="showPanel('routes')">🔄 SYSTEM ROUTES</button>
+        <button class="tab" onclick="showPanel('database')">🗄️ DATABASE EXPLORER</button>
+        <button class="tab" onclick="showPanel('dashboard')">📊 DASHBOARD DEBUG</button>
+        <button class="tab" onclick="showPanel('ajax')">📡 AJAX MONITOR</button>
+        <button class="tab" onclick="showPanel('trace')">🔍 SWAP TRACE</button>
     </div>
-
-    <div class="control-bar">
-        <button class="btn btn-primary" onclick="runAllTests()">🚀 RUN FULL TEST SUITE</button>
-        <button class="btn btn-success" onclick="runTest('config')">⚙️ CONFIG</button>
-        <button class="btn btn-success" onclick="runTest('api_connections')">🔌 API CONNECTIONS</button>
-        <button class="btn btn-success" onclick="runTest('fee_splitting')">💰 FEE SPLITTING</button>
-        <button class="btn btn-success" onclick="runTest('cashout_retry')">🔄 CASHOUT RETRY</button>
-        <button class="btn btn-success" onclick="runTest('local_swap')">🔄 LOCAL SWAP</button>
-        <button class="btn btn-success" onclick="runTest('cross_border')">🌍 CROSS-BORDER</button>
-        <button class="btn btn-success" onclick="runTest('fx_swap')">💱 FX SWAP</button>
-        <button class="btn btn-success" onclick="runTest('cashout')">🏧 CASHOUT</button>
-        <button class="btn btn-warning" onclick="runTest('fee_equation')">💰 FEES</button>
-        <button class="btn btn-warning" onclick="runTest('mojaloop')">🔌 MOJALOOP</button>
-        <button class="btn btn-warning" onclick="runTest('message_adapters')">📨 MESSAGE ADAPTERS</button>
-    </div>
-
-    <div class="test-grid" id="test-grid"></div>
-
-    <!-- Trace Panel -->
-    <div class="trace-panel">
-        <div class="trace-header">
-            <span>🔍 MONEY TRACE</span>
-            <div class="trace-input">
-                <input type="text" id="trace-swap-ref" placeholder="Enter Swap Reference...">
-                <button class="btn" onclick="traceSwap()" style="background: #FFDA63; color:#001B44;">TRACE</button>
+    
+    <!-- PANEL 1: SYSTEM EXPLORER -->
+    <div id="panel-explorer" class="panel active">
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-header" onclick="toggleCard(this)">📁 VOUCHMORPH STRUCTURE</div>
+                <div class="card-body">
+                    <div class="file-tree" id="vouchmorphTree"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header" onclick="toggleCard(this)">⚙️ CONFIGURATION FILES</div>
+                <div class="card-body">
+                    <div id="configFiles"></div>
+                </div>
             </div>
         </div>
-        <div class="trace-content" id="trace-content">
-            <div style="color: #666; text-align: center;">Enter a swap reference to trace full money path</div>
+        <div class="card">
+            <div class="card-header" onclick="toggleCard(this)">📄 FILE VIEWER</div>
+            <div class="card-body">
+                <input type="text" id="filePath" placeholder="Enter file path to view..." value="src/Core/Config/Countries/Botswana/participants.json">
+                <button class="btn" onclick="viewFile()">VIEW FILE</button>
+                <div id="fileContent" class="json-viewer" style="margin-top: 12px;"></div>
+            </div>
         </div>
     </div>
-
-    <div class="log-viewer" id="log-viewer">
-        <div class="log-entry info">✨ Swap Test Control Dashboard initialized</div>
-        <div class="log-entry info">📊 Test accounts: SACCUSSALIS eWallet (+26770000000) → ZURUBANK</div>
-        <div class="log-entry info">💰 Fee splitting & Cashout retry tests included</div>
-        <div class="log-entry info">🔌 API Connection tests included</div>
-        <?php if (!$messageAdaptersLoaded): ?>
-        <div class="log-entry warning">⚠️ Message adapter tests disabled - interface not found</div>
-        <?php endif; ?>
+    
+    <!-- PANEL 2: PARTICIPANT INSPECTOR -->
+    <div id="panel-participants" class="panel">
+        <div id="participantsGrid" class="grid-2"></div>
+        <div class="card">
+            <div class="card-header" onclick="toggleCard(this)">🔌 ENDPOINT TESTER</div>
+            <div class="card-body">
+                <select id="testParticipantSelect"></select>
+                <select id="testEndpointSelect"></select>
+                <textarea id="testPayload" rows="4" placeholder='{"test": true}'></textarea>
+                <button class="btn" onclick="testEndpointLive()">TEST ENDPOINT →</button>
+                <div id="testResult" class="json-viewer" style="margin-top: 12px;"></div>
+            </div>
+        </div>
     </div>
-
-    <div class="admin-footer">
-        <p>VOUCHMORPH · SWAP TEST CONTROL · API CONNECTIONS · FEE SPLITTING · CASHOUT RETRY · MONEY TRACE</p>
+    
+    <!-- PANEL 3: SYSTEM ROUTES -->
+    <div id="panel-routes" class="panel">
+        <div class="card">
+            <div class="card-header" onclick="toggleCard(this)">🔗 API ROUTES</div>
+            <div class="card-body">
+                <div id="routesList"></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- PANEL 4: DATABASE EXPLORER -->
+    <div id="panel-database" class="panel">
+        <div class="grid-3" id="dbStats"></div>
+        <div class="card">
+            <div class="card-header" onclick="toggleCard(this)">📊 TABLE BROWSER</div>
+            <div class="card-body">
+                <select id="tableSelect">
+                    <option value="">Select a table...</option>
+                    <?php foreach ($tables as $table): ?>
+                        <option value="<?= htmlspecialchars($table) ?>"><?= htmlspecialchars($table) ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <button class="btn" onclick="loadTableData()">LOAD DATA</button>
+                <div id="tableData" class="json-viewer" style="margin-top: 12px;"></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- PANEL 5: DASHBOARD DEBUG -->
+    <div id="panel-dashboard" class="panel">
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-header" onclick="toggleCard(this)">📋 DASHBOARD STATE</div>
+                <div class="card-body" id="dashboardState"></div>
+            </div>
+            <div class="card">
+                <div class="card-header" onclick="toggleCard(this)">🛠️ REPAIR TOOLS</div>
+                <div class="card-body">
+                    <button class="btn" onclick="repairDashboard()">🔧 BACKUP DASHBOARD</button>
+                    <button class="btn" onclick="checkParticipantsPath()">📁 CHECK PARTICIPANTS PATH</button>
+                    <button class="btn" onclick="testDashboardApi()">🔌 TEST DASHBOARD API</button>
+                    <div id="repairResult" class="json-viewer" style="margin-top: 12px;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- PANEL 6: AJAX MONITOR -->
+    <div id="panel-ajax" class="panel">
+        <div class="card">
+            <div class="card-header" onclick="toggleCard(this)">📡 LIVE AJAX MONITOR</div>
+            <div class="card-body">
+                <div class="ajax-monitor" id="ajaxMonitor">
+                    <div class="log-entry info">✨ AJAX Monitor ready</div>
+                    <div class="log-entry info">📡 Intercepting dashboard requests...</div>
+                </div>
+                <button class="btn" onclick="testDashboardGetParticipants()" style="margin-top: 12px;">TEST get_participants</button>
+                <button class="btn" onclick="testDashboardSwap()">TEST swap_linked</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- PANEL 7: SWAP TRACE -->
+    <div id="panel-trace" class="panel">
+        <div class="card">
+            <div class="card-header" onclick="toggleCard(this)">🔍 SWAP EXECUTION TRACE</div>
+            <div class="card-body">
+                <input type="text" id="traceSwapRef" placeholder="Enter swap reference (e.g., VM-ABCD-123456)">
+                <button class="btn" onclick="traceSwap()">TRACE →</button>
+                <div id="traceResult"></div>
+            </div>
+        </div>
     </div>
 </div>
 
 <script>
-const testAccounts = <?php echo json_encode($testAccounts); ?>;
-const participants = <?php echo json_encode($participants); ?>;
-const initErrors = <?php echo json_encode($initErrors); ?>;
-const messageAdaptersLoaded = <?php echo $messageAdaptersLoaded ? 'true' : 'false'; ?>;
-
-let testResults = {};
-
-// Helper function to test API connection to a participant
-async function testApiConnection(participantName, participantConfig) {
-    const baseUrl = participantConfig.base_url || participantConfig.api_config?.base_url;
-    if (!baseUrl) {
-        return { passed: false, message: 'No base URL configured' };
-    }
-    
-    const healthEndpoint = participantConfig.health_check?.endpoint || '/health';
-    const url = baseUrl.replace(/\/$/, '') + healthEndpoint;
-    
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
-        
-        const response = await fetch(url, {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json'
-            },
-            signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        
-        if (response.ok) {
-            return { passed: true, message: `HTTP ${response.status} - Online` };
-        } else {
-            return { passed: false, message: `HTTP ${response.status} - Unhealthy` };
-        }
-    } catch (error) {
-        if (error.name === 'AbortError') {
-            return { passed: false, message: 'Connection timeout (10s)' };
-        }
-        return { passed: false, message: error.message };
-    }
+// ============================================================
+// UTILITY FUNCTIONS
+// ============================================================
+function showPanel(panelId) {
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.getElementById(`panel-${panelId}`).classList.add('active');
+    event.target.classList.add('active');
 }
 
-// Test definitions
-const tests = {
-    config: {
-        name: '⚙️ CONFIGURATION HEALTH',
-        description: 'Validates fees.json, participants.json, ATM notes, cards, FX, corridors',
-        run: async () => {
-            const results = [];
-            results.push({ name: 'Fees Config', passed: true, message: 'fees.json loaded' });
-            results.push({ name: 'Participants Config', passed: true, message: Object.keys(participants).length + ' participants loaded' });
-            results.push({ name: 'SACCUSSALIS (Botswana)', passed: true, message: 'Source institution configured' });
-            results.push({ name: 'ZURUBANK (Botswana)', passed: true, message: 'Destination institution configured' });
-            results.push({ name: 'ZURUBANK (South Africa)', passed: true, message: 'Cross-border destination configured' });
-            results.push({ name: 'Forex Service', passed: true, message: 'FX ready' });
-            results.push({ name: 'Settlement Strategy', passed: true, message: 'Active' });
-            results.push({ name: 'Message Adapters', passed: messageAdaptersLoaded, message: messageAdaptersLoaded ? 'Loaded' : 'Skipped' });
-            return { status: 'PASS', results, message: 'Configuration valid' };
-        }
-    },
-    
-    api_connections: {
-        name: '🔌 API CONNECTION TESTS',
-        description: 'Tests connectivity to all participant bank APIs',
-        run: async () => {
-            const results = [];
-            
-            for (const [name, config] of Object.entries(participants)) {
-                const result = await testApiConnection(name, config);
-                results.push({
-                    name: name,
-                    passed: result.passed,
-                    message: result.message
-                });
-            }
-            
-            if (Object.keys(participants).length === 0) {
-                results.push({ name: 'No Participants', passed: false, message: 'No participants configured' });
-            }
-            
-            const passedCount = results.filter(r => r.passed).length;
-            const totalCount = results.length;
-            const status = passedCount === totalCount ? 'PASS' : (passedCount > 0 ? 'PARTIAL' : 'FAIL');
-            
-            return { status, results, message: `${passedCount}/${totalCount} APIs reachable` };
-        }
-    },
-    
-    fee_splitting: {
-        name: '💰 FEE SPLITTING',
-        description: 'Tests fee split logic: Swap Levy, Platform (35%), Source (15%), Destination (50%)',
-        run: async () => {
-            const results = [];
-            const totalFee = 10.00;
-            const swapLevy = 1.00;
-            const afterLevy = 9.00;
-            const platformShare = afterLevy * 0.35;
-            const sourceShare = afterLevy * 0.15;
-            const destinationShare = afterLevy * 0.50;
-            results.push({ name: 'Swap Levy', passed: swapLevy === 1.00, message: '1.00 BWP → VouchMorph' });
-            results.push({ name: 'Platform Share (35%)', passed: platformShare === 3.15, message: '3.15 BWP → VouchMorph' });
-            results.push({ name: 'Source Share (15%)', passed: sourceShare === 1.35, message: '1.35 BWP → SACCUSSALIS' });
-            results.push({ name: 'Destination Share (50%)', passed: destinationShare === 4.50, message: '4.50 BWP → ZURUBANK' });
-            return { status: 'PASS', results, message: 'Fee splitting logic correct' };
-        }
-    },
-    
-    cashout_retry: {
-        name: '🔄 CASHOUT RETRY (Swap-on-Swap)',
-        description: 'Tests free retry (1st) and paid retry (2nd+) logic',
-        run: async () => {
-            const results = [];
-            results.push({ name: 'First Attempt (Failed)', passed: true, message: 'Client pays 10.00, unearned cashout fee stored' });
-            results.push({ name: 'First Retry (FREE)', passed: true, message: 'Client pays 0, VouchMorph pays generate code fee (0.45)' });
-            results.push({ name: 'Second+ Retry (PAID)', passed: true, message: 'Client pays generate code fee (0.45)' });
-            results.push({ name: 'Cashout Fee Source', passed: true, message: 'Cashout fee (4.05) always from unearned fee' });
-            return { status: 'PASS', results, message: 'Swap-on-swap retry logic correct' };
-        }
-    },
-    
-    local_swap: {
-        name: '🔄 LOCAL SWAP (BWP → BWP)',
-        description: 'Source: SACCUSSALIS eWallet (+26770000000) → Destination: ZURUBANK Account',
-        run: async () => {
-            const results = [];
-            results.push({ name: 'Source', passed: true, message: 'SACCUSSALIS eWallet (+26770000000)' });
-            results.push({ name: 'Destination', passed: true, message: 'ZURUBANK Account (Botswana)' });
-            results.push({ name: 'Amount', passed: true, message: '100 BWP' });
-            results.push({ name: 'Fee Deduction', passed: true, message: '6.00 BWP swap fee + VAT' });
-            results.push({ name: 'Same Country', passed: true, message: 'Botswana → Botswana' });
-            results.push({ name: 'Same Currency', passed: true, message: 'BWP → BWP' });
-            return { status: 'PASS', results, message: 'Local swap flow validated' };
-        }
-    },
-    
-    cross_border: {
-        name: '🌍 CROSS-BORDER (BWP → BWP to SA)',
-        description: 'Botswana SACCUSSALIS → South Africa ZURUBANK (same currency)',
-        run: async () => {
-            const results = [];
-            results.push({ name: 'Source Country', passed: true, message: 'Botswana (BW)' });
-            results.push({ name: 'Destination Country', passed: true, message: 'South Africa (ZA)' });
-            results.push({ name: 'Different Country', passed: true, message: 'Yes - cross-border applies' });
-            results.push({ name: 'Same Currency', passed: true, message: 'BWP → BWP' });
-            results.push({ name: 'Cross-border Fee', passed: true, message: '0.5% applied' });
-            results.push({ name: 'FX Fee', passed: true, message: '0% (same currency)' });
-            return { status: 'PASS', results, message: 'Cross-border same currency validated' };
-        }
-    },
-    
-    fx_swap: {
-        name: '💱 FX SWAP (BWP → ZAR)',
-        description: 'Botswana (BWP) → South Africa (ZAR) with currency conversion',
-        run: async () => {
-            const results = [];
-            results.push({ name: 'Different Countries', passed: true, message: 'Botswana → South Africa' });
-            results.push({ name: 'Different Currencies', passed: true, message: 'BWP → ZAR' });
-            results.push({ name: 'FX Fee', passed: true, message: '1.5% applied' });
-            results.push({ name: 'Cross-border Fee', passed: true, message: '0.5% applied' });
-            results.push({ name: 'Swap Fee', passed: true, message: '10.00 BWP (cashout rate)' });
-            return { status: 'PASS', results, message: 'FX swap validated' };
-        }
-    },
-    
-    cashout: {
-        name: '🏧 CASHOUT',
-        description: 'SACCUSSALIS eWallet → ZURUBANK ATM Cashout (Botswana)',
-        run: async () => {
-            const results = [];
-            results.push({ name: 'Source', passed: true, message: 'SACCUSSALIS eWallet (+26770000000)' });
-            results.push({ name: 'Destination', passed: true, message: 'ZURUBANK ATM' });
-            results.push({ name: 'Beneficiary Phone', passed: true, message: '+26770000000' });
-            results.push({ name: 'Fee Deduction', passed: true, message: '10.00 BWP swap fee' });
-            results.push({ name: 'ATM Code Generation', passed: true, message: '6-digit code sent via SMS' });
-            results.push({ name: 'Retry Logic', passed: true, message: 'Swap-on-swap available on failure' });
-            return { status: 'PASS', results, message: 'Cashout flow validated' };
-        }
-    },
-    
-    fee_equation: {
-        name: '💰 FEE EQUATION',
-        description: 'Gross = Net + Fees + VAT',
-        run: async () => {
-            const results = [];
-            const gross = 100;
-            const swapFee = 6.00;
-            const vatRate = 0.14;
-            const vat = swapFee * vatRate;
-            const net = gross - swapFee - vat;
-            results.push({ name: 'Equation', passed: true, message: `${gross} = ${net.toFixed(2)} + ${swapFee} + ${vat.toFixed(2)}` });
-            results.push({ name: 'Net Positive', passed: net > 0, message: `Net: ${net.toFixed(2)} BWP` });
-            return { status: 'PASS', results, message: 'Fee equation balanced' };
-        }
-    },
-    
-    mojaloop: {
-        name: '🔌 MOJALOOP ADAPTER',
-        description: 'Tests Mojaloop API endpoints',
-        run: async () => {
-            const results = [];
-            try {
-                const healthResp = await fetch('/api/mojaloop/health');
-                results.push({ name: 'Health Check', passed: healthResp.ok, message: `HTTP ${healthResp.status}` });
-            } catch(e) {
-                results.push({ name: 'Health Check', passed: false, message: e.message });
-            }
-            results.push({ name: 'Async Pattern', passed: true, message: 'Endpoints return 202 Accepted' });
-            results.push({ name: 'ISO20022 Compliance', passed: true, message: 'pacs.008, pacs.002 messages' });
-            return { status: 'PASS', results, message: 'Mojaloop adapter ready' };
-        }
-    },
-    
-    message_adapters: {
-        name: '📨 MESSAGE ADAPTERS',
-        description: 'Tests ISO20022, ISO8583, Mobile Money, RTGS, Legacy adapters',
-        run: async () => {
-            if (!messageAdaptersLoaded) {
-                return { status: 'PARTIAL', results: [{ name: 'Message Adapters', passed: false, message: 'Interface not found - skipping' }], message: 'Message adapters not available' };
-            }
-            
-            const results = [];
-            const adapters = ['ISO20022', 'ISO8583', 'MOBILE_MONEY', 'RTGS', 'LEGACY'];
-            for (const adapter of adapters) {
-                results.push({ name: `${adapter} Adapter`, passed: true, message: 'Ready' });
-            }
-            return { status: 'PASS', results, message: 'All message adapters available' };
-        }
+function toggleCard(header) {
+    const body = header.nextElementSibling;
+    body.classList.toggle('expanded');
+}
+
+function addLog(level, message, containerId = 'ajaxMonitor') {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const timestamp = new Date().toLocaleTimeString();
+    const div = document.createElement('div');
+    div.className = `log-entry log-${level}`;
+    div.innerHTML = `[${timestamp}] ${message}`;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+    while (container.children.length > 100) container.removeChild(container.firstChild);
+}
+
+async function apiCall(action, data = {}) {
+    const formData = new FormData();
+    formData.append('action', action);
+    for (let key in data) {
+        formData.append(key, data[key]);
     }
-};
-
-function renderTestGrid() {
-    const grid = document.getElementById('test-grid');
-    grid.innerHTML = Object.entries(tests).map(([id, test]) => `
-        <div class="test-card" id="card-${id}">
-            <div class="test-header" onclick="toggleCard('${id}')">
-                <div class="test-title"><div class="test-status" id="status-${id}"></div><span>${test.name}</span></div>
-                <span>▼</span>
-            </div>
-            <div class="test-body" id="body-${id}">
-                <div style="color: #666; margin-bottom: 12px; font-size: 0.75rem;">${test.description}</div>
-                <div id="result-${id}" style="font-family: monospace; font-size: 0.75rem;">Not run yet</div>
-            </div>
-        </div>
-    `).join('');
-}
-
-function toggleCard(id) {
-    document.getElementById(`body-${id}`).classList.toggle('expanded');
-}
-
-async function runAllTests() {
-    addLog('info', '🚀 Running full test suite...');
-    for (const [id] of Object.entries(tests)) {
-        await runTest(id);
-    }
-    addLog('success', '✅ Full test suite complete!');
-}
-
-async function runTest(testId) {
-    const test = tests[testId];
-    if (!test) return;
     
-    addLog('info', `🔄 Running: ${test.name}...`);
-    updateTestStatus(testId, 'running', 'Running...');
-    
-    try {
-        const result = await test.run();
-        testResults[testId] = result;
-        const status = result.status.toLowerCase();
-        updateTestStatus(testId, status, formatResults(result));
-        addLog(status === 'pass' ? 'success' : (status === 'partial' ? 'warning' : 'error'), `${test.name}: ${result.message}`);
-        updateStats();
-    } catch (error) {
-        updateTestStatus(testId, 'failed', `Error: ${error.message}`);
-        addLog('error', `${test.name} failed: ${error.message}`);
+    const response = await fetch(window.location.href, {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        body: formData
+    });
+    return await response.json();
+}
+
+// ============================================================
+// SYSTEM EXPLORER
+// ============================================================
+async function loadFolder(path, containerId) {
+    const result = await apiCall('get_folder', { folder: path });
+    if (result.status === 'success') {
+        const container = document.getElementById(containerId);
+        container.innerHTML = renderFileTree(result.files, path);
     }
 }
 
-function updateTestStatus(testId, status, resultHtml) {
-    const statusDot = document.getElementById(`status-${testId}`);
-    const resultDiv = document.getElementById(`result-${testId}`);
-    const card = document.getElementById(`card-${testId}`);
+function renderFileTree(files, basePath) {
+    let html = '';
+    const folders = files.filter(f => f.type === 'dir').sort((a,b) => a.name.localeCompare(b.name));
+    const fileItems = files.filter(f => f.type === 'file').sort((a,b) => a.name.localeCompare(b.name));
     
-    if (statusDot) statusDot.className = `test-status ${status}`;
-    if (card) card.className = `test-card ${status}`;
-    if (resultDiv && typeof resultHtml !== 'object') resultDiv.innerHTML = resultHtml;
-}
-
-function formatResults(result) {
-    if (!result.results) return `<div>${result.message}</div>`;
-    let html = `<div style="margin-bottom: 12px; font-weight: 600;">📊 ${result.message}</div>`;
-    html += `<div style="background: #f8f9fa; padding: 12px;">`;
-    for (const r of result.results) {
-        html += `<div style="margin: 4px 0; color: ${r.passed ? '#10b981' : '#ef4444'}">${r.passed ? '✅' : '❌'} ${r.name}: ${r.message}</div>`;
+    for (const folder of folders) {
+        html += `<div class="folder" onclick="loadFolder('${folder.path}', '${folder.name}Tree')">📁 ${folder.name}</div>`;
+        html += `<div id="${folder.name}Tree" style="margin-left: 20px;"></div>`;
     }
-    html += `</div>`;
+    for (const file of fileItems) {
+        html += `<div class="file" onclick="viewFilePath('${file.path}')">📄 ${file.name}</div>`;
+    }
     return html;
 }
 
-function updateStats() {
-    const total = Object.keys(testResults).length;
-    const passed = Object.values(testResults).filter(r => r.status === 'PASS').length;
-    const partial = Object.values(testResults).filter(r => r.status === 'PARTIAL').length;
-    const score = total > 0 ? Math.round(((passed + partial * 0.5) / total) * 100) : 0;
-    
-    document.getElementById('stat-total').textContent = total;
-    document.getElementById('stat-passed').textContent = passed;
-    document.getElementById('stat-failed').textContent = total - passed - partial;
-    document.getElementById('stat-score').textContent = `${score}%`;
-    document.getElementById('stat-score').style.color = score >= 80 ? '#10b981' : score >= 50 ? '#f59e0b' : '#ef4444';
+async function viewFilePath(filePath) {
+    document.getElementById('filePath').value = filePath;
+    await viewFile();
 }
 
-async function traceSwap() {
-    const swapRef = document.getElementById('trace-swap-ref').value.trim();
-    if (!swapRef) {
-        addLog('error', 'Please enter a swap reference');
+async function viewFile() {
+    const filePath = document.getElementById('filePath').value;
+    const result = await apiCall('get_file', { file: filePath });
+    const container = document.getElementById('fileContent');
+    
+    if (result.status === 'success') {
+        const ext = filePath.split('.').pop();
+        if (ext === 'json') {
+            try {
+                const parsed = JSON.parse(result.content);
+                container.innerHTML = `<pre style="white-space: pre-wrap;">${JSON.stringify(parsed, null, 2)}</pre>`;
+            } catch(e) {
+                container.innerHTML = `<pre style="white-space: pre-wrap;">${result.content}</pre>`;
+            }
+        } else {
+            container.innerHTML = `<pre style="white-space: pre-wrap;">${escapeHtml(result.content)}</pre>`;
+        }
+        addLog('info', `Viewed: ${filePath}`, 'ajaxMonitor');
+    } else {
+        container.innerHTML = `<div class="error">${result.message}</div>`;
+        addLog('error', `Failed to view: ${result.message}`, 'ajaxMonitor');
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// ============================================================
+// PARTICIPANT INSPECTOR
+// ============================================================
+async function loadParticipants() {
+    const result = await apiCall('get_participants_live');
+    if (result.status === 'success') {
+        const participants = result.participants;
+        const grid = document.getElementById('participantsGrid');
+        const select = document.getElementById('testParticipantSelect');
+        
+        let html = '';
+        select.innerHTML = '<option value="">Select participant...</option>';
+        
+        for (const [code, p] of Object.entries(participants)) {
+            select.innerHTML += `<option value="${code}" data-url="${p.base_url || ''}">${code} (${p.country})</option>`;
+            html += `
+                <div class="participant-card online">
+                    <div><strong>${code}</strong> <span class="status-badge success">${p.country}</span></div>
+                    <div style="font-size: 11px; margin-top: 8px;">Base URL: ${p.base_url || 'Not configured'}</div>
+                    <div style="font-size: 11px;">Asset Types: ${(p.capabilities?.asset_types || []).join(', ')}</div>
+                    <div style="font-size: 11px;">Endpoints: ${Object.keys(p.resource_endpoints || {}).join(', ')}</div>
+                </div>
+            `;
+        }
+        grid.innerHTML = html;
+    }
+}
+
+document.getElementById('testParticipantSelect')?.addEventListener('change', function() {
+    const selected = this.options[this.selectedIndex];
+    const code = this.value;
+    const endpointSelect = document.getElementById('testEndpointSelect');
+    
+    if (code) {
+        endpointSelect.innerHTML = '<option value="">Select endpoint...</option>';
+        // Would need to load endpoints from participant config
+        endpointSelect.innerHTML += `<option value="health">Health Check</option>`;
+        endpointSelect.innerHTML += `<option value="verify_asset">Verify Asset</option>`;
+        endpointSelect.innerHTML += `<option value="place_hold">Place Hold</option>`;
+    }
+});
+
+async function testEndpointLive() {
+    const participant = document.getElementById('testParticipantSelect').value;
+    const endpoint = document.getElementById('testEndpointSelect').value;
+    const payload = document.getElementById('testPayload').value;
+    const resultDiv = document.getElementById('testResult');
+    
+    if (!participant) {
+        resultDiv.innerHTML = '<div class="error">Select a participant first</div>';
         return;
     }
     
-    addLog('info', `🔍 Tracing swap: ${swapRef}...`);
-    const traceContent = document.getElementById('trace-content');
+    // Get participant data
+    const partsResult = await apiCall('get_participants_live');
+    const participantData = partsResult.participants[participant];
     
-    traceContent.innerHTML = `
-        <div class="trace-step success">📤 <strong>STEP 1: SOURCE VERIFICATION</strong><br>
-        Institution: SACCUSSALIS<br>
-        Asset Type: E-WALLET<br>
-        Phone: +26770000000<br>
-        Account: 10000001<br>
-        Amount: 100.00 BWP</div>
-        
-        <div class="trace-step success">🔒 <strong>STEP 2: HOLD PLACED</strong><br>
-        Hold Reference: HLD-${swapRef}<br>
-        Expiry: 24 hours</div>
-        
-        <div class="trace-step success">💰 <strong>STEP 3: FEE CALCULATION & SPLITTING</strong><br>
-        Gross: 100.00 BWP<br>
-        Swap Levy: 1.00 → VouchMorph<br>
-        Platform (35%): 3.15 → VouchMorph<br>
-        Source (15%): 1.35 → SACCUSSALIS<br>
-        Destination (50%): 4.50 → ZURUBANK<br>
-        Net Amount: 90.00 BWP<br>
-        <div class="retry-flow"><strong>🔄 Retry Logic:</strong><br>
-        - First attempt fails: Unearned cashout fee (4.05) stored<br>
-        - Free retry (1st): VouchMorph pays generate code fee (0.45)<br>
-        - Paid retry (2nd+): Client pays generate code fee (0.45)</div></div>
-        
-        <div class="trace-step success">📨 <strong>STEP 4: MESSAGE ADAPTER</strong><br>
-        GenericBankClient selects appropriate adapter<br>
-        Format: Based on destination institution configuration</div>
-        
-        <div class="trace-step success">📥 <strong>STEP 5: DESTINATION PROCESSED</strong><br>
-        Institution: ZURUBANK<br>
-        Account/Voucher/ATM credited with net amount<br>
-        Status: COMPLETED ✓</div>
-        
-        <div class="fee-equation">✅ FEE EQUATION: 100.00 = 90.00 + 1.00 + 3.15 + 1.35 + 4.50</div>
-        <div class="trace-step info">🔌 API Connection: Banking APIs reachable</div>
-    `;
-    addLog('success', `✅ Trace complete for ${swapRef}`);
-}
-
-function addLog(level, message) {
-    const logViewer = document.getElementById('log-viewer');
-    const timestamp = new Date().toLocaleTimeString();
-    const logEntry = document.createElement('div');
-    logEntry.className = `log-entry ${level}`;
-    logEntry.innerHTML = `[${timestamp}] ${message}`;
-    logViewer.appendChild(logEntry);
-    logViewer.scrollTop = logViewer.scrollHeight;
-    while (logViewer.children.length > 100) logViewer.removeChild(logViewer.firstChild);
-}
-
-// Initialize
-renderTestGrid();
-setTimeout(() => {
-    runTest('config');
-    runTest('api_connections');
-    if (initErrors.length > 0) {
-        initErrors.forEach(e => addLog(e.status === 'success' ? 'success' : (e.status === 'warning' ? 'warning' : 'error'), `${e.component}: ${e.message}`));
+    if (!participantData || !participantData.base_url) {
+        resultDiv.innerHTML = '<div class="error">Participant has no base URL configured</div>';
+        return;
     }
-}, 500);
+    
+    let url = participantData.base_url;
+    if (endpoint === 'health') {
+        url += '/health';
+    } else if (participantData.resource_endpoints && participantData.resource_endpoints[endpoint]) {
+        url += participantData.resource_endpoints[endpoint];
+    }
+    
+    resultDiv.innerHTML = '<div class="info">Testing...</div>';
+    
+    const testResult = await apiCall('test_endpoint', {
+        url: url,
+        method: 'POST',
+        payload: payload || '{}'
+    });
+    
+    if (testResult.http_code === 200) {
+        resultDiv.innerHTML = `
+            <div class="success">✅ SUCCESS</div>
+            <div>HTTP ${testResult.http_code} (${testResult.response_time}ms)</div>
+            <pre style="margin-top: 8px;">${JSON.stringify(testResult.response, null, 2)}</pre>
+        `;
+        addLog('success', `Endpoint test: ${url} - ${testResult.http_code}`, 'ajaxMonitor');
+    } else {
+        resultDiv.innerHTML = `
+            <div class="error">❌ FAILED</div>
+            <div>HTTP ${testResult.http_code || 'N/A'}</div>
+            <div>Error: ${testResult.error || 'Unknown'}</div>
+        `;
+        addLog('error', `Endpoint test failed: ${url} - ${testResult.error}`, 'ajaxMonitor');
+    }
+}
+
+// ============================================================
+// SYSTEM ROUTES
+// ============================================================
+function displayRoutes() {
+    const routes = <?php echo json_encode(array_merge($apiRoutes, $srcRoutes)); ?>;
+    const container = document.getElementById('routesList');
+    
+    let html = '<table style="width: 100%; border-collapse: collapse;">';
+    html += '<tr style="background: #1a1a1a;"><th style="padding: 8px; text-align: left;">Method</th><th style="padding: 8px; text-align: left;">URL</th><th style="padding: 8px; text-align: left;">File</th></tr>';
+    
+    for (const route of routes) {
+        const methodClass = route.method === 'POST' ? 'success' : (route.method === 'GET' ? 'info' : 'warning');
+        html += `<tr style="border-bottom: 1px solid #333;">
+            <td style="padding: 8px;"><span class="status-badge ${methodClass}">${route.method}</span></td>
+            <td style="padding: 8px; font-family: monospace;">${route.url}</td>
+            <td style="padding: 8px; font-size: 11px; color: #888;">${route.file}</td>
+        </tr>`;
+    }
+    html += '</table>';
+    container.innerHTML = html;
+}
+
+// ============================================================
+// DATABASE EXPLORER
+// ============================================================
+async function loadTableData() {
+    const table = document.getElementById('tableSelect').value;
+    if (!table) return;
+    
+    const result = await apiCall('get_table_data', { table: table });
+    const container = document.getElementById('tableData');
+    
+    if (result.status === 'success') {
+        container.innerHTML = `
+            <div class="success">✅ Loaded ${result.count} records</div>
+            <pre style="margin-top: 8px; white-space: pre-wrap;">${JSON.stringify(result.data, null, 2)}</pre>
+        `;
+    } else {
+        container.innerHTML = `<div class="error">${result.message}</div>`;
+    }
+}
+
+// ============================================================
+// DASHBOARD DEBUG
+// ============================================================
+async function loadDashboardState() {
+    const container = document.getElementById('dashboardState');
+    
+    // Check participants.json
+    const participantsResult = await apiCall('get_file', { file: 'src/Core/Config/Countries/Botswana/participants.json' });
+    const participantsLoaded = participantsResult.status === 'success';
+    let participantsCount = 0;
+    if (participantsLoaded) {
+        try {
+            const data = JSON.parse(participantsResult.content);
+            participantsCount = Object.keys(data.participants || data || {}).length;
+        } catch(e) {}
+    }
+    
+    // Check database sources
+    const sourcesResult = await apiCall('get_table_data', { table: 'user_funding_sources' });
+    const sourcesCount = sourcesResult.status === 'success' ? sourcesResult.data.length : 0;
+    
+    // Check swaps
+    const swapsResult = await apiCall('get_table_data', { table: 'swap_transactions' });
+    const swapsCount = swapsResult.status === 'success' ? swapsResult.data.length : 0;
+    
+    container.innerHTML = `
+        <div style="margin-bottom: 16px;">
+            <div class="metric">${participantsLoaded ? '✓' : '✗'}</div>
+            <div class="metric-label">Participants.json Loaded</div>
+            <div style="font-size: 11px; margin-top: 4px;">Found ${participantsCount} participants</div>
+        </div>
+        <div style="margin-bottom: 16px;">
+            <div class="metric"><?php echo $dbConnected ? '✓' : '✗'; ?></div>
+            <div class="metric-label">Database Connected</div>
+        </div>
+        <div style="margin-bottom: 16px;">
+            <div class="metric">${sourcesCount}</div>
+            <div class="metric-label">Linked Sources</div>
+        </div>
+        <div style="margin-bottom: 16px;">
+            <div class="metric">${swapsCount}</div>
+            <div class="metric-label">Swap Transactions</div>
+        </div>
+        <div>
+            <div class="metric"><?php echo session_status() === PHP_SESSION_ACTIVE ? '✓' : '✗'; ?></div>
+            <div class="metric-label">Session Active</div>
+        </div>
+    `;
+}
+
+async function repairDashboard() {
+    const result = await apiCall('fix_dashboard');
+    const container = document.getElementById('repairResult');
+    if (result.status === 'backup_created') {
+        container.innerHTML = `<div class="success">✅ Backup created at ${result.backup_path}</div>`;
+        addLog('success', `Dashboard backup created`, 'ajaxMonitor');
+    } else {
+        container.innerHTML = `<div class="error">${result.message}</div>`;
+    }
+}
+
+async function checkParticipantsPath() {
+    const paths = [
+        'src/Core/Config/Countries/Botswana/participants.json',
+        'src/Core/Config/countries/Botswana/participants.json',
+        'src/CORE_CONFIG/countries/Botswana/participants.json'
+    ];
+    const container = document.getElementById('repairResult');
+    let html = '<div><strong>Checking participants.json paths:</strong></div>';
+    
+    for (const path of paths) {
+        const result = await apiCall('get_file', { file: path });
+        html += `<div style="margin-top: 8px;">${result.status === 'success' ? '✅' : '❌'} ${path}</div>`;
+    }
+    container.innerHTML = html;
+}
+
+async function testDashboardApi() {
+    const container = document.getElementById('repairResult');
+    container.innerHTML = '<div class="info">Testing dashboard API endpoints...</div>';
+    
+    // Test get_participants
+    const participantsResult = await apiCall('get_participants_live');
+    if (participantsResult.status === 'success') {
+        addLog('success', `get_participants: ${Object.keys(participantsResult.participants).length} participants found`, 'ajaxMonitor');
+    } else {
+        addLog('error', `get_participants failed`, 'ajaxMonitor');
+    }
+    
+    container.innerHTML = `
+        <div class="success">✅ API tests complete</div>
+        <div>Check the AJAX Monitor for details</div>
+    `;
+}
+
+// ============================================================
+// AJAX MONITOR
+// ============================================================
+async function testDashboardGetParticipants() {
+    addLog('info', 'Testing get_participants...', 'ajaxMonitor');
+    addLog('info', '📤 AJAX REQUEST: action=get_participants', 'ajaxMonitor');
+    
+    const result = await apiCall('get_participants_live');
+    
+    if (result.status === 'success') {
+        addLog('success', `📥 AJAX RESPONSE: ${Object.keys(result.participants).length} participants loaded`, 'ajaxMonitor');
+        addLog('info', `Participants: ${Object.keys(result.participants).join(', ')}`, 'ajaxMonitor');
+    } else {
+        addLog('error', `📥 AJAX ERROR: ${result.message}`, 'ajaxMonitor');
+    }
+}
+
+async function testDashboardSwap() {
+    addLog('info', 'Testing swap execution...', 'ajaxMonitor');
+    addLog('info', '📤 AJAX REQUEST: action=swap_linked', 'ajaxMonitor');
+    
+    const result = await apiCall('swap_linked', {
+        source_id: 1,
+        amount: 100,
+        dest_institution: 'ZURUBANK',
+        dest_identifier: '10000001',
+        dest_action: 'deposit'
+    });
+    
+    if (result.status === 'success') {
+        addLog('success', `📥 AJAX RESPONSE: ${result.message}`, 'ajaxMonitor');
+        addLog('info', `Swap Reference: ${result.swap_reference}`, 'ajaxMonitor');
+    } else {
+        addLog('error', `📥 AJAX ERROR: ${result.message}`, 'ajaxMonitor');
+    }
+}
+
+// ============================================================
+// SWAP TRACE
+// ============================================================
+async function traceSwap() {
+    const swapRef = document.getElementById('traceSwapRef').value;
+    const container = document.getElementById('traceResult');
+    
+    if (!swapRef) {
+        container.innerHTML = '<div class="error">Enter a swap reference</div>';
+        return;
+    }
+    
+    container.innerHTML = '<div class="info">Tracing...</div>';
+    
+    const result = await apiCall('trace_swap', { swap_ref: swapRef });
+    
+    if (result.status === 'success' && result.swap) {
+        container.innerHTML = `
+            <div class="trace-step success">✅ SWAP FOUND: ${result.swap.swap_reference}</div>
+            <div class="trace-step info">📤 Source: ${result.swap.source_institution} (${result.swap.source_asset_type || 'N/A'})</div>
+            <div class="trace-step info">📥 Destination: ${result.swap.destination_institution} → ${result.swap.destination_identifier}</div>
+            <div class="trace-step info">💰 Amount: ${result.swap.amount} BWP</div>
+            <div class="trace-step info">📅 Created: ${result.swap.created_at}</div>
+            <div class="trace-step ${result.swap.status === 'completed' ? 'success' : 'warning'}">📊 Status: ${result.swap.status}</div>
+            ${result.settlement ? `<div class="trace-step success">🏦 Settlement: ${result.settlement.from_participant} → ${result.settlement.to_participant} (${result.settlement.amount} BWP)</div>` : ''}
+        `;
+        addLog('success', `Traced swap: ${swapRef}`, 'ajaxMonitor');
+    } else {
+        container.innerHTML = `<div class="trace-step error">❌ Swap not found: ${result.message || 'No such reference'}</div>`;
+        addLog('error', `Swap not found: ${swapRef}`, 'ajaxMonitor');
+    }
+}
+
+// ============================================================
+// HEALTH SCORE CALCULATION
+// ============================================================
+async function calculateHealthScore() {
+    let score = 0;
+    let total = 6;
+    
+    // Database connected
+    <?php if ($dbConnected): $score++; ?> <?php endif; ?>
+    
+    // Participants loaded
+    const participants = await apiCall('get_participants_live');
+    if (participants.status === 'success' && Object.keys(participants.participants).length > 0) score++;
+    
+    // Database has tables
+    <?php if (!empty($tables)): $score++; ?> <?php endif; ?>
+    
+    // Session active
+    <?php if (session_status() === PHP_SESSION_ACTIVE): $score++; ?> <?php endif; ?>
+    
+    // Config files exist
+    const configCheck = await apiCall('get_file', { file: 'src/Core/Config/Countries/Botswana/participants.json' });
+    if (configCheck.status === 'success') score++;
+    
+    // Routes discovered
+    const routesCount = <?php echo count($apiRoutes); ?>;
+    if (routesCount > 0) score++;
+    
+    const percentage = Math.round((score / total) * 100);
+    document.getElementById('scoreValue').textContent = `${percentage}%`;
+    document.getElementById('scoreValue').style.color = percentage >= 70 ? '#10b981' : (percentage >= 40 ? '#f59e0b' : '#ef4444');
+}
+
+// ============================================================
+// INITIALIZATION
+// ============================================================
+async function init() {
+    // Load VouchMorph tree
+    await loadFolder('', 'vouchmorphTree');
+    
+    // Load config files display
+    const configFilesHtml = `<?php 
+        foreach ($availableCountries as $country) {
+            echo "<div style='margin-bottom: 16px;'><strong>{$country}</strong><div style='margin-left: 16px;'>";
+            foreach ($countryFiles[$country] as $file => $exists) {
+                echo "<div>" . ($exists ? '✅' : '❌') . " {$file}</div>";
+            }
+            echo "</div></div>";
+        }
+    ?>`;
+    document.getElementById('configFiles').innerHTML = configFilesHtml;
+    
+    // Load participants
+    await loadParticipants();
+    
+    // Display routes
+    displayRoutes();
+    
+    // Load dashboard state
+    await loadDashboardState();
+    
+    // Calculate health score
+    await calculateHealthScore();
+    
+    addLog('info', '✨ Diagnostics Center ready', 'ajaxMonitor');
+    addLog('info', `📊 Found ${Object.keys(<?php echo json_encode($allParticipants); ?>).length} participants`, 'ajaxMonitor');
+    addLog('info', `🔗 Discovered <?php echo count($apiRoutes); ?> API routes`, 'ajaxMonitor');
+    addLog('info', `🗄️ Database: <?php echo $dbConnected ? 'Connected' : 'Disconnected'; ?>`, 'ajaxMonitor');
+}
+
+init();
 </script>
 </body>
 </html>
