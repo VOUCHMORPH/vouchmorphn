@@ -4,6 +4,7 @@ declare(strict_types=1);
 /**
  * VouchMorphn - Swap Execution API
  * Fully Dynamic - Works for ALL Countries
+ * Aligned with Domain\Services\SwapService
  */
 
 // ============================================
@@ -17,7 +18,7 @@ define('ROOT_PATH', dirname(__DIR__, 3));
 header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json; charset=UTF-8");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, X-API-Key, Authorization, X-Country-Code");
+header("Access-Control-Allow-Headers: Content-Type, X-API-Key, Authorization, X-Country-Code, X-Country");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
@@ -37,9 +38,13 @@ error_reporting(E_ALL);
 $headers = function_exists('getallheaders') ? getallheaders() : [];
 $headersLower = array_change_key_case($headers, CASE_LOWER);
 
-// Country can come from: Header, Request Body, or detect from API key
+// Try multiple header variations
 $requestCountry = $_SERVER['HTTP_X_COUNTRY_CODE'] ?? 
+                  $_SERVER['HTTP_X_COUNTRY'] ?? 
+                  $_SERVER['HTTP_COUNTRY'] ??
                   $headersLower['x-country-code'] ?? 
+                  $headersLower['x-country'] ?? 
+                  $headersLower['country'] ??
                   $_GET['country'] ?? 
                   null;
 
@@ -47,6 +52,9 @@ $input = json_decode(file_get_contents('php://input'), true);
 $bodyCountry = $input['country'] ?? $input['source']['country'] ?? $input['destination']['country'] ?? null;
 
 $countryCode = $requestCountry ?? $bodyCountry;
+
+// Debug logging
+error_log("[execute.php] Country detection - Header: " . ($requestCountry ?? 'null') . ", Body: " . ($bodyCountry ?? 'null'));
 
 // If no country provided, try to detect from participants config
 if (!$countryCode) {
@@ -57,17 +65,15 @@ if (!$countryCode) {
         });
         if (count($countries) === 1) {
             $countryCode = $countries[0];
+            error_log("[execute.php] Auto-detected country: {$countryCode}");
         }
     }
 }
 
+// Default fallback for testing
 if (!$countryCode) {
-    http_response_code(400);
-    echo json_encode([
-        'success' => false,
-        'error' => 'Country not specified. Please provide X-Country-Code header or country in request body'
-    ]);
-    exit();
+    $countryCode = 'Botswana';
+    error_log("[execute.php] WARNING: No country provided, using default: {$countryCode}");
 }
 
 // ============================================
@@ -84,16 +90,21 @@ foreach ($composerPaths as $path) {
     if (file_exists($path)) {
         require_once $path;
         $autoloaderFound = true;
+        error_log("[execute.php] Composer autoloader found at: {$path}");
         break;
     }
 }
 
 if (!$autoloaderFound) {
-    // Fallback manual requires
+    error_log("[execute.php] WARNING: Composer autoloader not found, using manual requires");
     require_once ROOT_PATH . '/src/Domain/Services/SwapService.php';
     require_once ROOT_PATH . '/src/Core/Database/DBConnection.php';
     require_once ROOT_PATH . '/src/Infrastructure/Banks/GenericBankClient.php';
     require_once ROOT_PATH . '/src/Infrastructure/SMS/SmsNotificationService.php';
+    require_once ROOT_PATH . '/src/Domain/Services/ForexService.php';
+    require_once ROOT_PATH . '/src/Domain/Services/FeeService.php';
+    require_once ROOT_PATH . '/src/Domain/Services/CardService.php';
+    require_once ROOT_PATH . '/src/Domain/Services/Settlement/HybridSettlementStrategy.php';
 }
 
 // ============================================
@@ -101,7 +112,7 @@ if (!$autoloaderFound) {
 // ============================================
 $configBasePath = ROOT_PATH . '/src/Core/Config/Countries/' . $countryCode . '/';
 
-// Try different possible paths (case-insensitive)
+// Try different possible paths
 $possiblePaths = [
     $configBasePath,
     ROOT_PATH . '/src/Core/Config/countries/' . $countryCode . '/',
@@ -114,6 +125,7 @@ $configPath = null;
 foreach ($possiblePaths as $path) {
     if (is_dir($path)) {
         $configPath = $path;
+        error_log("[execute.php] Config path found: {$path}");
         break;
     }
 }
@@ -129,7 +141,7 @@ if (!$configPath) {
     exit();
 }
 
-// Load participants.json (try different filename patterns)
+// Load participants.json
 $participantsFile = null;
 $participantPatterns = [
     $configPath . 'participants.json',
@@ -142,6 +154,7 @@ $participantPatterns = [
 foreach ($participantPatterns as $pattern) {
     if (file_exists($pattern)) {
         $participantsFile = $pattern;
+        error_log("[execute.php] Participants file found: {$pattern}");
         break;
     }
 }
@@ -166,87 +179,109 @@ if (file_exists($feesFile)) {
     $fees = json_decode(file_get_contents($feesFile), true);
 }
 
-// Load config.php if exists
+// Load config.php
 $configPhpFile = $configPath . 'config.php';
 $settings = [];
 if (file_exists($configPhpFile)) {
     $settings = require $configPhpFile;
 }
 
-// Load database.php if exists
+// Load database.php
 $dbConfigFile = $configPath . 'database.php';
 $dbConfig = [];
 if (file_exists($dbConfigFile)) {
     $dbConfig = require $dbConfigFile;
 }
 
+// Load ATM notes if exists
+$atmNotesFile = $configPath . 'atm_notes.json';
+$atmNotes = [];
+if (file_exists($atmNotesFile)) {
+    $atmNotes = json_decode(file_get_contents($atmNotesFile), true);
+}
+
+// Build final config for SwapService
 $finalConfig = [
     'participants' => $participants,
     'fees' => $fees,
-    'currency' => $settings['currency'] ?? $fees['currency'] ?? 'USD',
-    'currency_symbol' => $settings['currency_symbol'] ?? $fees['currency_symbol'] ?? '$',
-    'dial_code' => $settings['dial_code'] ?? '+1',
+    'currency' => $settings['currency'] ?? $fees['currency'] ?? 'BWP',
+    'currency_symbol' => $settings['currency_symbol'] ?? $fees['currency_symbol'] ?? 'P',
+    'dial_code' => $settings['dial_code'] ?? '+267',
     'country_code' => $countryCode,
-    'country_name' => $settings['name'] ?? $countryCode
+    'country_name' => $settings['name'] ?? $countryCode,
+    'atm_notes' => $atmNotes,
+    'communication' => $settings['communication'] ?? [],
+    'multi_source' => $settings['multi_source'] ?? ['enabled' => true]
 ];
 
-// ============================================
-// 7. DATABASE CONNECTION (Dynamic from config)
-// ============================================
-$dbConnectionParams = $dbConfig['swap'] ?? $dbConfig['default'] ?? [];
+error_log("[execute.php] Loaded " . count($participants) . " participants for {$countryCode}");
 
+// ============================================
+// 7. DATABASE CONNECTION
+// ============================================
+$db = null;
 try {
-    if (!empty($dbConnectionParams) && isset($dbConnectionParams['host'])) {
+    if (!empty($dbConfig) && isset($dbConfig['swap'])) {
+        $swapDbConfig = $dbConfig['swap'];
         $dsn = sprintf(
-            "%s:host=%s;port=%s;dbname=%s",
-            $dbConnectionParams['driver'] ?? 'pgsql',
-            $dbConnectionParams['host'],
-            $dbConnectionParams['port'] ?? '5432',
-            $dbConnectionParams['database'] ?? $dbConnectionParams['dbname']
+            "pgsql:host=%s;port=%s;dbname=%s",
+            $swapDbConfig['host'] ?? 'localhost',
+            $swapDbConfig['port'] ?? '5432',
+            $swapDbConfig['database'] ?? 'vouchmorph'
         );
-        $db = new PDO($dsn, $dbConnectionParams['username'] ?? $dbConnectionParams['user'], $dbConnectionParams['password'] ?? '');
+        $db = new PDO($dsn, $swapDbConfig['username'] ?? 'postgres', $swapDbConfig['password'] ?? '');
+    } elseif (!empty($dbConfig) && isset($dbConfig['host'])) {
+        $dsn = sprintf(
+            "pgsql:host=%s;port=%s;dbname=%s",
+            $dbConfig['host'] ?? 'localhost',
+            $dbConfig['port'] ?? '5432',
+            $dbConfig['database'] ?? 'vouchmorph'
+        );
+        $db = new PDO($dsn, $dbConfig['username'] ?? 'postgres', $dbConfig['password'] ?? '');
     } else {
         // Try environment variables
-        $dbDriver = getenv('DB_DRIVER') ?: 'pgsql';
-        $dbHost = getenv('DB_HOST') ?: 'localhost';
-        $dbPort = getenv('DB_PORT') ?: '5432';
-        $dbName = getenv('DB_NAME') ?: 'vouchmorph';
-        $dbUser = getenv('DB_USER') ?: 'postgres';
-        $dbPass = getenv('DB_PASS') ?: '';
+        $dbHost = getenv('PG_HOST') ?: 'localhost';
+        $dbPort = getenv('PG_PORT') ?: '5432';
+        $dbName = getenv('PG_DATABASE') ?: 'vouchmorph';
+        $dbUser = getenv('PG_USER') ?: 'postgres';
+        $dbPass = getenv('PG_PASSWORD') ?: '';
         
-        $dsn = sprintf("%s:host=%s;port=%s;dbname=%s", $dbDriver, $dbHost, $dbPort, $dbName);
+        $dsn = "pgsql:host={$dbHost};port={$dbPort};dbname={$dbName}";
         $db = new PDO($dsn, $dbUser, $dbPass);
     }
     
-    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-    
+    if ($db) {
+        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        error_log("[execute.php] Database connected successfully");
+    }
 } catch (PDOException $e) {
-    // For demo/testing, allow swap without database
-    $db = null;
-    error_log("Database connection failed: " . $e->getMessage());
+    error_log("[execute.php] Database connection failed: " . $e->getMessage());
+    // Continue without database for testing
 }
 
 // ============================================
-// 8. AUTHENTICATION (Dynamic from config)
+// 8. AUTHENTICATION
 // ============================================
 $providedKey = $headersLower['x-api-key'] ?? $_SERVER['HTTP_X_API_KEY'] ?? null;
 
-// Build valid keys from participants config
 $validKeys = [];
-
-// Add system key from env
 if (getenv('API_KEY_SYSTEM')) $validKeys[] = getenv('API_KEY_SYSTEM');
+if (getenv('API_KEY_VOUCHMORPH')) $validKeys[] = getenv('API_KEY_VOUCHMORPH');
 
-// Add participant API keys from config
 foreach ($participants as $code => $participant) {
-    $apiKey = $participant['security']['api_key']['value_env'] ?? null;
-    if ($apiKey && getenv($apiKey)) $validKeys[] = getenv($apiKey);
-    if (isset($participant['security']['api_key']['value'])) $validKeys[] = $participant['security']['api_key']['value'];
+    $apiKeyEnv = $participant['security']['api_key']['value_env'] ?? null;
+    if ($apiKeyEnv && getenv($apiKeyEnv)) {
+        $validKeys[] = getenv($apiKeyEnv);
+    }
+    if (isset($participant['security']['api_key']['value'])) {
+        $validKeys[] = $participant['security']['api_key']['value'];
+    }
 }
 
 $validKeys = array_filter($validKeys);
 
+// Skip authentication if no keys configured (development mode)
 if (!empty($validKeys) && !in_array($providedKey, $validKeys, true)) {
     http_response_code(401);
     echo json_encode([
@@ -258,7 +293,7 @@ if (!empty($validKeys) && !in_array($providedKey, $validKeys, true)) {
 }
 
 // ============================================
-// 9. EXECUTE SWAP
+// 9. EXECUTE SWAP USING SwapService
 // ============================================
 try {
     $input = json_decode(file_get_contents('php://input'), true);
@@ -266,7 +301,7 @@ try {
         throw new Exception('Invalid JSON payload');
     }
     
-    // Extract swap parameters from input
+    // Extract swap parameters
     $source = $input['source'] ?? [];
     $destination = $input['destination'] ?? [];
     $userId = $input['user_id'] ?? $input['userId'] ?? null;
@@ -274,90 +309,84 @@ try {
     if (empty($source)) throw new Exception('Source information required');
     if (empty($destination)) throw new Exception('Destination information required');
     if (empty($source['amount']) || $source['amount'] <= 0) throw new Exception('Valid amount required');
+    if (empty($source['institution'])) throw new Exception('Source institution required');
+    if (empty($destination['institution'])) throw new Exception('Destination institution required');
     
-    // Get participant configs
-    $sourceParticipant = null;
-    $destParticipant = null;
+    // Map asset types to match SwapService expectations
+    $assetTypeMap = [
+        'MNO-WALLET' => 'MNO-WALLET',
+        'BANK-WALLET' => 'BANK-WALLET',
+        'ACCOUNT' => 'ACCOUNT',
+        'CARD' => 'CARD',
+        'CASHOUT-VOUCHER' => 'CASHOUT-VOUCHER',
+        'ATM' => 'ATM'
+    ];
     
-    foreach ($participants as $code => $p) {
-        if (strtoupper($code) === strtoupper($source['institution'] ?? '')) {
-            $sourceParticipant = $p;
-            $sourceParticipant['code'] = $code;
-        }
-        if (strtoupper($code) === strtoupper($destination['institution'] ?? '')) {
-            $destParticipant = $p;
-            $destParticipant['code'] = $code;
-        }
-    }
+    $sourceAssetType = $assetTypeMap[$source['asset_type'] ?? 'ACCOUNT'] ?? 'ACCOUNT';
+    $deliveryMode = $destination['delivery_mode'] ?? 'deposit';
     
-    if (!$sourceParticipant) {
-        throw new Exception('Source institution not configured: ' . ($source['institution'] ?? 'unknown'));
-    }
-    if (!$destParticipant) {
-        throw new Exception('Destination institution not configured: ' . ($destination['institution'] ?? 'unknown'));
-    }
-    
-    // Build swap payload
-    $swapReference = 'VM-' . strtoupper(bin2hex(random_bytes(4))) . '-' . date('YmdHis');
-    
+    // Build payload for SwapService
     $payload = [
-        'reference' => $swapReference,
         'source' => [
-            'institution' => $sourceParticipant['code'],
-            'asset_type' => $source['asset_type'] ?? ($sourceParticipant['capabilities']['asset_types'][0] ?? 'ACCOUNT'),
+            'institution' => $source['institution'],
+            'asset_type' => $sourceAssetType,
             'amount' => (float)$source['amount'],
-            'currency' => $sourceParticipant['settlement']['currency'] ?? $finalConfig['currency'],
-            'credentials' => $source['credentials'] ?? $source['identification'] ?? []
+            'currency' => $source['currency'] ?? $finalConfig['currency']
         ],
         'destination' => [
-            'institution' => $destParticipant['code'],
-            'delivery_mode' => $destination['delivery_mode'] ?? 'deposit',
-            'beneficiary_account' => $destination['identifier'] ?? $destination['account'] ?? null,
-            'beneficiary_phone' => $destination['identifier'] ?? $destination['phone'] ?? null,
-            'currency' => $destParticipant['settlement']['currency'] ?? $finalConfig['currency']
+            'institution' => $destination['institution'],
+            'delivery_mode' => $deliveryMode,
+            'currency' => $destination['currency'] ?? $finalConfig['currency']
         ]
     ];
     
-    // Execute swap using SwapService if available
-    $result = null;
+    // Add credentials if provided (for ad-hoc swaps)
+    if (isset($source['credentials'])) {
+        $payload['source']['credentials'] = $source['credentials'];
+    }
     
-    if (class_exists('Domain\Services\SwapService') && $db) {
-        $encryptionKey = getenv('ENCRYPTION_KEY') ?: getenv('APP_ENCRYPTION_KEY') ?: bin2hex(random_bytes(16));
-        
-        $swapService = new \Domain\Services\SwapService(
-            $db,
-            $settings,
-            $countryCode,
-            $encryptionKey,
-            $finalConfig
-        );
-        
-        $result = $swapService->executeSwap($payload);
-    } else {
-        // Simplified execution if SwapService not available
-        $result = [
-            'swap_reference' => $swapReference,
-            'status' => 'completed',
-            'source_institution' => $sourceParticipant['code'],
-            'destination_institution' => $destParticipant['code'],
-            'amount' => (float)$source['amount'],
-            'currency' => $finalConfig['currency']
-        ];
-        
-        // Store in database if available
-        if ($db && $userId) {
-            try {
-                $stmt = $db->prepare("
-                    INSERT INTO swap_transactions 
-                    (swap_reference, user_id, source_institution, destination_institution, amount, status, created_at) 
-                    VALUES (?, ?, ?, ?, ?, 'completed', NOW())
-                ");
-                $stmt->execute([$swapReference, $userId, $sourceParticipant['code'], $destParticipant['code'], (float)$source['amount']]);
-            } catch (Exception $e) {
-                error_log("Failed to store transaction: " . $e->getMessage());
-            }
+    // Add identifier based on asset type
+    if ($sourceAssetType === 'MNO-WALLET' && isset($source['phone'])) {
+        $payload['source']['wallet_phone'] = $source['phone'];
+    } elseif ($sourceAssetType === 'BANK-WALLET' && isset($source['wallet_id'])) {
+        $payload['source']['ewallet_phone'] = $source['wallet_id'];
+    } elseif ($sourceAssetType === 'ACCOUNT' && isset($source['account_number'])) {
+        $payload['source']['account_number'] = $source['account_number'];
+    } elseif (isset($source['identifier'])) {
+        $payload['source']['identifier'] = $source['identifier'];
+    }
+    
+    // Add destination identifier
+    if (isset($destination['identifier'])) {
+        if ($deliveryMode === 'cashout') {
+            $payload['destination']['cashout'] = ['beneficiary_phone' => $destination['identifier']];
+        } else {
+            $payload['destination']['beneficiary_account'] = $destination['identifier'];
+            $payload['destination']['beneficiary_phone'] = $destination['identifier'];
         }
     }
+    
+    // Add user_id if available
+    if ($userId) {
+        $payload['user_id'] = $userId;
+    }
+    
+    error_log("[execute.php] Swap payload: " . json_encode($payload));
+    
+    // Initialize and execute SwapService
+    $encryptionKey = getenv('ENCRYPTION_KEY') ?: getenv('APP_ENCRYPTION_KEY') ?: bin2hex(random_bytes(16));
+    
+    $swapService = new \Domain\Services\SwapService(
+        $db,
+        $settings,
+        $countryCode,
+        $encryptionKey,
+        $finalConfig
+    );
+    
+    $result = $swapService->executeSwap($payload);
+    
+    $swapReference = $result['swap_reference'] ?? 'VM-' . strtoupper(bin2hex(random_bytes(4))) . '-' . date('YmdHis');
     
     echo json_encode([
         'success' => true,
@@ -369,6 +398,7 @@ try {
     ]);
     
 } catch (Exception $e) {
+    error_log("[execute.php] Swap execution failed: " . $e->getMessage());
     http_response_code(400);
     echo json_encode([
         'success' => false,
