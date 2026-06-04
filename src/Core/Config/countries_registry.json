@@ -1,0 +1,51 @@
+{
+  "version": "1.0.0",
+  "default_country": "Botswana",
+  "countries": {
+    "Botswana": {
+      "code": "BW",
+      "name": "Botswana",
+      "currency": "BWP",
+      "currency_symbol": "P",
+      "dial_code": "+267",
+      "config_path": "src/Core/Config/Countries/Botswana/",
+      "participants_file": "participants.json",
+      "fees_file": "fees.json",
+      "config_file": "config.php",
+      "database_file": "database.php",
+      "enabled": true,
+      "timezone": "Africa/Gaborone",
+      "settlement_cycle": "T+1"
+    },
+    "South Africa": {
+      "code": "ZA",
+      "name": "South Africa",
+      "currency": "ZAR",
+      "currency_symbol": "R",
+      "dial_code": "+27",
+      "config_path": "src/Core/Config/Countries/South Africa/",
+      "participants_file": "participants.json",
+      "fees_file": "fees.json",
+      "config_file": "config.php",
+      "database_file": "database.php",
+      "enabled": true,
+      "timezone": "Africa/Johannesburg",
+      "settlement_cycle": "T+1"
+    },
+    "Nigeria": {
+      "code": "NG",
+      "name": "Nigeria",
+      "currency": "NGN",
+      "currency_symbol": "₦",
+      "dial_code": "+234",
+      "config_path": "src/Core/Config/Countries/Nigeria/",
+      "participants_file": "participants.json",
+      "fees_file": "fees.json",
+      "config_file": "config.php",
+      "database_file": "database.php",
+      "enabled": false,
+      "timezone": "Africa/Lagos",
+      "settlement_cycle": "T+1"
+    }
+  }
+}
