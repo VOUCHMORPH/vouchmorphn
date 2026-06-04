@@ -3,14 +3,13 @@ declare(strict_types=1);
 
 /**
  * VouchMorphn - Swap Execution API
- * Fully Dynamic - Works for ALL Countries
- * Aligned with Domain\Services\SwapService
+ * Uses Country Registry for faster and more reliable config loading
  */
 
 // ============================================
 // 1. BOOTSTRAP & PATHS
 // ============================================
-define('ROOT_PATH', dirname(__DIR__, 3));
+define('ROOT_PATH', dirname(__DIR__, 4));
 
 // ============================================
 // 2. HEADERS & CORS
@@ -33,12 +32,39 @@ ini_set('log_errors', 1);
 error_reporting(E_ALL);
 
 // ============================================
-// 4. AUTO-DETECT OR GET COUNTRY
+// 4. LOAD COUNTRY REGISTRY
+// ============================================
+$registryFile = ROOT_PATH . '/src/Core/Config/countries_registry.json';
+
+if (!file_exists($registryFile)) {
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'error' => 'Country registry not found',
+        'expected_path' => $registryFile
+    ]);
+    exit();
+}
+
+$registry = json_decode(file_get_contents($registryFile), true);
+$availableCountries = [];
+
+foreach ($registry['countries'] as $name => $config) {
+    if ($config['enabled'] ?? true) {
+        $availableCountries[] = [
+            'name' => $name,
+            'code' => $config['code'],
+            'currency' => $config['currency']
+        ];
+    }
+}
+
+// ============================================
+// 5. GET COUNTRY FROM REQUEST
 // ============================================
 $headers = function_exists('getallheaders') ? getallheaders() : [];
 $headersLower = array_change_key_case($headers, CASE_LOWER);
 
-// Try multiple header variations
 $requestCountry = $_SERVER['HTTP_X_COUNTRY_CODE'] ?? 
                   $_SERVER['HTTP_X_COUNTRY'] ?? 
                   $_SERVER['HTTP_COUNTRY'] ??
@@ -51,33 +77,123 @@ $requestCountry = $_SERVER['HTTP_X_COUNTRY_CODE'] ??
 $input = json_decode(file_get_contents('php://input'), true);
 $bodyCountry = $input['country'] ?? $input['source']['country'] ?? $input['destination']['country'] ?? null;
 
-$countryCode = $requestCountry ?? $bodyCountry;
+$countryInput = $requestCountry ?? $bodyCountry;
 
-// Debug logging
-error_log("[execute.php] Country detection - Header: " . ($requestCountry ?? 'null') . ", Body: " . ($bodyCountry ?? 'null'));
+// Find matching country in registry
+$countryConfig = null;
+$countryName = null;
 
-// If no country provided, try to detect from participants config
-if (!$countryCode) {
-    $configBasePath = ROOT_PATH . '/src/Core/Config/Countries/';
-    if (is_dir($configBasePath)) {
-        $countries = array_filter(scandir($configBasePath), function($item) use ($configBasePath) {
-            return $item !== '.' && $item !== '..' && is_dir($configBasePath . $item);
-        });
-        if (count($countries) === 1) {
-            $countryCode = $countries[0];
-            error_log("[execute.php] Auto-detected country: {$countryCode}");
+if ($countryInput) {
+    foreach ($registry['countries'] as $name => $config) {
+        if (strtolower($name) === strtolower($countryInput) || 
+            strtolower($config['code']) === strtolower($countryInput)) {
+            $countryConfig = $config;
+            $countryName = $name;
+            break;
         }
     }
 }
 
-// Default fallback for testing
-if (!$countryCode) {
-    $countryCode = 'Botswana';
-    error_log("[execute.php] WARNING: No country provided, using default: {$countryCode}");
+// If not found, use default
+if (!$countryConfig) {
+    $defaultCountry = $registry['default_country'] ?? 'Botswana';
+    $countryConfig = $registry['countries'][$defaultCountry] ?? null;
+    $countryName = $defaultCountry;
 }
 
+if (!$countryConfig) {
+    http_response_code(400);
+    echo json_encode([
+        'success' => false,
+        'error' => 'No valid country configuration found',
+        'available_countries' => $availableCountries
+    ]);
+    exit();
+}
+
+// Check if country is enabled
+if (!($countryConfig['enabled'] ?? true)) {
+    http_response_code(403);
+    echo json_encode([
+        'success' => false,
+        'error' => "Country '{$countryName}' is not enabled",
+        'available_countries' => $availableCountries
+    ]);
+    exit();
+}
+
+error_log("[execute.php] Using country: {$countryName} ({$countryConfig['code']})");
+
 // ============================================
-// 5. LOAD COMPOSER AUTOLOADER
+// 6. LOAD COUNTRY FILES USING REGISTRY PATHS
+// ============================================
+$basePath = ROOT_PATH . '/' . $countryConfig['config_path'];
+$participantsFile = $basePath . $countryConfig['participants_file'];
+$feesFile = $basePath . $countryConfig['fees_file'];
+$configFile = $basePath . $countryConfig['config_file'];
+$dbConfigFile = $basePath . $countryConfig['database_file'];
+$atmNotesFile = $basePath . ($countryConfig['atm_notes_file'] ?? 'atm_notes.json');
+
+// Load participants
+if (!file_exists($participantsFile)) {
+    http_response_code(404);
+    echo json_encode([
+        'success' => false,
+        'error' => "Participants file not found for {$countryName}",
+        'path' => $participantsFile
+    ]);
+    exit();
+}
+
+$participantsData = json_decode(file_get_contents($participantsFile), true);
+$participants = $participantsData['participants'] ?? $participantsData ?? [];
+
+// Load fees
+$fees = [];
+if (file_exists($feesFile)) {
+    $fees = json_decode(file_get_contents($feesFile), true);
+}
+
+// Load config
+$settings = [];
+if (file_exists($configFile)) {
+    $settings = require $configFile;
+}
+
+// Load database config
+$dbConfig = [];
+if (file_exists($dbConfigFile)) {
+    $dbConfig = require $dbConfigFile;
+}
+
+// Load ATM notes
+$atmNotes = [];
+if (file_exists($atmNotesFile)) {
+    $atmNotes = json_decode(file_get_contents($atmNotesFile), true);
+}
+
+$currency = $countryConfig['currency'];
+$currencySymbol = $countryConfig['currency_symbol'] ?? $settings['currency_symbol'] ?? 'P';
+$dialCode = $countryConfig['dial_code'] ?? $settings['dial_code'] ?? '+267';
+
+// Build final config for SwapService
+$finalConfig = [
+    'participants' => $participants,
+    'fees' => $fees,
+    'currency' => $currency,
+    'currency_symbol' => $currencySymbol,
+    'dial_code' => $dialCode,
+    'country_code' => $countryConfig['code'],
+    'country_name' => $countryName,
+    'atm_notes' => $atmNotes,
+    'communication' => $settings['communication'] ?? [],
+    'multi_source' => $settings['multi_source'] ?? ['enabled' => true]
+];
+
+error_log("[execute.php] Loaded " . count($participants) . " participants for {$countryName}");
+
+// ============================================
+// 7. LOAD COMPOSER AUTOLOADER
 // ============================================
 $composerPaths = [
     ROOT_PATH . '/vendor/autoload.php',
@@ -108,116 +224,7 @@ if (!$autoloaderFound) {
 }
 
 // ============================================
-// 6. LOAD COUNTRY CONFIGURATION (DYNAMIC)
-// ============================================
-$configBasePath = ROOT_PATH . '/src/Core/Config/Countries/' . $countryCode . '/';
-
-// Try different possible paths
-$possiblePaths = [
-    $configBasePath,
-    ROOT_PATH . '/src/Core/Config/countries/' . $countryCode . '/',
-    ROOT_PATH . '/src/CORE_CONFIG/countries/' . $countryCode . '/',
-    ROOT_PATH . '/src/Core/Config/Countries/' . ucfirst($countryCode) . '/',
-    ROOT_PATH . '/src/Core/Config/Countries/' . strtoupper($countryCode) . '/'
-];
-
-$configPath = null;
-foreach ($possiblePaths as $path) {
-    if (is_dir($path)) {
-        $configPath = $path;
-        error_log("[execute.php] Config path found: {$path}");
-        break;
-    }
-}
-
-if (!$configPath) {
-    http_response_code(404);
-    echo json_encode([
-        'success' => false,
-        'error' => "Configuration not found for country: {$countryCode}",
-        'available_countries' => is_dir(ROOT_PATH . '/src/Core/Config/Countries/') ? 
-            array_values(array_diff(scandir(ROOT_PATH . '/src/Core/Config/Countries/'), ['.', '..'])) : []
-    ]);
-    exit();
-}
-
-// Load participants.json
-$participantsFile = null;
-$participantPatterns = [
-    $configPath . 'participants.json',
-    $configPath . 'participants_' . $countryCode . '.json',
-    $configPath . 'participants_' . strtolower($countryCode) . '.json',
-    $configPath . 'participants_' . strtoupper($countryCode) . '.json',
-    $configPath . 'config.json'
-];
-
-foreach ($participantPatterns as $pattern) {
-    if (file_exists($pattern)) {
-        $participantsFile = $pattern;
-        error_log("[execute.php] Participants file found: {$pattern}");
-        break;
-    }
-}
-
-if (!$participantsFile) {
-    http_response_code(404);
-    echo json_encode([
-        'success' => false,
-        'error' => "participants.json not found for country: {$countryCode}",
-        'searched_paths' => $participantPatterns
-    ]);
-    exit();
-}
-
-$participantsData = json_decode(file_get_contents($participantsFile), true);
-$participants = $participantsData['participants'] ?? $participantsData ?? [];
-
-// Load fees.json
-$feesFile = $configPath . 'fees.json';
-$fees = [];
-if (file_exists($feesFile)) {
-    $fees = json_decode(file_get_contents($feesFile), true);
-}
-
-// Load config.php
-$configPhpFile = $configPath . 'config.php';
-$settings = [];
-if (file_exists($configPhpFile)) {
-    $settings = require $configPhpFile;
-}
-
-// Load database.php
-$dbConfigFile = $configPath . 'database.php';
-$dbConfig = [];
-if (file_exists($dbConfigFile)) {
-    $dbConfig = require $dbConfigFile;
-}
-
-// Load ATM notes if exists
-$atmNotesFile = $configPath . 'atm_notes.json';
-$atmNotes = [];
-if (file_exists($atmNotesFile)) {
-    $atmNotes = json_decode(file_get_contents($atmNotesFile), true);
-}
-
-// Build final config for SwapService
-$finalConfig = [
-    'participants' => $participants,
-    'fees' => $fees,
-    'currency' => $settings['currency'] ?? $fees['currency'] ?? 'BWP',
-    'currency_symbol' => $settings['currency_symbol'] ?? $fees['currency_symbol'] ?? 'P',
-    'dial_code' => $settings['dial_code'] ?? '+267',
-    'country_code' => $countryCode,
-    'country_name' => $settings['name'] ?? $countryCode,
-    'atm_notes' => $atmNotes,
-    'communication' => $settings['communication'] ?? [],
-    'multi_source' => $settings['multi_source'] ?? ['enabled' => true]
-];
-
-error_log("[execute.php] Loaded " . count($participants) . " participants for {$countryCode}");
-
-// ============================================
-// 7. DATABASE CONNECTION
+// 8. DATABASE CONNECTION
 // ============================================
 $db = null;
 try {
@@ -257,11 +264,10 @@ try {
     }
 } catch (PDOException $e) {
     error_log("[execute.php] Database connection failed: " . $e->getMessage());
-    // Continue without database for testing
 }
 
 // ============================================
-// 8. AUTHENTICATION
+// 9. AUTHENTICATION
 // ============================================
 $providedKey = $headersLower['x-api-key'] ?? $_SERVER['HTTP_X_API_KEY'] ?? null;
 
@@ -281,27 +287,24 @@ foreach ($participants as $code => $participant) {
 
 $validKeys = array_filter($validKeys);
 
-// Skip authentication if no keys configured (development mode)
 if (!empty($validKeys) && !in_array($providedKey, $validKeys, true)) {
     http_response_code(401);
     echo json_encode([
         'success' => false,
         'error' => 'Unauthorized: Invalid API key',
-        'country' => $countryCode
+        'country' => $countryName
     ]);
     exit();
 }
 
 // ============================================
-// 9. EXECUTE SWAP USING SwapService
+// 10. EXECUTE SWAP USING SwapService
 // ============================================
 try {
-    $input = json_decode(file_get_contents('php://input'), true);
     if (!$input) {
         throw new Exception('Invalid JSON payload');
     }
     
-    // Extract swap parameters
     $source = $input['source'] ?? [];
     $destination = $input['destination'] ?? [];
     $userId = $input['user_id'] ?? $input['userId'] ?? null;
@@ -312,7 +315,7 @@ try {
     if (empty($source['institution'])) throw new Exception('Source institution required');
     if (empty($destination['institution'])) throw new Exception('Destination institution required');
     
-    // Map asset types to match SwapService expectations
+    // Map asset types
     $assetTypeMap = [
         'MNO-WALLET' => 'MNO-WALLET',
         'BANK-WALLET' => 'BANK-WALLET',
@@ -325,22 +328,37 @@ try {
     $sourceAssetType = $assetTypeMap[$source['asset_type'] ?? 'ACCOUNT'] ?? 'ACCOUNT';
     $deliveryMode = $destination['delivery_mode'] ?? 'deposit';
     
+    // Validate institutions exist in config
+    $sourceExists = false;
+    $destExists = false;
+    foreach ($participants as $code => $p) {
+        if (strtoupper($code) === strtoupper($source['institution'])) $sourceExists = true;
+        if (strtoupper($code) === strtoupper($destination['institution'])) $destExists = true;
+    }
+    
+    if (!$sourceExists) {
+        throw new Exception('Source institution not configured: ' . $source['institution']);
+    }
+    if (!$destExists) {
+        throw new Exception('Destination institution not configured: ' . $destination['institution']);
+    }
+    
     // Build payload for SwapService
     $payload = [
         'source' => [
             'institution' => $source['institution'],
             'asset_type' => $sourceAssetType,
             'amount' => (float)$source['amount'],
-            'currency' => $source['currency'] ?? $finalConfig['currency']
+            'currency' => $source['currency'] ?? $currency
         ],
         'destination' => [
             'institution' => $destination['institution'],
             'delivery_mode' => $deliveryMode,
-            'currency' => $destination['currency'] ?? $finalConfig['currency']
+            'currency' => $destination['currency'] ?? $currency
         ]
     ];
     
-    // Add credentials if provided (for ad-hoc swaps)
+    // Add credentials if provided
     if (isset($source['credentials'])) {
         $payload['source']['credentials'] = $source['credentials'];
     }
@@ -366,7 +384,6 @@ try {
         }
     }
     
-    // Add user_id if available
     if ($userId) {
         $payload['user_id'] = $userId;
     }
@@ -379,7 +396,7 @@ try {
     $swapService = new \Domain\Services\SwapService(
         $db,
         $settings,
-        $countryCode,
+        $countryConfig['code'],
         $encryptionKey,
         $finalConfig
     );
@@ -393,7 +410,11 @@ try {
         'status' => 'success',
         'swap_reference' => $swapReference,
         'message' => 'Swap completed successfully',
-        'country' => $countryCode,
+        'country' => [
+            'name' => $countryName,
+            'code' => $countryConfig['code'],
+            'currency' => $currency
+        ],
         'data' => $result
     ]);
     
@@ -404,7 +425,7 @@ try {
         'success' => false,
         'status' => 'error',
         'message' => $e->getMessage(),
-        'country' => $countryCode,
+        'country' => $countryName,
         'trace' => getenv('APP_DEBUG') === 'true' ? $e->getTraceAsString() : null
     ]);
 }
