@@ -218,6 +218,125 @@
         "cutoff_time": "16:00"
       }
     },
+        "CAZACOM": {
+      "type": "MOBILE_NETWORK_OPERATOR",
+      "category": "MNO",
+      "provider_code": "CAZACOM",
+      "adapter_class": "MobileMoneyAdapter",
+      "auth_type": "MTLS_OAUTH2",
+      "base_url": "https://cazacom-production.up.railway.app",
+      "timeout_ms": 5000,
+      "sandbox_mode": true,
+      "security": {
+        "api_key": {
+          "value_env": "API_KEY_CAZACOM",
+          "header_name": "X-API-KEY"
+        },
+        "oauth2": {
+          "enabled": true,
+          "authorization_endpoint": "/oauth/authorize",
+          "token_endpoint": "/oauth/token",
+          "revoke_endpoint": "/oauth/revoke",
+          "userinfo_endpoint": "/oauth/userinfo",
+          "client_id_env": "CAZACOM_CLIENT_ID",
+          "client_secret_env": "CAZACOM_CLIENT_SECRET",
+          "scope": "read_balance initiate_payment read_transactions",
+          "response_type": "code",
+          "grant_type": "authorization_code",
+          "code_challenge_method": "S256"
+        },
+        "request_signing": {
+          "algorithm": "RSA-SHA256",
+          "private_key_env": "CAZACOM_SIGNING_KEY"
+        }
+      },
+      "identity": {
+        "system_user_id": 1001,
+        "legal_entity_identifier": "BW-CAZACOM-LEI-001",
+        "license_number": "MNO-BW-001"
+      },
+      "capabilities": {
+        "supports_sca": true,
+        "supports_realtime_processing": true,
+        "supports_reversal": true,
+        "supports_idempotency": true,
+        "supports_holds": true,
+        "asset_types": ["MNO-WALLET", "CASHOUT-VOUCHER", "AIRTIME"]
+      },
+      "resource_endpoints": {
+        "verify_asset": "/api/v1/mno/verify_wallet",
+        "place_hold": "/api/v1/mno/hold",
+        "release_hold": "/api/v1/mno/release_hold",
+        "debit_funds": "/api/v1/mno/debit",
+        "process_deposit": "/api/v1/mno/credit",
+        "generate_token": "/api/v1/mno/generate_code",
+        "verify_token": "/api/v1/mno/verify_code",
+        "confirm_cashout": "/api/v1/mno/confirm_cashout",
+        "reverse_transaction": "/api/v1/mno/reverse",
+        "check_balance": "/api/v1/mno/balance",
+        "transaction_history": "/api/v1/mno/transactions",
+        "airtime_purchase": "/api/v1/mno/airtime"
+      },
+      "phone_format": {
+        "prefix": "+",
+        "country_code": "267",
+        "strip_leading_zeros": true,
+        "expected_length": 11,
+        "remove_country_code_for_local": false,
+        "mno_prefixes": ["71", "72", "73", "74", "75", "76"]
+      },
+      "message_profile": {
+        "correlation_id_header": "X-Correlation-ID",
+        "idempotency_key_header": "X-Idempotency-Key",
+        "signature_header": "X-Signature",
+        "timestamp_header": "X-Timestamp",
+        "content_standard": "ISO20022_JSON",
+        "standard": "ISO-20022-JSON",
+        "requires_trace_id": true,
+        "trace_id_prefix": "CAZACOM"
+      },
+      "status": "ACTIVE",
+      "idempotency": {
+        "enabled": true,
+        "header_name": "X-Idempotency-Key"
+      },
+      "retry_policy": {
+        "max_retries": 3,
+        "retry_delay_ms": 1000,
+        "retry_on": ["timeout", "5xx", "network_error"]
+      },
+      "health_check": {
+        "enabled": true,
+        "endpoint": "/health",
+        "method": "GET"
+      },
+      "settlement": {
+        "account": "CAZACOM_TRUST_ACCOUNT",
+        "trust_bank": "SACCUSSALIS",
+        "trust_account_number": "TRUST-CAZACOM-001",
+        "type": "TRUST",
+        "currency": "BWP",
+        "settlement_cycle": "T+1",
+        "cutoff_time": "16:00"
+      },
+      "wallet_config": {
+        "max_balance": 100000,
+        "min_balance": 0,
+        "daily_transaction_limit": 50000,
+        "per_transaction_limit": 10000,
+        "kyc_tiers": [
+          {"tier": 1, "max_balance": 5000, "daily_limit": 2000},
+          {"tier": 2, "max_balance": 50000, "daily_limit": 10000},
+          {"tier": 3, "max_balance": 100000, "daily_limit": 50000}
+        ]
+      },
+      "agent_config": {
+        "supports_agents": true,
+        "agent_commission_percent": 0.5,
+        "cash_in_fee": 0,
+        "cash_out_fee": 5.00
+      }
+    },
     "VOUCHMORPH": {
       "type": "TECHNICAL_PROVIDER",
       "category": "PAYMENT_PROCESSOR",
