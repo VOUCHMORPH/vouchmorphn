@@ -2,6 +2,7 @@
 /**
  * VouchMorph Complete Diagnostic Center
  * Full System Introspection, Network Testing, API Validation, and Repair Tools
+ * FIXED: Event handlers, JSON parsing, Railway sleep mode, CURL options
  */
 
 session_start();
@@ -52,7 +53,7 @@ $botswanaEnv = PROJECT_ROOT . '/src/Core/Config/Countries/Botswana/.env';
 loadEnvFile($botswanaEnv);
 
 // ============================================================
-// AJAX HANDLER - FULL DIAGNOSTIC API
+// AJAX HANDLER
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH'])) {
     header('Content-Type: application/json');
@@ -98,7 +99,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // Network diagnostic
+    // Network diagnostic - FIXED: use GET instead of NOBODY
     if ($action === 'network_diagnostic') {
         $targets = [
             ['name' => 'VouchMorph API', 'url' => 'https://vouchmorphn-production.up.railway.app/health'],
@@ -114,10 +115,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             curl_setopt($ch, CURLOPT_TIMEOUT, 15);
             curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
             curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-            curl_setopt($ch, CURLOPT_NOBODY, true);
+            // FIXED: Use GET request instead of NOBODY
+            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'GET');
+            curl_setopt($ch, CURLOPT_NOBODY, false);
             
             $start = microtime(true);
-            curl_exec($ch);
+            $response = curl_exec($ch);
             $time = round((microtime(true) - $start) * 1000, 2);
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $error = curl_error($ch);
@@ -126,7 +129,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             $results[] = [
                 'name' => $target['name'],
                 'url' => $target['url'],
-                'reachable' => $httpCode > 0,
+                'reachable' => $httpCode > 0 && $httpCode < 500,
                 'http_code' => $httpCode,
                 'response_time' => $time,
                 'error' => $error
@@ -170,7 +173,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         
         $results = [];
         foreach ($ports as $port) {
-            $connection = @fsockopen($host, $port, $errno, $errstr, 2);
+            $connection = @fsockopen($host, $port, $errno, $errstr, 3);
             $isOpen = $connection !== false;
             if ($isOpen) fclose($connection);
             
@@ -187,16 +190,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // Test API endpoint with full details
+    // Test API endpoint with full details - FIXED: better timeout handling
     if ($action === 'test_api_detailed') {
         $url = $_POST['url'] ?? '';
         $apiKey = $_POST['api_key'] ?? '';
         $payload = json_decode($_POST['payload'] ?? '{}', true);
         $method = $_POST['method'] ?? 'POST';
         
+        // Handle Railway sleep mode - first try a wake-up request
+        $wakeUrl = str_replace('/api/v1/swap/execute.php', '/health', $url);
+        $wakeCh = curl_init($wakeUrl);
+        curl_setopt($wakeCh, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($wakeCh, CURLOPT_TIMEOUT, 5);
+        curl_setopt($wakeCh, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($wakeCh, CURLOPT_NOBODY, true);
+        curl_exec($wakeCh);
+        curl_close($wakeCh);
+        
         $ch = curl_init($url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 45); // Increased timeout for Railway wake-up
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($ch, CURLOPT_MAXREDIRS, 5);
@@ -640,14 +653,14 @@ $apiRoutes = array_merge($apiRoutes, $apiRoutes2);
     </div>
     
     <div class="tabs">
-        <button class="tab active" onclick="showPanel('dashboard')">📊 DASHBOARD</button>
-        <button class="tab" onclick="showPanel('network')">🌐 NETWORK</button>
-        <button class="tab" onclick="showPanel('participants')">🏦 PARTICIPANTS</button>
-        <button class="tab" onclick="showPanel('keys')">🔑 API KEYS</button>
-        <button class="tab" onclick="showPanel('database')">🗄️ DATABASE</button>
-        <button class="tab" onclick="showPanel('files')">📁 FILES</button>
-        <button class="tab" onclick="showPanel('trace')">🔍 SWAP TRACE</button>
-        <button class="tab" onclick="showPanel('repair')">🛠️ REPAIR</button>
+        <button class="tab" data-panel="dashboard">📊 DASHBOARD</button>
+        <button class="tab" data-panel="network">🌐 NETWORK</button>
+        <button class="tab" data-panel="participants">🏦 PARTICIPANTS</button>
+        <button class="tab" data-panel="keys">🔑 API KEYS</button>
+        <button class="tab" data-panel="database">🗄️ DATABASE</button>
+        <button class="tab" data-panel="files">📁 FILES</button>
+        <button class="tab" data-panel="trace">🔍 SWAP TRACE</button>
+        <button class="tab" data-panel="repair">🛠️ REPAIR</button>
     </div>
     
     <!-- PANEL: DASHBOARD STATUS -->
@@ -822,13 +835,15 @@ $apiRoutes = array_merge($apiRoutes, $apiRoutes2);
 function showPanel(panelId) {
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.getElementById(`panel-${panelId}`).classList.add('active');
-    if (event && event.target) event.target.classList.add('active');
+    const targetPanel = document.getElementById('panel-' + panelId);
+    if (targetPanel) targetPanel.classList.add('active');
+    const activeTab = Array.from(document.querySelectorAll('.tab')).find(t => t.getAttribute('data-panel') === panelId);
+    if (activeTab) activeTab.classList.add('active');
 }
 
 function toggleCard(header) {
     const body = header.nextElementSibling;
-    body.classList.toggle('expanded');
+    if (body) body.classList.toggle('expanded');
 }
 
 function addLog(message, level = 'info') {
@@ -847,7 +862,9 @@ async function apiCall(action, data = {}) {
     const formData = new FormData();
     formData.append('action', action);
     for (let key in data) {
-        formData.append(key, data[key]);
+        if (data[key] !== undefined && data[key] !== null) {
+            formData.append(key, data[key]);
+        }
     }
     
     const response = await fetch(window.location.href, {
@@ -857,6 +874,14 @@ async function apiCall(action, data = {}) {
     });
     return await response.json();
 }
+
+// Initialize tabs
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', function() {
+        const panelId = this.getAttribute('data-panel');
+        if (panelId) showPanel(panelId);
+    });
+});
 
 // ============================================================
 // NETWORK DIAGNOSTICS
@@ -875,6 +900,8 @@ async function runDnsLookup() {
             </div>
         `).join('');
         addLog(`DNS lookup complete: ${result.results.filter(r => r.resolves).length}/${result.results.length} resolve`, 'success');
+    } else {
+        container.innerHTML = '<div class="trace-step error">DNS lookup failed</div>';
     }
 }
 
@@ -887,31 +914,41 @@ async function runPortScan() {
     if (result.status === 'success') {
         container.innerHTML = result.results.map(r => `
             <div class="trace-step ${r.open ? 'success' : 'error'}">
-                Port ${r.port} (${r.service}): ${r.open ? 'OPEN' : 'CLOSED'}
+                Port ${r.port} (${r.service}): ${r.open ? '✅ OPEN' : '❌ CLOSED'}
+                ${r.error ? `<br>Error: ${r.error}` : ''}
             </div>
         `).join('');
         addLog(`Port scan complete: ${result.results.filter(r => r.open).length} open ports`, 'info');
+    } else {
+        container.innerHTML = '<div class="trace-step error">Port scan failed</div>';
     }
 }
 
 async function testApiDetailed() {
     const url = document.getElementById('apiTestUrl').value;
     const apiKey = document.getElementById('apiTestKey').value;
-    const payload = document.getElementById('apiTestPayload').value;
+    let payload = document.getElementById('apiTestPayload').value;
     const container = document.getElementById('apiTestResult');
     
     if (!url) {
-        container.innerHTML = '<div class="error">Enter API URL</div>';
+        container.innerHTML = '<div class="trace-step error">❌ Please enter an API URL</div>';
         return;
     }
     
-    container.innerHTML = '<div class="info">Testing API (30s timeout)...</div>';
-    addLog(`Testing API: ${url}`, 'info');
-    
+    // Validate and parse JSON
     let payloadObj = {};
-    try {
-        payloadObj = JSON.parse(payload || '{}');
-    } catch(e) {}
+    if (payload && payload.trim()) {
+        try {
+            payloadObj = JSON.parse(payload);
+        } catch(e) {
+            container.innerHTML = `<div class="trace-step error">❌ Invalid JSON: ${e.message}</div>`;
+            return;
+        }
+    }
+    
+    container.innerHTML = '<div class="trace-step info">⏳ Testing API (45s timeout)...</div>';
+    addLog(`Testing API: ${url}`, 'info');
+    if (apiKey) addLog(`Using API Key: ${apiKey.substring(0, 15)}...`, 'info');
     
     const result = await apiCall('test_api_detailed', {
         url: url,
@@ -920,39 +957,45 @@ async function testApiDetailed() {
         method: 'POST'
     });
     
-    let html = `<div class="trace-step ${result.http_code === 200 ? 'success' : (result.http_code === 401 ? 'warning' : 'error')}">
-        <strong>HTTP ${result.http_code}</strong> (${result.total_time_ms}ms)
-    </div>`;
+    let html = '';
+    
+    if (result.http_code === 200) {
+        html += `<div class="trace-step success">✅ SUCCESS (HTTP ${result.http_code}) - ${result.total_time_ms}ms</div>`;
+        addLog(`API test SUCCESS: ${result.total_time_ms}ms`, 'success');
+    } else if (result.http_code === 401) {
+        html += `<div class="trace-step error">❌ UNAUTHORIZED (HTTP 401)</div>`;
+        html += `<div class="trace-step warning">The API key is invalid or missing. Try: cazacom_test_key_2025</div>`;
+        addLog(`API test FAILED: Unauthorized - Invalid API key`, 'error');
+    } else if (result.http_code === 404) {
+        html += `<div class="trace-step error">❌ NOT FOUND (HTTP 404)</div>`;
+        html += `<div class="trace-step warning">The endpoint URL may need a .php extension</div>`;
+        addLog(`API test FAILED: Not Found - Check URL`, 'error');
+    } else if (result.http_code > 0) {
+        html += `<div class="trace-step warning">⚠️ RESPONSE (HTTP ${result.http_code}) - ${result.total_time_ms}ms</div>`;
+        addLog(`API test returned HTTP ${result.http_code}`, 'warning');
+    } else if (result.error && result.error.includes('timed out')) {
+        html += `<div class="trace-step error">❌ TIMEOUT (45s)</div>`;
+        html += `<div class="trace-step warning">Railway service may be sleeping. Try again in 10 seconds.</div>`;
+        addLog(`API test FAILED: Timeout - Service may be sleeping`, 'warning');
+    } else {
+        html += `<div class="trace-step error">❌ FAILED</div>`;
+        html += `<div class="trace-step error">Error: ${result.error || 'Unknown error'}</div>`;
+        addLog(`API test FAILED: ${result.error || 'Unknown'}`, 'error');
+    }
     
     if (result.timing) {
-        html += `<div class="trace-step info">
-            DNS: ${result.timing.dns}ms | Connect: ${result.timing.connect}ms | Transfer: ${result.timing.starttransfer}ms
-        </div>`;
+        html += `<div class="trace-step info">⏱️ Timing: DNS=${result.timing.dns}ms, Connect=${result.timing.connect}ms, Transfer=${result.timing.starttransfer}ms</div>`;
     }
     
     if (result.redirect_url) {
-        html += `<div class="trace-step warning">Redirected to: ${result.redirect_url}</div>`;
-    }
-    
-    if (result.error) {
-        html += `<div class="trace-step error">Error: ${result.error}</div>`;
+        html += `<div class="trace-step warning">🔄 Redirected to: ${result.redirect_url}</div>`;
     }
     
     if (result.response) {
-        html += `<div class="trace-step success">Response: <pre style="margin-top: 8px;">${JSON.stringify(result.response, null, 2)}</pre></div>`;
+        html += `<div class="trace-step success">📦 Response: <pre style="margin-top: 8px; white-space: pre-wrap;">${JSON.stringify(result.response, null, 2)}</pre></div>`;
     }
     
     container.innerHTML = html;
-    
-    if (result.http_code === 200) {
-        addLog(`API test SUCCESS: ${result.total_time_ms}ms`, 'success');
-    } else if (result.http_code === 401) {
-        addLog(`API test FAILED: Unauthorized - Check API key`, 'error');
-    } else if (result.error && result.error.includes('timed out')) {
-        addLog(`API test FAILED: Timeout - Service may be sleeping`, 'warning');
-    } else {
-        addLog(`API test FAILED: HTTP ${result.http_code}`, 'error');
-    }
 }
 
 async function runHealthChecks() {
@@ -965,11 +1008,13 @@ async function runHealthChecks() {
             <div class="trace-step ${r.reachable ? 'success' : 'error'}">
                 <strong>${r.name}</strong><br>
                 URL: ${r.url}<br>
-                Status: ${r.reachable ? `HTTP ${r.http_code} (${r.response_time}ms)` : `UNREACHABLE - ${r.error}`}
+                Status: ${r.reachable ? `✅ HTTP ${r.http_code} (${r.response_time}ms)` : `❌ UNREACHABLE - ${r.error || 'No response'}`}
             </div>
         `).join('');
         const reachable = result.results.filter(r => r.reachable).length;
         addLog(`Health checks: ${reachable}/${result.results.length} services reachable`, reachable === result.results.length ? 'success' : 'warning');
+    } else {
+        container.innerHTML = '<div class="trace-step error">Health check failed</div>';
     }
 }
 
@@ -988,16 +1033,23 @@ async function refreshEnvVars() {
         keysContainer.innerHTML = apiKeys.map(key => `
             <div class="api-key-card">
                 <strong>${key}</strong><br>
-                <span style="color: #FFDA63;">${result.env_vars[key] || 'NOT SET'}</span>
+                <span style="color: #FFDA63; word-break: break-all;">${result.env_vars[key] || '❌ NOT SET'}</span>
+                ${result.env_vars[key] ? `<button class="btn" style="margin-top: 6px;" onclick="testWithKey('${result.env_vars[key]}')">🔑 Test This Key</button>` : ''}
             </div>
         `).join('');
         
         envContainer.innerHTML = Object.entries(result.env_vars).map(([k, v]) => `
-            <div><strong>${k}</strong>: ${v}</div>
+            <div style="margin-bottom: 4px; font-size: 10px;"><strong>${k}</strong>: ${v}</div>
         `).join('');
         
         addLog(`Loaded ${Object.keys(result.env_vars).length} environment variables`, 'success');
     }
+}
+
+async function testWithKey(apiKey) {
+    document.getElementById('apiTestKey').value = apiKey;
+    addLog(`Setting API key: ${apiKey.substring(0, 20)}...`, 'info');
+    await testApiDetailed();
 }
 
 async function loadParticipants() {
@@ -1006,16 +1058,22 @@ async function loadParticipants() {
         const participants = result.participants;
         const grid = document.getElementById('participantsGrid');
         
-        grid.innerHTML = Object.entries(participants).map(([code, p]) => `
-            <div class="participant-card online">
-                <div><strong>${code}</strong> <span class="status-badge success">${p.country}</span></div>
-                <div style="font-size: 10px; margin-top: 6px;">Base URL: ${p.base_url || 'Not configured'}</div>
-                <div style="font-size: 10px;">Asset Types: ${(p.capabilities?.asset_types || []).join(', ')}</div>
-                <div style="font-size: 10px;">Endpoints: ${Object.keys(p.resource_endpoints || {}).length}</div>
-            </div>
-        `).join('');
+        if (Object.keys(participants).length === 0) {
+            grid.innerHTML = '<div class="trace-step warning">No participants found. Check participants.json file.</div>';
+        } else {
+            grid.innerHTML = Object.entries(participants).map(([code, p]) => `
+                <div class="participant-card online">
+                    <div><strong>${code}</strong> <span class="status-badge success">${p.country}</span></div>
+                    <div style="font-size: 10px; margin-top: 6px;">Base URL: ${p.base_url || 'Not configured'}</div>
+                    <div style="font-size: 10px;">Asset Types: ${(p.capabilities?.asset_types || []).join(', ')}</div>
+                    <div style="font-size: 10px;">Endpoints: ${Object.keys(p.resource_endpoints || {}).length}</div>
+                </div>
+            `).join('');
+        }
         
         addLog(`Loaded ${Object.keys(participants).length} participants`, 'success');
+    } else {
+        document.getElementById('participantsGrid').innerHTML = '<div class="trace-step error">Failed to load participants</div>';
     }
 }
 
@@ -1028,27 +1086,30 @@ async function checkDatabaseConnection() {
     const container = document.getElementById('quickResult');
     
     if (result.status === 'success') {
-        container.innerHTML = `<div class="success">✅ Database connected. Users table has ${result.count} records.</div>`;
+        container.innerHTML = `<div class="trace-step success">✅ Database connected. Users table has ${result.count} records.</div>`;
         addLog(`Database connected, ${result.count} users found`, 'success');
     } else {
-        container.innerHTML = `<div class="error">❌ Database error: ${result.message}</div>`;
+        container.innerHTML = `<div class="trace-step error">❌ Database error: ${result.message}</div>`;
         addLog(`Database error: ${result.message}`, 'error');
     }
 }
 
 async function loadTableData() {
     const table = document.getElementById('tableSelect').value;
-    if (!table) return;
+    if (!table) {
+        addLog('Please select a table', 'warning');
+        return;
+    }
     
     const result = await apiCall('get_table_data', { table: table });
     const container = document.getElementById('tableData');
     
     if (result.status === 'success') {
-        container.innerHTML = `<div class="success">✅ Loaded ${result.count} records</div>
-            <pre style="margin-top: 8px;">${JSON.stringify(result.data, null, 2)}</pre>`;
+        container.innerHTML = `<div class="trace-step success">✅ Loaded ${result.count} records</div>
+            <pre style="margin-top: 8px; white-space: pre-wrap;">${JSON.stringify(result.data, null, 2)}</pre>`;
         addLog(`Loaded ${result.count} records from ${table}`, 'success');
     } else {
-        container.innerHTML = `<div class="error">${result.message}</div>`;
+        container.innerHTML = `<div class="trace-step error">❌ ${result.message}</div>`;
         addLog(`Failed to load ${table}: ${result.message}`, 'error');
     }
 }
@@ -1094,17 +1155,23 @@ async function viewFile() {
         if (ext === 'json') {
             try {
                 const parsed = JSON.parse(result.content);
-                container.innerHTML = `<pre>${JSON.stringify(parsed, null, 2)}</pre>`;
+                container.innerHTML = `<pre style="white-space: pre-wrap;">${JSON.stringify(parsed, null, 2)}</pre>`;
             } catch(e) {
-                container.innerHTML = `<pre>${result.content}</pre>`;
+                container.innerHTML = `<pre style="white-space: pre-wrap;">${escapeHtml(result.content)}</pre>`;
             }
         } else {
-            container.innerHTML = `<pre>${escapeHtml(result.content)}</pre>`;
+            container.innerHTML = `<pre style="white-space: pre-wrap;">${escapeHtml(result.content)}</pre>`;
         }
         addLog(`Viewed: ${filePath}`, 'info');
     } else {
-        container.innerHTML = `<div class="error">${result.message}</div>`;
+        container.innerHTML = `<div class="trace-step error">❌ ${result.message}</div>`;
     }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 // ============================================================
@@ -1114,10 +1181,10 @@ async function backupDashboard() {
     const result = await apiCall('fix_dashboard');
     const container = document.getElementById('repairResult');
     if (result.status === 'backup_created') {
-        container.innerHTML = `<div class="success">✅ Backup created at ${result.backup_path}</div>`;
+        container.innerHTML = `<div class="trace-step success">✅ Backup created at ${result.backup_path}</div>`;
         addLog(`Dashboard backup created`, 'success');
     } else {
-        container.innerHTML = `<div class="error">${result.message}</div>`;
+        container.innerHTML = `<div class="trace-step error">❌ ${result.message}</div>`;
     }
 }
 
@@ -1144,10 +1211,10 @@ async function testDashboardApi() {
     const result = await apiCall('get_participants_live');
     const container = document.getElementById('repairResult');
     if (result.status === 'success') {
-        container.innerHTML = `<div class="success">✅ API test successful: ${Object.keys(result.participants).length} participants</div>`;
+        container.innerHTML = `<div class="trace-step success">✅ API test successful: ${Object.keys(result.participants).length} participants</div>`;
         addLog(`Dashboard API test passed`, 'success');
     } else {
-        container.innerHTML = `<div class="error">❌ API test failed</div>`;
+        container.innerHTML = `<div class="trace-step error">❌ API test failed: ${result.message}</div>`;
         addLog(`Dashboard API test failed`, 'error');
     }
 }
@@ -1157,25 +1224,26 @@ async function traceSwap() {
     const container = document.getElementById('traceResult');
     
     if (!swapRef) {
-        container.innerHTML = '<div class="error">Enter a swap reference</div>';
+        container.innerHTML = '<div class="trace-step error">❌ Enter a swap reference</div>';
         return;
     }
     
-    container.innerHTML = '<div class="info">Tracing...</div>';
+    container.innerHTML = '<div class="trace-step info">⏳ Tracing...</div>';
     const result = await apiCall('trace_swap', { swap_ref: swapRef });
     
     if (result.status === 'success' && result.swap) {
         container.innerHTML = `
             <div class="trace-step success">✅ SWAP FOUND: ${result.swap.swap_reference}</div>
-            <div class="trace-step info">Source: ${result.swap.source_institution}</div>
-            <div class="trace-step info">Destination: ${result.swap.destination_institution} → ${result.swap.destination_identifier}</div>
-            <div class="trace-step info">Amount: ${result.swap.amount} ${result.swap.currency || 'BWP'}</div>
-            <div class="trace-step ${result.swap.status === 'completed' ? 'success' : 'warning'}">Status: ${result.swap.status}</div>
-            ${result.settlement ? `<div class="trace-step success">Settlement: ${result.settlement.from_participant} → ${result.settlement.to_participant}</div>` : ''}
+            <div class="trace-step info">📤 Source: ${result.swap.source_institution}</div>
+            <div class="trace-step info">📥 Destination: ${result.swap.destination_institution} → ${result.swap.destination_identifier}</div>
+            <div class="trace-step info">💰 Amount: ${result.swap.amount} ${result.swap.currency || 'BWP'}</div>
+            <div class="trace-step info">📅 Created: ${result.swap.created_at}</div>
+            <div class="trace-step ${result.swap.status === 'completed' ? 'success' : 'warning'}">📊 Status: ${result.swap.status}</div>
+            ${result.settlement ? `<div class="trace-step success">🏦 Settlement: ${result.settlement.from_participant} → ${result.settlement.to_participant}</div>` : ''}
         `;
         addLog(`Traced swap: ${swapRef}`, 'success');
     } else {
-        container.innerHTML = `<div class="trace-step error">❌ Swap not found</div>`;
+        container.innerHTML = `<div class="trace-step error">❌ Swap not found: ${result.message || 'No such reference'}</div>`;
         addLog(`Swap not found: ${swapRef}`, 'error');
     }
 }
@@ -1192,7 +1260,6 @@ async function generateReport() {
         timestamp: new Date().toISOString(),
         environment: {
             app_env: env.env_vars?.APP_ENV || 'unknown',
-            app_debug: env.env_vars?.APP_DEBUG || 'unknown',
             db_host: env.env_vars?.PG_HOST || 'unknown'
         },
         api_keys: {
@@ -1200,28 +1267,28 @@ async function generateReport() {
             cazacom: env.env_vars?.API_KEY_CAZACOM ? 'set' : 'missing',
             zurubank: env.env_vars?.API_KEY_ZURUBANK ? 'set' : 'missing'
         },
-        participants: Object.keys(participants.participants || {}).length,
-        network: network.results || []
+        participants_count: Object.keys(participants.participants || {}).length,
+        services: network.results || []
     };
     
-    container.innerHTML = `<pre>${JSON.stringify(report, null, 2)}</pre>`;
+    container.innerHTML = `<pre style="white-space: pre-wrap;">${JSON.stringify(report, null, 2)}</pre>`;
     addLog('Diagnostic report generated', 'success');
 }
 
 async function testAllEndpoints() {
     addLog('Testing all endpoints...', 'info');
     await runHealthChecks();
-    await testApiDetailed();
 }
 
 async function runFullDiagnostic() {
-    addLog('Running full diagnostic...', 'info');
+    addLog('========== FULL DIAGNOSTIC START ==========', 'info');
     await runDnsLookup();
+    await runPortScan();
     await runHealthChecks();
     await refreshEnvVars();
     await checkDatabaseConnection();
     await loadParticipants();
-    addLog('Full diagnostic complete', 'success');
+    addLog('========== FULL DIAGNOSTIC COMPLETE ==========', 'success');
 }
 
 async function updateSystemStatus() {
@@ -1230,23 +1297,20 @@ async function updateSystemStatus() {
     const participants = await apiCall('get_participants_live');
     
     container.innerHTML = `
-        <div class="trace-step info">Environment: ${env.env_vars?.APP_ENV || 'unknown'}</div>
-        <div class="trace-step info">Database: ${'<?php echo $dbConnected ? "Connected" : "Disconnected"; ?>'}</div>
-        <div class="trace-step info">Participants: ${Object.keys(participants.participants || {}).length}</div>
-        <div class="trace-step info">API Keys: ${Object.keys(env.env_vars || {}).filter(k => k.startsWith('API_KEY')).length}</div>
+        <div class="trace-step info">🌍 Environment: ${env.env_vars?.APP_ENV || 'unknown'}</div>
+        <div class="trace-step info">🗄️ Database: <?php echo $dbConnected ? 'Connected' : 'Disconnected'; ?></div>
+        <div class="trace-step info">🏦 Participants: ${Object.keys(participants.participants || {}).length}</div>
+        <div class="trace-step info">🔑 API Keys: ${Object.keys(env.env_vars || {}).filter(k => k.startsWith('API_KEY')).length}</div>
     `;
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
 }
 
 // ============================================================
 // INITIALIZATION
 // ============================================================
 async function init() {
+    // Set default active tab
+    showPanel('dashboard');
+    
     await loadFolder('', 'vouchmorphTree');
     await loadParticipants();
     await refreshEnvVars();
@@ -1266,16 +1330,31 @@ async function init() {
     document.getElementById('configFilesList').innerHTML = configHtml;
     
     const dbStatusHtml = `<?php echo $dbConnected ? 
-        '<div class="success">✅ Database Connected</div>' : 
-        '<div class="error">❌ Database Disconnected</div>'; ?>
-        <div class="trace-step info">Tables found: <?php echo count($tables); ?></div>
-        <div class="trace-step info">Allowed tables: <?php echo implode(', ', $allowedTables); ?></div>
+        '<div class="trace-step success">✅ Database Connected</div>' : 
+        '<div class="trace-step error">❌ Database Disconnected</div>'; ?>
+        <div class="trace-step info">📊 Tables found: <?php echo count($tables); ?></div>
     `;
     document.getElementById('dbStatus').innerHTML = dbStatusHtml;
     
     addLog('✨ Complete Diagnostic Center ready', 'success');
-    addLog(`📊 Found <?php echo count($allParticipants); ?> participants`, 'info');
+    addLog(`📊 Found <?php echo count($allParticipants); ?> participants in config`, 'info');
     addLog(`🗄️ Database: <?php echo $dbConnected ? 'Connected' : 'Disconnected'; ?>`, 'info');
+    
+    // Set default test payload
+    document.getElementById('apiTestPayload').value = JSON.stringify({
+        source: {
+            institution: "CAZACOM",
+            asset_type: "MNO-WALLET",
+            amount: 100,
+            phone: "71234567",
+            credentials: { pin: "1234" }
+        },
+        destination: {
+            institution: "ZURUBANK",
+            delivery_mode: "deposit",
+            identifier: "10000001"
+        }
+    }, null, 2);
 }
 
 init();
