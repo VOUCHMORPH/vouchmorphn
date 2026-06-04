@@ -1,8 +1,7 @@
 <?php
 /**
  * VouchMorph Diagnostic Center
- * FULLY DYNAMIC - No hardcoded paths, keys, or endpoints
- * Auto-discovers countries, participants, configurations, and routes
+ * FULLY DYNAMIC - No hardcoded values
  */
 
 session_start();
@@ -14,7 +13,7 @@ if (!isset($_SESSION['admin_logged_in']) || $_SESSION['admin_logged_in'] !== tru
 define('PROJECT_ROOT', dirname(__DIR__, 2));
 
 // ============================================================
-// AUTO-DISCOVER FUNCTIONS
+// AUTO-DISCOVER FUNCTIONS (WITHOUT DATABASE DEPENDENCY)
 // ============================================================
 
 /**
@@ -123,8 +122,6 @@ function loadEnvFile($filePath) {
             $value = trim($parts[1]);
             $value = trim($value, '"\'');
             $env[$key] = $value;
-            putenv("$key=$value");
-            $_ENV[$key] = $value;
         }
     }
     return $env;
@@ -158,8 +155,7 @@ function discoverApiRoutes() {
     $routes = [];
     $apiPaths = [
         PROJECT_ROOT . '/public/api',
-        PROJECT_ROOT . '/api',
-        PROJECT_ROOT . '/src/Application/Controllers'
+        PROJECT_ROOT . '/api'
     ];
     
     foreach ($apiPaths as $basePath) {
@@ -172,7 +168,7 @@ function discoverApiRoutes() {
         foreach ($iterator as $file) {
             if ($file->getExtension() === 'php') {
                 $relativePath = str_replace(PROJECT_ROOT, '', $file->getPathname());
-                $urlPath = str_replace(['/public', '/src/Application/Controllers'], '', $relativePath);
+                $urlPath = str_replace('/public', '', $relativePath);
                 $urlPath = str_replace('.php', '', $urlPath);
                 
                 // Detect HTTP method from file content
@@ -198,40 +194,6 @@ function discoverApiRoutes() {
     return $routes;
 }
 
-/**
- * Get database tables (with whitelist for security)
- */
-function getDatabaseTables() {
-    $allowedTables = [
-        'users', 'user_funding_sources', 'swap_transactions', 'settlement_obligations',
-        'sessions', 'audit_logs', 'wallets', 'accounts', 'transactions'
-    ];
-    
-    $existingTables = [];
-    try {
-        $db = \Core\Database\DBConnection::getInstance();
-        $stmt = $db->query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
-        $allTables = $stmt->fetchAll(PDO::FETCH_COLUMN);
-        $existingTables = array_intersect($allTables, $allowedTables);
-    } catch (Exception $e) {
-        // Database not connected
-    }
-    
-    return $existingTables;
-}
-
-/**
- * Check database connection
- */
-function isDatabaseConnected() {
-    try {
-        $db = \Core\Database\DBConnection::getInstance();
-        return true;
-    } catch (Exception $e) {
-        return false;
-    }
-}
-
 // ============================================================
 // DISCOVER DATA FOR INITIAL PAGE LOAD
 // ============================================================
@@ -239,8 +201,6 @@ $countries = discoverCountries();
 $allParticipants = loadAllParticipants();
 $apiRoutes = discoverApiRoutes();
 $allEnvVars = loadAllEnvVars();
-$dbConnected = isDatabaseConnected();
-$dbTables = getDatabaseTables();
 
 // ============================================================
 // AJAX HANDLER
@@ -353,7 +313,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         $headers = ['Content-Type: application/json'];
         if (!empty($apiKey)) {
             $headers[] = 'X-API-Key: ' . $apiKey;
-            $headers[] = 'X-Country-Code: BW';
         }
         curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
         curl_setopt($ch, CURLOPT_POST, true);
@@ -381,7 +340,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // Network check
+    // Network check - test all participant health endpoints
     if ($action === 'network_check') {
         $targets = [];
         foreach ($allParticipants as $code => $p) {
@@ -422,47 +381,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
-    // Get table data
-    if ($action === 'get_table_data') {
-        $allowedTables = [
-            'users', 'user_funding_sources', 'swap_transactions', 'settlement_obligations',
-            'sessions', 'audit_logs', 'wallets', 'accounts', 'transactions'
-        ];
-        $table = $_POST['table'] ?? '';
-        
-        if (!in_array($table, $allowedTables)) {
-            echo json_encode(['status' => 'error', 'message' => 'Table not allowed']);
-            exit;
-        }
-        
-        try {
-            $db = \Core\Database\DBConnection::getInstance();
-            $stmt = $db->query("SELECT * FROM $table LIMIT 50");
-            $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            echo json_encode(['status' => 'success', 'data' => $data, 'count' => count($data)]);
-        } catch (Exception $e) {
-            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
-        }
-        exit;
-    }
-    
-    // Trace swap
+    // Trace swap (database dependent - safe fallback)
     if ($action === 'trace_swap') {
         $swapRef = $_POST['swap_ref'] ?? '';
+        
+        // Try to load database connection if available
+        $swap = null;
+        $settlement = null;
+        
         try {
-            $db = \Core\Database\DBConnection::getInstance();
-            $stmt = $db->prepare("SELECT * FROM swap_transactions WHERE swap_reference = :ref");
-            $stmt->execute(['ref' => $swapRef]);
-            $swap = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            $stmt = $db->prepare("SELECT * FROM settlement_obligations WHERE swap_reference = :ref");
-            $stmt->execute(['ref' => $swapRef]);
-            $settlement = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            echo json_encode(['status' => 'success', 'swap' => $swap, 'settlement' => $settlement]);
+            // Try to include the DBConnection class
+            $dbConnPath = PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
+            if (file_exists($dbConnPath)) {
+                require_once $dbConnPath;
+                
+                if (class_exists('Core\Database\DBConnection')) {
+                    $db = Core\Database\DBConnection::getInstance();
+                    $stmt = $db->prepare("SELECT * FROM swap_transactions WHERE swap_reference = :ref");
+                    $stmt->execute(['ref' => $swapRef]);
+                    $swap = $stmt->fetch(PDO::FETCH_ASSOC);
+                    
+                    $stmt = $db->prepare("SELECT * FROM settlement_obligations WHERE swap_reference = :ref");
+                    $stmt->execute(['ref' => $swapRef]);
+                    $settlement = $stmt->fetch(PDO::FETCH_ASSOC);
+                }
+            }
         } catch (Exception $e) {
-            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+            // Database not available - return empty
+            error_log("Database error in trace_swap: " . $e->getMessage());
         }
+        
+        echo json_encode(['status' => 'success', 'swap' => $swap, 'settlement' => $settlement]);
         exit;
     }
     
@@ -639,7 +588,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             <div class="stat"><div class="stat-value" id="statCountries"><?php echo count($countries); ?></div><div class="stat-label">COUNTRIES</div></div>
             <div class="stat"><div class="stat-value" id="statParticipants"><?php echo count($allParticipants); ?></div><div class="stat-label">PARTICIPANTS</div></div>
             <div class="stat"><div class="stat-value" id="statRoutes"><?php echo count($apiRoutes); ?></div><div class="stat-label">API ROUTES</div></div>
-            <div class="stat"><div class="stat-value"><?php echo $dbConnected ? '✓' : '✗'; ?></div><div class="stat-label">DATABASE</div></div>
         </div>
     </div>
     
@@ -649,7 +597,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         <button class="tab" data-panel="participants">🏦 PARTICIPANTS</button>
         <button class="tab" data-panel="api">🔌 API TESTER</button>
         <button class="tab" data-panel="routes">🔄 ROUTES</button>
-        <button class="tab" data-panel="database">🗄️ DATABASE</button>
         <button class="tab" data-panel="env">📋 ENVIRONMENT</button>
         <button class="tab" data-panel="trace">🔍 SWAP TRACE</button>
     </div>
@@ -669,7 +616,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                         <div class="log-entry">📊 Found <?php echo count($countries); ?> countries</div>
                         <div class="log-entry">🏦 Found <?php echo count($allParticipants); ?> participants</div>
                         <div class="log-entry">🔄 Found <?php echo count($apiRoutes); ?> API routes</div>
-                        <div class="log-entry">🗄️ Database: <?php echo $dbConnected ? 'Connected' : 'Disconnected'; ?></div>
                     </div>
                 </div>
             </div>
@@ -678,7 +624,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             <div class="card-header" onclick="toggleCard(this)">⚡ QUICK ACTIONS</div>
             <div class="card-body expanded">
                 <button class="btn" onclick="runHealthCheck()">🏥 HEALTH CHECK</button>
-                <button class="btn" onclick="testAllApis()">🌐 TEST ALL APIS</button>
                 <button class="btn" onclick="refreshAllData()">🔄 REFRESH DATA</button>
                 <div id="quickResult" class="json-viewer" style="margin-top: 12px;"></div>
             </div>
@@ -787,23 +732,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         </div>
     </div>
     
-    <!-- DATABASE PANEL -->
-    <div id="panel-database" class="panel">
-        <div class="card">
-            <div class="card-header" onclick="toggleCard(this)">🗄️ DATABASE BROWSER</div>
-            <div class="card-body expanded">
-                <select id="dbTableSelect">
-                    <option value="">Select table...</option>
-                    <?php foreach ($dbTables as $table): ?>
-                        <option value="<?php echo htmlspecialchars($table); ?>"><?php echo htmlspecialchars($table); ?></option>
-                    <?php endforeach; ?>
-                </select>
-                <button class="btn" onclick="loadTableData()">LOAD DATA</button>
-                <div id="dbResult" class="json-viewer" style="margin-top: 12px;"></div>
-            </div>
-        </div>
-    </div>
-    
     <!-- ENVIRONMENT PANEL -->
     <div id="panel-env" class="panel">
         <div class="card">
@@ -847,7 +775,8 @@ let countriesData = <?php echo json_encode($countries); ?>;
 function showPanel(panelId) {
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.getElementById('panel-' + panelId).classList.add('active');
+    const targetPanel = document.getElementById('panel-' + panelId);
+    if (targetPanel) targetPanel.classList.add('active');
     if (event && event.target) event.target.classList.add('active');
 }
 
@@ -894,7 +823,8 @@ document.querySelectorAll('.tab').forEach(tab => {
         const panelId = this.getAttribute('data-panel');
         document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        document.getElementById('panel-' + panelId).classList.add('active');
+        const targetPanel = document.getElementById('panel-' + panelId);
+        if (targetPanel) targetPanel.classList.add('active');
         this.classList.add('active');
     });
 });
@@ -1098,13 +1028,6 @@ async function runHealthCheck() {
     }
 }
 
-async function testAllApis() {
-    addLog('Testing all participant APIs...', 'info');
-    // This would iterate through all participants and test their health endpoints
-    // Implementation can be added as needed
-    addLog('API testing complete', 'success');
-}
-
 function refreshAllData() {
     location.reload();
 }
@@ -1121,30 +1044,6 @@ function filterRoutes() {
             route.style.display = 'none';
         }
     });
-}
-
-// ============================================================
-// DATABASE FUNCTIONS
-// ============================================================
-async function loadTableData() {
-    const table = document.getElementById('dbTableSelect').value;
-    if (!table) {
-        addLog('Please select a table', 'warning');
-        return;
-    }
-    
-    addLog(`Loading data from ${table}...`, 'info');
-    const result = await apiCall('get_table_data', { table: table });
-    const container = document.getElementById('dbResult');
-    
-    if (result.status === 'success') {
-        container.innerHTML = `<div class="trace-step success">✅ Loaded ${result.count} records</div>
-            <pre style="margin-top: 8px; white-space: pre-wrap;">${JSON.stringify(result.data, null, 2)}</pre>`;
-        addLog(`Loaded ${result.count} records from ${table}`, 'success');
-    } else {
-        container.innerHTML = `<div class="trace-step error">❌ ${result.message}</div>`;
-        addLog(`Failed to load ${table}: ${result.message}`, 'error');
-    }
 }
 
 // ============================================================
@@ -1190,7 +1089,6 @@ async function updateSystemOverview() {
     
     container.innerHTML = `
         <div class="trace-step info">🌍 System: VouchMorph Diagnostic Center</div>
-        <div class="trace-step info">🗄️ Database: <?php echo $dbConnected ? 'Connected' : 'Disconnected'; ?></div>
         <div class="trace-step info">📂 Countries: ${Object.keys(countriesData).length}</div>
         <div class="trace-step info">🏦 Participants: ${Object.keys(allParticipantsData).length}</div>
         <div class="trace-step info">🔄 API Routes: <?php echo count($apiRoutes); ?></div>
