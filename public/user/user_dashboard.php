@@ -1,5 +1,5 @@
 <?php
-// public/user/user_dashboard.php - CLEAN VERSION (NO DIRECT DB UPDATES)
+// public/user/user_dashboard.php - Calls YOUR VouchMorph API
 
 ini_set('display_errors', 1);
 ini_set('log_errors', 1);
@@ -11,9 +11,11 @@ function vm_h($value) { return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF
 $isAjax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
+require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/bootstrap.php';
 
 use Application\Utils\SessionManager;
+use Core\Database\DBConnection;
 
 SessionManager::start();
 
@@ -30,7 +32,12 @@ $userCountry = $user['country'] ?? 'Botswana';
 $hasTransactionPin = $user['has_transaction_pin'] ?? false;
 
 // ============================================================
-// LOAD PARTICIPANTS FROM CONFIG (READ ONLY)
+// API BASE URL (YOUR EXISTING API)
+// ============================================================
+$apiBaseUrl = rtrim(getenv('VOUCHMORPH_API_URL') ?: 'https://vouchmorphn-production.up.railway.app', '/');
+
+// ============================================================
+// LOAD PARTICIPANTS FROM CONFIG (for UI display only)
 // ============================================================
 $allParticipants = [];
 $destinationCountries = [];
@@ -60,13 +67,10 @@ if (file_exists($participantsPath)) {
                 'country' => $participant['country'] ?? $userCountry,
                 'currency' => $participant['settlement']['currency'] ?? 'BWP',
                 'asset_types' => $assetTypes,
-                'base_url' => $participant['base_url'] ?? '',
-                'category' => $participant['category'] ?? 'BANK',
                 'status' => $participant['status'] ?? 'ACTIVE'
             ];
             
-            $destCountry = $participant['country'] ?? $userCountry;
-            $destinationCountries[$destCountry] = true;
+            $destinationCountries[$participant['country'] ?? $userCountry] = true;
         }
     }
 }
@@ -81,217 +85,227 @@ function getAssetIcon($type) {
 
 $destinationCountries = array_keys($destinationCountries);
 $userCurrency = 'BWP';
-$userCurrencySymbol = 'P';
 
-// Load linked sources (READ ONLY from database)
+// ============================================================
+// LOAD LINKED SOURCES
+// ============================================================
 $fundingSources = [];
 try {
-    $db = \Core\Database\DBConnection::getInstance();
+    $db = DBConnection::getInstance();
     $stmt = $db->prepare("SELECT id, institution_code, institution_name, source_type FROM user_funding_sources WHERE user_id = :user_id AND status = 'ACTIVE'");
     $stmt->execute([':user_id' => $userId]);
     $fundingSources = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 } catch (\Throwable $e) {
-    error_log("Error loading funding sources: " . $e->getMessage());
-}
-
-// Refresh PIN status from database
-if ($userId) {
-    try {
-        $db = \Core\Database\DBConnection::getInstance();
-        $stmt = $db->prepare("SELECT has_transaction_pin FROM users WHERE user_id = :user_id LIMIT 1");
-        $stmt->execute([':user_id' => $userId]);
-        $dbPinStatus = $stmt->fetch(\PDO::FETCH_ASSOC);
-        if ($dbPinStatus) {
-            $hasTransactionPin = (bool)$dbPinStatus['has_transaction_pin'];
-            $user['has_transaction_pin'] = $hasTransactionPin;
-            SessionManager::setUser($user);
-        }
-    } catch (\Throwable $e) {}
+    error_log("Error loading sources: " . $e->getMessage());
 }
 
 // ============================================================
-// AJAX HANDLERS - CALL BACKEND SwapService
+// REFRESH PIN STATUS
+// ============================================================
+try {
+    $db = DBConnection::getInstance();
+    $stmt = $db->prepare("SELECT has_transaction_pin FROM users WHERE user_id = :user_id");
+    $stmt->execute([':user_id' => $userId]);
+    $pinStatus = $stmt->fetch(\PDO::FETCH_ASSOC);
+    if ($pinStatus) {
+        $hasTransactionPin = (bool)$pinStatus['has_transaction_pin'];
+    }
+} catch (\Throwable $e) {}
+
+// ============================================================
+// AJAX HANDLERS - CALL YOUR EXISTING API
 // ============================================================
 if ($isAjax) {
     header('Content-Type: application/json');
     $action = $_POST['action'] ?? $_GET['action'] ?? '';
     
+    // Get participants for UI
     if ($action === 'get_participants') {
         echo json_encode(['success' => true, 'participants' => array_values($allParticipants), 'countries' => $destinationCountries]);
         exit;
     }
     
+    // Get linked sources
     if ($action === 'get_linked_sources') {
         $sources = [];
         foreach ($fundingSources as $fs) {
-            $sources[] = ['id' => $fs['id'], 'name' => $fs['institution_name'], 'type' => $fs['source_type']];
+            $sources[] = [
+                'id' => $fs['id'],
+                'name' => $fs['institution_name'] ?? $fs['institution_code'],
+                'type' => $fs['source_type']
+            ];
         }
         echo json_encode(['success' => true, 'sources' => $sources]);
         exit;
     }
     
-    // ============================================================
-    // THESE CALL YOUR EXISTING SwapService BACKEND
-    // ============================================================
-    
-    if ($action === 'swap_linked') {
-        try {
-            // Forward to SwapService via internal API call
-            $swapData = [
-                'action' => 'swap_linked',
-                'source_id' => $_POST['source_id'] ?? 0,
-                'amount' => (float)($_POST['amount'] ?? 0),
-                'dest_institution' => $_POST['dest_institution'] ?? '',
-                'dest_identifier' => $_POST['dest_identifier'] ?? '',
-                'dest_action' => $_POST['dest_action'] ?? 'deposit',
-                'user_id' => $userId
-            ];
-            
-            // Call your SwapService
-            $result = callSwapService($swapData);
-            echo json_encode($result);
-            
-        } catch (Exception $e) {
-            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
-        }
-        exit;
-    }
-    
-    if ($action === 'swap_adhoc') {
-        try {
-            // Forward to SwapService via internal API call
-            $swapData = [
-                'action' => 'swap_adhoc',
-                'source_institution' => $_POST['source_institution'] ?? '',
-                'asset_type' => $_POST['asset_type'] ?? '',
-                'source_identifier' => $_POST['source_identifier'] ?? '',
-                'inst_pin' => $_POST['inst_pin'] ?? '',
-                'amount' => (float)($_POST['amount'] ?? 0),
-                'dest_institution' => $_POST['dest_institution'] ?? '',
-                'dest_identifier' => $_POST['dest_identifier'] ?? '',
-                'dest_action' => $_POST['dest_action'] ?? 'deposit',
-                'user_id' => $userId
-            ];
-            
-            // Call your SwapService
-            $result = callSwapService($swapData);
-            echo json_encode($result);
-            
-        } catch (Exception $e) {
-            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
-        }
-        exit;
-    }
-    
-    if ($action === 'verify_pin') {
-        try {
-            $pin = $_POST['pin'] ?? '';
-            
-            // Verify PIN using your existing AuthService
-            $db = \Core\Database\DBConnection::getInstance();
-            $stmt = $db->prepare("SELECT transaction_pin_hash FROM users WHERE user_id = :user_id");
-            $stmt->execute([':user_id' => $userId]);
-            $userData = $stmt->fetch(\PDO::FETCH_ASSOC);
-            
-            if ($userData && password_verify($pin, $userData['transaction_pin_hash'])) {
-                // Store swap data in session for the actual swap call
-                $swapData = json_decode($_POST['swap_data'] ?? '{}', true);
-                $_SESSION['pending_swap'] = $swapData;
-                $_SESSION['pending_swap_expires'] = time() + 300;
-                echo json_encode(['status' => 'success']);
-            } else {
-                throw new Exception('Invalid PIN');
-            }
-        } catch (Exception $e) {
-            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
-        }
-        exit;
-    }
-    
-    if ($action === 'set_transaction_pin') {
+    // Set transaction PIN - call your Auth API
+    if ($action === 'set_pin') {
         try {
             $pin = $_POST['pin'] ?? '';
             if (strlen($pin) !== 6 || !ctype_digit($pin)) throw new Exception('PIN must be 6 digits');
             
-            $hash = password_hash($pin, PASSWORD_DEFAULT);
-            $db = \Core\Database\DBConnection::getInstance();
-            $stmt = $db->prepare("UPDATE users SET transaction_pin_hash = :hash, has_transaction_pin = true WHERE user_id = :user_id");
-            $stmt->execute([':hash' => $hash, ':user_id' => $userId]);
+            $result = callVouchMorphApi('auth/set_pin', [
+                'pin' => $pin,
+                'user_id' => $userId
+            ]);
             
-            echo json_encode(['status' => 'success', 'message' => 'PIN set successfully']);
+            echo json_encode($result);
         } catch (Exception $e) {
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
         }
         exit;
     }
     
-    echo json_encode(['status' => 'error', 'message' => 'Invalid action']);
+    // Verify PIN - call your Auth API
+    if ($action === 'verify_pin') {
+        try {
+            $pin = $_POST['pin'] ?? '';
+            
+            $result = callVouchMorphApi('auth/verify_pin', [
+                'pin' => $pin,
+                'user_id' => $userId
+            ]);
+            
+            if ($result['status'] === 'success') {
+                $_SESSION['pin_verified'] = true;
+                $_SESSION['pin_verified_at'] = time();
+            }
+            
+            echo json_encode($result);
+        } catch (Exception $e) {
+            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    
+    // Execute linked swap - call YOUR /api/v1/swap/execute.php
+    if ($action === 'swap_linked') {
+        try {
+            if (!isset($_SESSION['pin_verified']) || $_SESSION['pin_verified_at'] < (time() - 300)) {
+                throw new Exception('PIN verification required');
+            }
+            
+            $sourceId = (int)($_POST['source_id'] ?? 0);
+            $amount = (float)($_POST['amount'] ?? 0);
+            $destInstitution = $_POST['dest_institution'] ?? '';
+            $destIdentifier = $_POST['dest_identifier'] ?? '';
+            $destAction = $_POST['dest_action'] ?? 'deposit';
+            
+            // Get source details
+            $db = DBConnection::getInstance();
+            $stmt = $db->prepare("SELECT institution_code, source_type FROM user_funding_sources WHERE id = :id AND user_id = :user_id");
+            $stmt->execute(['id' => $sourceId, 'user_id' => $userId]);
+            $source = $stmt->fetch(\PDO::FETCH_ASSOC);
+            
+            if (!$source) throw new Exception('Source not found');
+            
+            // Call YOUR swap execute API
+            $result = callVouchMorphApi('v1/swap/execute', [
+                'source' => [
+                    'institution' => $source['institution_code'],
+                    'asset_type' => $source['source_type'],
+                    'amount' => $amount
+                ],
+                'destination' => [
+                    'institution' => $destInstitution,
+                    'identifier' => $destIdentifier,
+                    'delivery_mode' => $destAction
+                ],
+                'user_id' => $userId
+            ]);
+            
+            unset($_SESSION['pin_verified']);
+            unset($_SESSION['pin_verified_at']);
+            
+            echo json_encode($result);
+        } catch (Exception $e) {
+            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    
+    // Execute ad-hoc swap - call YOUR /api/v1/swap/execute.php
+    if ($action === 'swap_adhoc') {
+        try {
+            $amount = (float)($_POST['amount'] ?? 0);
+            $sourceInstitution = $_POST['source_institution'] ?? '';
+            $assetType = $_POST['asset_type'] ?? '';
+            $sourceIdentifier = $_POST['source_identifier'] ?? '';
+            $instPin = $_POST['inst_pin'] ?? '';
+            $destInstitution = $_POST['dest_institution'] ?? '';
+            $destIdentifier = $_POST['dest_identifier'] ?? '';
+            $destAction = $_POST['dest_action'] ?? 'deposit';
+            
+            // Call YOUR swap execute API
+            $result = callVouchMorphApi('v1/swap/execute', [
+                'source' => [
+                    'institution' => $sourceInstitution,
+                    'asset_type' => $assetType,
+                    'identifier' => $sourceIdentifier,
+                    'pin' => $instPin,
+                    'amount' => $amount
+                ],
+                'destination' => [
+                    'institution' => $destInstitution,
+                    'identifier' => $destIdentifier,
+                    'delivery_mode' => $destAction
+                ],
+                'user_id' => $userId
+            ]);
+            
+            echo json_encode($result);
+        } catch (Exception $e) {
+            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    
+    echo json_encode(['status' => 'error', 'message' => 'Unknown action: ' . $action]);
     exit;
 }
 
 // ============================================================
-// Helper: Call your existing SwapService
+// HELPER: Call YOUR VouchMorph API
 // ============================================================
-function callSwapService($data) {
-    // Option 1: Direct class call (if SwapService is available)
-    if (class_exists('Domain\Services\SwapService')) {
-        try {
-            $db = \Core\Database\DBConnection::getInstance();
-            $config = []; // Load your config
-            $swapService = new \Domain\Services\SwapService($db, [], 'Botswana', '', $config);
-            
-            if ($data['action'] === 'swap_linked') {
-                // Build payload for SwapService
-                $payload = [
-                    'source' => [
-                        'institution' => $data['source_institution'] ?? '',
-                        'asset_type' => $data['asset_type'] ?? '',
-                        'amount' => $data['amount'],
-                        'source_id' => $data['source_id']
-                    ],
-                    'destination' => [
-                        'institution' => $data['dest_institution'],
-                        'identifier' => $data['dest_identifier'],
-                        'delivery_mode' => $data['dest_action']
-                    ]
-                ];
-                $result = $swapService->executeSwap($payload);
-                return $result;
-            }
-            
-            return ['status' => 'error', 'message' => 'Swap service not configured'];
-            
-        } catch (Exception $e) {
-            return ['status' => 'error', 'message' => $e->getMessage()];
-        }
-    }
+function callVouchMorphApi($endpoint, $data) {
+    global $apiBaseUrl;
     
-    // Option 2: Call via HTTP to your API endpoint
-    $apiUrl = getenv('VOUCHMORPH_API_URL') ?: 'https://vouchmorphn-production.up.railway.app/api/v1/swap/execute.php';
+    $url = $apiBaseUrl . '/api/' . $endpoint;
     
-    $ch = curl_init($apiUrl);
+    $ch = curl_init($url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Content-Type: application/json',
+        'X-Requested-With: XMLHttpRequest'
+    ]);
     curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
     curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
     
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
     curl_close($ch);
+    
+    if ($curlError) {
+        return ['status' => 'error', 'message' => 'API connection error: ' . $curlError];
+    }
     
     if ($httpCode !== 200) {
         return ['status' => 'error', 'message' => "API returned HTTP {$httpCode}"];
     }
     
-    return json_decode($response, true);
+    $result = json_decode($response, true);
+    return $result ?: ['status' => 'error', 'message' => 'Invalid API response'];
 }
 
-// Prepare data for JavaScript (READ ONLY)
+// Prepare data for JavaScript
 $participantsJson = json_encode(array_values($allParticipants));
 $countriesJson = json_encode($destinationCountries);
 $sourcesJson = json_encode(array_map(function($s) { 
-    return ['id' => $s['id'], 'name' => $s['institution_name'], 'type' => $s['source_type']]; 
+    return ['id' => $s['id'], 'name' => $s['institution_name'] ?? $s['institution_code'], 'type' => $s['source_type']]; 
 }, $fundingSources));
 ?>
 <!DOCTYPE html>
@@ -307,13 +321,13 @@ $sourcesJson = json_encode(array_map(function($s) {
     
     .app { display: flex; min-height: 100vh; }
     .sidebar { width: 280px; background: #0a0a0a; border-right: 1px solid #1a1a1a; padding: 32px 24px; }
-    .main { flex: 1; padding: 32px 48px; max-width: 800px; }
+    .main { flex: 1; padding: 32px 48px; max-width: 700px; }
     .right-panel { width: 360px; background: #0a0a0a; border-left: 1px solid #1a1a1a; padding: 32px 24px; }
     
     .logo { font-size: 14px; letter-spacing: 4px; margin-bottom: 48px; color: rgba(255,255,255,0.5); }
-    .logo strong { color: #FFFFFF; font-weight: 500; }
+    .logo strong { color: #FFFFFF; }
     
-    .nav-item { display: block; width: 100%; background: transparent; border: none; padding: 14px 0; font-family: inherit; font-size: 13px; letter-spacing: 1px; color: rgba(255,255,255,0.5); cursor: pointer; text-align: left; border-bottom: 1px solid #1a1a1a; transition: all 0.1s; }
+    .nav-item { display: block; width: 100%; background: transparent; border: none; padding: 14px 0; font-family: inherit; font-size: 13px; letter-spacing: 1px; color: rgba(255,255,255,0.5); cursor: pointer; text-align: left; border-bottom: 1px solid #1a1a1a; }
     .nav-item:hover { color: #FFFFFF; border-bottom-color: #FFFFFF; }
     
     .user-section { margin-top: auto; padding-top: 32px; border-top: 1px solid #1a1a1a; }
@@ -323,9 +337,9 @@ $sourcesJson = json_encode(array_map(function($s) {
     .balance-label { font-size: 10px; letter-spacing: 2px; color: rgba(255,255,255,0.3); margin-bottom: 8px; text-transform: uppercase; }
     .balance-amount { font-size: 48px; font-weight: 500; letter-spacing: -2px; margin-bottom: 32px; }
     
-    .primary-btn { width: 100%; background: #FFFFFF; border: none; padding: 16px 24px; font-family: inherit; font-size: 13px; font-weight: 500; letter-spacing: 2px; color: #000000; cursor: pointer; margin-top: 24px; transition: opacity 0.1s; }
+    .primary-btn { width: 100%; background: #FFFFFF; border: none; padding: 16px 24px; font-family: inherit; font-size: 13px; font-weight: 500; letter-spacing: 2px; color: #000000; cursor: pointer; margin-top: 24px; }
     .primary-btn:hover { opacity: 0.9; }
-    .secondary-btn { width: 100%; background: transparent; border: 1px solid rgba(255,255,255,0.2); padding: 14px 20px; font-family: inherit; font-size: 12px; letter-spacing: 1px; color: #FFFFFF; cursor: pointer; margin-bottom: 12px; transition: all 0.1s; }
+    .secondary-btn { width: 100%; background: transparent; border: 1px solid rgba(255,255,255,0.2); padding: 12px 20px; font-family: inherit; font-size: 12px; letter-spacing: 1px; color: #FFFFFF; cursor: pointer; margin-bottom: 12px; }
     .secondary-btn:hover { border-color: #FFFFFF; }
     
     .form-group { margin-bottom: 20px; }
@@ -363,8 +377,8 @@ $sourcesJson = json_encode(array_map(function($s) {
     .source-item { padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.06); cursor: pointer; }
     .source-item:hover { background: rgba(255,255,255,0.03); padding-left: 8px; }
     .badge { font-size: 9px; padding: 4px 8px; margin-left: 8px; }
-    .badge-deposit { background: rgba(76, 175, 80, 0.2); border: 1px solid #4CAF50; color: #4CAF50; }
-    .badge-cashout { background: rgba(255, 152, 0, 0.2); border: 1px solid #FF9800; color: #FF9800; }
+    .badge-deposit { background: rgba(76,175,80,0.2); border: 1px solid #4CAF50; color: #4CAF50; }
+    .badge-cashout { background: rgba(255,152,0,0.2); border: 1px solid #FF9800; color: #FF9800; }
     .panel-title { font-size: 10px; letter-spacing: 2px; color: rgba(255,255,255,0.3); margin-bottom: 20px; text-transform: uppercase; }
 </style>
 </head>
@@ -541,7 +555,13 @@ let hasTransactionPin = <?php echo $hasTransactionPin ? 'true' : 'false'; ?>;
 let pendingSwapData = null;
 let currentPinInput = '', verifyPinInput = '';
 
-function debugLog(msg) { console.log(msg); const d = document.getElementById('debugInfo'); if(d) d.innerHTML = `<div>${new Date().toLocaleTimeString()}: ${msg}</div>` + d.innerHTML; }
+function debugLog(msg) { 
+    console.log(msg); 
+    const d = document.getElementById('debugInfo'); 
+    if(d) d.innerHTML = `<div>${new Date().toLocaleTimeString()}: ${msg}</div>` + d.innerHTML; 
+    if(d && d.children.length > 10) d.removeChild(d.lastChild);
+}
+
 function showError(msg) { document.getElementById('errorMessage').innerHTML = msg; document.getElementById('errorModal').style.display = 'flex'; }
 function closeErrorModal() { document.getElementById('errorModal').style.display = 'none'; }
 function showSuccess(msg) { document.getElementById('successMessage').innerHTML = msg; document.getElementById('successModal').style.display = 'flex'; }
@@ -550,14 +570,34 @@ function closeSuccessModal() { document.getElementById('successModal').style.dis
 async function loadData() {
     debugLog('Loading data...');
     try {
-        const res = await fetch(window.location.href, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'action=get_participants' });
+        const res = await fetch(window.location.href, { 
+            method: 'POST', 
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' }, 
+            body: 'action=get_participants' 
+        });
         const data = await res.json();
-        if(data.success) { participants = data.participants; destinationCountries = data.countries; renderInstitutionList(); renderSelects(); }
+        if(data.success) { 
+            participants = data.participants; 
+            destinationCountries = data.countries; 
+            renderInstitutionList(); 
+            renderSelects(); 
+            debugLog(`Loaded ${participants.length} participants`);
+        }
         
-        const res2 = await fetch(window.location.href, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'action=get_linked_sources' });
+        const res2 = await fetch(window.location.href, { 
+            method: 'POST', 
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' }, 
+            body: 'action=get_linked_sources' 
+        });
         const data2 = await res2.json();
-        if(data2.success) { linkedSources = data2.sources; renderLinkedSources(); }
-    } catch(e) { debugLog('Load error: ' + e.message); }
+        if(data2.success) { 
+            linkedSources = data2.sources; 
+            renderLinkedSources(); 
+            debugLog(`Loaded ${linkedSources.length} linked sources`);
+        }
+    } catch(e) { 
+        debugLog('Load error: ' + e.message);
+    }
 }
 
 function renderInstitutionList() {
@@ -576,8 +616,14 @@ function renderSelects() {
 function renderLinkedSources() {
     const container = document.getElementById('sourcesList');
     const select = document.getElementById('linkedSourceSelect');
-    if(container) container.innerHTML = linkedSources.map(s => `<div class="source-item" onclick="document.getElementById('linkedSourceSelect').value=${s.id}; showStep('swap')">${s.name} (${s.type})</div>`).join('');
+    if(container) container.innerHTML = linkedSources.map(s => `<div class="source-item" onclick="selectLinkedSource(${s.id}, '${s.name}')">${s.name} (${s.type})</div>`).join('');
     if(select) select.innerHTML = '<option value="">-- Select --</option>' + linkedSources.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+}
+
+function selectLinkedSource(id, name) {
+    document.getElementById('linkedSourceSelect').value = id;
+    showStep('swap');
+    showSuccess(`Selected: ${name}`);
 }
 
 document.getElementById('destCountry')?.addEventListener('change', function() {
@@ -600,7 +646,9 @@ function toggleSourceFields() {
 }
 
 function showStep(step) {
-    ['swap', 'sources', 'security'].forEach(s => document.getElementById(`step${s.charAt(0).toUpperCase() + s.slice(1)}`).classList.remove('active'));
+    ['swap', 'sources', 'security'].forEach(s => {
+        document.getElementById(`step${s.charAt(0).toUpperCase() + s.slice(1)}`).classList.remove('active');
+    });
     document.getElementById(`step${step.charAt(0).toUpperCase() + step.slice(1)}`).classList.add('active');
 }
 
@@ -627,12 +675,25 @@ function pinInput(val) {
 function showPinSetupModal() { currentPinInput = ''; renderPinDots(); renderPinPad(); document.getElementById('pinModal').style.display = 'flex'; }
 function closePinModal() { document.getElementById('pinModal').style.display = 'none'; }
 async function savePin() {
+    debugLog('Setting PIN...');
     try {
-        const res = await fetch(window.location.href, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' }, body: `action=set_transaction_pin&pin=${currentPinInput}` });
+        const res = await fetch(window.location.href, { 
+            method: 'POST', 
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' }, 
+            body: `action=set_pin&pin=${currentPinInput}` 
+        });
         const data = await res.json();
-        if(data.status === 'success') { hasTransactionPin = true; document.getElementById('pinStatus').innerHTML = 'PIN: SET'; closePinModal(); showSuccess('PIN set successfully!'); }
-        else document.getElementById('pinError').innerHTML = data.message;
-    } catch(e) { document.getElementById('pinError').innerHTML = 'Failed'; }
+        if(data.status === 'success') { 
+            hasTransactionPin = true; 
+            document.getElementById('pinStatus').innerHTML = 'PIN: SET'; 
+            closePinModal(); 
+            showSuccess('PIN set successfully!');
+        } else { 
+            document.getElementById('pinError').innerHTML = data.message;
+        }
+    } catch(e) { 
+        document.getElementById('pinError').innerHTML = 'Failed: ' + e.message;
+    }
 }
 
 // PIN Verify
@@ -646,24 +707,44 @@ function renderVerifyPinPad() {
     const container = document.getElementById('verifyPinPad');
     if(!container) return;
     const nums = [1,2,3,4,5,6,7,8,9,'⌫',0,'CLR'];
-    container.innerHTML = nums.map(n => `<button class="pin-btn" onclick="verifyPinInputHandler('${n}')">${n}</button>`).join('');
+    container.innerHTML = nums.map(n => `<button class="pin-btn" onclick="verifyPinHandler('${n}')">${n}</button>`).join('');
 }
-function verifyPinInputHandler(val) {
+function verifyPinHandler(val) {
     if(val === '⌫') verifyPinInput = verifyPinInput.slice(0,-1);
     else if(val === 'CLR') verifyPinInput = '';
     else if(verifyPinInput.length < 6) verifyPinInput += val;
     renderVerifyPinDots();
     if(verifyPinInput.length === 6) submitPinVerification();
 }
-function showPinVerifyModal(swapData) { pendingSwapData = swapData; verifyPinInput = ''; renderVerifyPinDots(); renderVerifyPinPad(); document.getElementById('pinVerifyModal').style.display = 'flex'; }
-function closePinVerifyModal() { document.getElementById('pinVerifyModal').style.display = 'none'; pendingSwapData = null; }
+function showPinVerifyModal(swapData) { 
+    pendingSwapData = swapData; 
+    verifyPinInput = ''; 
+    renderVerifyPinDots(); 
+    renderVerifyPinPad(); 
+    document.getElementById('pinVerifyModal').style.display = 'flex'; 
+}
+function closePinVerifyModal() { 
+    document.getElementById('pinVerifyModal').style.display = 'none'; 
+    pendingSwapData = null; 
+}
 async function submitPinVerification() {
+    debugLog('Verifying PIN...');
     try {
-        const res = await fetch(window.location.href, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' }, body: `action=verify_pin&pin=${verifyPinInput}&swap_data=${JSON.stringify(pendingSwapData)}` });
+        const res = await fetch(window.location.href, { 
+            method: 'POST', 
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' }, 
+            body: `action=verify_pin&pin=${verifyPinInput}` 
+        });
         const data = await res.json();
-        if(data.status === 'success') { closePinVerifyModal(); await executeSwap(); }
-        else document.getElementById('verifyPinError').innerHTML = data.message;
-    } catch(e) { document.getElementById('verifyPinError').innerHTML = e.message; }
+        if(data.status === 'success') { 
+            closePinVerifyModal(); 
+            await executeSwap();
+        } else { 
+            document.getElementById('verifyPinError').innerHTML = data.message;
+        }
+    } catch(e) { 
+        document.getElementById('verifyPinError').innerHTML = e.message;
+    }
 }
 document.getElementById('verifyPinCancel')?.addEventListener('click', () => closePinVerifyModal());
 
@@ -701,27 +782,54 @@ async function initiateSwap() {
 
 async function executeSwap() {
     const data = pendingSwapData;
-    debugLog('Executing linked swap via backend...');
+    debugLog(`Executing linked swap via API...`);
     try {
-        const res = await fetch(window.location.href, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' }, body: `action=swap_linked&source_id=${data.source_id}&amount=${data.amount}&dest_institution=${data.dest_institution}&dest_identifier=${data.dest_identifier}&dest_action=${data.dest_action}` });
+        const res = await fetch(window.location.href, { 
+            method: 'POST', 
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' }, 
+            body: `action=swap_linked&source_id=${data.source_id}&amount=${data.amount}&dest_institution=${data.dest_institution}&dest_identifier=${data.dest_identifier}&dest_action=${data.dest_action}` 
+        });
         const result = await res.json();
-        if(result.status === 'success') showSuccess(`Swap complete!\nRef: ${result.swap_reference}\nAmount: ${data.amount} BWP`);
-        else showError(result.message);
-    } catch(e) { showError(e.message); }
+        debugLog('API Response: ' + JSON.stringify(result));
+        if(result.status === 'success') { 
+            showSuccess(`Swap complete!\nRef: ${result.swap_reference}\nAmount: ${data.amount} BWP`);
+            document.getElementById('amount').value = '';
+            document.getElementById('destIdentifier').value = '';
+        } else { 
+            showError(result.message); 
+        }
+    } catch(e) { 
+        showError(e.message);
+    }
 }
 
 async function executeAdhocSwap(amount, srcInst, assetType, srcId, pin, destInst, destId, action) {
-    debugLog('Executing ad-hoc swap via backend...');
+    debugLog(`Executing ad-hoc swap via API...`);
     try {
-        const res = await fetch(window.location.href, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' }, body: `action=swap_adhoc&amount=${amount}&source_institution=${srcInst}&asset_type=${assetType}&source_identifier=${srcId}&inst_pin=${pin}&dest_institution=${destInst}&dest_identifier=${destId}&dest_action=${action}` });
+        const res = await fetch(window.location.href, { 
+            method: 'POST', 
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' }, 
+            body: `action=swap_adhoc&amount=${amount}&source_institution=${srcInst}&asset_type=${assetType}&source_identifier=${srcId}&inst_pin=${pin}&dest_institution=${destInst}&dest_identifier=${destId}&dest_action=${action}` 
+        });
         const result = await res.json();
-        if(result.status === 'success') showSuccess(`Swap complete!\nRef: ${result.swap_reference}\nAmount: ${amount} BWP`);
-        else showError(result.message);
-    } catch(e) { showError(e.message); }
+        debugLog('API Response: ' + JSON.stringify(result));
+        if(result.status === 'success') { 
+            showSuccess(`Swap complete!\nRef: ${result.swap_reference}\nAmount: ${amount} BWP`);
+            document.getElementById('amount').value = '';
+            document.getElementById('destIdentifier').value = '';
+            document.getElementById('adhocIdentifier').value = '';
+            document.getElementById('adhocPin').value = '';
+        } else { 
+            showError(result.message); 
+        }
+    } catch(e) { 
+        showError(e.message);
+    }
 }
 
 function logout() { window.location.href = 'logout.php'; }
 
+// Initialize
 loadData();
 toggleSourceFields();
 <?php if(!$hasTransactionPin) echo 'setTimeout(() => showPinSetupModal(), 1000);'; ?>
