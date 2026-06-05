@@ -3,61 +3,279 @@
 
 namespace Security\Auth;
 
-use Security\FapiCompliantAuth;
-use Security\HSMKeyManager;
-use Security\AuditLogger;
+use Core\Database\DBConnection;
+use Application\Utils\AuditLogger;
 
 /**
  * Enterprise-grade token validator with PSD2 compliance
+ * Works with existing clients table
  */
 class TokenValidator
 {
-    private static ?FapiCompliantAuth $fapi = null;
-    private static ?HSMKeyManager $hsm = null;
-    private static ?AuditLogger $audit = null;
+    private static $db = null;
+    private static $auditLogger = null;
     
     private static function init(): void
     {
-        if (self::$fapi === null) {
-            self::$hsm = new HSMKeyManager();
-            self::$fapi = new FapiCompliantAuth(self::$hsm);
-            self::$audit = new AuditLogger();
+        if (self::$db === null) {
+            self::$db = DBConnection::getInstance();
+            self::$auditLogger = new AuditLogger();
         }
     }
     
     /**
-     * Validate complete request with mTLS + DPoP + Token
-     * This is the main entry point for all API endpoints
+     * Validate API key for incoming requests (Partner → VouchMorph)
      */
-    public static function validateSecureRequest(): array
+    public static function validateApiKey(string $apiKey, string $clientId = null): array
     {
         self::init();
         
-        $requestId = bin2hex(random_bytes(16));
-        $startTime = microtime(true);
+        $stmt = self::$db->prepare("
+            SELECT * FROM clients 
+            WHERE client_id = :client_id AND is_active = true
+        ");
         
-        try {
-            $result = self::$fapi->validateRequest();
+        $clientId = $clientId ?: $apiKey;
+        $stmt->execute(['client_id' => $clientId]);
+        $client = $stmt->fetch(\PDO::FETCH_ASSOC);
+        
+        if (!$client) {
+            self::$auditLogger->log('INVALID_API_KEY', 'WARNING', 'security', null, null, [
+                'provided_key' => substr($apiKey, 0, 10) . '...',
+                'ip' => $_SERVER['REMOTE_ADDR'] ?? null
+            ]);
             
-            // Log successful validation
-            self::$audit->logAuthentication(
-                $result['client_id'],
-                'success',
-                ['request_id' => $requestId]
-            );
-            
-            return $result;
-            
-        } catch (\Exception $e) {
-            // Log failed validation
-            self::$audit->logAuthentication(
-                $_SERVER['REMOTE_ADDR'] ?? 'unknown',
-                'failure',
-                ['error' => $e->getMessage(), 'request_id' => $requestId]
-            );
-            
-            throw $e;
+            http_response_code(401);
+            echo json_encode(['error' => 'invalid_api_key', 'message' => 'Invalid API key']);
+            exit;
         }
+        
+        // Verify client secret hash
+        if (!password_verify($apiKey, $client['client_secret_hash'])) {
+            self::$auditLogger->log('API_KEY_MISMATCH', 'WARNING', 'security', null, null, [
+                'client_id' => $clientId,
+                'ip' => $_SERVER['REMOTE_ADDR'] ?? null
+            ]);
+            
+            http_response_code(401);
+            echo json_encode(['error' => 'invalid_api_key', 'message' => 'Invalid API key']);
+            exit;
+        }
+        
+        return $client;
+    }
+    
+    /**
+     * Validate OAuth 2.0 Bearer token
+     */
+    public static function validateBearerToken(string $token): array
+    {
+        self::init();
+        
+        $tokenHash = hash('sha256', $token);
+        
+        $stmt = self::$db->prepare("
+            SELECT * FROM oauth_tokens 
+            WHERE token_hash = :hash AND revoked = false AND expires_at > NOW()
+        ");
+        $stmt->execute(['hash' => $tokenHash]);
+        $tokenData = $stmt->fetch(\PDO::FETCH_ASSOC);
+        
+        if (!$tokenData) {
+            self::$auditLogger->log('INVALID_BEARER_TOKEN', 'WARNING', 'security', null, null, [
+                'token_hash' => substr($tokenHash, 0, 16),
+                'ip' => $_SERVER['REMOTE_ADDR'] ?? null
+            ]);
+            
+            http_response_code(401);
+            echo json_encode(['error' => 'invalid_token', 'message' => 'Invalid or expired token']);
+            exit;
+        }
+        
+        // Rate limiting
+        self::applyRateLimit($tokenData['client_id']);
+        
+        return $tokenData;
+    }
+    
+    /**
+     * Validate request with mTLS (for bank-grade security)
+     */
+    public static function validateMtlsRequest(): array
+    {
+        self::init();
+        
+        // Check client certificate
+        $clientCert = $_SERVER['SSL_CLIENT_CERT'] ?? null;
+        if (!$clientCert) {
+            self::$auditLogger->log('MTLS_CERTIFICATE_MISSING', 'ERROR', 'security', null, null, [
+                'ip' => $_SERVER['REMOTE_ADDR'] ?? null
+            ]);
+            
+            http_response_code(401);
+            echo json_encode(['error' => 'mtls_required', 'message' => 'mTLS certificate required']);
+            exit;
+        }
+        
+        $certInfo = openssl_x509_parse($clientCert);
+        
+        if (!$certInfo || $certInfo['validTo_time_t'] < time()) {
+            self::$auditLogger->log('INVALID_MTLS_CERTIFICATE', 'ERROR', 'security', null, null, [
+                'cert_subject' => $certInfo['subject']['CN'] ?? 'unknown',
+                'ip' => $_SERVER['REMOTE_ADDR'] ?? null
+            ]);
+            
+            http_response_code(401);
+            echo json_encode(['error' => 'invalid_certificate', 'message' => 'Invalid or expired certificate']);
+            exit;
+        }
+        
+        // Check certificate revocation
+        $stmt = self::$db->prepare("SELECT 1 FROM certificate_revocation_list WHERE serial_number = :serial");
+        $stmt->execute(['serial' => $certInfo['serialNumberHex']]);
+        if ($stmt->fetch()) {
+            self::$auditLogger->log('REVOKED_CERTIFICATE', 'ERROR', 'security', null, null, [
+                'serial' => $certInfo['serialNumberHex']
+            ]);
+            
+            http_response_code(403);
+            echo json_encode(['error' => 'certificate_revoked', 'message' => 'Certificate has been revoked']);
+            exit;
+        }
+        
+        $clientCn = $certInfo['subject']['CN'] ?? '';
+        
+        // Get client from existing clients table
+        $stmt = self::$db->prepare("SELECT * FROM clients WHERE client_id = :cn AND is_active = true");
+        $stmt->execute(['cn' => $clientCn]);
+        $client = $stmt->fetch(\PDO::FETCH_ASSOC);
+        
+        if (!$client) {
+            self::$auditLogger->log('UNAUTHORIZED_MTLS_CLIENT', 'ERROR', 'security', null, null, [
+                'cn' => $clientCn
+            ]);
+            
+            http_response_code(403);
+            echo json_encode(['error' => 'unauthorized', 'message' => 'Client not authorized']);
+            exit;
+        }
+        
+        return [
+            'client_id' => $clientCn,
+            'client_name' => $client['full_name'] ?? $clientCn,
+            'certificate' => $certInfo,
+            'scopes' => explode(' ', $client['allowed_scopes'] ?? 'read_balance')
+        ];
+    }
+    
+    /**
+     * Validate DPoP proof (RFC 9449) - for financial-grade API
+     */
+    public static function validateDpopProof(string $dpopHeader, string $method, string $url, string $accessToken = null): array
+    {
+        $parts = explode('.', $dpopHeader);
+        if (count($parts) !== 3) {
+            http_response_code(400);
+            echo json_encode(['error' => 'invalid_dpop', 'message' => 'Invalid DPoP format']);
+            exit;
+        }
+        
+        $payload = json_decode(self::base64UrlDecode($parts[1]), true);
+        
+        // Validate nonce (prevent replay)
+        $nonceKey = "dpop_nonce:{$payload['nonce']}";
+        $redis = new \Redis();
+        $redis->connect(getenv('REDIS_HOST') ?: 'localhost');
+        
+        if ($redis->exists($nonceKey)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'dpop_replay', 'message' => 'DPoP nonce already used']);
+            exit;
+        }
+        $redis->setex($nonceKey, 300, '1');
+        
+        // Validate method and URL
+        if ($payload['htm'] !== $method) {
+            http_response_code(400);
+            echo json_encode(['error' => 'dpop_method_mismatch', 'message' => 'HTTP method mismatch']);
+            exit;
+        }
+        
+        $requestUrl = strtok($url, '?');
+        if ($payload['htu'] !== $requestUrl) {
+            http_response_code(400);
+            echo json_encode(['error' => 'dpop_url_mismatch', 'message' => 'URL mismatch']);
+            exit;
+        }
+        
+        return $payload;
+    }
+    
+    /**
+     * Generate OAuth 2.0 access token
+     */
+    public static function generateAccessToken(int $userId, string $clientId, array $scopes = ['read_balance'], int $ttl = 300): string
+    {
+        self::init();
+        
+        $tokenId = bin2hex(random_bytes(32));
+        $token = bin2hex(random_bytes(64));
+        $tokenHash = hash('sha256', $token);
+        
+        $stmt = self::$db->prepare("
+            INSERT INTO oauth_tokens (
+                token_id, token_hash, client_id, user_id, scope, expires_at, 
+                ip_address, user_agent, created_at
+            ) VALUES (
+                :id, :hash, :client, :user, :scope, NOW() + INTERVAL ':ttl seconds',
+                :ip, :ua, NOW()
+            )
+        ");
+        
+        $stmt->execute([
+            'id' => $tokenId,
+            'hash' => $tokenHash,
+            'client' => $clientId,
+            'user' => $userId,
+            'scope' => json_encode($scopes),
+            'ttl' => $ttl,
+            'ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+            'ua' => $_SERVER['HTTP_USER_AGENT'] ?? null
+        ]);
+        
+        self::$auditLogger->log('TOKEN_GENERATED', 'INFO', 'security', null, null, [
+            'user_id' => $userId,
+            'client_id' => $clientId,
+            'scopes' => $scopes,
+            'token_id' => $tokenId
+        ]);
+        
+        return $token;
+    }
+    
+    /**
+     * Revoke token
+     */
+    public static function revokeToken(string $token): bool
+    {
+        self::init();
+        
+        $tokenHash = hash('sha256', $token);
+        
+        $stmt = self::$db->prepare("
+            UPDATE oauth_tokens 
+            SET revoked = true, revoked_at = NOW() 
+            WHERE token_hash = :hash
+        ");
+        
+        $result = $stmt->execute(['hash' => $tokenHash]);
+        
+        self::$auditLogger->log('TOKEN_REVOKED', 'INFO', 'security', null, null, [
+            'token_hash' => substr($tokenHash, 0, 16),
+            'ip' => $_SERVER['REMOTE_ADDR'] ?? null
+        ]);
+        
+        return $result;
     }
     
     /**
@@ -88,68 +306,35 @@ class TokenValidator
     }
     
     /**
-     * Generate JWT for service-to-service authentication
+     * Apply rate limiting
      */
-    public static function generateServiceToken(string $clientId, array $scopes = ['read_balance'], int $ttl = 300): string
+    private static function applyRateLimit(string $clientId): void
     {
-        self::init();
+        $redis = new \Redis();
+        $redis->connect(getenv('REDIS_HOST') ?: 'localhost');
         
-        $now = time();
-        $payload = [
-            'jti' => bin2hex(random_bytes(16)),
-            'iss' => getenv('OAUTH_ISSUER') ?: 'vouchmorph.internal',
-            'sub' => $clientId,
-            'iat' => $now,
-            'nbf' => $now,
-            'exp' => $now + $ttl,
-            'scope' => $scopes,
-            'client_id' => $clientId
-        ];
+        $key = "rate_limit:{$clientId}:" . date('Y-m-d-H');
+        $current = $redis->incr($key);
         
-        $header = ['alg' => 'PS256', 'typ' => 'JWT'];
-        $encodedHeader = self::base64UrlEncode(json_encode($header));
-        $encodedPayload = self::base64UrlEncode(json_encode($payload));
-        
-        $signatureInput = $encodedHeader . '.' . $encodedPayload;
-        $signature = self::$hsm->sign(getenv('HSM_SIGNING_KEY'), $signatureInput);
-        
-        return $encodedHeader . '.' . $encodedPayload . '.' . $signature;
-    }
-    
-    /**
-     * Generate DPoP proof for outgoing requests
-     */
-    public static function generateDpopProof(string $method, string $url, string $accessToken = null): string
-    {
-        $now = time();
-        $nonce = bin2hex(random_bytes(16));
-        
-        $payload = [
-            'jti' => bin2hex(random_bytes(16)),
-            'htm' => $method,
-            'htu' => $url,
-            'iat' => $now,
-            'nonce' => $nonce
-        ];
-        
-        if ($accessToken) {
-            $payload['ath'] = base64_encode(hash('sha256', $accessToken, true));
+        if ($current === 1) {
+            $redis->expire($key, 3600);
         }
         
-        $header = ['alg' => 'PS256', 'typ' => 'dpop+jwt'];
-        $encodedHeader = self::base64UrlEncode(json_encode($header));
-        $encodedPayload = self::base64UrlEncode(json_encode($payload));
+        // Get rate limit from clients table
+        $stmt = self::$db->prepare("SELECT rate_limit FROM clients WHERE client_id = :id");
+        $stmt->execute(['id' => $clientId]);
+        $client = $stmt->fetch(\PDO::FETCH_ASSOC);
+        $limit = $client['rate_limit'] ?? 1000;
         
-        $signatureInput = $encodedHeader . '.' . $encodedPayload;
-        
-        self::init();
-        $signature = self::$hsm->sign(getenv('HSM_CLIENT_KEY'), $signatureInput);
-        
-        return $encodedHeader . '.' . $encodedPayload . '.' . $signature;
+        if ($current > $limit) {
+            http_response_code(429);
+            echo json_encode(['error' => 'rate_limit_exceeded', 'message' => 'Too many requests']);
+            exit;
+        }
     }
     
-    private static function base64UrlEncode(string $data): string
+    private static function base64UrlDecode(string $data): string
     {
-        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+        return base64_decode(strtr($data, '-_', '+/'));
     }
 }
