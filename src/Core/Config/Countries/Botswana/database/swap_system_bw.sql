@@ -4823,3 +4823,46 @@ CREATE TABLE IF NOT EXISTS user_bank_connections (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS certificate_revocation_list (
+    id BIGSERIAL PRIMARY KEY,
+    serial VARCHAR(255) UNIQUE NOT NULL,
+    subject_cn VARCHAR(255),
+    revoked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    revoked_by VARCHAR(255),
+    reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS clients (
+    id BIGSERIAL PRIMARY KEY,
+    client_id VARCHAR(255) UNIQUE NOT NULL,
+    client_name VARCHAR(255),
+    public_key TEXT NOT NULL,
+    rate_limit INTEGER DEFAULT 1000,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+    id BIGSERIAL PRIMARY KEY,
+    token_id VARCHAR(255) UNIQUE NOT NULL,
+    token_hash VARCHAR(255) NOT NULL,
+    client_id VARCHAR(255) NOT NULL,
+    user_id INTEGER NULL REFERENCES users(user_id),
+    scope TEXT,
+    expires_at TIMESTAMP NOT NULL,
+    revoked BOOLEAN DEFAULT FALSE,
+    revoked_at TIMESTAMP,
+    ip_address INET,
+    user_agent TEXT,
+    certificate_hash VARCHAR(255),
+    dpop_proof_hash VARCHAR(255),
+    transaction_id VARCHAR(64),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS event_type VARCHAR(50);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS client_id VARCHAR(255);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS endpoint VARCHAR(255);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS duration_ms INTEGER;
