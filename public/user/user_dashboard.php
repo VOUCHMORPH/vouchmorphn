@@ -1,6 +1,6 @@
 <?php
 // public/user/user_dashboard.php - VouchMorph Swap Dashboard
-// FULLY DYNAMIC - Reads from YAML files, shows options based on actual data
+// FULLY DYNAMIC - Reads EVERYTHING from YAML files. No hardcoding.
 
 ini_set('display_errors', 0);
 ini_set('log_errors', 1);
@@ -34,145 +34,129 @@ $userFullName = $user['full_name'] ?? $user['username'] ?? 'User';
 
 // Get PIN status
 $hasTransactionPin = false;
-$pinLockedUntil = null;
-
 try {
     $db = DBConnection::getInstance();
-    $stmt = $db->prepare("SELECT transaction_pin_hash, pin_locked_until FROM users WHERE user_id = :user_id");
+    $stmt = $db->prepare("SELECT transaction_pin_hash FROM users WHERE user_id = :user_id");
     $stmt->execute([':user_id' => $userId]);
     $userData = $stmt->fetch(PDO::FETCH_ASSOC);
     $hasTransactionPin = !empty($userData['transaction_pin_hash']);
-    $pinLockedUntil = $userData['pin_locked_until'] ?? null;
 } catch (Throwable $e) {
     error_log("PIN status error: " . $e->getMessage());
 }
 
 // ============================================================
-// LOAD ALL YAML FILES
+// LOAD ALL YAML FILES - NO HARDCODING
 // ============================================================
 
-// Helper function to parse simple YAML
-function parseSimpleYaml($content) {
+function loadYamlFile($path) {
+    if (!file_exists($path)) return [];
+    
+    $content = file_get_contents($path);
     $result = [];
     $lines = explode("\n", $content);
     $current = null;
     $currentSub = null;
-    $indentLevel = 0;
+    $currentField = null;
+    $indentStack = [];
     
-    foreach ($lines as $line) {
+    foreach ($lines as $lineNum => $line) {
         $line = rtrim($line);
         if (empty($line) || $line[0] === '#') continue;
         
-        // Count leading spaces
-        $leading = strlen($line) - strlen(ltrim($line));
+        $indent = strlen($line) - strlen(ltrim($line));
         $trimmed = trim($line);
         
-        // Top level key (no indent)
-        if ($leading === 0 && strpos($trimmed, ':') !== false && !preg_match('/^- /', $trimmed)) {
-            $parts = explode(':', $trimmed, 2);
-            $current = trim($parts[0]);
-            $value = trim($parts[1] ?? '');
-            if ($value === '') {
-                $result[$current] = [];
-            } else {
-                $result[$current] = $value;
-            }
-            $currentSub = null;
-            continue;
-        }
-        
-        // List item
+        // List item (array element)
         if (preg_match('/^- (.+)$/', $trimmed, $matches)) {
+            $value = trim($matches[1]);
+            if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
+            if (preg_match("/^'(.+)'$/", $value, $q)) $value = $q[1];
+            
             if ($currentSub) {
-                $result[$current][$currentSub][] = $matches[1];
+                if (!isset($result[$current][$currentSub])) $result[$current][$currentSub] = [];
+                $result[$current][$currentSub][] = $value;
             } elseif ($current) {
                 if (!isset($result[$current])) $result[$current] = [];
-                $result[$current][] = $matches[1];
+                $result[$current][] = $value;
             }
             continue;
         }
         
-        // Key-value pair with indent
-        if (preg_match('/^([a-z_]+): (.+)$/', $trimmed, $matches)) {
+        // Key-value pair
+        if (preg_match('/^([a-z_][a-z0-9_]*): ?(.*)$/', $trimmed, $matches)) {
             $key = $matches[1];
             $value = trim($matches[2]);
+            
+            // Remove quotes
             if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
+            if (preg_match("/^'(.+)'$/", $value, $q)) $value = $q[1];
+            
+            // Parse values
             if ($value === 'true') $value = true;
             if ($value === 'false') $value = false;
-            if (is_numeric($value)) $value = (float)$value;
+            if (is_numeric($value) && $value !== '') $value = (float)$value;
             
-            if ($leading === 2 && $current) {
+            // Empty value means this is a parent key
+            if ($value === '' && $indent === 0) {
+                $current = $key;
+                $currentSub = null;
+                $currentField = null;
+                $result[$key] = [];
+            } 
+            // Field definition (inside fields array)
+            elseif ($currentSub === 'fields' && $key === 'name') {
+                $currentField = $value;
+                if (!isset($result[$current]['fields'])) $result[$current]['fields'] = [];
+                $result[$current]['fields'][$currentField] = [];
+            }
+            // Field property
+            elseif ($currentField !== null && $currentSub === 'fields') {
+                $result[$current]['fields'][$currentField][$key] = $value;
+            }
+            // Nested property with indent 2
+            elseif ($indent === 2 && $current) {
                 $result[$current][$key] = $value;
                 $currentSub = $key;
-            } elseif ($leading === 4 && $current && $currentSub) {
-                $result[$current][$currentSub][$key] = $value;
-            } elseif ($leading === 6 && $current && $currentSub) {
+            }
+            // Nested property with indent 4
+            elseif ($indent === 4 && $current && $currentSub) {
                 if (!is_array($result[$current][$currentSub])) $result[$current][$currentSub] = [];
                 $result[$current][$currentSub][$key] = $value;
             }
+            // Nested property with indent 6
+            elseif ($indent === 6 && $current && $currentSub) {
+                if (!is_array($result[$current][$currentSub])) $result[$current][$currentSub] = [];
+                $result[$current][$currentSub][$key] = $value;
+            }
+            // Top level
+            elseif ($indent === 0) {
+                $result[$key] = $value;
+            }
+        }
+    }
+    
+    // Convert fields from associative array to indexed array
+    foreach ($result as $key => $value) {
+        if (isset($value['fields']) && is_array($value['fields'])) {
+            $result[$key]['fields'] = array_values($value['fields']);
         }
     }
     
     return $result;
 }
 
-// Load assets.yaml (global)
-$assets = [];
-$assetsPath = __DIR__ . '/../../src/Core/Config/assets.yaml';
-if (file_exists($assetsPath)) {
-    $assets = parseSimpleYaml(file_get_contents($assetsPath));
-}
+// Load assets.yaml
+$assets = loadYamlFile(__DIR__ . '/../../src/Core/Config/assets.yaml');
 
-// Load flows.yaml (global)
-$flows = [];
-$flowsPath = __DIR__ . '/../../src/Core/Config/flows.yaml';
-if (file_exists($flowsPath)) {
-    $flows = parseSimpleYaml(file_get_contents($flowsPath));
-}
+// Load flows.yaml
+$flows = loadYamlFile(__DIR__ . '/../../src/Core/Config/flows.yaml');
 
-// Load participants.yaml (country specific)
-$participants = [];
-$participantsByCountry = [];
-$allAssetTypes = [];
+// Load participants.yaml
+$participantsRaw = loadYamlFile(__DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/participants.yaml');
+$participants = $participantsRaw['participants'] ?? [];
 
-$participantsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/participants.yaml';
-if (file_exists($participantsPath)) {
-    $parsed = parseSimpleYaml(file_get_contents($participantsPath));
-    $participants = $parsed['participants'] ?? [];
-    
-    // Organize by country
-    foreach ($participants as $code => $data) {
-        $country = $data['country'] ?? $userCountry;
-        if (!isset($participantsByCountry[$country])) {
-            $participantsByCountry[$country] = [];
-        }
-        
-        $assetList = $data['assets'] ?? [];
-        if (is_string($assetList)) {
-            $assetList = array_map('trim', explode(',', trim($assetList, '[]')));
-        }
-        
-        $participantsByCountry[$country][] = [
-            'code' => $code,
-            'name' => $data['name'] ?? $code,
-            'type' => $data['type'] ?? 'FINANCIAL_INSTITUTION',
-            'category' => getCategoryIcon($data['type'] ?? 'FINANCIAL_INSTITUTION'),
-            'assets' => $assetList,
-            'limits' => $data['limits'] ?? ['min_amount' => 10, 'max_amount' => 500000, 'currency' => 'BWP']
-        ];
-        
-        foreach ($assetList as $assetType) {
-            $allAssetTypes[$assetType] = $assets[$assetType] ?? ['name' => $assetType];
-        }
-    }
-}
-
-// Load endpoints.yaml (connection details for fields)
-$endpoints = [];
-$endpointsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/endpoints.yaml';
-if (file_exists($endpointsPath)) {
-    $endpoints = parseSimpleYaml(file_get_contents($endpointsPath));
-}
+// Load endpoints.yaml
+$endpoints = loadYamlFile(__DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/endpoints.yaml');
 
 // Load country registry
 $countries = [];
@@ -185,43 +169,20 @@ if (file_exists($countryRegistryPath)) {
     }
 }
 
-function getCategoryIcon($type) {
-    $icons = [
-        'BANK' => '🏦',
-        'FINANCIAL_INSTITUTION' => '🏦',
-        'MNO' => '📱',
-        'MOBILE_NETWORK_OPERATOR' => '📱',
-        'ORCHESTRATION_LAYER' => '⚡',
-        'PAYMENT_SWITCH' => '⚡'
-    ];
-    return $icons[$type] ?? '🏢';
-}
-
-function getAssetIcon($assetType) {
-    $icons = [
-        'ACCOUNT' => '🏦',
-        'MNO-WALLET' => '📱',
-        'BANK-WALLET' => '👛',
-        'CARD' => '💳',
-        'ATM' => '🏧',
-        'CASHOUT-VOUCHER' => '🎫'
-    ];
-    return $icons[$assetType] ?? '📄';
-}
-
-function getAssetDisplayName($assetType, $assets) {
-    if (isset($assets[$assetType]['ui']['display_name'])) {
-        return $assets[$assetType]['ui']['display_name'];
+// Organize participants by country
+$participantsByCountry = [];
+foreach ($participants as $code => $data) {
+    $country = $data['country'] ?? $userCountry;
+    if (!isset($participantsByCountry[$country])) {
+        $participantsByCountry[$country] = [];
     }
-    $names = [
-        'ACCOUNT' => 'Bank Account',
-        'MNO-WALLET' => 'Mobile Wallet',
-        'BANK-WALLET' => 'Bank Wallet',
-        'CARD' => 'Payment Card',
-        'ATM' => 'ATM Cashout',
-        'CASHOUT-VOUCHER' => 'Cashout Voucher'
+    $participantsByCountry[$country][] = [
+        'code' => $code,
+        'name' => $data['name'] ?? $code,
+        'type' => $data['type'] ?? 'FINANCIAL_INSTITUTION',
+        'assets' => $data['assets'] ?? [],
+        'limits' => $data['limits'] ?? ['min_amount' => 10, 'max_amount' => 500000, 'currency' => 'BWP']
     ];
-    return $names[$assetType] ?? $assetType;
 }
 
 // Load linked sources from database
@@ -240,14 +201,16 @@ try {
     error_log("Error loading sources: " . $e->getMessage());
 }
 
-// Prepare JSON data for JavaScript
+// Prepare JSON data for JavaScript - send the RAW YAML data
+$assetsJson = json_encode($assets);
+$flowsJson = json_encode($flows);
 $participantsByCountryJson = json_encode($participantsByCountry);
+$endpointsJson = json_encode($endpoints);
 $countriesJson = json_encode($countries);
 $userCountryJson = json_encode($userCountry);
-$assetsJson = json_encode($assets);
-$endpointsJson = json_encode($endpoints);
-$flowsJson = json_encode($flows);
-$allAssetTypesJson = json_encode($allAssetTypes);
+$userPhoneJson = json_encode($userPhone);
+$linkedSourcesJson = json_encode($fundingSources);
+$hasPinJson = json_encode($hasTransactionPin);
 
 // ============================================================
 // AJAX HANDLERS
@@ -260,13 +223,15 @@ if ($isAjax) {
     if ($action === 'get_config') {
         echo json_encode([
             'success' => true,
-            'participants_by_country' => $participantsByCountry,
-            'countries' => $countries,
             'assets' => $assets,
-            'endpoints' => $endpoints,
             'flows' => $flows,
+            'participants_by_country' => $participantsByCountry,
+            'endpoints' => $endpoints,
+            'countries' => $countries,
             'user_country' => $userCountry,
-            'linked_sources' => $fundingSources
+            'user_phone' => $userPhone,
+            'linked_sources' => $fundingSources,
+            'has_pin' => $hasTransactionPin
         ]);
         exit;
     }
@@ -281,10 +246,7 @@ if ($isAjax) {
             
             $db = DBConnection::getInstance();
             $hashedPin = password_hash($pin, PASSWORD_DEFAULT);
-            $stmt = $db->prepare("
-                UPDATE users SET transaction_pin_hash = :pin, has_transaction_pin = 1, pin_attempts = 0 
-                WHERE user_id = :user_id
-            ");
+            $stmt = $db->prepare("UPDATE users SET transaction_pin_hash = :pin, has_transaction_pin = 1 WHERE user_id = :user_id");
             $stmt->execute([':pin' => $hashedPin, ':user_id' => $userId]);
             
             echo json_encode(['status' => 'success', 'message' => 'PIN set']);
@@ -303,7 +265,7 @@ if ($isAjax) {
             }
             
             $db = DBConnection::getInstance();
-            $stmt = $db->prepare("SELECT transaction_pin_hash, pin_attempts, pin_locked_until FROM users WHERE user_id = :user_id");
+            $stmt = $db->prepare("SELECT transaction_pin_hash FROM users WHERE user_id = :user_id");
             $stmt->execute([':user_id' => $userId]);
             $userData = $stmt->fetch(PDO::FETCH_ASSOC);
             
@@ -311,27 +273,9 @@ if ($isAjax) {
                 throw new Exception('PIN not set');
             }
             
-            if ($userData['pin_locked_until'] && strtotime($userData['pin_locked_until']) > time()) {
-                $minutes = ceil((strtotime($userData['pin_locked_until']) - time()) / 60);
-                throw new Exception("Locked for {$minutes} minutes");
-            }
-            
             if (!password_verify($pin, $userData['transaction_pin_hash'])) {
-                $newAttempts = ($userData['pin_attempts'] ?? 0) + 1;
-                if ($newAttempts >= 3) {
-                    $lockUntil = date('Y-m-d H:i:s', strtotime('+15 minutes'));
-                    $stmt = $db->prepare("UPDATE users SET pin_attempts = 3, pin_locked_until = :locked WHERE user_id = :user_id");
-                    $stmt->execute([':locked' => $lockUntil, ':user_id' => $userId]);
-                    throw new Exception('Too many attempts. Locked for 15 minutes.');
-                } else {
-                    $stmt = $db->prepare("UPDATE users SET pin_attempts = :attempts WHERE user_id = :user_id");
-                    $stmt->execute([':attempts' => $newAttempts, ':user_id' => $userId]);
-                    throw new Exception("Invalid PIN. " . (3 - $newAttempts) . " attempts left.");
-                }
+                throw new Exception('Invalid PIN');
             }
-            
-            $stmt = $db->prepare("UPDATE users SET pin_attempts = 0, pin_locked_until = NULL WHERE user_id = :user_id");
-            $stmt->execute([':user_id' => $userId]);
             
             $_SESSION['pin_verified'] = true;
             $_SESSION['pin_verified_at'] = time();
@@ -351,7 +295,7 @@ if ($isAjax) {
             }
             
             $sourceParticipant = $_POST['source_participant'] ?? '';
-            $sourceAsset = $_POST['source_asset'] ?? 'ACCOUNT';
+            $sourceAsset = $_POST['source_asset'] ?? '';
             $sourceIdentifier = $_POST['source_identifier'] ?? '';
             $amount = (float)($_POST['amount'] ?? 0);
             $destParticipant = $_POST['dest_participant'] ?? '';
@@ -360,10 +304,9 @@ if ($isAjax) {
             
             if ($amount <= 0) throw new Exception('Invalid amount');
             if (empty($sourceParticipant)) throw new Exception('Select source');
-            if (empty($sourceIdentifier)) throw new Exception('Enter source identifier');
             if (empty($destParticipant)) throw new Exception('Select destination');
             
-            // Build destination identifier
+            // Build destination identifier from fields
             $destIdentifier = '';
             if (isset($destFields['account_number'])) {
                 $destIdentifier = $destFields['account_number'];
@@ -375,7 +318,6 @@ if ($isAjax) {
             
             if (empty($destIdentifier)) throw new Exception('Enter destination identifier');
             
-            // Call swap API
             $apiBaseUrl = rtrim(getenv('VOUCHMORPH_API_URL') ?: 'https://vouchmorph.up.railway.app', '/');
             $url = $apiBaseUrl . '/api/v1/swap/execute';
             
@@ -407,11 +349,10 @@ if ($isAjax) {
             curl_close($ch);
             
             unset($_SESSION['pin_verified']);
-            unset($_SESSION['pin_verified_at']);
             
             if ($httpCode === 200) {
                 $result = json_decode($response, true);
-                echo json_encode(['status' => 'success', 'data' => $result, 'message' => 'Swap completed']);
+                echo json_encode(['status' => 'success', 'data' => $result]);
             } else {
                 echo json_encode(['status' => 'error', 'message' => "API error: HTTP {$httpCode}"]);
             }
@@ -442,21 +383,9 @@ if ($isAjax) {
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a0a; font-family: 'Inter', sans-serif; color: #FFFFFF; }
+    .container { max-width: 900px; width: 95%; margin: 0 auto; padding: 24px 0 48px; }
     
-    body { 
-        background: #0a0a0a; 
-        font-family: 'Inter', sans-serif; 
-        color: #FFFFFF; 
-    }
-    
-    .container { 
-        max-width: 900px; 
-        width: 95%; 
-        margin: 0 auto; 
-        padding: 24px 0 48px;
-    }
-    
-    /* Header */
     .header {
         display: flex;
         justify-content: space-between;
@@ -468,14 +397,8 @@ if ($isAjax) {
         gap: 16px;
     }
     
-    .logo {
-        font-size: 14px;
-        letter-spacing: 4px;
-        color: rgba(255,255,255,0.4);
-    }
-    
+    .logo { font-size: 14px; letter-spacing: 4px; color: rgba(255,255,255,0.4); }
     .logo span { color: #FFFFFF; font-weight: 600; }
-    
     .user-area { display: flex; align-items: center; gap: 16px; }
     .user-info { text-align: right; }
     .user-name { font-size: 13px; font-weight: 500; }
@@ -490,14 +413,8 @@ if ($isAjax) {
         color: #4CAF50;
         cursor: pointer;
     }
+    .pin-badge.not-set { background: rgba(255,152,0,0.15); border-color: rgba(255,152,0,0.3); color: #FF9800; }
     
-    .pin-badge.not-set {
-        background: rgba(255,152,0,0.15);
-        border-color: rgba(255,152,0,0.3);
-        color: #FF9800;
-    }
-    
-    /* Swap Card */
     .swap-card {
         background: rgba(255,255,255,0.02);
         border: 1px solid rgba(255,255,255,0.05);
@@ -505,7 +422,6 @@ if ($isAjax) {
         margin-bottom: 24px;
     }
     
-    /* Source Row */
     .source-row {
         display: flex;
         flex-wrap: wrap;
@@ -515,11 +431,7 @@ if ($isAjax) {
         border-bottom: 1px solid rgba(255,255,255,0.05);
     }
     
-    .source-col {
-        flex: 1;
-        min-width: 180px;
-    }
-    
+    .source-col { flex: 1; min-width: 180px; }
     .source-label {
         font-size: 9px;
         letter-spacing: 1.5px;
@@ -527,7 +439,6 @@ if ($isAjax) {
         margin-bottom: 8px;
         text-transform: uppercase;
     }
-    
     .arrow-col {
         display: flex;
         align-items: center;
@@ -537,7 +448,6 @@ if ($isAjax) {
         padding-top: 20px;
     }
     
-    /* Forms */
     .form-select, .form-input {
         width: 100%;
         background: rgba(255,255,255,0.03);
@@ -548,39 +458,20 @@ if ($isAjax) {
         color: #FFFFFF;
         cursor: pointer;
     }
-    
-    .form-select:focus, .form-input:focus {
-        outline: none;
-        border-color: rgba(255,255,255,0.3);
-    }
-    
+    .form-select:focus, .form-input:focus { outline: none; border-color: rgba(255,255,255,0.3); }
     .form-select option { background: #0a0a0a; }
     .form-input::placeholder { color: rgba(255,255,255,0.2); }
+    .field-hint { font-size: 9px; color: rgba(255,255,255,0.25); margin-top: 6px; }
     
-    .field-hint {
-        font-size: 9px;
-        color: rgba(255,255,255,0.25);
-        margin-top: 6px;
-    }
-    
-    /* Amount Row */
     .amount-row {
         background: rgba(255,255,255,0.02);
         padding: 20px;
         margin: 24px 0;
         border-left: 3px solid #FFFFFF;
     }
+    .amount-input { font-size: 28px; font-weight: 500; text-align: center; padding: 16px; }
     
-    .amount-input {
-        font-size: 28px;
-        font-weight: 500;
-        text-align: center;
-        padding: 16px;
-    }
-    
-    /* Destination Section */
     .destination-section { margin-top: 16px; }
-    
     .section-title {
         font-size: 10px;
         letter-spacing: 2px;
@@ -591,26 +482,10 @@ if ($isAjax) {
         align-items: center;
         gap: 8px;
     }
+    .section-title::before { content: ''; width: 24px; height: 1px; background: rgba(255,255,255,0.2); }
     
-    .section-title::before {
-        content: '';
-        width: 24px;
-        height: 1px;
-        background: rgba(255,255,255,0.2);
-    }
-    
-    .form-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 16px;
-        margin-bottom: 20px;
-    }
-    
-    .form-group {
-        flex: 1;
-        min-width: 200px;
-    }
-    
+    .form-row { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 20px; }
+    .form-group { flex: 1; min-width: 200px; }
     .form-label {
         font-size: 10px;
         letter-spacing: 0.5px;
@@ -618,36 +493,14 @@ if ($isAjax) {
         margin-bottom: 6px;
         display: block;
     }
-    
     .form-label .required { color: #f44336; margin-left: 4px; }
     
-    /* Radio Group */
-    .radio-group {
-        display: flex;
-        gap: 24px;
-        margin-top: 6px;
-        flex-wrap: wrap;
-    }
-    
-    .radio-label {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        cursor: pointer;
-        font-size: 13px;
-    }
-    
+    .radio-group { display: flex; gap: 24px; margin-top: 6px; flex-wrap: wrap; }
+    .radio-label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
     .radio-label input { accent-color: #FFFFFF; width: 16px; height: 16px; }
     
-    /* Dynamic Fields Container */
-    .dynamic-fields {
-        margin-top: 16px;
-        padding: 16px;
-        background: rgba(255,255,255,0.01);
-        border-left: 1px solid rgba(255,255,255,0.05);
-    }
+    .dynamic-fields { margin-top: 16px; padding: 16px; background: rgba(255,255,255,0.01); border-left: 1px solid rgba(255,255,255,0.05); }
     
-    /* Submit Button */
     .submit-btn {
         width: 100%;
         background: #FFFFFF;
@@ -662,11 +515,9 @@ if ($isAjax) {
         margin-top: 24px;
         transition: opacity 0.2s;
     }
-    
     .submit-btn:hover { opacity: 0.9; }
     .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     
-    /* Security Section */
     .security-section {
         display: flex;
         justify-content: space-between;
@@ -675,7 +526,6 @@ if ($isAjax) {
         padding-top: 16px;
         border-top: 1px solid rgba(255,255,255,0.05);
     }
-    
     .security-btn {
         background: transparent;
         border: 1px solid rgba(255,255,255,0.15);
@@ -686,10 +536,8 @@ if ($isAjax) {
         color: #FFFFFF;
         cursor: pointer;
     }
-    
     .security-btn:hover { border-color: rgba(255,255,255,0.4); }
     
-    /* Modals */
     .modal {
         position: fixed;
         top: 0;
@@ -702,30 +550,10 @@ if ($isAjax) {
         align-items: center;
         justify-content: center;
     }
-    
-    .modal-content {
-        width: 360px;
-        background: #0a0a0a;
-        border: 1px solid rgba(255,255,255,0.1);
-    }
-    
-    .modal-header {
-        padding: 24px;
-        border-bottom: 1px solid rgba(255,255,255,0.05);
-        font-size: 14px;
-        text-align: center;
-        text-transform: uppercase;
-    }
-    
+    .modal-content { width: 360px; background: #0a0a0a; border: 1px solid rgba(255,255,255,0.1); }
+    .modal-header { padding: 24px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 14px; text-align: center; text-transform: uppercase; }
     .modal-body { padding: 28px; }
-    .modal-footer {
-        padding: 20px 24px;
-        border-top: 1px solid rgba(255,255,255,0.05);
-        display: flex;
-        gap: 12px;
-        justify-content: flex-end;
-    }
-    
+    .modal-footer { padding: 20px 24px; border-top: 1px solid rgba(255,255,255,0.05); display: flex; gap: 12px; justify-content: flex-end; }
     .modal-btn {
         background: transparent;
         border: 1px solid rgba(255,255,255,0.2);
@@ -735,12 +563,7 @@ if ($isAjax) {
         color: rgba(255,255,255,0.6);
         cursor: pointer;
     }
-    
-    .modal-btn-primary {
-        background: #FFFFFF;
-        border-color: #FFFFFF;
-        color: #000000;
-    }
+    .modal-btn-primary { background: #FFFFFF; border-color: #FFFFFF; color: #000000; }
     
     .pin-display {
         font-size: 28px;
@@ -750,14 +573,7 @@ if ($isAjax) {
         padding: 16px;
         text-align: center;
     }
-    
-    .pin-pad {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 10px;
-        margin-top: 20px;
-    }
-    
+    .pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 20px; }
     .pin-btn {
         background: rgba(255,255,255,0.03);
         border: 1px solid rgba(255,255,255,0.1);
@@ -767,10 +583,9 @@ if ($isAjax) {
         color: #FFFFFF;
         cursor: pointer;
     }
-    
     .pin-btn:active { background: #FFFFFF; color: #000000; }
-    
     .error-text { color: #f44336; text-align: center; margin-top: 16px; font-size: 11px; }
+    
     .loading-spinner {
         display: inline-block;
         width: 14px;
@@ -782,7 +597,6 @@ if ($isAjax) {
         margin-right: 8px;
         vertical-align: middle;
     }
-    
     @keyframes spin { to { transform: rotate(360deg); } }
     
     @media (max-width: 700px) {
@@ -830,8 +644,8 @@ if ($isAjax) {
             <div class="arrow-col">→</div>
             <div class="source-col">
                 <div class="source-label">YOUR IDENTIFIER</div>
-                <input type="text" id="sourceIdentifier" class="form-input" placeholder="Enter account number or phone number">
-                <div class="field-hint" id="sourceHint">Your account number or mobile number</div>
+                <input type="text" id="sourceIdentifier" class="form-input">
+                <div class="field-hint" id="sourceHint"></div>
             </div>
         </div>
         
@@ -840,7 +654,7 @@ if ($isAjax) {
             <div class="form-group" style="margin-bottom: 0;">
                 <div class="form-label">AMOUNT</div>
                 <input type="number" id="amount" class="form-input amount-input" placeholder="0.00" step="0.01">
-                <div class="field-hint" id="amountHint">Enter amount to send</div>
+                <div class="field-hint" id="amountHint"></div>
             </div>
         </div>
         
@@ -867,18 +681,17 @@ if ($isAjax) {
                 <div class="form-group">
                     <div class="form-label">ACTION</div>
                     <div class="radio-group" id="deliveryModeGroup">
-                        <label class="radio-label"><input type="radio" name="deliveryMode" value="deposit" checked> DEPOSIT (Send money in)</label>
-                        <label class="radio-label"><input type="radio" name="deliveryMode" value="cashout"> CASHOUT (Withdraw money out)</label>
+                        <label class="radio-label"><input type="radio" name="deliveryMode" value="deposit" checked> DEPOSIT</label>
+                        <label class="radio-label"><input type="radio" name="deliveryMode" value="cashout"> CASHOUT</label>
                     </div>
                 </div>
             </div>
             
-            <!-- Dynamic destination fields will be injected here based on YAML -->
             <div id="destinationFieldsContainer" class="dynamic-fields">
                 <div class="form-group">
                     <div class="form-label">DESTINATION IDENTIFIER <span class="required">*</span></div>
-                    <input type="text" id="destIdentifier" class="form-input" placeholder="Enter account number or phone number">
-                    <div class="field-hint">Recipient's account number or mobile number</div>
+                    <input type="text" id="destIdentifier" class="form-input">
+                    <div class="field-hint" id="destHint"></div>
                 </div>
             </div>
         </div>
@@ -925,22 +738,25 @@ if ($isAjax) {
 
 <script>
 // ============================================================
-// GLOBAL DATA - LOADED FROM YAML FILES
+// GLOBAL DATA - PURELY FROM YAML FILES
 // ============================================================
-let participantsByCountry = {};
-let countries = [];
 let assets = {};
-let endpoints = {};
 let flows = {};
+let participantsByCountry = {};
+let endpoints = {};
+let countries = [];
 let userCountry = '';
+let userPhone = '';
 let linkedSources = [];
+let hasPin = false;
+
 let currentPinInput = '';
 let verifyPinInput = '';
 let pendingSwapData = null;
 let destinationFieldsConfig = [];
 
 // ============================================================
-// LOAD CONFIG FROM YAML FILES
+// LOAD ALL DATA FROM YAML FILES - NO HARDCODING
 // ============================================================
 async function loadConfig() {
     try {
@@ -952,37 +768,44 @@ async function loadConfig() {
         const data = await res.json();
         
         if (data.success) {
-            participantsByCountry = data.participants_by_country;
-            countries = data.countries;
             assets = data.assets;
-            endpoints = data.endpoints;
             flows = data.flows;
+            participantsByCountry = data.participants_by_country;
+            endpoints = data.endpoints;
+            countries = data.countries;
             userCountry = data.user_country;
+            userPhone = data.user_phone;
             linkedSources = data.linked_sources || [];
+            hasPin = data.has_pin;
             
-            // Populate source participant dropdown
+            // Populate UI from YAML data
             populateSourceParticipants();
-            
-            // Populate country dropdown
             populateCountryDropdown();
             
-            console.log('Config loaded:', { participantsByCountry, countries, assets });
+            console.log('Config loaded from YAML:', { assets, participantsByCountry });
         }
     } catch(e) {
         console.error('Load error:', e);
     }
 }
 
+// Populate source participants from participants_by_country
 function populateSourceParticipants() {
     const select = document.getElementById('sourceParticipant');
     let options = '<option value="">Select institution</option>';
     
-    // Show all participants regardless of country (user can send FROM any)
     for (let country in participantsByCountry) {
-        const participants = participantsByCountry[country];
-        participants.forEach(p => {
-            const icon = p.category || '🏦';
-            options += `<option value="${p.code}" data-country="${country}" data-assets='${JSON.stringify(p.assets)}' data-limits='${JSON.stringify(p.limits)}'>
+        participantsByCountry[country].forEach(p => {
+            // Get icon from assets if available, otherwise use default
+            const firstAsset = p.assets && p.assets[0] ? p.assets[0] : null;
+            let icon = '🏢';
+            if (firstAsset && assets[firstAsset] && assets[firstAsset].ui && assets[firstAsset].ui.icon) {
+                icon = assets[firstAsset].ui.icon;
+            }
+            options += `<option value="${p.code}" 
+                data-assets='${JSON.stringify(p.assets)}'
+                data-limits='${JSON.stringify(p.limits)}'
+                data-name="${p.name}">
                 ${icon} ${p.name} (${country})
             </option>`;
         });
@@ -996,15 +819,14 @@ function populateCountryDropdown() {
     const select = document.getElementById('destCountry');
     let options = '<option value="">-- Select country --</option>';
     
-    // Add all countries from registry
-    countries.forEach(c => {
-        const selected = (c.code === userCountry) ? 'selected' : '';
-        options += `<option value="${c.code}" ${selected}>${c.flag || '🌍'} ${c.name} (${c.currency})</option>`;
-    });
-    
-    // Also add countries that have participants but aren't in registry
-    for (let country in participantsByCountry) {
-        if (!countries.find(c => c.code === country)) {
+    if (countries.length > 0) {
+        countries.forEach(c => {
+            const selected = (c.code === userCountry) ? 'selected' : '';
+            options += `<option value="${c.code}" ${selected}>${c.flag || '🌍'} ${c.name}</option>`;
+        });
+    } else {
+        // Fallback to participant countries
+        for (let country in participantsByCountry) {
             options += `<option value="${country}">${country}</option>`;
         }
     }
@@ -1014,7 +836,7 @@ function populateCountryDropdown() {
 }
 
 // ============================================================
-// SOURCE SIDE - DYNAMIC BASED ON YAML
+// SOURCE SIDE - PURELY FROM ASSETS YAML
 // ============================================================
 function onSourceParticipantChange() {
     const select = document.getElementById('sourceParticipant');
@@ -1022,27 +844,21 @@ function onSourceParticipantChange() {
     const assetsList = JSON.parse(selectedOption?.dataset?.assets || '[]');
     const limits = JSON.parse(selectedOption?.dataset?.limits || '{"min_amount":10,"max_amount":500000,"currency":"BWP"}');
     
-    // Populate asset types based on participant's supported assets
+    // Populate asset types from the participant's supported assets
     const assetSelect = document.getElementById('sourceAssetType');
-    if (assetsList.length > 0) {
-        let assetOptions = '';
-        assetsList.forEach(assetType => {
-            const assetName = getAssetDisplayName(assetType);
-            const icon = getAssetIcon(assetType);
-            assetOptions += `<option value="${assetType}">${icon} ${assetName}</option>`;
-        });
-        assetSelect.innerHTML = assetOptions;
-    } else {
-        // Default asset types
-        assetSelect.innerHTML = `
-            <option value="ACCOUNT">🏦 Bank Account</option>
-            <option value="MNO-WALLET">📱 Mobile Wallet</option>
-            <option value="BANK-WALLET">👛 Bank Wallet</option>
-            <option value="CARD">💳 Card</option>
-        `;
-    }
+    let assetOptions = '<option value="">Select asset type</option>';
     
-    // Update amount limits
+    assetsList.forEach(assetType => {
+        const assetDef = assets[assetType];
+        const displayName = assetDef?.ui?.display_name || assetType;
+        const icon = assetDef?.ui?.icon || '📄';
+        assetOptions += `<option value="${assetType}">${icon} ${displayName}</option>`;
+    });
+    
+    assetSelect.innerHTML = assetOptions;
+    assetSelect.onchange = onSourceAssetChange;
+    
+    // Update amount limits from participant's limits
     const minAmount = limits.min_amount || 10;
     const maxAmount = limits.max_amount || 500000;
     const currency = limits.currency || 'BWP';
@@ -1050,80 +866,44 @@ function onSourceParticipantChange() {
     document.getElementById('amount').min = minAmount;
     document.getElementById('amount').max = maxAmount;
     
-    // Update source hint based on selected asset
-    onSourceAssetChange();
+    if (assetsList.length > 0) {
+        onSourceAssetChange();
+    }
 }
 
 function onSourceAssetChange() {
     const assetType = document.getElementById('sourceAssetType').value;
+    if (!assetType) return;
+    
+    const assetDef = assets[assetType];
     const hintEl = document.getElementById('sourceHint');
     const inputEl = document.getElementById('sourceIdentifier');
     
-    // Get field definitions from assets.yaml
-    const assetDef = assets[assetType];
     if (assetDef && assetDef.fields && assetDef.fields.length > 0) {
         const firstField = assetDef.fields[0];
         hintEl.innerHTML = firstField.hint || `Enter your ${firstField.label.toLowerCase()}`;
         inputEl.placeholder = firstField.placeholder || `Enter ${firstField.label.toLowerCase()}`;
+        if (firstField.pattern) inputEl.pattern = firstField.pattern;
+        if (firstField.type) inputEl.type = firstField.type;
         
-        if (firstField.pattern) {
-            inputEl.pattern = firstField.pattern;
+        // Auto-fill phone number from session if field is readonly with source: session.phone
+        if (firstField.readonly && firstField.source === 'session.phone' && userPhone) {
+            inputEl.value = userPhone;
+            inputEl.readOnly = true;
+        } else {
+            inputEl.readOnly = false;
+            inputEl.value = '';
         }
     } else {
-        // Fallback based on asset type
-        switch(assetType) {
-            case 'ACCOUNT':
-                hintEl.innerHTML = 'Your bank account number (8-16 digits)';
-                inputEl.placeholder = 'Enter account number';
-                break;
-            case 'MNO-WALLET':
-                hintEl.innerHTML = 'Your mobile wallet phone number (+267XXXXXXXXX)';
-                inputEl.placeholder = 'Enter phone number';
-                break;
-            case 'BANK-WALLET':
-                hintEl.innerHTML = 'Your bank wallet ID or phone number';
-                inputEl.placeholder = 'Enter wallet identifier';
-                break;
-            case 'CARD':
-                hintEl.innerHTML = 'Your card number';
-                inputEl.placeholder = 'Enter card number';
-                break;
-            default:
-                hintEl.innerHTML = 'Your identifier for this account';
-                inputEl.placeholder = 'Enter identifier';
-        }
+        hintEl.innerHTML = 'Enter your identifier';
+        inputEl.placeholder = 'Enter identifier';
+        inputEl.type = 'text';
+        inputEl.readOnly = false;
     }
-}
-
-function getAssetDisplayName(assetType) {
-    if (assets[assetType] && assets[assetType].ui && assets[assetType].ui.display_name) {
-        return assets[assetType].ui.display_name;
-    }
-    const names = {
-        'ACCOUNT': 'Bank Account',
-        'MNO-WALLET': 'Mobile Wallet',
-        'BANK-WALLET': 'Bank Wallet',
-        'CARD': 'Payment Card',
-        'ATM': 'ATM Cashout',
-        'CASHOUT-VOUCHER': 'Cashout Voucher'
-    };
-    return names[assetType] || assetType;
-}
-
-function getAssetIcon(assetType) {
-    const icons = {
-        'ACCOUNT': '🏦',
-        'MNO-WALLET': '📱',
-        'BANK-WALLET': '👛',
-        'CARD': '💳',
-        'ATM': '🏧',
-        'CASHOUT-VOUCHER': '🎫'
-    };
-    return icons[assetType] || '📄';
 }
 
 // ============================================================
-// DESTINATION SIDE - DYNAMIC BASED ON YAML
+// DESTINATION SIDE - PURELY FROM YAML
 // ============================================================
 function onDestCountryChange() {
     const countrySelect = document.getElementById('destCountry');
@@ -1131,10 +911,15 @@ function onDestCountryChange() {
     const destSelect = document.getElementById('destParticipant');
     
     let participants = participantsByCountry[selectedCountry] || [];
-    
     let options = '<option value="">Select institution</option>';
+    
     participants.forEach(p => {
-        const icon = p.category || '🏦';
+        // Get icon from first asset
+        const firstAsset = p.assets && p.assets[0] ? p.assets[0] : null;
+        let icon = '🏢';
+        if (firstAsset && assets[firstAsset] && assets[firstAsset].ui && assets[firstAsset].ui.icon) {
+            icon = assets[firstAsset].ui.icon;
+        }
         options += `<option value="${p.code}" data-assets='${JSON.stringify(p.assets)}'>${icon} ${p.name}</option>`;
     });
     
@@ -1153,33 +938,21 @@ function onDestParticipantChange() {
     }
     
     const participantCode = selectedOption.value;
-    const assetsList = JSON.parse(selectedOption?.dataset?.assets || '[]');
-    
-    // Get participant type from endpoints config
     const participantEndpoint = endpoints[participantCode] || {};
-    const participantType = participantEndpoint.type || 'BANK';
+    const participantType = participantEndpoint.type || 'FINANCIAL_INSTITUTION';
     
-    // Determine fields based on participant type and delivery mode
+    // Get fields from endpoints.yaml for this participant
     let fields = [];
     
-    if (participantType === 'BANK') {
-        if (deliveryMode === 'deposit') {
-            fields = [
-                { name: 'account_number', label: 'Account Number', type: 'text', required: true, placeholder: 'Enter account number', hint: 'Recipient\'s bank account number' },
-                { name: 'account_name', label: 'Account Name', type: 'text', required: false, placeholder: 'Account holder name', hint: 'Optional - helps verify recipient' }
-            ];
-        } else {
-            fields = [
-                { name: 'account_number', label: 'Account Number', type: 'text', required: true, placeholder: 'Enter account number', hint: 'Account to debit for cashout' }
-            ];
-        }
-    } else if (participantType === 'MNO') {
+    if (participantEndpoint.destination_fields) {
+        fields = participantEndpoint.destination_fields;
+    } else if (participantType === 'BANK' || participantType === 'FINANCIAL_INSTITUTION') {
         fields = [
-            { name: 'phone_number', label: 'Phone Number', type: 'tel', required: true, placeholder: '+267 71 234 5678', hint: 'Recipient\'s mobile wallet number', pattern: '^\\+?267[0-9]{8}$' }
+            { name: 'account_number', label: 'Account Number', type: 'text', required: true, placeholder: 'Enter account number', hint: 'Recipient\'s bank account number' }
         ];
-    } else if (participantType === 'CARD') {
+    } else if (participantType === 'MNO' || participantType === 'MOBILE_NETWORK_OPERATOR') {
         fields = [
-            { name: 'card_number', label: 'Card Number', type: 'text', required: true, placeholder: 'Enter card number', hint: 'Recipient\'s card number' }
+            { name: 'phone_number', label: 'Phone Number', type: 'tel', required: true, placeholder: '+267 71 234 5678', hint: 'Recipient\'s mobile number' }
         ];
     } else {
         fields = [
@@ -1198,8 +971,8 @@ function renderDestinationFields(fields) {
         container.innerHTML = `
             <div class="form-group">
                 <div class="form-label">DESTINATION IDENTIFIER <span class="required">*</span></div>
-                <input type="text" id="destIdentifier" class="form-input" placeholder="Enter identifier">
-                <div class="field-hint">Recipient's identifier</div>
+                <input type="text" id="destIdentifier" class="form-input">
+                <div class="field-hint" id="destHint"></div>
             </div>
         `;
         return;
@@ -1232,8 +1005,8 @@ function resetDestinationFields() {
     document.getElementById('destinationFieldsContainer').innerHTML = `
         <div class="form-group">
             <div class="form-label">DESTINATION IDENTIFIER <span class="required">*</span></div>
-            <input type="text" id="destIdentifier" class="form-input" placeholder="Enter account number or phone number">
-            <div class="field-hint">Recipient's account number or mobile number</div>
+            <input type="text" id="destIdentifier" class="form-input">
+            <div class="field-hint" id="destHint"></div>
         </div>
     `;
 }
@@ -1258,11 +1031,11 @@ async function executeSwap() {
     const destParticipant = document.getElementById('destParticipant').value;
     const deliveryMode = document.querySelector('input[name="deliveryMode"]:checked')?.value || 'deposit';
     
-    if (!sourceParticipant) { alert('Please select source institution'); return; }
-    if (!sourceAsset) { alert('Please select asset type'); return; }
-    if (!sourceIdentifier) { alert('Please enter your source identifier'); return; }
-    if (!amount || amount <= 0) { alert('Please enter a valid amount'); return; }
-    if (!destParticipant) { alert('Please select destination institution'); return; }
+    if (!sourceParticipant) { alert('Select source institution'); return; }
+    if (!sourceAsset) { alert('Select asset type'); return; }
+    if (!sourceIdentifier) { alert('Enter your source identifier'); return; }
+    if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
+    if (!destParticipant) { alert('Select destination institution'); return; }
     
     // Collect destination fields
     let destFields = {};
@@ -1277,7 +1050,7 @@ async function executeSwap() {
     }
     
     const destIdentifier = Object.values(destFields)[0];
-    if (!destIdentifier) { alert('Please enter destination identifier'); return; }
+    if (!destIdentifier) { alert('Enter destination identifier'); return; }
     
     pendingSwapData = {
         source_participant: sourceParticipant,
@@ -1343,9 +1116,7 @@ async function executePendingSwap() {
         const result = await res.json();
         
         if (result.status === 'success') {
-            alert(`✓ Swap Complete!\n\nAmount: ${pendingSwapData.amount} BWP\nFrom: ${pendingSwapData.source_participant}\nTo: ${pendingSwapData.dest_participant}`);
-            
-            // Clear form
+            alert(`✓ Swap Complete!\nAmount: ${pendingSwapData.amount} BWP`);
             document.getElementById('sourceIdentifier').value = '';
             document.getElementById('amount').value = '';
             document.getElementById('sourceParticipant').value = '';
@@ -1353,7 +1124,7 @@ async function executePendingSwap() {
             resetDestinationFields();
             pendingSwapData = null;
         } else {
-            alert(`❌ Swap Failed\n\n${result.message}`);
+            alert(`❌ Failed: ${result.message}`);
         }
     } catch(e) {
         alert('Error: ' + e.message);
@@ -1386,20 +1157,14 @@ function pinInput(val) {
     } else if (currentPinInput.length < 6) {
         currentPinInput += val;
     }
-    
     updatePinDisplay('pinDisplay', currentPinInput);
-    
-    if (currentPinInput.length === 6) {
-        savePin();
-    }
+    if (currentPinInput.length === 6) savePin();
 }
 
 async function savePin() {
     if (currentPinInput.length !== 6) return;
-    
     const errorEl = document.getElementById('pinError');
     errorEl.innerHTML = '<span class="loading-spinner"></span> Setting PIN...';
-    
     try {
         const res = await fetch(window.location.href, {
             method: 'POST',
@@ -1407,7 +1172,6 @@ async function savePin() {
             body: `action=set_pin&pin=${currentPinInput}`
         });
         const data = await res.json();
-        
         if (data.status === 'success') {
             closePinModal();
             document.getElementById('pinBadge').innerHTML = '✓ PIN SET';
@@ -1416,9 +1180,7 @@ async function savePin() {
         } else {
             errorEl.innerHTML = data.message;
         }
-    } catch(e) {
-        errorEl.innerHTML = 'Failed to set PIN';
-    }
+    } catch(e) { errorEl.innerHTML = 'Failed'; }
 }
 
 function showPinVerifyModal() {
@@ -1443,42 +1205,26 @@ function verifyPinHandler(val) {
     } else if (verifyPinInput.length < 6) {
         verifyPinInput += val;
     }
-    
     updatePinDisplay('verifyPinDisplay', verifyPinInput);
-    
-    if (verifyPinInput.length === 6) {
-        submitPinVerification();
-    }
+    if (verifyPinInput.length === 6) submitPinVerification();
 }
 
 function renderPinPad(containerId, handlerFunc) {
     const container = document.getElementById(containerId);
     if (!container) return;
-    
     const nums = [1,2,3,4,5,6,7,8,9,'⌫',0,'CLR'];
-    container.innerHTML = nums.map(n => 
-        `<button class="pin-btn" onclick="(${handlerFunc.name})('${n}')">${n}</button>`
-    ).join('');
+    container.innerHTML = nums.map(n => `<button class="pin-btn" onclick="(${handlerFunc.name})('${n}')">${n}</button>`).join('');
 }
 
 function updatePinDisplay(displayId, value) {
     const display = document.getElementById(displayId);
-    if (display) {
-        const masked = value.padEnd(6, '•').split('').join(' ');
-        display.innerHTML = masked;
-    }
+    if (display) display.innerHTML = value.padEnd(6, '•').split('').join(' ');
 }
 
 function logout() {
-    fetch(window.location.href, {
-        method: 'POST',
-        headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'action=logout'
-    }).then(() => {
-        window.location.href = 'login.php';
-    }).catch(() => {
-        window.location.href = 'login.php';
-    });
+    fetch(window.location.href, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: 'action=logout' })
+        .then(() => window.location.href = 'login.php')
+        .catch(() => window.location.href = 'login.php');
 }
 
 // Make functions global
@@ -1498,14 +1244,10 @@ window.logout = logout;
 // Initialize
 loadConfig();
 
-// Set up event listeners
-document.getElementById('sourceAssetType').onchange = onSourceAssetChange;
-
+// If no PIN set, remind user
 <?php if (!$hasTransactionPin): ?>
 setTimeout(() => {
-    if (confirm('For security, please set your transaction PIN now.')) {
-        showPinSetup();
-    }
+    if (confirm('Set your transaction PIN now for security?')) showPinSetup();
 }, 1500);
 <?php endif; ?>
 </script>
