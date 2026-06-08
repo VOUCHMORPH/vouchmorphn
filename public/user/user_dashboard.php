@@ -1,6 +1,6 @@
 <?php
 // public/user/user_dashboard.php - VouchMorph Swap Dashboard
-// Clean horizontal layout: Source on top, Destination below
+// FULLY DYNAMIC - Reads from YAML files, shows options based on actual data
 
 ini_set('display_errors', 0);
 ini_set('log_errors', 1);
@@ -48,14 +48,134 @@ try {
 }
 
 // ============================================================
-// LOAD CONFIGURATION
+// LOAD ALL YAML FILES
 // ============================================================
-$countries = [];
-$allParticipants = [];
+
+// Helper function to parse simple YAML
+function parseSimpleYaml($content) {
+    $result = [];
+    $lines = explode("\n", $content);
+    $current = null;
+    $currentSub = null;
+    $indentLevel = 0;
+    
+    foreach ($lines as $line) {
+        $line = rtrim($line);
+        if (empty($line) || $line[0] === '#') continue;
+        
+        // Count leading spaces
+        $leading = strlen($line) - strlen(ltrim($line));
+        $trimmed = trim($line);
+        
+        // Top level key (no indent)
+        if ($leading === 0 && strpos($trimmed, ':') !== false && !preg_match('/^- /', $trimmed)) {
+            $parts = explode(':', $trimmed, 2);
+            $current = trim($parts[0]);
+            $value = trim($parts[1] ?? '');
+            if ($value === '') {
+                $result[$current] = [];
+            } else {
+                $result[$current] = $value;
+            }
+            $currentSub = null;
+            continue;
+        }
+        
+        // List item
+        if (preg_match('/^- (.+)$/', $trimmed, $matches)) {
+            if ($currentSub) {
+                $result[$current][$currentSub][] = $matches[1];
+            } elseif ($current) {
+                if (!isset($result[$current])) $result[$current] = [];
+                $result[$current][] = $matches[1];
+            }
+            continue;
+        }
+        
+        // Key-value pair with indent
+        if (preg_match('/^([a-z_]+): (.+)$/', $trimmed, $matches)) {
+            $key = $matches[1];
+            $value = trim($matches[2]);
+            if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
+            if ($value === 'true') $value = true;
+            if ($value === 'false') $value = false;
+            if (is_numeric($value)) $value = (float)$value;
+            
+            if ($leading === 2 && $current) {
+                $result[$current][$key] = $value;
+                $currentSub = $key;
+            } elseif ($leading === 4 && $current && $currentSub) {
+                $result[$current][$currentSub][$key] = $value;
+            } elseif ($leading === 6 && $current && $currentSub) {
+                if (!is_array($result[$current][$currentSub])) $result[$current][$currentSub] = [];
+                $result[$current][$currentSub][$key] = $value;
+            }
+        }
+    }
+    
+    return $result;
+}
+
+// Load assets.yaml (global)
+$assets = [];
+$assetsPath = __DIR__ . '/../../src/Core/Config/assets.yaml';
+if (file_exists($assetsPath)) {
+    $assets = parseSimpleYaml(file_get_contents($assetsPath));
+}
+
+// Load flows.yaml (global)
+$flows = [];
+$flowsPath = __DIR__ . '/../../src/Core/Config/flows.yaml';
+if (file_exists($flowsPath)) {
+    $flows = parseSimpleYaml(file_get_contents($flowsPath));
+}
+
+// Load participants.yaml (country specific)
+$participants = [];
 $participantsByCountry = [];
-$assetTypesList = ['ACCOUNT', 'MNO-WALLET', 'BANK-WALLET', 'CARD', 'ATM', 'CASHOUT-VOUCHER'];
+$allAssetTypes = [];
+
+$participantsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/participants.yaml';
+if (file_exists($participantsPath)) {
+    $parsed = parseSimpleYaml(file_get_contents($participantsPath));
+    $participants = $parsed['participants'] ?? [];
+    
+    // Organize by country
+    foreach ($participants as $code => $data) {
+        $country = $data['country'] ?? $userCountry;
+        if (!isset($participantsByCountry[$country])) {
+            $participantsByCountry[$country] = [];
+        }
+        
+        $assetList = $data['assets'] ?? [];
+        if (is_string($assetList)) {
+            $assetList = array_map('trim', explode(',', trim($assetList, '[]')));
+        }
+        
+        $participantsByCountry[$country][] = [
+            'code' => $code,
+            'name' => $data['name'] ?? $code,
+            'type' => $data['type'] ?? 'FINANCIAL_INSTITUTION',
+            'category' => getCategoryIcon($data['type'] ?? 'FINANCIAL_INSTITUTION'),
+            'assets' => $assetList,
+            'limits' => $data['limits'] ?? ['min_amount' => 10, 'max_amount' => 500000, 'currency' => 'BWP']
+        ];
+        
+        foreach ($assetList as $assetType) {
+            $allAssetTypes[$assetType] = $assets[$assetType] ?? ['name' => $assetType];
+        }
+    }
+}
+
+// Load endpoints.yaml (connection details for fields)
+$endpoints = [];
+$endpointsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/endpoints.yaml';
+if (file_exists($endpointsPath)) {
+    $endpoints = parseSimpleYaml(file_get_contents($endpointsPath));
+}
 
 // Load country registry
+$countries = [];
 $countryRegistryPath = __DIR__ . '/../../src/Core/Config/countries_registry.json';
 if (file_exists($countryRegistryPath)) {
     $registryContent = file_get_contents($countryRegistryPath);
@@ -65,39 +185,46 @@ if (file_exists($countryRegistryPath)) {
     }
 }
 
-// Load participants from YAML
-$participantsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/participants.yaml';
-if (file_exists($participantsPath)) {
-    $yamlContent = file_get_contents($participantsPath);
-    $data = parseParticipantsYaml($yamlContent);
-    if ($data && isset($data['participants'])) {
-        foreach ($data['participants'] as $code => $participant) {
-            if ($code === 'VOUCHMORPH') continue;
-            
-            $participantCode = strtoupper($code);
-            $participantCountry = $participant['country'] ?? $userCountry;
-            
-            $allParticipants[$participantCode] = [
-                'code' => $participantCode,
-                'name' => $participant['name'] ?? $participantCode,
-                'type' => $participant['type'] ?? 'BANK',
-                'category' => getCategoryFromType($participant['type'] ?? 'BANK'),
-                'country' => $participantCountry,
-                'currency' => $participant['limits']['currency'] ?? 'BWP',
-                'assets' => $participant['assets'] ?? ['ACCOUNT'],
-                'min_amount' => $participant['limits']['min_amount'] ?? 10,
-                'max_amount' => $participant['limits']['max_amount'] ?? 500000
-            ];
-            
-            if (!isset($participantsByCountry[$participantCountry])) {
-                $participantsByCountry[$participantCountry] = [];
-            }
-            $participantsByCountry[$participantCountry][] = $allParticipants[$participantCode];
-        }
-    }
+function getCategoryIcon($type) {
+    $icons = [
+        'BANK' => '🏦',
+        'FINANCIAL_INSTITUTION' => '🏦',
+        'MNO' => '📱',
+        'MOBILE_NETWORK_OPERATOR' => '📱',
+        'ORCHESTRATION_LAYER' => '⚡',
+        'PAYMENT_SWITCH' => '⚡'
+    ];
+    return $icons[$type] ?? '🏢';
 }
 
-// Load linked sources
+function getAssetIcon($assetType) {
+    $icons = [
+        'ACCOUNT' => '🏦',
+        'MNO-WALLET' => '📱',
+        'BANK-WALLET' => '👛',
+        'CARD' => '💳',
+        'ATM' => '🏧',
+        'CASHOUT-VOUCHER' => '🎫'
+    ];
+    return $icons[$assetType] ?? '📄';
+}
+
+function getAssetDisplayName($assetType, $assets) {
+    if (isset($assets[$assetType]['ui']['display_name'])) {
+        return $assets[$assetType]['ui']['display_name'];
+    }
+    $names = [
+        'ACCOUNT' => 'Bank Account',
+        'MNO-WALLET' => 'Mobile Wallet',
+        'BANK-WALLET' => 'Bank Wallet',
+        'CARD' => 'Payment Card',
+        'ATM' => 'ATM Cashout',
+        'CASHOUT-VOUCHER' => 'Cashout Voucher'
+    ];
+    return $names[$assetType] ?? $assetType;
+}
+
+// Load linked sources from database
 $fundingSources = [];
 try {
     $db = DBConnection::getInstance();
@@ -113,47 +240,14 @@ try {
     error_log("Error loading sources: " . $e->getMessage());
 }
 
-function getCategoryFromType($type) {
-    $map = [
-        'BANK' => '🏦 Bank',
-        'MNO' => '📱 Mobile Network',
-        'ORCHESTRATOR' => '⚡ Orchestrator',
-        'FINANCIAL_INSTITUTION' => '🏦 Bank'
-    ];
-    return $map[$type] ?? '🏢 Institution';
-}
-
-function parseParticipantsYaml($content) {
-    $result = ['participants' => []];
-    $lines = explode("\n", $content);
-    $current = null;
-    
-    foreach ($lines as $line) {
-        $line = rtrim($line);
-        if (empty($line) || $line[0] === '#') continue;
-        
-        if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
-            $current = $matches[1];
-            $result['participants'][$current] = [];
-            continue;
-        }
-        
-        if ($current && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
-            $key = $matches[1];
-            $value = trim($matches[2]);
-            if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
-            if ($value === 'true') $value = true;
-            if ($value === 'false') $value = false;
-            if (is_numeric($value)) $value = (float)$value;
-            $result['participants'][$current][$key] = $value;
-        }
-        
-        if ($current && preg_match('/^      ([a-z_]+): (.+)$/', $line, $matches)) {
-            $result['participants'][$current]['limits'][$matches[1]] = $matches[2];
-        }
-    }
-    return $result;
-}
+// Prepare JSON data for JavaScript
+$participantsByCountryJson = json_encode($participantsByCountry);
+$countriesJson = json_encode($countries);
+$userCountryJson = json_encode($userCountry);
+$assetsJson = json_encode($assets);
+$endpointsJson = json_encode($endpoints);
+$flowsJson = json_encode($flows);
+$allAssetTypesJson = json_encode($allAssetTypes);
 
 // ============================================================
 // AJAX HANDLERS
@@ -162,73 +256,17 @@ if ($isAjax) {
     header('Content-Type: application/json');
     $action = $_POST['action'] ?? $_GET['action'] ?? '';
     
-    // Get participants for dropdowns
-    if ($action === 'get_participants') {
+    // Get all config data
+    if ($action === 'get_config') {
         echo json_encode([
             'success' => true,
-            'participants' => array_values($allParticipants),
             'participants_by_country' => $participantsByCountry,
             'countries' => $countries,
+            'assets' => $assets,
+            'endpoints' => $endpoints,
+            'flows' => $flows,
             'user_country' => $userCountry,
-            'asset_types' => $assetTypesList
-        ]);
-        exit;
-    }
-    
-    // Get source details (limits, assets)
-    if ($action === 'get_source_details') {
-        $participantCode = $_POST['participant_code'] ?? '';
-        $participant = $allParticipants[$participantCode] ?? null;
-        
-        if ($participant) {
-            echo json_encode([
-                'success' => true,
-                'min_amount' => $participant['min_amount'] ?? 10,
-                'max_amount' => $participant['max_amount'] ?? 500000,
-                'currency' => $participant['currency'] ?? 'BWP',
-                'assets' => $participant['assets'] ?? ['ACCOUNT']
-            ]);
-        } else {
-            echo json_encode(['success' => false, 'message' => 'Participant not found']);
-        }
-        exit;
-    }
-    
-    // Get destination field based on participant type and asset
-    if ($action === 'get_destination_fields') {
-        $participantCode = $_POST['participant_code'] ?? '';
-        $deliveryMode = $_POST['delivery_mode'] ?? 'deposit';
-        $participant = $allParticipants[$participantCode] ?? null;
-        
-        if (!$participant) {
-            echo json_encode(['success' => false]);
-            exit;
-        }
-        
-        $fields = [];
-        $type = $participant['type'] ?? 'BANK';
-        
-        if ($type === 'BANK') {
-            $fields = [
-                ['name' => 'account_number', 'label' => 'Account Number', 'type' => 'text', 'placeholder' => 'Enter account number', 'required' => true, 'pattern' => '^[0-9]{8,16}$'],
-                ['name' => 'account_name', 'label' => 'Account Name', 'type' => 'text', 'placeholder' => 'Account holder name', 'required' => false]
-            ];
-        } elseif ($type === 'MNO') {
-            $fields = [
-                ['name' => 'phone_number', 'label' => 'Phone Number', 'type' => 'tel', 'placeholder' => '+267 71 234 5678', 'required' => true, 'pattern' => '^\\+?267[0-9]{8}$']
-            ];
-        } else {
-            $fields = [
-                ['name' => 'identifier', 'label' => 'Identifier', 'type' => 'text', 'placeholder' => 'Enter identifier', 'required' => true]
-            ];
-        }
-        
-        echo json_encode([
-            'success' => true,
-            'fields' => $fields,
-            'participant_name' => $participant['name'],
-            'currency' => $participant['currency'] ?? 'BWP',
-            'delivery_modes' => ['deposit', 'cashout']
+            'linked_sources' => $fundingSources
         ]);
         exit;
     }
@@ -322,9 +360,10 @@ if ($isAjax) {
             
             if ($amount <= 0) throw new Exception('Invalid amount');
             if (empty($sourceParticipant)) throw new Exception('Select source');
+            if (empty($sourceIdentifier)) throw new Exception('Enter source identifier');
             if (empty($destParticipant)) throw new Exception('Select destination');
             
-            // Build destination identifier from fields
+            // Build destination identifier
             $destIdentifier = '';
             if (isset($destFields['account_number'])) {
                 $destIdentifier = $destFields['account_number'];
@@ -372,7 +411,7 @@ if ($isAjax) {
             
             if ($httpCode === 200) {
                 $result = json_decode($response, true);
-                echo json_encode(['status' => 'success', 'data' => $result, 'message' => 'Swap completed successfully']);
+                echo json_encode(['status' => 'success', 'data' => $result, 'message' => 'Swap completed']);
             } else {
                 echo json_encode(['status' => 'error', 'message' => "API error: HTTP {$httpCode}"]);
             }
@@ -392,18 +431,13 @@ if ($isAjax) {
     echo json_encode(['status' => 'error', 'message' => 'Unknown action']);
     exit;
 }
-
-// Prepare data for JavaScript
-$countriesJson = json_encode($countries);
-$participantsJson = json_encode(array_values($allParticipants));
-$userCountryJson = json_encode($userCountry);
 ?>
 
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VOUCHMORPH | SWAP</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -413,10 +447,8 @@ $userCountryJson = json_encode($userCountry);
         background: #0a0a0a; 
         font-family: 'Inter', sans-serif; 
         color: #FFFFFF; 
-        min-height: 100vh; 
     }
     
-    /* Container */
     .container { 
         max-width: 900px; 
         width: 95%; 
@@ -431,7 +463,7 @@ $userCountryJson = json_encode($userCountry);
         align-items: center;
         padding: 20px 0;
         border-bottom: 1px solid rgba(255,255,255,0.05);
-        margin-bottom: 40px;
+        margin-bottom: 32px;
         flex-wrap: wrap;
         gap: 16px;
     }
@@ -444,26 +476,10 @@ $userCountryJson = json_encode($userCountry);
     
     .logo span { color: #FFFFFF; font-weight: 600; }
     
-    .user-area {
-        display: flex;
-        align-items: center;
-        gap: 16px;
-    }
-    
-    .user-info {
-        text-align: right;
-    }
-    
-    .user-name {
-        font-size: 13px;
-        font-weight: 500;
-    }
-    
-    .user-phone {
-        font-size: 11px;
-        color: rgba(255,255,255,0.4);
-        margin-top: 2px;
-    }
+    .user-area { display: flex; align-items: center; gap: 16px; }
+    .user-info { text-align: right; }
+    .user-name { font-size: 13px; font-weight: 500; }
+    .user-phone { font-size: 11px; color: rgba(255,255,255,0.4); margin-top: 2px; }
     
     .pin-badge {
         font-size: 9px;
@@ -472,59 +488,98 @@ $userCountryJson = json_encode($userCountry);
         border: 1px solid rgba(76,175,80,0.3);
         border-radius: 20px;
         color: #4CAF50;
+        cursor: pointer;
     }
     
     .pin-badge.not-set {
         background: rgba(255,152,0,0.15);
         border-color: rgba(255,152,0,0.3);
         color: #FF9800;
-        cursor: pointer;
     }
     
     /* Swap Card */
     .swap-card {
         background: rgba(255,255,255,0.02);
         border: 1px solid rgba(255,255,255,0.05);
-        padding: 32px;
+        padding: 28px;
         margin-bottom: 24px;
     }
     
-    /* Source Row (Horizontal) */
+    /* Source Row */
     .source-row {
         display: flex;
         flex-wrap: wrap;
         gap: 16px;
-        margin-bottom: 32px;
-        padding-bottom: 32px;
+        margin-bottom: 28px;
+        padding-bottom: 28px;
         border-bottom: 1px solid rgba(255,255,255,0.05);
     }
     
+    .source-col {
+        flex: 1;
+        min-width: 180px;
+    }
+    
     .source-label {
-        font-size: 10px;
-        letter-spacing: 1px;
+        font-size: 9px;
+        letter-spacing: 1.5px;
         color: rgba(255,255,255,0.3);
         margin-bottom: 8px;
         text-transform: uppercase;
     }
     
-    .source-select {
-        flex: 1;
-        min-width: 180px;
-    }
-    
-    .arrow-icon {
+    .arrow-col {
         display: flex;
         align-items: center;
         justify-content: center;
-        color: rgba(255,255,255,0.2);
+        color: rgba(255,255,255,0.15);
         font-size: 24px;
-        padding-top: 24px;
+        padding-top: 20px;
     }
     
-    /* Destination Section (Vertical below) */
-    .destination-section {
-        margin-top: 16px;
+    /* Forms */
+    .form-select, .form-input {
+        width: 100%;
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.1);
+        padding: 12px 14px;
+        font-family: inherit;
+        font-size: 14px;
+        color: #FFFFFF;
+        cursor: pointer;
     }
+    
+    .form-select:focus, .form-input:focus {
+        outline: none;
+        border-color: rgba(255,255,255,0.3);
+    }
+    
+    .form-select option { background: #0a0a0a; }
+    .form-input::placeholder { color: rgba(255,255,255,0.2); }
+    
+    .field-hint {
+        font-size: 9px;
+        color: rgba(255,255,255,0.25);
+        margin-top: 6px;
+    }
+    
+    /* Amount Row */
+    .amount-row {
+        background: rgba(255,255,255,0.02);
+        padding: 20px;
+        margin: 24px 0;
+        border-left: 3px solid #FFFFFF;
+    }
+    
+    .amount-input {
+        font-size: 28px;
+        font-weight: 500;
+        text-align: center;
+        padding: 16px;
+    }
+    
+    /* Destination Section */
+    .destination-section { margin-top: 16px; }
     
     .section-title {
         font-size: 10px;
@@ -539,7 +594,7 @@ $userCountryJson = json_encode($userCountry);
     
     .section-title::before {
         content: '';
-        width: 20px;
+        width: 24px;
         height: 1px;
         background: rgba(255,255,255,0.2);
     }
@@ -553,72 +608,25 @@ $userCountryJson = json_encode($userCountry);
     
     .form-group {
         flex: 1;
-        min-width: 180px;
+        min-width: 200px;
     }
     
     .form-label {
-        font-size: 11px;
+        font-size: 10px;
         letter-spacing: 0.5px;
         color: rgba(255,255,255,0.4);
         margin-bottom: 6px;
         display: block;
     }
     
-    .form-label .required {
-        color: #f44336;
-        margin-left: 4px;
-    }
-    
-    .form-input, .form-select {
-        width: 100%;
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,255,255,0.1);
-        padding: 12px 14px;
-        font-family: inherit;
-        font-size: 14px;
-        color: #FFFFFF;
-        transition: all 0.2s;
-    }
-    
-    .form-input:focus, .form-select:focus {
-        outline: none;
-        border-color: rgba(255,255,255,0.3);
-    }
-    
-    .form-input::placeholder {
-        color: rgba(255,255,255,0.2);
-    }
-    
-    .form-select option {
-        background: #0a0a0a;
-    }
-    
-    .field-hint {
-        font-size: 9px;
-        color: rgba(255,255,255,0.25);
-        margin-top: 4px;
-    }
-    
-    /* Amount Row */
-    .amount-row {
-        background: rgba(255,255,255,0.02);
-        padding: 16px;
-        margin: 24px 0;
-        border-left: 2px solid #FFFFFF;
-    }
-    
-    .amount-input {
-        font-size: 24px;
-        font-weight: 500;
-        padding: 12px;
-        text-align: center;
-    }
+    .form-label .required { color: #f44336; margin-left: 4px; }
     
     /* Radio Group */
     .radio-group {
         display: flex;
         gap: 24px;
         margin-top: 6px;
+        flex-wrap: wrap;
     }
     
     .radio-label {
@@ -629,10 +637,14 @@ $userCountryJson = json_encode($userCountry);
         font-size: 13px;
     }
     
-    .radio-label input {
-        accent-color: #FFFFFF;
-        width: 16px;
-        height: 16px;
+    .radio-label input { accent-color: #FFFFFF; width: 16px; height: 16px; }
+    
+    /* Dynamic Fields Container */
+    .dynamic-fields {
+        margin-top: 16px;
+        padding: 16px;
+        background: rgba(255,255,255,0.01);
+        border-left: 1px solid rgba(255,255,255,0.05);
     }
     
     /* Submit Button */
@@ -647,7 +659,7 @@ $userCountryJson = json_encode($userCountry);
         letter-spacing: 2px;
         color: #000000;
         cursor: pointer;
-        margin-top: 16px;
+        margin-top: 24px;
         transition: opacity 0.2s;
     }
     
@@ -656,14 +668,12 @@ $userCountryJson = json_encode($userCountry);
     
     /* Security Section */
     .security-section {
-        margin-top: 24px;
-        padding-top: 24px;
-        border-top: 1px solid rgba(255,255,255,0.05);
         display: flex;
         justify-content: space-between;
-        align-items: center;
-        flex-wrap: wrap;
         gap: 16px;
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid rgba(255,255,255,0.05);
     }
     
     .security-btn {
@@ -732,11 +742,6 @@ $userCountryJson = json_encode($userCountry);
         color: #000000;
     }
     
-    .pin-input-group {
-        text-align: center;
-        margin-bottom: 24px;
-    }
-    
     .pin-display {
         font-size: 28px;
         letter-spacing: 12px;
@@ -763,18 +768,9 @@ $userCountryJson = json_encode($userCountry);
         cursor: pointer;
     }
     
-    .pin-btn:active {
-        background: #FFFFFF;
-        color: #000000;
-    }
+    .pin-btn:active { background: #FFFFFF; color: #000000; }
     
-    .error-text {
-        color: #f44336;
-        text-align: center;
-        margin-top: 16px;
-        font-size: 11px;
-    }
-    
+    .error-text { color: #f44336; text-align: center; margin-top: 16px; font-size: 11px; }
     .loading-spinner {
         display: inline-block;
         width: 14px;
@@ -789,21 +785,20 @@ $userCountryJson = json_encode($userCountry);
     
     @keyframes spin { to { transform: rotate(360deg); } }
     
-    /* Responsive */
     @media (max-width: 700px) {
-        .container { width: 100%; padding: 16px; }
         .swap-card { padding: 20px; }
         .source-row { flex-direction: column; gap: 12px; }
-        .arrow-icon { display: none; }
+        .arrow-col { display: none; }
         .form-row { flex-direction: column; }
         .form-group { min-width: 100%; }
+        .security-section { flex-direction: column; }
+        .security-btn { width: 100%; text-align: center; }
     }
 </style>
 </head>
 <body>
 
 <div class="container">
-    <!-- Header -->
     <div class="header">
         <div class="logo">V<span>OUCH</span>M<span>ORPH</span></div>
         <div class="user-area">
@@ -817,29 +812,25 @@ $userCountryJson = json_encode($userCountry);
         </div>
     </div>
     
-    <!-- Main Swap Card -->
     <div class="swap-card">
-        <!-- SOURCE ROW (Horizontal) -->
+        <!-- SOURCE ROW -->
         <div class="source-row">
-            <div class="source-select">
+            <div class="source-col">
                 <div class="source-label">FROM</div>
-                <select id="sourceParticipant" class="form-select" onchange="onSourceParticipantChange()">
+                <select id="sourceParticipant" class="form-select">
                     <option value="">Select institution</option>
                 </select>
             </div>
-            <div class="source-select">
+            <div class="source-col">
                 <div class="source-label">ASSET TYPE</div>
-                <select id="sourceAssetType" class="form-select" onchange="onSourceAssetChange()">
-                    <option value="ACCOUNT">🏦 Bank Account</option>
-                    <option value="MNO-WALLET">📱 Mobile Wallet</option>
-                    <option value="BANK-WALLET">👛 Bank Wallet</option>
-                    <option value="CARD">💳 Card</option>
+                <select id="sourceAssetType" class="form-select">
+                    <option value="">Select asset type</option>
                 </select>
             </div>
-            <div class="arrow-icon">→</div>
-            <div class="source-select">
+            <div class="arrow-col">→</div>
+            <div class="source-col">
                 <div class="source-label">YOUR IDENTIFIER</div>
-                <input type="text" id="sourceIdentifier" class="form-input" placeholder="Account number or phone number">
+                <input type="text" id="sourceIdentifier" class="form-input" placeholder="Enter account number or phone number">
                 <div class="field-hint" id="sourceHint">Your account number or mobile number</div>
             </div>
         </div>
@@ -849,25 +840,24 @@ $userCountryJson = json_encode($userCountry);
             <div class="form-group" style="margin-bottom: 0;">
                 <div class="form-label">AMOUNT</div>
                 <input type="number" id="amount" class="form-input amount-input" placeholder="0.00" step="0.01">
-                <div class="field-hint" id="amountHint">Min: 10 BWP | Max: 500,000 BWP</div>
+                <div class="field-hint" id="amountHint">Enter amount to send</div>
             </div>
         </div>
         
-        <!-- DESTINATION SECTION (Vertical) -->
+        <!-- DESTINATION SECTION -->
         <div class="destination-section">
             <div class="section-title">DESTINATION</div>
             
             <div class="form-row">
                 <div class="form-group">
                     <div class="form-label">COUNTRY</div>
-                    <select id="destCountry" class="form-select" onchange="onDestCountryChange()">
-                        <option value="">Select country</option>
+                    <select id="destCountry" class="form-select">
+                        <option value="">-- Select country --</option>
                     </select>
-                    <div class="field-hint">Leave empty to use your country (<?= $userCountry ?>)</div>
                 </div>
                 <div class="form-group">
                     <div class="form-label">INSTITUTION</div>
-                    <select id="destParticipant" class="form-select" onchange="onDestParticipantChange()">
+                    <select id="destParticipant" class="form-select">
                         <option value="">Select institution</option>
                     </select>
                 </div>
@@ -883,21 +873,19 @@ $userCountryJson = json_encode($userCountry);
                 </div>
             </div>
             
-            <div class="form-row" id="destinationFieldsContainer">
-                <!-- Dynamic fields will appear here -->
+            <!-- Dynamic destination fields will be injected here based on YAML -->
+            <div id="destinationFieldsContainer" class="dynamic-fields">
                 <div class="form-group">
-                    <div class="form-label">DESTINATION IDENTIFIER</div>
+                    <div class="form-label">DESTINATION IDENTIFIER <span class="required">*</span></div>
                     <input type="text" id="destIdentifier" class="form-input" placeholder="Enter account number or phone number">
-                    <div class="field-hint" id="destHint">Recipient's account number or mobile number</div>
+                    <div class="field-hint">Recipient's account number or mobile number</div>
                 </div>
             </div>
         </div>
         
-        <!-- SUBMIT BUTTON -->
         <button class="submit-btn" onclick="executeSwap()" id="submitBtn">SEND →</button>
     </div>
     
-    <!-- Security Footer -->
     <div class="security-section">
         <button class="security-btn" onclick="showPinSetup()">🔒 Set Transaction PIN</button>
         <button class="security-btn" onclick="logout()">🚪 Logout</button>
@@ -909,9 +897,7 @@ $userCountryJson = json_encode($userCountry);
     <div class="modal-content">
         <div class="modal-header">SET TRANSACTION PIN</div>
         <div class="modal-body">
-            <div class="pin-input-group">
-                <div class="pin-display" id="pinDisplay">••••••</div>
-            </div>
+            <div class="pin-display" id="pinDisplay">••••••</div>
             <div class="pin-pad" id="pinPad"></div>
             <div id="pinError" class="error-text"></div>
         </div>
@@ -926,9 +912,7 @@ $userCountryJson = json_encode($userCountry);
     <div class="modal-content">
         <div class="modal-header">VERIFY PIN</div>
         <div class="modal-body">
-            <div class="pin-input-group">
-                <div class="pin-display" id="verifyPinDisplay">••••••</div>
-            </div>
+            <div class="pin-display" id="verifyPinDisplay">••••••</div>
             <div class="pin-pad" id="verifyPinPad"></div>
             <div id="verifyPinError" class="error-text"></div>
         </div>
@@ -941,209 +925,270 @@ $userCountryJson = json_encode($userCountry);
 
 <script>
 // ============================================================
-// GLOBAL DATA
+// GLOBAL DATA - LOADED FROM YAML FILES
 // ============================================================
-let participants = [];
 let participantsByCountry = {};
 let countries = [];
-let userCountry = '<?= $userCountry ?>';
-let pendingSwapData = null;
+let assets = {};
+let endpoints = {};
+let flows = {};
+let userCountry = '';
+let linkedSources = [];
 let currentPinInput = '';
 let verifyPinInput = '';
-let destinationFields = [];
+let pendingSwapData = null;
+let destinationFieldsConfig = [];
 
 // ============================================================
-// LOAD DATA
+// LOAD CONFIG FROM YAML FILES
 // ============================================================
-async function loadData() {
+async function loadConfig() {
     try {
         const res = await fetch(window.location.href, {
             method: 'POST',
             headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'action=get_participants'
+            body: 'action=get_config'
         });
         const data = await res.json();
         
         if (data.success) {
-            participants = data.participants;
             participantsByCountry = data.participants_by_country;
             countries = data.countries;
+            assets = data.assets;
+            endpoints = data.endpoints;
+            flows = data.flows;
             userCountry = data.user_country;
+            linkedSources = data.linked_sources || [];
             
-            // Populate source dropdown
-            const sourceSelect = document.getElementById('sourceParticipant');
-            sourceSelect.innerHTML = '<option value="">Select institution</option>';
-            participants.forEach(p => {
-                const icon = p.type === 'BANK' ? '🏦' : (p.type === 'MNO' ? '📱' : '🏢');
-                sourceSelect.innerHTML += `<option value="${p.code}">${icon} ${p.name} (${p.country})</option>`;
-            });
+            // Populate source participant dropdown
+            populateSourceParticipants();
             
             // Populate country dropdown
-            const countrySelect = document.getElementById('destCountry');
-            countrySelect.innerHTML = '<option value="">-- Select country (optional) --</option>';
-            if (countries.length > 0) {
-                countries.forEach(c => {
-                    const selected = (c.code === userCountry) ? 'selected' : '';
-                    countrySelect.innerHTML += `<option value="${c.code}" ${selected}>${c.flag || '🌍'} ${c.name} (${c.currency})</option>`;
-                });
-            } else {
-                // Fallback to participants-based countries
-                Object.keys(participantsByCountry).forEach(code => {
-                    const selected = (code === userCountry) ? 'selected' : '';
-                    countrySelect.innerHTML += `<option value="${code}" ${selected}>${code}</option>`;
-                });
-            }
+            populateCountryDropdown();
             
-            // Trigger initial destination load based on default country
-            onDestCountryChange();
+            console.log('Config loaded:', { participantsByCountry, countries, assets });
         }
     } catch(e) {
         console.error('Load error:', e);
     }
 }
 
-// ============================================================
-// SOURCE SIDE
-// ============================================================
-async function onSourceParticipantChange() {
-    const participantCode = document.getElementById('sourceParticipant').value;
-    const assetSelect = document.getElementById('sourceAssetType');
+function populateSourceParticipants() {
+    const select = document.getElementById('sourceParticipant');
+    let options = '<option value="">Select institution</option>';
     
-    if (!participantCode) {
-        assetSelect.innerHTML = '<option value="ACCOUNT">🏦 Bank Account</option>';
-        document.getElementById('amountHint').innerHTML = 'Min: 10 BWP | Max: 500,000 BWP';
-        return;
-    }
-    
-    try {
-        const res = await fetch(window.location.href, {
-            method: 'POST',
-            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `action=get_source_details&participant_code=${encodeURIComponent(participantCode)}`
+    // Show all participants regardless of country (user can send FROM any)
+    for (let country in participantsByCountry) {
+        const participants = participantsByCountry[country];
+        participants.forEach(p => {
+            const icon = p.category || '🏦';
+            options += `<option value="${p.code}" data-country="${country}" data-assets='${JSON.stringify(p.assets)}' data-limits='${JSON.stringify(p.limits)}'>
+                ${icon} ${p.name} (${country})
+            </option>`;
         });
-        const data = await res.json();
-        
-        if (data.success) {
-            // Update asset types dropdown based on what participant supports
-            const assets = data.assets || ['ACCOUNT'];
-            assetSelect.innerHTML = assets.map(a => {
-                const label = getAssetLabel(a);
-                return `<option value="${a}">${label}</option>`;
-            }).join('');
-            
-            // Update amount limits
-            const min = data.min_amount || 10;
-            const max = data.max_amount || 500000;
-            const currency = data.currency || 'BWP';
-            document.getElementById('amountHint').innerHTML = `Min: ${min} ${currency} | Max: ${max.toLocaleString()} ${currency}`;
-            document.getElementById('amount').min = min;
-            document.getElementById('amount').max = max;
-            
-            // Update source hint
-            const asset = assetSelect.value;
-            updateSourceHint(asset);
-        }
-    } catch(e) {
-        console.error('Error loading source details:', e);
     }
+    
+    select.innerHTML = options;
+    select.onchange = onSourceParticipantChange;
+}
+
+function populateCountryDropdown() {
+    const select = document.getElementById('destCountry');
+    let options = '<option value="">-- Select country --</option>';
+    
+    // Add all countries from registry
+    countries.forEach(c => {
+        const selected = (c.code === userCountry) ? 'selected' : '';
+        options += `<option value="${c.code}" ${selected}>${c.flag || '🌍'} ${c.name} (${c.currency})</option>`;
+    });
+    
+    // Also add countries that have participants but aren't in registry
+    for (let country in participantsByCountry) {
+        if (!countries.find(c => c.code === country)) {
+            options += `<option value="${country}">${country}</option>`;
+        }
+    }
+    
+    select.innerHTML = options;
+    select.onchange = onDestCountryChange;
+}
+
+// ============================================================
+// SOURCE SIDE - DYNAMIC BASED ON YAML
+// ============================================================
+function onSourceParticipantChange() {
+    const select = document.getElementById('sourceParticipant');
+    const selectedOption = select.options[select.selectedIndex];
+    const assetsList = JSON.parse(selectedOption?.dataset?.assets || '[]');
+    const limits = JSON.parse(selectedOption?.dataset?.limits || '{"min_amount":10,"max_amount":500000,"currency":"BWP"}');
+    
+    // Populate asset types based on participant's supported assets
+    const assetSelect = document.getElementById('sourceAssetType');
+    if (assetsList.length > 0) {
+        let assetOptions = '';
+        assetsList.forEach(assetType => {
+            const assetName = getAssetDisplayName(assetType);
+            const icon = getAssetIcon(assetType);
+            assetOptions += `<option value="${assetType}">${icon} ${assetName}</option>`;
+        });
+        assetSelect.innerHTML = assetOptions;
+    } else {
+        // Default asset types
+        assetSelect.innerHTML = `
+            <option value="ACCOUNT">🏦 Bank Account</option>
+            <option value="MNO-WALLET">📱 Mobile Wallet</option>
+            <option value="BANK-WALLET">👛 Bank Wallet</option>
+            <option value="CARD">💳 Card</option>
+        `;
+    }
+    
+    // Update amount limits
+    const minAmount = limits.min_amount || 10;
+    const maxAmount = limits.max_amount || 500000;
+    const currency = limits.currency || 'BWP';
+    document.getElementById('amountHint').innerHTML = `Min: ${minAmount} ${currency} | Max: ${maxAmount.toLocaleString()} ${currency}`;
+    document.getElementById('amount').min = minAmount;
+    document.getElementById('amount').max = maxAmount;
+    
+    // Update source hint based on selected asset
+    onSourceAssetChange();
 }
 
 function onSourceAssetChange() {
-    const asset = document.getElementById('sourceAssetType').value;
-    updateSourceHint(asset);
-}
-
-function updateSourceHint(assetType) {
+    const assetType = document.getElementById('sourceAssetType').value;
     const hintEl = document.getElementById('sourceHint');
     const inputEl = document.getElementById('sourceIdentifier');
     
-    switch(assetType) {
-        case 'ACCOUNT':
-            hintEl.innerHTML = 'Your bank account number (8-16 digits)';
-            inputEl.placeholder = 'Enter account number';
-            break;
-        case 'MNO-WALLET':
-            hintEl.innerHTML = 'Your mobile wallet phone number (+267XXXXXXXXX)';
-            inputEl.placeholder = 'Enter phone number';
-            break;
-        case 'BANK-WALLET':
-            hintEl.innerHTML = 'Your bank wallet ID or phone number';
-            inputEl.placeholder = 'Enter wallet identifier';
-            break;
-        case 'CARD':
-            hintEl.innerHTML = 'Your card number (last 4 digits or full)';
-            inputEl.placeholder = 'Enter card number';
-            break;
-        default:
-            hintEl.innerHTML = 'Your identifier for this account';
-            inputEl.placeholder = 'Enter identifier';
+    // Get field definitions from assets.yaml
+    const assetDef = assets[assetType];
+    if (assetDef && assetDef.fields && assetDef.fields.length > 0) {
+        const firstField = assetDef.fields[0];
+        hintEl.innerHTML = firstField.hint || `Enter your ${firstField.label.toLowerCase()}`;
+        inputEl.placeholder = firstField.placeholder || `Enter ${firstField.label.toLowerCase()}`;
+        
+        if (firstField.pattern) {
+            inputEl.pattern = firstField.pattern;
+        }
+    } else {
+        // Fallback based on asset type
+        switch(assetType) {
+            case 'ACCOUNT':
+                hintEl.innerHTML = 'Your bank account number (8-16 digits)';
+                inputEl.placeholder = 'Enter account number';
+                break;
+            case 'MNO-WALLET':
+                hintEl.innerHTML = 'Your mobile wallet phone number (+267XXXXXXXXX)';
+                inputEl.placeholder = 'Enter phone number';
+                break;
+            case 'BANK-WALLET':
+                hintEl.innerHTML = 'Your bank wallet ID or phone number';
+                inputEl.placeholder = 'Enter wallet identifier';
+                break;
+            case 'CARD':
+                hintEl.innerHTML = 'Your card number';
+                inputEl.placeholder = 'Enter card number';
+                break;
+            default:
+                hintEl.innerHTML = 'Your identifier for this account';
+                inputEl.placeholder = 'Enter identifier';
+        }
     }
 }
 
-function getAssetLabel(asset) {
-    const labels = {
-        'ACCOUNT': '🏦 Bank Account',
-        'MNO-WALLET': '📱 Mobile Wallet',
-        'BANK-WALLET': '👛 Bank Wallet',
-        'CARD': '💳 Card',
-        'ATM': '🏧 ATM',
-        'CASHOUT-VOUCHER': '🎫 Voucher'
+function getAssetDisplayName(assetType) {
+    if (assets[assetType] && assets[assetType].ui && assets[assetType].ui.display_name) {
+        return assets[assetType].ui.display_name;
+    }
+    const names = {
+        'ACCOUNT': 'Bank Account',
+        'MNO-WALLET': 'Mobile Wallet',
+        'BANK-WALLET': 'Bank Wallet',
+        'CARD': 'Payment Card',
+        'ATM': 'ATM Cashout',
+        'CASHOUT-VOUCHER': 'Cashout Voucher'
     };
-    return labels[asset] || asset;
+    return names[assetType] || assetType;
+}
+
+function getAssetIcon(assetType) {
+    const icons = {
+        'ACCOUNT': '🏦',
+        'MNO-WALLET': '📱',
+        'BANK-WALLET': '👛',
+        'CARD': '💳',
+        'ATM': '🏧',
+        'CASHOUT-VOUCHER': '🎫'
+    };
+    return icons[assetType] || '📄';
 }
 
 // ============================================================
-// DESTINATION SIDE
+// DESTINATION SIDE - DYNAMIC BASED ON YAML
 // ============================================================
 function onDestCountryChange() {
     const countrySelect = document.getElementById('destCountry');
-    const selectedCountry = countrySelect.value;
+    const selectedCountry = countrySelect.value || userCountry;
     const destSelect = document.getElementById('destParticipant');
     
-    let countryParticipants = [];
+    let participants = participantsByCountry[selectedCountry] || [];
     
-    if (!selectedCountry) {
-        // Use user's country as default
-        countryParticipants = participantsByCountry[userCountry] || [];
-    } else {
-        countryParticipants = participantsByCountry[selectedCountry] || [];
-    }
-    
-    destSelect.innerHTML = '<option value="">Select institution</option>';
-    countryParticipants.forEach(p => {
-        const icon = p.type === 'BANK' ? '🏦' : (p.type === 'MNO' ? '📱' : '🏢');
-        destSelect.innerHTML += `<option value="${p.code}">${icon} ${p.name}</option>`;
+    let options = '<option value="">Select institution</option>';
+    participants.forEach(p => {
+        const icon = p.category || '🏦';
+        options += `<option value="${p.code}" data-assets='${JSON.stringify(p.assets)}'>${icon} ${p.name}</option>`;
     });
+    
+    destSelect.innerHTML = options;
+    destSelect.onchange = onDestParticipantChange;
 }
 
-async function onDestParticipantChange() {
-    const participantCode = document.getElementById('destParticipant').value;
+function onDestParticipantChange() {
+    const select = document.getElementById('destParticipant');
+    const selectedOption = select.options[select.selectedIndex];
     const deliveryMode = document.querySelector('input[name="deliveryMode"]:checked')?.value || 'deposit';
     
-    if (!participantCode) {
+    if (!selectedOption || !selectedOption.value) {
         resetDestinationFields();
         return;
     }
     
-    try {
-        const res = await fetch(window.location.href, {
-            method: 'POST',
-            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `action=get_destination_fields&participant_code=${encodeURIComponent(participantCode)}&delivery_mode=${deliveryMode}`
-        });
-        const data = await res.json();
-        
-        if (data.success) {
-            destinationFields = data.fields || [];
-            renderDestinationFields(destinationFields);
-            document.getElementById('destHint').innerHTML = `Recipient's ${data.fields[0]?.label.toLowerCase() || 'identifier'} at ${data.participant_name}`;
+    const participantCode = selectedOption.value;
+    const assetsList = JSON.parse(selectedOption?.dataset?.assets || '[]');
+    
+    // Get participant type from endpoints config
+    const participantEndpoint = endpoints[participantCode] || {};
+    const participantType = participantEndpoint.type || 'BANK';
+    
+    // Determine fields based on participant type and delivery mode
+    let fields = [];
+    
+    if (participantType === 'BANK') {
+        if (deliveryMode === 'deposit') {
+            fields = [
+                { name: 'account_number', label: 'Account Number', type: 'text', required: true, placeholder: 'Enter account number', hint: 'Recipient\'s bank account number' },
+                { name: 'account_name', label: 'Account Name', type: 'text', required: false, placeholder: 'Account holder name', hint: 'Optional - helps verify recipient' }
+            ];
         } else {
-            resetDestinationFields();
+            fields = [
+                { name: 'account_number', label: 'Account Number', type: 'text', required: true, placeholder: 'Enter account number', hint: 'Account to debit for cashout' }
+            ];
         }
-    } catch(e) {
-        console.error('Error loading destination fields:', e);
-        resetDestinationFields();
+    } else if (participantType === 'MNO') {
+        fields = [
+            { name: 'phone_number', label: 'Phone Number', type: 'tel', required: true, placeholder: '+267 71 234 5678', hint: 'Recipient\'s mobile wallet number', pattern: '^\\+?267[0-9]{8}$' }
+        ];
+    } else if (participantType === 'CARD') {
+        fields = [
+            { name: 'card_number', label: 'Card Number', type: 'text', required: true, placeholder: 'Enter card number', hint: 'Recipient\'s card number' }
+        ];
+    } else {
+        fields = [
+            { name: 'identifier', label: 'Identifier', type: 'text', required: true, placeholder: 'Enter identifier', hint: 'Recipient\'s identifier' }
+        ];
     }
+    
+    destinationFieldsConfig = fields;
+    renderDestinationFields(fields);
 }
 
 function renderDestinationFields(fields) {
@@ -1152,7 +1197,7 @@ function renderDestinationFields(fields) {
     if (!fields || fields.length === 0) {
         container.innerHTML = `
             <div class="form-group">
-                <div class="form-label">DESTINATION IDENTIFIER</div>
+                <div class="form-label">DESTINATION IDENTIFIER <span class="required">*</span></div>
                 <input type="text" id="destIdentifier" class="form-input" placeholder="Enter identifier">
                 <div class="field-hint">Recipient's identifier</div>
             </div>
@@ -1183,15 +1228,14 @@ function renderDestinationFields(fields) {
 }
 
 function resetDestinationFields() {
-    const container = document.getElementById('destinationFieldsContainer');
-    container.innerHTML = `
+    destinationFieldsConfig = [];
+    document.getElementById('destinationFieldsContainer').innerHTML = `
         <div class="form-group">
-            <div class="form-label">DESTINATION IDENTIFIER</div>
+            <div class="form-label">DESTINATION IDENTIFIER <span class="required">*</span></div>
             <input type="text" id="destIdentifier" class="form-input" placeholder="Enter account number or phone number">
             <div class="field-hint">Recipient's account number or mobile number</div>
         </div>
     `;
-    destinationFields = [];
 }
 
 // Listen for delivery mode change
@@ -1214,16 +1258,16 @@ async function executeSwap() {
     const destParticipant = document.getElementById('destParticipant').value;
     const deliveryMode = document.querySelector('input[name="deliveryMode"]:checked')?.value || 'deposit';
     
-    // Validate
     if (!sourceParticipant) { alert('Please select source institution'); return; }
+    if (!sourceAsset) { alert('Please select asset type'); return; }
     if (!sourceIdentifier) { alert('Please enter your source identifier'); return; }
     if (!amount || amount <= 0) { alert('Please enter a valid amount'); return; }
     if (!destParticipant) { alert('Please select destination institution'); return; }
     
     // Collect destination fields
     let destFields = {};
-    if (destinationFields.length > 0) {
-        destinationFields.forEach(field => {
+    if (destinationFieldsConfig.length > 0) {
+        destinationFieldsConfig.forEach(field => {
             const input = document.getElementById(`dest_${field.name}`);
             if (input) destFields[field.name] = input.value.trim();
         });
@@ -1235,7 +1279,6 @@ async function executeSwap() {
     const destIdentifier = Object.values(destFields)[0];
     if (!destIdentifier) { alert('Please enter destination identifier'); return; }
     
-    // Show PIN modal
     pendingSwapData = {
         source_participant: sourceParticipant,
         source_asset: sourceAsset,
@@ -1300,7 +1343,7 @@ async function executePendingSwap() {
         const result = await res.json();
         
         if (result.status === 'success') {
-            alert(`✓ Swap Complete!\n\nAmount: ${pendingSwapData.amount} BWP\nFrom: ${pendingSwapData.source_participant}\nTo: ${pendingSwapData.dest_participant}\n\nReference: ${result.data?.swap_reference || 'completed'}`);
+            alert(`✓ Swap Complete!\n\nAmount: ${pendingSwapData.amount} BWP\nFrom: ${pendingSwapData.source_participant}\nTo: ${pendingSwapData.dest_participant}`);
             
             // Clear form
             document.getElementById('sourceIdentifier').value = '';
@@ -1448,12 +1491,16 @@ window.showPinSetup = showPinSetup;
 window.closePinModal = closePinModal;
 window.closePinVerifyModal = closePinVerifyModal;
 window.submitPinVerification = submitPinVerification;
+window.pinInput = pinInput;
+window.verifyPinHandler = verifyPinHandler;
 window.logout = logout;
 
 // Initialize
-loadData();
+loadConfig();
 
-// If no PIN set, remind user
+// Set up event listeners
+document.getElementById('sourceAssetType').onchange = onSourceAssetChange;
+
 <?php if (!$hasTransactionPin): ?>
 setTimeout(() => {
     if (confirm('For security, please set your transaction PIN now.')) {
