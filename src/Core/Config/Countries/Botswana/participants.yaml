@@ -1,0 +1,175 @@
+# ============================================
+# PARTICIPANT REGISTRY
+# ============================================
+# This file lists every participant in the network.
+# No connection details, no endpoints, no secrets.
+# Just identity and what assets they support.
+# ============================================
+
+version: "3.1.0"
+
+participants:
+  # ----------------------------------------------------------
+  # ZURUBANK - Traditional commercial bank
+  # ----------------------------------------------------------
+  ZURUBANK:
+    id: ZURUBWXX
+    name: "Zuru Bank"
+    type: BANK
+    country: BW
+    status: ACTIVE
+    swift_bic: ZURUBWXX
+    
+    asset_types:
+      - ACCOUNT
+      - ATM
+      - CASHOUT-VOUCHER
+    
+    routing:
+      priority: 10
+      cost_score: 5
+      reliability_score: 9
+      region: africa_south
+    
+    limits:
+      min_amount: 10
+      max_amount: 500000
+      currency: BWP
+    
+    cross_border:
+      enabled: true
+      supported_currencies:
+        - BWP
+        - ZAR
+        - USD
+      settlement_cycles:
+        BWP: "T+0"
+        ZAR: "T+1"
+        USD: "T+2"
+
+  # ----------------------------------------------------------
+  # SACCUSSALIS - Commercial bank
+  # ----------------------------------------------------------
+  SACCUSSALIS:
+    id: SACCUSBWXX
+    name: "Saccussalis"
+    type: BANK
+    country: BW
+    status: ACTIVE
+    swift_bic: SACCUBWXX
+    
+    asset_types:
+      - ACCOUNT
+      - ATM
+      - BANK-WALLET
+    
+    routing:
+      priority: 15
+      cost_score: 4
+      reliability_score: 8
+      region: africa_south
+    
+    limits:
+      min_amount: 10
+      max_amount: 500000
+      currency: BWP
+    
+    cross_border:
+      enabled: true
+      supported_currencies:
+        - BWP
+        - ZAR
+        - EUR
+      settlement_cycles:
+        BWP: "T+0"
+        ZAR: "T+1"
+        EUR: "T+2"
+
+  # ----------------------------------------------------------
+  # CAZACOM - Mobile network operator
+  # ----------------------------------------------------------
+  CAZACOM:
+    id: CAZACOM
+    name: "CazaCom"
+    type: MNO
+    country: BW
+    status: ACTIVE
+    
+    asset_types:
+      - MNO-WALLET
+      - CASHOUT-VOUCHER
+    
+    routing:
+      priority: 5
+      cost_score: 3
+      reliability_score: 7
+      region: africa_south
+    
+    limits:
+      min_amount: 1
+      max_amount: 100000
+      currency: BWP
+    
+    cross_border:
+      enabled: true
+      supported_currencies:
+        - BWP
+        - ZAR
+      settlement_cycles:
+        BWP: "T+0"
+        ZAR: "T+1"
+    
+    wallet_config:
+      max_balance: 100000
+      daily_transaction_limit: 50000
+      per_transaction_limit: 10000
+      kyc_tiers:
+        - tier: 1
+          max_balance: 5000
+          daily_limit: 2000
+        - tier: 2
+          max_balance: 50000
+          daily_limit: 10000
+        - tier: 3
+          max_balance: 100000
+          daily_limit: 50000
+
+  # ----------------------------------------------------------
+  # VOUCHMORPH - Orchestration layer
+  # ----------------------------------------------------------
+  VOUCHMORPH:
+    id: VMPHBWX1
+    name: "VouchMorph"
+    type: ORCHESTRATOR
+    country: BW
+    status: ACTIVE
+    
+    asset_types:
+      - CARD
+      - CASHOUT-VOUCHER
+    
+    routing:
+      priority: 1
+      cost_score: 1
+      reliability_score: 10
+      region: global
+    
+    limits:
+      min_amount: 1
+      max_amount: 1000000
+      currency: BWP
+    
+    cross_border:
+      enabled: true
+      supported_currencies:
+        - BWP
+        - ZAR
+        - EUR
+        - USD
+        - GBP
+      settlement_cycles:
+        BWP: "T+0"
+        ZAR: "T+1"
+        EUR: "T+2"
+        USD: "T+2"
+        GBP: "T+2"
