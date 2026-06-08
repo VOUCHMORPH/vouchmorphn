@@ -1,0 +1,435 @@
+# ============================================
+# FLOWS - Complete Corridor Matrix
+# ============================================
+# Every possible combination is defined.
+# No missing cells.
+# ============================================
+
+version: "3.1.0"
+
+metadata:
+  standard: "ISO-20022-JSON / GSMA-MM"
+  region: "BW-EU-CROSSBORDER"
+  governance: "CENTRAL_BANK_HUB"
+
+# ------------------------------------------------------------
+# Global defaults
+# ------------------------------------------------------------
+defaults:
+  timeout_ms: 5000
+  idempotency_header: "X-Idempotency-Key"
+  
+  retry_policy:
+    max_retries: 3
+    retry_delay_ms: 1000
+    retry_on:
+      - timeout
+      - 5xx
+      - network_error
+
+# ------------------------------------------------------------
+# Four operation types
+# ------------------------------------------------------------
+operations:
+  TRANSFER:
+    description: "Same asset type, same or different participant"
+    steps:
+      - verify_source
+      - verify_destination
+      - place_hold_on_source
+      - debit_source
+      - credit_destination
+      - release_hold
+  
+  SWAP:
+    description: "Different asset types"
+    steps:
+      - verify_source
+      - verify_destination
+      - place_hold_on_source
+      - debit_source
+      - credit_destination
+      - release_hold
+  
+  CASHOUT:
+    description: "Money leaves system (to ATM or Voucher)"
+    steps:
+      - verify_asset
+      - place_hold
+      - debit_funds
+      - confirm_cashout
+      - release_hold
+  
+  DEPOSIT:
+    description: "Money enters system (from ATM or Voucher)"
+    steps:
+      - verify_asset
+      - place_hold
+      - confirm_deposit
+      - release_hold
+
+# ------------------------------------------------------------
+# Transaction state machine
+# ------------------------------------------------------------
+states:
+  - INITIATED
+  - VERIFIED
+  - HELD
+  - SETTLING
+  - SETTLED
+  - FAILED
+  - REVERSED
+  - EXPIRED
+
+transitions:
+  INITIATED:
+    - VERIFIED
+    - FAILED
+  
+  VERIFIED:
+    - HELD
+    - FAILED
+  
+  HELD:
+    - SETTLING
+    - EXPIRED
+    - REVERSED
+  
+  SETTLING:
+    - SETTLED
+    - FAILED
+  
+  SETTLED: []
+  FAILED:
+    - REVERSED
+  REVERSED: []
+  EXPIRED: []
+
+# ============================================
+# COMPLETE CORRIDOR MATRIX
+# ============================================
+
+corridors:
+  
+  # ========== ACCOUNT ROW ==========
+  ACCOUNT_TO_ACCOUNT:
+    operation: TRANSFER
+    source: ACCOUNT
+    destination: ACCOUNT
+    description: "Bank account to bank account"
+  
+  ACCOUNT_TO_CARD:
+    operation: SWAP
+    source: ACCOUNT
+    destination: CARD
+    description: "Bank account to card"
+  
+  ACCOUNT_TO_MNO_WALLET:
+    operation: SWAP
+    source: ACCOUNT
+    destination: MNO-WALLET
+    description: "Bank account to mobile wallet"
+  
+  ACCOUNT_TO_BANK_WALLET:
+    operation: SWAP
+    source: ACCOUNT
+    destination: BANK-WALLET
+    description: "Bank account to bank wallet"
+  
+  ACCOUNT_TO_ATM:
+    operation: CASHOUT
+    source: ACCOUNT
+    destination: ATM
+    description: "Bank account to ATM withdrawal"
+  
+  ACCOUNT_TO_VOUCHER:
+    operation: CASHOUT
+    source: ACCOUNT
+    destination: CASHOUT-VOUCHER
+    description: "Bank account to cashout voucher"
+  
+  # ========== CARD ROW ==========
+  CARD_TO_ACCOUNT:
+    operation: SWAP
+    source: CARD
+    destination: ACCOUNT
+    description: "Card to bank account"
+  
+  CARD_TO_CARD:
+    operation: TRANSFER
+    source: CARD
+    destination: CARD
+    description: "Card to card"
+  
+  CARD_TO_MNO_WALLET:
+    operation: SWAP
+    source: CARD
+    destination: MNO-WALLET
+    description: "Card to mobile wallet"
+  
+  CARD_TO_BANK_WALLET:
+    operation: SWAP
+    source: CARD
+    destination: BANK-WALLET
+    description: "Card to bank wallet"
+  
+  CARD_TO_ATM:
+    operation: CASHOUT
+    source: CARD
+    destination: ATM
+    description: "Card to ATM withdrawal"
+  
+  CARD_TO_VOUCHER:
+    operation: CASHOUT
+    source: CARD
+    destination: CASHOUT-VOUCHER
+    description: "Card to cashout voucher"
+  
+  # ========== MNO-WALLET ROW ==========
+  MNO_WALLET_TO_ACCOUNT:
+    operation: SWAP
+    source: MNO-WALLET
+    destination: ACCOUNT
+    description: "Mobile wallet to bank account"
+  
+  MNO_WALLET_TO_CARD:
+    operation: SWAP
+    source: MNO-WALLET
+    destination: CARD
+    description: "Mobile wallet to card"
+  
+  MNO_WALLET_TO_MNO_WALLET:
+    operation: TRANSFER
+    source: MNO-WALLET
+    destination: MNO-WALLET
+    description: "Mobile wallet to mobile wallet"
+  
+  MNO_WALLET_TO_BANK_WALLET:
+    operation: SWAP
+    source: MNO-WALLET
+    destination: BANK-WALLET
+    description: "Mobile wallet to bank wallet"
+  
+  MNO_WALLET_TO_ATM:
+    operation: CASHOUT
+    source: MNO-WALLET
+    destination: ATM
+    description: "Mobile wallet to ATM withdrawal"
+  
+  MNO_WALLET_TO_VOUCHER:
+    operation: CASHOUT
+    source: MNO-WALLET
+    destination: CASHOUT-VOUCHER
+    description: "Mobile wallet to cashout voucher"
+  
+  # ========== BANK-WALLET ROW ==========
+  BANK_WALLET_TO_ACCOUNT:
+    operation: SWAP
+    source: BANK-WALLET
+    destination: ACCOUNT
+    description: "Bank wallet to bank account"
+  
+  BANK_WALLET_TO_CARD:
+    operation: SWAP
+    source: BANK-WALLET
+    destination: CARD
+    description: "Bank wallet to card"
+  
+  BANK_WALLET_TO_MNO_WALLET:
+    operation: SWAP
+    source: BANK-WALLET
+    destination: MNO-WALLET
+    description: "Bank wallet to mobile wallet"
+  
+  BANK_WALLET_TO_BANK_WALLET:
+    operation: TRANSFER
+    source: BANK-WALLET
+    destination: BANK-WALLET
+    description: "Bank wallet to bank wallet"
+  
+  BANK_WALLET_TO_ATM:
+    operation: CASHOUT
+    source: BANK-WALLET
+    destination: ATM
+    description: "Bank wallet to ATM withdrawal"
+  
+  BANK_WALLET_TO_VOUCHER:
+    operation: CASHOUT
+    source: BANK-WALLET
+    destination: CASHOUT-VOUCHER
+    description: "Bank wallet to cashout voucher"
+  
+  # ========== ATM ROW ==========
+  ATM_TO_ACCOUNT:
+    operation: DEPOSIT
+    source: ATM
+    destination: ACCOUNT
+    description: "ATM deposit to bank account"
+  
+  ATM_TO_CARD:
+    operation: DEPOSIT
+    source: ATM
+    destination: CARD
+    description: "ATM deposit to card"
+  
+  ATM_TO_MNO_WALLET:
+    operation: DEPOSIT
+    source: ATM
+    destination: MNO-WALLET
+    description: "ATM deposit to mobile wallet"
+  
+  ATM_TO_BANK_WALLET:
+    operation: DEPOSIT
+    source: ATM
+    destination: BANK-WALLET
+    description: "ATM deposit to bank wallet"
+  
+  ATM_TO_ATM:
+    operation: TRANSFER
+    source: ATM
+    destination: ATM
+    description: "ATM to ATM (same network)"
+  
+  ATM_TO_VOUCHER:
+    operation: DEPOSIT
+    source: ATM
+    destination: CASHOUT-VOUCHER
+    description: "ATM to voucher"
+  
+  # ========== VOUCHER ROW ==========
+  VOUCHER_TO_ACCOUNT:
+    operation: DEPOSIT
+    source: CASHOUT-VOUCHER
+    destination: ACCOUNT
+    description: "Voucher redemption to bank account"
+  
+  VOUCHER_TO_CARD:
+    operation: DEPOSIT
+    source: CASHOUT-VOUCHER
+    destination: CARD
+    description: "Voucher redemption to card"
+  
+  VOUCHER_TO_MNO_WALLET:
+    operation: DEPOSIT
+    source: CASHOUT-VOUCHER
+    destination: MNO-WALLET
+    description: "Voucher redemption to mobile wallet"
+  
+  VOUCHER_TO_BANK_WALLET:
+    operation: DEPOSIT
+    source: CASHOUT-VOUCHER
+    destination: BANK-WALLET
+    description: "Voucher redemption to bank wallet"
+  
+  VOUCHER_TO_ATM:
+    operation: DEPOSIT
+    source: CASHOUT-VOUCHER
+    destination: ATM
+    description: "Voucher redemption at ATM"
+  
+  VOUCHER_TO_VOUCHER:
+    operation: TRANSFER
+    source: CASHOUT-VOUCHER
+    destination: CASHOUT-VOUCHER
+    description: "Voucher to voucher (combine/transfer)"
+
+# ============================================
+# COMPLETE CAPABILITY SUMMARY
+# ============================================
+
+asset_capabilities:
+  ACCOUNT:
+    as_source:
+      - ACCOUNT_TO_ACCOUNT
+      - ACCOUNT_TO_CARD
+      - ACCOUNT_TO_MNO_WALLET
+      - ACCOUNT_TO_BANK_WALLET
+      - ACCOUNT_TO_ATM
+      - ACCOUNT_TO_VOUCHER
+    
+    as_destination:
+      - CARD_TO_ACCOUNT
+      - MNO_WALLET_TO_ACCOUNT
+      - BANK_WALLET_TO_ACCOUNT
+      - ATM_TO_ACCOUNT
+      - VOUCHER_TO_ACCOUNT
+  
+  CARD:
+    as_source:
+      - CARD_TO_ACCOUNT
+      - CARD_TO_CARD
+      - CARD_TO_MNO_WALLET
+      - CARD_TO_BANK_WALLET
+      - CARD_TO_ATM
+      - CARD_TO_VOUCHER
+    
+    as_destination:
+      - ACCOUNT_TO_CARD
+      - MNO_WALLET_TO_CARD
+      - BANK_WALLET_TO_CARD
+      - ATM_TO_CARD
+      - VOUCHER_TO_CARD
+  
+  MNO-WALLET:
+    as_source:
+      - MNO_WALLET_TO_ACCOUNT
+      - MNO_WALLET_TO_CARD
+      - MNO_WALLET_TO_MNO_WALLET
+      - MNO_WALLET_TO_BANK_WALLET
+      - MNO_WALLET_TO_ATM
+      - MNO_WALLET_TO_VOUCHER
+    
+    as_destination:
+      - ACCOUNT_TO_MNO_WALLET
+      - CARD_TO_MNO_WALLET
+      - BANK_WALLET_TO_MNO_WALLET
+      - ATM_TO_MNO_WALLET
+      - VOUCHER_TO_MNO_WALLET
+  
+  BANK-WALLET:
+    as_source:
+      - BANK_WALLET_TO_ACCOUNT
+      - BANK_WALLET_TO_CARD
+      - BANK_WALLET_TO_MNO_WALLET
+      - BANK_WALLET_TO_BANK_WALLET
+      - BANK_WALLET_TO_ATM
+      - BANK_WALLET_TO_VOUCHER
+    
+    as_destination:
+      - ACCOUNT_TO_BANK_WALLET
+      - CARD_TO_BANK_WALLET
+      - MNO_WALLET_TO_BANK_WALLET
+      - ATM_TO_BANK_WALLET
+      - VOUCHER_TO_BANK_WALLET
+  
+  ATM:
+    as_source:
+      - ATM_TO_ACCOUNT
+      - ATM_TO_CARD
+      - ATM_TO_MNO_WALLET
+      - ATM_TO_BANK_WALLET
+      - ATM_TO_ATM
+      - ATM_TO_VOUCHER
+    
+    as_destination:
+      - ACCOUNT_TO_ATM
+      - CARD_TO_ATM
+      - MNO_WALLET_TO_ATM
+      - BANK_WALLET_TO_ATM
+      - VOUCHER_TO_ATM
+  
+  CASHOUT-VOUCHER:
+    as_source:
+      - VOUCHER_TO_ACCOUNT
+      - VOUCHER_TO_CARD
+      - VOUCHER_TO_MNO_WALLET
+      - VOUCHER_TO_BANK_WALLET
+      - VOUCHER_TO_ATM
+      - VOUCHER_TO_VOUCHER
+    
+    as_destination:
+      - ACCOUNT_TO_VOUCHER
+      - CARD_TO_VOUCHER
+      - MNO_WALLET_TO_VOUCHER
+      - BANK_WALLET_TO_VOUCHER
+      - ATM_TO_VOUCHER
