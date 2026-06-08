@@ -2,18 +2,22 @@
 
 require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
 
-// SECURITY_LAYER/Encryption/TokenEncryptor.php
+namespace Security\Encryption;
 
-namespace SECURITY_LAYER\Encryption;
+use Security\Encryption\KeyVault;
 
 class TokenEncryptor
 {
     private string $cipher = 'AES-256-CBC';
     private string $key;
 
-    public function __construct(string $key)
+    public function __construct(?string $key = null)
     {
-        // Normalize the key to a 256-bit hash for consistent key length
+        if ($key === null) {
+            $keyVault = KeyVault::getInstance();
+            $key = $keyVault->getEncryptionKey();
+        }
+        
         $this->key = hash('sha256', $key, true);
     }
 
