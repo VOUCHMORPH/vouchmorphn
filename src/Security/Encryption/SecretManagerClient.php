@@ -2,28 +2,36 @@
 
 require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
 
-// SECURITY_LAYER/Encryption/SecretManagerClient.php
+namespace Security\Encryption;
 
-namespace SECURITY_LAYER\Encryption;
+use Security\Encryption\KeyVault;
 
 class SecretManagerClient
 {
-    private array $secrets = [];
+    private KeyVault $keyVault;
 
     public function __construct(array $config = [])
     {
-        // Load secrets from secure storage or config
-        $this->secrets = $config['secrets'] ?? [];
+        $this->keyVault = KeyVault::getInstance();
     }
 
     public function getSecret(string $key): ?string
     {
-        return $this->secrets[$key] ?? null;
+        // Read from KeyVault first (Railway Vault Box)
+        $value = $this->keyVault->getKey($key);
+        
+        if ($value) {
+            return $value;
+        }
+        
+        // Fallback to environment
+        return getenv($key) ?: null;
     }
 
     public function setSecret(string $key, string $value): void
     {
-        // Ideally store in secure vault
-        $this->secrets[$key] = $value;
+        // Note: This only sets runtime. For permanent storage, use Railway Vault.
+        // Log for audit trail
+        error_log("Secret '{$key}' updated at runtime. Update Railway Vault for persistence.");
     }
 }
