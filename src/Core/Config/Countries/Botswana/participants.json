@@ -441,15 +441,6 @@
             "display_order": 2,
             "color": "#9C27B0"
           },
-          "fields": [
-            {
-              "name": "wallet_id",
-              "label": "Wallet ID",
-              "type": "text",
-              "required": true,
-              "pattern": "^[A-Z0-9]{6,20}$",
-              "placeholder": "Enter wallet ID"
-            },
             {
               "name": "wallet_pin",
               "label": "Wallet PIN",
