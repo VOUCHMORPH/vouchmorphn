@@ -1,6 +1,6 @@
 <?php
 // public/user/user_dashboard.php - VouchMorph Swap Dashboard
-// Reads from participants.yaml and assets.yaml
+// SIMPLE - Reads participants directly from participants.yaml
 
 ini_set('display_errors', 0);
 ini_set('log_errors', 1);
@@ -45,7 +45,7 @@ try {
 }
 
 // ============================================================
-// LOAD YAML FILES
+// LOAD YAML FILES - DIRECT, NO COMPLEX GROUPING
 // ============================================================
 
 function loadYamlFile($path) {
@@ -55,7 +55,6 @@ function loadYamlFile($path) {
     $result = [];
     $lines = explode("\n", $content);
     $current = null;
-    $currentSub = null;
     
     foreach ($lines as $line) {
         $line = rtrim($line);
@@ -64,14 +63,12 @@ function loadYamlFile($path) {
         $indent = strlen($line) - strlen(ltrim($line));
         $trimmed = trim($line);
         
-        // List item (array element) - handles "- value"
+        // List item (array element)
         if (preg_match('/^- (.+)$/', $trimmed, $matches)) {
             $value = trim($matches[1]);
             if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
             
-            if ($currentSub && isset($result[$current][$currentSub]) && is_array($result[$current][$currentSub])) {
-                $result[$current][$currentSub][] = $value;
-            } elseif ($current && isset($result[$current]) && is_array($result[$current])) {
+            if ($current && isset($result[$current]) && is_array($result[$current])) {
                 $result[$current][] = $value;
             }
             continue;
@@ -90,24 +87,21 @@ function loadYamlFile($path) {
             // Empty value with no indent = new section
             if ($value === '' && $indent === 0) {
                 $current = $key;
-                $currentSub = null;
                 $result[$key] = [];
             } 
-            // Indent 2 = property of current section
+            // Indent 2 = property
             elseif ($indent === 2 && $current) {
                 $result[$current][$key] = $value;
-                $currentSub = $key;
             }
-            // Indent 4 = nested property
-            elseif ($indent === 4 && $current && $currentSub) {
-                if (!is_array($result[$current][$currentSub])) {
-                    $result[$current][$currentSub] = [];
+            // Indent 4 = nested property (like limits.min_amount)
+            elseif ($indent === 4 && $current) {
+                // Find the parent section
+                foreach ($result[$current] as $parentKey => $parentValue) {
+                    if (is_array($parentValue)) {
+                        $result[$current][$parentKey][$key] = $value;
+                        break;
+                    }
                 }
-                $result[$current][$currentSub][$key] = $value;
-            }
-            // Top level
-            elseif ($indent === 0) {
-                $result[$key] = $value;
             }
         }
     }
@@ -115,15 +109,38 @@ function loadYamlFile($path) {
     return $result;
 }
 
-// Load from correct paths
+// Define paths
 $baseConfigPath = __DIR__ . '/../../src/Core/Config';
 $countryConfigPath = $baseConfigPath . '/Countries/' . $userCountry;
 
+// Load assets.yaml
 $assets = loadYamlFile($baseConfigPath . '/assets.yaml');
+
+// Load participants.yaml - THIS IS THE ONLY SOURCE FOR PARTICIPANTS
 $participantsRaw = loadYamlFile($countryConfigPath . '/participants.yaml');
 $participants = $participantsRaw['participants'] ?? [];
 
-// Load country registry
+// Build simple participant list - NO GROUPING, JUST A FLAT ARRAY
+$participantList = [];
+foreach ($participants as $code => $data) {
+    // Skip VOUCHMORPH (orchestrator) from user selection
+    if ($code === 'VOUCHMORPH') continue;
+    
+    // Get asset types from the participant
+    $assetTypes = $data['asset_types'] ?? [];
+    
+    $participantList[] = [
+        'code' => $code,
+        'name' => $data['name'] ?? $code,
+        'type' => $data['type'] ?? 'BANK',
+        'asset_types' => $assetTypes,
+        'min_amount' => $data['limits']['min_amount'] ?? 10,
+        'max_amount' => $data['limits']['max_amount'] ?? 500000,
+        'currency' => $data['limits']['currency'] ?? 'BWP'
+    ];
+}
+
+// Load country registry for destination dropdown
 $countries = [];
 $countryRegistryPath = $baseConfigPath . '/countries_registry.json';
 if (file_exists($countryRegistryPath)) {
@@ -134,47 +151,9 @@ if (file_exists($countryRegistryPath)) {
     }
 }
 
-// Build participants by country
-$participantsByCountry = [];
-$allAssetTypes = [];
-
-foreach ($participants as $code => $data) {
-    $countryCode = $data['country'] ?? 'BW';
-    $countryName = $countryCode;
-    foreach ($countries as $c) {
-        if ($c['code'] === $countryCode) {
-            $countryName = $c['name'];
-            break;
-        }
-    }
-    
-    if (!isset($participantsByCountry[$countryName])) {
-        $participantsByCountry[$countryName] = [];
-    }
-    
-    $assetTypes = $data['asset_types'] ?? [];
-    foreach ($assetTypes as $assetType) {
-        $allAssetTypes[$assetType] = $assets[$assetType] ?? ['ui' => ['icon' => '📄', 'display_name' => $assetType]];
-    }
-    
-    $participantsByCountry[$countryName][] = [
-        'code' => $code,
-        'name' => $data['name'] ?? $code,
-        'type' => $data['type'] ?? 'BANK',
-        'asset_types' => $assetTypes,
-        'limits' => $data['limits'] ?? ['min_amount' => 10, 'max_amount' => 500000, 'currency' => 'BWP']
-    ];
-}
-
-// Load linked sources
-$fundingSources = [];
-try {
-    $db = DBConnection::getInstance();
-    $stmt = $db->prepare("SELECT id, institution_code, institution_name, asset_type, identifier FROM user_funding_sources WHERE user_id = :user_id AND status = 'ACTIVE'");
-    $stmt->execute([':user_id' => $userId]);
-    $fundingSources = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Throwable $e) {
-    error_log("Error loading sources: " . $e->getMessage());
+// Fallback if no countries
+if (empty($countries)) {
+    $countries = [['code' => 'BW', 'name' => 'Botswana', 'flag' => '🇧🇼']];
 }
 
 // ============================================================
@@ -188,9 +167,8 @@ if ($isAjax) {
         echo json_encode([
             'success' => true,
             'assets' => $assets,
-            'participants_by_country' => $participantsByCountry,
+            'participants' => $participantList,
             'countries' => $countries,
-            'user_country' => $userCountry,
             'user_phone' => $userPhone,
             'has_pin' => $hasTransactionPin
         ]);
@@ -248,7 +226,6 @@ if ($isAjax) {
             $sourceIdentifier = $_POST['source_identifier'] ?? '';
             $amount = (float)($_POST['amount'] ?? 0);
             $destParticipant = $_POST['dest_participant'] ?? '';
-            $destDeliveryMode = $_POST['dest_delivery_mode'] ?? 'deposit';
             $destIdentifier = $_POST['dest_identifier'] ?? '';
             
             if ($amount <= 0) throw new Exception('Invalid amount');
@@ -269,7 +246,7 @@ if ($isAjax) {
                 'destination' => [
                     'institution' => $destParticipant,
                     'identifier' => $destIdentifier,
-                    'delivery_mode' => $destDeliveryMode
+                    'delivery_mode' => 'deposit'
                 ],
                 'user_id' => $userId
             ];
@@ -320,7 +297,7 @@ if ($isAjax) {
 <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #0a0a0a; font-family: 'Inter', sans-serif; color: #FFFFFF; }
-    .container { max-width: 900px; width: 95%; margin: 0 auto; padding: 24px 0 48px; }
+    .container { max-width: 700px; width: 95%; margin: 0 auto; padding: 24px 0 48px; }
     
     .header {
         display: flex;
@@ -351,27 +328,14 @@ if ($isAjax) {
         margin-bottom: 24px;
     }
     
-    .source-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 16px;
-        margin-bottom: 28px;
-        padding-bottom: 28px;
-        border-bottom: 1px solid rgba(255,255,255,0.05);
+    .form-group { margin-bottom: 20px; }
+    .form-label {
+        font-size: 10px; letter-spacing: 1px; color: rgba(255,255,255,0.4);
+        margin-bottom: 8px; display: block; text-transform: uppercase;
     }
-    .source-col { flex: 1; min-width: 180px; }
-    .source-label {
-        font-size: 9px; letter-spacing: 1.5px; color: rgba(255,255,255,0.3);
-        margin-bottom: 8px; text-transform: uppercase;
-    }
-    .arrow-col {
-        display: flex; align-items: center; justify-content: center;
-        color: rgba(255,255,255,0.15); font-size: 24px; padding-top: 20px;
-    }
-    
     .form-select, .form-input {
         width: 100%; background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,255,255,0.1); padding: 12px 14px;
+        border: 1px solid rgba(255,255,255,0.1); padding: 14px 16px;
         font-family: inherit; font-size: 14px; color: #FFFFFF; cursor: pointer;
     }
     .form-select:focus, .form-input:focus { outline: none; border-color: rgba(255,255,255,0.3); }
@@ -385,24 +349,14 @@ if ($isAjax) {
     }
     .amount-input { font-size: 28px; font-weight: 500; text-align: center; padding: 16px; }
     
-    .destination-section { margin-top: 16px; }
     .section-title {
         font-size: 10px; letter-spacing: 2px; color: rgba(255,255,255,0.3);
-        margin-bottom: 20px; text-transform: uppercase; display: flex; align-items: center; gap: 8px;
+        margin: 24px 0 16px 0; text-transform: uppercase; display: flex; align-items: center; gap: 8px;
     }
     .section-title::before { content: ''; width: 24px; height: 1px; background: rgba(255,255,255,0.2); }
     
-    .form-row { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 20px; }
-    .form-group { flex: 1; min-width: 200px; }
-    .form-label {
-        font-size: 10px; letter-spacing: 0.5px; color: rgba(255,255,255,0.4);
-        margin-bottom: 6px; display: block;
-    }
-    .form-label .required { color: #f44336; margin-left: 4px; }
-    
-    .radio-group { display: flex; gap: 24px; margin-top: 6px; flex-wrap: wrap; }
-    .radio-label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
-    .radio-label input { accent-color: #FFFFFF; width: 16px; height: 16px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .col { flex: 1; min-width: 200px; }
     
     .submit-btn {
         width: 100%; background: #FFFFFF; border: none; padding: 16px;
@@ -423,6 +377,7 @@ if ($isAjax) {
     }
     .security-btn:hover { border-color: rgba(255,255,255,0.4); }
     
+    /* Modals */
     .modal {
         position: fixed; top: 0; left: 0; right: 0; bottom: 0;
         background: rgba(0,0,0,0.98); z-index: 1000; display: none;
@@ -459,12 +414,10 @@ if ($isAjax) {
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     
-    @media (max-width: 700px) {
+    @media (max-width: 600px) {
         .swap-card { padding: 20px; }
-        .source-row { flex-direction: column; gap: 12px; }
-        .arrow-col { display: none; }
-        .form-row { flex-direction: column; }
-        .form-group { min-width: 100%; }
+        .row { flex-direction: column; }
+        .col { min-width: 100%; }
         .security-section { flex-direction: column; }
         .security-btn { width: 100%; text-align: center; }
     }
@@ -487,62 +440,62 @@ if ($isAjax) {
     </div>
     
     <div class="swap-card">
-        <!-- SOURCE ROW -->
-        <div class="source-row">
-            <div class="source-col">
-                <div class="source-label">FROM</div>
-                <select id="sourceParticipant" class="form-select"><option value="">Select institution</option></select>
-            </div>
-            <div class="source-col">
-                <div class="source-label">ASSET TYPE</div>
-                <select id="sourceAssetType" class="form-select"><option value="">Select asset type</option></select>
-            </div>
-            <div class="arrow-col">→</div>
-            <div class="source-col">
-                <div class="source-label">YOUR IDENTIFIER</div>
-                <input type="text" id="sourceIdentifier" class="form-input" placeholder="Enter account number or phone number">
-                <div class="field-hint" id="sourceHint"></div>
-            </div>
+        <!-- SOURCE -->
+        <div class="form-group">
+            <label class="form-label">FROM (SOURCE INSTITUTION)</label>
+            <select id="sourceParticipant" class="form-select">
+                <option value="">Select institution</option>
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label class="form-label">ASSET TYPE</label>
+            <select id="sourceAssetType" class="form-select">
+                <option value="">Select asset type</option>
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label class="form-label">YOUR IDENTIFIER</label>
+            <input type="text" id="sourceIdentifier" class="form-input" placeholder="Enter account number or phone number">
+            <div class="field-hint" id="sourceHint"></div>
         </div>
         
         <!-- AMOUNT -->
         <div class="amount-row">
             <div class="form-group" style="margin-bottom:0;">
-                <div class="form-label">AMOUNT</div>
+                <label class="form-label">AMOUNT</label>
                 <input type="number" id="amount" class="form-input amount-input" placeholder="0.00" step="0.01">
                 <div class="field-hint" id="amountHint"></div>
             </div>
         </div>
         
-        <!-- DESTINATION SECTION -->
-        <div class="destination-section">
-            <div class="section-title">DESTINATION</div>
-            <div class="form-row">
+        <!-- DESTINATION -->
+        <div class="section-title">DESTINATION</div>
+        
+        <div class="row">
+            <div class="col">
                 <div class="form-group">
-                    <div class="form-label">COUNTRY</div>
-                    <select id="destCountry" class="form-select"><option value="">-- Select country --</option></select>
-                </div>
-                <div class="form-group">
-                    <div class="form-label">INSTITUTION</div>
-                    <select id="destParticipant" class="form-select"><option value="">Select institution</option></select>
-                </div>
-            </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <div class="form-label">ACTION</div>
-                    <div class="radio-group">
-                        <label class="radio-label"><input type="radio" name="deliveryMode" value="deposit" checked> DEPOSIT</label>
-                        <label class="radio-label"><input type="radio" name="deliveryMode" value="cashout"> CASHOUT</label>
-                    </div>
+                    <label class="form-label">COUNTRY</label>
+                    <select id="destCountry" class="form-select">
+                        <option value="">Select country</option>
+                    </select>
                 </div>
             </div>
-            <div id="destinationFieldsContainer">
+            <div class="col">
                 <div class="form-group">
-                    <div class="form-label">DESTINATION IDENTIFIER <span class="required">*</span></div>
-                    <input type="text" id="destIdentifier" class="form-input" placeholder="Enter account number or phone number">
-                    <div class="field-hint"></div>
+                    <label class="form-label">INSTITUTION</label>
+                    <select id="destParticipant" class="form-select">
+                        <option value="">Select institution</option>
+                    </select>
                 </div>
             </div>
+        </div>
+        
+        <div class="form-group">
+            <label class="form-label">DESTINATION IDENTIFIER</label>
+            <input type="text" id="destIdentifier" class="form-input" placeholder="Enter account number or phone number">
+            <div class="field-hint">Recipient's account number or mobile number</div>
         </div>
         
         <button class="submit-btn" onclick="executeSwap()" id="submitBtn">SEND →</button>
@@ -586,13 +539,10 @@ if ($isAjax) {
 </div>
 
 <script>
-// ============================================================
-// GLOBAL DATA - FROM YAML FILES
-// ============================================================
+// Global data
 let assets = {};
-let participantsByCountry = {};
+let participants = [];
 let countries = [];
-let userCountry = '';
 let userPhone = '';
 let hasPin = false;
 let currentPinInput = '';
@@ -613,93 +563,77 @@ async function loadConfig() {
         
         if (data.success) {
             assets = data.assets;
-            participantsByCountry = data.participants_by_country;
+            participants = data.participants;
             countries = data.countries;
-            userCountry = data.user_country;
             userPhone = data.user_phone;
             hasPin = data.has_pin;
             
-            populateSourceParticipants();
-            populateCountryDropdown();
+            // Populate source participants dropdown - SIMPLE FLAT LIST
+            const sourceSelect = document.getElementById('sourceParticipant');
+            let sourceOptions = '<option value="">Select institution</option>';
             
-            console.log('Config loaded:', { assets, participantsByCountry });
+            participants.forEach(p => {
+                let icon = '🏦';
+                if (p.type === 'MNO') icon = '📱';
+                if (p.type === 'ORCHESTRATOR') icon = '⚡';
+                sourceOptions += `<option value="${p.code}" 
+                    data-asset-types='${JSON.stringify(p.asset_types)}'
+                    data-min="${p.min_amount}"
+                    data-max="${p.max_amount}"
+                    data-currency="${p.currency}">
+                    ${icon} ${p.name}
+                </option>`;
+            });
+            sourceSelect.innerHTML = sourceOptions;
+            sourceSelect.onchange = onSourceParticipantChange;
+            
+            // Populate country dropdown for destination
+            const countrySelect = document.getElementById('destCountry');
+            let countryOptions = '<option value="">Select country</option>';
+            countries.forEach(c => {
+                countryOptions += `<option value="${c.code}">${c.flag || '🌍'} ${c.name}</option>`;
+            });
+            countrySelect.innerHTML = countryOptions;
+            countrySelect.onchange = onDestCountryChange;
+            
+            console.log('Loaded participants:', participants.length);
         }
     } catch(e) {
         console.error('Load error:', e);
     }
 }
 
-// Populate source participants dropdown
-function populateSourceParticipants() {
-    const select = document.getElementById('sourceParticipant');
-    let options = '<option value="">Select institution</option>';
-    
-    for (let country in participantsByCountry) {
-        participantsByCountry[country].forEach(p => {
-            let icon = '🏦';
-            if (p.type === 'MNO') icon = '📱';
-            if (p.type === 'ORCHESTRATOR') icon = '⚡';
-            
-            options += `<option value="${p.code}" 
-                data-asset-types='${JSON.stringify(p.asset_types)}'
-                data-limits='${JSON.stringify(p.limits)}'>
-                ${icon} ${p.name} (${country})
-            </option>`;
-        });
-    }
-    
-    select.innerHTML = options;
-    select.onchange = onSourceParticipantChange;
-}
-
-// Populate country dropdown
-function populateCountryDropdown() {
-    const select = document.getElementById('destCountry');
-    let options = '<option value="">-- Select country --</option>';
-    
-    if (countries.length > 0) {
-        countries.forEach(c => {
-            const selected = (c.name === userCountry || c.code === userCountry) ? 'selected' : '';
-            options += `<option value="${c.name}" ${selected}>${c.flag || '🌍'} ${c.name}</option>`;
-        });
-    } else {
-        for (let country in participantsByCountry) {
-            options += `<option value="${country}">${country}</option>`;
-        }
-    }
-    
-    select.innerHTML = options;
-    select.onchange = onDestCountryChange;
-}
-
 // ============================================================
-// SOURCE SIDE - FROM YAML
+// SOURCE SIDE
 // ============================================================
 function onSourceParticipantChange() {
-    const opt = document.getElementById('sourceParticipant').selectedOptions[0];
-    const assetTypesList = JSON.parse(opt?.dataset?.assetTypes || '[]');
-    const limits = JSON.parse(opt?.dataset?.limits || '{"min_amount":10,"max_amount":500000,"currency":"BWP"}');
+    const select = document.getElementById('sourceParticipant');
+    const opt = select.options[select.selectedIndex];
+    const assetTypes = JSON.parse(opt?.dataset?.assetTypes || '[]');
+    const minAmount = opt?.dataset?.min || 10;
+    const maxAmount = opt?.dataset?.max || 500000;
+    const currency = opt?.dataset?.currency || 'BWP';
     
     // Populate asset types dropdown
     const assetSelect = document.getElementById('sourceAssetType');
     let assetOptions = '<option value="">Select asset type</option>';
     
-    assetTypesList.forEach(assetType => {
+    assetTypes.forEach(assetType => {
         const assetDef = assets[assetType];
         const icon = assetDef?.ui?.icon || '📄';
-        const displayName = assetDef?.ui?.display_name || assetType;
-        assetOptions += `<option value="${assetType}">${icon} ${displayName}</option>`;
+        const name = assetDef?.ui?.display_name || assetType;
+        assetOptions += `<option value="${assetType}">${icon} ${name}</option>`;
     });
     
     assetSelect.innerHTML = assetOptions;
     assetSelect.onchange = onSourceAssetChange;
     
-    // Update amount limits
-    document.getElementById('amountHint').innerHTML = `Min: ${limits.min_amount} ${limits.currency} | Max: ${limits.max_amount.toLocaleString()} ${limits.currency}`;
-    document.getElementById('amount').min = limits.min_amount;
-    document.getElementById('amount').max = limits.max_amount;
+    // Update amount hints
+    document.getElementById('amountHint').innerHTML = `Min: ${minAmount} ${currency} | Max: ${Number(maxAmount).toLocaleString()} ${currency}`;
+    document.getElementById('amount').min = minAmount;
+    document.getElementById('amount').max = maxAmount;
     
-    if (assetTypesList.length > 0) {
+    if (assetTypes.length > 0) {
         onSourceAssetChange();
     }
 }
@@ -713,11 +647,11 @@ function onSourceAssetChange() {
     const inputEl = document.getElementById('sourceIdentifier');
     
     if (assetDef?.fields?.length) {
-        const firstField = assetDef.fields[0];
-        hintEl.innerHTML = firstField.hint || `Enter your ${firstField.label?.toLowerCase()}`;
-        inputEl.placeholder = firstField.placeholder || `Enter ${firstField.label?.toLowerCase()}`;
+        const field = assetDef.fields[0];
+        hintEl.innerHTML = field.hint || `Enter your ${field.label?.toLowerCase()}`;
+        inputEl.placeholder = field.placeholder || `Enter ${field.label?.toLowerCase()}`;
         
-        if (firstField.readonly && firstField.source === 'session.phone' && userPhone) {
+        if (field.readonly && field.source === 'session.phone' && userPhone) {
             inputEl.value = userPhone;
             inputEl.readOnly = true;
         } else {
@@ -727,6 +661,7 @@ function onSourceAssetChange() {
     } else {
         hintEl.innerHTML = 'Enter your identifier';
         inputEl.placeholder = 'Enter identifier';
+        inputEl.readOnly = false;
     }
 }
 
@@ -734,10 +669,11 @@ function onSourceAssetChange() {
 // DESTINATION SIDE
 // ============================================================
 function onDestCountryChange() {
-    const country = document.getElementById('destCountry').value;
+    const countryCode = document.getElementById('destCountry').value;
     const destSelect = document.getElementById('destParticipant');
     
-    let participants = participantsByCountry[country] || [];
+    // Filter participants by country (based on their country code)
+    // For now, show all participants since country filtering is in participants.yaml
     let options = '<option value="">Select institution</option>';
     
     participants.forEach(p => {
@@ -759,7 +695,6 @@ async function executeSwap() {
     const sourceIdentifier = document.getElementById('sourceIdentifier').value.trim();
     const amount = parseFloat(document.getElementById('amount').value);
     const destParticipant = document.getElementById('destParticipant').value;
-    const deliveryMode = document.querySelector('input[name="deliveryMode"]:checked')?.value || 'deposit';
     const destIdentifier = document.getElementById('destIdentifier').value.trim();
     
     if (!sourceParticipant) { alert('Select source institution'); return; }
@@ -775,7 +710,6 @@ async function executeSwap() {
         source_identifier: sourceIdentifier,
         amount: amount,
         dest_participant: destParticipant,
-        dest_delivery_mode: deliveryMode,
         dest_identifier: destIdentifier
     };
     
@@ -826,7 +760,6 @@ async function executePendingSwap() {
                 source_identifier: pendingSwapData.source_identifier,
                 amount: pendingSwapData.amount,
                 dest_participant: pendingSwapData.dest_participant,
-                dest_delivery_mode: pendingSwapData.dest_delivery_mode,
                 dest_identifier: pendingSwapData.dest_identifier
             }).toString()
         });
