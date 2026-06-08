@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "version": "2.1.0",
+    "version": "3.1.0",
     "standard": "ISO-20022-JSON / GSMA-MM",
     "region": "BW-EU-CROSSBORDER",
     "governance": "CENTRAL_BANK_HUB",
@@ -9,63 +9,252 @@
     "default_retry_policy": {
       "max_retries": 3,
       "retry_delay_ms": 1000,
-      "retry_on": [
-        "timeout",
-        "5xx",
-        "network_error"
-      ]
+      "retry_on": ["timeout", "5xx", "network_error"]
     },
     "default_idempotency_header": "X-Idempotency-Key",
-    "updated_for": "participant_adapter_framework"
+    "updated_for": "orchestration_layer_refactor"
+  },
+  "orchestration": {
+    "hold_before_debit": true,
+    "atomic_swaps": true,
+    "max_execution_time_seconds": 30,
+    "auto_reverse_on_failure": true,
+    "reconciliation_required": true,
+    "supports_multi_hop_routing": true,
+    "transaction_states": [
+      "INITIATED",
+      "VERIFIED",
+      "HELD",
+      "SETTLING",
+      "SETTLED",
+      "FAILED",
+      "REVERSED",
+      "EXPIRED"
+    ],
+    "state_transitions": {
+      "INITIATED": ["VERIFIED", "FAILED"],
+      "VERIFIED": ["HELD", "FAILED"],
+      "HELD": ["SETTLING", "EXPIRED", "REVERSED"],
+      "SETTLING": ["SETTLED", "FAILED"],
+      "SETTLED": [],
+      "FAILED": ["REVERSED"],
+      "REVERSED": [],
+      "EXPIRED": []
+    }
   },
   "participants": {
     "ZURUBANK": {
       "type": "FINANCIAL_INSTITUTION",
       "category": "BANK",
       "provider_code": "ZURUBWXX",
+      "name": "Zuru Bank",
+      "country": "Botswana",
       "adapter_class": "GenericFinancialInstitutionAdapter",
-      "auth_type": "MTLS_OAUTH2",
+      "auth_type": "API_KEY",
       "base_url": "https://zurubank-production.up.railway.app/Backend",
       "timeout_ms": 5000,
       "sandbox_mode": true,
       "security": {
         "api_key": {
-          "value_env": "API_KEY_ZURUBANK",
+          "env": "ZURUBANK_API_KEY",
           "header_name": "X-API-KEY"
+        }
+      },
+      "vault_config": {
+        "incoming_keys": {
+          "CAZACOM": { "env": "CAZACOM_API_KEY" },
+          "VOUCHMORPH": { "env": "VOUCHMORPH_API_KEY" }
         },
-        "oauth2": {
-          "enabled": true,
-          "authorization_endpoint": "/api/v1/oauth/authorize.php",
-          "token_endpoint": "/api/v1/oauth/token.php",
-          "revoke_endpoint": "/api/v1/oauth/revoke.php",
-          "userinfo_endpoint": "/api/v1/oauth/userinfo.php",
-          "client_id_env": "ZURUBANK_CLIENT_ID",
-          "client_secret_env": "ZURUBANK_CLIENT_SECRET",
-          "scope": "read_balance read_transactions initiate_payment",
-          "response_type": "code",
-          "grant_type": "authorization_code",
-          "code_challenge_method": "S256"
+        "outgoing_keys": {
+          "CAZACOM": { "env": "UPSTREAM_CAZACOM_KEY" },
+          "VOUCHMORPH": { "env": "UPSTREAM_VOUCHMORPH_KEY" }
         },
-        "request_signing": {
-          "algorithm": "RSA-SHA256",
-          "private_key_env": "ZURUBANK_SIGNING_KEY"
+        "encryption_key_env": "ENCRYPTION_KEY"
+      },
+      "service_status": {
+        "enabled": true,
+        "endpoint": "/api/v1/status",
+        "failure_threshold": 3,
+        "recovery_threshold": 2,
+        "health_endpoint": "/health"
+      },
+      "routing": {
+        "priority": 10,
+        "cost_score": 5,
+        "reliability_score": 9,
+        "region": "africa_south"
+      },
+      "compliance": {
+        "kyc_required": true,
+        "aml_screening": true,
+        "sanctions_check": true,
+        "pep_check": true,
+        "max_transaction_amount": 500000,
+        "min_transaction_amount": 10
+      },
+      "cross_border": {
+        "enabled": true,
+        "supported_currencies": ["BWP", "ZAR", "USD"],
+        "fx_providers": ["SACCUSSALIS", "ZURUBANK"],
+        "settlement_cycles": {
+          "BWP": "T+0",
+          "ZAR": "T+1",
+          "USD": "T+2"
         }
       },
       "identity": {
         "system_user_id": 1001,
         "legal_entity_identifier": "BW-ZURUBANK-LEI-001",
-        "license_number": "CB-BW-017"
+        "license_number": "CB-BW-017",
+        "swift_bic": "ZURUBWXX"
       },
       "capabilities": {
         "supports_sca": true,
         "supports_realtime_processing": true,
         "supports_reversal": true,
         "supports_idempotency": true,
-        "asset_types": [
-          "ACCOUNT",
-          "CASHOUT-VOUCHER",
-          "ATM"
-        ]
+        "asset_types": ["ACCOUNT", "CASHOUT-VOUCHER", "ATM"]
+      },
+      "callbacks": {
+        "hold_confirmed": "/api/v1/callbacks/hold-confirmed",
+        "hold_released": "/api/v1/callbacks/hold-released",
+        "debit_confirmed": "/api/v1/callbacks/debit-confirmed",
+        "deposit_confirmed": "/api/v1/callbacks/deposit-confirmed",
+        "reversal_confirmed": "/api/v1/callbacks/reversal-confirmed"
+      },
+      "asset_type_definitions": {
+        "ACCOUNT": {
+          "name": "Bank Account",
+          "vault_slot": "zurubank_primary",
+          "delivery_modes": ["deposit", "cashout"],
+          "workflow": {
+            "verify_before_hold": true,
+            "supports_partial_debit": false,
+            "reversal_window_seconds": 86400
+          },
+          "hold_policy": {
+            "required": true,
+            "expiry_seconds": 900,
+            "auto_release": true
+          },
+          "amount": {
+            "required": true,
+            "min": 10,
+            "max": 500000,
+            "currency": "BWP",
+            "step": 0.01
+          },
+          "ui": {
+            "icon": "🏦",
+            "category": "banking",
+            "display_order": 1,
+            "color": "#4CAF50"
+          },
+          "fields": [
+            {
+              "name": "account_number",
+              "label": "Account Number",
+              "type": "text",
+              "required": true,
+              "pattern": "^[0-9]{8,16}$",
+              "placeholder": "Enter account number",
+              "min_length": 8,
+              "max_length": 16
+            }
+          ]
+        },
+        "CASHOUT-VOUCHER": {
+          "name": "Cashout Voucher",
+          "vault_slot": "zurubank_voucher",
+          "delivery_modes": ["cashout"],
+          "workflow": {
+            "verify_before_hold": true,
+            "supports_partial_debit": false,
+            "reversal_window_seconds": 3600
+          },
+          "hold_policy": {
+            "required": true,
+            "expiry_seconds": 600,
+            "auto_release": true
+          },
+          "amount": {
+            "required": true,
+            "min": 10,
+            "max": 50000,
+            "currency": "BWP",
+            "step": 0.01
+          },
+          "ui": {
+            "icon": "🎫",
+            "category": "voucher",
+            "display_order": 2,
+            "color": "#FF9800"
+          },
+          "fields": [
+            {
+              "name": "voucher_number",
+              "label": "Voucher Number",
+              "type": "text",
+              "required": true,
+              "pattern": "^[A-Z0-9]{8,16}$",
+              "placeholder": "Enter voucher number"
+            },
+            {
+              "name": "voucher_pin",
+              "label": "Voucher PIN",
+              "type": "password",
+              "required": true,
+              "placeholder": "Enter voucher PIN",
+              "vault_field": "pin"
+            }
+          ]
+        },
+        "ATM": {
+          "name": "ATM Cashout",
+          "vault_slot": "zurubank_atm",
+          "delivery_modes": ["cashout"],
+          "workflow": {
+            "verify_before_hold": true,
+            "supports_partial_debit": false,
+            "reversal_window_seconds": 1800
+          },
+          "hold_policy": {
+            "required": true,
+            "expiry_seconds": 300,
+            "auto_release": true
+          },
+          "amount": {
+            "required": true,
+            "min": 50,
+            "max": 10000,
+            "currency": "BWP",
+            "step": 10
+          },
+          "ui": {
+            "icon": "🏧",
+            "category": "atm",
+            "display_order": 3,
+            "color": "#2196F3"
+          },
+          "fields": [
+            {
+              "name": "atm_code",
+              "label": "ATM Code",
+              "type": "text",
+              "required": true,
+              "pattern": "^[0-9]{6}$",
+              "placeholder": "6-digit ATM code"
+            },
+            {
+              "name": "atm_pin",
+              "label": "ATM PIN",
+              "type": "password",
+              "required": true,
+              "placeholder": "Enter ATM PIN",
+              "vault_field": "pin"
+            }
+          ]
+        }
       },
       "resource_endpoints": {
         "verify_asset": "/api/v1/verify_asset.php",
@@ -98,70 +287,225 @@
       "status": "ACTIVE",
       "idempotency": {
         "enabled": true,
-        "header_name": "X-Idempotency-Key"
+        "header_name": "X-Idempotency-Key",
+        "ttl_seconds": 86400
       },
       "retry_policy": {
         "max_retries": 3,
         "retry_delay_ms": 1000,
-        "retry_on": [
-          "timeout",
-          "5xx",
-          "network_error"
-        ]
-      },
-      "health_check": {
-        "enabled": true,
-        "endpoint": "/health",
-        "method": "GET"
-      },
-      "settlement": {
-        "account": "ZURUBANK_SETTLEMENT",
-        "type": "BILATERAL",
-        "currency": "BWP",
-        "settlement_cycle": "T+1",
-        "cutoff_time": "16:00"
+        "retry_on": ["timeout", "5xx", "network_error"]
       }
     },
     "SACCUSSALIS": {
       "type": "FINANCIAL_INSTITUTION",
       "category": "BANK",
       "provider_code": "SACCUSBWXX",
+      "name": "Saccussalis",
+      "country": "Botswana",
       "adapter_class": "GenericFinancialInstitutionAdapter",
-      "auth_type": "MTLS_OAUTH2",
+      "auth_type": "API_KEY",
       "base_url": "https://saccussalis-production.up.railway.app/backend",
       "timeout_ms": 5000,
       "sandbox_mode": true,
       "security": {
         "api_key": {
-          "value_env": "API_KEY_SACCUSSALIS",
+          "env": "SACCUSSALIS_API_KEY",
           "header_name": "X-API-KEY"
+        }
+      },
+      "vault_config": {
+        "incoming_keys": {
+          "CAZACOM": { "env": "CAZACOM_API_KEY" },
+          "VOUCHMORPH": { "env": "VOUCHMORPH_API_KEY" }
         },
-        "oauth2": {
-          "token_endpoint": "/oauth2/token",
-          "client_id_env": "SACCUSSALIS_CLIENT_ID",
-          "client_secret_env": "SACCUSSALIS_CLIENT_SECRET",
-          "scope": "payments settlement ewallet atm"
+        "outgoing_keys": {
+          "CAZACOM": { "env": "UPSTREAM_CAZACOM_KEY" },
+          "VOUCHMORPH": { "env": "UPSTREAM_VOUCHMORPH_KEY" }
         },
-        "request_signing": {
-          "algorithm": "RSA-SHA256",
-          "private_key_env": "SACCUSSALIS_SIGNING_KEY"
+        "encryption_key_env": "ENCRYPTION_KEY"
+      },
+      "service_status": {
+        "enabled": true,
+        "endpoint": "/api/v1/status",
+        "failure_threshold": 3,
+        "recovery_threshold": 2,
+        "health_endpoint": "/health"
+      },
+      "routing": {
+        "priority": 15,
+        "cost_score": 4,
+        "reliability_score": 8,
+        "region": "africa_south"
+      },
+      "compliance": {
+        "kyc_required": true,
+        "aml_screening": true,
+        "sanctions_check": true,
+        "pep_check": true,
+        "max_transaction_amount": 500000,
+        "min_transaction_amount": 10
+      },
+      "cross_border": {
+        "enabled": true,
+        "supported_currencies": ["BWP", "ZAR", "EUR"],
+        "fx_providers": ["SACCUSSALIS"],
+        "settlement_cycles": {
+          "BWP": "T+0",
+          "ZAR": "T+1",
+          "EUR": "T+2"
         }
       },
       "identity": {
         "system_user_id": 1001,
         "legal_entity_identifier": "BW-SACCUSSALIS-LEI-001",
-        "license_number": "CB-BW-027"
+        "license_number": "CB-BW-027",
+        "swift_bic": "SACCUBWXX"
       },
       "capabilities": {
         "supports_sca": true,
         "supports_realtime_processing": true,
         "supports_reversal": true,
         "supports_idempotency": true,
-        "asset_types": [
-          "ACCOUNT",
-          "BANK-WALLET",
-          "ATM"
-        ]
+        "asset_types": ["ACCOUNT", "BANK-WALLET", "ATM"]
+      },
+      "callbacks": {
+        "hold_confirmed": "/api/v1/callbacks/hold-confirmed",
+        "hold_released": "/api/v1/callbacks/hold-released",
+        "debit_confirmed": "/api/v1/callbacks/debit-confirmed",
+        "deposit_confirmed": "/api/v1/callbacks/deposit-confirmed",
+        "reversal_confirmed": "/api/v1/callbacks/reversal-confirmed"
+      },
+      "asset_type_definitions": {
+        "ACCOUNT": {
+          "name": "Bank Account",
+          "vault_slot": "saccussalis_primary",
+          "delivery_modes": ["deposit", "cashout"],
+          "workflow": {
+            "verify_before_hold": true,
+            "supports_partial_debit": false,
+            "reversal_window_seconds": 86400
+          },
+          "hold_policy": {
+            "required": true,
+            "expiry_seconds": 900,
+            "auto_release": true
+          },
+          "amount": {
+            "required": true,
+            "min": 10,
+            "max": 500000,
+            "currency": "BWP",
+            "step": 0.01
+          },
+          "ui": {
+            "icon": "🏦",
+            "category": "banking",
+            "display_order": 1,
+            "color": "#4CAF50"
+          },
+          "fields": [
+            {
+              "name": "account_number",
+              "label": "Account Number",
+              "type": "text",
+              "required": true,
+              "pattern": "^[0-9]{8,16}$",
+              "placeholder": "Enter account number"
+            }
+          ]
+        },
+        "BANK-WALLET": {
+          "name": "Bank Wallet",
+          "vault_slot": "saccussalis_ewallet",
+          "delivery_modes": ["deposit", "cashout"],
+          "workflow": {
+            "verify_before_hold": true,
+            "supports_partial_debit": true,
+            "reversal_window_seconds": 86400
+          },
+          "hold_policy": {
+            "required": true,
+            "expiry_seconds": 900,
+            "auto_release": true
+          },
+          "amount": {
+            "required": true,
+            "min": 5,
+            "max": 100000,
+            "currency": "BWP",
+            "step": 0.01
+          },
+          "ui": {
+            "icon": "👛",
+            "category": "wallet",
+            "display_order": 2,
+            "color": "#9C27B0"
+          },
+          "fields": [
+            {
+              "name": "wallet_id",
+              "label": "Wallet ID",
+              "type": "text",
+              "required": true,
+              "pattern": "^[A-Z0-9]{6,20}$",
+              "placeholder": "Enter wallet ID"
+            },
+            {
+              "name": "wallet_pin",
+              "label": "Wallet PIN",
+              "type": "password",
+              "required": true,
+              "placeholder": "Enter wallet PIN",
+              "vault_field": "pin"
+            }
+          ]
+        },
+        "ATM": {
+          "name": "ATM Cashout",
+          "vault_slot": "saccussalis_atm",
+          "delivery_modes": ["cashout"],
+          "workflow": {
+            "verify_before_hold": true,
+            "supports_partial_debit": false,
+            "reversal_window_seconds": 1800
+          },
+          "hold_policy": {
+            "required": true,
+            "expiry_seconds": 300,
+            "auto_release": true
+          },
+          "amount": {
+            "required": true,
+            "min": 50,
+            "max": 10000,
+            "currency": "BWP",
+            "step": 10
+          },
+          "ui": {
+            "icon": "🏧",
+            "category": "atm",
+            "display_order": 3,
+            "color": "#2196F3"
+          },
+          "fields": [
+            {
+              "name": "atm_code",
+              "label": "ATM Code",
+              "type": "text",
+              "required": true,
+              "pattern": "^[0-9]{6}$",
+              "placeholder": "6-digit ATM code"
+            },
+            {
+              "name": "atm_pin",
+              "label": "ATM PIN",
+              "type": "password",
+              "required": true,
+              "placeholder": "Enter ATM PIN",
+              "vault_field": "pin"
+            }
+          ]
+        }
       },
       "resource_endpoints": {
         "verify_asset": "/api/v1/verify_asset.php",
@@ -194,60 +538,75 @@
       "status": "ACTIVE",
       "idempotency": {
         "enabled": true,
-        "header_name": "X-Idempotency-Key"
+        "header_name": "X-Idempotency-Key",
+        "ttl_seconds": 86400
       },
       "retry_policy": {
         "max_retries": 3,
         "retry_delay_ms": 1000,
-        "retry_on": [
-          "timeout",
-          "5xx",
-          "network_error"
-        ]
-      },
-      "health_check": {
-        "enabled": true,
-        "endpoint": "/health",
-        "method": "GET"
-      },
-      "settlement": {
-        "account": "SACCUSSALIS_SETTLEMENT",
-        "type": "BILATERAL",
-        "currency": "BWP",
-        "settlement_cycle": "T+1",
-        "cutoff_time": "16:00"
+        "retry_on": ["timeout", "5xx", "network_error"]
       }
     },
-        "CAZACOM": {
+    "CAZACOM": {
       "type": "MOBILE_NETWORK_OPERATOR",
       "category": "MNO",
       "provider_code": "CAZACOM",
+      "name": "CazaCom",
+      "country": "Botswana",
       "adapter_class": "MobileMoneyAdapter",
-      "auth_type": "MTLS_OAUTH2",
+      "auth_type": "API_KEY",
       "base_url": "https://cazacom-production.up.railway.app",
       "timeout_ms": 5000,
       "sandbox_mode": true,
       "security": {
         "api_key": {
-          "value_env": "API_KEY_CAZACOM",
+          "env": "CAZACOM_API_KEY",
           "header_name": "X-API-KEY"
+        }
+      },
+      "vault_config": {
+        "incoming_keys": {
+          "VOUCHMORPH": { "env": "VOUCHMORPH_API_KEY" },
+          "ZURUBANK": { "env": "ZURUBANK_API_KEY" },
+          "SACCUSSALIS": { "env": "SACCUSSALIS_API_KEY" },
+          "ZURUBANK_SA": { "env": "ZURUBANK_SA_API_KEY" }
         },
-        "oauth2": {
-          "enabled": true,
-          "authorization_endpoint": "/oauth/authorize",
-          "token_endpoint": "/oauth/token",
-          "revoke_endpoint": "/oauth/revoke",
-          "userinfo_endpoint": "/oauth/userinfo",
-          "client_id_env": "CAZACOM_CLIENT_ID",
-          "client_secret_env": "CAZACOM_CLIENT_SECRET",
-          "scope": "read_balance initiate_payment read_transactions",
-          "response_type": "code",
-          "grant_type": "authorization_code",
-          "code_challenge_method": "S256"
+        "outgoing_keys": {
+          "VOUCHMORPH": { "env": "UPSTREAM_VOUCHMORPH_KEY" },
+          "SACCUSSALIS": { "env": "UPSTREAM_SACCUSSALIS_KEY" },
+          "ZURUBANK": { "env": "UPSTREAM_ZURUBANK_KEY" },
+          "ZURUBANK_SA": { "env": "UPSTREAM_ZURUBANK_SA_KEY" }
         },
-        "request_signing": {
-          "algorithm": "RSA-SHA256",
-          "private_key_env": "CAZACOM_SIGNING_KEY"
+        "encryption_key_env": "ENCRYPTION_KEY"
+      },
+      "service_status": {
+        "enabled": true,
+        "endpoint": "/api/v1/status",
+        "failure_threshold": 3,
+        "recovery_threshold": 2,
+        "health_endpoint": "/health"
+      },
+      "routing": {
+        "priority": 5,
+        "cost_score": 3,
+        "reliability_score": 7,
+        "region": "africa_south"
+      },
+      "compliance": {
+        "kyc_required": true,
+        "aml_screening": false,
+        "sanctions_check": true,
+        "pep_check": false,
+        "max_transaction_amount": 100000,
+        "min_transaction_amount": 1
+      },
+      "cross_border": {
+        "enabled": true,
+        "supported_currencies": ["BWP", "ZAR"],
+        "fx_providers": ["SACCUSSALIS", "ZURUBANK"],
+        "settlement_cycles": {
+          "BWP": "T+0",
+          "ZAR": "T+1"
         }
       },
       "identity": {
@@ -261,7 +620,115 @@
         "supports_reversal": true,
         "supports_idempotency": true,
         "supports_holds": true,
-        "asset_types": ["MNO-WALLET", "CASHOUT-VOUCHER", "AIRTIME"]
+        "asset_types": ["MNO-WALLET", "CASHOUT-VOUCHER"]
+      },
+      "callbacks": {
+        "hold_confirmed": "/api/v1/callbacks/hold-confirmed",
+        "hold_released": "/api/v1/callbacks/hold-released",
+        "debit_confirmed": "/api/v1/callbacks/debit-confirmed",
+        "deposit_confirmed": "/api/v1/callbacks/deposit-confirmed",
+        "reversal_confirmed": "/api/v1/callbacks/reversal-confirmed"
+      },
+      "asset_type_definitions": {
+        "MNO-WALLET": {
+          "name": "Mobile Wallet",
+          "vault_slot": "cazacom_mobile_money",
+          "delivery_modes": ["deposit", "cashout"],
+          "workflow": {
+            "verify_before_hold": true,
+            "supports_partial_debit": true,
+            "reversal_window_seconds": 86400
+          },
+          "hold_policy": {
+            "required": true,
+            "expiry_seconds": 900,
+            "auto_release": true
+          },
+          "amount": {
+            "required": true,
+            "min": 1,
+            "max": 100000,
+            "currency": "BWP",
+            "step": 0.01
+          },
+          "ui": {
+            "icon": "📱",
+            "category": "mobile_money",
+            "display_order": 1,
+            "color": "#E91E63"
+          },
+          "fields": [
+            {
+              "name": "phone_number",
+              "label": "Phone Number",
+              "type": "tel",
+              "required": true,
+              "pattern": "^\\+?267[0-9]{8}$",
+              "placeholder": "+26771XXXXXX",
+              "source": {
+                "type": "session",
+                "field": "phone"
+              },
+              "readonly": true
+            },
+            {
+              "name": "wallet_pin",
+              "label": "Wallet PIN",
+              "type": "password",
+              "required": true,
+              "placeholder": "Enter mobile money PIN",
+              "vault_field": "pin",
+              "max_length": 6,
+              "min_length": 4
+            }
+          ]
+        },
+        "CASHOUT-VOUCHER": {
+          "name": "Cashout Voucher",
+          "vault_slot": "cazacom_voucher",
+          "delivery_modes": ["cashout"],
+          "workflow": {
+            "verify_before_hold": true,
+            "supports_partial_debit": false,
+            "reversal_window_seconds": 3600
+          },
+          "hold_policy": {
+            "required": true,
+            "expiry_seconds": 600,
+            "auto_release": true
+          },
+          "amount": {
+            "required": true,
+            "min": 10,
+            "max": 50000,
+            "currency": "BWP",
+            "step": 0.01
+          },
+          "ui": {
+            "icon": "🎫",
+            "category": "voucher",
+            "display_order": 2,
+            "color": "#FF9800"
+          },
+          "fields": [
+            {
+              "name": "voucher_number",
+              "label": "Voucher Number",
+              "type": "text",
+              "required": true,
+              "pattern": "^[A-Z0-9]{8,16}$",
+              "placeholder": "Enter voucher number"
+            },
+            {
+              "name": "voucher_pin",
+              "label": "Voucher PIN",
+              "type": "password",
+              "required": true,
+              "placeholder": "Enter voucher PIN",
+              "vault_field": "pin"
+            }
+          ]
+        }
       },
       "resource_endpoints": {
         "verify_asset": "/api/v1/mno/verify_wallet",
@@ -274,8 +741,7 @@
         "confirm_cashout": "/api/v1/mno/confirm_cashout",
         "reverse_transaction": "/api/v1/mno/reverse",
         "check_balance": "/api/v1/mno/balance",
-        "transaction_history": "/api/v1/mno/transactions",
-        "airtime_purchase": "/api/v1/mno/airtime"
+        "transaction_history": "/api/v1/mno/transactions"
       },
       "phone_format": {
         "prefix": "+",
@@ -298,26 +764,13 @@
       "status": "ACTIVE",
       "idempotency": {
         "enabled": true,
-        "header_name": "X-Idempotency-Key"
+        "header_name": "X-Idempotency-Key",
+        "ttl_seconds": 86400
       },
       "retry_policy": {
         "max_retries": 3,
         "retry_delay_ms": 1000,
         "retry_on": ["timeout", "5xx", "network_error"]
-      },
-      "health_check": {
-        "enabled": true,
-        "endpoint": "/health",
-        "method": "GET"
-      },
-      "settlement": {
-        "account": "CAZACOM_TRUST_ACCOUNT",
-        "trust_bank": "SACCUSSALIS",
-        "trust_account_number": "TRUST-CAZACOM-001",
-        "type": "TRUST",
-        "currency": "BWP",
-        "settlement_cycle": "T+1",
-        "cutoff_time": "16:00"
       },
       "wallet_config": {
         "max_balance": 100000,
@@ -338,47 +791,219 @@
       }
     },
     "VOUCHMORPH": {
-      "type": "TECHNICAL_PROVIDER",
-      "category": "PAYMENT_PROCESSOR",
+      "type": "ORCHESTRATION_LAYER",
+      "category": "PAYMENT_SWITCH",
       "provider_code": "VMPHBWX1",
-      "adapter_class": "VouchMorphInternalAdapter",
+      "name": "VouchMorph",
+      "country": "Botswana",
+      "adapter_class": "VouchMorphOrchestrationAdapter",
       "auth_type": "API_KEY",
-      "base_url": "https://vouchmorphn-production.up.railway.app",
+      "base_url": "https://vouchmorph.up.railway.app",
       "timeout_ms": 5000,
       "sandbox_mode": true,
       "security": {
         "api_key": {
-          "value_env": "API_KEY_SYSTEM",
+          "env": "VOUCHMORPH_API_KEY",
           "header_name": "X-API-KEY"
+        }
+      },
+      "vault_config": {
+        "incoming_keys": {
+          "CAZACOM": { "env": "CAZACOM_API_KEY" }
+        },
+        "outgoing_keys": {
+          "CAZACOM": { "env": "UPSTREAM_CAZACOM_KEY" },
+          "ZURUBANK": { "env": "UPSTREAM_ZURUBANK_KEY" },
+          "SACCUSSALIS": { "env": "UPSTREAM_SACCUSSALIS_KEY" }
+        },
+        "encryption_key_env": "ENCRYPTION_KEY"
+      },
+      "service_status": {
+        "enabled": true,
+        "endpoint": "/api/v1/status",
+        "failure_threshold": 3,
+        "recovery_threshold": 2,
+        "health_endpoint": "/health"
+      },
+      "routing": {
+        "priority": 1,
+        "cost_score": 1,
+        "reliability_score": 10,
+        "region": "global"
+      },
+      "compliance": {
+        "kyc_required": false,
+        "aml_screening": false,
+        "sanctions_check": false,
+        "pep_check": false,
+        "max_transaction_amount": 1000000,
+        "min_transaction_amount": 1
+      },
+      "cross_border": {
+        "enabled": true,
+        "supported_currencies": ["BWP", "ZAR", "EUR", "USD", "GBP"],
+        "fx_providers": ["SACCUSSALIS", "ZURUBANK"],
+        "settlement_cycles": {
+          "BWP": "T+0",
+          "ZAR": "T+1",
+          "EUR": "T+2",
+          "USD": "T+2",
+          "GBP": "T+2"
         }
       },
       "identity": {
         "system_user_id": 0,
-        "legal_entity_identifier": "VOUCHMORPH-SWAP-SYSTEM",
-        "license_number": "SANDBOX-001"
+        "legal_entity_identifier": "VOUCHMORPH-ORCHESTRATOR",
+        "license_number": "ORCHESTRATOR-001"
       },
       "capabilities": {
         "supports_sca": true,
         "supports_realtime_processing": true,
         "supports_reversal": true,
         "supports_idempotency": true,
-        "asset_types": [
-          "CARD",
-          "CASHOUT-VOUCHER"
-        ],
+        "holds_customer_funds": false,
+        "settlement_role": "ORCHESTRATOR",
+        "asset_types": ["CARD", "CASHOUT-VOUCHER"],
         "services": [
-          "card_issuance",
           "message_clearing",
           "swap_execution",
-          "settlement"
-        ],
-        "card_types": [
-          "message_based",
-          "balance_based"
-        ],
-        "default_card_type": "message_based",
-        "supports_card_authorization": true,
-        "supports_card_swipe_settlement": true
+          "transaction_routing"
+        ]
+      },
+      "callbacks": {
+        "hold_confirmed": "/api/v1/callbacks/hold-confirmed",
+        "hold_released": "/api/v1/callbacks/hold-released",
+        "debit_confirmed": "/api/v1/callbacks/debit-confirmed",
+        "deposit_confirmed": "/api/v1/callbacks/deposit-confirmed",
+        "reversal_confirmed": "/api/v1/callbacks/reversal-confirmed",
+        "swap_completed": "/api/v1/callbacks/swap-completed"
+      },
+      "asset_type_definitions": {
+        "CARD": {
+          "name": "VouchMorph Card",
+          "vault_slot": "vouchmorph_card",
+          "delivery_modes": ["deposit", "cashout"],
+          "workflow": {
+            "verify_before_hold": true,
+            "supports_partial_debit": true,
+            "reversal_window_seconds": 259200
+          },
+          "hold_policy": {
+            "required": true,
+            "expiry_seconds": 1800,
+            "auto_release": true
+          },
+          "amount": {
+            "required": true,
+            "min": 1,
+            "max": 1000000,
+            "currency": "BWP",
+            "step": 0.01
+          },
+          "ui": {
+            "icon": "💳",
+            "category": "card",
+            "display_order": 1,
+            "color": "#673AB7"
+          },
+          "fields": [
+            {
+              "name": "card_number",
+              "label": "Card Number",
+              "type": "text",
+              "required": true,
+              "pattern": "^[0-9]{16}$",
+              "placeholder": "16-digit card number",
+              "vault_field": "pan"
+            },
+            {
+              "name": "card_pin",
+              "label": "Card PIN",
+              "type": "password",
+              "required": true,
+              "placeholder": "Enter card PIN",
+              "vault_field": "pin",
+              "max_length": 6,
+              "min_length": 4
+            },
+            {
+              "name": "cvv",
+              "label": "CVV",
+              "type": "password",
+              "required": true,
+              "placeholder": "3-digit CVV",
+              "vault_field": "cvv",
+              "max_length": 4,
+              "min_length": 3
+            },
+            {
+              "name": "expiry_month",
+              "label": "Expiry Month",
+              "type": "number",
+              "required": true,
+              "placeholder": "MM",
+              "min": 1,
+              "max": 12,
+              "vault_field": "expiry_month"
+            },
+            {
+              "name": "expiry_year",
+              "label": "Expiry Year",
+              "type": "number",
+              "required": true,
+              "placeholder": "YYYY",
+              "min": 2024,
+              "max": 2034,
+              "vault_field": "expiry_year"
+            }
+          ]
+        },
+        "CASHOUT-VOUCHER": {
+          "name": "Cashout Voucher",
+          "vault_slot": "vouchmorph_voucher",
+          "delivery_modes": ["cashout"],
+          "workflow": {
+            "verify_before_hold": true,
+            "supports_partial_debit": false,
+            "reversal_window_seconds": 3600
+          },
+          "hold_policy": {
+            "required": true,
+            "expiry_seconds": 600,
+            "auto_release": true
+          },
+          "amount": {
+            "required": true,
+            "min": 10,
+            "max": 50000,
+            "currency": "BWP",
+            "step": 0.01
+          },
+          "ui": {
+            "icon": "🎫",
+            "category": "voucher",
+            "display_order": 2,
+            "color": "#FF9800"
+          },
+          "fields": [
+            {
+              "name": "voucher_number",
+              "label": "Voucher Number",
+              "type": "text",
+              "required": true,
+              "pattern": "^[A-Z0-9]{8,16}$",
+              "placeholder": "Enter voucher number"
+            },
+            {
+              "name": "voucher_pin",
+              "label": "Voucher PIN",
+              "type": "password",
+              "required": true,
+              "placeholder": "Enter voucher PIN",
+              "vault_field": "pin"
+            }
+          ]
+        }
       },
       "resource_endpoints": {
         "card_issue": "/api/v1/cards/issue.php",
@@ -388,7 +1013,6 @@
         "card_block": "/api/v1/cards/block.php",
         "card_transactions": "/api/v1/cards/transactions.php",
         "card_swipe": "/api/v1/cards/swipe.php",
-        "card_settlement": "/api/v1/cards/settlement.php",
         "swap_execute": "/api/v1/swap/execute.php",
         "swap_status": "/api/v1/swap/status.php",
         "swap_cancel": "/api/v1/swap/cancel.php",
@@ -422,31 +1046,16 @@
         "trace_id_prefix": "VOUCHMOR",
         "timestamp_header": "X-Timestamp"
       },
-      "settlement": {
-        "account": "VOUCHMORPH_SETTLEMENT",
-        "type": "POOLED",
-        "currency": "BWP",
-        "settlement_cycle": "T+1",
-        "cutoff_time": "16:00"
-      },
       "status": "ACTIVE",
       "idempotency": {
         "enabled": true,
-        "header_name": "X-Idempotency-Key"
+        "header_name": "X-Idempotency-Key",
+        "ttl_seconds": 86400
       },
       "retry_policy": {
         "max_retries": 3,
         "retry_delay_ms": 1000,
-        "retry_on": [
-          "timeout",
-          "5xx",
-          "network_error"
-        ]
-      },
-      "health_check": {
-        "enabled": true,
-        "endpoint": "/health",
-        "method": "GET"
+        "retry_on": ["timeout", "5xx", "network_error"]
       }
     }
   }
