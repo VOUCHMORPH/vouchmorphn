@@ -1,5 +1,4 @@
-# Use PHP CLI so we can run the built-in server
-FROM php:8.2-cli
+FROM php:8.2-fpm
 
 # Install system dependencies and PHP extensions
 RUN apt-get update && apt-get install -y \
@@ -8,33 +7,39 @@ RUN apt-get update && apt-get install -y \
     git \
     curl \
     libzip-dev \
-    && docker-php-ext-install pdo pdo_pgsql pgsql zip \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    nginx \
+    && docker-php-ext-install -j$(nproc) \
+        pdo \
+        pdo_pgsql \
+        pgsql \
+        zip \
+        bcmath \
+    && docker-php-ext-enable pdo_pgsql \
+    && apt-get clean
 
-# Set working directory
-WORKDIR /var/www/html
+# Verify extension is installed
+RUN php -m | grep pdo_pgsql
 
 # Install Composer
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
-# Copy Composer files first for better layer caching
-COPY composer.json ./
-COPY composer.lock* ./
+WORKDIR /var/www/html
 
-# Install PHP dependencies
+# Copy application
+COPY composer.json composer.lock* ./
 RUN composer install --no-dev --optimize-autoloader --no-interaction || true
 
-# Copy application code
-# Note: config/ directory no longer exists - all configs moved to src/Core/Config/
 COPY src/ src/
 COPY public/ public/
 
-# Expose port
+# Create php.ini with extensions
+RUN echo "extension=pdo_pgsql.so" > /usr/local/etc/php/conf.d/pdo_pgsql.ini
+
+# Simple nginx config
+RUN echo 'server { listen 9000; root /var/www/html/public; index index.php; location / { try_files $uri $uri/ /index.php?$args; } location ~ \.php$ { fastcgi_pass 127.0.0.1:9001; fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; include fastcgi_params; } }' > /etc/nginx/sites-enabled/default
+
+# Start both PHP-FPM and nginx
+RUN mkdir -p /var/log/nginx
+CMD sh -c "php-fpm -D && nginx -g 'daemon off;'"
+
 EXPOSE 9000
-
-# Refresh autoload after full source copy
-RUN composer dump-autoload --optimize --no-interaction || true
-
-# Start PHP built-in server
-CMD ["sh", "-c", "php -S 0.0.0.0:${PORT:-9000} -t public/"]
