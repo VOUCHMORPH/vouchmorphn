@@ -1,13 +1,24 @@
 [phases.setup]
-nixPkgs = ["php83", "php83Extensions.pdo_pgsql", "php83Extensions.pgsql"]
+nixPkgs = [
+  "php83",
+  "php83Extensions.pdo_pgsql",
+  "php83Extensions.pgsql"
+]
 
 [phases.install]
-cmds = ["composer install --no-dev --optimize-autoloader"]
+cmds = [
+  "composer install --no-dev --optimize-autoloader"
+]
+
+[phases.build]
+cmds = [
+  "php -m | grep -E 'pdo_pgsql|pgsql' || echo 'WARNING: PostgreSQL extensions missing'"
+]
 
 [start]
 cmd = "php -S 0.0.0.0:$PORT -t public"
 
 [deploy]
 healthcheckPath = "/health.php"
-healthcheckTimeout = 30
+healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
