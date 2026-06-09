@@ -21,7 +21,7 @@ ini_set('display_errors', 1);
 ini_set('memory_limit', '2048M');
 set_time_limit(0);
 
-require_once __DIR__ . '/../src/bootstrap.php';
+require_once __DIR__ . '/../../src/bootstrap.php';
 
 use Domain\Services\SwapService;
 use Domain\Services\Settlement\HybridSettlementStrategy;
