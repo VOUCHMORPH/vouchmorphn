@@ -1,23 +1,41 @@
 <?php
+// File: /var/www/html/src/Infrastructure/SMS/Contracts/ProviderInterface.php
+
+declare(strict_types=1);
 
 namespace Infrastructure\SMS\Contracts;
 
-interface CommunicationProviderInterface
+interface ProviderInterface
 {
     /**
-     * Send an SMS
-     *
-     * @param string $phone
-     * @param string $message
-     * @return array ['success'=>bool, 'message'=>string, ...]
+     * Send an SMS message
+     * 
+     * @param string $to Recipient phone number
+     * @param string $message Message content
+     * @param string $reference Optional reference ID
+     * @return array Response with status, message_id, etc.
      */
-    public function sendSMS(string $phone, string $message): array;
-
+    public function send(string $to, string $message, string $reference = ''): array;
+    
     /**
-     * Optional: send a USSD / start session
-     *
-     * @param array|null $payload
-     * @return array
+     * Check delivery status of an SMS
+     * 
+     * @param string $messageId The message ID from send()
+     * @return array Status information
      */
-    public function sendUSSD(?array $payload = null): array;
+    public function getDeliveryStatus(string $messageId): array;
+    
+    /**
+     * Get provider name
+     * 
+     * @return string
+     */
+    public function getProviderName(): string;
+    
+    /**
+     * Check if provider is available/healthy
+     * 
+     * @return bool
+     */
+    public function isAvailable(): bool;
 }
