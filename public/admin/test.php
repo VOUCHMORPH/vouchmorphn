@@ -1,26 +1,11 @@
 <?php
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-
-define('PROJECT_ROOT', dirname(__DIR__, 2));
-
-$feesFile = PROJECT_ROOT . '/src/Core/Config/Countries/Botswana/fees.json';
-
-echo "<h1>Check fees.json</h1>";
-echo "<p>File path: " . $feesFile . "</p>";
-echo "<p>File exists: " . (file_exists($feesFile) ? 'YES' : 'NO') . "</p>";
-
-if (file_exists($feesFile)) {
-    $content = file_get_contents($feesFile);
-    echo "<p>File size: " . strlen($content) . " bytes</p>";
-    
-    $decoded = json_decode($content, true);
-    echo "<p>JSON valid: " . (json_last_error() === JSON_ERROR_NONE ? 'YES' : 'NO') . "</p>";
-    
-    if (json_last_error() !== JSON_ERROR_NONE) {
-        echo "<p style='color:red'>JSON Error: " . json_last_error_msg() . "</p>";
+header('Content-Type: application/json');
+$keys = [];
+$possible = ['API_KEY_SYSTEM', 'VOUCHMORPH_API_KEY', 'UPSTREAM_ZURUBANK_KEY', 'UPSTREAM_CAZACOM_KEY', 'UPSTREAM_SACCUSSALIS_KEY', 'API_KEY_ZURUBANK', 'API_KEY_SACCUSSALIS', 'API_KEY_CAZACOM', 'SYSTEM_API_KEY'];
+foreach ($possible as $key) {
+    $val = getenv($key);
+    if ($val) {
+        $keys[$key] = substr($val, 0, 10) . '...' . substr($val, -5);
     }
-    
-    echo "<h2>File content:</h2>";
-    echo "<pre>" . htmlspecialchars($content) . "</pre>";
 }
+echo json_encode(['available_keys' => $keys, 'all_env_keys' => array_keys(array_filter($_SERVER, function($k) { return preg_match('/KEY|API|TOKEN/i', $k); }, ARRAY_FILTER_USE_KEY))]);
