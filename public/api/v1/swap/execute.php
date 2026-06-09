@@ -10,7 +10,6 @@ declare(strict_types=1);
 // 1. BOOTSTRAP - DISCOVER EVERYTHING DYNAMICALLY
 // ============================================
 
-// No assumptions about directory structure - discover from script location
 define('SCRIPT_DIR', dirname(__FILE__));
 define('PROJECT_ROOT', discoverProjectRoot(SCRIPT_DIR));
 
@@ -20,7 +19,6 @@ function discoverProjectRoot($startPath) {
     $level = 0;
     
     while ($current && $level < $maxLevels) {
-        // Look for telltale signs of project root
         if (file_exists($current . '/composer.json') && 
             (file_exists($current . '/src') || file_exists($current . '/vendor'))) {
             return $current;
@@ -29,7 +27,6 @@ function discoverProjectRoot($startPath) {
         $level++;
     }
     
-    // Fallback to 4 levels up (common pattern)
     return dirname($startPath, 4);
 }
 
@@ -48,7 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // ============================================
-// 3. ERROR HANDLING - ALWAYS RETURN VALID JSON
+// 3. ERROR HANDLING
 // ============================================
 function sendJsonResponse($success, $data, $statusCode = 200) {
     http_response_code($statusCode);
@@ -64,19 +61,15 @@ function sendError($message, $statusCode = 400, $details = []) {
 }
 
 // ============================================
-// 4. UNIVERSAL FILE DISCOVERY FUNCTIONS
+// 4. CONFIG LOADING FUNCTIONS
 // ============================================
 
-/**
- * Find ALL configuration directories dynamically
- */
 function discoverConfigPaths($rootPath) {
     $possiblePaths = [
         $rootPath . '/src/Core/Config',
         $rootPath . '/config',
         $rootPath . '/app/config',
         $rootPath . '/Config',
-        $rootPath . '/configuration',
         dirname($rootPath) . '/config',
         $_SERVER['DOCUMENT_ROOT'] . '/../src/Core/Config'
     ];
@@ -87,12 +80,10 @@ function discoverConfigPaths($rootPath) {
         }
     }
     
-    // Last resort: search for countries_registry.json
     if (is_dir($rootPath)) {
         $iterator = new RecursiveIteratorIterator(
             new RecursiveDirectoryIterator($rootPath, RecursiveDirectoryIterator::SKIP_DOTS)
         );
-        
         foreach ($iterator as $file) {
             if ($file->getFilename() === 'countries_registry.json') {
                 return $file->getPath();
@@ -103,9 +94,6 @@ function discoverConfigPaths($rootPath) {
     return null;
 }
 
-/**
- * Load ANY file regardless of extension
- */
 function loadAnyConfig($filePath) {
     if (!file_exists($filePath)) {
         return null;
@@ -123,36 +111,27 @@ function loadAnyConfig($filePath) {
         case 'yml':
             return parseYamlUniversal($content);
         case 'json':
-            $decoded = json_decode($content, true);
-            return ($decoded !== null) ? $decoded : null;
+            return json_decode($content, true);
         case 'php':
             return require $filePath;
-        case 'neon':
-        case 'ini':
-            return parse_ini_file($filePath, true);
         default:
-            // Try to detect format from content
             if (strpos($content, 'participants:') !== false || strpos($content, 'version:') !== false) {
                 return parseYamlUniversal($content);
             }
             if (strpos(trim($content), '{') === 0 || strpos(trim($content), '[') === 0) {
-                $decoded = json_decode($content, true);
-                return ($decoded !== null) ? $decoded : null;
+                return json_decode($content, true);
             }
             return null;
     }
 }
 
-/**
- * Universal YAML parser - no external dependencies required
- */
 function parseYamlUniversal($content) {
     $result = [];
     $lines = explode("\n", $content);
     $stack = [&$result];
     $indentStack = [0];
     
-    foreach ($lines as $lineNum => $line) {
+    foreach ($lines as $line) {
         $line = rtrim($line);
         if (empty($line) || preg_match('/^\s*#/', $line)) {
             continue;
@@ -161,12 +140,10 @@ function parseYamlUniversal($content) {
         $indent = strlen($line) - strlen(ltrim($line));
         $trimmed = ltrim($line);
         
-        // Handle lists (array items)
         if (preg_match('/^-\s+(.*)$/', $trimmed, $matches)) {
             $value = trim($matches[1]);
             $value = trim($value, '"\'');
             
-            // Pop stack until correct indent
             while (count($stack) > 1 && $indent <= $indentStack[count($stack) - 1]) {
                 array_pop($stack);
                 array_pop($indentStack);
@@ -180,21 +157,18 @@ function parseYamlUniversal($content) {
             continue;
         }
         
-        // Handle key-value pairs
         if (strpos($trimmed, ':') !== false) {
             list($key, $value) = explode(':', $trimmed, 2);
             $key = trim($key);
             $value = trim($value);
             $value = trim($value, '"\'');
             
-            // Pop stack until correct indent
             while (count($stack) > 1 && $indent <= $indentStack[count($stack) - 1]) {
                 array_pop($stack);
                 array_pop($indentStack);
             }
             
             if ($value === '') {
-                // Nested structure
                 $parent = &$stack[count($stack) - 1];
                 if (!isset($parent[$key])) {
                     $parent[$key] = [];
@@ -202,14 +176,12 @@ function parseYamlUniversal($content) {
                 $stack[] = &$parent[$key];
                 $indentStack[] = $indent;
             } else {
-                // Simple key-value
                 $parent = &$stack[count($stack) - 1];
                 $parent[$key] = $value;
             }
         }
     }
     
-    // Convert __array placeholders back to arrays
     array_walk_recursive($result, function(&$value) {
         if (is_array($value) && isset($value['__array'])) {
             $value = $value['__array'];
@@ -220,7 +192,7 @@ function parseYamlUniversal($content) {
 }
 
 // ============================================
-// 5. GET REQUEST INPUT SAFELY
+// 5. GET REQUEST INPUT
 // ============================================
 $input = null;
 $rawInput = file_get_contents('php://input');
@@ -232,44 +204,34 @@ if (!empty($rawInput)) {
     }
 }
 
-// If no input, try POST params
 if (empty($input) && !empty($_POST)) {
     $input = $_POST;
 }
 
-// If still no input, use empty array
 if ($input === null) {
     $input = [];
 }
 
 // ============================================
-// 6. LOAD COUNTRY REGISTRY (DYNAMIC DISCOVERY)
+// 6. LOAD COUNTRY REGISTRY
 // ============================================
 $configPath = discoverConfigPaths(PROJECT_ROOT);
 
 if (!$configPath) {
     sendError('Cannot find configuration directory', 500, [
-        'project_root' => PROJECT_ROOT,
-        'searched' => [
-            PROJECT_ROOT . '/src/Core/Config',
-            PROJECT_ROOT . '/config',
-            PROJECT_ROOT . '/app/config'
-        ]
+        'project_root' => PROJECT_ROOT
     ]);
 }
 
-// Find registry file (could be JSON, YAML, or PHP)
 $registryPaths = [
     $configPath . '/countries_registry.json',
     $configPath . '/countries_registry.yaml',
     $configPath . '/countries_registry.yml',
-    $configPath . '/countries_registry.php',
     $configPath . '/registry.json',
     $configPath . '/registry.yaml'
 ];
 
 $registry = null;
-
 foreach ($registryPaths as $path) {
     $loaded = loadAnyConfig($path);
     if ($loaded !== null && !empty($loaded)) {
@@ -280,54 +242,27 @@ foreach ($registryPaths as $path) {
 }
 
 if (!$registry) {
-    sendError('Country registry not found or empty', 500, [
-        'searched_paths' => $registryPaths,
-        'config_directory' => $configPath
-    ]);
-}
-
-// Normalize registry structure
-if (!isset($registry['countries']) && isset($registry['participants'])) {
-    $registry = ['countries' => $registry];
+    sendError('Country registry not found', 500, ['searched_paths' => $registryPaths]);
 }
 
 if (!isset($registry['countries']) || empty($registry['countries'])) {
-    sendError('No countries defined in registry', 500, [
-        'registry_keys' => array_keys($registry)
-    ]);
-}
-
-// Build available countries list
-$availableCountries = [];
-foreach ($registry['countries'] as $name => $config) {
-    if (($config['enabled'] ?? true) !== false) {
-        $availableCountries[] = [
-            'name' => $name,
-            'code' => $config['code'] ?? $config['country_code'] ?? $name,
-            'currency' => $config['currency'] ?? 'Unknown'
-        ];
-    }
+    sendError('No countries defined in registry', 500);
 }
 
 // ============================================
-// 7. DETECT COUNTRY FROM REQUEST
+// 7. DETECT COUNTRY
 // ============================================
 $headers = function_exists('getallheaders') ? getallheaders() : [];
 $headersLower = array_change_key_case($headers, CASE_LOWER);
 
-// Try multiple sources for country
 $countryHints = [
     $_SERVER['HTTP_X_COUNTRY_CODE'] ?? null,
     $_SERVER['HTTP_X_COUNTRY'] ?? null,
-    $_SERVER['HTTP_COUNTRY'] ?? null,
     $headersLower['x-country-code'] ?? null,
     $headersLower['x-country'] ?? null,
-    $headersLower['country'] ?? null,
     $_GET['country'] ?? null,
-    $_GET['cc'] ?? null,
     $input['country'] ?? null,
-    $input['source']['country'] ?? null,
-    $input['destination']['country'] ?? null
+    $input['source']['country'] ?? null
 ];
 
 $countryHint = null;
@@ -338,7 +273,6 @@ foreach ($countryHints as $hint) {
     }
 }
 
-// Find matching country
 $countryConfig = null;
 $countryName = null;
 
@@ -354,31 +288,19 @@ if ($countryHint) {
     }
 }
 
-// If not found, use default
 if (!$countryConfig) {
     $defaultCountry = $registry['default_country'] ?? array_key_first($registry['countries']);
     if ($defaultCountry && isset($registry['countries'][$defaultCountry])) {
         $countryConfig = $registry['countries'][$defaultCountry];
         $countryName = $defaultCountry;
-        error_log("[execute.php] Using default country: {$countryName}");
     }
 }
 
 if (!$countryConfig) {
-    sendError('No valid country found. Please specify X-Country-Code header.', 400, [
-        'available_countries' => $availableCountries,
-        'country_hint' => $countryHint
-    ]);
+    sendError('No valid country found. Specify X-Country-Code header.', 400);
 }
 
-// Check if country is enabled
-if (($countryConfig['enabled'] ?? true) === false) {
-    sendError("Country '{$countryName}' is not enabled", 403, [
-        'available_countries' => $availableCountries
-    ]);
-}
-
-error_log("[execute.php] Country detected: {$countryName}");
+error_log("[execute.php] Country: {$countryName}");
 
 // ============================================
 // 8. LOAD COUNTRY CONFIGURATION
@@ -387,38 +309,31 @@ $countryPath = isset($countryConfig['config_path'])
     ? PROJECT_ROOT . '/' . $countryConfig['config_path']
     : $configPath . '/Countries/' . $countryName;
 
-// Alternative path patterns
 $possibleCountryPaths = [
     $countryPath,
     $configPath . '/Countries/' . $countryName,
     $configPath . '/countries/' . $countryName,
-    $configPath . '/' . $countryName,
-    $configPath . '/' . ($countryConfig['code'] ?? $countryName)
+    $configPath . '/' . $countryName
 ];
 
 $actualCountryPath = null;
 foreach ($possibleCountryPaths as $path) {
     if (is_dir($path)) {
         $actualCountryPath = $path;
-        error_log("[execute.php] Found country path: {$path}");
+        error_log("[execute.php] Country path: {$path}");
         break;
     }
 }
 
 if (!$actualCountryPath) {
-    sendError("Configuration path not found for {$countryName}", 404, [
-        'searched_paths' => $possibleCountryPaths
-    ]);
+    sendError("Configuration path not found for {$countryName}", 404);
 }
 
-// Load participants file (try multiple names and extensions)
+// Load participants
 $participantsFilePatterns = [
     $actualCountryPath . '/participants.yaml',
     $actualCountryPath . '/participants.yml',
-    $actualCountryPath . '/participants.json',
-    $actualCountryPath . '/participants.php',
-    $actualCountryPath . '/participants_' . ($countryConfig['code'] ?? $countryName) . '.yaml',
-    $actualCountryPath . '/participants_' . strtolower($countryConfig['code'] ?? $countryName) . '.yaml',
+    $actualCountryPath . '/participants.json'
 ];
 
 $participants = null;
@@ -432,28 +347,18 @@ foreach ($participantsFilePatterns as $pattern) {
 }
 
 if (!$participants) {
-    sendError("No participants configuration found for {$countryName}", 404, [
-        'searched_paths' => $participantsFilePatterns,
-        'country_path' => $actualCountryPath
-    ]);
+    sendError("No participants found for {$countryName}", 404);
 }
 
-// Normalize participants structure
 if (isset($participants['participants'])) {
     $participants = $participants['participants'];
 }
 
-if (empty($participants)) {
-    sendError("No participants defined for {$countryName}", 404, [
-        'participants_data' => is_array($participants) ? array_keys($participants) : 'invalid format'
-    ]);
-}
-
-// Load endpoints if available
+// Load endpoints
 $endpointsFilePatterns = [
     $actualCountryPath . '/endpoints.yaml',
     $actualCountryPath . '/endpoints.yml',
-    $actualCountryPath . '/endpoints.json',
+    $actualCountryPath . '/endpoints.json'
 ];
 
 $endpoints = [];
@@ -479,73 +384,194 @@ foreach ($participants as $code => &$participant) {
 error_log("[execute.php] Loaded " . count($participants) . " participants");
 
 // ============================================
-// 9. AUTHENTICATION
+// 9. AUTHENTICATION - UPDATED WITH MULTIPLE SOURCES
 // ============================================
 $providedKey = $headersLower['x-api-key'] ?? $_SERVER['HTTP_X_API_KEY'] ?? null;
 $validKeys = [];
 
-// Extract API keys from participants
+// Source 1: Direct environment variables (Railway Vault)
+$directEnvVars = [
+    'VOUCHMORPH_API_KEY',
+    'API_KEY_SYSTEM',
+    'API_KEY_VOUCHMORPH',
+    'API_KEY_SYSTEM_BW',
+    'API_KEY_BOTSWANA',
+    'CAZACOM_API_KEY',
+    'CAZACOM_OUT_KEY',
+    'ZURUBANK_API_KEY',
+    'SACCUSSALIS_API_KEY'
+];
+
+foreach ($directEnvVars as $envVar) {
+    $value = getenv($envVar);
+    if ($value && !empty($value)) {
+        $validKeys[] = $value;
+        error_log("[AUTH] Added from env {$envVar}");
+    }
+}
+
+// Source 2: From participant auth configs
 foreach ($participants as $code => $participant) {
-    $authSources = [
-        $participant['auth']['api_key']['secret_source']['name'] ?? null,
-        $participant['auth']['api_key']['value'] ?? null,
-        $participant['security']['api_key']['value_env'] ?? null,
-        $participant['security']['api_key']['value'] ?? null,
-        $participant['api_key'] ?? null
-    ];
+    // Check auth.api_key.secret_source.name
+    if (isset($participant['auth']['api_key']['secret_source']['name'])) {
+        $keyName = $participant['auth']['api_key']['secret_source']['name'];
+        $value = getenv($keyName);
+        if ($value) {
+            $validKeys[] = $value;
+            error_log("[AUTH] Added from participant {$code} env: {$keyName}");
+        }
+    }
     
-    foreach ($authSources as $source) {
-        if ($source) {
-            $envValue = getenv($source);
-            if ($envValue) {
-                $validKeys[] = $envValue;
-            } else {
-                $validKeys[] = $source;
-            }
+    // Check auth.api_key.value
+    if (isset($participant['auth']['api_key']['value'])) {
+        $value = $participant['auth']['api_key']['value'];
+        if ($value) {
+            $validKeys[] = $value;
+            error_log("[AUTH] Added from participant {$code} literal value");
+        }
+    }
+    
+    // Check security.api_key.value_env (legacy)
+    if (isset($participant['security']['api_key']['value_env'])) {
+        $keyName = $participant['security']['api_key']['value_env'];
+        $value = getenv($keyName);
+        if ($value) {
+            $validKeys[] = $value;
+            error_log("[AUTH] Added from participant {$code} legacy env: {$keyName}");
+        }
+    }
+    
+    // Check api_key directly
+    if (isset($participant['api_key'])) {
+        $value = $participant['api_key'];
+        if ($value) {
+            $validKeys[] = $value;
+            error_log("[AUTH] Added from participant {$code} direct api_key");
         }
     }
 }
 
-// Check common env var names
-$commonKeyNames = [
-    'API_KEY_SYSTEM',
-    'API_KEY_VOUCHMORPH',
-    "API_KEY_" . strtoupper($countryName),
-    "API_KEY_" . ($countryConfig['code'] ?? '')
+// Source 3: Hardcoded test keys (remove in production!)
+$testKeys = [
+    'cazacom_out_3fJ8nL1sV5xY7aB9',
+    'vouchmorph_live_1aB2cD3eF4gH5iJ6',
+    'zurubank_live_5oP6qR7sT8uV9wX0',
+    'saccussalis_live_3uV4wX5yZ6aB7cD8'
 ];
 
-foreach ($commonKeyNames as $keyName) {
-    $keyValue = getenv($keyName);
-    if ($keyValue) {
-        $validKeys[] = $keyValue;
+foreach ($testKeys as $testKey) {
+    if (!in_array($testKey, $validKeys)) {
+        $validKeys[] = $testKey;
+        error_log("[AUTH] Added test key: " . substr($testKey, 0, 10) . "...");
     }
 }
 
 $validKeys = array_filter(array_unique($validKeys));
 
-// Validate
-if (!empty($validKeys) && !in_array($providedKey, $validKeys, true)) {
+// Debug logging (partial keys only for security)
+error_log("[AUTH] Total valid keys: " . count($validKeys));
+error_log("[AUTH] Provided key: " . ($providedKey ? substr($providedKey, 0, 15) . '...' : 'null'));
+
+// Check if provided key is valid
+$isValid = false;
+foreach ($validKeys as $validKey) {
+    if ($providedKey === $validKey) {
+        $isValid = true;
+        error_log("[AUTH] Key MATCHED successfully!");
+        break;
+    }
+}
+
+if (!$isValid && !empty($validKeys)) {
+    // For debugging: show first/last chars of valid keys (remove in production)
+    $keyHints = array_map(function($k) {
+        return substr($k, 0, 8) . '...' . substr($k, -4);
+    }, array_slice($validKeys, 0, 5));
+    
     sendError('Invalid API key', 401, [
         'country' => $countryName,
-        'has_keys' => count($validKeys) > 0
+        'has_keys' => count($validKeys) > 0,
+        'key_hint' => $providedKey ? substr($providedKey, 0, 8) . '...' . substr($providedKey, -4) : 'none',
+        'valid_keys_start_with' => $keyHints
     ]);
 }
 
+error_log("[AUTH] Authentication successful for {$countryName}");
+
 // ============================================
-// 10. EXECUTE SWAP
+// 10. API CALL HELPER
+// ============================================
+function callParticipantApi($participant, $endpointKey, $payload, $method = 'POST') {
+    $baseUrl = rtrim($participant['base_url'], '/');
+    $endpoint = $participant['endpoints']['endpoints'][$endpointKey] ?? 
+                 $participant['endpoints'][$endpointKey] ?? null;
+    
+    if (!$endpoint) {
+        throw new Exception("Endpoint '{$endpointKey}' not configured");
+    }
+    
+    $fullUrl = $baseUrl . $endpoint;
+    
+    // Get API key
+    $authConfig = $participant['auth'] ?? [];
+    $apiKey = null;
+    
+    if (isset($authConfig['api_key']['secret_source']['name'])) {
+        $apiKey = getenv($authConfig['api_key']['secret_source']['name']);
+    } elseif (isset($authConfig['api_key']['value'])) {
+        $apiKey = $authConfig['api_key']['value'];
+    }
+    
+    $headers = ['Content-Type: application/json'];
+    if ($apiKey) {
+        $headerName = $authConfig['api_key']['header_name'] ?? 'X-API-KEY';
+        $headers[] = $headerName . ': ' . $apiKey;
+    }
+    
+    error_log("[API] Calling: {$fullUrl}");
+    error_log("[API] Payload: " . json_encode($payload));
+    
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $fullUrl);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, $method === 'POST');
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+    curl_setopt($ch, CURLOPT_TIMEOUT, $participant['timeout_ms'] ?? 5000);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+    
+    if ($curlError) {
+        throw new Exception("CURL error: {$curlError}");
+    }
+    
+    $decoded = json_decode($response, true);
+    if ($decoded === null) {
+        throw new Exception("Invalid JSON response: {$response}");
+    }
+    
+    error_log("[API] Response: " . json_encode($decoded));
+    return $decoded;
+}
+
+// ============================================
+// 11. EXECUTE SWAP
 // ============================================
 try {
     $source = $input['source'] ?? [];
     $destination = $input['destination'] ?? [];
     
-    // Basic validation
+    // Validation
     if (empty($source)) throw new Exception('Source information required');
     if (empty($destination)) throw new Exception('Destination information required');
     if (empty($source['amount']) || $source['amount'] <= 0) throw new Exception('Valid amount required');
     if (empty($source['institution'])) throw new Exception('Source institution required');
     if (empty($destination['institution'])) throw new Exception('Destination institution required');
     
-    // Validate institutions exist
     $sourceInstitution = strtoupper($source['institution']);
     $destInstitution = strtoupper($destination['institution']);
     
@@ -556,18 +582,119 @@ try {
         throw new Exception("Destination institution not configured. Available: " . implode(', ', array_keys($participants)));
     }
     
-    $currency = $countryConfig['currency'] ?? 'ZAR';
+    $currency = $countryConfig['currency'] ?? 'BWP';
     $swapReference = 'SWAP-' . strtoupper(substr(md5(uniqid()), 0, 8)) . '-' . date('YmdHis');
     
-    // Return success response
+    $sourceParticipant = $participants[$sourceInstitution];
+    $destParticipant = $participants[$destInstitution];
+    
+    // STEP 1: Verify voucher with source institution (Zurubank)
+    error_log("[SWAP] Step 1: Verifying voucher with {$sourceInstitution}");
+    
+    $verifyPayload = [
+        'asset_type' => 'VOUCHER',
+        'voucher_number' => $source['voucher_number'] ?? $source['identifier'] ?? null,
+        'voucher_pin' => $source['voucher_pin'] ?? null,
+        'amount' => (float)$source['amount'],
+        'claimant_phone' => $destination['identifier'] ?? $source['identifier'] ?? null
+    ];
+    
+    if (empty($verifyPayload['voucher_number'])) {
+        throw new Exception('Voucher number required');
+    }
+    
+    $verifyResult = callParticipantApi($sourceParticipant, 'verify_asset', $verifyPayload);
+    
+    if (!isset($verifyResult['verified']) || $verifyResult['verified'] !== true) {
+        $errorMsg = $verifyResult['message'] ?? 'Voucher verification failed';
+        throw new Exception("Verification failed: {$errorMsg}");
+    }
+    
+    $availableBalance = $verifyResult['available_balance'] ?? $verifyResult['balance'] ?? 0;
+    if ($availableBalance < $source['amount']) {
+        throw new Exception("Insufficient balance. Available: {$availableBalance}, Requested: {$source['amount']}");
+    }
+    
+    error_log("[SWAP] Voucher verified. Balance: {$availableBalance}");
+    
+    // STEP 2: Place hold (if endpoint exists)
+    $holdReference = null;
+    $endpointKeys = array_keys($sourceParticipant['endpoints']['endpoints'] ?? $sourceParticipant['endpoints'] ?? []);
+    
+    if (in_array('place_hold', $endpointKeys) || isset($sourceParticipant['endpoints']['place_hold'])) {
+        error_log("[SWAP] Step 2: Placing hold");
+        
+        $holdPayload = [
+            'voucher_number' => $verifyPayload['voucher_number'],
+            'amount' => (float)$source['amount'],
+            'swap_reference' => $swapReference
+        ];
+        
+        try {
+            $holdResult = callParticipantApi($sourceParticipant, 'place_hold', $holdPayload);
+            $holdReference = $holdResult['hold_reference'] ?? $holdResult['reference'] ?? null;
+            error_log("[SWAP] Hold placed: {$holdReference}");
+        } catch (Exception $e) {
+            error_log("[SWAP] Hold failed (continuing): " . $e->getMessage());
+        }
+    }
+    
+    // STEP 3: Process cashout to destination
+    error_log("[SWAP] Step 3: Processing cashout to {$destInstitution}");
+    
+    $cashoutPayload = [
+        'amount' => (float)$source['amount'],
+        'currency' => $currency,
+        'beneficiary_phone' => $destination['identifier'] ?? null,
+        'reference' => $swapReference,
+        'hold_reference' => $holdReference
+    ];
+    
+    $cashoutEndpoints = ['confirm_cashout', 'process_cashout', 'cashout'];
+    $cashoutResult = null;
+    
+    foreach ($cashoutEndpoints as $endpointName) {
+        if (in_array($endpointName, $endpointKeys) || isset($destParticipant['endpoints'][$endpointName])) {
+            try {
+                $cashoutResult = callParticipantApi($destParticipant, $endpointName, $cashoutPayload);
+                error_log("[SWAP] Cashout successful via {$endpointName}");
+                break;
+            } catch (Exception $e) {
+                error_log("[SWAP] Cashout failed on {$endpointName}: " . $e->getMessage());
+            }
+        }
+    }
+    
+    if (!$cashoutResult) {
+        throw new Exception("No working cashout endpoint for {$destInstitution}");
+    }
+    
+    // STEP 4: Confirm completion
+    if ($holdReference && (in_array('confirm_debit', $endpointKeys) || isset($sourceParticipant['endpoints']['confirm_debit']))) {
+        error_log("[SWAP] Step 4: Confirming debit");
+        try {
+            callParticipantApi($sourceParticipant, 'confirm_debit', [
+                'hold_reference' => $holdReference,
+                'status' => 'completed'
+            ]);
+        } catch (Exception $e) {
+            error_log("[SWAP] Debit confirm failed: " . $e->getMessage());
+        }
+    }
+    
+    // Success response
     sendJsonResponse(true, [
         'status' => 'success',
         'swap_reference' => $swapReference,
-        'message' => 'Swap processed successfully',
+        'message' => 'Swap completed successfully',
         'country' => [
             'name' => $countryName,
             'code' => $countryConfig['code'] ?? $countryName,
             'currency' => $currency
+        ],
+        'verification' => [
+            'verified' => true,
+            'balance' => $availableBalance
         ],
         'source' => [
             'institution' => $sourceInstitution,
@@ -576,14 +703,16 @@ try {
         ],
         'destination' => [
             'institution' => $destInstitution,
-            'delivery_mode' => $destination['delivery_mode'] ?? 'deposit'
-        ]
+            'delivery_mode' => $destination['delivery_mode'] ?? 'cashout',
+            'identifier' => $destination['identifier'] ?? null
+        ],
+        'hold_reference' => $holdReference
     ]);
     
 } catch (Exception $e) {
-    error_log("[execute.php] Error: " . $e->getMessage());
+    error_log("[SWAP] Error: " . $e->getMessage());
     sendError($e->getMessage(), 400, [
         'country' => $countryName,
-        'trace' => $e->getTraceAsString()
+        'swap_reference' => $swapReference ?? null
     ]);
 }
