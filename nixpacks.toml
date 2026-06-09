@@ -1,0 +1,23 @@
+[phases.setup]
+nixPkgs = ["php83", "php83Extensions.pdo_pgsql", "php83Extensions.pgsql", "postgresql"]
+
+[phases.install]
+cmds = [
+    "composer install --no-dev --optimize-autoloader",
+    "mkdir -p /etc/php/conf.d",
+    "echo 'extension=pdo_pgsql' > /etc/php/conf.d/pdo_pgsql.ini",
+    "echo 'extension=pgsql' > /etc/php/conf.d/pgsql.ini"
+]
+
+[phases.build]
+cmds = [
+    "php -m | grep -q pdo_pgsql || echo 'WARNING: pdo_pgsql not found'"
+]
+
+[start]
+cmd = "php -d extension=pdo_pgsql.so -d extension=pgsql.so -S 0.0.0.0:$PORT -t public"
+
+[deploy]
+healthcheckPath = "/health.php"
+healthcheckTimeout = 100
+restartPolicyType = "ON_FAILURE"
