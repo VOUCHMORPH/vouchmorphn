@@ -1,0 +1,210 @@
+# ============================================
+# PARTICIPANT ENDPOINTS
+# ============================================
+# One file. Dashboard loads this dynamically.
+# To get endpoints for a participant:
+#   endpoints[participant_id][operation]
+# ============================================
+
+version: "2.1.0"
+
+# ------------------------------------------------------------
+# ZURUBANK_SA - Traditional bank (South Africa)
+# ------------------------------------------------------------
+ZURUBANK_SA:
+  
+  # Connection details
+  base_url: "https://zurubank-southafrica-production.up.railway.app/Backend"
+  timeout_ms: 5000
+  sandbox_mode: true
+  adapter_class: "GenericFinancialInstitutionAdapter"
+  
+  # Authentication
+  auth:
+    type: MTLS_OAUTH2
+    api_key:
+      header_name: "X-API-KEY"
+      secret_source:
+        type: env_var
+        name: "API_KEY_ZURUBANK_SA"
+    oauth2:
+      token_endpoint: "/oauth2/token"
+      client_id_source:
+        type: env_var
+        name: "ZURUBANK_SA_CLIENT_ID"
+      client_secret_source:
+        type: env_var
+        name: "ZURUBANK_SA_CLIENT_SECRET"
+      scope: "payments settlement"
+    request_signing:
+      algorithm: "RSA-SHA256"
+      private_key_source:
+        type: env_var
+        name: "ZURUBANK_SA_SIGNING_KEY"
+  
+  # API endpoints by operation
+  endpoints:
+    deposit:
+      verify_asset: "/api/v1/verify_asset.php"
+      place_hold: "/api/v1/hold.php"
+      confirm_deposit: "/api/v1/deposit/direct.php"
+      release_hold: "/api/v1/hold.php"
+    
+    cashout:
+      verify_asset: "/api/v1/verify_asset.php"
+      place_hold: "/api/v1/hold.php"
+      debit_funds: "/api/v1/settlement/notify_debit.php"
+      confirm_cashout: "/api/v1/atm_cashout.php"
+      generate_token: "/api/v1/atm/generate_code.php"
+      verify_token: "/api/v1/atm/atm_cashout.php"
+      release_hold: "/api/v1/hold.php"
+    
+    common:
+      reverse_transaction: "/api/v1/hold.php"
+      health: "/health"
+  
+  # Callbacks (where ZURUBANK_SA calls us)
+  callbacks:
+    hold_confirmed: "/api/v1/callbacks/hold-confirmed"
+    hold_released: "/api/v1/callbacks/hold-released"
+    debit_confirmed: "/api/v1/callbacks/debit-confirmed"
+    deposit_confirmed: "/api/v1/callbacks/deposit-confirmed"
+    reversal_confirmed: "/api/v1/callbacks/reversal-confirmed"
+  
+  # Formatting rules
+  phone_format:
+    prefix: "+"
+    country_code: "27"
+    strip_leading_zeros: true
+    expected_length: 10
+    remove_country_code_for_local: false
+  
+  message_profile:
+    correlation_id_header: "X-Correlation-ID"
+    idempotency_key_header: "X-Idempotency-Key"
+    signature_header: "X-Signature"
+    timestamp_header: "X-Timestamp"
+    trace_id_prefix: "ZURUBANKSA"
+    timestamp_format: "ISO8601"
+    content_type: "application/json"
+    content_standard: "ISO20022_JSON"
+    requires_trace_id: true
+  
+  retry_policy:
+    max_retries: 3
+    retry_delay_ms: 1000
+    retry_on: [timeout, 5xx, connection_error]
+  
+  idempotency:
+    enabled: true
+    header_name: "X-Idempotency-Key"
+    key_ttl_seconds: 86400
+  
+  health_check:
+    enabled: true
+    endpoint: "/health"
+    method: "GET"
+    expected_status: 200
+
+# ------------------------------------------------------------
+# VOUCHMORPH - Technical provider
+# ------------------------------------------------------------
+VOUCHMORPH:
+  
+  base_url: "https://vouchmorph-southafrica-production.up.railway.app"
+  timeout_ms: 5000
+  sandbox_mode: true
+  adapter_class: "VouchMorphTechnicalProviderAdapter"
+  
+  auth:
+    type: API_KEY
+    header_name: "X-API-KEY"
+    secret_source:
+      type: env_var
+      name: "API_KEY_SYSTEM_SA"
+  
+  endpoints:
+    deposit:
+      load_card: "/api/v1/cards/load.php"
+      authorize: "/api/v1/cards/authorize.php"
+      check_balance: "/api/v1/cards/balance.php"
+    
+    cashout:
+      authorize: "/api/v1/cards/authorize.php"
+      swipe: "/api/v1/cards/swipe.php"
+      check_balance: "/api/v1/cards/balance.php"
+    
+    swap:
+      execute: "/api/v1/swap/execute.php"
+      status: "/api/v1/swap/status.php"
+      cancel: "/api/v1/swap/cancel.php"
+    
+    common:
+      issue_card: "/api/v1/cards/issue.php"
+      block_card: "/api/v1/cards/block.php"
+      transactions: "/api/v1/cards/transactions.php"
+      health: "/health"
+      regulatory_report: "/api/regulatory/report"
+      card_settlement: "/api/v1/cards/settlement.php"
+  
+  callbacks:
+    hold_confirmed: "/api/v1/callbacks/hold-confirmed"
+    hold_released: "/api/v1/callbacks/hold-released"
+    debit_confirmed: "/api/v1/callbacks/debit-confirmed"
+    deposit_confirmed: "/api/v1/callbacks/deposit-confirmed"
+    reversal_confirmed: "/api/v1/callbacks/reversal-confirmed"
+    swap_completed: "/api/v1/callbacks/swap-completed"
+  
+  # Card-specific configuration
+  card_config:
+    message_based:
+      authorization_expiry_days: 30
+      requires_hold: true
+      fee_collection: "on_settlement"
+      supports_partial_usage: true
+    balance_based:
+      requires_hold: false
+      fee_collection: "on_load"
+      supports_partial_usage: true
+    default_card_type: "message_based"
+    supports_card_authorization: true
+    supports_card_swipe_settlement: true
+  
+  # Formatting rules
+  phone_format:
+    prefix: "+"
+    country_code: "27"
+    strip_leading_zeros: true
+    expected_length: 10
+  
+  message_profile:
+    correlation_id_header: "X-Correlation-ID"
+    idempotency_key_header: "X-Idempotency-Key"
+    trace_id_prefix: "VOUCHMORPH"
+    timestamp_format: "ISO8601"
+    content_type: "application/json"
+    content_standard: "ISO20022_JSON"
+    requires_trace_id: true
+  
+  retry_policy:
+    max_retries: 3
+    retry_delay_ms: 1000
+    retry_on: [timeout, 5xx, connection_error]
+  
+  idempotency:
+    enabled: true
+    header_name: "X-Idempotency-Key"
+    key_ttl_seconds: 86400
+  
+  health_check:
+    enabled: true
+    endpoint: "/health"
+    method: "GET"
+    expected_status: 200
+  
+  settlement:
+    account: "VOUCHMORPH_SETTLEMENT_SA"
+    type: "POOLED"
+    currency: "ZAR"
+    settlement_cycle: "T+1"
+    cutoff_time: "16:00"
