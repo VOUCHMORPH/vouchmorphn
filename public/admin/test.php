@@ -1,26 +1,20 @@
 <?php
-// Secure Vault Reader - No environment variables needed
+// /public/admin/test.php
+header('Content-Type: application/json');
+
+// Secure Vault Reader
 class RailwayVaultReader {
     private $vaultUrl;
     private $vaultToken;
     
     public function __construct() {
-        // These come from Railway injection (not API keys)
         $this->vaultUrl = getenv('RAILWAY_SERVICE_VAULT_URL');
         $this->vaultToken = getenv('RAILWAY_VAULT_TOKEN');
-        
-        if (!$this->vaultUrl || !$this->vaultToken) {
-            error_log("Vault not available - running in local mode");
-        }
     }
     
-    /**
-     * Get secret directly from Railway Vault
-     */
     public function getSecret(string $path, string $key = 'value'): ?string {
         if (!$this->vaultUrl || !$this->vaultToken) {
-            // Fallback for local development only
-            return getenv($path) ?: null;
+            return null;
         }
         
         try {
@@ -32,6 +26,7 @@ class RailwayVaultReader {
                 'Content-Type: application/json'
             ]);
             curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
             
             $response = curl_exec($ch);
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -42,80 +37,82 @@ class RailwayVaultReader {
                 return $data['data'][$key] ?? $data[$key] ?? null;
             }
             
-            error_log("Vault read failed for {$path}: HTTP {$httpCode}");
             return null;
-            
         } catch (Exception $e) {
-            error_log("Vault error: " . $e->getMessage());
             return null;
         }
     }
     
-    /**
-     * Get API key for a specific participant
-     */
     public function getApiKey(string $participant): ?string {
-        // Try multiple path patterns
         $paths = [
             "secret/participants/{$participant}/api_key",
             "secret/swap-system/api_keys/{$participant}",
-            "secret/api_keys/{$participant}",
-            "kv/participants/{$participant}"
+            "secret/api_keys/{$participant}"
         ];
         
         foreach ($paths as $path) {
             $key = $this->getSecret($path);
-            if ($key) {
-                error_log("Retrieved API key for {$participant} from vault path: {$path}");
-                return $key;
-            }
+            if ($key) return $key;
         }
         
         return null;
     }
     
-    /**
-     * Get all API keys from vault
-     */
     public function getAllApiKeys(): array {
         $keys = [];
-        
-        // List of participants from config
         $participants = ['ZURUBANK', 'SACCUSSALIS', 'CAZACOM', 'VOUCHMORPH'];
         
         foreach ($participants as $participant) {
             $key = $this->getApiKey($participant);
-            if ($key) {
-                $keys[] = $key;
-            }
+            if ($key) $keys[$participant] = $key;
         }
         
         return $keys;
     }
 }
 
-// Initialize vault reader
+// Initialize
 $vault = new RailwayVaultReader();
 
-// For authentication - read API keys from vault, NOT from env
-function authenticate($providedKey, $vault) {
-    $validKeys = $vault->getAllApiKeys();
-    
-    // Also check system key
-    $systemKey = $vault->getSecret('secret/swap-system/system_api_key');
-    if ($systemKey) {
-        $validKeys[] = $systemKey;
+// Collect debug info
+$debug = [
+    'vault_url_available' => getenv('RAILWAY_SERVICE_VAULT_URL') ? 'yes' : 'no',
+    'vault_token_available' => getenv('RAILWAY_VAULT_TOKEN') ? 'yes' : 'no',
+    'vault_url_value' => getenv('RAILWAY_SERVICE_VAULT_URL') ? substr(getenv('RAILWAY_SERVICE_VAULT_URL'), 0, 30) . '...' : 'not set',
+    'api_keys_from_vault' => [],
+    'environment_variables' => []
+];
+
+// Try to get API keys from vault
+$keys = $vault->getAllApiKeys();
+if (!empty($keys)) {
+    foreach ($keys as $participant => $key) {
+        $debug['api_keys_from_vault'][$participant] = substr($key, 0, 10) . '...' . substr($key, -5);
     }
-    
-    if (!empty($validKeys) && !in_array($providedKey, $validKeys, true)) {
-        http_response_code(401);
-        echo json_encode([
-            'success' => false,
-            'error' => 'Invalid API key',
-            'message' => 'API key not found in vault'
-        ]);
-        exit();
-    }
-    
-    return true;
+} else {
+    $debug['api_keys_from_vault'] = 'No keys found in vault';
 }
+
+// Also check environment variables (for debugging)
+$env_keys = ['API_KEY_SYSTEM', 'API_KEY_ZURUBANK', 'API_KEY_SACCUSSALIS', 'VOUCHMORPH_API_KEY'];
+foreach ($env_keys as $key) {
+    $value = getenv($key);
+    if ($value) {
+        $debug['environment_variables'][$key] = substr($value, 0, 10) . '...' . substr($value, -5);
+    }
+}
+
+// Output results
+echo json_encode([
+    'service' => 'Railway Vault Test',
+    'timestamp' => date('Y-m-d H:i:s'),
+    'debug' => $debug,
+    'status' => !empty($keys) ? 'Vault working' : 'Vault not accessible',
+    'next_steps' => empty($keys) ? [
+        '1. Go to Railway Dashboard',
+        '2. Click on your service',
+        '3. Go to Variables tab',
+        '4. Add API keys as service variables (not just project variables)',
+        '5. Or use: railway variables set API_KEY_ZURUBANK=your_key_here'
+    ] : 'Vault is working! Use the keys above.'
+], JSON_PRETTY_PRINT);
