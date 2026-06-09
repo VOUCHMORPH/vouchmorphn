@@ -4866,3 +4866,14 @@ ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS event_type VARCHAR(50);
 ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS client_id VARCHAR(255);
 ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS endpoint VARCHAR(255);
 ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS duration_ms INTEGER;
+
+
+CREATE TABLE idempotency_keys (
+    key VARCHAR(255) PRIMARY KEY,
+    operation VARCHAR(100),
+    result JSONB,
+    created_at TIMESTAMP
+);
+
+CREATE INDEX idx_idempotency_created_at 
+ON idempotency_keys (created_at);
