@@ -27,29 +27,42 @@ ZURUBANK:
       type: env_var
       name: "ZURUBANK_API_KEY"
   
-  # API endpoints by operation
+  # OAuth endpoints (for linking accounts)
+  oauth:
+    authorization_url: "/oauth/authorize"
+    token_url: "/oauth/token"
+    refresh_url: "/oauth/refresh"
+    revoke_url: "/oauth/revoke"
+    userinfo_url: "/oauth/userinfo"
+    scopes: ["balance", "transactions", "payments"]
+  
+  # API endpoints by operation (mapping to BankAPIInterface)
   endpoints:
-    # Deposit operations (money INTO participant)
-    deposit:
-      verify_account: "/api/v1/verify_asset.php"
-      place_hold: "/api/v1/hold.php"
-      confirm_deposit: "/api/v1/deposit/direct.php"
-      release_hold: "/api/v1/hold.php"
+    # SOURCE ROLE METHODS
+    source:
+      verify_asset: "/api/v1/verify_asset.php"           # verifyAsset()
+      place_hold: "/api/v1/hold.php"                     # placeHold()
+      debit_funds: "/api/v1/settlement/notify_debit.php" # debitFunds()
+      release_hold: "/api/v1/hold.php"                   # releaseHold()
+      get_balance: "/api/v1/balance.php"                 # getAccountBalance()
+      get_transactions: "/api/v1/transactions.php"       # getTransactions()
     
-    # Cashout operations (money OUT OF participant)
-    cashout:
-      verify_asset: "/api/v1/verify_asset.php"
-      place_hold: "/api/v1/hold.php"
-      debit_funds: "/api/v1/settlement/notify_debit.php"
-      confirm_cashout: "/api/v1/atm_cashout.php"
-      generate_token: "/api/v1/atm/generate_code.php"
-      verify_token: "/api/v1/atm/atm_cashout.php"
-      release_hold: "/api/v1/hold.php"
+    # DESTINATION ROLE METHODS - Cashout flow
+    destination_cashout:
+      generate_token: "/api/v1/atm/generate_code.php"    # generateToken()
+      verify_token: "/api/v1/atm/atm_cashout.php"        # verifyToken()
+      confirm_cashout: "/api/v1/atm_cashout.php"         # confirmCashout()
     
-    # Common operations
+    # DESTINATION ROLE METHODS - Deposit flow
+    destination_deposit:
+      process_deposit: "/api/v1/deposit/direct.php"      # processDeposit()
+      verify_account: "/api/v1/verify_asset.php"         # verifyAsset() for destination
+    
+    # Common operations (legacy/compatibility)
     common:
-      reverse_transaction: "/api/v1/hold.php"
-      status: "/api/v1/status"
+      transfer: "/api/v1/transfer.php"                   # transfer()
+      reverse: "/api/v1/hold.php"                        # reverse()
+      status: "/api/v1/status"                           # checkStatus()
       health: "/health"
   
   # Callbacks (where ZURUBANK calls us)
@@ -59,13 +72,16 @@ ZURUBANK:
     debit_confirmed: "/api/v1/callbacks/debit-confirmed"
     deposit_confirmed: "/api/v1/callbacks/deposit-confirmed"
     reversal_confirmed: "/api/v1/callbacks/reversal-confirmed"
+    cashout_confirmed: "/api/v1/callbacks/cashout-confirmed"
   
-  # Formatting rules
+  # Phone formatting rules
   phone_format:
     prefix: "+"
     country_code: "267"
     expected_length: 11
+    supported_networks: ["mascom", "orange", "btc"]
   
+  # Message formatting
   message_profile:
     correlation_id_header: "X-Correlation-ID"
     idempotency_key_header: "X-Idempotency-Key"
@@ -73,6 +89,7 @@ ZURUBANK:
     timestamp_header: "X-Timestamp"
     trace_id_prefix: "ZURUBANK"
   
+  # Retry policy
   retry_policy:
     max_retries: 3
     retry_delay_ms: 1000
@@ -95,24 +112,35 @@ SACCUSSALIS:
       type: env_var
       name: "SACCUSSALIS_API_KEY"
   
+  oauth:
+    authorization_url: "/oauth/authorize"
+    token_url: "/oauth/token"
+    refresh_url: "/oauth/refresh"
+    revoke_url: "/oauth/revoke"
+    userinfo_url: "/oauth/userinfo"
+    scopes: ["balance", "transactions", "payments"]
+  
   endpoints:
-    deposit:
-      verify_account: "/api/v1/verify_asset.php"
-      place_hold: "/api/v1/hold.php"
-      confirm_deposit: "/api/v1/transaction/credit_funds.php"
-      release_hold: "/api/v1/hold.php"
-    
-    cashout:
+    source:
       verify_asset: "/api/v1/verify_asset.php"
       place_hold: "/api/v1/hold.php"
       debit_funds: "/api/v1/notify_debit.php"
-      confirm_cashout: "/api/v1/confirm_cashout.php"
+      release_hold: "/api/v1/hold.php"
+      get_balance: "/api/v1/balance"
+      get_transactions: "/api/v1/transactions"
+    
+    destination_cashout:
       generate_token: "/api/v1/atm/generate_code.php"
       verify_token: "/api/v1/atm/verify-token/index.php"
-      release_hold: "/api/v1/hold.php"
+      confirm_cashout: "/api/v1/confirm_cashout.php"
+    
+    destination_deposit:
+      process_deposit: "/api/v1/transaction/credit_funds.php"
+      verify_account: "/api/v1/verify_asset.php"
     
     common:
-      reverse_transaction: "/api/v1/hold.php"
+      transfer: "/api/v1/transfer.php"
+      reverse: "/api/v1/hold.php"
       status: "/api/v1/status"
       health: "/health"
   
@@ -122,11 +150,13 @@ SACCUSSALIS:
     debit_confirmed: "/api/v1/callbacks/debit-confirmed"
     deposit_confirmed: "/api/v1/callbacks/deposit-confirmed"
     reversal_confirmed: "/api/v1/callbacks/reversal-confirmed"
+    cashout_confirmed: "/api/v1/callbacks/cashout-confirmed"
   
   phone_format:
     prefix: "+"
     country_code: "267"
     expected_length: 11
+    supported_networks: ["mascom", "orange", "btc"]
   
   message_profile:
     correlation_id_header: "X-Correlation-ID"
@@ -141,7 +171,7 @@ SACCUSSALIS:
     retry_on: [timeout, 5xx, network_error]
 
 # ------------------------------------------------------------
-# CAZACOM - Mobile network operator
+# CAZACOM - Mobile network operator (MNO)
 # ------------------------------------------------------------
 CAZACOM:
   
@@ -157,26 +187,35 @@ CAZACOM:
       type: env_var
       name: "CAZACOM_API_KEY"
   
+  oauth:
+    authorization_url: "/oauth/authorize"
+    token_url: "/oauth/token"
+    refresh_url: "/oauth/refresh"
+    revoke_url: "/oauth/revoke"
+    userinfo_url: "/oauth/userinfo"
+    scopes: ["wallet_balance", "wallet_transactions", "wallet_payments"]
+  
   endpoints:
-    deposit:
-      verify_wallet: "/api/v1/mno/verify_wallet"
-      place_hold: "/api/v1/mno/hold"
-      confirm_deposit: "/api/v1/mno/credit"
-      release_hold: "/api/v1/mno/release_hold"
+    source:
+      verify_asset: "/api/v1/mno/verify_wallet"          # verifyAsset()
+      place_hold: "/api/v1/mno/hold"                     # placeHold()
+      debit_funds: "/api/v1/mno/debit"                   # debitFunds()
+      release_hold: "/api/v1/mno/release_hold"           # releaseHold()
+      get_balance: "/api/v1/mno/balance"                 # getAccountBalance()
+      get_transactions: "/api/v1/mno/transactions"       # getTransactions()
     
-    cashout:
-      verify_wallet: "/api/v1/mno/verify_wallet"
-      place_hold: "/api/v1/mno/hold"
-      debit_funds: "/api/v1/mno/debit"
-      confirm_cashout: "/api/v1/mno/confirm_cashout"
-      generate_token: "/api/v1/mno/generate_code"
-      verify_token: "/api/v1/mno/verify_code"
-      release_hold: "/api/v1/mno/release_hold"
+    destination_cashout:
+      generate_token: "/api/v1/mno/generate_code"        # generateToken()
+      verify_token: "/api/v1/mno/verify_code"            # verifyToken()
+      confirm_cashout: "/api/v1/mno/confirm_cashout"     # confirmCashout()
+    
+    destination_deposit:
+      process_deposit: "/api/v1/mno/credit"              # processDeposit()
+      verify_account: "/api/v1/mno/verify_wallet"        # verifyAsset()
     
     common:
-      reverse_transaction: "/api/v1/mno/reverse"
-      check_balance: "/api/v1/mno/balance"
-      transaction_history: "/api/v1/mno/transactions"
+      transfer: "/api/v1/mno/transfer"
+      reverse: "/api/v1/mno/reverse"
       status: "/api/v1/status"
       health: "/health"
   
@@ -186,12 +225,14 @@ CAZACOM:
     debit_confirmed: "/api/v1/callbacks/debit-confirmed"
     deposit_confirmed: "/api/v1/callbacks/deposit-confirmed"
     reversal_confirmed: "/api/v1/callbacks/reversal-confirmed"
+    cashout_confirmed: "/api/v1/callbacks/cashout-confirmed"
   
   phone_format:
     prefix: "+"
     country_code: "267"
     expected_length: 11
     mno_prefixes: ["71", "72", "73", "74", "75", "76"]
+    default_network: "mascom"
   
   message_profile:
     correlation_id_header: "X-Correlation-ID"
@@ -206,7 +247,7 @@ CAZACOM:
     retry_on: [timeout, 5xx, network_error]
 
 # ------------------------------------------------------------
-# VOUCHMORPH - Orchestration layer
+# VOUCHMORPH - Orchestration layer (internal)
 # ------------------------------------------------------------
 VOUCHMORPH:
   
@@ -222,27 +263,36 @@ VOUCHMORPH:
       type: env_var
       name: "VOUCHMORPH_API_KEY"
   
+  oauth:
+    authorization_url: "/oauth/authorize"
+    token_url: "/oauth/token"
+    refresh_url: "/oauth/refresh"
+    revoke_url: "/oauth/revoke"
+    userinfo_url: "/oauth/userinfo"
+    scopes: ["swaps", "cards", "settlements", "reports"]
+  
   endpoints:
-    deposit:
-      load_card: "/api/v1/cards/load.php"
-      authorize: "/api/v1/cards/authorize.php"
-      check_balance: "/api/v1/cards/balance.php"
+    source:
+      verify_asset: "/api/v1/cards/verify.php"
+      place_hold: "/api/v1/cards/authorize.php"
+      debit_funds: "/api/v1/cards/load.php"
+      release_hold: "/api/v1/cards/void.php"
+      get_balance: "/api/v1/cards/balance.php"
+      get_transactions: "/api/v1/cards/transactions.php"
     
-    cashout:
-      authorize: "/api/v1/cards/authorize.php"
-      swipe: "/api/v1/cards/swipe.php"
-      check_balance: "/api/v1/cards/balance.php"
+    destination_cashout:
+      generate_token: "/api/v1/cards/atm/generate.php"
+      verify_token: "/api/v1/cards/atm/verify.php"
+      confirm_cashout: "/api/v1/cards/atm/confirm.php"
     
-    swap:
-      execute: "/api/v1/swap/execute.php"
-      status: "/api/v1/swap/status.php"
-      cancel: "/api/v1/swap/cancel.php"
+    destination_deposit:
+      process_deposit: "/api/v1/cards/load.php"
+      verify_account: "/api/v1/cards/verify.php"
     
     common:
-      issue_card: "/api/v1/cards/issue.php"
-      block_card: "/api/v1/cards/block.php"
-      transactions: "/api/v1/cards/transactions.php"
-      status: "/api/v1/status"
+      transfer: "/api/v1/swap/execute.php"
+      reverse: "/api/v1/swap/cancel.php"
+      status: "/api/v1/swap/status.php"
       health: "/health"
       regulatory_report: "/api/regulatory/report"
   
@@ -253,15 +303,18 @@ VOUCHMORPH:
     deposit_confirmed: "/api/v1/callbacks/deposit-confirmed"
     reversal_confirmed: "/api/v1/callbacks/reversal-confirmed"
     swap_completed: "/api/v1/callbacks/swap-completed"
+    cashout_confirmed: "/api/v1/callbacks/cashout-confirmed"
   
   phone_format:
     prefix: "+"
     country_code: "267"
     expected_length: 11
+    supported_networks: ["mascom", "orange", "btc"]
   
   message_profile:
     correlation_id_header: "X-Correlation-ID"
     idempotency_key_header: "X-Idempotency-Key"
+    signature_header: "X-Signature"
     timestamp_header: "X-Timestamp"
     trace_id_prefix: "VOUCHMOR"
   
