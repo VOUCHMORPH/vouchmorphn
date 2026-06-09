@@ -1,6 +1,8 @@
 FROM php:8.2-fpm
 
-# Install system dependencies and PHP extensions
+# =========================
+# System dependencies
+# =========================
 RUN apt-get update && apt-get install -y \
     libpq-dev \
     unzip \
@@ -8,38 +10,73 @@ RUN apt-get update && apt-get install -y \
     curl \
     libzip-dev \
     nginx \
-    && docker-php-ext-install -j$(nproc) \
-        pdo \
+    && rm -rf /var/lib/apt/lists/*
+
+# =========================
+# PHP extensions
+# =========================
+RUN docker-php-ext-install -j$(nproc) \
         pdo_pgsql \
         pgsql \
         zip \
-        bcmath \
-    && docker-php-ext-enable pdo_pgsql \
-    && apt-get clean
+        bcmath
 
-# Verify extension is installed
+# Verify extension exists at build time
 RUN php -m | grep pdo_pgsql
 
-# Install Composer
+# =========================
+# Composer
+# =========================
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
+# =========================
+# Work directory
+# =========================
 WORKDIR /var/www/html
 
-# Copy application
+# =========================
+# Copy app files
+# =========================
 COPY composer.json composer.lock* ./
+
 RUN composer install --no-dev --optimize-autoloader --no-interaction || true
 
 COPY src/ src/
 COPY public/ public/
 
-# Create php.ini with extensions
-RUN echo "extension=pdo_pgsql.so" > /usr/local/etc/php/conf.d/pdo_pgsql.ini
+# =========================
+# CRITICAL FIX: allow env vars in PHP-FPM (Railway fix)
+# =========================
+RUN sed -i 's/;clear_env = yes/clear_env = no/' /usr/local/etc/php-fpm.d/www.conf || true \
+ && echo "clear_env = no" >> /usr/local/etc/php-fpm.d/www.conf
 
-# Simple nginx config
-RUN echo 'server { listen 9000; root /var/www/html/public; index index.php; location / { try_files $uri $uri/ /index.php?$args; } location ~ \.php$ { fastcgi_pass 127.0.0.1:9001; fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; include fastcgi_params; } }' > /etc/nginx/sites-enabled/default
+# =========================
+# Nginx config
+# =========================
+RUN echo 'server {
+    listen 9000;
+    root /var/www/html/public;
+    index index.php index.html;
 
-# Start both PHP-FPM and nginx
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass 127.0.0.1:9001;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    }
+}' > /etc/nginx/sites-enabled/default
+
+# =========================
+# Logs
+# =========================
 RUN mkdir -p /var/log/nginx
+
+# =========================
+# Start both services
+# =========================
 CMD sh -c "php-fpm -D && nginx -g 'daemon off;'"
 
 EXPOSE 9000
