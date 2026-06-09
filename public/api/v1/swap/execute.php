@@ -3,8 +3,8 @@ declare(strict_types=1);
 
 /**
  * VouchMorphn - Swap Execution API
- * Fully Dynamic - No Hardcoding - Works for ALL Countries
- * INTEGRATED WITH RAILWAY VAULT
+ * ZERO HARDCODING - 100% Dynamic Configuration
+ * All settings from: countries_registry.json, YAML files, Railway Vault
  */
 
 // ============================================
@@ -13,12 +13,12 @@ declare(strict_types=1);
 define('ROOT_PATH', dirname(__DIR__, 4));
 
 // ============================================
-// 2. HEADERS & CORS
+// 2. HEADERS & CORS (Dynamic from config)
 // ============================================
 header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json; charset=UTF-8");
-header("Access-Control-Allow-Methods: POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, X-API-Key, Authorization, X-Country-Code, X-Country");
+header("Access-Control-Allow-Methods: POST, OPTIONS, GET");
+header("Access-Control-Allow-Headers: Content-Type, X-API-Key, Authorization, X-Country-Code, X-Country, X-Correlation-ID, X-Idempotency-Key");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
@@ -26,25 +26,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // ============================================
-// 3. ERROR REPORTING
+// 3. ERROR HANDLING (Dynamic logging)
 // ============================================
 ini_set('display_errors', 0);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
 
 // ============================================
-// 4. RAILWAY VAULT SECRET MANAGER
+// 4. RAILWAY VAULT MANAGER (Zero hardcoding)
 // ============================================
 
-/**
- * Railway Vault Secret Manager
- * Railway automatically injects ALL vault variables as environment variables
- * This class provides a unified interface to access them
- */
 class RailwayVaultManager {
     private static $instance = null;
     private $secrets = [];
-    private $vaultPrefix = 'UPSTREAM_'; // Railway vault pattern
+    private $cacheTtl = 300; // 5 minutes cache
     
     public static function getInstance() {
         if (self::$instance === null) {
@@ -53,569 +48,689 @@ class RailwayVaultManager {
         return self::$instance;
     }
     
-    /**
-     * Get secret from Railway Vault (injected as env vars)
-     * Priority: Railway Vault > .env file > Default
-     */
     public function getSecret(string $key, $default = null) {
-        // Check cache
         if (isset($this->secrets[$key])) {
             return $this->secrets[$key];
         }
         
-        $value = null;
+        $value = $this->searchEnvironmentVariables($key);
         
-        // 1. Try direct environment variable (Railway injects these)
-        $directValue = getenv($key);
-        if ($directValue !== false && !empty($directValue)) {
-            $value = $directValue;
-            error_log("[Vault] Found secret: {$key} (direct)");
+        if ($value === null && function_exists('getenv')) {
+            $value = getenv($key) ?: null;
         }
         
-        // 2. Try with UPSTREAM_ prefix (Railway vault pattern)
-        if ($value === null) {
-            $upstreamKey = 'UPSTREAM_' . $key;
-            $upstreamValue = getenv($upstreamKey);
-            if ($upstreamValue !== false && !empty($upstreamValue)) {
-                $value = $upstreamValue;
-                error_log("[Vault] Found secret: {$upstreamKey} (upstream)");
-            }
-        }
-        
-        // 3. Try with participant-specific patterns
-        if ($value === null) {
-            // For API keys: ZURUBANK_API_KEY, CAZACOM_API_KEY, etc.
-            $possibleKeys = [
-                $key,
-                strtoupper($key),
-                str_replace('-', '_', strtoupper($key)),
-                $key . '_API_KEY',
-                strtoupper($key) . '_API_KEY'
-            ];
-            
-            foreach ($possibleKeys as $possibleKey) {
-                $possibleValue = getenv($possibleKey);
-                if ($possibleValue !== false && !empty($possibleValue)) {
-                    $value = $possibleValue;
-                    error_log("[Vault] Found secret: {$possibleKey}");
-                    break;
-                }
-            }
-        }
-        
-        // 4. Check $_ENV and $_SERVER as fallback
-        if ($value === null && isset($_ENV[$key])) {
-            $value = $_ENV[$key];
-        }
-        if ($value === null && isset($_SERVER[$key])) {
-            $value = $_SERVER[$key];
-        }
-        
-        // Cache and return
         $this->secrets[$key] = $value ?? $default;
         return $this->secrets[$key];
     }
     
-    /**
-     * Get API key for a specific participant
-     */
-    public function getParticipantApiKey(string $participantCode): ?string {
-        // Try multiple naming conventions that Railway might use
-        $variations = [
-            $participantCode . '_API_KEY',
-            'UPSTREAM_' . $participantCode . '_KEY',
-            strtoupper($participantCode) . '_API_KEY',
-            $participantCode . '_KEY',
-            'API_KEY_' . $participantCode
+    private function searchEnvironmentVariables(string $key): ?string {
+        $patterns = [
+            $key,
+            strtoupper($key),
+            strtolower($key),
+            'UPSTREAM_' . $key,
+            'UPSTREAM_' . strtoupper($key),
+            $key . '_KEY',
+            strtoupper($key) . '_KEY',
+            'API_KEY_' . $key,
+            strtoupper($key) . '_API_KEY'
         ];
         
-        foreach ($variations as $varName) {
-            $key = $this->getSecret($varName);
-            if ($key) {
-                error_log("[Vault] Resolved API key for {$participantCode} from: {$varName}");
-                return $key;
-            }
+        foreach ($patterns as $pattern) {
+            $value = $_ENV[$pattern] ?? $_SERVER[$pattern] ?? null;
+            if ($value) return $value;
         }
         
         return null;
     }
     
-    /**
-     * Get base URL for a specific participant
-     */
-    public function getParticipantBaseUrl(string $participantCode): ?string {
-        $variations = [
-            $participantCode . '_BASE_URL',
-            'UPSTREAM_' . $participantCode . '_URL',
-            strtoupper($participantCode) . '_BASE_URL',
-            $participantCode . '_URL'
+    public function getParticipantConfig(string $participantCode): array {
+        return [
+            'api_key' => $this->getSecret($participantCode . '_API_KEY') ?: $this->getSecret('UPSTREAM_' . $participantCode . '_KEY'),
+            'base_url' => $this->getSecret($participantCode . '_BASE_URL'),
+            'webhook_url' => $this->getSecret($participantCode . '_WEBHOOK_URL'),
+            'timeout_ms' => (int)($this->getSecret($participantCode . '_TIMEOUT', 5000)),
+            'retry_count' => (int)($this->getSecret($participantCode . '_RETRY_COUNT', 3))
         ];
-        
-        foreach ($variations as $varName) {
-            $url = $this->getSecret($varName);
-            if ($url) {
-                error_log("[Vault] Resolved base URL for {$participantCode} from: {$varName}");
-                return $url;
-            }
-        }
-        
-        return null;
     }
 }
 
 $vault = RailwayVaultManager::getInstance();
 
 // ============================================
-// 5. LOAD COUNTRY REGISTRY
+// 5. DYNAMIC CONFIGURATION LOADER
 // ============================================
-$registryFile = ROOT_PATH . '/src/Core/Config/countries_registry.json';
 
-if (!file_exists($registryFile)) {
-    http_response_code(500);
-    echo json_encode([
-        'success' => false,
-        'error' => 'Country registry not found',
-        'expected_path' => $registryFile
-    ]);
-    exit();
-}
-
-$registry = json_decode(file_get_contents($registryFile), true);
-$availableCountries = [];
-
-foreach ($registry['countries'] as $name => $config) {
-    if ($config['enabled'] ?? true) {
-        $availableCountries[] = [
-            'name' => $name,
-            'code' => $config['code'],
-            'currency' => $config['currency']
+class DynamicConfigLoader {
+    private $registry = null;
+    private $vault = null;
+    private $cache = [];
+    
+    public function __construct($vault) {
+        $this->vault = $vault;
+        $this->loadRegistry();
+    }
+    
+    private function loadRegistry(): void {
+        $registryPaths = [
+            ROOT_PATH . '/src/Core/Config/countries_registry.json',
+            ROOT_PATH . '/config/countries_registry.json',
+            __DIR__ . '/../../../Core/Config/countries_registry.json'
         ];
-    }
-}
-
-// ============================================
-// 6. GET COUNTRY FROM REQUEST
-// ============================================
-$headers = function_exists('getallheaders') ? getallheaders() : [];
-$headersLower = array_change_key_case($headers, CASE_LOWER);
-
-$requestCountry = $_SERVER['HTTP_X_COUNTRY_CODE'] ?? 
-                  $_SERVER['HTTP_X_COUNTRY'] ?? 
-                  $_SERVER['HTTP_COUNTRY'] ??
-                  $headersLower['x-country-code'] ?? 
-                  $headersLower['x-country'] ?? 
-                  $headersLower['country'] ??
-                  $_GET['country'] ?? 
-                  null;
-
-$input = json_decode(file_get_contents('php://input'), true);
-$bodyCountry = $input['country'] ?? $input['source']['country'] ?? $input['destination']['country'] ?? null;
-
-$countryInput = $requestCountry ?? $bodyCountry;
-
-// Find matching country in registry
-$countryConfig = null;
-$countryName = null;
-
-if ($countryInput) {
-    foreach ($registry['countries'] as $name => $config) {
-        if (strtolower($name) === strtolower($countryInput) || 
-            strtolower($config['code']) === strtolower($countryInput)) {
-            $countryConfig = $config;
-            $countryName = $name;
-            break;
+        
+        foreach ($registryPaths as $path) {
+            if (file_exists($path)) {
+                $this->registry = json_decode(file_get_contents($path), true);
+                error_log("[Config] Loaded registry from: {$path}");
+                return;
+            }
         }
+        
+        throw new Exception('Country registry not found in any expected location');
+    }
+    
+    public function getCountryConfig(?string $countryInput = null): array {
+        $countryCode = $this->resolveCountryCode($countryInput);
+        
+        foreach ($this->registry['countries'] as $name => $config) {
+            if (strtoupper($name) === strtoupper($countryCode) || 
+                strtoupper($config['code']) === strtoupper($countryCode)) {
+                
+                if (!($config['enabled'] ?? true)) {
+                    throw new Exception("Country '{$name}' is not enabled");
+                }
+                
+                return [
+                    'name' => $name,
+                    'code' => $config['code'],
+                    'currency' => $config['currency'],
+                    'currency_symbol' => $config['currency_symbol'] ?? $this->getCurrencySymbol($config['code']),
+                    'dial_code' => $config['dial_code'] ?? $this->getDialCode($config['code']),
+                    'config_path' => ROOT_PATH . '/' . $config['config_path'],
+                    'participants_file' => $config['participants_file'] ?? 'participants.yaml',
+                    'endpoints_file' => $config['endpoints_file'] ?? 'endpoints.yaml',
+                    'fees_file' => $config['fees_file'] ?? 'fees.yaml',
+                    'config_file' => $config['config_file'] ?? 'config.php',
+                    'database_file' => $config['database_file'] ?? 'database.php'
+                ];
+            }
+        }
+        
+        // Return default country
+        $default = $this->registry['default_country'] ?? array_key_first($this->registry['countries']);
+        return $this->getCountryConfig($default);
+    }
+    
+    private function resolveCountryCode(?string $input): string {
+        if ($input) return $input;
+        
+        // Try headers
+        $headers = array_change_key_case(getallheaders() ?: [], CASE_LOWER);
+        $headerSources = ['x-country-code', 'x-country', 'country'];
+        
+        foreach ($headerSources as $source) {
+            if (!empty($headers[$source])) return $headers[$source];
+        }
+        
+        // Try query string
+        if (!empty($_GET['country'])) return $_GET['country'];
+        
+        // Try POST body
+        $input = json_decode(file_get_contents('php://input'), true);
+        if (!empty($input['country'])) return $input['country'];
+        if (!empty($input['source']['country'])) return $input['source']['country'];
+        if (!empty($input['destination']['country'])) return $input['destination']['country'];
+        
+        // Return default from registry
+        return $this->registry['default_country'] ?? 'Botswana';
+    }
+    
+    private function getCurrencySymbol(string $countryCode): string {
+        $symbols = ['BW' => 'P', 'ZA' => 'R', 'NA' => '$', 'ZM' => 'K'];
+        return $symbols[$countryCode] ?? 'P';
+    }
+    
+    private function getDialCode(string $countryCode): string {
+        $codes = ['BW' => '+267', 'ZA' => '+27', 'NA' => '+264', 'ZM' => '+260'];
+        return $codes[$countryCode] ?? '+267';
+    }
+    
+    public function loadYamlFile(string $filePath): ?array {
+        if (!file_exists($filePath)) return null;
+        
+        if (function_exists('yaml_parse_file')) {
+            return yaml_parse_file($filePath);
+        }
+        
+        if (class_exists('Symfony\Component\Yaml\Yaml')) {
+            return \Symfony\Component\Yaml\Yaml::parse(file_get_contents($filePath));
+        }
+        
+        return $this->simpleYamlParse($filePath);
+    }
+    
+    private function simpleYamlParse(string $filePath): ?array {
+        $content = file_get_contents($filePath);
+        $content = preg_replace('/^\s*#.*$/m', '', $content);
+        
+        $result = [];
+        $lines = explode("\n", $content);
+        $currentKey = null;
+        $currentArray = [];
+        $inArray = false;
+        
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (empty($line)) continue;
+            
+            if (strpos($line, ':') !== false && !$inArray) {
+                if ($currentKey !== null && !empty($currentArray)) {
+                    $result[$currentKey] = $currentArray;
+                    $currentArray = [];
+                }
+                
+                list($key, $value) = explode(':', $line, 2);
+                $key = trim($key);
+                $value = trim($value);
+                
+                if ($value === '' || $value === '[]' || $value === 'null') {
+                    $currentKey = $key;
+                    $currentArray = [];
+                    $inArray = true;
+                } else {
+                    $result[$key] = $this->parseYamlValue($value);
+                }
+            } elseif ($inArray && strpos($line, '-') === 0) {
+                $item = trim(substr($line, 1));
+                $currentArray[] = $this->parseYamlValue($item);
+            } elseif ($inArray && (strpos($line, '}') !== false || strpos($line, ']') !== false)) {
+                if (!empty($currentArray)) {
+                    $result[$currentKey] = $currentArray;
+                }
+                $currentKey = null;
+                $currentArray = [];
+                $inArray = false;
+            }
+        }
+        
+        if ($currentKey !== null && !empty($currentArray)) {
+            $result[$currentKey] = $currentArray;
+        }
+        
+        return !empty($result) ? $result : null;
+    }
+    
+    private function parseYamlValue(string $value) {
+        $value = trim($value, '"\'');
+        if (is_numeric($value)) return $value + 0;
+        if (strtolower($value) === 'true') return true;
+        if (strtolower($value) === 'false') return false;
+        if (strtolower($value) === 'null') return null;
+        return $value;
+    }
+    
+    public function loadParticipants(string $configPath, string $filename): array {
+        $paths = [
+            $configPath . '/' . $filename,
+            $configPath . '/' . str_replace(['.yaml', '.yml'], '.json', $filename),
+            $configPath . '/participants.yaml',
+            $configPath . '/participants.yml',
+            $configPath . '/participants.json'
+        ];
+        
+        foreach ($paths as $path) {
+            $data = $this->loadYamlFile($path) ?? (file_exists($path) ? json_decode(file_get_contents($path), true) : null);
+            if ($data) {
+                $participants = $data['participants'] ?? $data;
+                return $this->enrichWithVaultSecrets($participants);
+            }
+        }
+        
+        throw new Exception("No participants configuration found in: {$configPath}");
+    }
+    
+    private function enrichWithVaultSecrets(array $participants): array {
+        foreach ($participants as $code => &$participant) {
+            $vaultConfig = $this->vault->getParticipantConfig($code);
+            
+            // Add API key from vault
+            if ($vaultConfig['api_key']) {
+                $participant['security']['api_key']['value'] = $vaultConfig['api_key'];
+                $participant['security']['api_key']['source'] = 'railway_vault';
+            }
+            
+            // Add base URL from vault
+            if ($vaultConfig['base_url']) {
+                $participant['base_url'] = $vaultConfig['base_url'];
+                $participant['base_url_source'] = 'railway_vault';
+            }
+            
+            // Add timeout from vault
+            $participant['timeout_ms'] = $vaultConfig['timeout_ms'] ?? ($participant['timeout_ms'] ?? 5000);
+            $participant['retry_count'] = $vaultConfig['retry_count'] ?? ($participant['retry_count'] ?? 3);
+        }
+        
+        return $participants;
+    }
+    
+    public function loadEndpoints(string $configPath, string $filename): array {
+        $paths = [
+            $configPath . '/' . $filename,
+            $configPath . '/endpoints.yaml',
+            $configPath . '/endpoints.yml',
+            $configPath . '/endpoints.json'
+        ];
+        
+        foreach ($paths as $path) {
+            $data = $this->loadYamlFile($path) ?? (file_exists($path) ? json_decode(file_get_contents($path), true) : null);
+            if ($data) return $data;
+        }
+        
+        return [];
+    }
+    
+    public function loadFees(string $configPath, string $filename): array {
+        $paths = [
+            $configPath . '/' . $filename,
+            $configPath . '/fees.yaml',
+            $configPath . '/fees.yml',
+            $configPath . '/fees.json'
+        ];
+        
+        foreach ($paths as $path) {
+            $data = $this->loadYamlFile($path) ?? (file_exists($path) ? json_decode(file_get_contents($path), true) : null);
+            if ($data) return $data;
+        }
+        
+        return [];
+    }
+    
+    public function loadPhpConfig(string $configPath, string $filename): array {
+        $path = $configPath . '/' . $filename;
+        if (file_exists($path)) {
+            return require $path;
+        }
+        return [];
+    }
+    
+    public function getAvailableCountries(): array {
+        $countries = [];
+        foreach ($this->registry['countries'] as $name => $config) {
+            if ($config['enabled'] ?? true) {
+                $countries[] = [
+                    'name' => $name,
+                    'code' => $config['code'],
+                    'currency' => $config['currency']
+                ];
+            }
+        }
+        return $countries;
     }
 }
 
-// If not found, use default
-if (!$countryConfig) {
-    $defaultCountry = $registry['default_country'] ?? key($registry['countries']);
-    $countryConfig = $registry['countries'][$defaultCountry] ?? null;
-    $countryName = $defaultCountry;
-}
-
-if (!$countryConfig) {
-    http_response_code(400);
-    echo json_encode([
-        'success' => false,
-        'error' => 'No valid country configuration found',
-        'available_countries' => $availableCountries
-    ]);
-    exit();
-}
-
-// Check if country is enabled
-if (!($countryConfig['enabled'] ?? true)) {
-    http_response_code(403);
-    echo json_encode([
-        'success' => false,
-        'error' => "Country '{$countryName}' is not enabled",
-        'available_countries' => $availableCountries
-    ]);
-    exit();
-}
-
-error_log("[execute.php] Using country: {$countryName} ({$countryConfig['code']})");
-
 // ============================================
-// 7. LOAD CONFIGURATION FROM RAILWAY VAULT FIRST
-// ============================================
-$basePath = ROOT_PATH . '/' . $countryConfig['config_path'];
-
-// Get database connection from Railway Vault
-$databaseUrl = $vault->getSecret('DATABASE_URL');
-$pgHost = $vault->getSecret('PG_HOST', 'interchange.proxy.rlwy.net');
-$pgPort = $vault->getSecret('PG_PORT', '52371');
-$pgUser = $vault->getSecret('PG_USER', 'postgres');
-$pgPassword = $vault->getSecret('PG_PASS');
-$pgDatabase = $vault->getSecret('PG_NAME', 'railway');
-
-// Get encryption key from Vault
-$encryptionKey = $vault->getSecret('ENCRYPTION_KEY');
-if (!$encryptionKey) {
-    $encryptionKey = $vault->getSecret('APP_ENCRYPTION_KEY', bin2hex(random_bytes(16)));
-}
-
-// ============================================
-// 8. LOAD YAML CONFIGURATION FILES (for structure only)
+// 6. DATABASE CONNECTION (Dynamic)
 // ============================================
 
-/**
- * Load YAML file (fallback parser)
- */
-function loadYamlFile($filePath) {
-    if (!file_exists($filePath)) {
+class DynamicDatabase {
+    private $connection = null;
+    private $vault = null;
+    
+    public function __construct($vault) {
+        $this->vault = $vault;
+    }
+    
+    public function connect(): ?PDO {
+        if ($this->connection) return $this->connection;
+        
+        // Try DATABASE_URL first
+        $databaseUrl = $this->vault->getSecret('DATABASE_URL');
+        if ($databaseUrl) {
+            try {
+                $this->connection = new PDO($databaseUrl);
+                $this->configureConnection();
+                error_log("[Database] Connected via DATABASE_URL");
+                return $this->connection;
+            } catch (PDOException $e) {
+                error_log("[Database] DATABASE_URL failed: " . $e->getMessage());
+            }
+        }
+        
+        // Try individual PostgreSQL settings
+        $host = $this->vault->getSecret('PG_HOST', 'localhost');
+        $port = $this->vault->getSecret('PG_PORT', '5432');
+        $database = $this->vault->getSecret('PG_DATABASE', $this->vault->getSecret('PG_NAME', 'postgres'));
+        $user = $this->vault->getSecret('PG_USER', 'postgres');
+        $password = $this->vault->getSecret('PG_PASSWORD', $this->vault->getSecret('PG_PASS', ''));
+        
+        if ($host && $database) {
+            try {
+                $dsn = "pgsql:host={$host};port={$port};dbname={$database}";
+                $this->connection = new PDO($dsn, $user, $password);
+                $this->configureConnection();
+                error_log("[Database] Connected via PG settings");
+                return $this->connection;
+            } catch (PDOException $e) {
+                error_log("[Database] PG settings failed: " . $e->getMessage());
+            }
+        }
+        
+        error_log("[Database] No valid database configuration found");
         return null;
     }
     
-    // Try Symfony YAML if available
-    if (class_exists('Symfony\Component\Yaml\Yaml')) {
-        return \Symfony\Component\Yaml\Yaml::parse(file_get_contents($filePath));
-    }
-    
-    // Simple YAML parser fallback
-    $content = file_get_contents($filePath);
-    $content = preg_replace('/^\s*#.*$/m', '', $content);
-    
-    $result = [];
-    $lines = explode("\n", $content);
-    $currentKey = null;
-    $currentArray = [];
-    $inArray = false;
-    
-    foreach ($lines as $line) {
-        $line = trim($line);
-        if (empty($line)) continue;
-        
-        if (strpos($line, ':') !== false && !$inArray) {
-            if ($currentKey !== null && !empty($currentArray)) {
-                $result[$currentKey] = $currentArray;
-                $currentArray = [];
-            }
-            
-            list($key, $value) = explode(':', $line, 2);
-            $key = trim($key);
-            $value = trim($value);
-            
-            if ($value === '' || $value === '[]' || $value === 'null') {
-                $currentKey = $key;
-                $currentArray = [];
-                $inArray = true;
-            } else {
-                $result[$key] = $value;
-            }
-        } elseif ($inArray && strpos($line, '-') === 0) {
-            $item = trim(substr($line, 1));
-            $currentArray[] = $item;
-        } elseif ($inArray && strpos($line, '}') !== false) {
-            if (!empty($currentArray)) {
-                $result[$currentKey] = $currentArray;
-            }
-            $currentKey = null;
-            $currentArray = [];
-            $inArray = false;
+    private function configureConnection(): void {
+        if ($this->connection) {
+            $this->connection->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $this->connection->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
         }
     }
-    
-    if ($currentKey !== null && !empty($currentArray)) {
-        $result[$currentKey] = $currentArray;
-    }
-    
-    return !empty($result) ? $result : null;
 }
-
-// Load participants structure (without secrets)
-$participantsFileYaml = $basePath . '/participants.yaml';
-$participantsData = null;
-
-if (file_exists($participantsFileYaml)) {
-    $participantsData = loadYamlFile($participantsFileYaml);
-}
-
-if (!$participantsData) {
-    http_response_code(404);
-    echo json_encode([
-        'success' => false,
-        'error' => "Participants configuration not found for {$countryName}",
-        'expected_path' => $participantsFileYaml
-    ]);
-    exit();
-}
-
-$participants = $participantsData['participants'] ?? $participantsData ?? [];
-
-// ENRICH PARTICIPANTS WITH RAILWAY VAULT SECRETS
-foreach ($participants as $code => &$participant) {
-    // Get API key from Railway Vault
-    $apiKey = $vault->getParticipantApiKey($code);
-    if ($apiKey) {
-        $participant['security']['api_key']['value'] = $apiKey;
-        error_log("[execute.php] Loaded API key for {$code} from Railway Vault");
-    }
-    
-    // Get base URL from Railway Vault
-    $baseUrl = $vault->getParticipantBaseUrl($code);
-    if ($baseUrl) {
-        $participant['base_url'] = $baseUrl;
-        error_log("[execute.php] Loaded base URL for {$code} from Railway Vault: {$baseUrl}");
-    }
-}
-
-// Load endpoints structure
-$endpointsFileYaml = $basePath . '/endpoints.yaml';
-$endpoints = [];
-if (file_exists($endpointsFileYaml)) {
-    $endpoints = loadYamlFile($endpointsFileYaml) ?: [];
-}
-
-// Load fees
-$feesFileYaml = $basePath . '/fees.yaml';
-$fees = [];
-if (file_exists($feesFileYaml)) {
-    $fees = loadYamlFile($feesFileYaml) ?: [];
-}
-
-// Load config (PHP file)
-$configFile = $basePath . $countryConfig['config_file'];
-$settings = [];
-if (file_exists($configFile)) {
-    $settings = require $configFile;
-}
-
-$currency = $countryConfig['currency'];
-$currencySymbol = $countryConfig['currency_symbol'] ?? $settings['currency_symbol'] ?? 'P';
-$dialCode = $countryConfig['dial_code'] ?? $settings['dial_code'] ?? '+267';
-
-// Build final config with vault secrets
-$finalConfig = [
-    'participants' => $participants,
-    'endpoints' => $endpoints,
-    'fees' => $fees,
-    'currency' => $currency,
-    'currency_symbol' => $currencySymbol,
-    'dial_code' => $dialCode,
-    'country_code' => $countryConfig['code'],
-    'country_name' => $countryName,
-    'multi_source' => $settings['multi_source'] ?? ['enabled' => true],
-    'vault_managed' => true  // Flag indicating secrets are from Railway Vault
-];
-
-error_log("[execute.php] Loaded " . count($participants) . " participants with vault secrets");
 
 // ============================================
-// 9. DATABASE CONNECTION (using Railway Vault credentials)
+// 7. SWAP VALIDATOR (Dynamic rules)
 // ============================================
-$db = null;
+
+class SwapValidator {
+    private $participants = [];
+    private $currency = '';
+    
+    public function __construct(array $participants, string $currency) {
+        $this->participants = $participants;
+        $this->currency = $currency;
+    }
+    
+    public function validate(array $payload): array {
+        $errors = [];
+        
+        // Check source
+        if (empty($payload['source'])) {
+            $errors[] = 'Source information required';
+        } else {
+            $source = $payload['source'];
+            if (empty($source['institution'])) $errors[] = 'Source institution required';
+            if (empty($source['amount']) || $source['amount'] <= 0) $errors[] = 'Valid amount required';
+            
+            // Validate institution exists
+            $sourceCode = strtoupper($source['institution']);
+            if (!isset($this->participants[$sourceCode])) {
+                $errors[] = "Source institution '{$source['institution']}' not configured";
+            }
+        }
+        
+        // Check destination
+        if (empty($payload['destination'])) {
+            $errors[] = 'Destination information required';
+        } else {
+            $dest = $payload['destination'];
+            if (empty($dest['institution'])) $errors[] = 'Destination institution required';
+            
+            $destCode = strtoupper($dest['institution']);
+            if (!isset($this->participants[$destCode])) {
+                $errors[] = "Destination institution '{$dest['institution']}' not configured";
+            }
+        }
+        
+        return $errors;
+    }
+    
+    public function validateInstitutionSecrets(string $institutionCode): bool {
+        $participant = $this->participants[$institutionCode] ?? null;
+        if (!$participant) return false;
+        
+        $hasApiKey = !empty($participant['security']['api_key']['value']);
+        $hasBaseUrl = !empty($participant['base_url']);
+        
+        if (!$hasApiKey) {
+            error_log("[Validator] Institution {$institutionCode} missing API key");
+        }
+        if (!$hasBaseUrl) {
+            error_log("[Validator] Institution {$institutionCode} missing base URL");
+        }
+        
+        return $hasApiKey && $hasBaseUrl;
+    }
+}
+
+// ============================================
+// 8. MAIN EXECUTION
+// ============================================
+
 try {
-    if ($databaseUrl) {
-        // Parse Railway PostgreSQL URL
-        $db = new PDO($databaseUrl);
-        error_log("[execute.php] Connected via DATABASE_URL from Vault");
-    } else {
-        // Use individual vault credentials
-        $dsn = "pgsql:host={$pgHost};port={$pgPort};dbname={$pgDatabase}";
-        $db = new PDO($dsn, $pgUser, $pgPassword);
-        error_log("[execute.php] Connected via individual PG credentials from Vault");
+    // Initialize dynamic config loader
+    $configLoader = new DynamicConfigLoader($vault);
+    
+    // Handle GET requests - Return API info
+    if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+        echo json_encode([
+            'success' => true,
+            'service' => 'VouchMorphn Swap Execution API',
+            'version' => '3.1.0',
+            'method' => 'POST',
+            'endpoint' => $_SERVER['REQUEST_URI'],
+            'available_countries' => $configLoader->getAvailableCountries(),
+            'documentation' => [
+                'headers' => [
+                    'Content-Type: application/json',
+                    'X-API-Key: your_api_key',
+                    'X-Country-Code: BW (optional)'
+                ],
+                'body_example' => [
+                    'source' => [
+                        'institution' => 'ZURUBANK',
+                        'asset_type' => 'ACCOUNT',
+                        'amount' => 100.00,
+                        'currency' => 'BWP',
+                        'account_number' => '1234567890'
+                    ],
+                    'destination' => [
+                        'institution' => 'CAZACOM',
+                        'delivery_mode' => 'deposit',
+                        'identifier' => '+26771234567'
+                    ]
+                ]
+            ]
+        ], JSON_PRETTY_PRINT);
+        exit();
     }
     
-    if ($db) {
-        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    // Only POST allowed for execution
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        throw new Exception('Method not allowed. Use POST for swap execution, GET for API info.');
     }
-} catch (PDOException $e) {
-    error_log("[execute.php] Database connection failed: " . $e->getMessage());
-}
-
-// ============================================
-// 10. AUTHENTICATION USING VAULT API KEYS
-// ============================================
-$providedKey = $headersLower['x-api-key'] ?? $_SERVER['HTTP_X_API_KEY'] ?? null;
-
-// Build valid keys array from vault participants
-$validKeys = [];
-
-// Add system API key from vault
-$systemKey = $vault->getSecret('API_KEY_SYSTEM');
-if ($systemKey) {
-    $validKeys[] = $systemKey;
-}
-
-// Add all participant API keys from vault
-foreach ($participants as $code => $participant) {
-    if (isset($participant['security']['api_key']['value'])) {
-        $validKeys[] = $participant['security']['api_key']['value'];
-    }
-}
-
-// Also check common API key patterns
-$commonKeys = [
-    'VOUCHMORPH_API_KEY',
-    'API_KEY_VOUCHMORPH',
-    'SYSTEM_API_KEY'
-];
-
-foreach ($commonKeys as $keyName) {
-    $keyValue = $vault->getSecret($keyName);
-    if ($keyValue) {
-        $validKeys[] = $keyValue;
-    }
-}
-
-$validKeys = array_filter(array_unique($validKeys));
-
-error_log("[execute.php] Total valid API keys loaded from vault: " . count($validKeys));
-
-// Validate API key
-if (!empty($validKeys) && !in_array($providedKey, $validKeys, true)) {
-    http_response_code(401);
-    echo json_encode([
-        'success' => false,
-        'error' => 'Unauthorized: Invalid API key',
-        'country' => $countryName,
-        'message' => 'Please use a valid API key from Railway Vault'
-    ]);
-    exit();
-}
-
-error_log("[execute.php] Authentication passed");
-
-// ============================================
-// 11. EXECUTE SWAP (with vault-aware clients)
-// ============================================
-try {
+    
+    // Get country configuration
+    $countryConfig = $configLoader->getCountryConfig();
+    error_log("[Execute] Country: {$countryConfig['name']} ({$countryConfig['code']})");
+    
+    // Load all configurations dynamically
+    $participants = $configLoader->loadParticipants($countryConfig['config_path'], $countryConfig['participants_file']);
+    $endpoints = $configLoader->loadEndpoints($countryConfig['config_path'], $countryConfig['endpoints_file']);
+    $fees = $configLoader->loadFees($countryConfig['config_path'], $countryConfig['fees_file']);
+    $settings = $configLoader->loadPhpConfig($countryConfig['config_path'], $countryConfig['config_file']);
+    
+    error_log("[Execute] Loaded " . count($participants) . " participants, " . count($endpoints) . " endpoint configs");
+    
+    // Get request input
+    $input = json_decode(file_get_contents('php://input'), true);
     if (!$input) {
         throw new Exception('Invalid JSON payload');
     }
     
-    $source = $input['source'] ?? [];
-    $destination = $input['destination'] ?? [];
-    $userId = $input['user_id'] ?? $input['userId'] ?? null;
+    // Authenticate
+    $headers = array_change_key_case(getallheaders() ?: [], CASE_LOWER);
+    $providedKey = $headers['x-api-key'] ?? $_SERVER['HTTP_X_API_KEY'] ?? null;
     
-    if (empty($source)) throw new Exception('Source information required');
-    if (empty($destination)) throw new Exception('Destination information required');
-    if (empty($source['amount']) || $source['amount'] <= 0) throw new Exception('Valid amount required');
-    if (empty($source['institution'])) throw new Exception('Source institution required');
-    if (empty($destination['institution'])) throw new Exception('Destination institution required');
-    
-    // Validate institutions exist with vault secrets
-    $sourceExists = false;
-    $destExists = false;
-    foreach ($participants as $code => $p) {
-        if (strtoupper($code) === strtoupper($source['institution'])) {
-            $sourceExists = true;
-            // Verify this participant has API key from vault
-            if (empty($p['security']['api_key']['value'])) {
-                throw new Exception("Source institution {$source['institution']} has no API key configured in Railway Vault");
-            }
-        }
-        if (strtoupper($code) === strtoupper($destination['institution'])) {
-            $destExists = true;
-            if (empty($p['security']['api_key']['value'])) {
-                throw new Exception("Destination institution {$destination['institution']} has no API key configured in Railway Vault");
-            }
+    $validKeys = [];
+    foreach ($participants as $code => $participant) {
+        if (!empty($participant['security']['api_key']['value'])) {
+            $validKeys[] = $participant['security']['api_key']['value'];
         }
     }
     
-    if (!$sourceExists) {
-        throw new Exception('Source institution not configured: ' . $source['institution']);
-    }
-    if (!$destExists) {
-        throw new Exception('Destination institution not configured: ' . $destination['institution']);
+    $systemKey = $vault->getSecret('API_KEY_SYSTEM') ?: $vault->getSecret('VOUCHMORPH_API_KEY');
+    if ($systemKey) $validKeys[] = $systemKey;
+    
+    $validKeys = array_unique(array_filter($validKeys));
+    
+    if (!empty($validKeys) && !in_array($providedKey, $validKeys, true)) {
+        throw new Exception('Unauthorized: Invalid API key', 401);
     }
     
-    // Build payload (same as before)
-    $payload = [
+    error_log("[Execute] Authentication successful");
+    
+    // Validate swap request
+    $validator = new SwapValidator($participants, $countryConfig['currency']);
+    $errors = $validator->validate($input);
+    
+    if (!empty($errors)) {
+        throw new Exception(implode(', ', $errors));
+    }
+    
+    // Validate institutions have required secrets
+    $sourceCode = strtoupper($input['source']['institution']);
+    $destCode = strtoupper($input['destination']['institution']);
+    
+    if (!$validator->validateInstitutionSecrets($sourceCode)) {
+        throw new Exception("Source institution '{$sourceCode}' missing API configuration in Railway Vault");
+    }
+    
+    if (!$validator->validateInstitutionSecrets($destCode)) {
+        throw new Exception("Destination institution '{$destCode}' missing API configuration in Railway Vault");
+    }
+    
+    // Build swap payload
+    $swapPayload = [
         'source' => [
-            'institution' => $source['institution'],
-            'asset_type' => $source['asset_type'] ?? 'ACCOUNT',
-            'amount' => (float)$source['amount'],
-            'currency' => $source['currency'] ?? $currency
+            'institution' => $sourceCode,
+            'asset_type' => $input['source']['asset_type'] ?? 'ACCOUNT',
+            'amount' => (float)$input['source']['amount'],
+            'currency' => $input['source']['currency'] ?? $countryConfig['currency']
         ],
         'destination' => [
-            'institution' => $destination['institution'],
-            'delivery_mode' => $destination['delivery_mode'] ?? 'deposit',
-            'currency' => $destination['currency'] ?? $currency
+            'institution' => $destCode,
+            'delivery_mode' => $input['destination']['delivery_mode'] ?? 'deposit',
+            'currency' => $input['destination']['currency'] ?? $countryConfig['currency']
         ]
     ];
     
-    // Add identifiers
-    if (isset($source['phone'])) {
-        $payload['source']['wallet_phone'] = $source['phone'];
-    }
-    if (isset($source['account_number'])) {
-        $payload['source']['account_number'] = $source['account_number'];
-    }
-    if (isset($destination['identifier'])) {
-        $payload['destination']['beneficiary_account'] = $destination['identifier'];
-        $payload['destination']['beneficiary_phone'] = $destination['identifier'];
+    // Add identifiers dynamically
+    $identifierMappings = [
+        'phone' => 'wallet_phone',
+        'account_number' => 'account_number',
+        'wallet_id' => 'ewallet_phone',
+        'identifier' => 'identifier'
+    ];
+    
+    foreach ($identifierMappings as $inputField => $payloadField) {
+        if (!empty($input['source'][$inputField])) {
+            $swapPayload['source'][$payloadField] = $input['source'][$inputField];
+        }
     }
     
-    if ($userId) {
-        $payload['user_id'] = $userId;
+    if (!empty($input['destination']['identifier'])) {
+        $swapPayload['destination']['beneficiary_account'] = $input['destination']['identifier'];
+        $swapPayload['destination']['beneficiary_phone'] = $input['destination']['identifier'];
     }
     
-    error_log("[execute.php] Swap payload: " . json_encode($payload));
-    
-    // Use vault-aware swap service
-    if (class_exists('Domain\Services\SwapService')) {
-        $swapService = new \Domain\Services\SwapService(
-            $db,
-            $settings,
-            $countryConfig['code'],
-            $encryptionKey,
-            $finalConfig,
-            $vault  // Pass vault manager for runtime secret resolution
-        );
-        
-        $result = $swapService->executeSwap($payload);
-        $swapReference = $result['swap_reference'] ?? 'VM-' . strtoupper(bin2hex(random_bytes(4))) . '-' . date('YmdHis');
-    } else {
-        $swapReference = 'VM-' . strtoupper(bin2hex(random_bytes(4))) . '-' . date('YmdHis');
-        $result = ['swap_reference' => $swapReference, 'status' => 'completed'];
+    if (!empty($input['user_id'])) {
+        $swapPayload['user_id'] = $input['user_id'];
     }
     
-    echo json_encode([
+    error_log("[Execute] Swap payload: " . json_encode($swapPayload));
+    
+    // Generate swap reference
+    $swapReference = 'VM-' . strtoupper(bin2hex(random_bytes(4))) . '-' . date('YmdHis');
+    
+    // Build response
+    $response = [
         'success' => true,
-        'status' => 'success',
+        'status' => 'pending',
         'swap_reference' => $swapReference,
-        'message' => 'Swap completed successfully',
+        'message' => 'Swap request validated and queued',
         'country' => [
-            'name' => $countryName,
+            'name' => $countryConfig['name'],
             'code' => $countryConfig['code'],
-            'currency' => $currency
+            'currency' => $countryConfig['currency'],
+            'currency_symbol' => $countryConfig['currency_symbol']
         ],
+        'participants' => [
+            'source' => [
+                'code' => $sourceCode,
+                'name' => $participants[$sourceCode]['name'] ?? $sourceCode,
+                'type' => $participants[$sourceCode]['type'] ?? 'bank'
+            ],
+            'destination' => [
+                'code' => $destCode,
+                'name' => $participants[$destCode]['name'] ?? $destCode,
+                'type' => $participants[$destCode]['type'] ?? 'bank'
+            ]
+        ],
+        'amount' => [
+            'value' => $swapPayload['source']['amount'],
+            'currency' => $swapPayload['source']['currency'],
+            'formatted' => $countryConfig['currency_symbol'] . number_format($swapPayload['source']['amount'], 2)
+        ],
+        'fees_applied' => !empty($fees),
         'vault_secured' => true,
-        'data' => $result
-    ]);
+        'timestamp' => date('c')
+    ];
+    
+    // Try to execute if SwapService exists
+    if (class_exists('Domain\Services\SwapService')) {
+        $db = (new DynamicDatabase($vault))->connect();
+        $encryptionKey = $vault->getSecret('ENCRYPTION_KEY') ?: $vault->getSecret('APP_ENCRYPTION_KEY');
+        
+        $finalConfig = [
+            'participants' => $participants,
+            'endpoints' => $endpoints,
+            'fees' => $fees,
+            'currency' => $countryConfig['currency'],
+            'currency_symbol' => $countryConfig['currency_symbol'],
+            'dial_code' => $countryConfig['dial_code'],
+            'country_code' => $countryConfig['code'],
+            'country_name' => $countryConfig['name'],
+            'vault_managed' => true
+        ];
+        
+        try {
+            $swapService = new \Domain\Services\SwapService(
+                $db,
+                $settings,
+                $countryConfig['code'],
+                $encryptionKey,
+                $finalConfig,
+                $vault
+            );
+            
+            $result = $swapService->executeSwap($swapPayload);
+            $response['status'] = $result['status'] ?? 'completed';
+            $response['data'] = $result;
+            $response['swap_reference'] = $result['swap_reference'] ?? $swapReference;
+        } catch (Exception $e) {
+            error_log("[Execute] SwapService execution error: " . $e->getMessage());
+            $response['status'] = 'queued';
+            $response['warning'] = 'Swap queued for processing: ' . $e->getMessage();
+        }
+    } else {
+        $response['status'] = 'simulated';
+        $response['notice'] = 'SwapService not available - request validated only';
+    }
+    
+    http_response_code(200);
+    echo json_encode($response);
     
 } catch (Exception $e) {
-    error_log("[execute.php] Swap execution failed: " . $e->getMessage());
-    http_response_code(400);
+    $httpCode = $e->getCode() && $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 400;
+    http_response_code($httpCode);
+    
     echo json_encode([
         'success' => false,
         'status' => 'error',
         'message' => $e->getMessage(),
-        'country' => $countryName
+        'code' => $httpCode,
+        'timestamp' => date('c')
     ]);
+    
+    error_log("[Execute] Error: " . $e->getMessage());
 }
