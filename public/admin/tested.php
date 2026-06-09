@@ -4,28 +4,27 @@ declare(strict_types=1);
 require_once __DIR__ . '/../../vendor/autoload.php';
 
 use Domain\Services\SwapService;
-use Domain\Services\Forex\ForexEngine;
+use Domain\Services\ForexService;
 use Domain\Services\Settlement\HybridSettlementStrategy;
-use Infrastructure\Adapters\AdapterRegistry;
+use Infrastructure\MessageAdapters\MessageAdapterFactory;
 use Infrastructure\SMS\SmsNotificationService;
-use Security\Pin\PinValidator;
 use PDO;
 
 echo "<pre>";
 
 /**
- * 1. CONNECT DB (REAL)
+ * DATABASE CONNECTION (REAL FIXED VERSION)
  */
 function db(): PDO {
     $url = getenv('DATABASE_URL');
-
     if (!$url) {
         throw new RuntimeException("DATABASE_URL not set");
     }
 
     $p = parse_url($url);
 
-    $dsn = "pgsql:host={$p['host']};port={$p['port']};dbname=" . ltrim($p['path'], '/');
+    $dsn = "pgsql:host={$p['host']};port=" . ($p['port'] ?? 5432) .
+           ";dbname=" . ltrim($p['path'], '/');
 
     return new PDO($dsn, $p['user'], $p['pass'], [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
@@ -37,24 +36,26 @@ $db = db();
 echo "✅ DATABASE CONNECTED\n\n";
 
 /**
- * 2. BUILD REAL SERVICES (NO MOCKS)
+ * REAL SERVICES (MATCH YOUR CODEBASE)
  */
-$forex = new ForexEngine($db);
-$adapter = new AdapterRegistry();
+$forex = new ForexService($db);
+$adapterFactory = new MessageAdapterFactory();
 $sms = new SmsNotificationService();
-$security = new PinValidator();
 $settlement = new HybridSettlementStrategy($db, $forex);
+
+/**
+ * THIS IS YOUR REAL SWAP ENGINE
+ */
 $swapService = new SwapService(
     $db,
     $forex,
-    $adapter,
+    $adapterFactory,
     $settlement,
-    $sms,
-    $security
+    $sms
 );
 
 /**
- * 3. REAL SWAP INPUT (YOUR DATA)
+ * REAL INPUT (YOUR VOUCHER)
  */
 $request = [
     'voucher_number' => '710083197',
@@ -62,22 +63,21 @@ $request = [
     'amount' => 200,
     'from' => 'ZURABANK',
     'to' => 'SACCUSALIS_ATM',
-    'from_account' => 'ZURA-DEFAULT',
+    'from_account' => '10000001',
     'cashout' => true
 ];
 
-echo "🔥 EXECUTING REAL SWAP...\n\n";
+echo "🔥 EXECUTING REAL SWAP FLOW...\n\n";
 
-/**
- * 4. EXECUTE REAL SWAP
- */
-$result = $swapService->execute($request);
+try {
+    $result = $swapService->execute($request);
 
-/**
- * 5. PRINT REAL RESULT (NOT SIMULATION)
- */
-echo "📊 RESULT:\n";
-print_r($result);
+    echo "📊 FINAL RESULT:\n";
+    print_r($result);
 
-echo "\n✅ DONE\n";
+} catch (Throwable $e) {
+    echo "❌ SWAP FAILED:\n";
+    echo $e->getMessage();
+}
+
 echo "</pre>";
