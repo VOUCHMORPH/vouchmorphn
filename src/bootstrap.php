@@ -45,7 +45,7 @@ $systemCountry = require SRC_PATH . '/Core/Config/SystemCountry.php';
 // Now use LoadCountry to get all configuration for this country
 $countryConfig = \Core\Config\LoadCountry::getConfig();
 
-// Extract values from loaded config
+// Extract values from loaded config (THESE ARE AVAILABLE NOW)
 $countryCode = $countryConfig['country_code'];
 $countryName = $countryConfig['country'];
 $countrySlug = strtolower($countryName);
@@ -56,7 +56,37 @@ $dbConfig = $countryConfig['db']['swap'];
 error_log("[Bootstrap] Running for country: {$countryName} ({$countryCode})");
 
 // ============================================================================
-// 5. CREATE DATABASE CONNECTION
+// 5. TIMEZONE SETTING (MOVE BEFORE DATABASE CONNECTION)
+// ============================================================================
+
+// Define timezone function that accepts countryCode as parameter
+function getValidTimezone(string $countryCode = null): string
+{
+    $envKeys = ['APP_TIMEZONE', 'TIMEZONE', 'TZ'];
+    foreach ($envKeys as $key) {
+        $value = $_ENV[$key] ?? getenv($key);
+        if ($value && is_string($value) && in_array($value, timezone_identifiers_list())) {
+            return $value;
+        }
+    }
+    
+    // Use country timezone from registry if available
+    if ($countryCode) {
+        $registry = \Core\Config\CountryRegistry::getInstance();
+        $countryInfo = $registry->getCountry($countryCode);
+        if (isset($countryInfo['config']['timezone'])) {
+            return $countryInfo['config']['timezone'];
+        }
+    }
+    
+    return 'UTC';
+}
+
+$timezone = getValidTimezone($countryCode);
+date_default_timezone_set($timezone);
+
+// ============================================================================
+// 6. CREATE DATABASE CONNECTION
 // ============================================================================
 
 $db = null;
@@ -84,7 +114,7 @@ try {
     ]);
     
     $db->exec("SET NAMES 'UTF8'");
-    $db->exec("SET timezone = 'UTC'");
+    $db->exec("SET timezone = '{$timezone}'");
     
     error_log("[Bootstrap] Database connection successful for {$countryName}");
     
@@ -94,7 +124,7 @@ try {
 }
 
 // ============================================================================
-// 6. EXTRACT CONFIGURATIONS FROM LoadCountry RESULT
+// 7. EXTRACT CONFIGURATIONS FROM LoadCountry RESULT
 // ============================================================================
 
 $participants = $countryConfig['participants'] ?? [];
@@ -102,36 +132,6 @@ $fees = $countryConfig['fees'] ?? [];
 $atmNotes = $countryConfig['atm_notes'] ?? [];
 $cardConfig = $countryConfig['card_config'] ?? [];
 $communication = $countryConfig['communication'] ?? [];
-
-// ============================================================================
-// 7. TIMEZONE SETTING
-// ============================================================================
-
-function getValidTimezone(): string
-{
-    $envKeys = ['APP_TIMEZONE', 'TIMEZONE', 'TZ'];
-    foreach ($envKeys as $key) {
-        $value = $_ENV[$key] ?? getenv($key);
-        if ($value && is_string($value) && in_array($value, timezone_identifiers_list())) {
-            return $value;
-        }
-    }
-    
-    // Use country timezone from registry if available
-    $registry = \Core\Config\CountryRegistry::getInstance();
-    $countryInfo = $registry->getCountry(COUNTRY_CODE ?? 'BW');
-    if (isset($countryInfo['config']['timezone'])) {
-        return $countryInfo['config']['timezone'];
-    }
-    
-    return 'UTC';
-}
-
-$timezone = getValidTimezone();
-date_default_timezone_set($timezone);
-if ($db) {
-    $db->exec("SET timezone = '{$timezone}'");
-}
 
 // ============================================================================
 // 8. APPLICATION SETTINGS
@@ -282,7 +282,7 @@ $container->setFactory('Domain\Services\MultiSourceSwapExecutor', function($c) {
 });
 
 // ============================================================================
-// 12. DEFINE CONSTANTS FOR APPLICATION USE
+// 12. DEFINE CONSTANTS FOR APPLICATION USE (NOW AFTER ALL VALUES ARE AVAILABLE)
 // ============================================================================
 
 if (!defined('COUNTRY_CODE')) {
