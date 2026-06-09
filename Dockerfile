@@ -1,82 +1,42 @@
 FROM php:8.2-fpm
 
-# =========================
-# System dependencies
-# =========================
+# Install required dependencies and PostgreSQL extensions only
 RUN apt-get update && apt-get install -y \
     libpq-dev \
     unzip \
     git \
     curl \
-    libzip-dev \
     nginx \
+    && docker-php-ext-install -j$(nproc) pdo_pgsql pgsql \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# =========================
-# PHP extensions
-# =========================
-RUN docker-php-ext-install -j$(nproc) \
-        pdo_pgsql \
-        pgsql \
-        zip \
-        bcmath
+# Verify extension is installed (build will fail if not)
+RUN php -m | grep -q pdo_pgsql || (echo "pdo_pgsql extension missing" && exit 1)
 
-# Verify extension exists at build time
-RUN php -m | grep pdo_pgsql
-
-# =========================
-# Composer
-# =========================
+# Copy Composer
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
-# =========================
-# Work directory
-# =========================
 WORKDIR /var/www/html
 
-# =========================
-# Copy app files
-# =========================
+# Copy composer files first
 COPY composer.json composer.lock* ./
-
 RUN composer install --no-dev --optimize-autoloader --no-interaction || true
 
+# Copy application code
 COPY src/ src/
 COPY public/ public/
 
-# =========================
-# CRITICAL FIX: allow env vars in PHP-FPM (Railway fix)
-# =========================
-RUN sed -i 's/;clear_env = yes/clear_env = no/' /usr/local/etc/php-fpm.d/www.conf || true \
- && echo "clear_env = no" >> /usr/local/etc/php-fpm.d/www.conf
+# Dump autoloader
+RUN composer dump-autoload --optimize --no-interaction || true
 
-# =========================
-# Nginx config
-# =========================
-RUN echo 'server {
-    listen 9000;
-    root /var/www/html/public;
-    index index.php index.html;
+# ===== CRITICAL: Fix for Railway environment variables =====
+ENV PHP_FPM_CLEAR_ENV=no
+RUN echo "clear_env = no" >> /usr/local/etc/php-fpm.d/www.conf
 
-    location / {
-        try_files $uri $uri/ /index.php?$args;
-    }
-
-    location ~ \.php$ {
-        include fastcgi_params;
-        fastcgi_pass 127.0.0.1:9001;
-        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-    }
-}' > /etc/nginx/sites-enabled/default
-
-# =========================
-# Logs
-# =========================
-RUN mkdir -p /var/log/nginx
-
-# =========================
-# Start both services
-# =========================
-CMD sh -c "php-fpm -D && nginx -g 'daemon off;'"
+# Simple nginx config
+RUN echo 'server { listen 9000; root /var/www/html/public; index index.php; location / { try_files $uri $uri/ /index.php?$args; } location ~ \.php$ { fastcgi_pass 127.0.0.1:9001; fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; include fastcgi_params; } }' > /etc/nginx/sites-enabled/default
 
 EXPOSE 9000
+
+CMD sh -c "php-fpm -D && nginx -g 'daemon off;'"
