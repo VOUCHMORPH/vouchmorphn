@@ -45,7 +45,7 @@ $systemCountry = require SRC_PATH . '/Core/Config/SystemCountry.php';
 // Now use LoadCountry to get all configuration for this country
 $countryConfig = \Core\Config\LoadCountry::getConfig();
 
-// Extract values from loaded config (THESE ARE AVAILABLE NOW)
+// Extract values from loaded config
 $countryCode = $countryConfig['country_code'];
 $countryName = $countryConfig['country'];
 $countrySlug = strtolower($countryName);
@@ -56,10 +56,9 @@ $dbConfig = $countryConfig['db']['swap'];
 error_log("[Bootstrap] Running for country: {$countryName} ({$countryCode})");
 
 // ============================================================================
-// 5. TIMEZONE SETTING (MOVE BEFORE DATABASE CONNECTION)
+// 5. TIMEZONE SETTING
 // ============================================================================
 
-// Define timezone function that accepts countryCode as parameter
 function getValidTimezone(string $countryCode = null): string
 {
     $envKeys = ['APP_TIMEZONE', 'TIMEZONE', 'TZ'];
@@ -86,39 +85,25 @@ $timezone = getValidTimezone($countryCode);
 date_default_timezone_set($timezone);
 
 // ============================================================================
-// 6. CREATE DATABASE CONNECTION
+// 6. CREATE DATABASE CONNECTION USING YOUR DBConnection CLASS
 // ============================================================================
 
 $db = null;
 
 try {
-    $host = $dbConfig['host'];
-    $port = $dbConfig['port'];
-    $database = $dbConfig['database'];
-    $username = $dbConfig['username'];
-    $password = $dbConfig['password'];
+    // Use your existing DBConnection class
+    $db = \Core\Database\DBConnection::getConnection($dbConfig);
     
-    $dsn = "pgsql:host={$host};port={$port};dbname={$database}";
-    
-    // Add SSL for Railway connections
-    if (strpos($host, 'railway.internal') !== false || getenv('RAILWAY_ENVIRONMENT')) {
-        $dsn .= ';sslmode=require';
+    if (!$db) {
+        throw new Exception("DBConnection returned null");
     }
     
-    error_log("[Bootstrap] Connecting to database: {$host}:{$port}/{$database}");
-    
-    $db = new PDO($dsn, $username, $password, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_EMULATE_PREPARES => false,
-    ]);
-    
-    $db->exec("SET NAMES 'UTF8'");
+    // Set timezone on the connection
     $db->exec("SET timezone = '{$timezone}'");
     
     error_log("[Bootstrap] Database connection successful for {$countryName}");
     
-} catch (PDOException $e) {
+} catch (Exception $e) {
     error_log("[Bootstrap] Database connection failed: " . $e->getMessage());
     $db = null;
 }
@@ -282,7 +267,7 @@ $container->setFactory('Domain\Services\MultiSourceSwapExecutor', function($c) {
 });
 
 // ============================================================================
-// 12. DEFINE CONSTANTS FOR APPLICATION USE (NOW AFTER ALL VALUES ARE AVAILABLE)
+// 12. DEFINE CONSTANTS FOR APPLICATION USE
 // ============================================================================
 
 if (!defined('COUNTRY_CODE')) {
@@ -299,7 +284,16 @@ if (!defined('COUNTRY_CONFIG_PATH')) {
 }
 
 // ============================================================================
-// 13. RETURN CONTAINER
+// 13. VERIFY DATABASE CONNECTION (OPTIONAL - FOR DEBUGGING)
+// ============================================================================
+
+if (getenv('APP_ENV') !== 'production') {
+    $status = \Core\Database\DBConnection::getConnectionStatus();
+    error_log("[Bootstrap] DB Status: " . json_encode($status));
+}
+
+// ============================================================================
+// 14. RETURN CONTAINER
 // ============================================================================
 
 error_log("[Bootstrap] VouchMorph initialized for {$countryName} ({$countryCode})");
