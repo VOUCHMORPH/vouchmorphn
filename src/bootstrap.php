@@ -2,7 +2,7 @@
 
 /**
  * VouchMorph Bootstrap File
- * Uses existing LoadCountry and CountryRegistry classes
+ * SINGLE SOURCE OF TRUTH - Uses only DATABASE_URL for database connections
  */
 
 // ============================================================================
@@ -50,9 +50,6 @@ $countryCode = $countryConfig['country_code'];
 $countryName = $countryConfig['country'];
 $countrySlug = strtolower($countryName);
 
-// Database configuration from LoadCountry
-$dbConfig = $countryConfig['db']['swap'];
-
 error_log("[Bootstrap] Running for country: {$countryName} ({$countryCode})");
 
 // ============================================================================
@@ -85,17 +82,17 @@ $timezone = getValidTimezone($countryCode);
 date_default_timezone_set($timezone);
 
 // ============================================================================
-// 6. CREATE DATABASE CONNECTION USING YOUR DBConnection CLASS
+// 6. CREATE DATABASE CONNECTION - SINGLE SOURCE OF TRUTH
 // ============================================================================
 
 $db = null;
 
 try {
-    // Use your existing DBConnection class
-    $db = \Core\Database\DBConnection::getConnection($dbConfig);
+    // Use DBConnection class - ONLY reads DATABASE_URL
+    $db = \Core\Database\DBConnection::getConnection();
     
     if (!$db) {
-        throw new Exception("DBConnection returned null");
+        throw new \Exception("DBConnection returned null");
     }
     
     // Set timezone on the connection
@@ -103,9 +100,14 @@ try {
     
     error_log("[Bootstrap] Database connection successful for {$countryName}");
     
-} catch (Exception $e) {
+} catch (\Exception $e) {
     error_log("[Bootstrap] Database connection failed: " . $e->getMessage());
     $db = null;
+    
+    // In production, don't die - let app handle gracefully
+    if (getenv('APP_ENV') !== 'production') {
+        die("Database connection failed: " . $e->getMessage());
+    }
 }
 
 // ============================================================================
@@ -288,7 +290,7 @@ if (!defined('COUNTRY_CONFIG_PATH')) {
 // ============================================================================
 
 if (getenv('APP_ENV') !== 'production') {
-    $status = \Core\Database\DBConnection::getConnectionStatus();
+    $status = \Core\Database\DBConnection::getStatus();
     error_log("[Bootstrap] DB Status: " . json_encode($status));
 }
 
