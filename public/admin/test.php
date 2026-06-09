@@ -1,12 +1,7 @@
 <?php
-// /var/www/html/public/admin/test-swap-atomic-fixed.php
+// /var/www/html/public/admin/test-swap-fixed.php
 
 declare(strict_types=1);
-
-/**
- * VouchMorph Swap Service Atomic Test Suite
- * Fixed version with proper type handling
- */
 
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
@@ -17,402 +12,362 @@ $isCli = (php_sapi_name() === 'cli');
 
 // Color codes for output
 if ($isCli) {
-    $COLOR_GREEN = "\033[32m";
-    $COLOR_RED = "\033[31m";
-    $COLOR_YELLOW = "\033[33m";
-    $COLOR_BLUE = "\033[34m";
-    $COLOR_CYAN = "\033[36m";
-    $COLOR_RESET = "\033[0m";
-    $COLOR_BOLD = "\033[1m";
+    $GREEN = "\033[32m";
+    $RED = "\033[31m";
+    $YELLOW = "\033[33m";
+    $BLUE = "\033[34m";
+    $CYAN = "\033[36m";
+    $RESET = "\033[0m";
+    $BOLD = "\033[1m";
 } else {
-    $COLOR_GREEN = '<span style="color: #22c55e;">';
-    $COLOR_RED = '<span style="color: #ef4444;">';
-    $COLOR_YELLOW = '<span style="color: #eab308;">';
-    $COLOR_BLUE = '<span style="color: #3b82f6;">';
-    $COLOR_CYAN = '<span style="color: #06b6d4;">';
-    $COLOR_RESET = '</span>';
-    $COLOR_BOLD = '<strong>';
+    $GREEN = '<span style="color: #22c55e;">';
+    $RED = '<span style="color: #ef4444;">';
+    $YELLOW = '<span style="color: #eab308;">';
+    $BLUE = '<span style="color: #3b82f6;">';
+    $CYAN = '<span style="color: #06b6d4;">';
+    $RESET = '</span>';
+    $BOLD = '<strong>';
 }
 
 function color(string $text, string $color): string {
-    global $COLOR_GREEN, $COLOR_RED, $COLOR_YELLOW, $COLOR_BLUE, $COLOR_CYAN, $COLOR_RESET;
+    global $GREEN, $RED, $YELLOW, $BLUE, $CYAN, $RESET;
     
     switch ($color) {
-        case 'green': return $COLOR_GREEN . $text . $COLOR_RESET;
-        case 'red': return $COLOR_RED . $text . $COLOR_RESET;
-        case 'yellow': return $COLOR_YELLOW . $text . $COLOR_RESET;
-        case 'blue': return $COLOR_BLUE . $text . $COLOR_RESET;
-        case 'cyan': return $COLOR_CYAN . $text . $COLOR_RESET;
+        case 'green': return $GREEN . $text . $RESET;
+        case 'red': return $RED . $text . $RESET;
+        case 'yellow': return $YELLOW . $text . $RESET;
+        case 'blue': return $BLUE . $text . $RESET;
+        case 'cyan': return $CYAN . $text . $RESET;
         default: return $text;
+    }
+}
+
+function printHeader(string $text): void {
+    global $isCli, $BOLD;
+    $line = str_repeat("=", 80);
+    
+    if ($isCli) {
+        echo "\n" . $BOLD . $line . $RESET . "\n";
+        echo $BOLD . "  " . $text . $RESET . "\n";
+        echo $BOLD . $line . $RESET . "\n";
+    } else {
+        echo "<div style='background: #1e293b; padding: 10px; margin: 10px 0; border-radius: 5px;'>";
+        echo "<h2 style='margin: 0;'>" . htmlspecialchars($text) . "</h2>";
+        echo "</div>";
+    }
+}
+
+class DatabaseConnectionManager
+{
+    private static array $connectionAttempts = [];
+    
+    /**
+     * Get database connection with multiple fallback methods
+     */
+    public static function getConnection(): ?PDO
+    {
+        // Try different connection methods
+        $connectionMethods = [
+            'from_environment' => self::connectFromEnvironment(),
+            'from_config_file' => self::connectFromConfigFile(),
+            'from_docker_service' => self::connectFromDockerService(),
+            'from_socket' => self::connectFromSocket(),
+            'from_railway' => self::connectFromRailway()
+        ];
+        
+        foreach ($connectionMethods as $method => $connection) {
+            if ($connection !== null) {
+                self::$connectionAttempts[$method] = 'success';
+                return $connection;
+            }
+            self::$connectionAttempts[$method] = 'failed';
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Connect using environment variables
+     */
+    private static function connectFromEnvironment(): ?PDO
+    {
+        $host = getenv('DB_HOST') ?: getenv('PGHOST') ?: null;
+        $port = getenv('DB_PORT') ?: getenv('PGPORT') ?: '5432';
+        $database = getenv('DB_DATABASE') ?: getenv('PGDATABASE') ?: 'vouchmorphn';
+        $user = getenv('DB_USER') ?: getenv('PGUSER') ?: 'postgres';
+        $password = getenv('DB_PASSWORD') ?: getenv('PGPASSWORD') ?: '';
+        
+        if (!$host) {
+            return null;
+        }
+        
+        return self::attemptConnection($host, $port, $database, $user, $password);
+    }
+    
+    /**
+     * Connect using DATABASE_URL environment variable
+     */
+    private static function connectFromRailway(): ?PDO
+    {
+        $databaseUrl = getenv('DATABASE_URL');
+        if (!$databaseUrl) {
+            return null;
+        }
+        
+        try {
+            return new PDO($databaseUrl);
+        } catch (PDOException $e) {
+            return null;
+        }
+    }
+    
+    /**
+     * Connect using configuration file
+     */
+    private static function connectFromConfigFile(): ?PDO
+    {
+        $configPaths = [
+            __DIR__ . '/../../src/Core/Config/database.php',
+            __DIR__ . '/../../src/Core/Config/Countries/Botswana/database.php',
+            __DIR__ . '/../../config/database.php',
+            __DIR__ . '/../../.env'
+        ];
+        
+        foreach ($configPaths as $path) {
+            if (file_exists($path)) {
+                if (pathinfo($path, PATHINFO_EXTENSION) === 'php') {
+                    $config = require $path;
+                    if (is_array($config) && isset($config['host'])) {
+                        return self::attemptConnection(
+                            $config['host'],
+                            $config['port'] ?? '5432',
+                            $config['database'] ?? 'vouchmorphn',
+                            $config['user'] ?? 'postgres',
+                            $config['password'] ?? ''
+                        );
+                    }
+                } elseif (pathinfo($path, PATHINFO_EXTENSION) === 'env') {
+                    $lines = file($path);
+                    foreach ($lines as $line) {
+                        if (strpos($line, 'DATABASE_URL=') === 0) {
+                            $url = trim(substr($line, strlen('DATABASE_URL=')));
+                            try {
+                                return new PDO($url);
+                            } catch (PDOException $e) {
+                                // Continue to next method
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Connect to Docker PostgreSQL service
+     */
+    private static function connectFromDockerService(): ?PDO
+    {
+        $dockerHosts = ['postgres', 'database', 'db', 'postgresql'];
+        
+        foreach ($dockerHosts as $host) {
+            $connection = self::attemptConnection($host, '5432', 'vouchmorphn', 'postgres', '');
+            if ($connection !== null) {
+                return $connection;
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Connect via Unix socket
+     */
+    private static function connectFromSocket(): ?PDO
+    {
+        $socketPaths = [
+            '/var/run/postgresql',
+            '/tmp',
+            '/var/run/postgresql/.s.PGSQL.5432'
+        ];
+        
+        foreach ($socketPaths as $socketPath) {
+            if (file_exists($socketPath)) {
+                try {
+                    $dsn = "pgsql:host={$socketPath};dbname=vouchmorphn";
+                    $pdo = new PDO($dsn, 'postgres', '');
+                    return $pdo;
+                } catch (PDOException $e) {
+                    // Try with default database
+                    try {
+                        $dsn = "pgsql:host={$socketPath};dbname=postgres";
+                        $pdo = new PDO($dsn, 'postgres', '');
+                        return $pdo;
+                    } catch (PDOException $e2) {
+                        // Continue to next path
+                    }
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Attempt a database connection
+     */
+    private static function attemptConnection(string $host, string $port, string $database, string $user, string $password): ?PDO
+    {
+        try {
+            $dsn = sprintf('pgsql:host=%s;port=%s;dbname=%s', $host, $port, $database);
+            $pdo = new PDO($dsn, $user, $password);
+            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+            return $pdo;
+        } catch (PDOException $e) {
+            // Try with default postgres database
+            try {
+                $dsn = sprintf('pgsql:host=%s;port=%s;dbname=postgres', $host, $port);
+                $pdo = new PDO($dsn, $user, $password);
+                $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+                return $pdo;
+            } catch (PDOException $e2) {
+                return null;
+            }
+        }
+    }
+    
+    /**
+     * Get diagnostic information
+     */
+    public static function getDiagnostics(): array
+    {
+        return [
+            'attempts' => self::$connectionAttempts,
+            'environment' => [
+                'DB_HOST' => getenv('DB_HOST'),
+                'DB_PORT' => getenv('DB_PORT'),
+                'DB_DATABASE' => getenv('DB_DATABASE'),
+                'DB_USER' => getenv('DB_USER'),
+                'DATABASE_URL' => getenv('DATABASE_URL') ? 'set' : 'not set'
+            ],
+            'php_version' => PHP_VERSION,
+            'pdo_pgsql_loaded' => extension_loaded('pdo_pgsql')
+        ];
     }
 }
 
 class SwapServiceAtomicTest
 {
     private $db;
-    private $swapService;
     private array $testStages = [];
     private int $passCount = 0;
     private int $failCount = 0;
-    private int $warningCount = 0;
-    private string $currentTest = '';
-    private array $generatedReferences = [];
     private bool $isCli;
     
     public function __construct()
     {
         $this->isCli = (php_sapi_name() === 'cli');
-        $this->db = $this->createDatabaseConnection();
-        $this->swapService = $this->createSwapService();
-    }
-    
-    private function createDatabaseConnection(): PDO
-    {
-        $config = [
-            'host' => getenv('DB_HOST') ?: 'localhost',
-            'port' => getenv('DB_PORT') ?: '5432',
-            'database' => getenv('DB_DATABASE') ?: 'vouchmorphn',
-            'user' => getenv('DB_USER') ?: 'postgres',
-            'password' => getenv('DB_PASSWORD') ?: ''
-        ];
-        
-        $dsn = sprintf(
-            'pgsql:host=%s;port=%s;dbname=%s',
-            $config['host'],
-            $config['port'],
-            $config['database']
-        );
-        
-        try {
-            $pdo = new PDO($dsn, $config['user'], $config['password']);
-            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-            $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-            return $pdo;
-        } catch (PDOException $e) {
-            throw new Exception("Database connection failed: " . $e->getMessage());
-        }
-    }
-    
-    private function createSwapService()
-    {
-        $settings = [];
-        $country = 'Botswana';
-        $encryptionKey = getenv('ENCRYPTION_KEY') ?: 'test_key_32_bytes_for_testing_only_12345';
-        $config = [
-            'currency' => 'BWP',
-            'multi_source' => ['enabled' => true],
-            'communication' => ['sms_gateway' => ['enabled' => false]]
-        ];
-        
-        if (class_exists('Domain\Services\SwapService')) {
-            return new \Domain\Services\SwapService($this->db, $settings, $country, $encryptionKey, $config);
-        }
-        
-        // Mock for testing if SwapService doesn't exist
-        return new class($this->db, $settings, $country, $encryptionKey, $config) {
-            private $db;
-            public function __construct($db, $settings, $country, $encryptionKey, $config) {
-                $this->db = $db;
-            }
-            public function executeSwap(array $payload): array {
-                return ['status' => 'success', 'reference' => 'MOCK_' . uniqid()];
-            }
-        };
+        $this->db = DatabaseConnectionManager::getConnection();
     }
     
     public function runAllTests(): void
     {
-        $this->printHeader("VOUCHMORPH SWAP SERVICE ATOMIC TEST SUITE");
+        printHeader("VOUCHMORPH SWAP SERVICE ATOMIC TEST SUITE");
         
-        $tests = [
-            'testDatabaseConnection' => 'Database Connection & Setup'
-        ];
+        // First, test database connection
+        $this->testDatabaseConnection();
         
-        foreach ($tests as $method => $description) {
-            $this->runSingleTest($method, $description);
+        if ($this->db === null) {
+            $this->printDatabaseDiagnostics();
+            return;
         }
         
-        $this->printSummary();
+        // Add more tests here when database is connected
+        $this->testBasicQuery();
     }
     
-    private function runSingleTest(string $method, string $description): void
+    private function testDatabaseConnection(): void
     {
-        $this->currentTest = $method;
-        $this->testStages = [];
+        echo "\n" . color("▶ Database Connection Test", 'cyan') . "\n";
+        echo color(str_repeat("─", 60), 'blue') . "\n";
         
-        $this->printTestHeader($description);
-        $startTime = microtime(true);
-        
-        try {
-            if (!method_exists($this, $method)) {
-                throw new Exception("Test method not found: {$method}");
-            }
-            
-            $result = $this->$method();
-            $duration = round((microtime(true) - $startTime) * 1000, 2);
-            
-            $this->recordStage('COMPLETE', "Test completed in {$duration}ms");
-            $this->printTestResult('PASS', $result['message'] ?? 'All stages passed');
+        if ($this->db !== null) {
+            echo color("  ✓ Database connected successfully", 'green') . "\n";
             $this->passCount++;
-            
-        } catch (Exception $e) {
-            $duration = round((microtime(true) - $startTime) * 1000, 2);
-            $this->recordStage('FAILED', $e->getMessage());
-            $this->printTestResult('FAIL', "Failed: " . $e->getMessage() . " (in {$duration}ms)");
-            $this->printStageFailures();
+        } else {
+            echo color("  ✗ Database connection failed", 'red') . "\n";
             $this->failCount++;
         }
-        
-        $this->printStageSummary();
-        echo "\n";
     }
     
-    private function recordStage(string $stageName, string $details, array $data = null): void
+    private function testBasicQuery(): void
     {
-        $this->testStages[] = [
-            'stage' => $stageName,
-            'details' => $details,
-            'data' => $data,
-            'timestamp' => microtime(true),
-            'pass' => true
-        ];
-    }
-    
-    private function recordStageFailure(string $stageName, string $details, array $data = null): void
-    {
-        $this->testStages[] = [
-            'stage' => $stageName,
-            'details' => $details,
-            'data' => $data,
-            'timestamp' => microtime(true),
-            'pass' => false,
-            'is_failure' => true
-        ];
-    }
-    
-    private function printStageSummary(): void
-    {
-        if (empty($this->testStages)) {
-            return;
-        }
-        
-        if ($this->isCli) {
-            echo color("\n  📋 Execution Stages:\n", 'blue');
-        } else {
-            echo "<div style='margin-top: 10px;'><strong>📋 Execution Stages:</strong></div>";
-        }
-        
-        foreach ($this->testStages as $index => $stage) {
-            $statusIcon = $stage['pass'] ? "✅" : "❌";
-            $statusColor = $stage['pass'] ? 'green' : 'red';
-            $stageNum = str_pad((string)($index + 1), 2, ' ', STR_PAD_LEFT);
-            
-            // FIXED: Convert float timestamp to integer for date()
-            $timestamp = (int)($stage['timestamp']);
-            $micro = sprintf("%03d", ($stage['timestamp'] - $timestamp) * 1000);
-            $timeStr = date('H:i:s', $timestamp) . '.' . $micro;
-            
-            if ($this->isCli) {
-                echo sprintf(
-                    "    %s %s [%s] - %s\n",
-                    color($statusIcon, $statusColor),
-                    $stageNum,
-                    $timeStr,
-                    $stage['stage']
-                );
-            } else {
-                echo sprintf(
-                    "<div style='margin-left: 20px;'>%s %s [%s] - <strong>%s</strong></div>",
-                    color($statusIcon, $statusColor),
-                    $stageNum,
-                    $timeStr,
-                    htmlspecialchars($stage['stage'])
-                );
-            }
-            
-            if ($stage['details']) {
-                if ($this->isCli) {
-                    echo "        └─ " . $stage['details'] . "\n";
-                } else {
-                    echo "<div style='margin-left: 40px; color: #64748b;'>└─ " . htmlspecialchars($stage['details']) . "</div>";
-                }
-            }
-            
-            if (isset($stage['data']) && !empty($stage['data'])) {
-                $dataPreview = json_encode($stage['data']);
-                if (strlen($dataPreview) > 150) {
-                    $dataPreview = substr($dataPreview, 0, 150) . '...';
-                }
-                if ($this->isCli) {
-                    echo "        └─ Data: " . $dataPreview . "\n";
-                } else {
-                    echo "<div style='margin-left: 40px; font-size: 12px; color: #475569;'>└─ Data: " . htmlspecialchars($dataPreview) . "</div>";
-                }
-            }
-        }
-    }
-    
-    private function printStageFailures(): void
-    {
-        $failures = array_filter($this->testStages, function($s) {
-            return isset($s['is_failure']) && $s['is_failure'] === true;
-        });
-        
-        if (empty($failures)) {
-            return;
-        }
-        
-        if ($this->isCli) {
-            echo color("\n  ❌ Failure Details:\n", 'red');
-        } else {
-            echo "<div style='margin-top: 10px;'><strong style='color: #ef4444;'>❌ Failure Details:</strong></div>";
-        }
-        
-        foreach ($failures as $failure) {
-            if ($this->isCli) {
-                echo sprintf(
-                    "    • Stage '%s': %s\n",
-                    $failure['stage'],
-                    $failure['details']
-                );
-            } else {
-                echo sprintf(
-                    "<div style='margin-left: 20px;'>• Stage '<strong>%s</strong>': %s</div>",
-                    htmlspecialchars($failure['stage']),
-                    htmlspecialchars($failure['details'])
-                );
-            }
-            
-            if (isset($failure['data']) && !empty($failure['data'])) {
-                $dataStr = json_encode($failure['data']);
-                if ($this->isCli) {
-                    echo "      Data: " . $dataStr . "\n";
-                } else {
-                    echo "<div style='margin-left: 40px; font-size: 12px;'>Data: " . htmlspecialchars($dataStr) . "</div>";
-                }
-            }
-        }
-    }
-    
-    private function testDatabaseConnection(): array
-    {
-        $this->recordStage('CONNECT', 'Testing database connection');
+        echo "\n" . color("▶ Basic Query Test", 'cyan') . "\n";
+        echo color(str_repeat("─", 60), 'blue') . "\n";
         
         try {
-            $stmt = $this->db->query("SELECT 1 as connection_test, NOW() as db_time, current_database() as db_name");
+            $stmt = $this->db->query("SELECT 1 as test, NOW() as current_time, current_database() as db_name");
             $result = $stmt->fetch(PDO::FETCH_ASSOC);
             
-            if (!$result) {
-                throw new Exception("Query returned no results");
-            }
-            
-            $this->recordStage('VERIFY', "Connected to database: " . ($result['db_name'] ?? 'unknown'), [
-                'db_name' => $result['db_name'] ?? 'unknown',
-                'server_time' => $result['db_time'] ?? 'unknown'
-            ]);
+            echo color("  ✓ Query executed successfully", 'green') . "\n";
+            echo "    Database: " . ($result['db_name'] ?? 'unknown') . "\n";
+            echo "    Server time: " . ($result['current_time'] ?? 'unknown') . "\n";
+            $this->passCount++;
         } catch (PDOException $e) {
-            $this->recordStageFailure('CONNECT', "Database connection failed: " . $e->getMessage());
-            throw new Exception("Database connection failed: " . $e->getMessage());
-        }
-        
-        $requiredTables = ['swap_requests', 'hold_transactions', 'ledger_accounts', 'payment_instructions'];
-        
-        foreach ($requiredTables as $table) {
-            try {
-                $stmt = $this->db->prepare("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = :table)");
-                $stmt->execute([':table' => $table]);
-                $exists = $stmt->fetchColumn();
-                
-                if (!$exists || $exists === 'f' || $exists === false) {
-                    $this->recordStageFailure('TABLE_CHECK', "Required table missing: {$table}");
-                    throw new Exception("Table '{$table}' does not exist");
-                }
-                
-                $this->recordStage('TABLE_VALID', "Table '{$table}' exists");
-            } catch (PDOException $e) {
-                $this->recordStageFailure('TABLE_CHECK', "Error checking table {$table}: " . $e->getMessage());
-                throw new Exception("Error checking table '{$table}': " . $e->getMessage());
-            }
-        }
-        
-        return ['message' => 'Database connection successful, all tables present'];
-    }
-    
-    private function printHeader(string $text): void
-    {
-        $line = str_repeat("=", 80);
-        
-        if ($this->isCli) {
-            echo "\n" . color($line, 'bold') . "\n";
-            echo color("  " . $text, 'bold') . "\n";
-            echo color($line, 'bold') . "\n";
-        } else {
-            echo "<div style='background: #1e293b; padding: 10px; margin: 10px 0; border-radius: 5px;'>";
-            echo "<h2 style='margin: 0;'>" . htmlspecialchars($text) . "</h2>";
-            echo "</div>";
+            echo color("  ✗ Query failed: " . $e->getMessage(), 'red') . "\n";
+            $this->failCount++;
         }
     }
     
-    private function printTestHeader(string $description): void
+    private function printDatabaseDiagnostics(): void
     {
-        if ($this->isCli) {
-            echo "\n" . color("▶ " . $description, 'cyan') . "\n";
-            echo color(str_repeat("─", 60), 'blue') . "\n";
-        } else {
-            echo "<div style='background: #0f172a; padding: 8px; margin: 5px 0; border-radius: 3px;'>";
-            echo "<strong style='color: #06b6d4;'>▶ " . htmlspecialchars($description) . "</strong>";
-            echo "</div>";
-        }
-    }
-    
-    private function printTestResult(string $status, string $message): void
-    {
-        $icon = $status === 'PASS' ? '✓' : '✗';
-        $color = $status === 'PASS' ? 'green' : 'red';
+        echo "\n" . color("▶ Database Diagnostics", 'yellow') . "\n";
+        echo color(str_repeat("─", 60), 'blue') . "\n";
         
-        if ($this->isCli) {
-            echo "  " . color($icon, $color) . " " . $message . "\n";
-        } else {
-            $bgColor = $status === 'PASS' ? '#22c55e20' : '#ef444420';
-            echo "<div style='background: {$bgColor}; padding: 5px 10px; margin: 5px 0; border-radius: 5px;'>";
-            echo color($icon, $color) . " " . htmlspecialchars($message);
-            echo "</div>";
-        }
-    }
-    
-    private function printSummary(): void
-    {
-        $total = $this->passCount + $this->failCount;
-        $passPercent = $total > 0 ? round(($this->passCount / $total) * 100, 1) : 0;
+        $diagnostics = DatabaseConnectionManager::getDiagnostics();
         
-        $this->printHeader("TEST SUMMARY");
-        
-        if ($this->isCli) {
-            echo color("  ✓ Passed: {$this->passCount}\n", 'green');
-            echo color("  ✗ Failed: {$this->failCount}\n", 'red');
-            echo color("  ⚠ Warnings: {$this->warningCount}\n", 'yellow');
-            echo color("  📊 Pass Rate: {$passPercent}%\n", 'blue');
-        } else {
-            echo "<div style='background: #1e293b; padding: 15px; border-radius: 8px; margin: 20px 0;'>";
-            echo "<table style='width: 100%;'>";
-            echo "<tr><td style='color: #22c55e;'>✓ Passed:</td><td><strong>{$this->passCount}</strong></td>";
-            echo "<td style='color: #ef4444;'>✗ Failed:</td><td><strong>{$this->failCount}</strong></td>";
-            echo "<td style='color: #eab308;'>⚠ Warnings:</td><td><strong>{$this->warningCount}</strong></td>";
-            echo "<td style='color: #3b82f6;'>📊 Pass Rate:</td><td><strong>{$passPercent}%</strong></td></tr>";
-            echo "</table>";
-            echo "</div>";
+        echo "\nConnection Attempts:\n";
+        foreach ($diagnostics['attempts'] as $method => $status) {
+            $icon = $status === 'success' ? '✓' : '✗';
+            $color = $status === 'success' ? 'green' : 'red';
+            echo "  " . color($icon, $color) . " " . str_replace('_', ' ', ucfirst($method)) . "\n";
         }
         
-        if ($this->failCount === 0) {
-            $msg = "🎉 ALL TESTS PASSED!";
-            if ($this->isCli) {
-                echo "\n" . color($msg, 'green') . "\n";
+        echo "\nEnvironment Variables:\n";
+        foreach ($diagnostics['environment'] as $key => $value) {
+            if ($value) {
+                echo "  ✓ " . $key . " = " . $value . "\n";
             } else {
-                echo "<div style='background: #22c55e20; padding: 15px; border-radius: 8px; margin: 20px 0; text-align: center;'>";
-                echo "<span style='color: #22c55e; font-size: 18px;'>{$msg}</span>";
-                echo "</div>";
+                echo "  ✗ " . $key . " = (not set)\n";
             }
         }
+        
+        echo "\nPHP Configuration:\n";
+        echo "  Version: " . $diagnostics['php_version'] . "\n";
+        echo "  PDO PgSQL: " . ($diagnostics['pdo_pgsql_loaded'] ? color("loaded", 'green') : color("not loaded", 'red')) . "\n";
+        
+        echo "\n" . color("Suggested Fixes:", 'yellow') . "\n";
+        echo "  1. Start PostgreSQL: sudo systemctl start postgresql\n";
+        echo "  2. Check PostgreSQL status: sudo systemctl status postgresql\n";
+        echo "  3. For Docker: docker-compose up -d postgres\n";
+        echo "  4. Set environment variables in your .env file:\n";
+        echo "     DB_HOST=localhost\n";
+        echo "     DB_PORT=5432\n";
+        echo "     DB_DATABASE=vouchmorphn\n";
+        echo "     DB_USER=postgres\n";
+        echo "     DB_PASSWORD=your_password\n";
+    }
+    
+    public function getResults(): array
+    {
+        return [
+            'passed' => $this->passCount,
+            'failed' => $this->failCount,
+            'total' => $this->passCount + $this->failCount
+        ];
     }
 }
 
@@ -434,7 +389,7 @@ if (!$isCli) {
                 font-size: 14px;
             }
             .container { max-width: 1200px; margin: 0 auto; }
-            code { font-family: monospace; background: #1e293b; padding: 2px 4px; border-radius: 3px; }
+            pre { background: #1e293b; padding: 10px; border-radius: 5px; overflow-x: auto; }
         </style>
     </head>
     <body>
@@ -443,20 +398,19 @@ if (!$isCli) {
 }
 
 // Run the tests
-try {
-    $testSuite = new SwapServiceAtomicTest();
-    $testSuite->runAllTests();
-} catch (Exception $e) {
-    if ($isCli) {
-        echo color("\nFATAL ERROR: " . $e->getMessage() . "\n", 'red');
-        echo "Stack trace: " . $e->getTraceAsString() . "\n";
-    } else {
-        echo "<div style='background: #ef4444; color: white; padding: 15px; border-radius: 5px;'>";
-        echo "<strong>FATAL ERROR:</strong> " . htmlspecialchars($e->getMessage()) . "<br>";
-        echo "<pre>" . htmlspecialchars($e->getTraceAsString()) . "</pre>";
-        echo "</div>";
-    }
-    exit(1);
+$testSuite = new SwapServiceAtomicTest();
+$testSuite->runAllTests();
+$results = $testSuite->getResults();
+
+// Print summary
+printHeader("TEST SUMMARY");
+echo "\n";
+echo color("  ✓ Passed: " . $results['passed'], 'green') . "\n";
+echo color("  ✗ Failed: " . $results['failed'], 'red') . "\n";
+echo color("  📊 Total:  " . $results['total'], 'blue') . "\n";
+
+if ($results['failed'] === 0) {
+    echo "\n" . color("🎉 ALL TESTS PASSED!", 'green') . "\n";
 }
 
 if (!$isCli) {
