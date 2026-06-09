@@ -1,9 +1,7 @@
 <?php
-
 namespace Infrastructure\MessageAdapters;
 
 use RuntimeException;
-use Infrastructure\MessageAdapters\MessageAdapterInterface;
 
 class MessageAdapterFactory
 {
@@ -14,186 +12,121 @@ class MessageAdapterFactory
 
     public function __construct(?string $countryCode = null)
     {
-        $configPath = dirname(__DIR__, 3) . '/Core/Config/message_adapters.php';
+        // src/Infrastructure/MessageAdapters
+        // -> up to src
+        // -> Core/Config/message_adapters.php
 
-        if (!file_exists($configPath)) {
-            throw new RuntimeException("Missing config: Core/Config/message_adapters.php");
+        $configFile = dirname(__DIR__, 2)
+            . '/Core/Config/message_adapters.php';
+
+        if (!file_exists($configFile)) {
+            throw new RuntimeException(
+                "Missing config: {$configFile}"
+            );
         }
 
-        $this->globalConfig = require $configPath;
+        $config = require $configFile;
 
-        if (!is_array($this->globalConfig)) {
-            throw new RuntimeException("Invalid message_adapters.php: must return array");
+        if (!is_array($config)) {
+            throw new RuntimeException(
+                "Invalid config file: {$configFile}"
+            );
         }
 
-        if ($countryCode) {
+        $this->globalConfig = $config;
+
+        if ($countryCode !== null) {
             $this->setCountry($countryCode);
         }
     }
 
     public function setCountry(string $countryCode): self
     {
-        $this->currentCountry = strtolower($countryCode);
+        /*
+         * Railway/Linux is case-sensitive.
+         *
+         * Your folders are:
+         *   Countries/Botswana
+         *   Countries/South Africa
+         *
+         * So do NOT lowercase them.
+         */
 
-        $configPath = dirname(__DIR__, 3)
-            . "/Core/Config/Countries/{$this->currentCountry}/bank_formats.php";
+        $this->currentCountry = trim($countryCode);
+
+        $configPath = dirname(__DIR__, 2)
+            . '/Core/Config/Countries/'
+            . $this->currentCountry
+            . '/bank_formats.php';
 
         if (!file_exists($configPath)) {
             throw new RuntimeException(
-                "No bank format config for country: {$countryCode}"
+                "Country config not found: {$configPath}"
             );
         }
 
-        $this->countryConfigs[$this->currentCountry] = require $configPath;
+        $countryConfig = require $configPath;
 
-        if (!is_array($this->countryConfigs[$this->currentCountry])) {
-            throw new RuntimeException("Invalid bank_formats.php for {$countryCode}");
+        if (!is_array($countryConfig)) {
+            throw new RuntimeException(
+                "Invalid country config: {$configPath}"
+            );
         }
+
+        $this->countryConfigs[$this->currentCountry] = $countryConfig;
 
         return $this;
     }
 
-    /**
-     * ================================
-     * SMART DETECTION ENGINE
-     * ================================
-     */
-    public static function detectFromContent(array|string $payload): string
-    {
-        if (is_string($payload)) {
-            if (str_contains($payload, '|')) return 'LEGACY';
-            if (str_contains($payload, ',')) return 'CSV';
-            return 'LEGACY';
-        }
-
-        if (isset($payload['businessMessageId'])
-            || isset($payload['debtor'])
-            || isset($payload['creditor'])
-            || isset($payload['endToEndId'])) {
-            return 'ISO20022';
-        }
-
-        if (isset($payload['mti']) || isset($payload['bitmap'])) {
-            return 'ISO8583';
-        }
-
-        if (isset($payload['walletId']) || isset($payload['from']['type'])) {
-            return 'MOBILE_MONEY';
-        }
-
-        if (isset($payload['settlementDate']) || isset($payload['valueDate'])) {
-            return 'RTGS';
-        }
-
-        return 'LEGACY';
-    }
-
-    public static function detectFromHeaders(array $headers): ?string
-    {
-        $headers = array_change_key_case($headers, CASE_LOWER);
-
-        $ct = $headers['content-type'] ?? '';
-
-        return match (true) {
-            str_contains($ct, 'interoperability') => 'ISO20022',
-            str_contains($ct, 'mobile-money') => 'MOBILE_MONEY',
-            str_contains($ct, 'iso8583') => 'ISO8583',
-            str_contains($ct, 'rtgs') => 'RTGS',
-            isset($headers['x-message-standard']) => strtoupper($headers['x-message-standard']),
-            default => null,
-        };
-    }
-
-    public static function smartDetect(
-        array|string $payload = [],
-        array $headers = [],
-        ?string $endpoint = null,
-        ?array $participant = null,
-        ?string $bankCode = null
-    ): array {
-
-        $detections = [];
-
-        if ($participant && isset($participant['message_profile']['standard'])) {
-            return [
-                'format' => $participant['message_profile']['standard'],
-                'confidence' => 100,
-                'source' => 'participant_config'
-            ];
-        }
-
-        if ($bankCode && $participant['bank_formats'][$bankCode] ?? false) {
-            return [
-                'format' => $participant['bank_formats'][$bankCode],
-                'confidence' => 95,
-                'source' => 'bank_mapping'
-            ];
-        }
-
-        if ($h = self::detectFromHeaders($headers)) {
-            $detections[] = ['format' => $h, 'confidence' => 85, 'source' => 'headers'];
-        }
-
-        if ($endpoint) {
-            if (str_contains($endpoint, 'mojaloop') || str_contains($endpoint, 'quotes')) {
-                $detections[] = ['format' => 'ISO20022', 'confidence' => 80, 'source' => 'endpoint'];
-            }
-        }
-
-        $content = self::detectFromContent($payload);
-        if ($content) {
-            $detections[] = ['format' => $content, 'confidence' => 75, 'source' => 'content'];
-        }
-
-        usort($detections, fn($a, $b) => $b['confidence'] <=> $a['confidence']);
-
-        $best = $detections[0] ?? [
-            'format' => 'ISO20022',
-            'confidence' => 30,
-            'source' => 'default'
-        ];
-
-        return $best + ['all' => $detections];
-    }
-
     public function getAdapter(string $formatType): MessageAdapterInterface
     {
-        if (!$this->currentCountry) {
-            throw new RuntimeException("Country not set");
+        if ($this->currentCountry === null) {
+            throw new RuntimeException(
+                'Country not set'
+            );
         }
 
-        $key = $this->currentCountry . '_' . $formatType;
+        $cacheKey =
+            $this->currentCountry . '_' . $formatType;
 
-        if (isset($this->instances[$key])) {
-            return $this->instances[$key];
+        if (isset($this->instances[$cacheKey])) {
+            return $this->instances[$cacheKey];
         }
 
-        if (!isset($this->globalConfig['adapters'][$formatType])) {
-            throw new RuntimeException("Unknown adapter: {$formatType}");
+        if (
+            !isset(
+                $this->globalConfig['adapters'][$formatType]
+            )
+        ) {
+            throw new RuntimeException(
+                "Adapter not configured: {$formatType}"
+            );
         }
 
-        $class = $this->globalConfig['adapters'][$formatType]['class'];
+        $adapterClass =
+            $this->globalConfig['adapters'][$formatType]['class'];
 
-        return $this->instances[$key] = new $class($this->currentCountry);
+        if (!class_exists($adapterClass)) {
+            throw new RuntimeException(
+                "Adapter class not found: {$adapterClass}"
+            );
+        }
+
+        $this->instances[$cacheKey] =
+            new $adapterClass($this->currentCountry);
+
+        return $this->instances[$cacheKey];
     }
 
-    public function getAdapterSmart(array|string $payload = [], array $headers = [], ?string $endpoint = null): array
+    public function getSupportedBanks(): array
     {
-        if (!$this->currentCountry) {
-            throw new RuntimeException("Country not set");
+        if ($this->currentCountry === null) {
+            return [];
         }
 
-        $participant = $this->countryConfigs[$this->currentCountry]['participant_config'] ?? null;
-
-        $detection = self::smartDetect($payload, $headers, $endpoint, $participant);
-
-        $adapter = $this->getAdapter($detection['format']);
-
-        return [
-            'adapter' => $adapter,
-            'format' => $detection['format'],
-            'confidence' => $detection['confidence'],
-            'source' => $detection['source']
-        ];
+        return array_keys(
+            $this->countryConfigs[$this->currentCountry]['bank_formats']
+                ?? []
+        );
     }
 }
