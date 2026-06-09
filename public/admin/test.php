@@ -1,164 +1,121 @@
 <?php
-// /public/admin/test_vault.php
-header('Content-Type: application/json');
-
-// Railway Vault variables are available via getenv() but may need specific patterns
-
-$result = [
-    'service' => 'Railway Vault API Key Test',
-    'timestamp' => date('Y-m-d H:i:s'),
-    'vault_variables' => [],
-    'all_environment_variables' => [],
-    'test_results' => []
-];
-
-// 1. Check specific Railway Vault variable patterns
-$vault_patterns = [
-    // Direct vault variables
-    'VOUCHMORPH_API_KEY',
-    'API_KEY_SYSTEM', 
-    'API_KEY_ZURUBANK',
-    'API_KEY_SACCUSSALIS',
-    'API_KEY_CAZACOM',
+// Secure Vault Reader - No environment variables needed
+class RailwayVaultReader {
+    private $vaultUrl;
+    private $vaultToken;
     
-    // Upstream pattern (common in Railway)
-    'UPSTREAM_VOUCHMORPH_API_KEY',
-    'UPSTREAM_ZURUBANK_KEY',
-    'UPSTREAM_SACCUSSALIS_KEY',
-    'UPSTREAM_CAZACOM_KEY',
-    
-    // Railway service-specific
-    'RAILWAY_SERVICE_API_KEY',
-    'SERVICE_API_KEY',
-    
-    // Generic patterns Railway might use
-    'API_KEY',
-    'APP_KEY',
-    'SECRET_KEY'
-];
-
-foreach ($vault_patterns as $pattern) {
-    // Try multiple ways to get the value
-    $value = false;
-    
-    // Method 1: getenv()
-    if (getenv($pattern) !== false) {
-        $value = getenv($pattern);
+    public function __construct() {
+        // These come from Railway injection (not API keys)
+        $this->vaultUrl = getenv('RAILWAY_SERVICE_VAULT_URL');
+        $this->vaultToken = getenv('RAILWAY_VAULT_TOKEN');
+        
+        if (!$this->vaultUrl || !$this->vaultToken) {
+            error_log("Vault not available - running in local mode");
+        }
     }
     
-    // Method 2: $_ENV
-    if (!$value && isset($_ENV[$pattern])) {
-        $value = $_ENV[$pattern];
+    /**
+     * Get secret directly from Railway Vault
+     */
+    public function getSecret(string $path, string $key = 'value'): ?string {
+        if (!$this->vaultUrl || !$this->vaultToken) {
+            // Fallback for local development only
+            return getenv($path) ?: null;
+        }
+        
+        try {
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $this->vaultUrl . '/v1/' . ltrim($path, '/'));
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                'Authorization: Bearer ' . $this->vaultToken,
+                'Content-Type: application/json'
+            ]);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+            
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            
+            if ($httpCode === 200) {
+                $data = json_decode($response, true);
+                return $data['data'][$key] ?? $data[$key] ?? null;
+            }
+            
+            error_log("Vault read failed for {$path}: HTTP {$httpCode}");
+            return null;
+            
+        } catch (Exception $e) {
+            error_log("Vault error: " . $e->getMessage());
+            return null;
+        }
     }
     
-    // Method 3: $_SERVER
-    if (!$value && isset($_SERVER[$pattern])) {
-        $value = $_SERVER[$pattern];
-    }
-    
-    if ($value && !empty($value)) {
-        $result['vault_variables'][$pattern] = [
-            'exists' => true,
-            'value_masked' => substr($value, 0, 10) . '...' . substr($value, -5),
-            'length' => strlen($value),
-            'source' => 'railway_vault'
+    /**
+     * Get API key for a specific participant
+     */
+    public function getApiKey(string $participant): ?string {
+        // Try multiple path patterns
+        $paths = [
+            "secret/participants/{$participant}/api_key",
+            "secret/swap-system/api_keys/{$participant}",
+            "secret/api_keys/{$participant}",
+            "kv/participants/{$participant}"
         ];
+        
+        foreach ($paths as $path) {
+            $key = $this->getSecret($path);
+            if ($key) {
+                error_log("Retrieved API key for {$participant} from vault path: {$path}");
+                return $key;
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Get all API keys from vault
+     */
+    public function getAllApiKeys(): array {
+        $keys = [];
+        
+        // List of participants from config
+        $participants = ['ZURUBANK', 'SACCUSSALIS', 'CAZACOM', 'VOUCHMORPH'];
+        
+        foreach ($participants as $participant) {
+            $key = $this->getApiKey($participant);
+            if ($key) {
+                $keys[] = $key;
+            }
+        }
+        
+        return $keys;
     }
 }
 
-// 2. Scan ALL environment variables for anything that looks like a key
-$all_vars = array_merge($_ENV, $_SERVER, getenv());
-foreach ($all_vars as $key => $value) {
-    if (is_string($value) && !empty($value)) {
-        // Look for long strings (32+ chars) or key-related names
-        if (strlen($value) >= 32 || preg_match('/KEY|API|TOKEN|SECRET|VAULT/i', $key)) {
-            if (!isset($result['all_environment_variables'][$key])) {
-                $result['all_environment_variables'][$key] = [
-                    'value_masked' => substr($value, 0, 10) . '...' . substr($value, -5),
-                    'length' => strlen($value)
-                ];
-            }
-        }
-    }
-}
+// Initialize vault reader
+$vault = new RailwayVaultReader();
 
-// 3. Test each found key against the API
-if (isset($_GET['test']) && $_GET['test'] === 'true') {
-    $test_payload = json_encode([
-        'test' => true,
-        'source' => ['institution' => 'TEST', 'amount' => 1],
-        'destination' => ['institution' => 'TEST']
-    ]);
+// For authentication - read API keys from vault, NOT from env
+function authenticate($providedKey, $vault) {
+    $validKeys = $vault->getAllApiKeys();
     
-    // Combine all found keys
-    $keys_to_test = [];
-    foreach ($result['vault_variables'] as $key => $info) {
-        $actual_value = getenv($key) ?: ($_ENV[$key] ?? $_SERVER[$key] ?? null);
-        if ($actual_value) {
-            $keys_to_test[$key] = $actual_value;
-        }
+    // Also check system key
+    $systemKey = $vault->getSecret('secret/swap-system/system_api_key');
+    if ($systemKey) {
+        $validKeys[] = $systemKey;
     }
     
-    foreach ($result['all_environment_variables'] as $key => $info) {
-        if (!isset($keys_to_test[$key])) {
-            $actual_value = getenv($key) ?: ($_ENV[$key] ?? $_SERVER[$key] ?? null);
-            if ($actual_value) {
-                $keys_to_test[$key] = $actual_value;
-            }
-        }
-    }
-    
-    foreach ($keys_to_test as $key_name => $actual_key) {
-        $ch = curl_init('https://vouchmorphn-production.up.railway.app/api/v1/swap/execute.php');
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $test_payload);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            'Content-Type: application/json',
-            'X-API-Key: ' . $actual_key
+    if (!empty($validKeys) && !in_array($providedKey, $validKeys, true)) {
+        http_response_code(401);
+        echo json_encode([
+            'success' => false,
+            'error' => 'Invalid API key',
+            'message' => 'API key not found in vault'
         ]);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-        
-        $response = curl_exec($ch);
-        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        
-        $result['test_results'][$key_name] = [
-            'http_code' => $http_code,
-            'works' => ($http_code === 200)
-        ];
+        exit();
     }
-}
-
-// 4. Show railway CLI command to check vault
-$result['railway_commands'] = [
-    'list_all_vars' => 'railway variables',
-    'get_specific' => 'railway variables get VARIABLE_NAME',
-    'list_service_vars' => 'railway variables --service your-service-name'
-];
-
-// 5. Recommendation
-if (empty($result['vault_variables'])) {
-    $result['recommendation'] = 'No vault variables found. Make sure you have set variables in Railway Vault.';
-    $result['how_to_fix'] = [
-        '1. Go to Railway Dashboard',
-        '2. Select your project',
-        '3. Click on your service',
-        '4. Go to "Variables" tab',
-        '5. Add variables like: API_KEY_SYSTEM=your_key_here',
-        '6. Redeploy the service'
-    ];
-} else {
-    $working = array_filter($result['test_results'] ?? [], function($test) {
-        return $test['works'] === true;
-    });
     
-    if (empty($working)) {
-        $result['recommendation'] = 'Keys found in vault but none work. Run with ?test=true to test each key.';
-    } else {
-        $result['recommendation'] = 'Working API keys found! Use one of: ' . implode(', ', array_keys($working));
-    }
+    return true;
 }
-
-echo json_encode($result, JSON_PRETTY_PRINT);
