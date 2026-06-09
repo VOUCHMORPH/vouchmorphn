@@ -40,7 +40,7 @@ echo "✅ DATABASE CONNECTED\n\n";
  */
 $forex = new ForexService($db);
 $adapterFactory = new MessageAdapterFactory();
-$sms = new SmsNotificationService();
+$smsService = new Infrastructure\SMS\SmsNotificationService($db);
 $settlement = new HybridSettlementStrategy($db, $forex);
 
 /**
