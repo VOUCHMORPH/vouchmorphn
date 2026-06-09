@@ -1,37 +1,36 @@
 <?php
 declare(strict_types=1);
 
-// Check if PDO_PGSQL is available BEFORE trying to connect
-if (!extension_loaded('pdo_pgsql')) {
-    echo "<pre>";
-    echo "❌ PDO_PGSQL EXTENSION NOT LOADED\n";
-    echo "Available extensions: " . implode(", ", get_loaded_extensions()) . "\n";
-    echo "Available PDO drivers: " . implode(", ", PDO::getAvailableDrivers()) . "\n";
-    echo "\nFIX: Install pdo_pgsql extension on Railway:\n";
-    echo "  1. Update nixpacks.toml:\n";
-    echo "     [phases.setup]\n";
-    echo "     nixPkgs = [\"php83\", \"php83Extensions.pdo_pgsql\", \"php83Extensions.pgsql\"]\n";
-    echo "  2. Or run in console: docker-php-ext-install pdo_pgsql\n";
-    echo "</pre>";
-    exit(1);
+// Get absolute paths
+$projectRoot = dirname(__DIR__, 2); // /var/www/html
+$testFile = $projectRoot . '/tests/System/SwapServiceFullTestSuite.php';
+
+// Debug: Show what we're trying to load
+error_log("Looking for test file at: " . $testFile);
+
+if (!file_exists($testFile)) {
+    die("Test file not found at: " . $testFile . "\n\n" .
+        "Project root: " . $projectRoot . "\n" .
+        "Directory contents of tests/System/:\n" .
+        shell_exec("ls -la " . $projectRoot . "/tests/System/ 2>&1"));
 }
 
-require_once __DIR__ . '/../../vendor/autoload.php';
-require_once __DIR__ . '/../../tests/System/SwapServiceFullTestSuite.php';
+require_once $testFile;
 
-/**
- * Safe PostgreSQL connection bootstrap
- */
+// Also check if we need to load the test class
+if (!class_exists('SwapServiceFullTestSuite')) {
+    die("Class SwapServiceFullTestSuite not found in file: " . $testFile);
+}
+
+// Now try to connect to database
 function connectDatabase(): PDO
 {
     $url = getenv('DATABASE_URL');
-
     if (!$url) {
         throw new RuntimeException("DATABASE_URL not set");
     }
 
     $parts = parse_url($url);
-
     if (!$parts) {
         throw new RuntimeException("Invalid DATABASE_URL format");
     }
@@ -57,7 +56,14 @@ try {
     echo "✅ DATABASE CONNECTED\n\n";
 
     $test = new SwapServiceFullTestSuite($db);
-    $test->run();
+    
+    if (method_exists($test, 'run')) {
+        $test->run();
+    } elseif (method_exists($test, 'runAllTests')) {
+        $test->runAllTests();
+    } else {
+        echo "No run method found in SwapServiceFullTestSuite\n";
+    }
 
     echo "</pre>";
 
@@ -65,6 +71,6 @@ try {
     echo "<pre>";
     echo "❌ DATABASE CONNECTION FAILED\n";
     echo "Error: " . $e->getMessage() . "\n";
-    echo "\nPDO Drivers available: " . implode(", ", PDO::getAvailableDrivers()) . "\n";
+    echo "\nTrace: " . $e->getTraceAsString() . "\n";
     echo "</pre>";
 }
