@@ -14,7 +14,7 @@ version: "3.1.0"
 ZURUBANK:
   
   # Connection details
-  base_url: "https://zurubank-production.up.railway.app/Backend"
+  base_url: "https://zurubank-production.up.railway.app"
   timeout_ms: 5000
   sandbox_mode: true
   adapter_class: "GenericFinancialInstitutionAdapter"
@@ -83,7 +83,7 @@ ZURUBANK:
 # ------------------------------------------------------------
 SACCUSSALIS:
   
-  base_url: "https://saccussalis-production.up.railway.app/backend"
+  base_url: "https://saccussalis-production.up.railway.app"
   timeout_ms: 5000
   sandbox_mode: true
   adapter_class: "GenericFinancialInstitutionAdapter"
