@@ -1,152 +1,163 @@
 <?php
-// Place this at: /public/admin/test.php
+// /public/admin/test_vault.php
 header('Content-Type: application/json');
 
-// Function to mask sensitive data
-function maskValue($value) {
-    if (empty($value)) return 'NOT SET';
-    if (strlen($value) <= 10) return '***';
-    return substr($value, 0, 8) . '...' . substr($value, -4);
-}
+// Railway Vault variables are available via getenv() but may need specific patterns
 
 $result = [
-    'service' => 'VouchMorph API Key Debugger',
+    'service' => 'Railway Vault API Key Test',
     'timestamp' => date('Y-m-d H:i:s'),
-    'request_method' => $_SERVER['REQUEST_METHOD'],
-    'headers_received' => [],
-    'api_keys_found' => [],
-    'environment_variables' => [],
+    'vault_variables' => [],
+    'all_environment_variables' => [],
     'test_results' => []
 ];
 
-// 1. Check incoming headers for API key
-$headers = getallheaders();
-$headers_lower = array_change_key_case($headers, CASE_LOWER);
-
-$result['headers_received'] = [
-    'x-api-key' => isset($headers_lower['x-api-key']) ? maskValue($headers_lower['x-api-key']) : 'NOT SET',
-    'authorization' => isset($headers_lower['authorization']) ? maskValue($headers_lower['authorization']) : 'NOT SET',
-    'api-key' => isset($headers_lower['api-key']) ? maskValue($headers_lower['api-key']) : 'NOT SET'
-];
-
-// 2. Check all possible environment variable sources for API keys
-$possible_keys = [
-    // Direct API keys
-    'API_KEY_SYSTEM',
-    'API_KEY_PARTNER_1',
-    'API_KEY_PARTNER_2',
-    'API_KEY_PARTNER_3',
-    'API_KEY_PARTNER_4',
-    'API_KEY_CAZACOM',
+// 1. Check specific Railway Vault variable patterns
+$vault_patterns = [
+    // Direct vault variables
+    'VOUCHMORPH_API_KEY',
+    'API_KEY_SYSTEM', 
     'API_KEY_ZURUBANK',
     'API_KEY_SACCUSSALIS',
-    'VOUCHMORPH_API_KEY',
-    'SYSTEM_API_KEY',
+    'API_KEY_CAZACOM',
     
-    // Upstream pattern (Railway Vault)
+    // Upstream pattern (common in Railway)
+    'UPSTREAM_VOUCHMORPH_API_KEY',
     'UPSTREAM_ZURUBANK_KEY',
-    'UPSTREAM_CAZACOM_KEY',
     'UPSTREAM_SACCUSSALIS_KEY',
-    'UPSTREAM_VOUCHMORPH_KEY',
+    'UPSTREAM_CAZACOM_KEY',
     
-    // Generic patterns
+    // Railway service-specific
+    'RAILWAY_SERVICE_API_KEY',
+    'SERVICE_API_KEY',
+    
+    // Generic patterns Railway might use
     'API_KEY',
     'APP_KEY',
     'SECRET_KEY'
 ];
 
-foreach ($possible_keys as $key) {
-    $value = getenv($key);
-    if ($value !== false && !empty($value)) {
-        $result['api_keys_found'][$key] = maskValue($value);
+foreach ($vault_patterns as $pattern) {
+    // Try multiple ways to get the value
+    $value = false;
+    
+    // Method 1: getenv()
+    if (getenv($pattern) !== false) {
+        $value = getenv($pattern);
+    }
+    
+    // Method 2: $_ENV
+    if (!$value && isset($_ENV[$pattern])) {
+        $value = $_ENV[$pattern];
+    }
+    
+    // Method 3: $_SERVER
+    if (!$value && isset($_SERVER[$pattern])) {
+        $value = $_SERVER[$pattern];
+    }
+    
+    if ($value && !empty($value)) {
+        $result['vault_variables'][$pattern] = [
+            'exists' => true,
+            'value_masked' => substr($value, 0, 10) . '...' . substr($value, -5),
+            'length' => strlen($value),
+            'source' => 'railway_vault'
+        ];
     }
 }
 
-// 3. Scan all environment variables for anything containing KEY or API
-foreach ($_SERVER as $key => $value) {
-    if (preg_match('/KEY|API|TOKEN|SECRET/i', $key) && !empty($value) && !is_array($value)) {
-        if (!isset($result['environment_variables'][$key])) {
-            $result['environment_variables'][$key] = maskValue($value);
+// 2. Scan ALL environment variables for anything that looks like a key
+$all_vars = array_merge($_ENV, $_SERVER, getenv());
+foreach ($all_vars as $key => $value) {
+    if (is_string($value) && !empty($value)) {
+        // Look for long strings (32+ chars) or key-related names
+        if (strlen($value) >= 32 || preg_match('/KEY|API|TOKEN|SECRET|VAULT/i', $key)) {
+            if (!isset($result['all_environment_variables'][$key])) {
+                $result['all_environment_variables'][$key] = [
+                    'value_masked' => substr($value, 0, 10) . '...' . substr($value, -5),
+                    'length' => strlen($value)
+                ];
+            }
         }
     }
 }
 
-// 4. Check if getenv() returns different values
-$result['getenv_check'] = [];
-$sample_keys = ['API_KEY_SYSTEM', 'VOUCHMORPH_API_KEY', 'UPSTREAM_ZURUBANK_KEY'];
-foreach ($sample_keys as $key) {
-    $env_value = getenv($key);
-    $server_value = $_SERVER[$key] ?? null;
-    $result['getenv_check'][$key] = [
-        'getenv' => maskValue($env_value),
-        '_SERVER' => maskValue($server_value),
-        'match' => ($env_value === $server_value)
-    ];
-}
-
-// 5. Test each found API key against the execute endpoint
-if (isset($_GET['test_keys']) && $_GET['test_keys'] === 'true') {
+// 3. Test each found key against the API
+if (isset($_GET['test']) && $_GET['test'] === 'true') {
     $test_payload = json_encode([
-        'source' => [
-            'institution' => 'TEST',
-            'asset_type' => 'ACCOUNT',
-            'amount' => 1
-        ],
-        'destination' => [
-            'institution' => 'TEST'
-        ]
+        'test' => true,
+        'source' => ['institution' => 'TEST', 'amount' => 1],
+        'destination' => ['institution' => 'TEST']
     ]);
     
-    foreach ($result['api_keys_found'] as $key_name => $masked) {
-        $actual_key = getenv($key_name);
-        if ($actual_key) {
-            $ch = curl_init('https://vouchmorphn-production.up.railway.app/api/v1/swap/execute.php');
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $test_payload);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                'Content-Type: application/json',
-                'X-API-Key: ' . $actual_key,
-                'X-Country-Code: BW'
-            ]);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-            
-            $response = curl_exec($ch);
-            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-            
-            $result['test_results'][$key_name] = [
-                'http_code' => $http_code,
-                'success' => ($http_code === 200),
-                'response' => json_decode($response, true)
-            ];
+    // Combine all found keys
+    $keys_to_test = [];
+    foreach ($result['vault_variables'] as $key => $info) {
+        $actual_value = getenv($key) ?: ($_ENV[$key] ?? $_SERVER[$key] ?? null);
+        if ($actual_value) {
+            $keys_to_test[$key] = $actual_value;
         }
+    }
+    
+    foreach ($result['all_environment_variables'] as $key => $info) {
+        if (!isset($keys_to_test[$key])) {
+            $actual_value = getenv($key) ?: ($_ENV[$key] ?? $_SERVER[$key] ?? null);
+            if ($actual_value) {
+                $keys_to_test[$key] = $actual_value;
+            }
+        }
+    }
+    
+    foreach ($keys_to_test as $key_name => $actual_key) {
+        $ch = curl_init('https://vouchmorphn-production.up.railway.app/api/v1/swap/execute.php');
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $test_payload);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'X-API-Key: ' . $actual_key
+        ]);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+        
+        $response = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        $result['test_results'][$key_name] = [
+            'http_code' => $http_code,
+            'works' => ($http_code === 200)
+        ];
     }
 }
 
-// 6. Add curl command examples
-$result['curl_examples'] = [
-    'example_1' => 'curl -X POST https://vouchmorphn-production.up.railway.app/api/v1/swap/execute.php -H "Content-Type: application/json" -H "X-API-Key: YOUR_API_KEY" -H "X-Country-Code: BW" -k -d \'{"source":{"institution":"ZURUBANK","amount":100},"destination":{"institution":"CAZACOM"}}\'',
-    'example_2' => 'curl -X POST https://vouchmorphn-production.up.railway.app/api/v1/swap/execute.php -H "Content-Type: application/json" -H "Authorization: Bearer YOUR_API_KEY" -H "X-Country-Code: BW" -k -d \'{"source":{"institution":"ZURUBANK","amount":100},"destination":{"institution":"CAZACOM"}}\''
+// 4. Show railway CLI command to check vault
+$result['railway_commands'] = [
+    'list_all_vars' => 'railway variables',
+    'get_specific' => 'railway variables get VARIABLE_NAME',
+    'list_service_vars' => 'railway variables --service your-service-name'
 ];
 
-// 7. Add recommendation
-if (empty($result['api_keys_found'])) {
-    $result['recommendation'] = 'NO API KEYS FOUND IN ENVIRONMENT. Check Railway Vault variables.';
+// 5. Recommendation
+if (empty($result['vault_variables'])) {
+    $result['recommendation'] = 'No vault variables found. Make sure you have set variables in Railway Vault.';
+    $result['how_to_fix'] = [
+        '1. Go to Railway Dashboard',
+        '2. Select your project',
+        '3. Click on your service',
+        '4. Go to "Variables" tab',
+        '5. Add variables like: API_KEY_SYSTEM=your_key_here',
+        '6. Redeploy the service'
+    ];
 } else {
-    $working_keys = array_filter($result['test_results'] ?? [], function($test) {
-        return $test['success'] === true;
+    $working = array_filter($result['test_results'] ?? [], function($test) {
+        return $test['works'] === true;
     });
     
-    if (empty($working_keys) && isset($_GET['test_keys'])) {
-        $result['recommendation'] = 'API keys found but none work. Check if execute.php is reading the correct environment variables.';
-        $result['recommendation'] .= ' The API key might need to be in the database or a different format.';
-    } elseif (empty($working_keys)) {
-        $result['recommendation'] = 'Add &test_keys=true to URL to test each key against the API';
+    if (empty($working)) {
+        $result['recommendation'] = 'Keys found in vault but none work. Run with ?test=true to test each key.';
     } else {
-        $result['recommendation'] = 'Use one of the working keys above';
-        $result['working_keys'] = array_keys($working_keys);
+        $result['recommendation'] = 'Working API keys found! Use one of: ' . implode(', ', array_keys($working));
     }
 }
 
