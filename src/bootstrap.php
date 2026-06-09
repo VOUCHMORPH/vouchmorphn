@@ -2,10 +2,7 @@
 
 /**
  * VouchMorph Bootstrap File
- * 
- * This file initializes the application, loads dependencies,
- * creates the Dependency Injection Container, and registers
- * all core services.
+ * Uses existing LoadCountry and CountryRegistry classes
  */
 
 // ============================================================================
@@ -39,49 +36,46 @@ if (class_exists('Dotenv\Dotenv') && file_exists(ROOT_PATH . '/.env')) {
 }
 
 // ============================================================================
-// 4. DEFINE COUNTRY AND PATHS
+// 4. LOAD COUNTRY SYSTEM (USING YOUR EXISTING CLASSES)
 // ============================================================================
 
-$countryCode = $_ENV['COUNTRY_CODE'] ?? getenv('COUNTRY_CODE') ?: 'botswana';
-$countryLower = strtolower($countryCode);
-$countryCapitalized = ucfirst($countryLower);
+// Load SystemCountry to determine which country is running
+$systemCountry = require SRC_PATH . '/Core/Config/SystemCountry.php';
 
-// CORRECT PATHS - using src/Core/Config/Countries/
-$countryConfigPath = SRC_PATH . '/Core/Config/Countries/' . $countryCapitalized;
-$countryConfigFile = $countryConfigPath . '/config.php';
-$dbConfigFile = $countryConfigPath . '/database.php';
+// Now use LoadCountry to get all configuration for this country
+$countryConfig = \Core\Config\LoadCountry::getConfig();
 
-error_log("[Bootstrap] Loading config from: {$countryConfigPath}");
+// Extract values from loaded config
+$countryCode = $countryConfig['country_code'];
+$countryName = $countryConfig['country'];
+$countrySlug = strtolower($countryName);
+
+// Database configuration from LoadCountry
+$dbConfig = $countryConfig['db']['swap'];
+
+error_log("[Bootstrap] Running for country: {$countryName} ({$countryCode})");
 
 // ============================================================================
-// 5. LOAD DATABASE CONFIGURATION
+// 5. CREATE DATABASE CONNECTION
 // ============================================================================
 
-$dbConfig = [];
-if (file_exists($dbConfigFile)) {
-    $dbConfig = require $dbConfigFile;
-    error_log("[Bootstrap] Loaded database config from: {$dbConfigFile}");
-} else {
-    error_log("[Bootstrap] Database config not found at: {$dbConfigFile}, using environment");
-    $dbConfig = [
-        'host' => getenv('DB_HOST') ?: 'localhost',
-        'port' => getenv('DB_PORT') ?: '5432',
-        'database' => getenv('DB_NAME') ?: 'vouchmorph',
-        'user' => getenv('DB_USER') ?: 'postgres',
-        'password' => getenv('DB_PASSWORD') ?: '',
-        'driver' => 'pgsql'
-    ];
-}
+$db = null;
 
-// Create database connection
 try {
-    $host = $dbConfig['host'] ?? 'localhost';
-    $port = $dbConfig['port'] ?? 5432;
-    $database = $dbConfig['database'] ?? $dbConfig['dbname'] ?? 'vouchmorph';
-    $username = $dbConfig['user'] ?? $dbConfig['username'] ?? 'postgres';
-    $password = $dbConfig['password'] ?? $dbConfig['pass'] ?? '';
+    $host = $dbConfig['host'];
+    $port = $dbConfig['port'];
+    $database = $dbConfig['database'];
+    $username = $dbConfig['username'];
+    $password = $dbConfig['password'];
     
-    $dsn = "pgsql:host=$host;port=$port;dbname=$database";
+    $dsn = "pgsql:host={$host};port={$port};dbname={$database}";
+    
+    // Add SSL for Railway connections
+    if (strpos($host, 'railway.internal') !== false || getenv('RAILWAY_ENVIRONMENT')) {
+        $dsn .= ';sslmode=require';
+    }
+    
+    error_log("[Bootstrap] Connecting to database: {$host}:{$port}/{$database}");
     
     $db = new PDO($dsn, $username, $password, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
@@ -90,7 +84,9 @@ try {
     ]);
     
     $db->exec("SET NAMES 'UTF8'");
-    error_log("[Bootstrap] PostgreSQL connection established to database: $database");
+    $db->exec("SET timezone = 'UTC'");
+    
+    error_log("[Bootstrap] Database connection successful for {$countryName}");
     
 } catch (PDOException $e) {
     error_log("[Bootstrap] Database connection failed: " . $e->getMessage());
@@ -98,59 +94,17 @@ try {
 }
 
 // ============================================================================
-// 6. LOAD COUNTRY CONFIGURATION
+// 6. EXTRACT CONFIGURATIONS FROM LoadCountry RESULT
 // ============================================================================
 
-$countryConfig = [];
-if (file_exists($countryConfigFile)) {
-    $countryConfig = require $countryConfigFile;
-    error_log("[Bootstrap] Loaded country config from: {$countryConfigFile}");
-}
+$participants = $countryConfig['participants'] ?? [];
+$fees = $countryConfig['fees'] ?? [];
+$atmNotes = $countryConfig['atm_notes'] ?? [];
+$cardConfig = $countryConfig['card_config'] ?? [];
+$communication = $countryConfig['communication'] ?? [];
 
 // ============================================================================
-// 7. LOAD COUNTRY-SPECIFIC JSON DATA
-// ============================================================================
-
-$banks = [];
-$banksFile = $countryConfigPath . '/banks.json';
-if (file_exists($banksFile)) {
-    $banks = json_decode(file_get_contents($banksFile), true) ?? [];
-}
-
-$participants = [];
-$participantsFile = $countryConfigPath . '/participants.json';
-if (file_exists($participantsFile)) {
-    $participantsData = json_decode(file_get_contents($participantsFile), true) ?? [];
-    // Ensure participants is in the correct format for SwapService
-    $participants = $participantsData['participants'] ?? $participantsData;
-}
-
-$fees = [];
-$feesFile = $countryConfigPath . '/fees.json';
-if (file_exists($feesFile)) {
-    $fees = json_decode(file_get_contents($feesFile), true) ?? [];
-}
-
-$cards = [];
-$cardsFile = $countryConfigPath . '/cards.json';
-if (file_exists($cardsFile)) {
-    $cards = json_decode(file_get_contents($cardsFile), true) ?? [];
-}
-
-$communication = [];
-$commFile = $countryConfigPath . '/communication.json';
-if (file_exists($commFile)) {
-    $communication = json_decode(file_get_contents($commFile), true) ?? [];
-}
-
-$atmNotes = [];
-$atmFile = $countryConfigPath . '/atm_notes.json';
-if (file_exists($atmFile)) {
-    $atmNotes = json_decode(file_get_contents($atmFile), true) ?? [];
-}
-
-// ============================================================================
-// 8. TIMEZONE HELPER FUNCTION
+// 7. TIMEZONE SETTING
 // ============================================================================
 
 function getValidTimezone(): string
@@ -163,47 +117,41 @@ function getValidTimezone(): string
         }
     }
     
-    $countryCode = $_ENV['COUNTRY_CODE'] ?? getenv('COUNTRY_CODE') ?: '';
-    if ($countryCode) {
-        $countryZones = DateTimeZone::listIdentifiers(DateTimeZone::PER_COUNTRY);
-        $countryUpper = strtoupper($countryCode);
-        if (isset($countryZones[$countryUpper]) && !empty($countryZones[$countryUpper])) {
-            return $countryZones[$countryUpper][0];
-        }
-    }
-    
-    $systemTimezone = ini_get('date.timezone');
-    if ($systemTimezone && in_array($systemTimezone, timezone_identifiers_list())) {
-        return $systemTimezone;
+    // Use country timezone from registry if available
+    $registry = \Core\Config\CountryRegistry::getInstance();
+    $countryInfo = $registry->getCountry(COUNTRY_CODE ?? 'BW');
+    if (isset($countryInfo['config']['timezone'])) {
+        return $countryInfo['config']['timezone'];
     }
     
     return 'UTC';
 }
 
+$timezone = getValidTimezone();
+date_default_timezone_set($timezone);
+if ($db) {
+    $db->exec("SET timezone = '{$timezone}'");
+}
+
 // ============================================================================
-// 9. APPLICATION SETTINGS
+// 8. APPLICATION SETTINGS
 // ============================================================================
 
 $settings = [
     'app_name' => $_ENV['APP_NAME'] ?? getenv('APP_NAME') ?: 'VouchMorph',
     'app_env' => $_ENV['APP_ENV'] ?? getenv('APP_ENV') ?: 'production',
     'app_url' => $_ENV['APP_URL'] ?? getenv('APP_URL') ?: 'http://localhost',
-    'timezone' => getValidTimezone(),
+    'timezone' => $timezone,
     'country_code' => $countryCode,
+    'country_name' => $countryName,
     'country_config' => $countryConfig,
     'encryption_key' => $_ENV['ENCRYPTION_KEY'] ?? getenv('ENCRYPTION_KEY') ?: 'default-key-32-chars-long!!',
     'jwt_secret' => $_ENV['JWT_SECRET'] ?? getenv('JWT_SECRET') ?: '',
-    'currency' => $countryConfig['currency'] ?? ($countryCode === 'botswana' ? 'BWP' : 'USD'),
+    'currency' => $countryConfig['currency'] ?? ($countryCode === 'BW' ? 'BWP' : 'USD'),
 ];
 
-// Set timezone
-date_default_timezone_set($settings['timezone']);
-if ($db) {
-    $db->exec("SET timezone = '{$settings['timezone']}'");
-}
-
 // ============================================================================
-// 10. DEPENDENCY INJECTION CONTAINER
+// 9. DEPENDENCY INJECTION CONTAINER
 // ============================================================================
 
 class Container
@@ -245,37 +193,34 @@ class Container
 $container = new Container();
 
 // ============================================================================
-// 11. REGISTER CORE SERVICES
+// 10. REGISTER CORE SERVICES
 // ============================================================================
 
 $container->set(PDO::class, $db);
 $container->set('settings', $settings);
 $container->set('countryConfig', $countryConfig);
 $container->set('countryCode', $countryCode);
-$container->set('banks', $banks);
+$container->set('countryName', $countryName);
 $container->set('participants', $participants);
 $container->set('fees', $fees);
-$container->set('cards', $cards);
-$container->set('communication', $communication);
 $container->set('atmNotes', $atmNotes);
+$container->set('cardConfig', $cardConfig);
+$container->set('communication', $communication);
 
 // ============================================================================
-// 12. REGISTER DOMAIN SERVICES (WITH CORRECT NAMESPACES)
+// 11. REGISTER DOMAIN SERVICES
 // ============================================================================
 
-// HybridSettlementStrategy
 $container->setFactory('Domain\Services\Settlement\HybridSettlementStrategy', function($c) {
     return new \Domain\Services\Settlement\HybridSettlementStrategy(
         $c->get(PDO::class)
     );
 });
 
-// ContributionCalculator (NEW - for multi-source)
 $container->setFactory('Domain\Services\ContributionCalculator', function($c) {
     return new \Domain\Services\ContributionCalculator();
 });
 
-// MultiSourceFeeCalculator (NEW - for multi-source)
 $container->setFactory('Domain\Services\MultiSourceFeeCalculator', function($c) {
     return new \Domain\Services\MultiSourceFeeCalculator(
         $c->get('countryConfig'),
@@ -283,14 +228,12 @@ $container->setFactory('Domain\Services\MultiSourceFeeCalculator', function($c) 
     );
 });
 
-// FeeService
 $container->setFactory('Domain\Services\FeeService', function($c) {
     $feesConfig = $c->get('fees');
     $currency = $c->get('settings')['currency'] ?? 'BWP';
     return new \Domain\Services\FeeService($feesConfig, $currency);
 });
 
-// ForexService
 $container->setFactory('Domain\Services\ForexService', function($c) {
     return new \Domain\Services\ForexService(
         $c->get(PDO::class),
@@ -300,7 +243,6 @@ $container->setFactory('Domain\Services\ForexService', function($c) {
     );
 });
 
-// CardService
 $container->setFactory('Domain\Services\CardService', function($c) {
     $vouchmorphConfig = $c->get('participants')['vouchmorph'] ?? [];
     return new \Domain\Services\CardService(
@@ -310,7 +252,6 @@ $container->setFactory('Domain\Services\CardService', function($c) {
     );
 });
 
-// SwapService (with correct namespace)
 $container->setFactory('Domain\Services\SwapService', function($c) {
     $fullConfig = [
         'participants' => $c->get('participants'),
@@ -330,7 +271,6 @@ $container->setFactory('Domain\Services\SwapService', function($c) {
     );
 });
 
-// MultiSourceSwapExecutor (NEW - for multi-source)
 $container->setFactory('Domain\Services\MultiSourceSwapExecutor', function($c) {
     return new \Domain\Services\MultiSourceSwapExecutor(
         $c->get(PDO::class),
@@ -342,10 +282,27 @@ $container->setFactory('Domain\Services\MultiSourceSwapExecutor', function($c) {
 });
 
 // ============================================================================
+// 12. DEFINE CONSTANTS FOR APPLICATION USE
+// ============================================================================
+
+if (!defined('COUNTRY_CODE')) {
+    define('COUNTRY_CODE', $countryCode);
+}
+if (!defined('COUNTRY_NAME')) {
+    define('COUNTRY_NAME', $countryName);
+}
+if (!defined('COUNTRY_SLUG')) {
+    define('COUNTRY_SLUG', $countrySlug);
+}
+if (!defined('COUNTRY_CONFIG_PATH')) {
+    define('COUNTRY_CONFIG_PATH', SRC_PATH . '/Core/Config/Countries/' . $countryName);
+}
+
+// ============================================================================
 // 13. RETURN CONTAINER
 // ============================================================================
 
-error_log("[Bootstrap] VouchMorph initialized successfully. Country: {$countryCode}, Timezone: {$settings['timezone']}");
-error_log("[Bootstrap] Multi-source services registered: ContributionCalculator, MultiSourceFeeCalculator, MultiSourceSwapExecutor");
+error_log("[Bootstrap] VouchMorph initialized for {$countryName} ({$countryCode})");
+error_log("[Bootstrap] Database: " . ($db ? 'Connected' : 'Not connected'));
 
 return $container;
