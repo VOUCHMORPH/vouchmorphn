@@ -1,0 +1,123 @@
+# ============================================
+# PARTICIPANT REGISTRY
+# ============================================
+# This file lists every participant in the network.
+# No connection details, no endpoints, no secrets.
+# Just identity and what assets they support.
+# ============================================
+
+version: "2.1.0"
+standard: "ISO-20022-JSON / GSMA-MM"
+region: "ZA-SA-CROSSBORDER"
+governance: "CENTRAL_BANK_HUB"
+updated_at: "2026-05-24T00:00:00Z"
+adapter_framework: "PARTICIPANT_ADAPTER_FRAMEWORK"
+
+participants:
+  # ----------------------------------------------------------
+  # ZURUBANK_SA - Traditional commercial bank (South Africa)
+  # ----------------------------------------------------------
+  ZURUBANK_SA:
+    id: ZURUZAXX
+    name: "Zuru Bank South Africa"
+    type: FINANCIAL_INSTITUTION
+    category: BANK
+    country: ZA
+    status: ACTIVE
+    swift_bic: ZURUZAXX
+    legal_entity_identifier: "ZA-ZURUBANK-LEI-001"
+    license_number: "CB-ZA-017"
+    
+    asset_types:
+      - ACCOUNT
+      - VOUCHER
+      - ATM
+    
+    routing:
+      priority: 10
+      cost_score: 5
+      reliability_score: 9
+      region: africa_south
+      default_currency: ZAR
+      settlement_type: DIRECT
+    
+    limits:
+      min_amount: 10
+      max_amount: 500000
+      currency: ZAR
+    
+    cross_border:
+      enabled: true
+      supported_currencies:
+        - ZAR
+      settlement_cycles:
+        ZAR: "T+0"
+    
+    capabilities:
+      supports_sca: true
+      supports_realtime_processing: true
+      supports_reversal: true
+      supports_idempotency: true
+    
+    compliance_profile:
+      aml_screening_required: true
+      sanctions_screening_required: true
+      travel_rule_compliant: true
+      data_residency: ZA
+      audit_level: STANDARD
+
+  # ----------------------------------------------------------
+  # VOUCHMORPH - Technical provider / orchestration layer
+  # ----------------------------------------------------------
+  VOUCHMORPH:
+    id: VMPHZAXX
+    name: "VouchMorph"
+    type: TECHNICAL_PROVIDER
+    category: PAYMENT_PROCESSOR
+    country: ZA
+    status: ACTIVE
+    legal_entity_identifier: "VOUCHMORPH-SWAP-SYSTEM-SA"
+    license_number: "CB-ZA-001"
+    
+    asset_types:
+      - CARD
+      - VOUCHER
+    
+    routing:
+      priority: 5
+      cost_score: 3
+      reliability_score: 10
+      region: africa_south
+      default_currency: ZAR
+      settlement_type: POOLED
+    
+    limits:
+      min_amount: 1
+      max_amount: 1000000
+      currency: ZAR
+    
+    cross_border:
+      enabled: true
+      supported_currencies:
+        - ZAR
+      settlement_cycles:
+        ZAR: "T+1"
+      cutoff_time: "16:00"
+    
+    capabilities:
+      supports_sca: true
+      supports_realtime_processing: true
+      supports_reversal: true
+      supports_idempotency: true
+      services:
+        - card_issuance
+        - message_clearing
+        - swap_execution
+        - settlement
+    
+    compliance_profile:
+      aml_screening_required: true
+      sanctions_screening_required: true
+      travel_rule_compliant: true
+      data_residency: ZA
+      audit_level: STANDARD
