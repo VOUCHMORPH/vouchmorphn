@@ -1,6 +1,6 @@
 <?php
 
-require_once "test.php";
+require_once "tested.php";
 
 $test = new CorrectiveTest();
 
