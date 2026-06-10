@@ -1,5 +1,5 @@
 <?php
-// Infrastructure/Banks/GenericBankClient.php (FIXED)
+// Infrastructure/Banks/GenericBankClient.php
 
 namespace Infrastructure\Banks;
 
@@ -19,16 +19,23 @@ class GenericBankClient implements BankAPIInterface
     protected ?string $cachedAccessToken = null;
     protected ?int $tokenExpiresAt = null;
     protected ?MessageAdapterFactory $adapterFactory = null;
+    protected ?string $bankPrefix = null;
 
     public function __construct(array $config, ?array $requestPayload = null, ?array $headers = null, ?string $endpoint = null)
     {
         $this->config = $config;
         
+        // Determine bank prefix for environment variables
+        $this->bankPrefix = strtoupper($this->config['provider_code'] ?? '');
+        if (empty($this->bankPrefix) && isset($this->config['name'])) {
+            $this->bankPrefix = strtoupper($this->config['name']);
+        }
+        
         // Initialize MessageAdapterFactory with country from config
         $countryCode = $config['country_code'] ?? 'Botswana';
         try {
             $this->adapterFactory = new MessageAdapterFactory($countryCode);
-            $this->detectedFormat = 'JSON'; // Default format
+            $this->detectedFormat = 'JSON';
             $this->detectionConfidence = 80;
             $this->detectionSource = 'generic_client';
         } catch (\Exception $e) {
@@ -40,6 +47,7 @@ class GenericBankClient implements BankAPIInterface
         
         error_log("=== GENERIC BANK CLIENT INIT ===");
         error_log("Bank: " . ($this->config['provider_code'] ?? 'unknown'));
+        error_log("Bank Prefix: {$this->bankPrefix}");
         error_log("Detected Format: {$this->detectedFormat}");
     }
     
@@ -47,6 +55,147 @@ class GenericBankClient implements BankAPIInterface
     public function getDetectionConfidence(): ?int { return $this->detectionConfidence; }
     public function getDetectionSource(): ?string { return $this->detectionSource; }
     public function getDetectionDetails(): array { return $this->detectionDetails; }
+
+    // ============================================================================
+    // BASE URL FROM ENVIRONMENT OR CONFIG
+    // ============================================================================
+
+    protected function getBaseUrl(): string
+    {
+        // Check for bank-specific base URL from environment (Railway vault)
+        if ($this->bankPrefix) {
+            $envVar = $this->bankPrefix . '_BASE_URL';
+            $baseUrl = getenv($envVar);
+            if ($baseUrl && !empty($baseUrl)) {
+                error_log("Using base URL from env: {$envVar} = {$baseUrl}");
+                return rtrim($baseUrl, '/');
+            }
+        }
+        
+        // Check generic base URL from environment
+        $genericBaseUrl = getenv('BANK_BASE_URL');
+        if ($genericBaseUrl && !empty($genericBaseUrl)) {
+            error_log("Using base URL from generic env: BANK_BASE_URL = {$genericBaseUrl}");
+            return rtrim($genericBaseUrl, '/');
+        }
+        
+        // Fallback to config
+        $configUrl = $this->config['base_url'] ?? '';
+        if (!empty($configUrl)) {
+            error_log("Using base URL from config: {$configUrl}");
+            return rtrim($configUrl, '/');
+        }
+        
+        error_log("WARNING: No base URL found for bank");
+        return '';
+    }
+
+    // ============================================================================
+    // API KEY FROM ENVIRONMENT
+    // ============================================================================
+
+    protected function getApiKey(): ?string
+    {
+        // Check for bank-specific API key from environment
+        if ($this->bankPrefix) {
+            $envVar = $this->bankPrefix . '_API_KEY';
+            $apiKey = getenv($envVar);
+            if ($apiKey && !empty($apiKey)) {
+                return $apiKey;
+            }
+        }
+        
+        // Check generic API key from environment
+        $genericApiKey = getenv('BANK_API_KEY');
+        if ($genericApiKey && !empty($genericApiKey)) {
+            return $genericApiKey;
+        }
+        
+        // Check config
+        if (isset($this->config['security']['api_key']['value'])) {
+            return $this->config['security']['api_key']['value'];
+        }
+        
+        return null;
+    }
+
+    // ============================================================================
+    // ENDPOINT RESOLUTION FROM ENVIRONMENT OR CONFIG
+    // ============================================================================
+
+    protected function getEndpoint(string $action): ?string
+    {
+        // Map actions to environment variable names
+        $envMap = [
+            'verify_asset' => 'VERIFY_ENDPOINT',
+            'place_hold' => 'HOLD_ENDPOINT',
+            'release_hold' => 'RELEASE_HOLD_ENDPOINT',
+            'debit_funds' => 'DEBIT_ENDPOINT',
+            'generate_token' => 'GENERATE_TOKEN_ENDPOINT',
+            'verify_token' => 'VERIFY_TOKEN_ENDPOINT',
+            'confirm_cashout' => 'CONFIRM_CASHOUT_ENDPOINT',
+            'process_deposit' => 'PROCESS_DEPOSIT_ENDPOINT',
+            'check_status' => 'STATUS_ENDPOINT',
+            'reverse_transaction' => 'REVERSE_ENDPOINT',
+            'account_balance' => 'BALANCE_ENDPOINT',
+            'transactions' => 'TRANSACTIONS_ENDPOINT',
+        ];
+        
+        $actionKey = $envMap[$action] ?? null;
+        
+        // PRIORITY 1: Bank-specific environment variable (Railway vault)
+        if ($actionKey && $this->bankPrefix) {
+            $envVar = $this->bankPrefix . '_' . $actionKey;
+            $endpoint = getenv($envVar);
+            if ($endpoint && !empty($endpoint)) {
+                error_log("Using endpoint from env: {$envVar} = {$endpoint}");
+                return $endpoint;
+            }
+        }
+        
+        // PRIORITY 2: Generic environment variable
+        if ($actionKey) {
+            $genericVar = 'BANK_' . $actionKey;
+            $endpoint = getenv($genericVar);
+            if ($endpoint && !empty($endpoint)) {
+                error_log("Using endpoint from generic env: {$genericVar} = {$endpoint}");
+                return $endpoint;
+            }
+        }
+        
+        // PRIORITY 3: Check in endpoints.source from config (for source role methods)
+        if (isset($this->config['endpoints']['source'][$action])) {
+            error_log("Using endpoint from config endpoints.source: {$action} = " . $this->config['endpoints']['source'][$action]);
+            return $this->config['endpoints']['source'][$action];
+        }
+        
+        // PRIORITY 4: Check in endpoints.destination_cashout (for cashout methods)
+        if (isset($this->config['endpoints']['destination_cashout'][$action])) {
+            error_log("Using endpoint from config endpoints.destination_cashout: {$action} = " . $this->config['endpoints']['destination_cashout'][$action]);
+            return $this->config['endpoints']['destination_cashout'][$action];
+        }
+        
+        // PRIORITY 5: Check in endpoints.destination_deposit (for deposit methods)
+        if (isset($this->config['endpoints']['destination_deposit'][$action])) {
+            error_log("Using endpoint from config endpoints.destination_deposit: {$action} = " . $this->config['endpoints']['destination_deposit'][$action]);
+            return $this->config['endpoints']['destination_deposit'][$action];
+        }
+        
+        // PRIORITY 6: Check in endpoints.common (for common methods)
+        if (isset($this->config['endpoints']['common'][$action])) {
+            error_log("Using endpoint from config endpoints.common: {$action} = " . $this->config['endpoints']['common'][$action]);
+            return $this->config['endpoints']['common'][$action];
+        }
+        
+        // PRIORITY 7: Check in resource_endpoints (legacy)
+        if (isset($this->config['resource_endpoints'][$action])) {
+            error_log("Using endpoint from config resource_endpoints: {$action} = " . $this->config['resource_endpoints'][$action]);
+            return $this->config['resource_endpoints'][$action];
+        }
+        
+        error_log("No endpoint found for action: {$action}");
+        return null;
+    }
 
     // ============================================================================
     // OAUTH METHODS
@@ -59,7 +208,7 @@ class GenericBankClient implements BankAPIInterface
             throw new \RuntimeException("OAuth2 not configured for " . ($this->config['provider_code'] ?? 'unknown'));
         }
         
-        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $baseUrl = $this->getBaseUrl();
         $authEndpoint = $oauthConfig['authorization_endpoint'] ?? '/oauth/authorize';
         
         $params = [
@@ -88,7 +237,7 @@ class GenericBankClient implements BankAPIInterface
             throw new \RuntimeException("OAuth2 not configured");
         }
         
-        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $baseUrl = $this->getBaseUrl();
         $tokenEndpoint = $oauthConfig['token_endpoint'] ?? '/oauth/token';
         
         $payload = [
@@ -138,7 +287,7 @@ class GenericBankClient implements BankAPIInterface
             throw new \RuntimeException("OAuth2 not configured");
         }
         
-        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $baseUrl = $this->getBaseUrl();
         $tokenEndpoint = $oauthConfig['token_endpoint'] ?? '/oauth/token';
         
         $payload = [
@@ -183,7 +332,7 @@ class GenericBankClient implements BankAPIInterface
             return false;
         }
         
-        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $baseUrl = $this->getBaseUrl();
         $revokeEndpoint = $oauthConfig['revoke_endpoint'] ?? '/oauth/revoke';
         
         $payload = [
@@ -212,7 +361,7 @@ class GenericBankClient implements BankAPIInterface
     public function getUserInfo(string $accessToken): array
     {
         $oauthConfig = $this->config['security']['oauth2'] ?? null;
-        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $baseUrl = $this->getBaseUrl();
         $userinfoEndpoint = $oauthConfig['userinfo_endpoint'] ?? '/oauth/userinfo';
         
         $ch = curl_init($baseUrl . $userinfoEndpoint);
@@ -235,8 +384,8 @@ class GenericBankClient implements BankAPIInterface
 
     public function getAccountBalance(string $accessToken, string $accountId): array
     {
-        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
-        $balanceEndpoint = $this->config['resource_endpoints']['account_balance'] ?? '/api/v1/accounts/balance.php';
+        $baseUrl = $this->getBaseUrl();
+        $balanceEndpoint = $this->getEndpoint('account_balance') ?? '/api/v1/accounts/balance.php';
         
         $ch = curl_init($baseUrl . $balanceEndpoint . '?account_id=' . urlencode($accountId));
         curl_setopt_array($ch, [
@@ -259,8 +408,8 @@ class GenericBankClient implements BankAPIInterface
 
     public function getTransactions(string $accessToken, string $accountId, int $limit = 50, int $offset = 0): array
     {
-        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
-        $transactionsEndpoint = $this->config['resource_endpoints']['transactions'] ?? '/api/v1/accounts/transactions.php';
+        $baseUrl = $this->getBaseUrl();
+        $transactionsEndpoint = $this->getEndpoint('transactions') ?? '/api/v1/accounts/transactions.php';
         
         $url = $baseUrl . $transactionsEndpoint . '?' . http_build_query([
             'account_id' => $accountId,
@@ -412,38 +561,6 @@ class GenericBankClient implements BankAPIInterface
     // PROTECTED HELPERS
     // ============================================================================
 
-    protected function getEndpoint(string $action): ?string
-    {
-        $endpointMap = [
-            'verify_asset' => 'verify_asset',
-            'place_hold' => 'place_hold',
-            'release_hold' => 'release_hold',
-            'debit_funds' => 'debit_funds',
-            'generate_token' => 'generate_token',
-            'verify_token' => 'verify_token',
-            'confirm_cashout' => 'confirm_cashout',
-            'process_deposit' => 'process_deposit',
-            'check_status' => 'check_status',
-            'reverse_transaction' => 'reverse_transaction',
-            'account_balance' => 'account_balance',
-            'transactions' => 'transactions'
-        ];
-
-        $endpointKey = $endpointMap[$action] ?? $action;
-        
-        // Check in resource_endpoints
-        if (isset($this->config['resource_endpoints'][$endpointKey])) {
-            return $this->config['resource_endpoints'][$endpointKey];
-        }
-        
-        // Check in endpoints (alternative location)
-        if (isset($this->config['endpoints'][$endpointKey])) {
-            return $this->config['endpoints'][$endpointKey];
-        }
-        
-        return null;
-    }
-
     protected function send(string $action, array $payload, ?string $accessToken = null): array
     {
         $endpoint = $this->getEndpoint($action);
@@ -457,13 +574,24 @@ class GenericBankClient implements BankAPIInterface
             ];
         }
 
-        $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
+        $baseUrl = $this->getBaseUrl();
+        
+        if (empty($baseUrl)) {
+            error_log("Base URL not configured for " . ($this->config['provider_code'] ?? 'unknown'));
+            return [
+                'success' => false,
+                'error' => "Base URL not configured",
+                'data' => []
+            ];
+        }
+        
         $endpoint = ltrim($endpoint, '/');
         $url = $baseUrl . '/' . $endpoint;
         
         $headers = $this->buildHeaders($payload, $accessToken);
         
         error_log("Sending request to: {$url}");
+        error_log("Payload: " . json_encode($payload));
         
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -480,7 +608,7 @@ class GenericBankClient implements BankAPIInterface
         $curlError = curl_error($ch);
         curl_close($ch);
         
-        error_log("Response HTTP {$httpCode}");
+        error_log("Response HTTP {$httpCode}: " . substr($response, 0, 500));
         
         $decodedResponse = json_decode($response, true);
         
@@ -511,13 +639,12 @@ class GenericBankClient implements BankAPIInterface
             $headers[] = 'X-Correlation-ID: ' . $payload['reference'];
         }
         
-        // Add API key if configured (for fallback/non-OAuth endpoints)
-        if (isset($this->config['security']['api_key'])) {
-            $apiKey = $this->config['security']['api_key'];
-            $keyValue = getenv($apiKey['value_env'] ?? '');
-            if ($keyValue) {
-                $headers[] = ($apiKey['header_name'] ?? 'X-API-Key') . ': ' . $keyValue;
-            }
+        // Add API key from environment or config
+        $apiKey = $this->getApiKey();
+        if ($apiKey) {
+            $headerName = $this->config['security']['api_key']['header_name'] ?? 'X-API-Key';
+            $headers[] = $headerName . ': ' . $apiKey;
+            error_log("Added API key header: {$headerName}");
         }
         
         return $headers;
