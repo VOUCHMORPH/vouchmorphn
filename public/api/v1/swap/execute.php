@@ -140,10 +140,9 @@ try {
     // DATABASE CONNECTION - FIXED to use DBConnection class
     // ============================================================
     require_once ROOT_PATH . '/src/Core/Database/DBConnection.php';
-    use Core\Database\DBConnection;
     
     try {
-        $db = DBConnection::getConnection();
+        $db = \Core\Database\DBConnection::getConnection();
         
         if (!$db) {
             throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
