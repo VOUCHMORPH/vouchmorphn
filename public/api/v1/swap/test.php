@@ -1,5 +1,5 @@
 <?php
-// test_swap_debug.php - Place in /var/www/html/public/api/v1/swap/test_swap_debug.php
+// test_swap_debug.php - UPDATED with SIGNED ENVELOPE FORMAT
 
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
@@ -112,14 +112,6 @@ if (!class_exists('Domain\Services\SwapService')) {
         $swapService = new \Domain\Services\SwapService($db, $config, 'Botswana');
         echo "✅ SwapService instantiated successfully\n";
         
-        // Test getParticipants method if exists
-        if (method_exists($swapService, 'getParticipants')) {
-            $participants = $swapService->getParticipants();
-            echo "   Participants from SwapService: " . implode(', ', array_keys($participants)) . "\n";
-        } else {
-            echo "   ⚠️ getParticipants() method not available\n";
-        }
-        
     } catch (Exception $e) {
         echo "❌ SwapService instantiation FAILED: " . $e->getMessage() . "\n";
     }
@@ -127,13 +119,14 @@ if (!class_exists('Domain\Services\SwapService')) {
 echo "\n";
 
 // ============================================================
-// TEST 4: Test Payload with Direct SwapService Call
+// TEST 4: Test Payload with SIGNED ENVELOPE (CORRECT FORMAT)
 // ============================================================
-echo "TEST 4: Test Payload with Direct SwapService Call\n";
+echo "TEST 4: Test Payload with SIGNED ENVELOPE (Correct Format)\n";
 echo "───────────────────────────────────────────────────────────────────────\n";
 
 if (isset($swapService) && $db) {
-    $testPayload = [
+    // This is the ORIGINAL payload (what SwapService actually needs)
+    $originalPayload = [
         'reference' => 'DIAG-TEST-001',
         'idempotency_key' => 'DIAG-IDEMP-001',
         'swap_type' => 'CASHOUT',
@@ -147,7 +140,14 @@ if (isset($swapService) && $db) {
         'beneficiary_phone' => '+26770000000'
     ];
     
-    echo "Test Payload:\n";
+    // This is the SIGNED ENVELOPE that SwapService expects
+    $testPayload = [
+        'original_payload' => $originalPayload,
+        'signature' => base64_encode(hash_hmac('sha256', json_encode($originalPayload), 'test_key', true)),
+        'timestamp' => time()
+    ];
+    
+    echo "Test Payload (Signed Envelope - CORRECT FORMAT):\n";
     echo json_encode($testPayload, JSON_PRETTY_PRINT) . "\n\n";
     
     try {
@@ -164,15 +164,15 @@ if (isset($swapService) && $db) {
 echo "\n";
 
 // ============================================================
-// TEST 5: Check API Endpoint Reachability
+// TEST 5: Check API Endpoint with SIGNED ENVELOPE
 // ============================================================
-echo "TEST 5: API Endpoint Reachability\n";
+echo "TEST 5: API Endpoint with SIGNED ENVELOPE\n";
 echo "───────────────────────────────────────────────────────────────────────\n";
 
 $apiUrl = 'https://vouchmorphn-production.up.railway.app/api/v1/swap/execute.php';
 $apiKey = 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
 
-$testPayload = [
+$originalPayload = [
     'reference' => 'API-TEST-001',
     'idempotency_key' => 'API-IDEMP-001',
     'swap_type' => 'CASHOUT',
@@ -184,6 +184,12 @@ $testPayload = [
     'amount' => 200,
     'currency' => 'BWP',
     'beneficiary_phone' => '+26770000000'
+];
+
+$testPayload = [
+    'original_payload' => $originalPayload,
+    'signature' => base64_encode(hash_hmac('sha256', json_encode($originalPayload), 'test_key', true)),
+    'timestamp' => time()
 ];
 
 $ch = curl_init($apiUrl);
