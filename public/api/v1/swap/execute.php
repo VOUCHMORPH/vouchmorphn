@@ -7,7 +7,7 @@ declare(strict_types=1);
  */
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 
-use Core\Database\DBConnection;  // ← MOVED HERE (top of file)
+use Core\Database\DBConnection;
 
 // ============================================
 // 1. BOOTSTRAP
@@ -145,7 +145,7 @@ try {
     require_once ROOT_PATH . '/src/Core/Database/DBConnection.php';
     
     try {
-        $db = DBConnection::getConnection();  // Now works because use statement is at top
+        $db = DBConnection::getConnection();
         
         if (!$db) {
             throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
@@ -171,10 +171,16 @@ try {
             $settings = require $configFile;
         }
         
+        // FIX: Pass the COUNTRY NAME (Botswana) not the code (BW)
+        // The country config has 'name' field (e.g., 'Botswana') which matches the folder name
+        $countryName = $countryConfig['name'] ?? 'Botswana';
+        
+        error_log("[EXECUTE] Using country name: {$countryName}");
+        
         $swapService = new \Domain\Services\SwapService(
-            $db,                           // PDO (now properly connected)
+            $db,                           // PDO
             $settings,                     // array config
-            $countryConfig['code']         // string country
+            $countryName                   // string country (name, not code)
         );
         
         $result = $swapService->executeAtomicSwap($input);
