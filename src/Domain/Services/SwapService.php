@@ -86,6 +86,7 @@ class SwapService
         // Initialize services
         $this->settlement = new HybridSettlementStrategy($this->swapDB);
         $this->feeService = new FeeService($this->feesConfig, $this->config['currency'] ?? 'BWP');
+        $this->feeService->setParticipants($this->participants); 
         $this->forexService = new ForexService($this->swapDB, $this->config, $this->participants, $this->feeService);
         
         // Initialize card service if configured
