@@ -8,24 +8,7 @@ session_start();
 // Define project root
 define('PROJECT_ROOT', dirname(__DIR__, 2));
 
-// Load configuration using the new system
-$configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
-if (!file_exists($configPath)) {
-    die("Configuration system not found.");
-}
-
-require_once $configPath;
-
-try {
-    $config = \Core\Config\LoadCountry::getConfig();
-    if (!is_array($config)) {
-        die("Configuration failed to load.");
-    }
-} catch (Throwable $e) {
-    die("Config error: " . $e->getMessage());
-}
-
-// Load required classes
+// Load required classes FIRST
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
@@ -38,6 +21,23 @@ use Application\Admin\Auth\AdminAuth;
 if (!SessionManager::isAdminLoggedIn()) {
     header('Location: admin_login.php');
     exit();
+}
+
+// Load configuration for country data only (not database)
+$configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
+if (file_exists($configPath)) {
+    require_once $configPath;
+    try {
+        $config = \Core\Config\LoadCountry::getConfig();
+        if (!is_array($config)) {
+            $config = [];
+        }
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] Config error: " . $e->getMessage());
+        $config = [];
+    }
+} else {
+    $config = [];
 }
 
 // Get admin info from session
@@ -56,43 +56,22 @@ $roleNames = [
 ];
 $roleName = $roleNames[$adminRoleId] ?? 'Administrator';
 
-// Initialize database connection
+// Initialize database connection using DBConnection (Single Source of Truth)
 try {
-    if (isset($config['db']['swap']) && is_array($config['db']['swap'])) {
-        $dbConfig = $config['db']['swap'];
-    } else {
-        $databaseUrl = getenv('DATABASE_URL');
-        if ($databaseUrl) {
-            $db = parse_url($databaseUrl);
-            $dbConfig = [
-                'host' => $db['host'] ?? 'localhost',
-                'port' => (int)($db['port'] ?? 5432),
-                'database' => ltrim($db['path'] ?? '', '/'),
-                'username' => $db['user'] ?? 'postgres',
-                'password' => $db['pass'] ?? '',
-            ];
-        } else {
-            $dbConfig = [
-                'host' => getenv('DB_HOST') ?: 'localhost',
-                'port' => (int)(getenv('DB_PORT') ?: 5432),
-                'database' => getenv('DB_NAME') ?: 'swap_system_bw',
-                'username' => getenv('DB_USER') ?: 'postgres',
-                'password' => getenv('DB_PASSWORD') ?: '',
-            ];
-        }
+    $db = DBConnection::getConnection();
+    
+    if (!$db) {
+        throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
     }
     
-    $dbConfig['type'] = 'pgsql';
-    $dbConfig['options'] = [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ];
-    
-    $db = DBConnection::getInstance($dbConfig);
+    // Test connection
+    $stmt = $db->query("SELECT 1");
+    $stmt->fetch();
+    error_log("[ADMIN DASHBOARD] Database connected successfully via DBConnection");
     
 } catch (Throwable $e) {
     error_log("[ADMIN DASHBOARD] DB Error: " . $e->getMessage());
-    die("Database connection failed.");
+    die("Database connection failed. Please check configuration.");
 }
 
 // Get country code for display
@@ -116,7 +95,7 @@ $hasAccess = function($permission) use ($adminRoleId) {
     return in_array('all', $userPerms) || in_array($permission, $userPerms);
 };
 
-// Get system metrics - FIXED: proper data types
+// Get system metrics
 $metrics = [];
 try {
     // Get today's transaction count
@@ -124,7 +103,7 @@ try {
     $stmt->execute();
     $metrics['today_transactions'] = (int)$stmt->fetchColumn();
     
-    // Get today's volume (keep as float for calculations, string for display)
+    // Get today's volume
     $stmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM swap_requests WHERE DATE(created_at) = CURRENT_DATE");
     $stmt->execute();
     $volumeRaw = (float)$stmt->fetchColumn();
@@ -530,7 +509,6 @@ $view = $_GET['view'] ?? 'dashboard';
             <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?> · <?php echo htmlspecialchars($countryName); ?> Time</div>
         </div>
 
-        <!-- Metrics Grid - FIXED: No double number_format() -->
         <div class="metrics-grid">
             <div class="metric-card">
                 <div class="metric-label">TODAY'S TRANSACTIONS</div>
@@ -559,7 +537,6 @@ $view = $_GET['view'] ?? 'dashboard';
         </div>
 
         <div class="grid-2">
-            <!-- Participants Overview -->
             <div class="card">
                 <div class="card-header">
                     <span class="card-title">PARTICIPANTS</span>
@@ -568,11 +545,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 <div class="table-responsive">
                     <table>
                         <thead>
-                            <tr>
-                                <th>Provider</th>
-                                <th>Type</th>
-                                <th>Status</th>
-                            </tr>
+                            <tr><th>Provider</th><th>Type</th><th>Status</th></tr>
                         </thead>
                         <tbody>
                             <?php 
@@ -589,14 +562,13 @@ $view = $_GET['view'] ?? 'dashboard';
                             </tr>
                             <?php endforeach; ?>
                             <?php if (count($participants) === 0): ?>
-                                <tr><td colspan="3" style="text-align: center;">No participants configured</td><tr>
+                                <tr><td colspan="3" style="text-align: center;">No participants configured</td></tr>
                             <?php endif; ?>
                         </tbody>
                     </table>
                 </div>
             </div>
 
-            <!-- Recent Transactions -->
             <div class="card">
                 <div class="card-header">
                     <span class="card-title">RECENT TRANSACTIONS</span>
@@ -605,12 +577,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 <div class="table-responsive">
                     <table>
                         <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Amount</th>
-                                <th>Status</th>
-                                <th>Date</th>
-                            </tr>
+                            <tr><th>ID</th><th>Amount</th><th>Status</th><th>Date</th></tr>
                         </thead>
                         <tbody>
                             <?php foreach ($recentTransactions as $tx): ?>
@@ -622,7 +589,7 @@ $view = $_GET['view'] ?? 'dashboard';
                             </tr>
                             <?php endforeach; ?>
                             <?php if (empty($recentTransactions)): ?>
-                                <tr><td colspan="4" style="text-align: center;">No transactions yet</td><tr>
+                                <tr><td colspan="4" style="text-align: center;">No transactions yet</td></tr>
                             <?php endif; ?>
                         </tbody>
                     </table>
@@ -630,31 +597,18 @@ $view = $_GET['view'] ?? 'dashboard';
             </div>
         </div>
 
-        <!-- System Health -->
         <div class="card">
             <div class="card-header">
                 <span class="card-title">SYSTEM HEALTH</span>
                 <span class="card-badge">LIVE</span>
             </div>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-                <div>
-                    <strong>Country:</strong> <?php echo htmlspecialchars($countryName); ?> (<?php echo htmlspecialchars($countryCode); ?>)
-                </div>
-                <div>
-                    <strong>Environment:</strong> <?php echo htmlspecialchars(getenv('APP_ENV') ?: 'production'); ?>
-                </div>
-                <div>
-                    <strong>Database:</strong> <span style="color: green;">✓ Connected</span>
-                </div>
-                <div>
-                    <strong>PHP Version:</strong> <?php echo phpversion(); ?>
-                </div>
-                <div>
-                    <strong>Server Time:</strong> <?php echo date('Y-m-d H:i:s'); ?>
-                </div>
-                <div>
-                    <strong>Admin Role:</strong> <?php echo htmlspecialchars($roleName); ?>
-                </div>
+                <div><strong>Country:</strong> <?php echo htmlspecialchars($countryName); ?> (<?php echo htmlspecialchars($countryCode); ?>)</div>
+                <div><strong>Environment:</strong> <?php echo htmlspecialchars(getenv('APP_ENV') ?: 'production'); ?></div>
+                <div><strong>Database:</strong> <span style="color: green;">✓ Connected</span></div>
+                <div><strong>PHP Version:</strong> <?php echo phpversion(); ?></div>
+                <div><strong>Server Time:</strong> <?php echo date('Y-m-d H:i:s'); ?></div>
+                <div><strong>Admin Role:</strong> <?php echo htmlspecialchars($roleName); ?></div>
             </div>
         </div>
 
@@ -725,7 +679,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>Connection: <span style="color: green;">Active</span></p>
                 <p>Type: PostgreSQL</p>
-                <p>Database: <?php echo htmlspecialchars($dbConfig['database'] ?? 'N/A'); ?></p>
+                <p>Driver: PDO_pgsql</p>
             </div>
         </div>
 
