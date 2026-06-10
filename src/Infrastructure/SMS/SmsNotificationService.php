@@ -29,7 +29,7 @@ class SmsNotificationService
         try {
             // Check if SmsGatewayClient class exists
             if (class_exists('\\Infrastructure\\SMS\\SmsGatewayClient')) {
-                $this->smsGateway = new SmsGatewayClient($db, $config);
+                $this->smsGateway = new SmsGatewayClient($config);
                 $this->log("SmsGatewayClient initialized successfully");
             } else {
                 $this->log("SmsGatewayClient class not found - SMS will be in mock mode");
