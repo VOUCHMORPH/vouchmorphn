@@ -159,24 +159,11 @@ try {
             $settings = require $configFile;
         }
         
-        $encryptionKey = getenv('ENCRYPTION_KEY') ?: getenv('APP_ENCRYPTION_KEY') ?: bin2hex(random_bytes(16));
-        
-        $swapConfig = [
-            'currency' => $countryConfig['currency'],
-            'currency_symbol' => $countryConfig['currency_symbol'] ?? 'P',
-            'dial_code' => $countryConfig['dial_code'] ?? '+267',
-            'country_code' => $countryConfig['code'],
-            'country_name' => array_search($countryConfig, $registry['countries']),
-            'communication' => $settings['communication'] ?? [],
-            'multi_source' => $settings['multi_source'] ?? ['enabled' => true]
-        ];
-        
+        // FIXED: Match SwapService constructor signature
         $swapService = new \Domain\Services\SwapService(
-            $db,
-            $settings,
-            $countryConfig['code'],
-            $encryptionKey,
-            $swapConfig
+            $db,                           // PDO
+            $settings,                     // array config
+            $countryConfig['code']         // string country
         );
         
         $result = $swapService->executeSwap($input);
@@ -184,10 +171,11 @@ try {
         echo json_encode([
             'success' => true,
             'status' => $result['status'] ?? 'completed',
-            'swap_reference' => $result['swap_reference'] ?? null,
+            'swap_reference' => $result['reference'] ?? $result['swap_reference'] ?? null,
             'data' => $result
         ]);
     } else {
+        // Fallback for when SwapService is not available (testing mode)
         echo json_encode([
             'success' => true,
             'status' => 'validated',
