@@ -136,15 +136,25 @@ try {
         $countryConfig = $registry['countries'][$default];
     }
     
-    $db = null;
-    $databaseUrl = getenv('DATABASE_URL');
-    if ($databaseUrl) {
-        try {
-            $db = new PDO($databaseUrl);
-            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        } catch (PDOException $e) {
-            error_log("[DB] Connection failed: " . $e->getMessage());
+    // ============================================================
+    // DATABASE CONNECTION - FIXED to use DBConnection class
+    // ============================================================
+    require_once ROOT_PATH . '/src/Core/Database/DBConnection.php';
+    use Core\Database\DBConnection;
+    
+    try {
+        $db = DBConnection::getConnection();
+        
+        if (!$db) {
+            throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
         }
+        
+        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        error_log("[EXECUTE] Database connected successfully via DBConnection");
+        
+    } catch (Throwable $e) {
+        error_log("[EXECUTE] DB ERROR: " . $e->getMessage());
+        throw new Exception("Database connection failed: " . $e->getMessage());
     }
     
     $composerPath = ROOT_PATH . '/vendor/autoload.php';
@@ -159,9 +169,8 @@ try {
             $settings = require $configFile;
         }
         
-        // FIXED: Match SwapService constructor signature
         $swapService = new \Domain\Services\SwapService(
-            $db,                           // PDO
+            $db,                           // PDO (now properly connected)
             $settings,                     // array config
             $countryConfig['code']         // string country
         );
@@ -175,7 +184,6 @@ try {
             'data' => $result
         ]);
     } else {
-        // Fallback for when SwapService is not available (testing mode)
         echo json_encode([
             'success' => true,
             'status' => 'validated',
