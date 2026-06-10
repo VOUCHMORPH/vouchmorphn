@@ -5,7 +5,7 @@ namespace Infrastructure\Banks;
 
 
 require_once __DIR__ . '/Contracts/BankAPIInterface.php';
-require_once __DIR__ . '/MessageAdapters/MessageAdapterFactory.php';
+require_once __DIR__ . '/../MessageAdapters/MessageAdapterFactory.php';
 
 use Infrastructure\Banks\Contracts\BankAPIInterface;
 use Infrastructure\MessageAdapters\MessageAdapterFactory;
