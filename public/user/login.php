@@ -1,12 +1,11 @@
 <?php
-// public/user/login.php - DEBUG VERSION
+// public/user/login.php - COMPLETE FIXED VERSION
 ob_start();
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 ini_set('log_errors', 1);
 
-// CORRECTED PATHS FOR DDD STRUCTURE
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
@@ -51,7 +50,7 @@ $countryName       = $countryConfig['name'] ?? $systemCountry;
 $phonePattern = '[0-9]{' . $localLength . '}';
 
 // --------------------------------------------------
-// 3️⃣ DB Bootstrap - Using DBConnection (Single Source of Truth)
+// 3️⃣ DB Bootstrap - Using DBConnection
 // --------------------------------------------------
 try {
     $db = DBConnection::getConnection();
@@ -61,9 +60,8 @@ try {
     }
     
     $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
-    error_log("[USER LOGIN] Database connected successfully via DBConnection");
+    error_log("[USER LOGIN] Database connected successfully");
     
-    // Test the connection
     $testStmt = $db->query("SELECT 1");
     $testStmt->fetch();
     error_log("[USER LOGIN] Database test query successful");
@@ -85,12 +83,10 @@ function normalizePhone(string $phoneInput, string $dialCode): string
         return '';
     }
 
-    // Already in international format
     if (str_starts_with($phoneInput, '+')) {
         return $phoneInput;
     }
 
-    // Convert local number to international using country config
     return $dialCode . ltrim($phoneInput, '0');
 }
 
@@ -99,7 +95,6 @@ function getLocalPhonePart(string $fullPhone, string $dialCode): string
     if (str_starts_with($fullPhone, $dialCode)) {
         return substr($fullPhone, strlen($dialCode));
     }
-
     return ltrim($fullPhone, '0');
 }
 
@@ -129,14 +124,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             error_log("[USER LOGIN] Missing phone or PIN");
         } else {
             try {
-                // First check if users table exists
                 $tableCheck = $db->query("SELECT 1 FROM users LIMIT 1");
                 if (!$tableCheck) {
                     error_log("[USER LOGIN] Users table may not exist");
                     $error = "System configuration error. Please contact support.";
                 } else {
+                    // FIXED: Use correct column names from your table
                     $stmt = $db->prepare(
-                        "SELECT user_id, phone, username, password_hash, verified, created_at, pin_enabled
+                        "SELECT user_id, phone, username, full_name, password_hash, verified, created_at, 
+                                has_transaction_pin as pin_enabled
                          FROM users
                          WHERE phone = :phone
                          LIMIT 1"
@@ -158,6 +154,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         SessionManager::setUser([
                             'user_id'     => $user['user_id'],
                             'username'    => $user['username'] ?? '',
+                            'full_name'   => $user['full_name'] ?? $user['username'],
                             'phone'       => $user['phone'],
                             'role'        => 'USER',
                             'country'     => $systemCountry,
@@ -188,8 +185,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     error_log("[USER LOGIN] Users table may not exist");
                     $error = "System configuration error. Please contact support.";
                 } else {
+                    // FIXED: Use correct column names from your table
                     $stmt = $db->prepare(
-                        "SELECT user_id, phone, username, created_at, verified, pin_enabled
+                        "SELECT user_id, phone, username, full_name, created_at, verified, 
+                                has_transaction_pin as pin_enabled
                          FROM users
                          WHERE phone = :phone
                          LIMIT 1"
@@ -208,6 +207,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         SessionManager::setUser([
                             'user_id'     => $user['user_id'],
                             'username'    => $user['username'] ?? '',
+                            'full_name'   => $user['full_name'] ?? $user['username'],
                             'phone'       => $user['phone'],
                             'role'        => 'USER',
                             'country'     => $systemCountry,
