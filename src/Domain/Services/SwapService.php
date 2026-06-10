@@ -1389,21 +1389,29 @@ class SwapService
         return isset($payload['is_multi_source']) && $payload['is_multi_source'] === true;
     }
 
-    public function getParticipant(string $institution): array
-    {
-        $key = strtolower($institution);
-        if (isset($this->participants[$key])) {
-            return $this->participants[$key];
-        }
-        
-        foreach ($this->participants as $code => $participant) {
-            if (isset($participant['provider_code']) && strtolower($participant['provider_code']) === $key) {
-                return $participant;
-            }
-        }
-        
-        throw new RuntimeException("Participant not found: {$institution}");
+   public function getParticipant(string $institution): array
+{
+    // Try exact match first
+    if (isset($this->participants[$institution])) {
+        return $this->participants[$institution];
     }
+    
+    // Try case-insensitive match
+    $key = strtolower($institution);
+    foreach ($this->participants as $code => $participant) {
+        if (strtolower($code) === $key) {
+            return $participant;
+        }
+        if (isset($participant['provider_code']) && strtolower($participant['provider_code']) === $key) {
+            return $participant;
+        }
+        if (isset($participant['id']) && strtolower($participant['id']) === $key) {
+            return $participant;
+        }
+    }
+    
+    throw new RuntimeException("Participant not found: {$institution}");
+}
 
     public function getHoldStatus(int $holdId): ?array
     {
