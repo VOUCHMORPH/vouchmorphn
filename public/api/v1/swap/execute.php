@@ -6,6 +6,8 @@ declare(strict_types=1);
  * ZERO HARDCODING - Routes to SwapService
  */
 
+use Core\Database\DBConnection;  // ← MOVED HERE (top of file)
+
 // ============================================
 // 1. BOOTSTRAP
 // ============================================
@@ -137,12 +139,12 @@ try {
     }
     
     // ============================================================
-    // DATABASE CONNECTION - FIXED to use DBConnection class
+    // DATABASE CONNECTION - Using DBConnection class
     // ============================================================
     require_once ROOT_PATH . '/src/Core/Database/DBConnection.php';
     
     try {
-        $db = \Core\Database\DBConnection::getConnection();
+        $db = DBConnection::getConnection();  // Now works because use statement is at top
         
         if (!$db) {
             throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
