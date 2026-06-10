@@ -1,123 +1,248 @@
 <?php
-// test_participants.php - Place in /var/www/html/public/api/v1/swap/test_participants.php
+// test_swap_debug.php - Place in /var/www/html/public/api/v1/swap/test_swap_debug.php
 
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
+ini_set('log_errors', 1);
 
 echo "<pre>";
-echo "========================================\n";
-echo "PARTICIPANTS LOADING TEST\n";
-echo "========================================\n\n";
+echo "═══════════════════════════════════════════════════════════════════════\n";
+echo "VOUCHMORPH SWAP SERVICE DIAGNOSTIC TEST\n";
+echo "═══════════════════════════════════════════════════════════════════════\n\n";
 
-// Path to participants.yaml
+// ============================================================
+// TEST 1: Database Connection
+// ============================================================
+echo "TEST 1: Database Connection\n";
+echo "───────────────────────────────────────────────────────────────────────\n";
+
+require_once __DIR__ . '/../../../../vendor/autoload.php';
+require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
+
+use Core\Database\DBConnection;
+
+try {
+    $db = DBConnection::getConnection();
+    if ($db) {
+        echo "✅ Database connection: SUCCESS\n";
+        $stmt = $db->query("SELECT 1");
+        echo "   Query test: PASSED\n";
+    } else {
+        echo "❌ Database connection: FAILED (returned null)\n";
+    }
+} catch (Exception $e) {
+    echo "❌ Database connection: ERROR - " . $e->getMessage() . "\n";
+}
+echo "\n";
+
+// ============================================================
+// TEST 2: Load Participants from YAML
+// ============================================================
+echo "TEST 2: Load Participants from YAML\n";
+echo "───────────────────────────────────────────────────────────────────────\n";
+
 $participantsPath = __DIR__ . '/../../../../src/Core/Config/Countries/Botswana/participants.yaml';
 
-echo "Looking for participants at: " . $participantsPath . "\n";
-echo "File exists: " . (file_exists($participantsPath) ? 'YES' : 'NO') . "\n\n";
-
 if (!file_exists($participantsPath)) {
-    die("File not found!\n");
-}
-
-// Read raw content
-$content = file_get_contents($participantsPath);
-echo "Raw content length: " . strlen($content) . " bytes\n\n";
-
-// Method 1: Simple regex to find participant names
-echo "Method 1 - Simple regex (^  ([A-Z_]+):)\n";
-echo "----------------------------------------\n";
-preg_match_all('/^  ([A-Z_]+):/m', $content, $matches);
-print_r($matches[1]);
-
-echo "\nMethod 2 - Parse full YAML structure\n";
-echo "----------------------------------------\n";
-
-function parseParticipantsYaml($content) {
-    $participants = [];
-    $lines = explode("\n", $content);
-    $currentParticipant = null;
-    $inParticipants = false;
+    echo "❌ Participants file NOT FOUND at: {$participantsPath}\n";
+} else {
+    echo "✅ Participants file found\n";
     
-    foreach ($lines as $line) {
-        $line = rtrim($line);
-        if (empty($line) || $line[0] === '#') continue;
+    function parseParticipantsYaml($path) {
+        $content = file_get_contents($path);
+        $participants = [];
+        $lines = explode("\n", $content);
+        $inParticipants = false;
+        $current = null;
         
-        // Find participants section
-        if (preg_match('/^participants:$/', $line)) {
-            $inParticipants = true;
-            echo "Found participants section\n";
-            continue;
+        foreach ($lines as $line) {
+            $line = rtrim($line);
+            if (empty($line) || $line[0] === '#') continue;
+            
+            if (preg_match('/^participants:$/', $line)) {
+                $inParticipants = true;
+                continue;
+            }
+            
+            if ($inParticipants && preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
+                $current = $matches[1];
+                $participants[$current] = [];
+                continue;
+            }
+            
+            if ($current && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
+                $value = trim($matches[2], '"\'');
+                $participants[$current][$matches[1]] = $value;
+            }
         }
-        
-        if (!$inParticipants) continue;
-        
-        // Match participant name (2 spaces, then uppercase letters/underscore, then colon)
-        if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
-            $currentParticipant = $matches[1];
-            $participants[$currentParticipant] = [];
-            echo "Found participant: {$currentParticipant}\n";
-            continue;
-        }
-        
-        // Match properties (4 spaces)
-        if ($currentParticipant && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
-            $key = $matches[1];
-            $value = trim($matches[2]);
-            // Remove quotes
-            if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
-            if (preg_match("/^'(.+)'$/", $value, $q)) $value = $q[1];
-            $participants[$currentParticipant][$key] = $value;
-            echo "  {$key}: {$value}\n";
-            continue;
-        }
-        
-        // Match asset_types list
-        if ($currentParticipant && preg_match('/^    asset_types:$/', $line)) {
-            $participants[$currentParticipant]['asset_types'] = [];
-            continue;
-        }
-        
-        // Match items in asset_types list
-        if ($currentParticipant && isset($participants[$currentParticipant]['asset_types']) && preg_match('/^      - (.+)$/', $line, $matches)) {
-            $participants[$currentParticipant]['asset_types'][] = trim($matches[1]);
-            echo "  asset_type: " . trim($matches[1]) . "\n";
-        }
+        return $participants;
     }
     
-    return $participants;
+    $participants = parseParticipantsYaml($participantsPath);
+    echo "   Parsed participants: " . implode(', ', array_keys($participants)) . "\n";
+    
+    // Test lookup
+    $testInstitution = 'ZURUBANK';
+    if (isset($participants[$testInstitution])) {
+        echo "✅ Lookup '{$testInstitution}': FOUND\n";
+        echo "   Data: " . json_encode($participants[$testInstitution]) . "\n";
+    } else {
+        echo "❌ Lookup '{$testInstitution}': NOT FOUND\n";
+        echo "   Available keys: " . implode(', ', array_keys($participants)) . "\n";
+    }
 }
+echo "\n";
 
-$participants = parseParticipantsYaml($content);
+// ============================================================
+// TEST 3: SwapService Constructor
+// ============================================================
+echo "TEST 3: SwapService Constructor\n";
+echo "───────────────────────────────────────────────────────────────────────\n";
 
-echo "\nMethod 2 Result:\n";
-echo "----------------------------------------\n";
-print_r($participants);
+if (!class_exists('Domain\Services\SwapService')) {
+    echo "❌ SwapService class not found\n";
+} else {
+    echo "✅ SwapService class found\n";
+    
+    try {
+        // Load config
+        require_once __DIR__ . '/../../../../src/Core/Config/LoadCountry.php';
+        $config = \Core\Config\LoadCountry::getConfig();
+        
+        $swapService = new \Domain\Services\SwapService($db, $config, 'Botswana');
+        echo "✅ SwapService instantiated successfully\n";
+        
+        // Test getParticipants method if exists
+        if (method_exists($swapService, 'getParticipants')) {
+            $participants = $swapService->getParticipants();
+            echo "   Participants from SwapService: " . implode(', ', array_keys($participants)) . "\n";
+        } else {
+            echo "   ⚠️ getParticipants() method not available\n";
+        }
+        
+    } catch (Exception $e) {
+        echo "❌ SwapService instantiation FAILED: " . $e->getMessage() . "\n";
+    }
+}
+echo "\n";
 
-echo "\nMethod 3 - Using existing SwapService (if available)\n";
-echo "----------------------------------------\n";
+// ============================================================
+// TEST 4: Test Payload with Direct SwapService Call
+// ============================================================
+echo "TEST 4: Test Payload with Direct SwapService Call\n";
+echo "───────────────────────────────────────────────────────────────────────\n";
 
-// Try to load using the actual SwapService
-require_once __DIR__ . '/../../../../vendor/autoload.php';
-require_once __DIR__ . '/../../../../src/Domain/Services/SwapService.php';
+if (isset($swapService) && $db) {
+    $testPayload = [
+        'reference' => 'DIAG-TEST-001',
+        'idempotency_key' => 'DIAG-IDEMP-001',
+        'swap_type' => 'CASHOUT',
+        'from_institution' => 'ZURUBANK',
+        'to_institution' => 'SACCUSSALIS',
+        'asset_type' => 'VOUCHER',
+        'voucher_number' => '710083197',
+        'voucher_pin' => '657250',
+        'amount' => 200,
+        'currency' => 'BWP',
+        'beneficiary_phone' => '+26770000000'
+    ];
+    
+    echo "Test Payload:\n";
+    echo json_encode($testPayload, JSON_PRETTY_PRINT) . "\n\n";
+    
+    try {
+        $result = $swapService->executeAtomicSwap($testPayload);
+        echo "✅ SwapService executed successfully\n";
+        echo "Result: " . json_encode($result, JSON_PRETTY_PRINT) . "\n";
+    } catch (Exception $e) {
+        echo "❌ SwapService execution FAILED: " . $e->getMessage() . "\n";
+        echo "   File: " . $e->getFile() . ":" . $e->getLine() . "\n";
+    }
+} else {
+    echo "⚠️ Cannot run test - SwapService or DB not available\n";
+}
+echo "\n";
 
-// Create a mock SwapService just to test participant loading
-$mockSwapService = new ReflectionClass('Domain\Services\SwapService');
-$loadConfigMethod = $mockSwapService->getMethod('loadConfiguration');
-$loadConfigMethod->setAccessible(true);
+// ============================================================
+// TEST 5: Check API Endpoint Reachability
+// ============================================================
+echo "TEST 5: API Endpoint Reachability\n";
+echo "───────────────────────────────────────────────────────────────────────\n";
 
-// We need a PDO object, but we can't create one without DB
-// Just test the parseYaml method directly
-$parseYamlMethod = $mockSwapService->getMethod('parseYaml');
-$parseYamlMethod->setAccessible(true);
+$apiUrl = 'https://vouchmorphn-production.up.railway.app/api/v1/swap/execute.php';
+$apiKey = 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
 
-// Create minimal instance
-$swapService = new \Domain\Services\SwapService(null, [], 'Botswana');
+$testPayload = [
+    'reference' => 'API-TEST-001',
+    'idempotency_key' => 'API-IDEMP-001',
+    'swap_type' => 'CASHOUT',
+    'from_institution' => 'ZURUBANK',
+    'to_institution' => 'SACCUSSALIS',
+    'asset_type' => 'VOUCHER',
+    'voucher_number' => '710083197',
+    'voucher_pin' => '657250',
+    'amount' => 200,
+    'currency' => 'BWP',
+    'beneficiary_phone' => '+26770000000'
+];
 
-$parsed = $parseYamlMethod->invoke($swapService, $participantsPath);
-echo "Parsed participants count: " . count($parsed) . "\n";
-echo "Keys: " . implode(', ', array_keys($parsed)) . "\n";
+$ch = curl_init($apiUrl);
+curl_setopt_array($ch, [
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_POST => true,
+    CURLOPT_POSTFIELDS => json_encode($testPayload),
+    CURLOPT_HTTPHEADER => [
+        'Content-Type: application/json',
+        'X-API-Key: ' . $apiKey
+    ],
+    CURLOPT_TIMEOUT => 30,
+    CURLOPT_VERBOSE => false
+]);
 
-echo "\n========================================\n";
-echo "TEST COMPLETE\n";
-echo "========================================\n";
+$response = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+$curlError = curl_error($ch);
+curl_close($ch);
+
+echo "HTTP Status Code: {$httpCode}\n";
+if ($curlError) {
+    echo "CURL Error: {$curlError}\n";
+}
+echo "Response: " . $response . "\n\n";
+
+// ============================================================
+// TEST 6: Check PHP Extensions
+// ============================================================
+echo "TEST 6: PHP Extensions Check\n";
+echo "───────────────────────────────────────────────────────────────────────\n";
+
+$requiredExtensions = ['pdo', 'pdo_pgsql', 'pgsql', 'json', 'curl'];
+foreach ($requiredExtensions as $ext) {
+    if (extension_loaded($ext)) {
+        echo "✅ {$ext} - loaded\n";
+    } else {
+        echo "❌ {$ext} - NOT LOADED\n";
+    }
+}
+echo "\n";
+
+// ============================================================
+// TEST 7: Check Directory Permissions
+// ============================================================
+echo "TEST 7: Directory Permissions\n";
+echo "───────────────────────────────────────────────────────────────────────\n";
+
+$configDir = __DIR__ . '/../../../../src/Core/Config/Countries/Botswana';
+echo "Config directory: {$configDir}\n";
+echo "Readable: " . (is_readable($configDir) ? 'YES' : 'NO') . "\n";
+echo "Writable: " . (is_writable($configDir) ? 'YES' : 'NO') . "\n";
+
+$yamlFile = $configDir . '/participants.yaml';
+echo "participants.yaml readable: " . (is_readable($yamlFile) ? 'YES' : 'NO') . "\n";
+echo "participants.yaml size: " . (file_exists($yamlFile) ? filesize($yamlFile) . ' bytes' : 'NOT FOUND') . "\n";
+
+echo "\n";
+echo "═══════════════════════════════════════════════════════════════════════\n";
+echo "DIAGNOSTIC TEST COMPLETE\n";
+echo "═══════════════════════════════════════════════════════════════════════\n";
 echo "</pre>";
