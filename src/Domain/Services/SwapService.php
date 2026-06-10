@@ -109,68 +109,84 @@ class SwapService
         $this->logger->info("Signed SwapService initialized", ['country' => $country]);
     }
 
-    /**
-     * Execute swap with cryptographic trust
-     */
     public function executeAtomicSwap(array $payload): array
-    {
-        $ref = $payload['reference'] ?? $this->generateReference();
-        $idempotencyKey = $payload['idempotency_key'] ?? $payload['idempotencyKey'] ?? null;
-        
-        // Idempotency check FIRST (no transaction yet)
-        if ($idempotencyKey) {
-            $cached = $this->checkIdempotency($idempotencyKey);
-            if ($cached) {
-                $this->logger->info("Idempotency cache hit", ['key' => $idempotencyKey]);
-                return $cached;
-            }
-        }
-        
-        // Determine swap type
-        $isMultiSource = $this->isMultiSourceContribution($payload);
-        $swapType = $payload['swap_type'] ?? ($isMultiSource ? 'MULTI_SOURCE' : 'STANDARD');
-        
-        // BEGIN ATOMIC BOUNDARY
-        $this->beginAtomicSwap($ref);
-        
-        try {
-            $result = match($swapType) {
-                'MULTI_SOURCE' => $this->executeMultiSourceSwap($payload),
-                'CASHOUT' => $this->executeSignedCashout($payload),
-                'DEPOSIT' => $this->executeSignedDeposit($payload),
-                'CARD_ISSUE' => $this->executeCardIssuance($payload),
-                default => $this->executeSignedStandardSwap($payload),
-            };
-            
-            $commitResult = $this->commitAtomicSwap();
-            $result = array_merge($result, ['atomic_commit' => $commitResult]);
-            
-            if ($idempotencyKey) {
-                $this->storeIdempotencyResult($idempotencyKey, $result);
-            }
-            
-            return $result;
-            
-        } catch (Exception $e) {
-            $this->logger->error("Atomic swap failed", [
-                'reference' => $ref,
-                'step' => $this->getLastStep(),
-                'error' => $e->getMessage()
-            ]);
-            
-            $rollbackResult = $this->rollbackAtomicSwap($e->getMessage());
-            
-            if ($idempotencyKey) {
-                $this->storeIdempotencyResult($idempotencyKey, [
-                    'status' => 'failed',
-                    'reference' => $ref,
-                    'error' => $e->getMessage()
-                ]);
-            }
-            
-            throw new RuntimeException("Swap failed: " . $e->getMessage(), 0, $e);
+{
+    // UNWRAP SIGNED ENVELOPE IF PRESENT
+    if (isset($payload['original_payload'])) {
+        error_log("[SwapService] Signed envelope detected, extracting original_payload");
+        $payload = $payload['original_payload'];
+    }
+    
+    // VALIDATE REQUIRED FIELDS
+    $sourceInst = $payload['from_institution'] ?? $payload['source_institution'] ?? null;
+    $destInst = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
+    
+    if (empty($sourceInst)) {
+        throw new RuntimeException("Missing source institution (from_institution or source_institution)");
+    }
+    if (empty($destInst)) {
+        throw new RuntimeException("Missing destination institution (to_institution or destination_institution)");
+    }
+    
+    error_log("[SwapService] Source: {$sourceInst}, Dest: {$destInst}");
+    
+    $ref = $payload['reference'] ?? $this->generateReference();
+    $idempotencyKey = $payload['idempotency_key'] ?? $payload['idempotencyKey'] ?? null;
+    
+    // Idempotency check FIRST (no transaction yet)
+    if ($idempotencyKey) {
+        $cached = $this->checkIdempotency($idempotencyKey);
+        if ($cached) {
+            $this->logger->info("Idempotency cache hit", ['key' => $idempotencyKey]);
+            return $cached;
         }
     }
+    
+    // Determine swap type
+    $isMultiSource = $this->isMultiSourceContribution($payload);
+    $swapType = $payload['swap_type'] ?? ($isMultiSource ? 'MULTI_SOURCE' : 'STANDARD');
+    
+    // BEGIN ATOMIC BOUNDARY
+    $this->beginAtomicSwap($ref);
+    
+    try {
+        $result = match($swapType) {
+            'MULTI_SOURCE' => $this->executeMultiSourceSwap($payload),
+            'CASHOUT' => $this->executeSignedCashout($payload),
+            'DEPOSIT' => $this->executeSignedDeposit($payload),
+            'CARD_ISSUE' => $this->executeCardIssuance($payload),
+            default => $this->executeSignedStandardSwap($payload),
+        };
+        
+        $commitResult = $this->commitAtomicSwap();
+        $result = array_merge($result, ['atomic_commit' => $commitResult]);
+        
+        if ($idempotencyKey) {
+            $this->storeIdempotencyResult($idempotencyKey, $result);
+        }
+        
+        return $result;
+        
+    } catch (Exception $e) {
+        $this->logger->error("Atomic swap failed", [
+            'reference' => $ref,
+            'step' => $this->getLastStep(),
+            'error' => $e->getMessage()
+        ]);
+        
+        $rollbackResult = $this->rollbackAtomicSwap($e->getMessage());
+        
+        if ($idempotencyKey) {
+            $this->storeIdempotencyResult($idempotencyKey, [
+                'status' => 'failed',
+                'reference' => $ref,
+                'error' => $e->getMessage()
+            ]);
+        }
+        
+        throw new RuntimeException("Swap failed: " . $e->getMessage(), 0, $e);
+    }
+}
 
     /**
      * Execute signed standard swap with cryptographic proof
