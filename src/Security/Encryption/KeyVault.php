@@ -180,13 +180,21 @@ class KeyVault
         return $this->keys['encryption_master'];
     }
 
-    /**
-     * Get any key by name
-     */
-    public function getKey(string $name): ?string
-    {
-        return $this->keys[$name] ?? null;
-    }
+   /**
+ * Get any key by name
+ */
+public function getKey(string $name): ?string
+{
+    return $this->keys[$name] ?? null;
+}
+
+/**
+ * Alias for getKey - for compatibility with SmsGatewayClient
+ */
+public function get(string $name): ?string
+{
+    return $this->getKey($name);
+}
 
     /**
      * Get configuration for a specific participant (bank, MNO, PSP)
