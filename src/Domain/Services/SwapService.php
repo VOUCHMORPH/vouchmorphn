@@ -74,7 +74,7 @@ class SwapService
         $this->swapDB = $swapDB;
         $this->config = $config;
         $this->countryCode = strtoupper($country);
-        $this->logger = $logger ?? new NullLogger();
+        $this->logger = $logger ?? new class { public function __call($name, $args) {} };
         
         // Initialize crypto
         $this->messageSigner = new MessageSigner();
