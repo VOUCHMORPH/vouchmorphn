@@ -1,7 +1,5 @@
 <?php
-// public/user/user_dashboard.php - ENHANCED DEBUG VERSION
-// Tests both YAML config AND database connection
-
+// public/user/user_dashboard.php
 ini_set('display_errors', 1);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
@@ -9,10 +7,11 @@ ob_start();
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
-require_once __DIR__ . '/../../src/bootstrap.php';
+require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
 
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
+use Core\Config\LoadCountry;
 
 SessionManager::start();
 
@@ -28,64 +27,48 @@ $userCountry = $user['country'] ?? 'Botswana';
 $userFullName = $user['full_name'] ?? $user['username'] ?? 'User';
 
 // ============================================================
-// TEST DATABASE CONNECTION
+// LOAD CONFIGURATION
 // ============================================================
-$dbStatus = [
-    'connected' => false,
-    'error' => null,
-    'tables' => []
-];
+
+try {
+    $config = LoadCountry::getConfig();
+    $countryCode = $config['country'] ?? 'BW';
+    $countryName = $config['country_settings'][$userCountry]['name'] ?? $userCountry;
+    $currencySymbol = $config['currency_symbol'] ?? 'BWP';
+} catch (Throwable $e) {
+    error_log("Dashboard config error: " . $e->getMessage());
+    $countryCode = 'BW';
+    $countryName = $userCountry;
+    $currencySymbol = 'BWP';
+}
+
+// ============================================================
+// DATABASE CONNECTION
+// ============================================================
 
 try {
     $db = DBConnection::getConnection();
     
-    if ($db) {
-        $dbStatus['connected'] = true;
-        
-        // Check which tables exist
-        $tables = ['users', 'transactions', 'wallets', 'swap_requests', 'hold_transactions'];
-        foreach ($tables as $table) {
-            try {
-                $stmt = $db->query("SELECT 1 FROM {$table} LIMIT 1");
-                $dbStatus['tables'][$table] = true;
-            } catch (Exception $e) {
-                $dbStatus['tables'][$table] = false;
-            }
-        }
-        
-        // Get user count
-        $stmt = $db->query("SELECT COUNT(*) FROM users");
-        $dbStatus['user_count'] = $stmt->fetchColumn();
-        
-    } else {
-        $dbStatus['error'] = "DBConnection::getConnection() returned null";
+    if (!$db) {
+        throw new Exception("Database connection failed");
     }
-} catch (Exception $e) {
-    $dbStatus['error'] = $e->getMessage();
+    
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    error_log("[USER DASHBOARD] Database connected successfully");
+    
+} catch (Throwable $e) {
+    error_log("USER DASHBOARD DB ERROR: " . $e->getMessage());
+    die("System initialisation failed.");
 }
 
 // ============================================================
-// LOAD AND DISPLAY RAW YAML DATA
+// LOAD YAML DATA
 // ============================================================
 
 $baseConfigPath = __DIR__ . '/../../src/Core/Config';
 $countryConfigPath = $baseConfigPath . '/Countries/' . $userCountry;
-
-// Check if files exist
 $participantsYamlPath = $countryConfigPath . '/participants.yaml';
-$assetsYamlPath = $baseConfigPath . '/assets.yaml';
 
-$filesExist = [
-    'participants.yaml' => file_exists($participantsYamlPath),
-    'assets.yaml' => file_exists($assetsYamlPath),
-    'country_config' => is_dir($countryConfigPath)
-];
-
-// Read raw YAML content
-$participantsRawContent = $filesExist['participants.yaml'] ? file_get_contents($participantsYamlPath) : 'FILE NOT FOUND';
-$assetsRawContent = $filesExist['assets.yaml'] ? file_get_contents($assetsYamlPath) : 'FILE NOT FOUND';
-
-// Simple YAML parser for participants
 function parseParticipantsYaml($content) {
     $participants = [];
     $lines = explode("\n", $content);
@@ -97,7 +80,7 @@ function parseParticipantsYaml($content) {
         
         if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
             $currentParticipant = $matches[1];
-            $participants[$currentParticipant] = [];
+            $participants[$currentParticipant] = ['code' => $currentParticipant];
             continue;
         }
         
@@ -133,24 +116,44 @@ function parseParticipantsYaml($content) {
     return $participants;
 }
 
-$parsedParticipants = $filesExist['participants.yaml'] ? parseParticipantsYaml($participantsRawContent) : [];
+$parsedParticipants = [];
+if (file_exists($participantsYamlPath)) {
+    $content = file_get_contents($participantsYamlPath);
+    $parsedParticipants = parseParticipantsYaml($content);
+}
 
-// Get recent transactions from database (if connected)
+// Get user's recent transactions
 $recentTransactions = [];
-if ($dbStatus['connected'] && isset($db)) {
-    try {
-        $stmt = $db->prepare("
-            SELECT transaction_id, type, amount, status, created_at, reference
-            FROM transactions 
-            WHERE user_id = :user_id 
-            ORDER BY created_at DESC 
-            LIMIT 5
-        ");
-        $stmt->execute([':user_id' => $userId]);
-        $recentTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (Exception $e) {
-        // Ignore - just won't show transactions
+try {
+    $stmt = $db->prepare("
+        SELECT transaction_id, type, amount, status, created_at, reference
+        FROM transactions 
+        WHERE user_id = :user_id 
+        ORDER BY created_at DESC 
+        LIMIT 10
+    ");
+    $stmt->execute([':user_id' => $userId]);
+    $recentTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    error_log("Transaction fetch error: " . $e->getMessage());
+}
+
+// Get wallet balance
+$walletBalance = 0;
+try {
+    $stmt = $db->prepare("
+        SELECT balance, held_balance 
+        FROM wallets 
+        WHERE user_id = :user_id AND status = 'active'
+        LIMIT 1
+    ");
+    $stmt->execute([':user_id' => $userId]);
+    $wallet = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($wallet) {
+        $walletBalance = $wallet['balance'] - ($wallet['held_balance'] ?? 0);
     }
+} catch (Throwable $e) {
+    error_log("Wallet fetch error: " . $e->getMessage());
 }
 ?>
 
@@ -159,166 +162,355 @@ if ($dbStatus['connected'] && isset($db)) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH | DEBUG DASHBOARD</title>
+    <title>VOUCHMORPH | Dashboard</title>
     <style>
-        body { background: #0a0a0a; color: #fff; font-family: monospace; padding: 20px; }
-        pre { background: #1a1a1a; padding: 15px; overflow-x: auto; border-left: 3px solid #4CAF50; margin: 10px 0; font-size: 11px; }
-        .error { color: #f44336; }
-        .success { color: #4CAF50; }
-        .warning { color: #FF9800; }
-        .section { margin-bottom: 30px; border-bottom: 1px solid #333; padding-bottom: 20px; }
-        h2 { color: #FF9800; font-size: 18px; }
-        h3 { color: #2196F3; font-size: 14px; margin-top: 20px; }
-        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
-        th, td { border: 1px solid #333; padding: 8px; text-align: left; }
-        th { background: #1a1a1a; }
-        .status-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: bold;
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
-        .status-online { background: #4CAF50; color: #fff; }
-        .status-offline { background: #f44336; color: #fff; }
+        
+        body {
+            background: #0a0a0a;
+            color: #fff;
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+        }
+        
+        .dashboard-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .dashboard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 20px;
+            padding: 20px;
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 100%);
+            border-radius: 12px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(0, 240, 255, 0.2);
+        }
+        
+        .logo h1 {
+            font-size: 1.5rem;
+            background: linear-gradient(135deg, #FFFFFF 0%, #00F0FF 40%, #B000FF 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        
+        .user-info {
+            text-align: right;
+        }
+        
+        .user-name {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #00F0FF;
+        }
+        
+        .user-phone {
+            font-size: 0.8rem;
+            color: #A0A0B0;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: #1a1a2e;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+        
+        .stat-card:hover {
+            border-color: #00F0FF;
+            transform: translateY(-2px);
+        }
+        
+        .stat-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            color: #A0A0B0;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+        
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #00F0FF;
+        }
+        
+        .stat-currency {
+            font-size: 0.8rem;
+            color: #A0A0B0;
+        }
+        
+        .section {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .section-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #00F0FF;
+            display: inline-block;
+        }
+        
+        .participants-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        
+        .participant-card {
+            background: #0f0f23;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 3px solid #00F0FF;
+        }
+        
+        .participant-name {
+            font-weight: 600;
+            color: #00F0FF;
+            margin-bottom: 5px;
+        }
+        
+        .participant-type {
+            font-size: 0.7rem;
+            color: #A0A0B0;
+            text-transform: uppercase;
+        }
+        
+        .participant-assets {
+            font-size: 0.75rem;
+            color: #fff;
+            margin-top: 8px;
+        }
+        
+        .transaction-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .transaction-table th,
+        .transaction-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .transaction-table th {
+            color: #00F0FF;
+            font-weight: 600;
+            font-size: 0.8rem;
+        }
+        
+        .status-completed {
+            color: #4CAF50;
+        }
+        
+        .status-pending {
+            color: #FF9800;
+        }
+        
+        .status-failed {
+            color: #f44336;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #00F0FF 0%, #B000FF 100%);
+            color: #050505;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            transition: transform 0.2s;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        
+        .logout-btn {
+            background: transparent;
+            border: 1px solid #f44336;
+            color: #f44336;
+        }
+        
+        .logout-btn:hover {
+            background: #f44336;
+            color: #fff;
+        }
+        
+        .quick-actions {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 30px;
+        }
+        
+        @media (max-width: 768px) {
+            .dashboard-container {
+                padding: 15px;
+            }
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
-    <h1>🔧 VOUCHMORPH DEBUG DASHBOARD</h1>
-    <p>User: <?= htmlspecialchars($userFullName) ?> | Phone: <?= htmlspecialchars($userPhone) ?> | Country: <?= htmlspecialchars($userCountry) ?> | User ID: <?= htmlspecialchars($userId) ?></p>
-    
-    <!-- DATABASE STATUS -->
-    <div class="section">
-        <h2>🗄️ DATABASE CONNECTION STATUS</h2>
-        <div>
-            <strong>Status:</strong> 
-            <?php if ($dbStatus['connected']): ?>
-                <span class="status-badge status-online">✓ CONNECTED</span>
-            <?php else: ?>
-                <span class="status-badge status-offline">✗ DISCONNECTED</span>
-            <?php endif; ?>
+    <div class="dashboard-container">
+        <!-- Header -->
+        <div class="dashboard-header">
+            <div class="logo">
+                <h1>VOUCHMORPH™</h1>
+                <div style="font-size: 0.7rem; color: #A0A0B0;">Interoperability Platform</div>
+            </div>
+            <div class="user-info">
+                <div class="user-name"><?= htmlspecialchars($userFullName) ?></div>
+                <div class="user-phone"><?= htmlspecialchars($userPhone) ?></div>
+                <div class="user-phone" style="font-size: 0.7rem;"><?= htmlspecialchars($countryName) ?></div>
+            </div>
         </div>
         
-        <?php if ($dbStatus['error']): ?>
-            <div class="error">Error: <?= htmlspecialchars($dbStatus['error']) ?></div>
-        <?php endif; ?>
+        <!-- Stats -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Available Balance</div>
+                <div class="stat-value"><?= number_format($walletBalance, 2) ?> <span class="stat-currency"><?= htmlspecialchars($currencySymbol) ?></span></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Recent Transactions</div>
+                <div class="stat-value"><?= count($recentTransactions) ?></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Available Institutions</div>
+                <div class="stat-value"><?= count($parsedParticipants) ?></div>
+            </div>
+        </div>
         
-        <?php if ($dbStatus['connected']): ?>
-            <div class="success">User count: <?= $dbStatus['user_count'] ?? 'N/A' ?></div>
-            
-            <h3>Table Existence:</h3>
-            <table>
-                <thead><tr><th>Table</th><th>Exists?</th></tr></thead>
-                <tbody>
-                    <?php foreach ($dbStatus['tables'] as $table => $exists): ?>
-                        <tr>
-                            <td><?= htmlspecialchars($table) ?></td>
-                            <td class="<?= $exists ? 'success' : 'error' ?>"><?= $exists ? '✓ YES' : '✗ NO' ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        <?php endif; ?>
-    </div>
-    
-    <!-- RECENT TRANSACTIONS -->
-    <?php if (!empty($recentTransactions)): ?>
-    <div class="section">
-        <h2>📋 RECENT TRANSACTIONS</h2>
-        <table>
-            <thead><tr><th>ID</th><th>Type</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead>
-            <tbody>
-                <?php foreach ($recentTransactions as $tx): ?>
-                    <tr>
-                        <td><?= htmlspecialchars($tx['transaction_id'] ?? $tx['reference']) ?></td>
-                        <td><?= htmlspecialchars($tx['type'] ?? 'N/A') ?></td>
-                        <td><?= number_format($tx['amount'] ?? 0, 2) ?> BWP</td>
-                        <td class="<?= ($tx['status'] ?? '') === 'completed' ? 'success' : 'warning' ?>"><?= htmlspecialchars($tx['status'] ?? 'N/A') ?></td>
-                        <td><?= date('Y-m-d H:i', strtotime($tx['created_at'])) ?></td>
-                    </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-    <?php endif; ?>
-    
-    <!-- FILE PATHS -->
-    <div class="section">
-        <h2>📁 FILE PATHS</h2>
-        <pre><?php 
-        echo "Base Config Path: " . $baseConfigPath . "\n";
-        echo "Country Config Path: " . $countryConfigPath . "\n";
-        echo "Participants YAML: " . $participantsYamlPath . "\n";
-        echo "Assets YAML: " . $assetsYamlPath . "\n";
-        echo "\nDOCUMENT_ROOT: " . $_SERVER['DOCUMENT_ROOT'] . "\n";
-        echo "SCRIPT_FILENAME: " . $_SERVER['SCRIPT_FILENAME'] . "\n";
-        ?></pre>
-    </div>
-    
-    <!-- FILE EXISTENCE -->
-    <div class="section">
-        <h2>📁 FILE EXISTENCE</h2>
-        <table>
-            <tr><th>File</th><th>Exists?</th></tr>
-            <tr><td>participants.yaml</td><td class="<?= $filesExist['participants.yaml'] ? 'success' : 'error' ?>"><?= $filesExist['participants.yaml'] ? '✓ YES' : '✗ NO' ?></td></tr>
-            <tr><td>assets.yaml</td><td class="<?= $filesExist['assets.yaml'] ? 'success' : 'error' ?>"><?= $filesExist['assets.yaml'] ? '✓ YES' : '✗ NO' ?></td></tr>
-            <tr><td>Country folder</td><td class="<?= $filesExist['country_config'] ? 'success' : 'error' ?>"><?= $filesExist['country_config'] ? '✓ YES' : '✗ NO' ?></td></tr>
-        </table>
-    </div>
-    
-    <!-- RAW PARTICIPANTS YAML -->
-    <div class="section">
-        <h2>📄 RAW participants.yaml CONTENT</h2>
-        <pre><?= htmlspecialchars(substr($participantsRawContent, 0, 3000)) ?></pre>
-        <?php if (strlen($participantsRawContent) > 3000): ?>
-            <p><em>... truncated (full file is <?= strlen($participantsRawContent) ?> bytes)</em></p>
-        <?php endif; ?>
-    </div>
-    
-    <!-- PARSED PARTICIPANTS -->
-    <div class="section">
-        <h2>🔍 PARSED PARTICIPANTS (from YAML)</h2>
-        <?php if (empty($parsedParticipants)): ?>
-            <p class="error">⚠ No participants parsed! Check YAML format.</p>
-        <?php else: ?>
-            <table>
+        <!-- Quick Actions -->
+        <div class="quick-actions">
+            <a href="swap.php" class="btn">💰 New Swap</a>
+            <a href="cashout.php" class="btn">🏧 Cash Out</a>
+            <a href="deposit.php" class="btn">📥 Deposit</a>
+            <a href="history.php" class="btn">📜 Transaction History</a>
+            <a href="logout.php" class="btn logout-btn">🚪 Logout</a>
+        </div>
+        
+        <!-- Recent Transactions -->
+        <div class="section">
+            <div class="section-title">RECENT TRANSACTIONS</div>
+            <table class="transaction-table">
                 <thead>
                     <tr>
-                        <th>Code</th>
-                        <th>Name</th>
+                        <th>Reference</th>
                         <th>Type</th>
-                        <th>Asset Types</th>
-                        <th>Min Amount</th>
-                        <th>Max Amount</th>
-                        <th>Currency</th>
+                        <th>Amount</th>
+                        <th>Status</th>
+                        <th>Date</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <?php foreach ($parsedParticipants as $code => $p): ?>
+                    <?php if (empty($recentTransactions)): ?>
                         <tr>
-                            <td><?= htmlspecialchars($code) ?></td>
-                            <td><?= htmlspecialchars($p['name'] ?? 'N/A') ?></td>
-                            <td><?= htmlspecialchars($p['type'] ?? 'N/A') ?></td>
-                            <td><?= htmlspecialchars(implode(', ', $p['asset_types'] ?? [])) ?></td>
-                            <td><?= htmlspecialchars($p['limits']['min_amount'] ?? 'N/A') ?></td>
-                            <td><?= htmlspecialchars($p['limits']['max_amount'] ?? 'N/A') ?></td>
-                            <td><?= htmlspecialchars($p['limits']['currency'] ?? 'N/A') ?></td>
+                            <td colspan="5" style="text-align: center; color: #A0A0B0;">No transactions yet</td>
                         </tr>
-                    <?php endforeach; ?>
+                    <?php else: ?>
+                        <?php foreach ($recentTransactions as $tx): ?>
+                            <tr>
+                                <td><?= htmlspecialchars($tx['reference'] ?? $tx['transaction_id']) ?></td>
+                                <td><?= htmlspecialchars($tx['type'] ?? 'Swap') ?></td>
+                                <td><?= number_format($tx['amount'], 2) ?> <?= htmlspecialchars($currencySymbol) ?></td>
+                                <td class="status-<?= strtolower($tx['status'] ?? 'pending') ?>"><?= htmlspecialchars($tx['status'] ?? 'Pending') ?></td>
+                                <td><?= date('Y-m-d H:i', strtotime($tx['created_at'])) ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
                 </tbody>
             </table>
-        <?php endif; ?>
-    </div>
-    
-    <!-- ENVIRONMENT VARIABLES (safe ones only) -->
-    <div class="section">
-        <h2>🌐 ENVIRONMENT (Safe Values)</h2>
-        <table>
-            <tr><th>Variable</th><th>Value</th></tr>
-            <tr><td>APP_ENV</td><td><?= htmlspecialchars(getenv('APP_ENV') ?: 'not set') ?></td></tr>
-            <tr><td>VM_COUNTRY</td><td><?= htmlspecialchars(getenv('VM_COUNTRY') ?: 'not set') ?></td></tr>
-            <tr><td>DATABASE_URL</td><td><?= getenv('DATABASE_URL') ? '***SET***' : 'NOT SET' ?></td></tr>
-        </table>
+        </div>
+        
+        <!-- Available Institutions -->
+        <div class="section">
+            <div class="section-title">AVAILABLE INSTITUTIONS</div>
+            <?php if (empty($parsedParticipants)): ?>
+                <p style="color: #A0A0B0;">No institutions configured.</p>
+            <?php else: ?>
+                <div class="participants-grid">
+                    <?php foreach ($parsedParticipants as $code => $p): ?>
+                        <div class="participant-card">
+                            <div class="participant-name"><?= htmlspecialchars($p['name'] ?? $code) ?></div>
+                            <div class="participant-type"><?= htmlspecialchars($p['type'] ?? 'FINANCIAL_INSTITUTION') ?></div>
+                            <div class="participant-assets">
+                                <strong>Assets:</strong> <?= htmlspecialchars(implode(', ', $p['asset_types'] ?? ['ACCOUNT'])) ?>
+                            </div>
+                            <?php if (isset($p['limits'])): ?>
+                                <div class="participant-assets" style="font-size: 0.7rem;">
+                                    Limits: <?= htmlspecialchars($p['limits']['min_amount'] ?? '0') ?> - <?= htmlspecialchars($p['limits']['max_amount'] ?? '∞') ?> <?= htmlspecialchars($p['limits']['currency'] ?? 'BWP') ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+        </div>
+        
+        <!-- Quick Swap Form -->
+        <div class="section">
+            <div class="section-title">QUICK SWAP</div>
+            <form action="swap.php" method="GET" style="display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end;">
+                <div style="flex: 1;">
+                    <label style="display: block; font-size: 0.7rem; margin-bottom: 5px;">From</label>
+                    <select name="source" style="width: 100%; padding: 10px; background: #0f0f23; border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 6px;">
+                        <option value="">Select Institution</option>
+                        <?php foreach ($parsedParticipants as $code => $p): ?>
+                            <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div style="flex: 1;">
+                    <label style="display: block; font-size: 0.7rem; margin-bottom: 5px;">To</label>
+                    <select name="destination" style="width: 100%; padding: 10px; background: #0f0f23; border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 6px;">
+                        <option value="">Select Institution</option>
+                        <?php foreach ($parsedParticipants as $code => $p): ?>
+                            <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div style="width: 150px;">
+                    <label style="display: block; font-size: 0.7rem; margin-bottom: 5px;">Amount (<?= htmlspecialchars($currencySymbol) ?>)</label>
+                    <input type="number" name="amount" step="0.01" style="width: 100%; padding: 10px; background: #0f0f23; border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 6px;">
+                </div>
+                <div>
+                    <button type="submit" class="btn" style="padding: 10px 20px;">GO →</button>
+                </div>
+            </form>
+        </div>
     </div>
 </body>
 </html>
