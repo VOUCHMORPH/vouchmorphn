@@ -13,7 +13,7 @@ class IdempotencyService
     public static function check(PDO $db, string $key): ?array
     {
         $stmt = $db->prepare("
-            SELECT operation, result, created_at
+            SELECT result, created_at
             FROM idempotency_keys
             WHERE key = :key
             LIMIT 1
@@ -26,45 +26,30 @@ class IdempotencyService
             return null;
         }
 
-        return [
-            'operation'  => $row['operation'],
-            'result'     => json_decode($row['result'], true),
-            'created_at' => $row['created_at']
-        ];
+        // Return just the result (as SwapService expects)
+        return json_decode($row['result'], true);
     }
 
     /**
-     * Store result safely (BANK-GRADE ATOMIC INSERT)
-     * Uses PostgreSQL ON CONFLICT for idempotency safety
+     * Store result safely - MATCHES SwapService call signature
+     * SwapService calls: IdempotencyService::store($this->swapDB, $key, $result)
      */
-    public static function store(PDO $db, string $key, string $operation, array $response): array
+    public static function store(PDO $db, string $key, array $result): array
     {
         try {
             $stmt = $db->prepare("
-                INSERT INTO idempotency_keys (key, operation, result, created_at)
-                VALUES (:key, :operation, :result::jsonb, NOW())
-                ON CONFLICT (key) DO NOTHING
+                INSERT INTO idempotency_keys (key, result, created_at)
+                VALUES (:key, :result::jsonb, NOW())
+                ON CONFLICT (key) DO UPDATE SET result = EXCLUDED.result, created_at = NOW()
                 RETURNING key
             ");
 
             $stmt->execute([
-                ':key'       => $key,
-                ':operation' => $operation,
-                ':result'    => json_encode($response)
+                ':key'    => $key,
+                ':result' => json_encode($result)
             ]);
 
-            $inserted = $stmt->fetchColumn();
-
-            // If another process already inserted it
-            if (!$inserted) {
-                return self::check($db, $key);
-            }
-
-            return [
-                'operation'  => $operation,
-                'result'     => $response,
-                'created_at' => date('Y-m-d H:i:s')
-            ];
+            return $result;
 
         } catch (PDOException $e) {
             throw new \RuntimeException(
@@ -83,7 +68,7 @@ class IdempotencyService
         $existing = self::check($db, $key);
 
         if ($existing) {
-            return $existing['result'];
+            return $existing;
         }
 
         return null;
@@ -92,19 +77,16 @@ class IdempotencyService
     /**
      * Reserve key BEFORE execution (prevents double spend race condition)
      */
-    public static function reserve(PDO $db, string $key, string $operation): bool
+    public static function reserve(PDO $db, string $key): bool
     {
         try {
             $stmt = $db->prepare("
-                INSERT INTO idempotency_keys (key, operation, result, created_at)
-                VALUES (:key, :operation, '{}'::jsonb, NOW())
+                INSERT INTO idempotency_keys (key, result, created_at)
+                VALUES (:key, '{}'::jsonb, NOW())
                 ON CONFLICT (key) DO NOTHING
             ");
 
-            $stmt->execute([
-                ':key'       => $key,
-                ':operation' => $operation
-            ]);
+            $stmt->execute([':key' => $key]);
 
             // If row exists already, reservation failed
             return $stmt->rowCount() > 0;
