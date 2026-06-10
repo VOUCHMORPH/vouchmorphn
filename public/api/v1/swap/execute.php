@@ -177,7 +177,7 @@ try {
             $countryConfig['code']         // string country
         );
         
-        $result = $swapService->executeSwap($input);
+        $result = $swapService->executeAtomicSwap($input);
         
         echo json_encode([
             'success' => true,
