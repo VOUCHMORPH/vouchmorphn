@@ -33,9 +33,9 @@ use Psr\Log\NullLogger;
 class SwapService
 {
     private PDO $swapDB;
-    private array $config;
-    private array $participants;
-    private array $endpoints;
+    private array $config = [];
+    private array $participants = [];
+    private array $endpoints = [];
     private string $countryCode;
     private array $feesConfig = [];
     
