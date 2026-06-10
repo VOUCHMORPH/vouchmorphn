@@ -15,11 +15,101 @@ class FeeService
 {
     private array $feesConfig;
     private string $defaultCurrency;
+    private array $participants = [];
     
     public function __construct(array $feesConfig, string $defaultCurrency = 'BWP')
     {
         $this->feesConfig = $feesConfig;
         $this->defaultCurrency = $defaultCurrency;
+    }
+    
+    /**
+     * Set participants for country lookup
+     */
+    public function setParticipants(array $participants): void
+    {
+        $this->participants = $participants;
+    }
+    
+    /**
+     * Wrapper method for SwapService compatibility
+     * Calculates fees based on transaction type and amount
+     */
+    public function calculateFees(string $transactionType, float $amount, array $payload = []): array
+    {
+        // Extract source and destination details from payload
+        $sourceInstitution = $payload['source_institution'] ?? $payload['from_institution'] ?? 'UNKNOWN';
+        $destInstitution = $payload['destination_institution'] ?? $payload['to_institution'] ?? 'UNKNOWN';
+        
+        // Get participant countries
+        $sourceCountry = $this->getParticipantCountry($sourceInstitution);
+        $destCountry = $this->getParticipantCountry($destInstitution);
+        $sourceCurrency = $payload['currency'] ?? $this->defaultCurrency;
+        $destCurrency = $payload['destination_currency'] ?? $sourceCurrency;
+        
+        // Map transaction type to fee key format
+        $feeType = $this->mapTransactionType($transactionType);
+        
+        // Calculate using the existing method
+        $calculatedFees = $this->calculateAllFees(
+            $amount,
+            $feeType,
+            $sourceCurrency,
+            $destCurrency,
+            $sourceCountry,
+            $destCountry
+        );
+        
+        // Return in format expected by SwapService
+        return [
+            'total_fee' => $calculatedFees['total_fees'],
+            'breakdown' => $this->getFeeBreakdown($calculatedFees),
+            'net_amount' => $calculatedFees['net_amount'],
+            'gross_amount' => $calculatedFees['gross_amount'],
+            'fees' => $calculatedFees,
+            'total_fees' => $calculatedFees['total_fees']
+        ];
+    }
+    
+    /**
+     * Helper to get participant country from participants config
+     */
+    private function getParticipantCountry(string $institution): string
+    {
+        // Try to find participant by code (uppercase key)
+        foreach ($this->participants as $code => $participant) {
+            if (strtoupper($code) === strtoupper($institution)) {
+                return $participant['country'] ?? 'Botswana';
+            }
+            if (isset($participant['id']) && strtoupper($participant['id']) === strtoupper($institution)) {
+                return $participant['country'] ?? 'Botswana';
+            }
+            if (isset($participant['provider_code']) && strtoupper($participant['provider_code']) === strtoupper($institution)) {
+                return $participant['country'] ?? 'Botswana';
+            }
+        }
+        
+        // Default to Botswana if not found
+        return 'Botswana';
+    }
+    
+    /**
+     * Map transaction type to fee type
+     */
+    private function mapTransactionType(string $transactionType): string
+    {
+        $map = [
+            'CASHOUT' => 'CASHOUT_SWAP_FEE',
+            'DEPOSIT' => 'DEPOSIT_SWAP_FEE',
+            'CARD_LOAD' => 'CARD_LOAD_FEE',
+            'CARD_ISSUE' => 'CARD_ISSUANCE_FEE',
+            'CARD_ISSUANCE' => 'CARD_ISSUANCE_FEE',
+            'SWAP' => 'DEPOSIT_SWAP_FEE',
+            'STANDARD' => 'DEPOSIT_SWAP_FEE',
+            'MULTI_SOURCE' => 'DEPOSIT_SWAP_FEE'
+        ];
+        
+        return $map[$transactionType] ?? 'DEPOSIT_SWAP_FEE';
     }
     
     /**
@@ -121,7 +211,7 @@ class FeeService
      */
     private function getSwapFee(float $amount, string $transactionType): float
     {
-        $feeKey = $this->getFeeKeyForTransaction($transactionType);
+        $feeKey = $transactionType;
         
         if (isset($this->feesConfig['fees'][$feeKey]['total_amount'])) {
             return (float)$this->feesConfig['fees'][$feeKey]['total_amount'];
