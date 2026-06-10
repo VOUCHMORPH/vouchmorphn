@@ -31,8 +31,7 @@ if (!defined('SYSTEM_COUNTRY')) {
 }
 
 $systemCountry = SYSTEM_COUNTRY;
-$dbConfig       = $config['db']['swap'] ?? null;
-$countryConfig  = $config['country_settings'][$systemCountry] ?? [];
+$countryConfig = $config['country_settings'][$systemCountry] ?? [];
 
 // Dynamic country phone settings
 $countryDialCode   = $countryConfig['dial_code'] ?? '+267';
@@ -43,20 +42,22 @@ $countryName       = $countryConfig['name'] ?? $systemCountry;
 // Regex pattern for frontend validation
 $phonePattern = '[0-9]{' . $localLength . '}';
 
-if (!$dbConfig) {
-    error_log("USER LOGIN: Swap DB config missing for {$systemCountry}");
-    die("System initialisation error.");
-}
-
 // --------------------------------------------------
-// 3️⃣ DB Bootstrap
+// 3️⃣ DB Bootstrap - Using DBConnection (Single Source of Truth)
 // --------------------------------------------------
 try {
-    $db = DBConnection::getInstance($dbConfig);
+    $db = DBConnection::getConnection();
+    
+    if (!$db) {
+        throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
+    }
+    
     $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+    error_log("[USER LOGIN] Database connected successfully via DBConnection");
+    
 } catch (\Throwable $e) {
     error_log("USER LOGIN DB ERROR [{$systemCountry}]: " . $e->getMessage());
-    die("System initialisation failed.");
+    die("System initialisation failed. Please check database configuration.");
 }
 
 // --------------------------------------------------
@@ -110,7 +111,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             try {
                 $stmt = $db->prepare(
-                    "SELECT user_id, phone, username, password_hash, verified, created_at
+                    "SELECT user_id, phone, username, password_hash, verified, created_at, pin_enabled
                      FROM users
                      WHERE phone = :phone
                      LIMIT 1"
@@ -127,12 +128,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     session_regenerate_id(true);
 
                     SessionManager::setUser([
-                        'user_id'    => $user['user_id'],
-                        'username'   => $user['username'] ?? '',
-                        'phone'      => $user['phone'],
-                        'role'       => 'USER',
-                        'country'    => $systemCountry,
-                        'created_at' => $user['created_at'] ?? null
+                        'user_id'     => $user['user_id'],
+                        'username'    => $user['username'] ?? '',
+                        'phone'       => $user['phone'],
+                        'role'        => 'USER',
+                        'country'     => $systemCountry,
+                        'created_at'  => $user['created_at'] ?? null,
+                        'pin_enabled' => (int)($user['pin_enabled'] ?? 0) === 1
                     ]);
 
                     error_log("PIN LOGIN SUCCESS: {$formattedPhone}");
