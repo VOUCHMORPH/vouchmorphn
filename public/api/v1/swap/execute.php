@@ -178,8 +178,7 @@ try {
         );
         
         $result = $swapService->executeAtomicSwap($input);
-    // Debug: Check participants
-error_log("[EXECUTE] Participants loaded: " . json_encode(array_keys($swapService->getParticipants())));    
+       
         echo json_encode([
             'success' => true,
             'status' => $result['status'] ?? 'completed',
