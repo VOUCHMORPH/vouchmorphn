@@ -13,6 +13,7 @@ participants:
   # ZURUBANK - Traditional commercial bank
   # ----------------------------------------------------------
   ZURUBANK:
+    provider_code: ZURUBANK
     id: ZURUBWXX
     name: "Zuru Bank"
     type: BANK
@@ -51,6 +52,7 @@ participants:
   # SACCUSSALIS - Commercial bank
   # ----------------------------------------------------------
   SACCUSSALIS:
+    provider_code: SACCUSSALIS
     id: SACCUSBWXX
     name: "Saccussalis"
     type: BANK
@@ -89,6 +91,7 @@ participants:
   # CAZACOM - Mobile network operator
   # ----------------------------------------------------------
   CAZACOM:
+    provider_code: CAZACOM
     id: CAZACOM
     name: "CazaCom"
     type: MNO
@@ -138,6 +141,7 @@ participants:
   # VOUCHMORPH - Orchestration layer
   # ----------------------------------------------------------
   VOUCHMORPH:
+    provider_code: VOUCHMORPH
     id: VMPHBWX1
     name: "VouchMorph"
     type: ORCHESTRATOR
