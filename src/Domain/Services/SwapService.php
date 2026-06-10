@@ -1356,29 +1356,61 @@ class SwapService
         $this->logger->info("Configuration loaded", ['country' => $country]);
     }
 
-    private function parseYaml(string $path): array
-    {
-        $content = file_get_contents($path);
-        $data = [];
-        $lines = explode("\n", $content);
-        $currentKey = null;
+   private function parseYaml(string $path): array
+{
+    $content = file_get_contents($path);
+    $data = [];
+    $lines = explode("\n", $content);
+    $currentKey = null;
+    
+    // First, find the participants section
+    $inParticipants = false;
+    $participantsData = [];
+    
+    foreach ($lines as $line) {
+        $line = rtrim($line);
+        if (empty($line) || $line[0] === '#') continue;
         
-        foreach ($lines as $line) {
-            $line = rtrim($line);
-            if (empty($line) || $line[0] === '#') continue;
-            
-            if (preg_match('/^([a-z_]+):$/', $line, $matches)) {
-                $currentKey = $matches[1];
-                $data[$currentKey] = [];
-            } elseif ($currentKey && preg_match('/^  ([a-z_]+): (.+)$/', $line, $matches)) {
-                $value = trim($matches[2]);
-                if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
-                $data[$currentKey][$matches[1]] = $value;
-            }
+        // Check for participants: section
+        if (preg_match('/^participants:$/', $line)) {
+            $inParticipants = true;
+            continue;
         }
         
-        return $data;
+        if ($inParticipants) {
+            // Match participant names (can be uppercase, uppercase with underscore)
+            if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
+                $currentKey = $matches[1];
+                $participantsData[$currentKey] = [];
+                continue;
+            }
+            
+            // Match properties (indented with 4 spaces)
+            if ($currentKey && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
+                $key = $matches[1];
+                $value = trim($matches[2]);
+                if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
+                if (preg_match("/^'(.+)'$/", $value, $q)) $value = $q[1];
+                $participantsData[$currentKey][$key] = $value;
+                continue;
+            }
+            
+            // Match asset_types list
+            if ($currentKey && preg_match('/^    asset_types:$/', $line)) {
+                $participantsData[$currentKey]['asset_types'] = [];
+                continue;
+            }
+            
+            // Match items in asset_types list
+            if ($currentKey && isset($participantsData[$currentKey]['asset_types']) && preg_match('/^      - (.+)$/', $line, $matches)) {
+                $participantsData[$currentKey]['asset_types'][] = trim($matches[1]);
+                continue;
+            }
+        }
     }
+    
+    return $participantsData;
+}
 
     // ============================================================
     // PUBLIC METHODS
