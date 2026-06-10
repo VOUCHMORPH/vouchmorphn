@@ -130,17 +130,20 @@ class GenericBankClient implements BankAPIInterface
         // Map actions to environment variable names
         $envMap = [
             'verify_asset' => 'VERIFY_ENDPOINT',
-            'place_hold' => 'HOLD_ENDPOINT',
-            'release_hold' => 'RELEASE_HOLD_ENDPOINT',
-            'debit_funds' => 'DEBIT_ENDPOINT',
-            'generate_token' => 'GENERATE_TOKEN_ENDPOINT',
-            'verify_token' => 'VERIFY_TOKEN_ENDPOINT',
-            'confirm_cashout' => 'CONFIRM_CASHOUT_ENDPOINT',
-            'process_deposit' => 'PROCESS_DEPOSIT_ENDPOINT',
-            'check_status' => 'STATUS_ENDPOINT',
-            'reverse_transaction' => 'REVERSE_ENDPOINT',
-            'account_balance' => 'BALANCE_ENDPOINT',
-            'transactions' => 'TRANSACTIONS_ENDPOINT',
+        'place_hold' => 'HOLD_ENDPOINT',
+        'release_hold' => 'RELEASE_HOLD_ENDPOINT',
+        'debit_funds' => 'DEBIT_ENDPOINT',
+        'generate_token' => 'GENERATE_TOKEN_ENDPOINT',
+        'generate_token_with_proof' => 'GENERATE_TOKEN_ENDPOINT',  // ADD THIS LINE
+        'verify_token' => 'VERIFY_TOKEN_ENDPOINT',
+        'confirm_cashout' => 'CONFIRM_CASHOUT_ENDPOINT',
+        'process_deposit' => 'PROCESS_DEPOSIT_ENDPOINT',
+        'process_deposit_with_proof' => 'PROCESS_DEPOSIT_ENDPOINT',  // ADD THIS LINE
+        'check_status' => 'STATUS_ENDPOINT',
+        'reverse_transaction' => 'REVERSE_ENDPOINT',
+        'account_balance' => 'BALANCE_ENDPOINT',
+        'transactions' => 'TRANSACTIONS_ENDPOINT',
+        'transfer_with_proof' => 'TRANSFER_ENDPOINT',
         ];
         
         $actionKey = $envMap[$action] ?? null;
