@@ -1,5 +1,7 @@
 <?php
-// public/user/user_dashboard.php
+// public/user/user_dashboard.php - FIXED VERSION
+// Using DBConnection and proper config loading
+
 ini_set('display_errors', 1);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
@@ -43,32 +45,46 @@ try {
 }
 
 // ============================================================
-// DATABASE CONNECTION
+// DATABASE CONNECTION - Using DBConnection
 // ============================================================
 
 try {
     $db = DBConnection::getConnection();
     
     if (!$db) {
-        throw new Exception("Database connection failed");
+        throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
     }
     
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    error_log("[USER DASHBOARD] Database connected successfully");
+    error_log("[USER DASHBOARD] Database connected successfully via DBConnection");
     
 } catch (Throwable $e) {
     error_log("USER DASHBOARD DB ERROR: " . $e->getMessage());
-    die("System initialisation failed.");
+    die("System initialisation failed. Please check database configuration.");
 }
 
 // ============================================================
-// LOAD YAML DATA
+// LOAD AND DISPLAY RAW YAML DATA (for debugging)
 // ============================================================
 
 $baseConfigPath = __DIR__ . '/../../src/Core/Config';
 $countryConfigPath = $baseConfigPath . '/Countries/' . $userCountry;
-$participantsYamlPath = $countryConfigPath . '/participants.yaml';
 
+// Check if files exist
+$participantsYamlPath = $countryConfigPath . '/participants.yaml';
+$assetsYamlPath = $baseConfigPath . '/assets.yaml';
+
+$filesExist = [
+    'participants.yaml' => file_exists($participantsYamlPath),
+    'assets.yaml' => file_exists($assetsYamlPath),
+    'country_config' => is_dir($countryConfigPath)
+];
+
+// Read raw YAML content
+$participantsRawContent = $filesExist['participants.yaml'] ? file_get_contents($participantsYamlPath) : 'FILE NOT FOUND';
+$assetsRawContent = $filesExist['assets.yaml'] ? file_get_contents($assetsYamlPath) : 'FILE NOT FOUND';
+
+// Simple YAML parser for participants
 function parseParticipantsYaml($content) {
     $participants = [];
     $lines = explode("\n", $content);
@@ -78,36 +94,43 @@ function parseParticipantsYaml($content) {
         $line = rtrim($line);
         if (empty($line) || $line[0] === '#') continue;
         
+        // Match participant name (indented with 2 spaces)
         if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
             $currentParticipant = $matches[1];
             $participants[$currentParticipant] = ['code' => $currentParticipant];
             continue;
         }
         
+        // Match properties (indented with 4 spaces)
         if ($currentParticipant && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
             $key = $matches[1];
             $value = trim($matches[2]);
+            // Remove quotes
             if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
             if (preg_match("/^'(.+)'$/", $value, $q)) $value = $q[1];
             $participants[$currentParticipant][$key] = $value;
             continue;
         }
         
+        // Match asset_types list
         if ($currentParticipant && preg_match('/^    asset_types:$/', $line)) {
             $participants[$currentParticipant]['asset_types'] = [];
             continue;
         }
         
+        // Match items in asset_types list
         if ($currentParticipant && isset($participants[$currentParticipant]['asset_types']) && preg_match('/^      - (.+)$/', $line, $matches)) {
             $participants[$currentParticipant]['asset_types'][] = trim($matches[1]);
             continue;
         }
         
+        // Match limits
         if ($currentParticipant && preg_match('/^    limits:$/', $line)) {
             $participants[$currentParticipant]['limits'] = [];
             continue;
         }
         
+        // Match limits properties
         if ($currentParticipant && isset($participants[$currentParticipant]['limits']) && preg_match('/^      ([a-z_]+): (.+)$/', $line, $matches)) {
             $participants[$currentParticipant]['limits'][$matches[1]] = trim($matches[2]);
         }
@@ -116,13 +139,9 @@ function parseParticipantsYaml($content) {
     return $participants;
 }
 
-$parsedParticipants = [];
-if (file_exists($participantsYamlPath)) {
-    $content = file_get_contents($participantsYamlPath);
-    $parsedParticipants = parseParticipantsYaml($content);
-}
+$parsedParticipants = $filesExist['participants.yaml'] ? parseParticipantsYaml($participantsRawContent) : [];
 
-// Get user's recent transactions
+// Get user's recent transactions from database
 $recentTransactions = [];
 try {
     $stmt = $db->prepare("
@@ -155,6 +174,7 @@ try {
 } catch (Throwable $e) {
     error_log("Wallet fetch error: " . $e->getMessage());
 }
+
 ?>
 
 <!DOCTYPE html>
@@ -459,7 +479,19 @@ try {
         <div class="section">
             <div class="section-title">AVAILABLE INSTITUTIONS</div>
             <?php if (empty($parsedParticipants)): ?>
-                <p style="color: #A0A0B0;">No institutions configured.</p>
+                <p style="color: #A0A0B0;">No institutions configured. Please check configuration files.</p>
+                <details style="margin-top: 15px;">
+                    <summary style="color: #FF9800; cursor: pointer;">Debug Info (click to expand)</summary>
+                    <pre style="margin-top: 10px; padding: 10px; background: #0f0f23; overflow-x: auto; font-size: 0.7rem;">
+<?php 
+echo "Config Path: " . $countryConfigPath . "\n";
+echo "Participants YAML exists: " . ($filesExist['participants.yaml'] ? 'Yes' : 'No') . "\n";
+if (!$filesExist['participants.yaml']) {
+    echo "\nLooking for file at: " . $participantsYamlPath . "\n";
+}
+?>
+                    </pre>
+                </details>
             <?php else: ?>
                 <div class="participants-grid">
                     <?php foreach ($parsedParticipants as $code => $p): ?>
