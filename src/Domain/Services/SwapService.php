@@ -264,83 +264,103 @@ class SwapService
         ];
     }
 
-    /**
-     * Execute signed cashout with cryptographic proof
-     */
-    private function executeSignedCashout(array $payload): array
-    {
-        $amount = (float)($payload['amount'] ?? 0);
-        $sourceInstitution = $payload['source_institution'] ?? $payload['from_institution'];
-        $beneficiaryPhone = $payload['beneficiary_phone'] ?? $payload['client_phone'] ?? null;
-        
-        // STEP 1: Verify source with signature
-        $verificationResult = $this->executeStep('VERIFY_CASHOUT_SOURCE_SIGNED', function() use ($payload, $sourceInstitution) {
-            return $this->verifySourceAssetSigned($payload, $sourceInstitution);
+  /**
+ * Execute signed cashout with cryptographic proof
+ */
+private function executeSignedCashout(array $payload): array
+{
+    error_log("[SwapService] ===== executeSignedCashout START =====");
+    error_log("[SwapService] Payload: " . json_encode($payload));
+    
+    $amount = (float)($payload['amount'] ?? 0);
+    $sourceInstitution = $payload['source_institution'] ?? $payload['from_institution'];
+    $beneficiaryPhone = $payload['beneficiary_phone'] ?? $payload['client_phone'] ?? null;
+    
+    error_log("[SwapService] sourceInstitution: '{$sourceInstitution}'");
+    error_log("[SwapService] amount: {$amount}");
+    
+    // STEP 1: Verify source with signature
+    error_log("[SwapService] STEP 1: Calling verifySourceAssetSigned");
+    $verificationResult = $this->executeStep('VERIFY_CASHOUT_SOURCE_SIGNED', function() use ($payload, $sourceInstitution) {
+        error_log("[SwapService] Inside closure, about to call verifySourceAssetSigned with: '{$sourceInstitution}'");
+        $result = $this->verifySourceAssetSigned($payload, $sourceInstitution);
+        error_log("[SwapService] verifySourceAssetSigned returned: " . json_encode($result));
+        return $result;
+    });
+    
+    error_log("[SwapService] verificationResult verified: " . ($verificationResult['verified'] ?? 'false'));
+    
+    $this->signedPayloads['verification'] = [
+        'payload' => $verificationResult['original_payload'],
+        'signature' => $verificationResult['signature'],
+        'source' => $sourceInstitution,
+        'timestamp' => $verificationResult['timestamp']
+    ];
+    
+    // STEP 2: Place hold with signature
+    error_log("[SwapService] STEP 2: Calling placeHoldSigned");
+    $holdResult = $this->executeStep('PLACE_CASHOUT_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
+        return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
+    });
+    
+    $this->signedPayloads['hold'] = [
+        'payload' => $holdResult['original_payload'],
+        'signature' => $holdResult['signature'],
+        'source' => $sourceInstitution,
+        'timestamp' => $holdResult['timestamp']
+    ];
+    
+    $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
+    
+    // STEP 3: Calculate fees
+    error_log("[SwapService] STEP 3: Calculating fees");
+    $feeBreakdown = $this->executeStep('CALCULATE_CASHOUT_FEES', function() use ($payload, $amount) {
+        return $this->feeService->calculateFees('CASHOUT', $amount, $payload);
+    });
+    
+    $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
+    error_log("[SwapService] netAmount after fees: {$netAmount}");
+    
+    // STEP 4: Generate ATM token with proof
+    error_log("[SwapService] STEP 4: Generating ATM token");
+    $tokenResult = $this->executeStep('GENERATE_TOKEN_WITH_PROOF', function() use ($payload, $sourceInstitution, $netAmount) {
+        return $this->generateAtmTokenWithProof($payload, $sourceInstitution, $netAmount);
+    });
+    
+    // STEP 5: Send SMS notification
+    if ($beneficiaryPhone && $this->smsService && isset($tokenResult['atm_pin'])) {
+        error_log("[SwapService] STEP 5: Sending SMS to {$beneficiaryPhone}");
+        $this->executeStep('SEND_SMS', function() use ($beneficiaryPhone, $tokenResult, $netAmount) {
+            return $this->smsService->sendCashoutCode(
+                $beneficiaryPhone,
+                $tokenResult['atm_pin'],
+                $netAmount,
+                $tokenResult['voucher_number'] ?? null
+            );
         });
-        
-        $this->signedPayloads['verification'] = [
-            'payload' => $verificationResult['original_payload'],
-            'signature' => $verificationResult['signature'],
-            'source' => $sourceInstitution,
-            'timestamp' => $verificationResult['timestamp']
-        ];
-        
-        // STEP 2: Place hold with signature
-        $holdResult = $this->executeStep('PLACE_CASHOUT_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
-            return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
-        });
-        
-        $this->signedPayloads['hold'] = [
-            'payload' => $holdResult['original_payload'],
-            'signature' => $holdResult['signature'],
-            'source' => $sourceInstitution,
-            'timestamp' => $holdResult['timestamp']
-        ];
-        
-        $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
-        
-        // STEP 3: Calculate fees
-        $feeBreakdown = $this->executeStep('CALCULATE_CASHOUT_FEES', function() use ($payload, $amount) {
-            return $this->feeService->calculateFees('CASHOUT', $amount, $payload);
-        });
-        
-        $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
-        
-        // STEP 4: Generate ATM token with proof
-        $tokenResult = $this->executeStep('GENERATE_TOKEN_WITH_PROOF', function() use ($payload, $sourceInstitution, $netAmount) {
-            return $this->generateAtmTokenWithProof($payload, $sourceInstitution, $netAmount);
-        });
-        
-        // STEP 5: Send SMS notification
-        if ($beneficiaryPhone && $this->smsService && isset($tokenResult['atm_pin'])) {
-            $this->executeStep('SEND_SMS', function() use ($beneficiaryPhone, $tokenResult, $netAmount) {
-                return $this->smsService->sendCashoutCode(
-                    $beneficiaryPhone,
-                    $tokenResult['atm_pin'],
-                    $netAmount,
-                    $tokenResult['voucher_number'] ?? null
-                );
-            });
-        }
-        
-        // STEP 6: Debit source
-        $debitResult = $this->executeStep('DEBIT_CASHOUT_SOURCE', function() use ($payload, $sourceInstitution) {
-            return $this->debitSource($payload, $sourceInstitution);
-        });
-        
-        // STEP 7: Update hold status
-        $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
-        
-        return [
-            'status' => 'success',
-            'reference' => $this->currentSwapRef,
-            'atm_code' => $tokenResult['atm_pin'] ?? null,
-            'voucher_number' => $tokenResult['voucher_number'] ?? null,
-            'amount' => $netAmount,
-            'fee' => $feeBreakdown['total_fee'] ?? 0,
-            'signature_chain' => $this->signedPayloads
-        ];
     }
+    
+    // STEP 6: Debit source
+    error_log("[SwapService] STEP 6: Debiting source");
+    $debitResult = $this->executeStep('DEBIT_CASHOUT_SOURCE', function() use ($payload, $sourceInstitution) {
+        return $this->debitSource($payload, $sourceInstitution);
+    });
+    
+    // STEP 7: Update hold status
+    $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
+    
+    error_log("[SwapService] ===== executeSignedCashout COMPLETED SUCCESSFULLY =====");
+    
+    return [
+        'status' => 'success',
+        'reference' => $this->currentSwapRef,
+        'atm_code' => $tokenResult['atm_pin'] ?? null,
+        'voucher_number' => $tokenResult['voucher_number'] ?? null,
+        'amount' => $netAmount,
+        'fee' => $feeBreakdown['total_fee'] ?? 0,
+        'signature_chain' => $this->signedPayloads
+    ];
+}
 
     /**
      * Execute signed deposit
