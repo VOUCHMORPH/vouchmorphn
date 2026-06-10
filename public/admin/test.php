@@ -571,49 +571,105 @@ class SwapIntegrationTest
     {
         $key = strtolower($name);
         
-        // First try from loaded YAML config (same as SwapService)
+        // FIRST: Check environment variables (Railway vault) - Build participant dynamically
+        $envBaseUrl = getenv(strtoupper($name) . '_BASE_URL');
+        
+        if ($envBaseUrl) {
+            echo "\n🔍 Using environment variables for {$name}\n";
+            echo "   BASE_URL: {$envBaseUrl}\n";
+            echo "   PROVIDER_CODE: " . strtoupper($name) . "\n";
+            
+            // Build participant from environment - provider_code matches the name (ZURUBANK, not ZURUBWXX)
+            return [
+                'name' => $name,
+                'provider_code' => strtoupper($name),  // Use 'ZURUBANK' to match env var prefix
+                'base_url' => $envBaseUrl,
+                'resource_endpoints' => [
+                    'verify_asset' => getenv(strtoupper($name) . '_VERIFY_ENDPOINT') ?: '/api/v1/verify_asset.php',
+                    'place_hold' => getenv(strtoupper($name) . '_HOLD_ENDPOINT') ?: '/api/v1/hold.php',
+                    'generate_token' => getenv(strtoupper($name) . '_GENERATE_TOKEN_ENDPOINT') ?: '/api/v1/atm/generate_code.php',
+                    'debit_funds' => getenv(strtoupper($name) . '_DEBIT_ENDPOINT') ?: '/api/v1/settlement/notify_debit.php',
+                ],
+                'security' => [
+                    'api_key' => [
+                        'header_name' => 'X-API-Key',
+                        'value' => getenv(strtoupper($name) . '_API_KEY')
+                    ]
+                ],
+                'endpoints' => [
+                    'source' => [
+                        'verify_asset' => getenv(strtoupper($name) . '_VERIFY_ENDPOINT') ?: '/api/v1/verify_asset.php',
+                        'place_hold' => getenv(strtoupper($name) . '_HOLD_ENDPOINT') ?: '/api/v1/hold.php',
+                    ]
+                ]
+            ];
+        }
+        
+        // SECOND: Try from YAML config
         if (isset($this->participants[$key])) {
             $participant = $this->participants[$key];
             
-            // Merge with endpoints if available
             if (isset($this->endpoints[$key])) {
                 $participant = array_merge($participant, $this->endpoints[$key]);
             }
             
-            // Ensure resource_endpoints is set properly from endpoints.source
+            // Make sure provider_code is set to match the name (for environment variable lookup)
+            if (!isset($participant['provider_code'])) {
+                $participant['provider_code'] = strtoupper($name);  // Use 'ZURUBANK'
+            }
+            
             if (isset($this->endpoints[$key]['endpoints']['source'])) {
                 $participant['resource_endpoints'] = $this->endpoints[$key]['endpoints']['source'];
             }
             
-            // Set default currency if not set
-            if (!isset($participant['default_currency'])) {
-                $participant['default_currency'] = 'BWP';
+            // Ensure base_url is set
+            if (empty($participant['base_url'])) {
+                $participant['base_url'] = getenv(strtoupper($name) . '_BASE_URL') ?: 'https://zurubank-production.up.railway.app/Backend';
             }
             
-            // Set country code if not set
-            if (!isset($participant['country_code'])) {
-                $participant['country_code'] = $this->country;
-            }
-            
-            error_log("Loaded participant from YAML: {$name} -> base_url: " . ($participant['base_url'] ?? 'not set'));
             return $participant;
         }
         
-        // Then try database
+        // THIRD: Try database
         try {
             $stmt = $this->pdo->prepare("SELECT * FROM participants WHERE UPPER(name) = :name OR UPPER(provider_code) = :code");
             $stmt->execute([':name' => $name, ':code' => $name]);
             $participant = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if ($participant) {
-                error_log("Loaded participant from DB: {$name}");
+                // Ensure provider_code matches the name for env var lookup
+                $participant['provider_code'] = strtoupper($name);
                 return $participant;
             }
         } catch (Exception $e) {
             error_log("DB participant lookup failed: " . $e->getMessage());
         }
         
-        throw new RuntimeException("Participant not found: {$name}. Check your YAML config files.");
+        // FINAL: Hardcoded fallback for testing
+        echo "\n⚠️ Using hardcoded fallback for {$name}\n";
+        
+        $baseUrls = [
+            'ZURUBANK' => 'https://zurubank-production.up.railway.app/Backend',
+            'SACCUSSALIS' => 'https://saccussalis-production.up.railway.app/Backend'
+        ];
+        
+        return [
+            'name' => $name,
+            'provider_code' => strtoupper($name),  // 'ZURUBANK' or 'SACCUSSALIS'
+            'base_url' => $baseUrls[$name] ?? 'http://localhost',
+            'resource_endpoints' => [
+                'verify_asset' => '/api/v1/verify_asset.php',
+                'place_hold' => '/api/v1/hold.php',
+                'generate_token' => '/api/v1/atm/generate_code.php',
+                'debit_funds' => '/api/v1/settlement/notify_debit.php',
+            ],
+            'security' => [
+                'api_key' => [
+                    'header_name' => 'X-API-Key',
+                    'value' => null
+                ]
+            ]
+        ];
     }
     
     private function stepStart(string $name): void
@@ -705,17 +761,25 @@ class SwapIntegrationTest
 
 echo "Initializing test suite...\n";
 
+// Display environment variables for debugging
+echo "\n📋 Environment variables (Railway vault):\n";
+echo "   ZURUBANK_BASE_URL: " . (getenv('ZURUBANK_BASE_URL') ?: 'NOT SET') . "\n";
+echo "   ZURUBANK_VERIFY_ENDPOINT: " . (getenv('ZURUBANK_VERIFY_ENDPOINT') ?: 'NOT SET') . "\n";
+echo "   ZURUBANK_HOLD_ENDPOINT: " . (getenv('ZURUBANK_HOLD_ENDPOINT') ?: 'NOT SET') . "\n";
+echo "   SACCUSSALIS_BASE_URL: " . (getenv('SACCUSSALIS_BASE_URL') ?: 'NOT SET') . "\n";
+echo "   SACCUSSALIS_GENERATE_TOKEN_ENDPOINT: " . (getenv('SACCUSSALIS_GENERATE_TOKEN_ENDPOINT') ?: 'NOT SET') . "\n";
+
 // Get PDO from your DBConnection class
 $pdo = DBConnection::getConnection();
 
 if (!$pdo) {
     $status = DBConnection::getStatus();
-    echo "❌ Database connection failed!\n";
+    echo "\n❌ Database connection failed!\n";
     echo "Status: " . json_encode($status, JSON_PRETTY_PRINT) . "\n";
     exit(1);
 }
 
-echo "✅ Database connected successfully\n";
+echo "\n✅ Database connected successfully\n";
 echo "   " . $pdo->getAttribute(PDO::ATTR_CONNECTION_STATUS) . "\n";
 
 // Run the test
