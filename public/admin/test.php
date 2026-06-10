@@ -2,7 +2,7 @@
 /**
  * complete_swap_integration_test.php
  * 
- * Tests complete swap flow using your actual DBConnection class
+ * Tests complete swap flow using the SAME configuration as SwapService
  * Zurubank (200 BWP Voucher) → Saccussalis (Cashout)
  */
 
@@ -23,18 +23,244 @@ class SwapIntegrationTest
     private $results = [];
     private $stepStartTime;
     private $country;
+    private $participants = [];
+    private $endpoints = [];
+    private $assets = [];
+    private $flows = [];
+    private $feesConfig = [];
     
     public function __construct($pdo, string $country = 'Botswana')
     {
         $this->pdo = $pdo;
         $this->country = $country;
+        
+        // Load configuration the SAME WAY SwapService does
+        $this->loadConfiguration();
+    }
+    
+    /**
+     * Load configuration exactly like SwapService::loadConfiguration()
+     */
+    private function loadConfiguration(): void
+    {
+        $countryPath = __DIR__ . "/../../src/Core/Config/Countries/{$this->country}";
+        
+        echo "\n📂 Loading configuration from: {$countryPath}\n";
+        
+        // 1. Load participants.yaml
+        $participantsPath = $countryPath . '/participants.yaml';
+        if (file_exists($participantsPath)) {
+            $this->participants = $this->parseParticipantsYaml($participantsPath);
+            echo "   ✅ Loaded " . count($this->participants) . " participants from YAML\n";
+        } else {
+            echo "   ⚠️ participants.yaml not found at: {$participantsPath}\n";
+        }
+        
+        // 2. Load endpoints.yaml
+        $endpointsPath = $countryPath . '/endpoints.yaml';
+        if (file_exists($endpointsPath)) {
+            $this->endpoints = $this->parseEndpointsYaml($endpointsPath);
+            echo "   ✅ Loaded " . count($this->endpoints) . " endpoint configs from YAML\n";
+        } else {
+            echo "   ⚠️ endpoints.yaml not found at: {$endpointsPath}\n";
+        }
+        
+        // 3. Load assets.yaml from global config
+        $assetsPath = __DIR__ . '/../../src/Core/Config/assets.yaml';
+        if (file_exists($assetsPath)) {
+            $this->assets = $this->parseAssetsYaml($assetsPath);
+            echo "   ✅ Loaded assets from YAML\n";
+        }
+        
+        // 4. Load flows.yaml from global config
+        $flowsPath = __DIR__ . '/../../src/Core/Config/flows.yaml';
+        if (file_exists($flowsPath)) {
+            $this->flows = $this->parseFlowsYaml($flowsPath);
+            echo "   ✅ Loaded flows from YAML\n";
+        }
+        
+        // 5. Load fees configuration
+        $feesPath = $countryPath . '/fees.json';
+        if (file_exists($feesPath)) {
+            $this->feesConfig = json_decode(file_get_contents($feesPath), true) ?? [];
+            echo "   ✅ Loaded fees configuration\n";
+        }
+        
+        // 6. Merge endpoints into participants (same as SwapService)
+        foreach ($this->participants as $code => &$participant) {
+            if (isset($this->endpoints[$code])) {
+                $participant['endpoints'] = $this->endpoints[$code]['endpoints'] ?? [];
+                $participant['base_url'] = $this->endpoints[$code]['base_url'] ?? null;
+                $participant['auth'] = $this->endpoints[$code]['auth'] ?? null;
+                $participant['callbacks'] = $this->endpoints[$code]['callbacks'] ?? [];
+                $participant['phone_format'] = $this->endpoints[$code]['phone_format'] ?? ['prefix' => '+', 'country_code' => '267'];
+                $participant['message_profile'] = $this->endpoints[$code]['message_profile'] ?? [];
+                $participant['retry_policy'] = $this->endpoints[$code]['retry_policy'] ?? ['max_retries' => 3];
+                
+                // Set resource_endpoints from endpoints.source
+                if (isset($this->endpoints[$code]['endpoints']['source'])) {
+                    $participant['resource_endpoints'] = $this->endpoints[$code]['endpoints']['source'];
+                }
+            }
+            
+            if (!isset($participant['default_currency'])) {
+                $participant['default_currency'] = 'BWP';
+            }
+            
+            if (!isset($participant['country_code'])) {
+                $participant['country_code'] = $this->country;
+            }
+        }
+        
+        echo "\n";
+    }
+    
+    private function parseParticipantsYaml(string $path): array
+    {
+        if (!file_exists($path)) {
+            return [];
+        }
+        
+        $content = file_get_contents($path);
+        $participants = [];
+        $lines = explode("\n", $content);
+        $currentParticipant = null;
+        
+        foreach ($lines as $line) {
+            $line = rtrim($line);
+            if (empty($line) || $line[0] === '#') continue;
+            
+            if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
+                $currentParticipant = strtolower($matches[1]);
+                $participants[$currentParticipant] = [];
+            } elseif ($currentParticipant && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
+                $value = trim($matches[2]);
+                if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
+                if (preg_match("/^'(.+)'$/", $value, $q)) $value = $q[1];
+                $participants[$currentParticipant][$matches[1]] = $value;
+            } elseif ($currentParticipant && preg_match('/^      ([a-z_]+): (.+)$/', $line, $matches)) {
+                if (!isset($participants[$currentParticipant]['routing'])) {
+                    $participants[$currentParticipant]['routing'] = [];
+                }
+                $participants[$currentParticipant]['routing'][$matches[1]] = trim($matches[2]);
+            }
+        }
+        
+        return $participants;
+    }
+    
+    private function parseEndpointsYaml(string $path): array
+    {
+        if (!file_exists($path)) {
+            return [];
+        }
+        
+        $content = file_get_contents($path);
+        $endpoints = [];
+        $lines = explode("\n", $content);
+        $currentParticipant = null;
+        $currentSection = null;
+        
+        foreach ($lines as $line) {
+            $line = rtrim($line);
+            if (empty($line) || $line[0] === '#') continue;
+            
+            if (preg_match('/^([A-Z_]+):$/', $line, $matches)) {
+                $currentParticipant = strtolower($matches[1]);
+                $endpoints[$currentParticipant] = [];
+                $currentSection = null;
+                continue;
+            }
+            
+            if (!$currentParticipant) continue;
+            
+            if (preg_match('/^  ([a-z_]+):$/', $line, $matches)) {
+                $currentSection = $matches[1];
+                $endpoints[$currentParticipant][$currentSection] = [];
+                continue;
+            }
+            
+            if ($currentSection && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
+                $key = $matches[1];
+                $value = trim($matches[2]);
+                if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
+                $endpoints[$currentParticipant][$currentSection][$key] = $value;
+                continue;
+            }
+            
+            if (preg_match('/^  ([a-z_]+): (.+)$/', $line, $matches)) {
+                $key = $matches[1];
+                $value = trim($matches[2]);
+                if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
+                if ($value === 'true') $value = true;
+                if ($value === 'false') $value = false;
+                if (is_numeric($value)) $value = (float)$value;
+                $endpoints[$currentParticipant][$key] = $value;
+            }
+        }
+        
+        return $endpoints;
+    }
+    
+    private function parseAssetsYaml(string $path): array
+    {
+        if (!file_exists($path)) {
+            return [];
+        }
+        
+        $content = file_get_contents($path);
+        $assets = [];
+        $lines = explode("\n", $content);
+        $currentAsset = null;
+        
+        foreach ($lines as $line) {
+            $line = rtrim($line);
+            if (empty($line) || $line[0] === '#') continue;
+            
+            if (preg_match('/^([A-Z-]+):$/', $line, $matches)) {
+                $currentAsset = $matches[1];
+                $assets[$currentAsset] = [];
+            } elseif ($currentAsset && preg_match('/^  ([a-z_]+): (.+)$/', $line, $matches)) {
+                $assets[$currentAsset][$matches[1]] = trim($matches[2]);
+            }
+        }
+        
+        return $assets;
+    }
+    
+    private function parseFlowsYaml(string $path): array
+    {
+        if (!file_exists($path)) {
+            return [];
+        }
+        
+        $content = file_get_contents($path);
+        $flows = [];
+        $lines = explode("\n", $content);
+        $currentSection = null;
+        
+        foreach ($lines as $line) {
+            $line = rtrim($line);
+            if (empty($line) || $line[0] === '#') continue;
+            
+            if (preg_match('/^([a-z_]+):$/', $line, $matches)) {
+                $currentSection = $matches[1];
+                $flows[$currentSection] = [];
+            } elseif ($currentSection === 'orchestration' && preg_match('/^  ([a-z_]+): (.+)$/', $line, $matches)) {
+                $flows[$currentSection][$matches[1]] = trim($matches[2]);
+            } elseif ($currentSection === 'states' && preg_match('/^  - (.+)$/', $line, $matches)) {
+                $flows[$currentSection][] = trim($matches[1]);
+            }
+        }
+        
+        return $flows;
     }
     
     public function run(): void
     {
         $this->header();
         
-        // Test 1: Database Connection (using DBConnection)
+        // Test 1: Database Connection
         $this->testDatabaseConnection();
         
         // Test 2: FeeService
@@ -89,10 +315,7 @@ class SwapIntegrationTest
         $this->stepStart("FeeService");
         
         try {
-            $feesPath = __DIR__ . "/../../src/Core/Config/Countries/{$this->country}/fees.json";
-            $feesConfig = file_exists($feesPath) ? json_decode(file_get_contents($feesPath), true) : [];
-            
-            $feeService = new FeeService($feesConfig, 'BWP');
+            $feeService = new FeeService($this->feesConfig, 'BWP');
             
             if (method_exists($feeService, 'calculateFees')) {
                 $fees = $feeService->calculateFees('CASHOUT', 200, [
@@ -101,7 +324,7 @@ class SwapIntegrationTest
                 ]);
                 $this->recordResult('FeeService', true, [
                     'total_fee' => $fees['total_fee'] ?? 10,
-                    'fee_config_loaded' => !empty($feesConfig)
+                    'fee_config_loaded' => !empty($this->feesConfig)
                 ]);
             } else {
                 $this->recordResult('FeeService', true, [
@@ -121,10 +344,9 @@ class SwapIntegrationTest
         
         try {
             $config = ['forex' => ['provider' => 'internal']];
-            $participants = ['ZURUBANK' => ['default_currency' => 'BWP']];
             $feeService = new FeeService([], 'BWP');
             
-            $forexService = new ForexService($this->pdo, $config, $participants, $feeService);
+            $forexService = new ForexService($this->pdo, $config, $this->participants, $feeService);
             
             if (method_exists($forexService, 'getRate')) {
                 $rate = $forexService->getRate('BWP', 'BWP', 200);
@@ -165,6 +387,7 @@ class SwapIntegrationTest
             $success = $result['success'] && $verified;
             
             $this->recordResult("Bank::verifyAsset({$bankName})", $success, [
+                'base_url' => $participant['base_url'] ?? 'not set',
                 'endpoint' => $participant['resource_endpoints']['verify_asset'] ?? '/api/v1/verify_asset.php',
                 'detected_format' => $bankClient->getDetectedFormat(),
                 'verified' => $verified,
@@ -202,6 +425,8 @@ class SwapIntegrationTest
             $success = $result['success'] && $holdPlaced;
             
             $this->recordResult("Bank::placeHold({$bankName})", $success, [
+                'base_url' => $participant['base_url'] ?? 'not set',
+                'endpoint' => $participant['resource_endpoints']['place_hold'] ?? '/api/v1/hold.php',
                 'hold_reference' => $holdReference,
                 'detected_format' => $bankClient->getDetectedFormat(),
                 'message' => $result['data']['message'] ?? ($holdPlaced ? 'Hold placed' : 'Hold failed')
@@ -235,6 +460,8 @@ class SwapIntegrationTest
             $result = $bankClient->generateToken($payload);
             
             $this->recordResult("Bank::generateToken({$bankName})", $result['success'], [
+                'base_url' => $participant['base_url'] ?? 'not set',
+                'endpoint' => $participant['resource_endpoints']['generate_token'] ?? '/api/v1/generate-atm-code.php',
                 'atm_pin' => $result['data']['atm_pin'] ?? null,
                 'voucher_number' => $result['data']['voucher_number'] ?? null,
                 'detected_format' => $bankClient->getDetectedFormat()
@@ -342,74 +569,51 @@ class SwapIntegrationTest
     
     private function getParticipant(string $name): array
     {
-        // Try to get from database
+        $key = strtolower($name);
+        
+        // First try from loaded YAML config (same as SwapService)
+        if (isset($this->participants[$key])) {
+            $participant = $this->participants[$key];
+            
+            // Merge with endpoints if available
+            if (isset($this->endpoints[$key])) {
+                $participant = array_merge($participant, $this->endpoints[$key]);
+            }
+            
+            // Ensure resource_endpoints is set properly from endpoints.source
+            if (isset($this->endpoints[$key]['endpoints']['source'])) {
+                $participant['resource_endpoints'] = $this->endpoints[$key]['endpoints']['source'];
+            }
+            
+            // Set default currency if not set
+            if (!isset($participant['default_currency'])) {
+                $participant['default_currency'] = 'BWP';
+            }
+            
+            // Set country code if not set
+            if (!isset($participant['country_code'])) {
+                $participant['country_code'] = $this->country;
+            }
+            
+            error_log("Loaded participant from YAML: {$name} -> base_url: " . ($participant['base_url'] ?? 'not set'));
+            return $participant;
+        }
+        
+        // Then try database
         try {
-            $stmt = $this->pdo->prepare("SELECT * FROM participants WHERE UPPER(name) = :name");
-            $stmt->execute([':name' => $name]);
+            $stmt = $this->pdo->prepare("SELECT * FROM participants WHERE UPPER(name) = :name OR UPPER(provider_code) = :code");
+            $stmt->execute([':name' => $name, ':code' => $name]);
             $participant = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if ($participant) {
+                error_log("Loaded participant from DB: {$name}");
                 return $participant;
             }
         } catch (Exception $e) {
-            // Table might not exist
+            error_log("DB participant lookup failed: " . $e->getMessage());
         }
         
-        // Load from YAML
-        $participantsPath = __DIR__ . "/../../src/Core/Config/Countries/{$this->country}/participants.yaml";
-        if (file_exists($participantsPath)) {
-            $participants = $this->parseParticipantsYaml($participantsPath);
-            $key = strtolower($name);
-            if (isset($participants[$key])) {
-                return $participants[$key];
-            }
-        }
-        
-        // Default config for testing
-        $baseUrls = [
-            'ZURUBANK' => 'https://zurubank-production.up.railway.app',
-            'SACCUSSALIS' => 'http://localhost/SaccusSalisbank/backend'
-        ];
-        
-        return [
-            'name' => $name,
-            'provider_code' => $name === 'ZURUBANK' ? 'ZURUBWXX' : 'SACCUSBWXX',
-            'base_url' => $baseUrls[$name] ?? 'http://localhost',
-            'resource_endpoints' => [
-                'verify_asset' => '/api/v1/verify_asset.php',
-                'place_hold' => '/api/v1/hold.php',
-                'generate_token' => '/api/v1/generate-atm-code.php',
-                'debit_funds' => '/api/v1/debit.php'
-            ]
-        ];
-    }
-    
-    private function parseParticipantsYaml(string $path): array
-    {
-        if (!file_exists($path)) {
-            return [];
-        }
-        
-        $content = file_get_contents($path);
-        $participants = [];
-        $lines = explode("\n", $content);
-        $current = null;
-        
-        foreach ($lines as $line) {
-            $line = rtrim($line);
-            if (empty($line) || $line[0] === '#') continue;
-            
-            if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
-                $current = strtolower($matches[1]);
-                $participants[$current] = [];
-            } elseif ($current && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
-                $value = trim($matches[2]);
-                if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
-                $participants[$current][$matches[1]] = $value;
-            }
-        }
-        
-        return $participants;
+        throw new RuntimeException("Participant not found: {$name}. Check your YAML config files.");
     }
     
     private function stepStart(string $name): void
@@ -478,7 +682,7 @@ class SwapIntegrationTest
         
         foreach ($this->results as $result) {
             $status = $result['passed'] ? '✅ PASS' : '❌ FAIL';
-            echo sprintf("  %-40s %s (%5s ms)\n", $result['test'], $status, $result['duration_ms']);
+            echo sprintf("  %-45s %s (%5s ms)\n", $result['test'], $status, $result['duration_ms']);
         }
         
         echo "\n───────────────────────────────────────────────────────────────────────────\n";
@@ -512,7 +716,7 @@ if (!$pdo) {
 }
 
 echo "✅ Database connected successfully\n";
-echo "   " . $pdo->getAttribute(PDO::ATTR_CONNECTION_STATUS) . "\n\n";
+echo "   " . $pdo->getAttribute(PDO::ATTR_CONNECTION_STATUS) . "\n";
 
 // Run the test
 $test = new SwapIntegrationTest($pdo, 'Botswana');
