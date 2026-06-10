@@ -26,7 +26,7 @@ $hold = $test->testHold(
         "asset_type" => "VOUCHER",
         "voucher_number" => "710083197",
         "reference" => $verify['data']['verification_reference'] ?? "TEST-REF",
-        "amount" => 100
+        "amount" => 200
     ]
 );
 
