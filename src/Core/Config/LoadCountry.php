@@ -33,7 +33,7 @@ final class LoadCountry
         // All config files in the country directory
         $configFile       = $countryDir . "/config.php";
         $databaseFile     = $countryDir . "/database.php";
-        $participantsFile = $countryDir . "/participants.json";
+        $participantsFile = $countryDir . "/participants.yaml";
         $feesFile         = $countryDir . "/fees.json";
         $atmNotesFile     = $countryDir . "/atm_notes.json";
         $cardsFile        = $countryDir . "/cards.json";
@@ -49,15 +49,16 @@ final class LoadCountry
             error_log("[LoadCountry] Config file not found: {$configFile}");
         }
 
-        // 2. Load participants.json
+        // 2. Load participants from YAML
         if (file_exists($participantsFile)) {
-            $participantsConfig = json_decode(file_get_contents($participantsFile), true);
-            if (json_last_error() === JSON_ERROR_NONE) {
+            $participantsConfig = self::parseYamlFile($participantsFile);
+            if (!empty($participantsConfig)) {
                 $countryConfig['participants'] = $participantsConfig['participants'] ?? [];
                 $countryConfig['api_keys']     = $participantsConfig['api_keys'] ?? [];
-                error_log("[LoadCountry] Loaded participants from: {$participantsFile}");
+                error_log("[LoadCountry] Loaded participants from YAML: {$participantsFile}");
             } else {
-                error_log("[LoadCountry] JSON parse error in participants file: " . json_last_error_msg());
+                error_log("[LoadCountry] Failed to parse YAML participants file: {$participantsFile}");
+                $countryConfig['participants'] = [];
             }
         } else {
             error_log("[LoadCountry] Participants file not found: {$participantsFile}");
@@ -220,6 +221,64 @@ final class LoadCountry
         }
 
         return $countryConfig;
+    }
+
+    /**
+     * Parse YAML file using available parser
+     */
+    private static function parseYamlFile(string $path): array
+    {
+        // Try native YAML extension first
+        if (function_exists('yaml_parse_file')) {
+            $data = yaml_parse_file($path);
+            if ($data !== false) {
+                return $data;
+            }
+        }
+        
+        // Try Symfony YAML component
+        if (class_exists('\Symfony\Component\Yaml\Yaml')) {
+            return \Symfony\Component\Yaml\Yaml::parseFile($path);
+        }
+        
+        // Fallback to manual parsing for participants.yaml
+        return self::parseYamlManually($path);
+    }
+    
+    /**
+     * Manual YAML parser for participants.yaml structure
+     */
+    private static function parseYamlManually(string $path): array
+    {
+        $content = file_get_contents($path);
+        $participants = [];
+        $lines = explode("\n", $content);
+        $inParticipants = false;
+        $currentKey = null;
+        
+        foreach ($lines as $line) {
+            $line = rtrim($line);
+            if (empty($line) || $line[0] === '#') continue;
+            
+            if (preg_match('/^participants:$/', $line)) {
+                $inParticipants = true;
+                continue;
+            }
+            
+            if ($inParticipants && preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
+                $currentKey = $matches[1];
+                $participants[$currentKey] = [];
+                continue;
+            }
+            
+            if ($currentKey && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
+                $value = trim($matches[2], '"\'');
+                $participants[$currentKey][$matches[1]] = $value;
+                continue;
+            }
+        }
+        
+        return ['participants' => $participants];
     }
 
     private static function decimal($value): string
