@@ -1,7 +1,7 @@
 <?php
 // Infrastructure/Banks/GenericBankClient.php
 
-namespace Infrastructure\Banks;
+namespace Infrastructure\Banks; 
 
 require_once __DIR__ . '/Contracts/BankAPIInterface.php';
 
