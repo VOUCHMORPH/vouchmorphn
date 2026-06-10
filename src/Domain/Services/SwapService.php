@@ -1335,13 +1335,22 @@ class SwapService
     }
 
     private function loadConfiguration(string $country): void
-    {
-        $countryPath = __DIR__ . '/../../Core/Config/Countries/' . $country;
-        
-        $participantsPath = $countryPath . '/participants.yaml';
-        if (file_exists($participantsPath)) {
-            $this->participants = $this->parseYaml($participantsPath);
-        }
+{
+    $countryPath = __DIR__ . '/../../Core/Config/Countries/' . $country;
+    
+    error_log("[SwapService] loadConfiguration called for country: {$country}");
+    error_log("[SwapService] Looking for config at: {$countryPath}");
+    
+    $participantsPath = $countryPath . '/participants.yaml';
+    error_log("[SwapService] Participants file: {$participantsPath}");
+    error_log("[SwapService] File exists: " . (file_exists($participantsPath) ? 'YES' : 'NO'));
+    
+    if (file_exists($participantsPath)) {
+        $this->participants = $this->parseYaml($participantsPath);
+        error_log("[SwapService] Participants loaded. Keys: " . implode(', ', array_keys($this->participants)));
+    } else {
+        error_log("[SwapService] Participants file NOT FOUND!");
+    }
         
         $endpointsPath = $countryPath . '/endpoints.yaml';
         if (file_exists($endpointsPath)) {
