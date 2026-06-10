@@ -4877,3 +4877,15 @@ CREATE TABLE idempotency_keys (
 
 CREATE INDEX idx_idempotency_created_at 
 ON idempotency_keys (created_at);
+
+
+ALTER TABLE hold_transactions ADD COLUMN signature_chain JSONB;
+
+CREATE TABLE institution_keys (
+    id SERIAL PRIMARY KEY,
+    institution VARCHAR(100) NOT NULL,
+    public_key TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    expires_at TIMESTAMP
+);
