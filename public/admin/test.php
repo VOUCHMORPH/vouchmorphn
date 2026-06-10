@@ -2,18 +2,37 @@
 /**
  * complete_swap_integration_test.php
  * 
- * Calls REAL files:
- * - SwapService.php
- * - FeeService.php  
- * - ForexService.php
- * - GenericBankClient.php
- * - HybridSettlementStrategy.php
- * - SmsNotificationService.php
+ * Calls REAL files from your actual structure:
+ * - src/Domain/Services/SwapService.php
+ * - src/Domain/Services/FeeService.php
+ * - src/Domain/Services/ForexService.php
+ * - src/Infrastructure/Banks/GenericBankClient.php
+ * - src/Domain/Services/Settlement/HybridSettlementStrategy.php
+ * - src/Infrastructure/Mojaloop/IdempotencyService.php
  * 
  * Tests: Zurubank Voucher (200) → Saccussalis Cashout
  */
 
+// Fix the autoload path
 require_once __DIR__ . '/../../src/bootstrap.php';
+
+// Load country-specific config
+$country = 'Botswana';
+$countryConfigPath = __DIR__ . "/../../src/Core/Config/Countries/{$country}/config.php";
+
+if (!file_exists($countryConfigPath)) {
+    die("Country config not found: {$countryConfigPath}");
+}
+
+$config = require $countryConfigPath;
+
+// Load database config from country folder
+$dbConfigPath = __DIR__ . "/../../src/Core/Config/Countries/{$country}/database.php";
+if (!file_exists($dbConfigPath)) {
+    die("Database config not found: {$dbConfigPath}");
+}
+
+$dbConfig = require $dbConfigPath;
 
 use Domain\Services\SwapService;
 use Domain\Services\FeeService;
@@ -28,10 +47,12 @@ class SwapIntegrationTest
     private $pdo;
     private $results = [];
     private $stepStartTime;
+    private $country;
     
-    public function __construct($pdo)
+    public function __construct($pdo, string $country = 'Botswana')
     {
         $this->pdo = $pdo;
+        $this->country = $country;
     }
     
     public function run(): void
@@ -44,14 +65,14 @@ class SwapIntegrationTest
         // Test 2: ForexService
         $this->testForexService();
         
-        // Test 3: GenericBankClient - Verify
-        $this->testBankVerify();
+        // Test 3: GenericBankClient - Verify (Zurubank)
+        $this->testBankVerify('ZURUBANK');
         
-        // Test 4: GenericBankClient - Hold
-        $this->testBankHold();
+        // Test 4: GenericBankClient - Hold (Zurubank)
+        $this->testBankHold('ZURUBANK');
         
-        // Test 5: GenericBankClient - Token Generation
-        $this->testBankGenerateToken();
+        // Test 5: GenericBankClient - Generate Token (Saccussalis)
+        $this->testBankGenerateToken('SACCUSSALIS');
         
         // Test 6: Complete Swap via SwapService
         $this->testCompleteSwap();
@@ -70,8 +91,11 @@ class SwapIntegrationTest
         $this->stepStart("FeeService");
         
         try {
-            $config = ['BWP' => ['CASHOUT' => 10.00]];
-            $feeService = new FeeService($config, 'BWP');
+            // Load fees from your actual fees.json
+            $feesPath = __DIR__ . "/../../src/Core/Config/Countries/{$this->country}/fees.json";
+            $feesConfig = file_exists($feesPath) ? json_decode(file_get_contents($feesPath), true) : [];
+            
+            $feeService = new FeeService($feesConfig, 'BWP');
             
             $fees = $feeService->calculateFees('CASHOUT', 200, [
                 'source_institution' => 'ZURUBANK',
@@ -80,7 +104,7 @@ class SwapIntegrationTest
             
             $this->recordResult('FeeService', true, [
                 'total_fee' => $fees['total_fee'] ?? 10,
-                'breakdown' => $fees['breakdown'] ?? [],
+                'fee_config_loaded' => !empty($feesConfig),
                 'calculation' => 'Fee calculated successfully'
             ]);
             
@@ -95,9 +119,12 @@ class SwapIntegrationTest
         
         try {
             $config = ['forex' => ['provider' => 'internal']];
-            $participants = ['ZURUBANK' => ['default_currency' => 'BWP']];
-            $feeService = new FeeService([], 'BWP');
             
+            // Load participants from YAML
+            $participantsPath = __DIR__ . "/../../src/Core/Config/Countries/{$this->country}/participants.yaml";
+            $participants = $this->parseParticipantsYaml($participantsPath);
+            
+            $feeService = new FeeService([], 'BWP');
             $forexService = new ForexService($this->pdo, $config, $participants, $feeService);
             
             $rate = $forexService->getRate('BWP', 'BWP', 200);
@@ -114,12 +141,12 @@ class SwapIntegrationTest
         }
     }
     
-    private function testBankVerify(): void
+    private function testBankVerify(string $bankName): void
     {
-        $this->stepStart("GenericBankClient::verifyAsset() - Zurubank");
+        $this->stepStart("GenericBankClient::verifyAsset() - {$bankName}");
         
         try {
-            $participant = $this->getParticipant('ZURUBANK');
+            $participant = $this->getParticipant($bankName);
             $bankClient = new GenericBankClient($participant);
             
             $payload = [
@@ -132,27 +159,29 @@ class SwapIntegrationTest
             
             $result = $bankClient->verifyAsset($payload);
             
-            $this->recordResult('Bank::verifyAsset', $result['success'] && ($result['data']['verified'] ?? false), [
+            $verified = $result['data']['verified'] ?? false;
+            
+            $this->recordResult("Bank::verifyAsset({$bankName})", $result['success'] && $verified, [
                 'endpoint' => $participant['resource_endpoints']['verify_asset'] ?? '/api/v1/verify_asset.php',
                 'detected_format' => $bankClient->getDetectedFormat(),
                 'confidence' => $bankClient->getDetectionConfidence(),
-                'verified' => $result['data']['verified'] ?? false,
+                'verified' => $verified,
                 'balance' => $result['data']['available_balance'] ?? null,
                 'asset_id' => $result['data']['asset_id'] ?? null,
                 'http_status' => $result['status_code'] ?? null
             ]);
             
         } catch (Exception $e) {
-            $this->recordResult('Bank::verifyAsset', false, ['error' => $e->getMessage()]);
+            $this->recordResult("Bank::verifyAsset({$bankName})", false, ['error' => $e->getMessage()]);
         }
     }
     
-    private function testBankHold(): void
+    private function testBankHold(string $bankName): void
     {
-        $this->stepStart("GenericBankClient::placeHold() - Zurubank");
+        $this->stepStart("GenericBankClient::placeHold() - {$bankName}");
         
         try {
-            $participant = $this->getParticipant('ZURUBANK');
+            $participant = $this->getParticipant($bankName);
             $bankClient = new GenericBankClient($participant);
             
             $payload = [
@@ -168,35 +197,36 @@ class SwapIntegrationTest
             $result = $bankClient->placeHold($payload);
             
             $holdReference = $result['data']['hold_reference'] ?? null;
+            $holdPlaced = $result['data']['hold_placed'] ?? false;
             
-            $this->recordResult('Bank::placeHold', $result['success'] && ($result['data']['hold_placed'] ?? false), [
+            $this->recordResult("Bank::placeHold({$bankName})", $result['success'] && $holdPlaced, [
                 'hold_reference' => $holdReference,
                 'status' => $result['data']['status'] ?? null,
                 'message' => $result['data']['message'] ?? null,
                 'detected_format' => $bankClient->getDetectedFormat()
             ]);
             
-            // Store hold reference for next test
+            // Store hold reference for potential later use
             if ($holdReference) {
                 $_SESSION['test_hold_reference'] = $holdReference;
             }
             
         } catch (Exception $e) {
-            $this->recordResult('Bank::placeHold', false, ['error' => $e->getMessage()]);
+            $this->recordResult("Bank::placeHold({$bankName})", false, ['error' => $e->getMessage()]);
         }
     }
     
-    private function testBankGenerateToken(): void
+    private function testBankGenerateToken(string $bankName): void
     {
-        $this->stepStart("GenericBankClient::generateToken() - Saccussalis");
+        $this->stepStart("GenericBankClient::generateToken() - {$bankName}");
         
         try {
-            $participant = $this->getParticipant('SACCUSSALIS');
+            $participant = $this->getParticipant($bankName);
             $bankClient = new GenericBankClient($participant);
             
             $payload = [
                 'reference' => 'TEST_TOKEN_' . uniqid(),
-                'amount' => 190, // After fee
+                'amount' => 190, // After fee deduction (200 - 10 fee)
                 'currency' => 'BWP',
                 'beneficiary_phone' => '+26770000000',
                 'action' => 'GENERATE_ATM_TOKEN'
@@ -204,7 +234,7 @@ class SwapIntegrationTest
             
             $result = $bankClient->generateToken($payload);
             
-            $this->recordResult('Bank::generateToken', $result['success'], [
+            $this->recordResult("Bank::generateToken({$bankName})", $result['success'], [
                 'atm_pin' => $result['data']['atm_pin'] ?? null,
                 'voucher_number' => $result['data']['voucher_number'] ?? null,
                 'expires_at' => $result['data']['expires_at'] ?? null,
@@ -212,7 +242,7 @@ class SwapIntegrationTest
             ]);
             
         } catch (Exception $e) {
-            $this->recordResult('Bank::generateToken', false, ['error' => $e->getMessage()]);
+            $this->recordResult("Bank::generateToken({$bankName})", false, ['error' => $e->getMessage()]);
         }
     }
     
@@ -221,8 +251,8 @@ class SwapIntegrationTest
         $this->stepStart("SwapService::executeAtomicSwap() - Complete Flow");
         
         try {
-            $config = require __DIR__ . '/../src/Core/Config/config.php';
-            $swapService = new SwapService($this->pdo, $config, 'Botswana');
+            $config = require __DIR__ . "/../../src/Core/Config/Countries/{$this->country}/config.php";
+            $swapService = new SwapService($this->pdo, $config, $this->country);
             
             $payload = [
                 'reference' => 'TEST_SWAP_' . uniqid(),
@@ -245,13 +275,12 @@ class SwapIntegrationTest
                 'hold_id' => $result['hold_id'] ?? null,
                 'steps_completed' => $result['steps_completed'] ?? 0,
                 'status' => $result['status'],
-                'message' => 'Swap completed atomically'
+                'message' => $result['atomic_commit']['status'] ?? 'Swap completed'
             ]);
             
         } catch (Exception $e) {
             $this->recordResult('SwapService::executeAtomicSwap', false, [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
+                'error' => $e->getMessage()
             ]);
         }
     }
@@ -307,27 +336,102 @@ class SwapIntegrationTest
     
     private function getParticipant(string $name): array
     {
+        // First try to get from database
         $stmt = $this->pdo->prepare("SELECT * FROM participants WHERE name = :name OR provider_code = :code");
         $stmt->execute([':name' => $name, ':code' => $name]);
         $participant = $stmt->fetch(PDO::FETCH_ASSOC);
         
-        if (!$participant) {
-            // Return default config for testing
-            return [
-                'name' => $name,
-                'provider_code' => $name === 'ZURUBANK' ? 'ZURUBWXX' : 'SACCUSBWXX',
-                'base_url' => $name === 'ZURUBANK' 
-                    ? 'https://zurubank-production.up.railway.app'
-                    : 'http://localhost/SaccusSalisbank/backend',
-                'resource_endpoints' => [
-                    'verify_asset' => '/api/v1/verify_asset.php',
-                    'place_hold' => '/api/v1/hold.php',
-                    'generate_token' => '/api/v1/generate-atm-code.php'
-                ]
-            ];
+        if ($participant) {
+            return $participant;
         }
         
-        return $participant;
+        // Fallback to loading from YAML
+        $participantsPath = __DIR__ . "/../../src/Core/Config/Countries/{$this->country}/participants.yaml";
+        $participants = $this->parseParticipantsYaml($participantsPath);
+        
+        $key = strtolower($name);
+        if (isset($participants[$key])) {
+            // Load endpoints
+            $endpointsPath = __DIR__ . "/../../src/Core/Config/Countries/{$this->country}/endpoints.yaml";
+            $endpoints = $this->parseEndpointsYaml($endpointsPath);
+            
+            if (isset($endpoints[$key])) {
+                $participants[$key] = array_merge($participants[$key], $endpoints[$key]);
+            }
+            
+            return $participants[$key];
+        }
+        
+        // Return default for testing
+        return [
+            'name' => $name,
+            'provider_code' => $name === 'ZURUBANK' ? 'ZURUBWXX' : 'SACCUSBWXX',
+            'base_url' => $name === 'ZURUBANK' 
+                ? 'https://zurubank-production.up.railway.app'
+                : 'http://localhost/SaccusSalisbank/backend',
+            'resource_endpoints' => [
+                'verify_asset' => '/api/v1/verify_asset.php',
+                'place_hold' => '/api/v1/hold.php',
+                'generate_token' => '/api/v1/generate-atm-code.php',
+                'debit_funds' => '/api/v1/debit.php'
+            ]
+        ];
+    }
+    
+    private function parseParticipantsYaml(string $path): array
+    {
+        if (!file_exists($path)) {
+            return [];
+        }
+        
+        $content = file_get_contents($path);
+        $participants = [];
+        $lines = explode("\n", $content);
+        $currentParticipant = null;
+        
+        foreach ($lines as $line) {
+            $line = rtrim($line);
+            if (empty($line) || $line[0] === '#') continue;
+            
+            if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
+                $currentParticipant = strtolower($matches[1]);
+                $participants[$currentParticipant] = [];
+            } elseif ($currentParticipant && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
+                $value = trim($matches[2]);
+                if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
+                $participants[$currentParticipant][$matches[1]] = $value;
+            }
+        }
+        
+        return $participants;
+    }
+    
+    private function parseEndpointsYaml(string $path): array
+    {
+        if (!file_exists($path)) {
+            return [];
+        }
+        
+        $content = file_get_contents($path);
+        $endpoints = [];
+        $lines = explode("\n", $content);
+        $currentParticipant = null;
+        
+        foreach ($lines as $line) {
+            $line = rtrim($line);
+            if (empty($line) || $line[0] === '#') continue;
+            
+            if (preg_match('/^([A-Z_]+):$/', $line, $matches)) {
+                $currentParticipant = strtolower($matches[1]);
+                $endpoints[$currentParticipant] = [];
+            } elseif ($currentParticipant && preg_match('/^  ([a-z_]+): (.+)$/', $line, $matches)) {
+                $value = trim($matches[2]);
+                if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
+                $endpoints[$currentParticipant][$matches[1]] = $value;
+            }
+        }
+        
+        return $endpoints;
     }
     
     private function stepStart(string $name): void
@@ -351,11 +455,16 @@ class SwapIntegrationTest
         ];
         
         $icon = $passed ? '✅' : '❌';
-        echo "{$icon} {$test} " . ($passed ? 'PASSED' : 'FAILED') . " ({$duration}ms)\n";
+        $statusText = $passed ? 'PASSED' : 'FAILED';
+        echo "{$icon} {$test} {$statusText} ({$duration}ms)\n";
         
         foreach ($details as $key => $value) {
             if ($value !== null && $key !== 'trace') {
-                echo "   • {$key}: " . (is_array($value) ? json_encode($value) : $value) . "\n";
+                $displayValue = is_array($value) ? json_encode($value) : $value;
+                if (strlen($displayValue) > 80) {
+                    $displayValue = substr($displayValue, 0, 77) . '...';
+                }
+                echo "   • {$key}: {$displayValue}\n";
             }
         }
     }
@@ -375,6 +484,7 @@ class SwapIntegrationTest
         echo "   • src/Domain/Services/Settlement/HybridSettlementStrategy.php\n";
         echo "   • src/Infrastructure/Mojaloop/IdempotencyService.php\n";
         echo "\n🔄 Flow: Zurubank (200 BWP Voucher) → Saccussalis (Cashout)\n";
+        echo "💰 Voucher: 710083197 | PIN: 657250 | Amount: 200 BWP\n";
         echo "═══════════════════════════════════════════════════════════════════════════\n";
     }
     
@@ -391,7 +501,7 @@ class SwapIntegrationTest
         
         foreach ($this->results as $result) {
             $status = $result['passed'] ? '✅ PASS' : '❌ FAIL';
-            echo sprintf("  %-40s %s (%s ms)\n", $result['test'], $status, $result['duration_ms']);
+            echo sprintf("  %-45s %s (%s ms)\n", $result['test'], $status, $result['duration_ms']);
         }
         
         echo "\n───────────────────────────────────────────────────────────────────────────\n";
@@ -413,15 +523,31 @@ class SwapIntegrationTest
 // RUN THE TEST
 // ============================================================================
 
-// Initialize database connection
-$dbConfig = require __DIR__ . '/../src/Core/Config/database.php';
-$pdo = new PDO(
-    "pgsql:host={$dbConfig['host']};port={$dbConfig['port']};dbname={$dbConfig['database']}",
-    $dbConfig['user'],
-    $dbConfig['password']
-);
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+echo "Loading configuration...\n";
+
+$country = 'Botswana';
+$dbConfigPath = __DIR__ . "/../../src/Core/Config/Countries/{$country}/database.php";
+
+if (!file_exists($dbConfigPath)) {
+    die("ERROR: Database config not found at: {$dbConfigPath}\n");
+}
+
+$dbConfig = require $dbConfigPath;
+
+try {
+    $pdo = new PDO(
+        "pgsql:host={$dbConfig['host']};port={$dbConfig['port']};dbname={$dbConfig['database']}",
+        $dbConfig['user'],
+        $dbConfig['password']
+    );
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    
+    echo "✅ Database connected successfully\n\n";
+    
+} catch (Exception $e) {
+    die("❌ Database connection failed: " . $e->getMessage() . "\n");
+}
 
 // Run the test
-$test = new SwapIntegrationTest($pdo);
+$test = new SwapIntegrationTest($pdo, $country);
 $test->run();
