@@ -1454,25 +1454,26 @@ private function executeSignedCashout(array $payload): array
   public function getParticipant(string $institution): array
 {
     error_log("[SwapService] getParticipant called with: '{$institution}'");
-    error_log("[SwapService] Participants array keys: " . json_encode(array_keys($this->participants)));
-    error_log("[SwapService] Participants array structure: " . json_encode($this->participants));
     
-    // Try exact match first
+    // Try exact match
     if (isset($this->participants[$institution])) {
-        error_log("[SwapService] Found exact match");
-        return $this->participants[$institution];
+        $participant = $this->participants[$institution];
+        // FORCE provider_code to match the institution name
+        $participant['provider_code'] = $institution;
+        error_log("[SwapService] Set provider_code for {$institution} to: {$institution}");
+        return $participant;
     }
     
-    // Try case-insensitive match
+    // Try case-insensitive
     $key = strtolower($institution);
     foreach ($this->participants as $code => $participant) {
         if (strtolower($code) === $key) {
+            $participant['provider_code'] = $code;
             error_log("[SwapService] Found case-insensitive match: {$code}");
             return $participant;
         }
     }
     
-    error_log("[SwapService] NOT FOUND! Available keys: " . json_encode(array_keys($this->participants)));
     throw new RuntimeException("Participant not found: {$institution}");
 }
 
