@@ -48,7 +48,7 @@ class SwapService
     private ?ContributionCalculator $contributionCalculator = null;
     private ?MultiSourceFeeCalculator $multiSourceFeeCalculator = null;
     private ?MultiSourceSwapExecutor $multiSourceExecutor = null;
-    private ?LoggerInterface $logger = null;
+    private $logger = null;
     
     // Crypto services
     private MessageSigner $messageSigner;
