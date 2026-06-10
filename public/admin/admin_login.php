@@ -6,7 +6,7 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
 // ============================================================
-// ADMIN LOGIN - Fixed for working database connection
+// ADMIN LOGIN - Using DBConnection (Single Source of Truth)
 // ============================================================
 
 // Define project root (goes up 2 levels: public/admin/ -> project root)
@@ -15,23 +15,28 @@ define('PROJECT_ROOT', dirname(__DIR__, 2));
 // Debug logging
 error_log("[ADMIN LOGIN] Starting login process");
 
-// Load configuration
+// Load required classes
+require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
+require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
+require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
+
+use Core\Database\DBConnection;
+use Application\Utils\SessionManager;
+use Application\Admin\Auth\AdminAuth;
+
+// Load configuration for country data only (not database)
 $configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
-
-if (!file_exists($configPath)) {
-    die("Configuration system not found.");
-}
-
-require_once $configPath;
-
-try {
-    $config = \Core\Config\LoadCountry::getConfig();
-    if (!is_array($config)) {
-        die("Configuration failed to load.");
+if (file_exists($configPath)) {
+    require_once $configPath;
+    try {
+        $config = \Core\Config\LoadCountry::getConfig();
+        error_log("[ADMIN LOGIN] Configuration loaded");
+    } catch (Throwable $e) {
+        error_log("[ADMIN LOGIN] Config warning: " . $e->getMessage());
+        $config = [];
     }
-    error_log("[ADMIN LOGIN] Configuration loaded");
-} catch (Throwable $e) {
-    die("Config error: " . $e->getMessage());
+} else {
+    $config = [];
 }
 
 // Get country
@@ -44,59 +49,18 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 $_SESSION['admin_country'] = $systemCountry;
 
-// Load required classes
-require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
-require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
-require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
-
-use Core\Database\DBConnection;
-use Application\Utils\SessionManager;
-use Application\Admin\Auth\AdminAuth;
-
-// Initialize database connection
+// Initialize database connection using DBConnection (Single Source of Truth)
 try {
-    // Get database config from loaded config
-    if (isset($config['db']['swap']) && is_array($config['db']['swap'])) {
-        $dbConfig = $config['db']['swap'];
-        error_log("[ADMIN LOGIN] Using db.swap config");
-    } else {
-        // Fallback - use environment
-        error_log("[ADMIN LOGIN] Using fallback config");
-        $databaseUrl = getenv('DATABASE_URL');
-        if ($databaseUrl) {
-            $db = parse_url($databaseUrl);
-            $dbConfig = [
-                'host' => $db['host'] ?? 'localhost',
-                'port' => (int)($db['port'] ?? 5432),
-                'database' => ltrim($db['path'] ?? '', '/'),
-                'username' => $db['user'] ?? 'postgres',
-                'password' => $db['pass'] ?? '',
-            ];
-        } else {
-            $dbConfig = [
-                'host' => getenv('DB_HOST') ?: 'localhost',
-                'port' => (int)(getenv('DB_PORT') ?: 5432),
-                'database' => getenv('DB_NAME') ?: 'swap_system_bw',
-                'username' => getenv('DB_USER') ?: 'postgres',
-                'password' => getenv('DB_PASSWORD') ?: '',
-            ];
-        }
+    $db = DBConnection::getConnection();
+    
+    if (!$db) {
+        throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
     }
-    
-    // Ensure we have all required keys
-    $dbConfig['type'] = 'pgsql';
-    $dbConfig['options'] = [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_EMULATE_PREPARES => false,
-    ];
-    
-    $db = DBConnection::getInstance($dbConfig);
     
     // Test connection
     $stmt = $db->query("SELECT 1");
     $stmt->fetch();
-    error_log("[ADMIN LOGIN] Database connected");
+    error_log("[ADMIN LOGIN] Database connected successfully via DBConnection");
     
     // Initialize AdminAuth
     $auth = new AdminAuth($db);
