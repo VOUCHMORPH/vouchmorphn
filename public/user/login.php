@@ -1,8 +1,10 @@
 <?php
+// public/user/login.php - DEBUG VERSION
 ob_start();
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
+ini_set('log_errors', 1);
 
 // CORRECTED PATHS FOR DDD STRUCTURE
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
@@ -24,7 +26,13 @@ if (SessionManager::isLoggedIn()) {
 // --------------------------------------------------
 // 2️⃣ Load Country & Config
 // --------------------------------------------------
-$config = LoadCountry::getConfig();
+try {
+    $config = LoadCountry::getConfig();
+    error_log("[USER LOGIN] Config loaded successfully");
+} catch (Throwable $e) {
+    error_log("[USER LOGIN] Config load error: " . $e->getMessage());
+    die("Configuration error: " . $e->getMessage());
+}
 
 if (!defined('SYSTEM_COUNTRY')) {
     define('SYSTEM_COUNTRY', $config['country'] ?? 'BW');
@@ -55,9 +63,15 @@ try {
     $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
     error_log("[USER LOGIN] Database connected successfully via DBConnection");
     
+    // Test the connection
+    $testStmt = $db->query("SELECT 1");
+    $testStmt->fetch();
+    error_log("[USER LOGIN] Database test query successful");
+    
 } catch (\Throwable $e) {
-    error_log("USER LOGIN DB ERROR [{$systemCountry}]: " . $e->getMessage());
-    die("System initialisation failed. Please check database configuration.");
+    error_log("[USER LOGIN] DB ERROR: " . $e->getMessage());
+    $dbError = "Database connection failed: " . $e->getMessage();
+    die($dbError);
 }
 
 // --------------------------------------------------
@@ -98,9 +112,13 @@ $formattedPhone = '';
 $loginMethod = $_POST['login_method'] ?? 'phone';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    error_log("[USER LOGIN] POST request received - Method: {$loginMethod}");
+    
     $phoneInput = trim($_POST['phone'] ?? '');
     $formattedPhone = normalizePhone($phoneInput, $countryDialCode);
     $phone = getLocalPhonePart($formattedPhone, $countryDialCode);
+    
+    error_log("[USER LOGIN] Phone input: {$phoneInput}, Formatted: {$formattedPhone}");
 
     if ($loginMethod === 'pin') {
         // PIN LOGIN
@@ -108,41 +126,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($phoneInput === '' || $pin === '') {
             $error = "Phone number and PIN are required.";
+            error_log("[USER LOGIN] Missing phone or PIN");
         } else {
             try {
-                $stmt = $db->prepare(
-                    "SELECT user_id, phone, username, password_hash, verified, created_at, pin_enabled
-                     FROM users
-                     WHERE phone = :phone
-                     LIMIT 1"
-                );
-                $stmt->execute([':phone' => $formattedPhone]);
-                $user = $stmt->fetch(\PDO::FETCH_ASSOC);
-
-                if (!$user || (int)$user['verified'] !== 1) {
-                    $error = "Invalid login credentials.";
-                } elseif (!password_verify($pin, $user['password_hash'])) {
-                    $error = "Invalid PIN.";
-                    error_log("PIN LOGIN FAILED: {$formattedPhone}");
+                // First check if users table exists
+                $tableCheck = $db->query("SELECT 1 FROM users LIMIT 1");
+                if (!$tableCheck) {
+                    error_log("[USER LOGIN] Users table may not exist");
+                    $error = "System configuration error. Please contact support.";
                 } else {
-                    session_regenerate_id(true);
+                    $stmt = $db->prepare(
+                        "SELECT user_id, phone, username, password_hash, verified, created_at, pin_enabled
+                         FROM users
+                         WHERE phone = :phone
+                         LIMIT 1"
+                    );
+                    $stmt->execute([':phone' => $formattedPhone]);
+                    $user = $stmt->fetch(\PDO::FETCH_ASSOC);
+                    
+                    error_log("[USER LOGIN] User found: " . ($user ? 'YES' : 'NO'));
 
-                    SessionManager::setUser([
-                        'user_id'     => $user['user_id'],
-                        'username'    => $user['username'] ?? '',
-                        'phone'       => $user['phone'],
-                        'role'        => 'USER',
-                        'country'     => $systemCountry,
-                        'created_at'  => $user['created_at'] ?? null,
-                        'pin_enabled' => (int)($user['pin_enabled'] ?? 0) === 1
-                    ]);
+                    if (!$user || (int)$user['verified'] !== 1) {
+                        $error = "Invalid login credentials.";
+                        error_log("[USER LOGIN] User not found or not verified");
+                    } elseif (!password_verify($pin, $user['password_hash'])) {
+                        $error = "Invalid PIN.";
+                        error_log("[USER LOGIN] PIN verification failed for {$formattedPhone}");
+                    } else {
+                        session_regenerate_id(true);
 
-                    error_log("PIN LOGIN SUCCESS: {$formattedPhone}");
-                    header('Location: user_dashboard.php');
-                    exit();
+                        SessionManager::setUser([
+                            'user_id'     => $user['user_id'],
+                            'username'    => $user['username'] ?? '',
+                            'phone'       => $user['phone'],
+                            'role'        => 'USER',
+                            'country'     => $systemCountry,
+                            'created_at'  => $user['created_at'] ?? null,
+                            'pin_enabled' => (int)($user['pin_enabled'] ?? 0) === 1
+                        ]);
+
+                        error_log("[USER LOGIN] PIN LOGIN SUCCESS: {$formattedPhone}");
+                        header('Location: user_dashboard.php');
+                        exit();
+                    }
                 }
             } catch (\Throwable $e) {
-                error_log("USER LOGIN QUERY ERROR [{$systemCountry}]: " . $e->getMessage());
+                error_log("[USER LOGIN] PIN LOGIN QUERY ERROR: " . $e->getMessage());
+                error_log("[USER LOGIN] Stack trace: " . $e->getTraceAsString());
                 $error = "System error. Please try again.";
             }
         }
@@ -150,38 +180,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // PHONE LOGIN
         if ($phoneInput === '') {
             $error = "Phone number is required.";
+            error_log("[USER LOGIN] Missing phone number");
         } else {
             try {
-                $stmt = $db->prepare(
-                    "SELECT user_id, phone, username, created_at, verified, pin_enabled
-                     FROM users
-                     WHERE phone = :phone
-                     LIMIT 1"
-                );
-                $stmt->execute([':phone' => $formattedPhone]);
-                $user = $stmt->fetch(\PDO::FETCH_ASSOC);
-
-                if (!$user || (int)$user['verified'] !== 1) {
-                    $error = "Invalid login credentials.";
+                $tableCheck = $db->query("SELECT 1 FROM users LIMIT 1");
+                if (!$tableCheck) {
+                    error_log("[USER LOGIN] Users table may not exist");
+                    $error = "System configuration error. Please contact support.";
                 } else {
-                    session_regenerate_id(true);
+                    $stmt = $db->prepare(
+                        "SELECT user_id, phone, username, created_at, verified, pin_enabled
+                         FROM users
+                         WHERE phone = :phone
+                         LIMIT 1"
+                    );
+                    $stmt->execute([':phone' => $formattedPhone]);
+                    $user = $stmt->fetch(\PDO::FETCH_ASSOC);
+                    
+                    error_log("[USER LOGIN] User found: " . ($user ? 'YES' : 'NO'));
 
-                    SessionManager::setUser([
-                        'user_id'     => $user['user_id'],
-                        'username'    => $user['username'] ?? '',
-                        'phone'       => $user['phone'],
-                        'role'        => 'USER',
-                        'country'     => $systemCountry,
-                        'created_at'  => $user['created_at'] ?? null,
-                        'pin_enabled' => (int)($user['pin_enabled'] ?? 0) === 1
-                    ]);
+                    if (!$user || (int)$user['verified'] !== 1) {
+                        $error = "Invalid login credentials.";
+                        error_log("[USER LOGIN] User not found or not verified");
+                    } else {
+                        session_regenerate_id(true);
 
-                    error_log("PHONE LOGIN SUCCESS: {$formattedPhone}");
-                    header('Location: user_dashboard.php');
-                    exit();
+                        SessionManager::setUser([
+                            'user_id'     => $user['user_id'],
+                            'username'    => $user['username'] ?? '',
+                            'phone'       => $user['phone'],
+                            'role'        => 'USER',
+                            'country'     => $systemCountry,
+                            'created_at'  => $user['created_at'] ?? null,
+                            'pin_enabled' => (int)($user['pin_enabled'] ?? 0) === 1
+                        ]);
+
+                        error_log("[USER LOGIN] PHONE LOGIN SUCCESS: {$formattedPhone}");
+                        header('Location: user_dashboard.php');
+                        exit();
+                    }
                 }
             } catch (\Throwable $e) {
-                error_log("USER LOGIN QUERY ERROR [{$systemCountry}]: " . $e->getMessage());
+                error_log("[USER LOGIN] PHONE LOGIN QUERY ERROR: " . $e->getMessage());
+                error_log("[USER LOGIN] Stack trace: " . $e->getTraceAsString());
                 $error = "System error. Please try again.";
             }
         }
@@ -197,12 +238,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
 <link href="https://api.fontshare.com/v2/css?f[]=clash-display@400,500,600,700&f[]=general-sans@400,500,600&f[]=space-grotesk@400,500,600&display=swap" rel="stylesheet">
 <style>
-    * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-    }
-
+    * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
         background: #050505;
         font-family: 'Inter', sans-serif;
@@ -215,7 +251,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         position: relative;
         overflow-x: hidden;
     }
-
     body::before {
         content: '';
         position: fixed;
@@ -230,32 +265,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         pointer-events: none;
         z-index: 0;
     }
-
-    .cursor {
-        width: 8px;
-        height: 8px;
-        background: #00F0FF;
-        position: fixed;
-        pointer-events: none;
-        z-index: 9999;
-        mix-blend-mode: difference;
-        transition: transform 0.1s ease;
-    }
-
-    .cursor-follower {
-        width: 40px;
-        height: 40px;
-        border: 1px solid rgba(0, 240, 255, 0.5);
-        position: fixed;
-        pointer-events: none;
-        z-index: 9998;
-        transition: 0.15s ease;
-    }
-
-    @media (max-width: 768px) {
-        .cursor, .cursor-follower { display: none; }
-    }
-
+    .cursor { width: 8px; height: 8px; background: #00F0FF; position: fixed; pointer-events: none; z-index: 9999; mix-blend-mode: difference; transition: transform 0.1s ease; }
+    .cursor-follower { width: 40px; height: 40px; border: 1px solid rgba(0, 240, 255, 0.5); position: fixed; pointer-events: none; z-index: 9998; transition: 0.15s ease; }
+    @media (max-width: 768px) { .cursor, .cursor-follower { display: none; } }
     .login-container {
         position: relative;
         z-index: 2;
@@ -267,244 +279,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         border-radius: 0px;
         box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
     }
-
-    .login-header {
-        padding: 2rem 2rem 1.5rem;
-        text-align: center;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    }
-
-    .login-header h1 {
-        font-family: 'Clash Display', sans-serif;
-        font-size: 2rem;
-        font-weight: 700;
-        letter-spacing: -0.02em;
-        background: linear-gradient(135deg, #FFFFFF 0%, #00F0FF 40%, #B000FF 100%);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
-        margin-bottom: 0.5rem;
-    }
-
-    .subtitle {
-        font-size: 0.875rem;
-        color: #A0A0B0;
-        margin-bottom: 1rem;
-    }
-
-    .system-badge {
-        display: inline-block;
-        padding: 0.25rem 0.75rem;
-        background: rgba(0, 240, 255, 0.1);
-        border: 1px solid rgba(0, 240, 255, 0.3);
-        font-size: 0.7rem;
-        font-weight: 500;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        border-radius: 0px;
-        color: #00F0FF;
-    }
-
-    .login-tabs {
-        display: flex;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(10, 10, 20, 0.5);
-    }
-
-    .tab-btn {
-        flex: 1;
-        padding: 1rem;
-        background: none;
-        border: none;
-        font-family: 'General Sans', sans-serif;
-        font-size: 0.875rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        color: #A0A0B0;
-        border-bottom: 2px solid transparent;
-    }
-
-    .tab-btn.active {
-        color: #00F0FF;
-        border-bottom-color: #00F0FF;
-        background: rgba(0, 240, 255, 0.05);
-    }
-
-    .tab-btn:hover:not(.active) {
-        color: #FFFFFF;
-        background: rgba(255, 255, 255, 0.03);
-    }
-
-    .login-form {
-        padding: 2rem;
-    }
-
-    .tab-pane {
-        display: none;
-    }
-
-    .tab-pane.active {
-        display: block;
-        animation: fadeInUp 0.4s ease;
-    }
-
-    .form-group {
-        margin-bottom: 1.5rem;
-    }
-
-    .form-group label {
-        display: block;
-        margin-bottom: 0.5rem;
-        font-size: 0.75rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: #C0C0D0;
-    }
-
-    .phone-input-container {
-        display: flex;
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        background: rgba(0, 0, 0, 0.5);
-        transition: all 0.2s ease;
-        border-radius: 0px;
-    }
-
-    .phone-input-container:focus-within {
-        border-color: #00F0FF;
-        box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.2);
-    }
-
-    .phone-prefix {
-        padding: 0.875rem 1rem;
-        font-family: 'Space Grotesk', monospace;
-        font-weight: 500;
-        color: #00F0FF;
-        background: rgba(0, 240, 255, 0.05);
-        border-right: 1px solid rgba(255, 255, 255, 0.1);
-        letter-spacing: 0.5px;
-    }
-
-    .form-control {
-        flex: 1;
-        border: none;
-        padding: 0.875rem 1rem;
-        font-size: 1rem;
-        font-family: 'Inter', sans-serif;
-        background: transparent;
-        color: #FFFFFF;
-        outline: none;
-    }
-
-    .form-control::placeholder {
-        color: #505060;
-    }
-
-    .pin-input {
-        font-family: 'Space Grotesk', monospace;
-        font-size: 1.25rem;
-        letter-spacing: 0.5rem;
-        text-align: center;
-    }
-
-    .login-btn {
-        width: 100%;
-        padding: 1rem;
-        background: linear-gradient(135deg, #00F0FF 0%, #B000FF 100%);
-        color: #050505;
-        border: none;
-        font-family: 'General Sans', sans-serif;
-        font-weight: 700;
-        font-size: 0.875rem;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        margin-top: 0.5rem;
-        border-radius: 0px;
-    }
-
-    .login-btn:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 10px 30px -10px rgba(0, 240, 255, 0.4);
-    }
-
-    .error-message {
-        background: rgba(255, 48, 48, 0.1);
-        border-left: 3px solid #FF3030;
-        padding: 0.875rem;
-        margin-bottom: 1.5rem;
-        font-size: 0.8125rem;
-        color: #FF6060;
-    }
-
-    .security-notice {
-        margin-top: 1.5rem;
-        padding-top: 1rem;
-        border-top: 1px solid rgba(255, 255, 255, 0.05);
-        font-size: 0.7rem;
-        color: #606070;
-        text-align: center;
-    }
-
-    .login-footer {
-        padding: 1.25rem 2rem;
-        border-top: 1px solid rgba(255, 255, 255, 0.05);
-        background: rgba(10, 10, 20, 0.3);
-    }
-
-    .login-links {
-        display: flex;
-        justify-content: center;
-        gap: 2rem;
-        flex-wrap: wrap;
-    }
-
-    .login-links a {
-        color: #808090;
-        text-decoration: none;
-        font-size: 0.75rem;
-        font-weight: 500;
-        transition: color 0.2s;
-    }
-
-    .login-links a:hover {
-        color: #00F0FF;
-    }
-
+    .login-header { padding: 2rem 2rem 1.5rem; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+    .login-header h1 { font-family: 'Clash Display', sans-serif; font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; background: linear-gradient(135deg, #FFFFFF 0%, #00F0FF 40%, #B000FF 100%); -webkit-background-clip: text; background-clip: text; color: transparent; margin-bottom: 0.5rem; }
+    .subtitle { font-size: 0.875rem; color: #A0A0B0; margin-bottom: 1rem; }
+    .system-badge { display: inline-block; padding: 0.25rem 0.75rem; background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); font-size: 0.7rem; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; border-radius: 0px; color: #00F0FF; }
+    .login-tabs { display: flex; border-bottom: 1px solid rgba(255, 255, 255, 0.08); background: rgba(10, 10, 20, 0.5); }
+    .tab-btn { flex: 1; padding: 1rem; background: none; border: none; font-family: 'General Sans', sans-serif; font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer; transition: all 0.2s ease; color: #A0A0B0; border-bottom: 2px solid transparent; }
+    .tab-btn.active { color: #00F0FF; border-bottom-color: #00F0FF; background: rgba(0, 240, 255, 0.05); }
+    .tab-btn:hover:not(.active) { color: #FFFFFF; background: rgba(255, 255, 255, 0.03); }
+    .login-form { padding: 2rem; }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; animation: fadeInUp 0.4s ease; }
+    .form-group { margin-bottom: 1.5rem; }
+    .form-group label { display: block; margin-bottom: 0.5rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #C0C0D0; }
+    .phone-input-container { display: flex; border: 1px solid rgba(255, 255, 255, 0.15); background: rgba(0, 0, 0, 0.5); transition: all 0.2s ease; border-radius: 0px; }
+    .phone-input-container:focus-within { border-color: #00F0FF; box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.2); }
+    .phone-prefix { padding: 0.875rem 1rem; font-family: 'Space Grotesk', monospace; font-weight: 500; color: #00F0FF; background: rgba(0, 240, 255, 0.05); border-right: 1px solid rgba(255, 255, 255, 0.1); letter-spacing: 0.5px; }
+    .form-control { flex: 1; border: none; padding: 0.875rem 1rem; font-size: 1rem; font-family: 'Inter', sans-serif; background: transparent; color: #FFFFFF; outline: none; }
+    .form-control::placeholder { color: #505060; }
+    .pin-input { font-family: 'Space Grotesk', monospace; font-size: 1.25rem; letter-spacing: 0.5rem; text-align: center; }
+    .login-btn { width: 100%; padding: 1rem; background: linear-gradient(135deg, #00F0FF 0%, #B000FF 100%); color: #050505; border: none; font-family: 'General Sans', sans-serif; font-weight: 700; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.1em; cursor: pointer; transition: all 0.2s ease; margin-top: 0.5rem; border-radius: 0px; }
+    .login-btn:hover { transform: translateY(-2px); box-shadow: 0 10px 30px -10px rgba(0, 240, 255, 0.4); }
+    .error-message { background: rgba(255, 48, 48, 0.1); border-left: 3px solid #FF3030; padding: 0.875rem; margin-bottom: 1.5rem; font-size: 0.8125rem; color: #FF6060; }
+    .security-notice { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid rgba(255, 255, 255, 0.05); font-size: 0.7rem; color: #606070; text-align: center; }
+    .login-footer { padding: 1.25rem 2rem; border-top: 1px solid rgba(255, 255, 255, 0.05); background: rgba(10, 10, 20, 0.3); }
+    .login-links { display: flex; justify-content: center; gap: 2rem; flex-wrap: wrap; }
+    .login-links a { color: #808090; text-decoration: none; font-size: 0.75rem; font-weight: 500; transition: color 0.2s; }
+    .login-links a:hover { color: #00F0FF; }
     @keyframes fadeInUp {
-        from {
-            opacity: 0;
-            transform: translateY(20px);
-        }
-        to {
-            opacity: 1;
-            transform: translateY(0);
-        }
+        from { opacity: 0; transform: translateY(20px); }
+        to { opacity: 1; transform: translateY(0); }
     }
-
     @media (max-width: 640px) {
-        .login-container {
-            margin: 1rem;
-        }
-        .login-header {
-            padding: 1.5rem 1.5rem 1rem;
-        }
-        .login-header h1 {
-            font-size: 1.5rem;
-        }
-        .login-form {
-            padding: 1.5rem;
-        }
-        .login-footer {
-            padding: 1rem 1.5rem;
-        }
-        .login-links {
-            gap: 1rem;
-        }
+        .login-container { margin: 1rem; }
+        .login-header { padding: 1.5rem 1.5rem 1rem; }
+        .login-header h1 { font-size: 1.5rem; }
+        .login-form { padding: 1.5rem; }
+        .login-footer { padding: 1rem 1.5rem; }
+        .login-links { gap: 1rem; }
     }
 </style>
 </head>
