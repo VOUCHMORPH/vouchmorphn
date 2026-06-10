@@ -1432,12 +1432,13 @@ class SwapService
 
   public function getParticipant(string $institution): array
 {
-    error_log("[SwapService] getParticipant called for: {$institution}");
-    error_log("[SwapService] Available participants keys: " . implode(', ', array_keys($this->participants)));
+    error_log("[SwapService] getParticipant called with: '{$institution}'");
+    error_log("[SwapService] Participants array keys: " . json_encode(array_keys($this->participants)));
+    error_log("[SwapService] Participants array structure: " . json_encode($this->participants));
     
     // Try exact match first
     if (isset($this->participants[$institution])) {
-        error_log("[SwapService] Found exact match: {$institution}");
+        error_log("[SwapService] Found exact match");
         return $this->participants[$institution];
     }
     
@@ -1448,17 +1449,9 @@ class SwapService
             error_log("[SwapService] Found case-insensitive match: {$code}");
             return $participant;
         }
-        if (isset($participant['provider_code']) && strtolower($participant['provider_code']) === $key) {
-            error_log("[SwapService] Found provider_code match: {$participant['provider_code']}");
-            return $participant;
-        }
-        if (isset($participant['id']) && strtolower($participant['id']) === $key) {
-            error_log("[SwapService] Found id match: {$participant['id']}");
-            return $participant;
-        }
     }
     
-    error_log("[SwapService] Participant NOT FOUND: {$institution}. Available: " . implode(', ', array_keys($this->participants)));
+    error_log("[SwapService] NOT FOUND! Available keys: " . json_encode(array_keys($this->participants)));
     throw new RuntimeException("Participant not found: {$institution}");
 }
 
