@@ -1,5 +1,5 @@
 <?php
-// Infrastructure/Banks/GenericBankClient.php
+// Infrastructure/Banks/GenericBankClient.php (FIXED)
 
 namespace Infrastructure\Banks;
 
@@ -18,23 +18,25 @@ class GenericBankClient implements BankAPIInterface
     protected array $detectionDetails = [];
     protected ?string $cachedAccessToken = null;
     protected ?int $tokenExpiresAt = null;
+    protected ?MessageAdapterFactory $adapterFactory = null;
 
     public function __construct(array $config, ?array $requestPayload = null, ?array $headers = null, ?string $endpoint = null)
     {
         $this->config = $config;
         
-        $detection = MessageAdapterFactory::smartDetect(
-            $requestPayload ?? [],
-            $headers ?? [],
-            $endpoint,
-            $config,
-            $config['provider_code'] ?? null
-        );
-        
-        $this->detectedFormat = $detection['format'];
-        $this->detectionConfidence = $detection['confidence'];
-        $this->detectionSource = $detection['source'];
-        $this->detectionDetails = $detection['all_detections'] ?? [];
+        // Initialize MessageAdapterFactory with country from config
+        $countryCode = $config['country_code'] ?? 'Botswana';
+        try {
+            $this->adapterFactory = new MessageAdapterFactory($countryCode);
+            $this->detectedFormat = 'JSON'; // Default format
+            $this->detectionConfidence = 80;
+            $this->detectionSource = 'generic_client';
+        } catch (\Exception $e) {
+            error_log("MessageAdapterFactory init failed: " . $e->getMessage());
+            $this->detectedFormat = 'JSON';
+            $this->detectionConfidence = 50;
+            $this->detectionSource = 'fallback';
+        }
         
         error_log("=== GENERIC BANK CLIENT INIT ===");
         error_log("Bank: " . ($this->config['provider_code'] ?? 'unknown'));
@@ -332,7 +334,7 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // DESTINATION ROLE METHODS - CASHOUT TOKEN (NOT OAUTH)
+    // DESTINATION ROLE METHODS - CASHOUT TOKEN
     // ============================================================================
 
     public function generateToken(array $payload): array
@@ -428,7 +430,18 @@ class GenericBankClient implements BankAPIInterface
         ];
 
         $endpointKey = $endpointMap[$action] ?? $action;
-        return $this->config['resource_endpoints'][$endpointKey] ?? null;
+        
+        // Check in resource_endpoints
+        if (isset($this->config['resource_endpoints'][$endpointKey])) {
+            return $this->config['resource_endpoints'][$endpointKey];
+        }
+        
+        // Check in endpoints (alternative location)
+        if (isset($this->config['endpoints'][$endpointKey])) {
+            return $this->config['endpoints'][$endpointKey];
+        }
+        
+        return null;
     }
 
     protected function send(string $action, array $payload, ?string $accessToken = null): array
@@ -436,7 +449,12 @@ class GenericBankClient implements BankAPIInterface
         $endpoint = $this->getEndpoint($action);
         
         if (!$endpoint) {
-            throw new \Exception("Endpoint {$action} not configured for " . ($this->config['provider_code'] ?? 'unknown'));
+            error_log("Endpoint {$action} not configured for " . ($this->config['provider_code'] ?? 'unknown'));
+            return [
+                'success' => false,
+                'error' => "Endpoint {$action} not configured",
+                'data' => []
+            ];
         }
 
         $baseUrl = rtrim($this->config['base_url'] ?? '', '/');
@@ -444,6 +462,8 @@ class GenericBankClient implements BankAPIInterface
         $url = $baseUrl . '/' . $endpoint;
         
         $headers = $this->buildHeaders($payload, $accessToken);
+        
+        error_log("Sending request to: {$url}");
         
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -459,6 +479,8 @@ class GenericBankClient implements BankAPIInterface
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlError = curl_error($ch);
         curl_close($ch);
+        
+        error_log("Response HTTP {$httpCode}");
         
         $decodedResponse = json_decode($response, true);
         
