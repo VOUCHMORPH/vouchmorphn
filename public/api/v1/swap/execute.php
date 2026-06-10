@@ -5,6 +5,7 @@ declare(strict_types=1);
  * VouchMorphn - Swap Execution API
  * ZERO HARDCODING - Routes to SwapService
  */
+require_once __DIR__ . '/../../../../vendor/autoload.php';
 
 use Core\Database\DBConnection;  // ← MOVED HERE (top of file)
 
