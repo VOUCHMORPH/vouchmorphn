@@ -74,7 +74,7 @@ class SwapService
         $this->swapDB = $swapDB;
         $this->config = $config;
         $this->countryCode = strtoupper($country);
-        $this->logger = $logger ?? new class { public function __call($name, $args) {} };
+        $this->logger = $logger ?? new NullLogger();
         
         // Initialize crypto
         $this->messageSigner = new MessageSigner();
@@ -110,83 +110,96 @@ class SwapService
     }
 
     public function executeAtomicSwap(array $payload): array
-{
-    // UNWRAP SIGNED ENVELOPE IF PRESENT
-    if (isset($payload['original_payload'])) {
-        error_log("[SwapService] Signed envelope detected, extracting original_payload");
-        $payload = $payload['original_payload'];
-    }
-    
-    // VALIDATE REQUIRED FIELDS
-    $sourceInst = $payload['from_institution'] ?? $payload['source_institution'] ?? null;
-    $destInst = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
-    
-    if (empty($sourceInst)) {
-        throw new RuntimeException("Missing source institution (from_institution or source_institution)");
-    }
-    if (empty($destInst)) {
-        throw new RuntimeException("Missing destination institution (to_institution or destination_institution)");
-    }
-    
-    error_log("[SwapService] Source: {$sourceInst}, Dest: {$destInst}");
-    
-    $ref = $payload['reference'] ?? $this->generateReference();
-    $idempotencyKey = $payload['idempotency_key'] ?? $payload['idempotencyKey'] ?? null;
-    
-    // Idempotency check FIRST (no transaction yet)
-    if ($idempotencyKey) {
-        $cached = $this->checkIdempotency($idempotencyKey);
-        if ($cached) {
-            $this->logger->info("Idempotency cache hit", ['key' => $idempotencyKey]);
-            return $cached;
-        }
-    }
-    
-    // Determine swap type
-    $isMultiSource = $this->isMultiSourceContribution($payload);
-    $swapType = $payload['swap_type'] ?? ($isMultiSource ? 'MULTI_SOURCE' : 'STANDARD');
-    
-    // BEGIN ATOMIC BOUNDARY
-    $this->beginAtomicSwap($ref);
-    
-    try {
-        $result = match($swapType) {
-            'MULTI_SOURCE' => $this->executeMultiSourceSwap($payload),
-            'CASHOUT' => $this->executeSignedCashout($payload),
-            'DEPOSIT' => $this->executeSignedDeposit($payload),
-            'CARD_ISSUE' => $this->executeCardIssuance($payload),
-            default => $this->executeSignedStandardSwap($payload),
-        };
+    {
+        // UNWRAP SIGNED ENVELOPE IF PRESENT
+        $envelopeSignature = null;
+        $envelopeTimestamp = null;
         
-        $commitResult = $this->commitAtomicSwap();
-        $result = array_merge($result, ['atomic_commit' => $commitResult]);
-        
-        if ($idempotencyKey) {
-            $this->storeIdempotencyResult($idempotencyKey, $result);
+        if (isset($payload['original_payload'])) {
+            error_log("[SwapService] Signed envelope detected, extracting original_payload");
+            $envelopeSignature = $payload['signature'] ?? null;
+            $envelopeTimestamp = $payload['timestamp'] ?? null;
+            
+            // Store envelope metadata for later use
+            $this->signedPayloads['envelope'] = [
+                'signature' => $envelopeSignature,
+                'timestamp' => $envelopeTimestamp
+            ];
+            
+            // Replace payload with unwrapped content
+            $payload = $payload['original_payload'];
         }
         
-        return $result;
+        // VALIDATE REQUIRED FIELDS
+        $sourceInst = $payload['from_institution'] ?? $payload['source_institution'] ?? null;
+        $destInst = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
         
-    } catch (Exception $e) {
-        $this->logger->error("Atomic swap failed", [
-            'reference' => $ref,
-            'step' => $this->getLastStep(),
-            'error' => $e->getMessage()
-        ]);
+        if (empty($sourceInst)) {
+            throw new RuntimeException("Missing source institution (from_institution or source_institution)");
+        }
+        if (empty($destInst)) {
+            throw new RuntimeException("Missing destination institution (to_institution or destination_institution)");
+        }
         
-        $rollbackResult = $this->rollbackAtomicSwap($e->getMessage());
+        error_log("[SwapService] Source: {$sourceInst}, Dest: {$destInst}");
         
+        $ref = $payload['reference'] ?? $this->generateReference();
+        $idempotencyKey = $payload['idempotency_key'] ?? $payload['idempotencyKey'] ?? null;
+        
+        // Idempotency check FIRST (no transaction yet)
         if ($idempotencyKey) {
-            $this->storeIdempotencyResult($idempotencyKey, [
-                'status' => 'failed',
+            $cached = $this->checkIdempotency($idempotencyKey);
+            if ($cached) {
+                $this->logger->info("Idempotency cache hit", ['key' => $idempotencyKey]);
+                return $cached;
+            }
+        }
+        
+        // Determine swap type
+        $isMultiSource = $this->isMultiSourceContribution($payload);
+        $swapType = $payload['swap_type'] ?? ($isMultiSource ? 'MULTI_SOURCE' : 'STANDARD');
+        
+        // BEGIN ATOMIC BOUNDARY
+        $this->beginAtomicSwap($ref);
+        
+        try {
+            $result = match($swapType) {
+                'MULTI_SOURCE' => $this->executeMultiSourceSwap($payload),
+                'CASHOUT' => $this->executeSignedCashout($payload),
+                'DEPOSIT' => $this->executeSignedDeposit($payload),
+                'CARD_ISSUE' => $this->executeCardIssuance($payload),
+                default => $this->executeSignedStandardSwap($payload),
+            };
+            
+            $commitResult = $this->commitAtomicSwap();
+            $result = array_merge($result, ['atomic_commit' => $commitResult]);
+            
+            if ($idempotencyKey) {
+                $this->storeIdempotencyResult($idempotencyKey, $result);
+            }
+            
+            return $result;
+            
+        } catch (Exception $e) {
+            $this->logger->error("Atomic swap failed", [
                 'reference' => $ref,
+                'step' => $this->getLastStep(),
                 'error' => $e->getMessage()
             ]);
+            
+            $rollbackResult = $this->rollbackAtomicSwap($e->getMessage());
+            
+            if ($idempotencyKey) {
+                $this->storeIdempotencyResult($idempotencyKey, [
+                    'status' => 'failed',
+                    'reference' => $ref,
+                    'error' => $e->getMessage()
+                ]);
+            }
+            
+            throw new RuntimeException("Swap failed: " . $e->getMessage(), 0, $e);
         }
-        
-        throw new RuntimeException("Swap failed: " . $e->getMessage(), 0, $e);
     }
-}
 
     /**
      * Execute signed standard swap with cryptographic proof
@@ -281,103 +294,103 @@ class SwapService
         ];
     }
 
-  /**
- * Execute signed cashout with cryptographic proof
- */
-private function executeSignedCashout(array $payload): array
-{
-    error_log("[SwapService] ===== executeSignedCashout START =====");
-    error_log("[SwapService] Payload: " . json_encode($payload));
-    
-    $amount = (float)($payload['amount'] ?? 0);
-    $sourceInstitution = $payload['source_institution'] ?? $payload['from_institution'];
-    $beneficiaryPhone = $payload['beneficiary_phone'] ?? $payload['client_phone'] ?? null;
-    
-    error_log("[SwapService] sourceInstitution: '{$sourceInstitution}'");
-    error_log("[SwapService] amount: {$amount}");
-    
-    // STEP 1: Verify source with signature
-    error_log("[SwapService] STEP 1: Calling verifySourceAssetSigned");
-    $verificationResult = $this->executeStep('VERIFY_CASHOUT_SOURCE_SIGNED', function() use ($payload, $sourceInstitution) {
-        error_log("[SwapService] Inside closure, about to call verifySourceAssetSigned with: '{$sourceInstitution}'");
-        $result = $this->verifySourceAssetSigned($payload, $sourceInstitution);
-        error_log("[SwapService] verifySourceAssetSigned returned: " . json_encode($result));
-        return $result;
-    });
-    
-    error_log("[SwapService] verificationResult verified: " . ($verificationResult['verified'] ?? 'false'));
-    
-    $this->signedPayloads['verification'] = [
-        'payload' => $verificationResult['original_payload'],
-        'signature' => $verificationResult['signature'],
-        'source' => $sourceInstitution,
-        'timestamp' => $verificationResult['timestamp']
-    ];
-    
-    // STEP 2: Place hold with signature
-    error_log("[SwapService] STEP 2: Calling placeHoldSigned");
-    $holdResult = $this->executeStep('PLACE_CASHOUT_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
-        return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
-    });
-    
-    $this->signedPayloads['hold'] = [
-        'payload' => $holdResult['original_payload'],
-        'signature' => $holdResult['signature'],
-        'source' => $sourceInstitution,
-        'timestamp' => $holdResult['timestamp']
-    ];
-    
-    $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
-    
-    // STEP 3: Calculate fees
-    error_log("[SwapService] STEP 3: Calculating fees");
-    $feeBreakdown = $this->executeStep('CALCULATE_CASHOUT_FEES', function() use ($payload, $amount) {
-        return $this->feeService->calculateFees('CASHOUT', $amount, $payload);
-    });
-    
-    $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
-    error_log("[SwapService] netAmount after fees: {$netAmount}");
-    
-    // STEP 4: Generate ATM token with proof
-    error_log("[SwapService] STEP 4: Generating ATM token");
-    $tokenResult = $this->executeStep('GENERATE_TOKEN_WITH_PROOF', function() use ($payload, $sourceInstitution, $netAmount) {
-        return $this->generateAtmTokenWithProof($payload, $sourceInstitution, $netAmount);
-    });
-    
-    // STEP 5: Send SMS notification
-    if ($beneficiaryPhone && $this->smsService && isset($tokenResult['atm_pin'])) {
-        error_log("[SwapService] STEP 5: Sending SMS to {$beneficiaryPhone}");
-        $this->executeStep('SEND_SMS', function() use ($beneficiaryPhone, $tokenResult, $netAmount) {
-            return $this->smsService->sendCashoutCode(
-                $beneficiaryPhone,
-                $tokenResult['atm_pin'],
-                $netAmount,
-                $tokenResult['voucher_number'] ?? null
-            );
+    /**
+     * Execute signed cashout with cryptographic proof
+     */
+    private function executeSignedCashout(array $payload): array
+    {
+        error_log("[SwapService] ===== executeSignedCashout START =====");
+        error_log("[SwapService] Payload: " . json_encode($payload));
+        
+        $amount = (float)($payload['amount'] ?? 0);
+        $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
+        $beneficiaryPhone = $payload['beneficiary_phone'] ?? $payload['client_phone'] ?? null;
+        
+        error_log("[SwapService] sourceInstitution: '{$sourceInstitution}'");
+        error_log("[SwapService] amount: {$amount}");
+        
+        // STEP 1: Verify source with signature
+        error_log("[SwapService] STEP 1: Calling verifySourceAssetSigned");
+        $verificationResult = $this->executeStep('VERIFY_CASHOUT_SOURCE_SIGNED', function() use ($payload, $sourceInstitution) {
+            error_log("[SwapService] Inside closure, about to call verifySourceAssetSigned with: '{$sourceInstitution}'");
+            $result = $this->verifySourceAssetSigned($payload, $sourceInstitution);
+            error_log("[SwapService] verifySourceAssetSigned returned: " . json_encode($result));
+            return $result;
         });
+        
+        error_log("[SwapService] verificationResult verified: " . ($verificationResult['verified'] ?? 'false'));
+        
+        $this->signedPayloads['verification'] = [
+            'payload' => $verificationResult['original_payload'],
+            'signature' => $verificationResult['signature'],
+            'source' => $sourceInstitution,
+            'timestamp' => $verificationResult['timestamp']
+        ];
+        
+        // STEP 2: Place hold with signature
+        error_log("[SwapService] STEP 2: Calling placeHoldSigned");
+        $holdResult = $this->executeStep('PLACE_CASHOUT_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
+            return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
+        });
+        
+        $this->signedPayloads['hold'] = [
+            'payload' => $holdResult['original_payload'],
+            'signature' => $holdResult['signature'],
+            'source' => $sourceInstitution,
+            'timestamp' => $holdResult['timestamp']
+        ];
+        
+        $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
+        
+        // STEP 3: Calculate fees
+        error_log("[SwapService] STEP 3: Calculating fees");
+        $feeBreakdown = $this->executeStep('CALCULATE_CASHOUT_FEES', function() use ($payload, $amount) {
+            return $this->feeService->calculateFees('CASHOUT', $amount, $payload);
+        });
+        
+        $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
+        error_log("[SwapService] netAmount after fees: {$netAmount}");
+        
+        // STEP 4: Generate ATM token with proof
+        error_log("[SwapService] STEP 4: Generating ATM token");
+        $tokenResult = $this->executeStep('GENERATE_TOKEN_WITH_PROOF', function() use ($payload, $sourceInstitution, $netAmount) {
+            return $this->generateAtmTokenWithProof($payload, $sourceInstitution, $netAmount);
+        });
+        
+        // STEP 5: Send SMS notification
+        if ($beneficiaryPhone && $this->smsService && isset($tokenResult['atm_pin'])) {
+            error_log("[SwapService] STEP 5: Sending SMS to {$beneficiaryPhone}");
+            $this->executeStep('SEND_SMS', function() use ($beneficiaryPhone, $tokenResult, $netAmount) {
+                return $this->smsService->sendCashoutCode(
+                    $beneficiaryPhone,
+                    $tokenResult['atm_pin'],
+                    $netAmount,
+                    $tokenResult['voucher_number'] ?? null
+                );
+            });
+        }
+        
+        // STEP 6: Debit source
+        error_log("[SwapService] STEP 6: Debiting source");
+        $debitResult = $this->executeStep('DEBIT_CASHOUT_SOURCE', function() use ($payload, $sourceInstitution) {
+            return $this->debitSource($payload, $sourceInstitution);
+        });
+        
+        // STEP 7: Update hold status
+        $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
+        
+        error_log("[SwapService] ===== executeSignedCashout COMPLETED SUCCESSFULLY =====");
+        
+        return [
+            'status' => 'success',
+            'reference' => $this->currentSwapRef,
+            'atm_code' => $tokenResult['atm_pin'] ?? null,
+            'voucher_number' => $tokenResult['voucher_number'] ?? null,
+            'amount' => $netAmount,
+            'fee' => $feeBreakdown['total_fee'] ?? 0,
+            'signature_chain' => $this->signedPayloads
+        ];
     }
-    
-    // STEP 6: Debit source
-    error_log("[SwapService] STEP 6: Debiting source");
-    $debitResult = $this->executeStep('DEBIT_CASHOUT_SOURCE', function() use ($payload, $sourceInstitution) {
-        return $this->debitSource($payload, $sourceInstitution);
-    });
-    
-    // STEP 7: Update hold status
-    $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
-    
-    error_log("[SwapService] ===== executeSignedCashout COMPLETED SUCCESSFULLY =====");
-    
-    return [
-        'status' => 'success',
-        'reference' => $this->currentSwapRef,
-        'atm_code' => $tokenResult['atm_pin'] ?? null,
-        'voucher_number' => $tokenResult['voucher_number'] ?? null,
-        'amount' => $netAmount,
-        'fee' => $feeBreakdown['total_fee'] ?? 0,
-        'signature_chain' => $this->signedPayloads
-    ];
-}
 
     /**
      * Execute signed deposit
@@ -564,6 +577,8 @@ private function executeSignedCashout(array $payload): array
         // Create local hold record
         $holdId = $this->createLocalHold($payload, $institution, $data['hold_reference'] ?? null);
         $this->currentHoldId = $holdId;
+        
+        error_log("[SwapService] Hold created with ID: {$holdId}");
         
         return [
             'hold_placed' => true,
@@ -1112,8 +1127,18 @@ private function executeSignedCashout(array $payload): array
         return (int)$row['hold_id'];
     }
 
-    private function updateHoldStatus(int $holdId, string $status): void
+    private function updateHoldStatus(?int $holdId, string $status): void
     {
+        if ($holdId === null) {
+            error_log("[SwapService] WARNING: updateHoldStatus called with NULL holdId, status: {$status}");
+            // Log to audit but don't crash
+            $this->auditLog('UPDATE_HOLD_SKIPPED', [
+                'status' => $status,
+                'reason' => 'holdId is null'
+            ]);
+            return;
+        }
+        
         $sql = "
             UPDATE hold_transactions 
             SET status = :status,
@@ -1128,6 +1153,8 @@ private function executeSignedCashout(array $payload): array
             ':status' => $status,
             ':hold_id' => $holdId
         ]);
+        
+        error_log("[SwapService] Hold {$holdId} updated to status: {$status}");
     }
 
     // ============================================================
@@ -1372,22 +1399,22 @@ private function executeSignedCashout(array $payload): array
     }
 
     private function loadConfiguration(string $country): void
-{
-    $countryPath = __DIR__ . '/../../Core/Config/Countries/' . $country;
-    
-    error_log("[SwapService] loadConfiguration called for country: {$country}");
-    error_log("[SwapService] Looking for config at: {$countryPath}");
-    
-    $participantsPath = $countryPath . '/participants.yaml';
-    error_log("[SwapService] Participants file: {$participantsPath}");
-    error_log("[SwapService] File exists: " . (file_exists($participantsPath) ? 'YES' : 'NO'));
-    
-    if (file_exists($participantsPath)) {
-        $this->participants = $this->parseYaml($participantsPath);
-        error_log("[SwapService] Participants loaded. Keys: " . implode(', ', array_keys($this->participants)));
-    } else {
-        error_log("[SwapService] Participants file NOT FOUND!");
-    }
+    {
+        $countryPath = __DIR__ . '/../../Core/Config/Countries/' . $country;
+        
+        error_log("[SwapService] loadConfiguration called for country: {$country}");
+        error_log("[SwapService] Looking for config at: {$countryPath}");
+        
+        $participantsPath = $countryPath . '/participants.yaml';
+        error_log("[SwapService] Participants file: {$participantsPath}");
+        error_log("[SwapService] File exists: " . (file_exists($participantsPath) ? 'YES' : 'NO'));
+        
+        if (file_exists($participantsPath)) {
+            $this->participants = $this->parseYaml($participantsPath);
+            error_log("[SwapService] Participants loaded. Keys: " . implode(', ', array_keys($this->participants)));
+        } else {
+            error_log("[SwapService] Participants file NOT FOUND!");
+        }
         
         $endpointsPath = $countryPath . '/endpoints.yaml';
         if (file_exists($endpointsPath)) {
@@ -1402,61 +1429,61 @@ private function executeSignedCashout(array $payload): array
         $this->logger->info("Configuration loaded", ['country' => $country]);
     }
 
-   private function parseYaml(string $path): array
-{
-    $content = file_get_contents($path);
-    $data = [];
-    $lines = explode("\n", $content);
-    $currentKey = null;
-    
-    // First, find the participants section
-    $inParticipants = false;
-    $participantsData = [];
-    
-    foreach ($lines as $line) {
-        $line = rtrim($line);
-        if (empty($line) || $line[0] === '#') continue;
+    private function parseYaml(string $path): array
+    {
+        $content = file_get_contents($path);
+        $data = [];
+        $lines = explode("\n", $content);
+        $currentKey = null;
         
-        // Check for participants: section
-        if (preg_match('/^participants:$/', $line)) {
-            $inParticipants = true;
-            continue;
+        // First, find the participants section
+        $inParticipants = false;
+        $participantsData = [];
+        
+        foreach ($lines as $line) {
+            $line = rtrim($line);
+            if (empty($line) || $line[0] === '#') continue;
+            
+            // Check for participants: section
+            if (preg_match('/^participants:$/', $line)) {
+                $inParticipants = true;
+                continue;
+            }
+            
+            if ($inParticipants) {
+                // Match participant names (can be uppercase, uppercase with underscore)
+                if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
+                    $currentKey = $matches[1];
+                    $participantsData[$currentKey] = [];
+                    continue;
+                }
+                
+                // Match properties (indented with 4 spaces)
+                if ($currentKey && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
+                    $key = $matches[1];
+                    $value = trim($matches[2]);
+                    if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
+                    if (preg_match("/^'(.+)'$/", $value, $q)) $value = $q[1];
+                    $participantsData[$currentKey][$key] = $value;
+                    continue;
+                }
+                
+                // Match asset_types list
+                if ($currentKey && preg_match('/^    asset_types:$/', $line)) {
+                    $participantsData[$currentKey]['asset_types'] = [];
+                    continue;
+                }
+                
+                // Match items in asset_types list
+                if ($currentKey && isset($participantsData[$currentKey]['asset_types']) && preg_match('/^      - (.+)$/', $line, $matches)) {
+                    $participantsData[$currentKey]['asset_types'][] = trim($matches[1]);
+                    continue;
+                }
+            }
         }
         
-        if ($inParticipants) {
-            // Match participant names (can be uppercase, uppercase with underscore)
-            if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
-                $currentKey = $matches[1];
-                $participantsData[$currentKey] = [];
-                continue;
-            }
-            
-            // Match properties (indented with 4 spaces)
-            if ($currentKey && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
-                $key = $matches[1];
-                $value = trim($matches[2]);
-                if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
-                if (preg_match("/^'(.+)'$/", $value, $q)) $value = $q[1];
-                $participantsData[$currentKey][$key] = $value;
-                continue;
-            }
-            
-            // Match asset_types list
-            if ($currentKey && preg_match('/^    asset_types:$/', $line)) {
-                $participantsData[$currentKey]['asset_types'] = [];
-                continue;
-            }
-            
-            // Match items in asset_types list
-            if ($currentKey && isset($participantsData[$currentKey]['asset_types']) && preg_match('/^      - (.+)$/', $line, $matches)) {
-                $participantsData[$currentKey]['asset_types'][] = trim($matches[1]);
-                continue;
-            }
-        }
+        return $participantsData;
     }
-    
-    return $participantsData;
-}
 
     // ============================================================
     // PUBLIC METHODS
@@ -1467,31 +1494,31 @@ private function executeSignedCashout(array $payload): array
         return isset($payload['is_multi_source']) && $payload['is_multi_source'] === true;
     }
 
-  public function getParticipant(string $institution): array
-{
-    error_log("[SwapService] getParticipant called with: '{$institution}'");
-    
-    // Try exact match
-    if (isset($this->participants[$institution])) {
-        $participant = $this->participants[$institution];
-        // FORCE provider_code to match the institution name
-        $participant['provider_code'] = $institution;
-        error_log("[SwapService] Set provider_code for {$institution} to: {$institution}");
-        return $participant;
-    }
-    
-    // Try case-insensitive
-    $key = strtolower($institution);
-    foreach ($this->participants as $code => $participant) {
-        if (strtolower($code) === $key) {
-            $participant['provider_code'] = $code;
-            error_log("[SwapService] Found case-insensitive match: {$code}");
+    public function getParticipant(string $institution): array
+    {
+        error_log("[SwapService] getParticipant called with: '{$institution}'");
+        
+        // Try exact match
+        if (isset($this->participants[$institution])) {
+            $participant = $this->participants[$institution];
+            // FORCE provider_code to match the institution name
+            $participant['provider_code'] = $institution;
+            error_log("[SwapService] Set provider_code for {$institution} to: {$institution}");
             return $participant;
         }
+        
+        // Try case-insensitive
+        $key = strtolower($institution);
+        foreach ($this->participants as $code => $participant) {
+            if (strtolower($code) === $key) {
+                $participant['provider_code'] = $code;
+                error_log("[SwapService] Found case-insensitive match: {$code}");
+                return $participant;
+            }
+        }
+        
+        throw new RuntimeException("Participant not found: {$institution}");
     }
-    
-    throw new RuntimeException("Participant not found: {$institution}");
-}
 
     public function getHoldStatus(int $holdId): ?array
     {
