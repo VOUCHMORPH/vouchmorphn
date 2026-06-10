@@ -19,7 +19,6 @@ use Infrastructure\Mojaloop\IdempotencyService;
 use Infrastructure\Crypto\SignatureVerifier;
 use Infrastructure\Crypto\MessageSigner;
 use Psr\Log\LoggerInterface;
-use Psr\Log\NullLogger;
 
 /**
  * SIGNED ATOMIC SWAP ORCHESTRATOR
@@ -29,6 +28,13 @@ use Psr\Log\NullLogger;
  * - Trust is carried in cryptographic signatures
  * - Each bank signs its own assertions
  * - Destination verifies source signature directly
+ * 
+ * CASHOUT RULES:
+ * - Amount must be built from available bank notes (denominations from atm_notes.json)
+ * - Remaining balance stays in source wallet/account
+ * 
+ * DEPOSIT RULES:
+ * - Amount can be any decimal value
  */
 class SwapService
 {
@@ -38,6 +44,8 @@ class SwapService
     private array $endpoints = [];
     private string $countryCode;
     private array $feesConfig = [];
+    private array $atmNotes = [];
+    private array $feeCalculationDetails = [];
     
     // Service dependencies
     private HybridSettlementStrategy $settlement;
@@ -65,7 +73,7 @@ class SwapService
     // Store signed payloads for forwarding
     private array $signedPayloads = [];
 
-        public function __construct(
+    public function __construct(
         PDO $swapDB, 
         array $config, 
         string $country,
@@ -108,6 +116,9 @@ class SwapService
         // Load configuration
         $this->loadConfiguration($country);
         
+        // Load ATM notes from country config
+        $this->loadAtmNotes($country);
+        
         // Initialize services
         $this->settlement = new HybridSettlementStrategy($this->swapDB);
         $this->feeService = new FeeService($this->feesConfig, $this->config['currency'] ?? 'BWP');
@@ -134,6 +145,112 @@ class SwapService
         $this->logger->info("Signed SwapService initialized", ['country' => $country]);
     }
 
+    /**
+     * Load ATM notes from country configuration
+     */
+    private function loadAtmNotes(string $country): void
+    {
+        $atmNotesPath = __DIR__ . '/../../Core/Config/Countries/' . $country . '/atm_notes.json';
+        
+        if (file_exists($atmNotesPath)) {
+            $this->atmNotes = json_decode(file_get_contents($atmNotesPath), true);
+            error_log("[SwapService] Loaded ATM notes for {$country}: " . json_encode($this->atmNotes));
+        } else {
+            // Default denominations if file not found
+            $currency = $this->config['currency'] ?? 'BWP';
+            $this->atmNotes[$currency] = [200, 100, 50, 20, 10];
+            error_log("[SwapService] Using default ATM notes for {$currency}: " . json_encode($this->atmNotes[$currency]));
+        }
+    }
+
+    /**
+     * Validate and break down cashout amount into available denominations
+     * Returns the actual dispensable amount and the note breakdown
+     */
+    private function validateCashoutAmount(float $requestedAmount, string $currency): array
+    {
+        $denominations = $this->atmNotes[$currency] ?? [200, 100, 50, 20, 10];
+        sort($denominations); // Ensure ascending order for algorithm
+        
+        $remaining = $requestedAmount;
+        $noteBreakdown = [];
+        
+        // Calculate note breakdown (largest to smallest)
+        foreach (array_reverse($denominations) as $note) {
+            if ($remaining >= $note) {
+                $count = floor($remaining / $note);
+                $noteBreakdown[$note] = $count;
+                $remaining = round($remaining - ($note * $count), 2);
+            }
+        }
+        
+        // The actual dispensable amount is requested amount minus any remainder
+        $dispensableAmount = $requestedAmount - $remaining;
+        $remainderBalance = $remaining;
+        
+        $result = [
+            'requested_amount' => $requestedAmount,
+            'dispensable_amount' => $dispensableAmount,
+            'remainder_balance' => $remainderBalance,
+            'note_breakdown' => $noteBreakdown,
+            'denominations_used' => $denominations,
+            'is_exact' => ($remainderBalance == 0),
+            'message' => $remainderBalance > 0 
+                ? "Cannot dispense exact amount. Will dispense {$dispensableAmount} ({$remainderBalance} will remain in account)"
+                : "Exact amount can be dispensed"
+        ];
+        
+        error_log("[SwapService] Cashout amount validation: " . json_encode($result));
+        
+        return $result;
+    }
+
+    /**
+     * Calculate fees with detailed breakdown
+     */
+    private function calculateFeesWithDetails(string $feeType, float $amount, array $payload): array
+    {
+        $this->feeCalculationDetails = [];
+        
+        $feeResult = $this->feeService->calculateFees($feeType, $amount, $payload);
+        
+        // Build detailed breakdown
+        $details = [
+            'fee_type' => $feeType,
+            'original_amount' => $amount,
+            'total_fee' => $feeResult['total_fee'] ?? 0,
+            'net_amount' => $amount - ($feeResult['total_fee'] ?? 0),
+            'breakdown' => []
+        ];
+        
+        // Extract fee components from the result
+        if (isset($feeResult['components'])) {
+            $details['breakdown'] = $feeResult['components'];
+        } elseif (isset($feeResult['fees'])) {
+            foreach ($feeResult['fees'] as $feeName => $feeValue) {
+                if (is_numeric($feeValue)) {
+                    $details['breakdown'][$feeName] = $feeValue;
+                }
+            }
+        }
+        
+        // Add swap levy if present
+        if (isset($feeResult['swap_levy']) && $feeResult['swap_levy'] > 0) {
+            $details['breakdown']['swap_levy'] = $feeResult['swap_levy'];
+        }
+        
+        // Add split information if available
+        if (isset($feeResult['split'])) {
+            $details['revenue_split'] = $feeResult['split'];
+        }
+        
+        $this->feeCalculationDetails = $details;
+        
+        error_log("[SwapService] Fee calculation details: " . json_encode($details));
+        
+        return $feeResult;
+    }
+
     public function executeAtomicSwap(array $payload): array
     {
         // UNWRAP SIGNED ENVELOPE IF PRESENT
@@ -158,6 +275,7 @@ class SwapService
         // VALIDATE REQUIRED FIELDS
         $sourceInst = $payload['from_institution'] ?? $payload['source_institution'] ?? null;
         $destInst = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
+        $swapType = $payload['swap_type'] ?? 'STANDARD';
         
         if (empty($sourceInst)) {
             throw new RuntimeException("Missing source institution (from_institution or source_institution)");
@@ -166,7 +284,29 @@ class SwapService
             throw new RuntimeException("Missing destination institution (to_institution or destination_institution)");
         }
         
-        error_log("[SwapService] Source: {$sourceInst}, Dest: {$destInst}");
+        error_log("[SwapService] Source: {$sourceInst}, Dest: {$destInst}, Type: {$swapType}");
+        
+        // For CASHOUT type, validate the amount can be dispensed with available notes
+        if ($swapType === 'CASHOUT') {
+            $amount = (float)($payload['amount'] ?? 0);
+            $currency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
+            
+            $validation = $this->validateCashoutAmount($amount, $currency);
+            
+            if (!$validation['is_exact']) {
+                $this->logger->warning("Cashout amount cannot be dispensed exactly", $validation);
+                // Store the validation info in payload for later use
+                $payload['_cashout_validation'] = $validation;
+            }
+            
+            // Update amount to dispensable amount if needed
+            if ($validation['dispensable_amount'] != $amount) {
+                $payload['original_requested_amount'] = $amount;
+                $payload['amount'] = $validation['dispensable_amount'];
+                $payload['remainder_balance'] = $validation['remainder_balance'];
+                $payload['note_breakdown'] = $validation['note_breakdown'];
+            }
+        }
         
         $ref = $payload['reference'] ?? $this->generateReference();
         $idempotencyKey = $payload['idempotency_key'] ?? $payload['idempotencyKey'] ?? null;
@@ -182,7 +322,6 @@ class SwapService
         
         // Determine swap type
         $isMultiSource = $this->isMultiSourceContribution($payload);
-        $swapType = $payload['swap_type'] ?? ($isMultiSource ? 'MULTI_SOURCE' : 'STANDARD');
         
         // BEGIN ATOMIC BOUNDARY
         $this->beginAtomicSwap($ref);
@@ -195,6 +334,11 @@ class SwapService
                 'CARD_ISSUE' => $this->executeCardIssuance($payload),
                 default => $this->executeSignedStandardSwap($payload),
             };
+            
+            // Add fee calculation details to result
+            if (!empty($this->feeCalculationDetails)) {
+                $result['fee_calculation_details'] = $this->feeCalculationDetails;
+            }
             
             $commitResult = $this->commitAtomicSwap();
             $result = array_merge($result, ['atomic_commit' => $commitResult]);
@@ -224,6 +368,189 @@ class SwapService
             
             throw new RuntimeException("Swap failed: " . $e->getMessage(), 0, $e);
         }
+    }
+
+    /**
+     * Execute signed cashout with cryptographic proof and note denomination
+     */
+    private function executeSignedCashout(array $payload): array
+    {
+        error_log("[SwapService] ===== executeSignedCashout START =====");
+        error_log("[SwapService] Payload: " . json_encode($payload));
+        
+        $amount = (float)($payload['amount'] ?? 0);
+        $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
+        $beneficiaryPhone = $payload['beneficiary_phone'] ?? $payload['client_phone'] ?? null;
+        
+        error_log("[SwapService] sourceInstitution: '{$sourceInstitution}'");
+        error_log("[SwapService] amount: {$amount}");
+        
+        // Store cashout validation info if present
+        if (isset($payload['_cashout_validation'])) {
+            $this->feeCalculationDetails['cashout_validation'] = $payload['_cashout_validation'];
+        }
+        if (isset($payload['note_breakdown'])) {
+            $this->feeCalculationDetails['note_breakdown'] = $payload['note_breakdown'];
+        }
+        
+        // STEP 1: Verify source with signature
+        error_log("[SwapService] STEP 1: Calling verifySourceAssetSigned");
+        $verificationResult = $this->executeStep('VERIFY_CASHOUT_SOURCE_SIGNED', function() use ($payload, $sourceInstitution) {
+            error_log("[SwapService] Inside closure, about to call verifySourceAssetSigned with: '{$sourceInstitution}'");
+            $result = $this->verifySourceAssetSigned($payload, $sourceInstitution);
+            error_log("[SwapService] verifySourceAssetSigned returned: " . json_encode($result));
+            return $result;
+        });
+        
+        error_log("[SwapService] verificationResult verified: " . ($verificationResult['verified'] ?? 'false'));
+        
+        $this->signedPayloads['verification'] = [
+            'payload' => $verificationResult['original_payload'],
+            'signature' => $verificationResult['signature'],
+            'source' => $sourceInstitution,
+            'timestamp' => $verificationResult['timestamp']
+        ];
+        
+        // STEP 2: Place hold with signature
+        error_log("[SwapService] STEP 2: Calling placeHoldSigned");
+        $holdResult = $this->executeStep('PLACE_CASHOUT_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
+            return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
+        });
+        
+        $this->signedPayloads['hold'] = [
+            'payload' => $holdResult['original_payload'],
+            'signature' => $holdResult['signature'],
+            'source' => $sourceInstitution,
+            'timestamp' => $holdResult['timestamp']
+        ];
+        
+        $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
+        
+        // STEP 3: Calculate fees with detailed breakdown
+        error_log("[SwapService] STEP 3: Calculating fees with details");
+        $feeBreakdown = $this->calculateFeesWithDetails('CASHOUT', $amount, $payload);
+        
+        $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
+        error_log("[SwapService] netAmount after fees: {$netAmount}");
+        
+        // STEP 4: Generate ATM token with proof (using note breakdown if available)
+        error_log("[SwapService] STEP 4: Generating ATM token");
+        $tokenResult = $this->executeStep('GENERATE_TOKEN_WITH_PROOF', function() use ($payload, $sourceInstitution, $netAmount) {
+            // Pass note breakdown to token generation
+            $tokenPayload = $payload;
+            if (isset($this->feeCalculationDetails['note_breakdown'])) {
+                $tokenPayload['note_breakdown'] = $this->feeCalculationDetails['note_breakdown'];
+            }
+            return $this->generateAtmTokenWithProof($tokenPayload, $sourceInstitution, $netAmount);
+        });
+        
+        // STEP 5: Send SMS notification with note breakdown
+        if ($beneficiaryPhone && $this->smsService && isset($tokenResult['atm_pin'])) {
+            error_log("[SwapService] STEP 5: Sending SMS to {$beneficiaryPhone}");
+            
+            // Include note breakdown in SMS if available
+            $smsData = [
+                'atm_pin' => $tokenResult['atm_pin'],
+                'amount' => $netAmount,
+                'voucher_number' => $tokenResult['voucher_number'] ?? null
+            ];
+            
+            if (isset($this->feeCalculationDetails['note_breakdown'])) {
+                $smsData['note_breakdown'] = $this->feeCalculationDetails['note_breakdown'];
+            }
+            
+            $this->executeStep('SEND_SMS', function() use ($beneficiaryPhone, $smsData, $netAmount) {
+                return $this->smsService->sendCashoutCode(
+                    $beneficiaryPhone,
+                    $smsData['atm_pin'],
+                    $netAmount,
+                    $smsData['voucher_number'] ?? null
+                );
+            });
+        }
+        
+        // STEP 6: Debit source (only the dispensable amount, remainder stays)
+        error_log("[SwapService] STEP 6: Debiting source");
+        $debitResult = $this->executeStep('DEBIT_CASHOUT_SOURCE', function() use ($payload, $sourceInstitution) {
+            return $this->debitSource($payload, $sourceInstitution);
+        });
+        
+        // STEP 7: Update hold status
+        $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
+        
+        error_log("[SwapService] ===== executeSignedCashout COMPLETED SUCCESSFULLY =====");
+        
+        $result = [
+            'status' => 'success',
+            'reference' => $this->currentSwapRef,
+            'atm_code' => $tokenResult['atm_pin'] ?? null,
+            'voucher_number' => $tokenResult['voucher_number'] ?? null,
+            'amount' => $netAmount,
+            'original_requested_amount' => $payload['original_requested_amount'] ?? $amount,
+            'remainder_balance' => $payload['remainder_balance'] ?? 0,
+            'fee' => $feeBreakdown['total_fee'] ?? 0,
+            'fee_calculation_details' => $this->feeCalculationDetails,
+            'signature_chain' => $this->signedPayloads
+        ];
+        
+        // Add note breakdown to result
+        if (isset($payload['note_breakdown'])) {
+            $result['note_breakdown'] = $payload['note_breakdown'];
+        }
+        
+        return $result;
+    }
+
+    /**
+     * Execute signed deposit (any decimal amount allowed)
+     */
+    private function executeSignedDeposit(array $payload): array
+    {
+        error_log("[SwapService] ===== executeSignedDeposit START =====");
+        
+        $amount = (float)($payload['amount'] ?? 0);
+        $sourceInstitution = $payload['source_institution'] ?? $payload['from_institution'];
+        
+        error_log("[SwapService] Deposit amount: {$amount} (any decimal allowed)");
+        
+        // STEP 1: Verify source with signature
+        $verificationResult = $this->executeStep('VERIFY_DEPOSIT_SOURCE_SIGNED', function() use ($payload, $sourceInstitution) {
+            return $this->verifySourceAssetSigned($payload, $sourceInstitution);
+        });
+        
+        $this->signedPayloads['verification'] = [
+            'payload' => $verificationResult['original_payload'],
+            'signature' => $verificationResult['signature'],
+            'source' => $sourceInstitution,
+            'timestamp' => $verificationResult['timestamp']
+        ];
+        
+        // STEP 2: Calculate fees with detailed breakdown
+        error_log("[SwapService] Calculating deposit fees with details");
+        $feeBreakdown = $this->calculateFeesWithDetails('DEPOSIT', $amount, $payload);
+        
+        $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
+        error_log("[SwapService] Deposit net amount after fees: {$netAmount}");
+        
+        // STEP 3: Process deposit with proof
+        $depositResult = $this->executeStep('PROCESS_DEPOSIT_WITH_PROOF', function() use ($payload, $sourceInstitution, $netAmount) {
+            $depositPayload = $payload;
+            $depositPayload['amount'] = $netAmount;
+            return $this->processDepositWithProof($depositPayload, $sourceInstitution, $netAmount);
+        });
+        
+        error_log("[SwapService] ===== executeSignedDeposit COMPLETED SUCCESSFULLY =====");
+        
+        return [
+            'status' => 'success',
+            'reference' => $this->currentSwapRef,
+            'amount' => $netAmount,
+            'original_amount' => $amount,
+            'fee' => $feeBreakdown['total_fee'] ?? 0,
+            'fee_calculation_details' => $this->feeCalculationDetails,
+            'deposit_reference' => $depositResult['transaction_reference'] ?? null,
+            'signature_chain' => $this->signedPayloads
+        ];
     }
 
     /**
@@ -271,19 +598,18 @@ class SwapService
         
         $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
         
-        // STEP 3: Calculate fees (local calculation - no signature needed)
-        $feeBreakdown = $this->executeStep('CALCULATE_FEES', function() use ($payload, $amount) {
-            $transactionType = $payload['transaction_type'] ?? 'SWAP';
-            return $this->feeService->calculateFees($transactionType, $amount, $payload);
-        });
+        // STEP 3: Calculate fees with detailed breakdown
+        $feeBreakdown = $this->calculateFeesWithDetails('SWAP', $amount, $payload);
+        
+        $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
         
         // STEP 4: Process destination with VERIFIABLE proof from source
-        $destinationResult = $this->executeStep('PROCESS_DESTINATION_SIGNED', function() use ($payload, $destInstitution, $amount, $feeBreakdown) {
+        $destinationResult = $this->executeStep('PROCESS_DESTINATION_SIGNED', function() use ($payload, $destInstitution, $netAmount, $feeBreakdown) {
             // Forward the signed proof from source to destination
             return $this->processDestinationWithProof(
                 $payload, 
                 $destInstitution, 
-                $amount, 
+                $netAmount, 
                 $feeBreakdown,
                 $this->signedPayloads['verification'],
                 $this->signedPayloads['hold']
@@ -312,142 +638,12 @@ class SwapService
             'reference' => $this->currentSwapRef,
             'hold_id' => $this->currentHoldId,
             'hold_reference' => $this->currentHoldReference,
-            'amount' => $amount,
+            'amount' => $netAmount,
+            'original_amount' => $amount,
             'fee' => $feeBreakdown['total_fee'] ?? 0,
+            'fee_calculation_details' => $this->feeCalculationDetails,
             'signature_chain' => $this->signedPayloads,
             'settlement' => $settlementResult
-        ];
-    }
-
-    /**
-     * Execute signed cashout with cryptographic proof
-     */
-    private function executeSignedCashout(array $payload): array
-    {
-        error_log("[SwapService] ===== executeSignedCashout START =====");
-        error_log("[SwapService] Payload: " . json_encode($payload));
-        
-        $amount = (float)($payload['amount'] ?? 0);
-        $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
-        $beneficiaryPhone = $payload['beneficiary_phone'] ?? $payload['client_phone'] ?? null;
-        
-        error_log("[SwapService] sourceInstitution: '{$sourceInstitution}'");
-        error_log("[SwapService] amount: {$amount}");
-        
-        // STEP 1: Verify source with signature
-        error_log("[SwapService] STEP 1: Calling verifySourceAssetSigned");
-        $verificationResult = $this->executeStep('VERIFY_CASHOUT_SOURCE_SIGNED', function() use ($payload, $sourceInstitution) {
-            error_log("[SwapService] Inside closure, about to call verifySourceAssetSigned with: '{$sourceInstitution}'");
-            $result = $this->verifySourceAssetSigned($payload, $sourceInstitution);
-            error_log("[SwapService] verifySourceAssetSigned returned: " . json_encode($result));
-            return $result;
-        });
-        
-        error_log("[SwapService] verificationResult verified: " . ($verificationResult['verified'] ?? 'false'));
-        
-        $this->signedPayloads['verification'] = [
-            'payload' => $verificationResult['original_payload'],
-            'signature' => $verificationResult['signature'],
-            'source' => $sourceInstitution,
-            'timestamp' => $verificationResult['timestamp']
-        ];
-        
-        // STEP 2: Place hold with signature
-        error_log("[SwapService] STEP 2: Calling placeHoldSigned");
-        $holdResult = $this->executeStep('PLACE_CASHOUT_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
-            return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
-        });
-        
-        $this->signedPayloads['hold'] = [
-            'payload' => $holdResult['original_payload'],
-            'signature' => $holdResult['signature'],
-            'source' => $sourceInstitution,
-            'timestamp' => $holdResult['timestamp']
-        ];
-        
-        $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
-        
-        // STEP 3: Calculate fees
-        error_log("[SwapService] STEP 3: Calculating fees");
-        $feeBreakdown = $this->executeStep('CALCULATE_CASHOUT_FEES', function() use ($payload, $amount) {
-            return $this->feeService->calculateFees('CASHOUT', $amount, $payload);
-        });
-        
-        $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
-        error_log("[SwapService] netAmount after fees: {$netAmount}");
-        
-        // STEP 4: Generate ATM token with proof
-        error_log("[SwapService] STEP 4: Generating ATM token");
-        $tokenResult = $this->executeStep('GENERATE_TOKEN_WITH_PROOF', function() use ($payload, $sourceInstitution, $netAmount) {
-            return $this->generateAtmTokenWithProof($payload, $sourceInstitution, $netAmount);
-        });
-        
-        // STEP 5: Send SMS notification
-        if ($beneficiaryPhone && $this->smsService && isset($tokenResult['atm_pin'])) {
-            error_log("[SwapService] STEP 5: Sending SMS to {$beneficiaryPhone}");
-            $this->executeStep('SEND_SMS', function() use ($beneficiaryPhone, $tokenResult, $netAmount) {
-                return $this->smsService->sendCashoutCode(
-                    $beneficiaryPhone,
-                    $tokenResult['atm_pin'],
-                    $netAmount,
-                    $tokenResult['voucher_number'] ?? null
-                );
-            });
-        }
-        
-        // STEP 6: Debit source
-        error_log("[SwapService] STEP 6: Debiting source");
-        $debitResult = $this->executeStep('DEBIT_CASHOUT_SOURCE', function() use ($payload, $sourceInstitution) {
-            return $this->debitSource($payload, $sourceInstitution);
-        });
-        
-        // STEP 7: Update hold status
-        $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
-        
-        error_log("[SwapService] ===== executeSignedCashout COMPLETED SUCCESSFULLY =====");
-        
-        return [
-            'status' => 'success',
-            'reference' => $this->currentSwapRef,
-            'atm_code' => $tokenResult['atm_pin'] ?? null,
-            'voucher_number' => $tokenResult['voucher_number'] ?? null,
-            'amount' => $netAmount,
-            'fee' => $feeBreakdown['total_fee'] ?? 0,
-            'signature_chain' => $this->signedPayloads
-        ];
-    }
-
-    /**
-     * Execute signed deposit
-     */
-    private function executeSignedDeposit(array $payload): array
-    {
-        $amount = (float)($payload['amount'] ?? 0);
-        $sourceInstitution = $payload['source_institution'] ?? $payload['from_institution'];
-        
-        // STEP 1: Verify source with signature
-        $verificationResult = $this->executeStep('VERIFY_DEPOSIT_SOURCE_SIGNED', function() use ($payload, $sourceInstitution) {
-            return $this->verifySourceAssetSigned($payload, $sourceInstitution);
-        });
-        
-        $this->signedPayloads['verification'] = [
-            'payload' => $verificationResult['original_payload'],
-            'signature' => $verificationResult['signature'],
-            'source' => $sourceInstitution,
-            'timestamp' => $verificationResult['timestamp']
-        ];
-        
-        // STEP 2: Process deposit with proof
-        $depositResult = $this->executeStep('PROCESS_DEPOSIT_WITH_PROOF', function() use ($payload, $sourceInstitution, $amount) {
-            return $this->processDepositWithProof($payload, $sourceInstitution, $amount);
-        });
-        
-        return [
-            'status' => 'success',
-            'reference' => $this->currentSwapRef,
-            'amount' => $amount,
-            'deposit_reference' => $depositResult['transaction_reference'] ?? null,
-            'signature_chain' => $this->signedPayloads
         ];
     }
 
@@ -631,12 +827,10 @@ class SwapService
         $participant = $this->getParticipant($institution);
         $bankClient = new GenericBankClient($participant, $payload);
         
-        $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
-        
         // Forward the signed proofs from source bank
         $transferPayload = [
             'reference' => $this->currentSwapRef,
-            'amount' => $netAmount,
+            'amount' => $amount,
             'currency' => $payload['currency'] ?? 'BWP',
             'destination_type' => $payload['destination_type'] ?? 'ACCOUNT',
             'destination_details' => $payload['destination_details'] ?? [],
@@ -696,6 +890,11 @@ class SwapService
             'source_verification' => $this->signedPayloads['verification'] ?? null,
             'source_hold' => $this->signedPayloads['hold'] ?? null
         ];
+        
+        // Add note breakdown if available
+        if (isset($payload['note_breakdown'])) {
+            $tokenPayload['note_breakdown'] = $payload['note_breakdown'];
+        }
         
         $result = $bankClient->generateTokenWithProof($tokenPayload);
         
@@ -768,6 +967,7 @@ class SwapService
             'amount' => $payload['amount'] ?? 0,
             'currency' => $payload['currency'] ?? 'BWP',
             'fee' => $feeBreakdown,
+            'fee_details' => $this->feeCalculationDetails,
             'signature_chain' => $this->signedPayloads,
             'destination_proof' => $destinationResult
         ];
@@ -1449,6 +1649,7 @@ class SwapService
         $feesPath = $countryPath . '/fees.json';
         if (file_exists($feesPath)) {
             $this->feesConfig = json_decode(file_get_contents($feesPath), true) ?? [];
+            error_log("[SwapService] Loaded fees from: {$feesPath}");
         }
         
         $this->logger->info("Configuration loaded", ['country' => $country]);
@@ -1552,5 +1753,21 @@ class SwapService
         $stmt->execute([':hold_id' => $holdId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
+    }
+
+    /**
+     * Get available ATM denominations for a currency
+     */
+    public function getAtmDenominations(string $currency): array
+    {
+        return $this->atmNotes[$currency] ?? [200, 100, 50, 20, 10];
+    }
+
+    /**
+     * Calculate optimal note breakdown for an amount
+     */
+    public function calculateNoteBreakdown(float $amount, string $currency): array
+    {
+        return $this->validateCashoutAmount($amount, $currency);
     }
 }
