@@ -1,5 +1,6 @@
 <?php
-// public/user/user_dashboard.php - DARK DEBUG STYLE (FULLY FUNCTIONAL)
+// public/user/user_dashboard.php - SAME STYLE AS DEBUG VERSION
+// Fully functional with wallet balance, transactions, and participants
 
 ini_set('display_errors', 1);
 ini_set('log_errors', 1);
@@ -55,8 +56,6 @@ try {
     }
     
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    error_log("[USER DASHBOARD] Database connected successfully");
-    
 } catch (Throwable $e) {
     error_log("USER DASHBOARD DB ERROR: " . $e->getMessage());
     die("Database connection failed.");
@@ -71,6 +70,12 @@ $countryConfigPath = $baseConfigPath . '/Countries/' . $userCountry;
 $participantsYamlPath = $countryConfigPath . '/participants.yaml';
 $assetsYamlPath = $baseConfigPath . '/assets.yaml';
 
+$filesExist = [
+    'participants.yaml' => file_exists($participantsYamlPath),
+    'assets.yaml' => file_exists($assetsYamlPath),
+    'country_config' => is_dir($countryConfigPath)
+];
+
 function parseParticipantsYaml($content) {
     $participants = [];
     $lines = explode("\n", $content);
@@ -82,7 +87,7 @@ function parseParticipantsYaml($content) {
         
         if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
             $currentParticipant = $matches[1];
-            $participants[$currentParticipant] = ['code' => $currentParticipant];
+            $participants[$currentParticipant] = [];
             continue;
         }
         
@@ -119,9 +124,10 @@ function parseParticipantsYaml($content) {
 }
 
 $parsedParticipants = [];
-if (file_exists($participantsYamlPath)) {
-    $content = file_get_contents($participantsYamlPath);
-    $parsedParticipants = parseParticipantsYaml($content);
+$participantsRawContent = '';
+if ($filesExist['participants.yaml']) {
+    $participantsRawContent = file_get_contents($participantsYamlPath);
+    $parsedParticipants = parseParticipantsYaml($participantsRawContent);
 }
 
 // Get user's recent transactions
@@ -170,7 +176,6 @@ try {
         pre { background: #1a1a1a; padding: 15px; overflow-x: auto; border-left: 3px solid #4CAF50; margin: 10px 0; }
         .error { color: #f44336; }
         .success { color: #4CAF50; }
-        .warning { color: #FF9800; }
         .section { margin-bottom: 30px; border-bottom: 1px solid #333; padding-bottom: 20px; }
         h2 { color: #FF9800; font-size: 18px; }
         h3 { color: #2196F3; font-size: 14px; margin-top: 20px; }
@@ -178,21 +183,18 @@ try {
         th, td { border: 1px solid #333; padding: 8px; text-align: left; }
         th { background: #1a1a1a; }
         .balance-card {
-            background: linear-gradient(135deg, #1a1a2e 0%, #0f0f23 100%);
-            border: 1px solid #00F0FF;
-            border-radius: 8px;
-            padding: 20px;
+            background: #1a1a1a;
+            border-left: 3px solid #4CAF50;
+            padding: 15px;
             margin-bottom: 20px;
-            text-align: center;
         }
         .balance-amount {
-            font-size: 2.5rem;
-            color: #00F0FF;
-            font-weight: bold;
+            font-size: 2rem;
+            color: #4CAF50;
         }
         .quick-actions {
             display: flex;
-            gap: 15px;
+            gap: 10px;
             flex-wrap: wrap;
             margin-bottom: 20px;
         }
@@ -202,12 +204,12 @@ try {
             padding: 8px 16px;
             color: #fff;
             text-decoration: none;
+            font-family: monospace;
             cursor: pointer;
-            display: inline-block;
         }
         .btn:hover {
-            border-color: #00F0FF;
-            color: #00F0FF;
+            border-color: #4CAF50;
+            color: #4CAF50;
         }
         .status-completed { color: #4CAF50; }
         .status-pending { color: #FF9800; }
@@ -220,20 +222,31 @@ try {
     
     <!-- Balance Card -->
     <div class="balance-card">
-        <div style="font-size: 0.8rem; color: #A0A0B0;">Available Balance</div>
+        <div>💰 AVAILABLE BALANCE</div>
         <div class="balance-amount"><?= number_format($walletBalance, 2) ?> <?= htmlspecialchars($currencySymbol) ?></div>
     </div>
     
     <!-- Quick Actions -->
     <div class="quick-actions">
-        <a href="swap.php" class="btn">💰 NEW SWAP</a>
+        <a href="swap.php" class="btn">🔄 NEW SWAP</a>
         <a href="cashout.php" class="btn">🏧 CASH OUT</a>
         <a href="deposit.php" class="btn">📥 DEPOSIT</a>
         <a href="history.php" class="btn">📜 HISTORY</a>
         <a href="logout.php" class="btn">🚪 LOGOUT</a>
     </div>
     
-    <!-- Recent Transactions -->
+    <!-- FILE EXISTENCE (Debug info) -->
+    <div class="section">
+        <h2>📁 CONFIGURATION STATUS</h2>
+        <table>
+            <tr><th>File</th><th>Exists?</th></tr>
+            <tr><td>participants.yaml</td><td class="<?= $filesExist['participants.yaml'] ? 'success' : 'error' ?>"><?= $filesExist['participants.yaml'] ? '✓ YES' : '✗ NO' ?></td></tr>
+            <tr><td>assets.yaml</td><td class="<?= $filesExist['assets.yaml'] ? 'success' : 'error' ?>"><?= $filesExist['assets.yaml'] ? '✓ YES' : '✗ NO' ?></td></tr>
+            <tr><td>Country folder</td><td class="<?= $filesExist['country_config'] ? 'success' : 'error' ?>"><?= $filesExist['country_config'] ? '✓ YES' : '✗ NO' ?></td></tr>
+        </table>
+    </div>
+    
+    <!-- RECENT TRANSACTIONS -->
     <div class="section">
         <h2>📋 RECENT TRANSACTIONS</h2>
         <table>
@@ -248,9 +261,7 @@ try {
             </thead>
             <tbody>
                 <?php if (empty($recentTransactions)): ?>
-                    <tr>
-                        <td colspan="5" style="text-align: center; color: #A0A0B0;">No transactions yet</td>
-                    </tr>
+                    <tr><td colspan="5" style="text-align: center;">No transactions yet</td></tr>
                 <?php else: ?>
                     <?php foreach ($recentTransactions as $tx): ?>
                         <tr>
@@ -266,11 +277,12 @@ try {
         </table>
     </div>
     
-    <!-- Available Institutions -->
+    <!-- PARSED PARTICIPANTS -->
     <div class="section">
         <h2>🏦 AVAILABLE INSTITUTIONS</h2>
         <?php if (empty($parsedParticipants)): ?>
-            <p class="error">⚠ No institutions configured. Check YAML file.</p>
+            <p class="error">⚠ No participants parsed! Check YAML file.</p>
+            <pre><?= htmlspecialchars(substr($participantsRawContent, 0, 500)) ?></pre>
         <?php else: ?>
             <table>
                 <thead>
@@ -299,35 +311,41 @@ try {
         <?php endif; ?>
     </div>
     
-    <!-- Quick Swap Form -->
+    <!-- QUICK SWAP FORM -->
     <div class="section">
         <h2>🔄 QUICK SWAP</h2>
-        <form action="swap.php" method="GET" style="display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end;">
-            <div>
-                <label style="display: block; font-size: 0.7rem; margin-bottom: 5px;">FROM</label>
-                <select name="source" style="background: #1a1a1a; border: 1px solid #333; color: #fff; padding: 8px;">
-                    <option value="">-- Select --</option>
-                    <?php foreach ($parsedParticipants as $code => $p): ?>
-                        <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            <div>
-                <label style="display: block; font-size: 0.7rem; margin-bottom: 5px;">TO</label>
-                <select name="destination" style="background: #1a1a1a; border: 1px solid #333; color: #fff; padding: 8px;">
-                    <option value="">-- Select --</option>
-                    <?php foreach ($parsedParticipants as $code => $p): ?>
-                        <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            <div>
-                <label style="display: block; font-size: 0.7rem; margin-bottom: 5px;">AMOUNT (<?= htmlspecialchars($currencySymbol) ?>)</label>
-                <input type="number" name="amount" step="0.01" style="background: #1a1a1a; border: 1px solid #333; color: #fff; padding: 8px;">
-            </div>
-            <div>
-                <button type="submit" class="btn">GO →</button>
-            </div>
+        <form action="swap.php" method="GET">
+            <table>
+                <tr>
+                    <td>FROM:</td>
+                    <td>
+                        <select name="source" style="background:#1a1a1a; border:1px solid #333; color:#fff; padding:8px;">
+                            <option value="">-- Select --</option>
+                            <?php foreach ($parsedParticipants as $code => $p): ?>
+                                <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <td>TO:</td>
+                    <td>
+                        <select name="destination" style="background:#1a1a1a; border:1px solid #333; color:#fff; padding:8px;">
+                            <option value="">-- Select --</option>
+                            <?php foreach ($parsedParticipants as $code => $p): ?>
+                                <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <td>AMOUNT (<?= htmlspecialchars($currencySymbol) ?>):</td>
+                    <td><input type="number" name="amount" step="0.01" style="background:#1a1a1a; border:1px solid #333; color:#fff; padding:8px;"></td>
+                </tr>
+                <tr>
+                    <td colspan="2"><button type="submit" class="btn">GO →</button></td>
+                </tr>
+            </table>
         </form>
     </div>
 </body>
