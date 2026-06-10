@@ -1,87 +1,77 @@
 <?php
-// test_vault_secrets.php
-// Run: php test_vault_secrets.php
+// test_vault_api.php
+// Run: php test_vault_api.php
 
 echo "═══════════════════════════════════════════════════════════════════\n";
-echo "VAULT SECRETS TEST (Reading from /vault/secrets/ ONLY)\n";
-echo "NO ENVIRONMENT VARIABLE FALLBACK\n";
+echo "VAULT API TEST (Fetch secrets directly from Vault)\n";
 echo "═══════════════════════════════════════════════════════════════════\n\n";
 
-$vaultSecretsPath = '/vault/secrets/';
+$vaultUrl = getenv('RAILWAY_SERVICE_VAULT_URL');
+$vaultToken = getenv('RAILWAY_SERVICE_VAULT_TOKEN') ?: getenv('VAULT_TOKEN');
 
-echo "Reading secrets from: {$vaultSecretsPath}\n";
-echo "Directory exists: " . (file_exists($vaultSecretsPath) ? 'YES' : 'NO') . "\n\n";
+echo "Vault URL: {$vaultUrl}\n";
+echo "Vault Token: " . ($vaultToken ? '***HIDDEN***' : 'NOT FOUND') . "\n\n";
 
-// List all files in vault secrets directory
-if (file_exists($vaultSecretsPath)) {
-    $files = scandir($vaultSecretsPath);
-    echo "Files in /vault/secrets/:\n";
-    foreach ($files as $file) {
-        if ($file !== '.' && $file !== '..') {
-            $content = trim(file_get_contents($vaultSecretsPath . $file));
-            // Mask API keys
-            if (strpos($file, 'api_key') !== false || strpos($file, 'key') !== false) {
-                $displayContent = '***HIDDEN***';
-            } else {
-                $displayContent = $content;
-            }
-            echo "  📄 {$file} = {$displayContent}\n";
-        }
-    }
-    echo "\n";
-} else {
-    echo "❌ /vault/secrets/ directory does NOT exist!\n";
-    echo "   Vault is not mounted to this container.\n\n";
+if (!$vaultUrl) {
+    echo "❌ VAULT_URL not found\n";
+    exit(1);
 }
 
-// Define required secrets
-$requiredSecrets = [
-    'zurubank_base_url',
-    'zurubank_verify_endpoint',
-    'zurubank_hold_endpoint',
-    'zurubank_api_key',
-    'saccussalis_base_url',
-    'saccussalis_generate_token_endpoint',
-    'saccussalis_api_key',
-    'cazacom_base_url',
-    'cazacom_verify_endpoint',
-    'cazacom_hold_endpoint',
-    'cazacom_api_key',
+if (!$vaultToken) {
+    echo "❌ VAULT_TOKEN not found\n";
+    echo "   Railway should automatically inject this when services are linked.\n";
+    exit(1);
+}
+
+// Function to fetch secret from Vault
+function fetchVaultSecret($vaultUrl, $vaultToken, $path) {
+    $url = "https://{$vaultUrl}/v1/secret/data/{$path}";
+    
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => [
+            "X-Vault-Token: {$vaultToken}",
+            "Content-Type: application/json"
+        ],
+        CURLOPT_TIMEOUT => 10
+    ]);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($httpCode === 200) {
+        $data = json_decode($response, true);
+        return $data['data']['data'] ?? null;
+    }
+    
+    return null;
+}
+
+// List of secrets to fetch
+$secretsToFetch = [
+    'zurubank',
+    'saccussalis', 
+    'cazacom'
 ];
 
-echo "Checking required secrets:\n\n";
-
-$found = 0;
-$missing = 0;
-
-foreach ($requiredSecrets as $secret) {
-    $filePath = $vaultSecretsPath . $secret;
-    if (file_exists($filePath)) {
-        $value = trim(file_get_contents($filePath));
-        if (!empty($value)) {
-            echo "✅ {$secret} = " . (strpos($secret, 'api_key') !== false ? '***HIDDEN***' : $value) . "\n";
-            $found++;
-        } else {
-            echo "❌ {$secret} = EMPTY FILE\n";
-            $missing++;
+foreach ($secretsToFetch as $secret) {
+    echo "▶ Fetching: {$secret}\n";
+    $result = fetchVaultSecret($vaultUrl, $vaultToken, $secret);
+    
+    if ($result) {
+        echo "   ✅ SUCCESS:\n";
+        foreach ($result as $key => $value) {
+            $displayValue = (strpos($key, 'api_key') !== false || strpos($key, 'key') !== false) 
+                ? '***HIDDEN***' 
+                : $value;
+            echo "      {$key}: {$displayValue}\n";
         }
     } else {
-        echo "❌ {$secret} = FILE NOT FOUND\n";
-        $missing++;
+        echo "   ❌ FAILED - secret not found or access denied\n";
     }
+    echo "\n";
 }
 
-echo "\n═══════════════════════════════════════════════════════════════════\n";
-echo "Summary:\n";
-echo "   Found: {$found}\n";
-echo "   Missing: {$missing}\n";
-
-if ($missing > 0) {
-    echo "\n⚠️ Missing secrets in /vault/secrets/\n";
-    echo "   Fix: Ensure Vault is properly linked to PHP service\n";
-    echo "   Railway CLI: railway service connect --service php --to vault\n";
-} else {
-    echo "\n✅ ALL SECRETS AVAILABLE IN VAULT!\n";
-}
-
-echo "\n═══════════════════════════════════════════════════════════════════\n";
+echo "═══════════════════════════════════════════════════════════════════\n";
