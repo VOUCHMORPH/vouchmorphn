@@ -1,7 +1,7 @@
 <?php
 // /public/generate_signature.php
 
-require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/../../vendor/autoload.php';
 
 use Infrastructure\Crypto\MessageSigner;
 
