@@ -9,6 +9,7 @@ require_once __DIR__ . '/../MessageAdapters/MessageAdapterFactory.php';
 
 use Infrastructure\Banks\Contracts\BankAPIInterface;
 use Infrastructure\MessageAdapters\MessageAdapterFactory;
+use Infrastructure\Crypto\MessageSigner;
 
 class GenericBankClient implements BankAPIInterface
 {
@@ -22,6 +23,7 @@ class GenericBankClient implements BankAPIInterface
     protected ?int $tokenExpiresAt = null;
     protected ?MessageAdapterFactory $adapterFactory = null;
     protected ?string $bankPrefix = null;
+    protected ?MessageSigner $signer = null;
 
     public function __construct(array $config, ?array $requestPayload = null, ?array $headers = null, ?string $endpoint = null)
     {
@@ -31,6 +33,13 @@ class GenericBankClient implements BankAPIInterface
         $this->bankPrefix = strtoupper($this->config['provider_code'] ?? '');
         if (empty($this->bankPrefix) && isset($this->config['name'])) {
             $this->bankPrefix = strtoupper($this->config['name']);
+        }
+        
+        // Initialize MessageSigner for RSA signatures
+        try {
+            $this->signer = new MessageSigner();
+        } catch (\Exception $e) {
+            error_log("MessageSigner init failed: " . $e->getMessage());
         }
         
         // Initialize MessageAdapterFactory with country from config
@@ -130,20 +139,20 @@ class GenericBankClient implements BankAPIInterface
         // Map actions to environment variable names
         $envMap = [
             'verify_asset' => 'VERIFY_ENDPOINT',
-        'place_hold' => 'HOLD_ENDPOINT',
-        'release_hold' => 'RELEASE_HOLD_ENDPOINT',
-        'debit_funds' => 'DEBIT_ENDPOINT',
-        'generate_token' => 'GENERATE_TOKEN_ENDPOINT',
-        'generate_token_with_proof' => 'GENERATE_TOKEN_ENDPOINT',  // ADD THIS LINE
-        'verify_token' => 'VERIFY_TOKEN_ENDPOINT',
-        'confirm_cashout' => 'CONFIRM_CASHOUT_ENDPOINT',
-        'process_deposit' => 'PROCESS_DEPOSIT_ENDPOINT',
-        'process_deposit_with_proof' => 'PROCESS_DEPOSIT_ENDPOINT',  // ADD THIS LINE
-        'check_status' => 'STATUS_ENDPOINT',
-        'reverse_transaction' => 'REVERSE_ENDPOINT',
-        'account_balance' => 'BALANCE_ENDPOINT',
-        'transactions' => 'TRANSACTIONS_ENDPOINT',
-        'transfer_with_proof' => 'TRANSFER_ENDPOINT',
+            'place_hold' => 'HOLD_ENDPOINT',
+            'release_hold' => 'RELEASE_HOLD_ENDPOINT',
+            'debit_funds' => 'DEBIT_ENDPOINT',
+            'generate_token' => 'GENERATE_TOKEN_ENDPOINT',
+            'generate_token_with_proof' => 'GENERATE_TOKEN_ENDPOINT',
+            'verify_token' => 'VERIFY_TOKEN_ENDPOINT',
+            'confirm_cashout' => 'CONFIRM_CASHOUT_ENDPOINT',
+            'process_deposit' => 'PROCESS_DEPOSIT_ENDPOINT',
+            'process_deposit_with_proof' => 'PROCESS_DEPOSIT_ENDPOINT',
+            'check_status' => 'STATUS_ENDPOINT',
+            'reverse_transaction' => 'REVERSE_ENDPOINT',
+            'account_balance' => 'BALANCE_ENDPOINT',
+            'transactions' => 'TRANSACTIONS_ENDPOINT',
+            'transfer_with_proof' => 'TRANSFER_ENDPOINT',
         ];
         
         $actionKey = $envMap[$action] ?? null;
@@ -442,18 +451,52 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
+    // HELPER: ADD SOURCE IDENTIFIER TO PAYLOAD
+    // ============================================================================
+
+    /**
+     * Add source identifier (phone/national ID/email) to payload for wallet verification
+     */
+    protected function addSourceIdentifier(array $payload): array
+    {
+        // If source identifier already exists, ensure all formats are present
+        $sourceIdentifier = $payload['source_identifier'] ?? 
+                            $payload['wallet_phone'] ?? 
+                            $payload['phone'] ?? 
+                            $payload['national_id'] ?? 
+                            $payload['email'] ?? null;
+        
+        if ($sourceIdentifier) {
+            // Add all possible identifier formats for maximum compatibility
+            $payload['source_identifier'] = $sourceIdentifier;
+            $payload['wallet_phone'] = $sourceIdentifier;
+            $payload['phone'] = $sourceIdentifier;
+            $payload['national_id'] = $sourceIdentifier;
+            $payload['email'] = $sourceIdentifier;
+            
+            error_log("[GenericBankClient] Source identifier added: {$sourceIdentifier}");
+        } else {
+            error_log("[GenericBankClient] WARNING: No source identifier found in payload");
+        }
+        
+        return $payload;
+    }
+
+    // ============================================================================
     // SOURCE ROLE METHODS
     // ============================================================================
 
     public function verifyAsset(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: verifyAsset ===");
+        $payload = $this->addSourceIdentifier($payload);
         return $this->send('verify_asset', $payload, $payload['access_token'] ?? null);
     }
 
     public function placeHold(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: placeHold ===");
+        $payload = $this->addSourceIdentifier($payload);
         return $this->send('place_hold', $payload, $payload['access_token'] ?? null);
     }
 
@@ -627,105 +670,102 @@ class GenericBankClient implements BankAPIInterface
         ];
     }
 
-// ============================================================================
-// SIGNED METHODS FOR BANK-GRADE TRUST
-// ============================================================================
+    // ============================================================================
+    // SIGNED METHODS FOR BANK-GRADE TRUST (RSA)
+    // ============================================================================
 
-/**
- * Verify asset and expect signed response from bank
- */
-public function verifyAssetSigned(array $payload): array
-{
-    error_log("=== GENERIC BANK CLIENT: verifyAssetSigned ===");
-    
-    // Add requester info to payload
-    $payload['requester'] = 'VOUCHMORPH';
-    $payload['timestamp'] = time();
-    
-    // Sign the request payload
-    $privateKey = getenv('VOUCHMORPH_PRIVATE_KEY');
-    $payloadJson = json_encode($payload);
-    $signature = base64_encode(hash_hmac('sha256', $payloadJson, $privateKey, true));
-    $payload['signature'] = $signature;
-    
-    return $this->send('verify_asset', $payload, $payload['access_token'] ?? null);
-}
+    /**
+     * Create a signed payload using RSA private key
+     * This is the proper PKI method like Visa/Mastercard
+     */
+    protected function createSignedPayload(array $payload, string $requester = 'VOUCHMORPH'): array
+    {
+        // Add source identifier if not present
+        $payload = $this->addSourceIdentifier($payload);
+        
+        if ($this->signer) {
+            // Use RSA signing (proper PKI)
+            return $this->signer->createSignedRequest($payload, $requester);
+        } else {
+            // Fallback to HMAC if signer not available
+            error_log("WARNING: MessageSigner not available, using HMAC fallback");
+            $payload['requester'] = $requester;
+            $payload['timestamp'] = time();
+            $privateKey = getenv('VOUCHMORPH_PRIVATE_KEY');
+            if ($privateKey) {
+                $payloadJson = json_encode($payload);
+                $signature = base64_encode(hash_hmac('sha256', $payloadJson, $privateKey, true));
+                $payload['signature'] = $signature;
+            }
+            return $payload;
+        }
+    }
 
-/**
- * Place hold and expect signed response from bank
- */
-public function placeHoldSigned(array $payload): array
-{
-    error_log("=== GENERIC BANK CLIENT: placeHoldSigned ===");
-    
-    $payload['requester'] = 'VOUCHMORPH';
-    $payload['timestamp'] = time();
-    
-    $privateKey = getenv('VOUCHMORPH_PRIVATE_KEY');
-    $payloadJson = json_encode($payload);
-    $signature = base64_encode(hash_hmac('sha256', $payloadJson, $privateKey, true));
-    $payload['signature'] = $signature;
-    
-    return $this->send('place_hold', $payload, $payload['access_token'] ?? null);
-}
+    /**
+     * Verify asset and expect signed response from bank
+     */
+    public function verifyAssetSigned(array $payload): array
+    {
+        error_log("=== GENERIC BANK CLIENT: verifyAssetSigned (RSA) ===");
+        
+        // Create signed payload with source identifier
+        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+        
+        return $this->send('verify_asset', $signedPayload, $signedPayload['access_token'] ?? null);
+    }
 
-/**
- * Transfer with cryptographic proof from source bank
- */
-public function transferWithProof(array $payload): array
-{
-    error_log("=== GENERIC BANK CLIENT: transferWithProof ===");
-    
-    $payload['requester'] = 'VOUCHMORPH';
-    $payload['timestamp'] = time();
-    
-    $privateKey = getenv('VOUCHMORPH_PRIVATE_KEY');
-    $payloadJson = json_encode($payload);
-    $signature = base64_encode(hash_hmac('sha256', $payloadJson, $privateKey, true));
-    $payload['signature'] = $signature;
-    
-    // Forward the source proofs as-is (already signed by source bank)
-    // This endpoint should expect source_verification and source_hold with their signatures
-    
-    return $this->send('transfer_with_proof', $payload);
-}
+    /**
+     * Place hold and expect signed response from bank
+     */
+    public function placeHoldSigned(array $payload): array
+    {
+        error_log("=== GENERIC BANK CLIENT: placeHoldSigned (RSA) ===");
+        
+        // Create signed payload with source identifier
+        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+        
+        return $this->send('place_hold', $signedPayload, $signedPayload['access_token'] ?? null);
+    }
 
-/**
- * Generate ATM token with proof
- */
-public function generateTokenWithProof(array $payload): array
-{
-    error_log("=== GENERIC BANK CLIENT: generateTokenWithProof ===");
-    
-    $payload['requester'] = 'VOUCHMORPH';
-    $payload['timestamp'] = time();
-    
-    $privateKey = getenv('VOUCHMORPH_PRIVATE_KEY');
-    $payloadJson = json_encode($payload);
-    $signature = base64_encode(hash_hmac('sha256', $payloadJson, $privateKey, true));
-    $payload['signature'] = $signature;
-    
-    return $this->send('generate_token_with_proof', $payload);
-}
+    /**
+     * Transfer with cryptographic proof from source bank
+     */
+    public function transferWithProof(array $payload): array
+    {
+        error_log("=== GENERIC BANK CLIENT: transferWithProof ===");
+        
+        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+        
+        return $this->send('transfer_with_proof', $signedPayload);
+    }
 
-/**
- * Process deposit with proof
- */
-public function processDepositWithProof(array $payload): array
-{
-    error_log("=== GENERIC BANK CLIENT: processDepositWithProof ===");
+    /**
+     * Generate ATM token with proof
+     */
+    public function generateTokenWithProof(array $payload): array
+    {
+        error_log("=== GENERIC BANK CLIENT: generateTokenWithProof ===");
+        
+        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+        
+        return $this->send('generate_token_with_proof', $signedPayload);
+    }
+
+    /**
+     * Process deposit with proof
+     */
+    public function processDepositWithProof(array $payload): array
+    {
+        error_log("=== GENERIC BANK CLIENT: processDepositWithProof ===");
+        
+        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+        
+        return $this->send('process_deposit_with_proof', $signedPayload);
+    }
     
-    $payload['requester'] = 'VOUCHMORPH';
-    $payload['timestamp'] = time();
-    
-    $privateKey = getenv('VOUCHMORPH_PRIVATE_KEY');
-    $payloadJson = json_encode($payload);
-    $signature = base64_encode(hash_hmac('sha256', $payloadJson, $privateKey, true));
-    $payload['signature'] = $signature;
-    
-    return $this->send('process_deposit_with_proof', $payload);
-}
-    
+    /**
+     * Build HTTP headers for request
+     */
     protected function buildHeaders(array $payload, ?string $accessToken = null): array
     {
         $headers = ['Content-Type: application/json'];
