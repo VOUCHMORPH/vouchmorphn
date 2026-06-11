@@ -3,15 +3,83 @@
 
 namespace Infrastructure\Crypto;
 
+use PDO;
+use Exception;
+
 class SignatureVerifier
 {
-    public function verify(array $payload, string $signature, string $publicKey): bool
+    private PDO $db;
+    
+    public function __construct(?PDO $db = null)
     {
-        $data = json_encode($payload);
-        $expected = base64_encode(hash_hmac('sha256', $data, $publicKey, true));
-        return hash_equals($expected, $signature);
+        $this->db = $db;
     }
     
+    /**
+     * Get RSA public key for an institution from institution_keys table
+     */
+    public function getInstitutionPublicKey(string $institution): ?string
+    {
+        if (!$this->db) {
+            error_log("No database connection for SignatureVerifier");
+            return null;
+        }
+        
+        try {
+            $stmt = $this->db->prepare("
+                SELECT public_key 
+                FROM institution_keys 
+                WHERE institution = :institution 
+                AND is_active = true
+                AND (expires_at IS NULL OR expires_at > NOW())
+                ORDER BY created_at DESC
+                LIMIT 1
+            ");
+            $stmt->execute([':institution' => $institution]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($row && !empty($row['public_key'])) {
+                error_log("Found RSA public key for institution: {$institution}");
+                return $row['public_key'];
+            }
+            
+            error_log("No public key found for institution: {$institution}");
+            return null;
+            
+        } catch (Exception $e) {
+            error_log("Error getting public key for {$institution}: " . $e->getMessage());
+            return null;
+        }
+    }
+    
+    /**
+     * Verify RSA signature from an institution
+     * Uses openssl_verify - same as Visa/Mastercard
+     */
+    public function verify(array $payload, string $signature, string $publicKey): bool
+    {
+        $payloadJson = json_encode($payload);
+        
+        // Verify RSA signature using openssl
+        $result = openssl_verify(
+            $payloadJson,
+            base64_decode($signature),
+            $publicKey,
+            OPENSSL_ALGO_SHA256
+        );
+        
+        $isValid = ($result === 1);
+        
+        if ($result === -1) {
+            error_log("Signature verification error: " . openssl_error_string());
+        }
+        
+        return $isValid;
+    }
+    
+    /**
+     * Verify signed payload with timestamp (prevents replay attacks)
+     */
     public function verifyWithTimestamp(array $signedPayload, string $publicKey, int $maxAgeSeconds = 300): bool
     {
         $payload = $signedPayload['payload'] ?? [];
@@ -20,9 +88,38 @@ class SignatureVerifier
         
         // Reject old messages (prevent replay attacks)
         if (abs(time() - $timestamp) > $maxAgeSeconds) {
+            error_log("Signature rejected: timestamp too old (age: " . abs(time() - $timestamp) . "s)");
             return false;
         }
         
-        return $this->verify($payload, $signature, $publicKey);
+        // Include timestamp in verification if present
+        if ($timestamp) {
+            $payloadToVerify = array_merge($payload, ['_timestamp' => $timestamp]);
+        } else {
+            $payloadToVerify = $payload;
+        }
+        
+        return $this->verify($payloadToVerify, $signature, $publicKey);
+    }
+    
+    /**
+     * Get institution public key and verify signature in one call
+     */
+    public function verifyForInstitution(array $payload, string $signature, string $institution, ?int $timestamp = null): bool
+    {
+        $publicKey = $this->getInstitutionPublicKey($institution);
+        
+        if (!$publicKey) {
+            error_log("Cannot verify signature: No public key for {$institution}");
+            return false;
+        }
+        
+        if ($timestamp) {
+            $payloadToVerify = array_merge($payload, ['_timestamp' => $timestamp]);
+        } else {
+            $payloadToVerify = $payload;
+        }
+        
+        return $this->verify($payloadToVerify, $signature, $publicKey);
     }
 }
