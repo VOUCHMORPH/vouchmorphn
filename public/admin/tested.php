@@ -1,22 +1,43 @@
 <?php
+// /public/generate_sig.php
+
+require_once __DIR__ . '/../vendor/autoload.php';
+
+use Infrastructure\Crypto\MessageSigner;
+
 header("Content-Type: text/plain");
 
-$privateKey = getenv('VOUCHMORPH_PRIVATE_KEY');
+$signer = new MessageSigner();
 
-// Convert literal \n to actual newlines
-$privateKey = str_replace('\\n', "\n", $privateKey);
-$privateKey = str_replace('\n', "\n", $privateKey);
-
-$key = openssl_pkey_get_private($privateKey);
-if (!$key) {
-    echo "ERROR: Failed to load private key\n";
+if (!$signer->isReady()) {
+    echo "ERROR: Private key not loaded\n";
+    echo "Check that VOUCHMORPH_PRIVATE_KEY is set in environment\n";
     exit;
 }
 
-// Extract the public key
-$details = openssl_pkey_get_details($key);
-$publicKey = $details['key'];
+// Create test payload
+$payload = [
+    'action' => 'VERIFY_ASSET',
+    'reference' => 'TEST_' . time(),
+    'asset_type' => 'BANK-WALLET',
+    'amount' => 100,
+    'currency' => 'BWP',
+    'institution' => 'SACCUSSALIS',
+    'timestamp' => time(),
+    'swap_type' => 'CASHOUT',
+    'source_identifier' => '+26770000000'
+];
 
-echo "=== THIS IS THE EXACT PUBLIC KEY THAT MATCHES YOUR PRIVATE KEY ===\n\n";
-echo $publicKey;
-echo "\n\n=== Copy this entire public key into Saccussalis trusted_partners table ===\n";
+// Generate signed request
+$signed = $signer->createSignedRequest($payload, 'VOUCHMORPH');
+
+echo "========================================\n";
+echo "SIGNATURE GENERATED\n";
+echo "========================================\n\n";
+echo "SIGNATURE: " . $signed['signature'] . "\n\n";
+echo "TIMESTAMP: " . $signed['timestamp'] . "\n\n";
+echo "PAYLOAD:\n";
+echo json_encode($payload, JSON_PRETTY_PRINT) . "\n\n";
+echo "========================================\n";
+echo "Copy these values to Saccussalis test\n";
+echo "========================================\n";
