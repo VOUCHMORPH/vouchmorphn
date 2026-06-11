@@ -1,7 +1,7 @@
 <?php
 // /public/test_hold_directly.php
 
-require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/../../vendor/autoload.php';
 use Infrastructure\Crypto\MessageSigner;
 
 $signer = new MessageSigner();
