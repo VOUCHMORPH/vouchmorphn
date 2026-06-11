@@ -1,68 +1,58 @@
 <?php
-// /public/test_hold_directly.php
-
+// /public/diagnose.php - Run this on VOUCHMORPH
 require_once __DIR__ . '/../../vendor/autoload.php';
 use Infrastructure\Crypto\MessageSigner;
 
-$signer = new MessageSigner();
+header("Content-Type: text/plain");
 
-if (!$signer->isReady()) {
-    die("ERROR: Private key not loaded\n");
+// Get private key
+$privateKeyContent = getenv('VOUCHMORPH_PRIVATE_KEY');
+$privateKeyContent = str_replace('\\n', "\n", $privateKeyContent);
+$privateKey = openssl_pkey_get_private($privateKeyContent);
+
+if (!$privateKey) {
+    die("ERROR: Cannot load private key\n");
 }
 
-// Create payload exactly as placeHoldSigned does
+// Extract public key from private key
+$details = openssl_pkey_get_details($privateKey);
+$correctPublicKey = $details['key'];
+
+echo "=== CORRECT PUBLIC KEY (use this in Saccussalis DB) ===\n";
+echo $correctPublicKey . "\n\n";
+
+// Test payload
 $payload = [
     'action' => 'PLACE_HOLD',
-    'reference' => 'TEST_' . time(),
-    'asset_type' => 'BANK-WALLET',
+    'reference' => 'DIAG_' . time(),
     'amount' => 100,
-    'currency' => 'BWP',
-    'hold_reason' => 'PENDING_SWAP',
-    'destination_institution' => 'ZURUBANK',
-    'expiry' => date('Y-m-d H:i:s', strtotime('+1 hour')),
-    'source_identifier' => '+26770000000',
-    'source_identifier_type' => 'phone',
-    'asset_id' => 4,
-    'wallet_phone' => '+26770000000',
-    'phone' => '+26770000000',
-    'national_id' => '+26770000000',
-    'email' => '+26770000000'
+    'asset_id' => 4
 ];
+ksort($payload);
 
-// Sign the payload
-$signed = $signer->createSignedRequest($payload, 'VOUCHMORPH');
+$timestamp = time();
+$payloadWithTs = $payload;
+$payloadWithTs['_timestamp'] = $timestamp;
+ksort($payloadWithTs);
 
-echo "Sending hold request to Saccussalis...\n";
+$jsonToSign = json_encode($payloadWithTs, JSON_UNESCAPED_SLASHES);
+echo "=== JSON THAT WILL BE SIGNED ===\n";
+echo $jsonToSign . "\n\n";
 
-// Send directly to Saccussalis hold endpoint
-$ch = curl_init('https://saccussalis-production.up.railway.app/backend/api/v1/hold.php');
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_POST, true);
-curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode([
-    'action' => $payload['action'],
-    'reference' => $payload['reference'],
-    'asset_type' => $payload['asset_type'],
-    'amount' => $payload['amount'],
-    'currency' => $payload['currency'],
-    'hold_reason' => $payload['hold_reason'],
-    'destination_institution' => $payload['destination_institution'],
-    'expiry' => $payload['expiry'],
-    'source_identifier' => $payload['source_identifier'],
-    'source_identifier_type' => $payload['source_identifier_type'],
-    'asset_id' => $payload['asset_id'],
-    'wallet_phone' => $payload['wallet_phone'],
-    'phone' => $payload['phone'],
-    'national_id' => $payload['national_id'],
-    'email' => $payload['email'],
-    'requester' => 'VOUCHMORPH',
-    'timestamp' => $signed['timestamp'],
-    'signature' => $signed['signature']
-]));
-curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+// Sign
+$signature = '';
+openssl_sign($jsonToSign, $signature, $privateKey, OPENSSL_ALGO_SHA256);
+$signatureBase64 = base64_encode($signature);
+echo "SIGNATURE: " . $signatureBase64 . "\n";
+echo "TIMESTAMP: " . $timestamp . "\n\n";
 
-$response = curl_exec($ch);
-$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-curl_close($ch);
+// Now verify it ourselves immediately
+echo "=== VERIFYING WITH OUR OWN PUBLIC KEY ===\n";
+$result = openssl_verify($jsonToSign, $signature, $correctPublicKey, OPENSSL_ALGO_SHA256);
+echo "Self-verification result: " . ($result === 1 ? "VALID ✓" : "INVALID ✗") . "\n\n";
 
-echo "HTTP Code: $httpCode\n";
-echo "Response: " . $response . "\n";
+echo "=== INSTRUCTIONS ===\n";
+echo "1. Copy the PUBLIC KEY above\n";
+echo "2. In Saccussalis DB, run:\n";
+echo "   UPDATE trusted_partners SET public_key = 'THE_PUBLIC_KEY_ABOVE' WHERE name = 'VOUCHMORPH';\n";
+echo "3. After updating, run this same script again\n";
