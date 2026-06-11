@@ -16,6 +16,9 @@ if (!SessionManager::isLoggedIn()) {
 $user = SessionManager::getUser();
 $loggedPhone = htmlspecialchars($user['phone'] ?? '');
 $userId = $user['user_id'] ?? null;
+$userPhone = htmlspecialchars($user['phone'] ?? '');
+$userNationalId = htmlspecialchars($user['national_id'] ?? '');
+$userEmail = htmlspecialchars($user['email'] ?? '');
 
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
@@ -116,9 +119,13 @@ function parseParticipantsYaml($path) {
         if (empty($p['asset_types'])) {
             // Default asset types based on institution type
             if ($code === 'ZURUBANK') {
-                $p['asset_types'] = ['VOUCHER'];
+                $p['asset_types'] = ['VOUCHER', 'ACCOUNT'];
             } elseif ($code === 'VOUCHMORPH') {
                 $p['asset_types'] = ['VOUCHER', 'ACCOUNT'];
+            } elseif ($code === 'SACCUSSALIS') {
+                $p['asset_types'] = ['ACCOUNT'];
+            } elseif ($code === 'CAZACOM') {
+                $p['asset_types'] = ['MNO-WALLET'];
             } else {
                 $p['asset_types'] = ['ACCOUNT'];
             }
@@ -179,18 +186,21 @@ function parseAssetsYaml($path) {
             if (!empty($assets[$current]['fields'])) {
                 $assets[$current]['fields'][count($assets[$current]['fields']) - 1]['label'] = trim($matches[1], '"\'');
             }
+            continue;
         }
         
         if ($current && isset($assets[$current]['fields']) && preg_match('/^      placeholder: (.+)$/', $line, $matches)) {
             if (!empty($assets[$current]['fields'])) {
                 $assets[$current]['fields'][count($assets[$current]['fields']) - 1]['placeholder'] = trim($matches[1], '"\'');
             }
+            continue;
         }
         
         if ($current && isset($assets[$current]['fields']) && preg_match('/^      required: (.+)$/', $line, $matches)) {
             if (!empty($assets[$current]['fields'])) {
                 $assets[$current]['fields'][count($assets[$current]['fields']) - 1]['required'] = trim($matches[1]) === 'true';
             }
+            continue;
         }
     }
     
@@ -206,7 +216,7 @@ foreach ($assets as $code => $asset) {
     $assetFields[$code] = $asset['fields'] ?? [];
 }
 
-// Get recent swaps
+// Get recent swaps for this user
 $recentSwaps = [];
 try {
     $stmt = $swapDB->prepare("
@@ -240,7 +250,7 @@ $denominationsList = implode(', ', $atmDenominations);
             padding: 20px;
             color: #fff;
         }
-        .container { max-width: 1000px; margin: 0 auto; }
+        .container { max-width: 1200px; margin: 0 auto; }
         
         .header {
             background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
@@ -275,7 +285,7 @@ $denominationsList = implode(', ', $atmDenominations);
         }
         .card h3 { margin-bottom: 20px; font-size: 18px; display: flex; align-items: center; gap: 8px; }
         
-        .form-row {
+        .two-columns {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 20px;
@@ -299,7 +309,6 @@ $denominationsList = implode(', ', $atmDenominations);
             border-radius: 8px;
             color: #fff;
             font-size: 14px;
-            cursor: pointer;
         }
         select:focus, input:focus { outline: none; border-color: #00f0ff; }
         select option { background: #1a1f3a; }
@@ -418,7 +427,7 @@ $denominationsList = implode(', ', $atmDenominations);
         .fee-display { color: #ffc107; font-size: 10px; margin-top: 4px; }
         
         @media (max-width: 768px) {
-            .form-row { grid-template-columns: 1fr; gap: 16px; }
+            .two-columns { grid-template-columns: 1fr; gap: 16px; }
         }
     </style>
 </head>
@@ -442,66 +451,87 @@ $denominationsList = implode(', ', $atmDenominations);
         <h3>🔄 New Swap</h3>
         
         <div id="corridorWarning" class="corridor-warning">
-            ⚠️ Source and destination must be different institutions.
+            ⚠️ Source and destination institutions must be different.
         </div>
         
         <div id="denominationInfo" class="denomination-info">
-            💡 Cashout amounts are dispensed using available notes: <strong><?= $denominationsList ?> <?= $currencySymbol ?></strong><br>
-            Any remainder will stay in your account balance (backend validates this).
+            💡 Cashout amounts are dispensed using available notes: <strong><?= $denominationsList ?> <?= $currencySymbol ?></strong>
         </div>
         
-        <div class="form-row">
-            <div class="form-group">
-                <label>📤 FROM INSTITUTION (Source)</label>
-                <select id="fromInstitution">
-                    <option value="">-- Select --</option>
-                    <?php foreach ($participants as $code => $p): ?>
-                        <option value="<?= htmlspecialchars($code) ?>" 
-                                data-asset-types='<?= json_encode($p['asset_types'] ?? ['ACCOUNT']) ?>'>
-                            <?= htmlspecialchars($p['name'] ?? $code) ?>
-                            <span style="font-size: 10px; color: #888;">(<?= implode(', ', $p['asset_types'] ?? ['ACCOUNT']) ?>)</span>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
+        <div class="two-columns">
+            <!-- LEFT COLUMN - SOURCE -->
+            <div>
+                <div class="form-group">
+                    <label>📤 SOURCE INSTITUTION</label>
+                    <select id="fromInstitution">
+                        <option value="">-- Select --</option>
+                        <?php foreach ($participants as $code => $p): ?>
+                            <option value="<?= htmlspecialchars($code) ?>">
+                                <?= htmlspecialchars($p['name'] ?? $code) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>🔑 SOURCE IDENTIFIER (Who is sending)</label>
+                    <input type="text" id="sourceIdentifier" 
+                           placeholder="Phone number or National ID or Email"
+                           value="<?= !empty($userPhone) ? $userPhone : (!empty($userNationalId) ? $userNationalId : '') ?>">
+                    <div class="info-note">
+                        💡 This identifies who is sending money.
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>🏷️ ASSET TYPE</label>
+                    <select id="assetType">
+                        <option value="">-- Select --</option>
+                    </select>
+                    <div id="assetTypeHint" style="font-size: 10px; color: #888; margin-top: 5px;"></div>
+                </div>
+                
+                <div id="assetFieldsContainer" class="dynamic-fields"></div>
             </div>
-            <div class="form-group">
-                <label>📥 TO INSTITUTION (Destination)</label>
-                <select id="toInstitution">
-                    <option value="">-- Select --</option>
-                    <?php foreach ($participants as $code => $p): ?>
-                        <option value="<?= htmlspecialchars($code) ?>">
-                            <?= htmlspecialchars($p['name'] ?? $code) ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
+            
+            <!-- RIGHT COLUMN - DESTINATION -->
+            <div>
+                <div class="form-group">
+                    <label>📥 DESTINATION INSTITUTION</label>
+                    <select id="toInstitution">
+                        <option value="">-- Select --</option>
+                        <?php foreach ($participants as $code => $p): ?>
+                            <option value="<?= htmlspecialchars($code) ?>">
+                                <?= htmlspecialchars($p['name'] ?? $code) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>📦 SWAP TYPE</label>
+                    <select id="swapType">
+                        <option value="CASHOUT">🏧 Cashout (ATM Code)</option>
+                        <option value="DEPOSIT">💳 Deposit (Wallet/Bank)</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>🔑 IDENTIFIER TYPE</label>
+                    <select id="identifierType">
+                        <option value="auto" selected>🔍 Auto-detect</option>
+                        <option value="phone">📱 Phone Number</option>
+                        <option value="national_id">🆔 National ID</option>
+                        <option value="email">📧 Email</option>
+                    </select>
+                </div>
+                
+                <div id="destFieldsContainer" class="dynamic-fields"></div>
             </div>
         </div>
-
-        <div class="form-row">
-            <div class="form-group">
-                <label>🏷️ ASSET TYPE</label>
-                <select id="assetType">
-                    <option value="">-- Select Asset Type --</option>
-                </select>
-                <div id="assetTypeHint" style="font-size: 10px; color: #888; margin-top: 5px;"></div>
-            </div>
-            <div class="form-group">
-                <label>📦 SWAP TYPE</label>
-                <select id="swapType">
-                    <option value="CASHOUT">🏧 Cashout (ATM / Agent)</option>
-                    <option value="DEPOSIT">💳 Deposit (Bank Account / Wallet)</option>
-                </select>
-            </div>
-        </div>
-
-        <!-- Dynamic Asset Fields Container (fields like voucher_number, voucher_pin, etc.) -->
-        <div id="assetFieldsContainer" class="dynamic-fields"></div>
-
-        <!-- Dynamic Destination Fields Container -->
-        <div id="destFieldsContainer" class="dynamic-fields"></div>
 
         <div class="form-group">
-            <label>AMOUNT (<?= $currencySymbol ?>)</label>
+            <label>💰 AMOUNT (<?= $currencySymbol ?>)</label>
             <input type="number" id="amount" step="0.01" placeholder="0.00">
             <div class="quick-amounts">
                 <?php foreach ($atmDenominations as $denom): ?>
@@ -512,7 +542,7 @@ $denominationsList = implode(', ', $atmDenominations);
             </div>
         </div>
 
-        <div class="summary" id="summary">📋 Select from institution, asset type, and to institution</div>
+        <div class="summary" id="summary">📋 Fill in the fields above</div>
 
         <button id="executeBtn">🚀 Execute Swap</button>
     </div>
@@ -548,14 +578,10 @@ const participants = <?= json_encode($participants) ?>;
 const assetFields = <?= json_encode($assetFields) ?>;
 const assets = <?= json_encode($assets) ?>;
 
-// Store asset types per institution from parsed data
 const institutionAssets = {};
 for (const [code, p] of Object.entries(participants)) {
     institutionAssets[code] = p.asset_types || ['ACCOUNT'];
 }
-
-console.log('Loaded participants:', participants);
-console.log('Institution assets:', institutionAssets);
 
 // DOM Elements
 const fromInstSelect = document.getElementById('fromInstitution');
@@ -569,8 +595,9 @@ const corridorWarning = document.getElementById('corridorWarning');
 const denominationInfo = document.getElementById('denominationInfo');
 const amountInput = document.getElementById('amount');
 const summaryDiv = document.getElementById('summary');
+const sourceIdentifierInput = document.getElementById('sourceIdentifier');
+const identifierTypeSelect = document.getElementById('identifierType');
 
-// Update asset type dropdown based on selected source institution
 function updateAssetTypes() {
     const fromInst = fromInstSelect.value;
     assetTypeSelect.innerHTML = '<option value="">-- Select Asset Type --</option>';
@@ -592,17 +619,12 @@ function updateAssetTypes() {
     assetsList.forEach(asset => {
         const displayName = assets[asset]?.display_name || asset;
         const icon = assets[asset]?.icon || '';
-        const description = assets[asset]?.description || '';
         const option = document.createElement('option');
         option.value = asset;
         option.textContent = icon ? `${icon} ${displayName}` : displayName;
-        if (description) {
-            option.title = description;
-        }
         assetTypeSelect.appendChild(option);
     });
     
-    // Auto-select if only one option
     if (assetsList.length === 1) {
         assetTypeSelect.value = assetsList[0];
         updateAssetFields();
@@ -610,7 +632,6 @@ function updateAssetTypes() {
     }
 }
 
-// Generate asset fields (voucher_number, voucher_pin, etc.) based on selected asset type
 function updateAssetFields() {
     const assetType = assetTypeSelect.value;
     const fields = assetFields[assetType] || [];
@@ -620,17 +641,16 @@ function updateAssetFields() {
     
     if (fields.length === 0 || !assetType) return;
     
-    let html = '<div class="form-row">';
+    let html = '<div class="two-columns">';
     fields.forEach(field => {
         const fieldName = field.name;
         const label = field.label || fieldName.replace(/_/g, ' ').toUpperCase();
         const placeholder = field.placeholder || `Enter ${fieldName.replace(/_/g, ' ')}`;
         const inputType = fieldName.includes('pin') ? 'password' : 'text';
-        const required = field.required ? 'required' : '';
         html += `
             <div class="form-group">
                 <label>${label}</label>
-                <input type="${inputType}" name="${fieldName}" id="${fieldName}" class="asset-field" placeholder="${placeholder}" ${required}>
+                <input type="${inputType}" id="${fieldName}" class="asset-field" placeholder="${placeholder}">
             </div>
         `;
     });
@@ -640,38 +660,35 @@ function updateAssetFields() {
     assetFieldsContainer.classList.add('active');
 }
 
-// Generate destination fields based on swap type
 function updateDestinationFields() {
     const swapType = swapTypeSelect.value;
     
     destFieldsContainer.innerHTML = '';
     destFieldsContainer.classList.remove('active');
     
-    // Show denomination info for cashout
     if (swapType === 'CASHOUT') {
         denominationInfo.classList.add('show');
         destFieldsContainer.innerHTML = `
             <div class="form-group">
-                <label>BENEFICIARY PHONE (for ATM code)</label>
-                <input type="tel" id="beneficiaryPhone" placeholder="Phone number for SMS" value="<?= $loggedPhone ?>">
+                <label>📱 BENEFICIARY PHONE (Where to send ATM code)</label>
+                <input type="tel" id="beneficiaryPhone" placeholder="+267XXXXXXXX" value="<?= $loggedPhone ?>">
             </div>
-            <div class="info-note">💡 ATM cashout code will be sent via SMS to this number. Backend will validate amount against available denominations.</div>
+            <div class="info-note">💡 ATM cashout code will be sent via SMS to this number.</div>
         `;
         destFieldsContainer.classList.add('active');
     } else {
         denominationInfo.classList.remove('show');
         destFieldsContainer.innerHTML = `
             <div class="form-group">
-                <label>DESTINATION ACCOUNT / PHONE</label>
-                <input type="text" id="destinationAccount" placeholder="Account number or phone number">
+                <label>🏦 DESTINATION IDENTIFIER (Who receives money)</label>
+                <input type="text" id="destinationIdentifier" placeholder="Phone number or National ID or Account number">
             </div>
-            <div class="info-note">💡 Deposit amount can be any decimal value. Funds will be credited to the destination account.</div>
+            <div class="info-note">💡 The person receiving the money.</div>
         `;
         destFieldsContainer.classList.add('active');
     }
 }
 
-// Check if source and destination are valid (must differ)
 function validateCorridor() {
     const fromInst = fromInstSelect.value;
     const toInst = toInstSelect.value;
@@ -690,7 +707,6 @@ function validateCorridor() {
     return true;
 }
 
-// Update summary display
 function updateSummary() {
     const fromInst = fromInstSelect.options[fromInstSelect.selectedIndex]?.text || '?';
     const toInst = toInstSelect.options[toInstSelect.selectedIndex]?.text || '?';
@@ -701,7 +717,6 @@ function updateSummary() {
     summaryDiv.innerHTML = `📋 ${fromInst} (${asset}) → ${toInst} (${swapType}) | Amount: <?= $currencySymbol ?> ${amount.toFixed(2)}`;
 }
 
-// Build payload exactly as backend expects
 function buildPayload() {
     const fromInst = fromInstSelect.value;
     const toInst = toInstSelect.value;
@@ -711,7 +726,17 @@ function buildPayload() {
     const reference = 'SWAP_' + Date.now();
     const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
     
-    // Base payload structure
+    // SOURCE IDENTIFIER
+    const sourceIdentifier = sourceIdentifierInput?.value.trim() || '';
+    let identifierType = identifierTypeSelect?.value || 'auto';
+    
+    // Auto-detect if set to auto
+    if (identifierType === 'auto' && sourceIdentifier) {
+        if (sourceIdentifier.match(/^[\+]?[0-9]{10,15}$/)) identifierType = 'phone';
+        else if (sourceIdentifier.match(/^[A-Z0-9]{6,20}$/i)) identifierType = 'national_id';
+        else if (sourceIdentifier.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) identifierType = 'email';
+    }
+    
     const payload = {
         reference: reference,
         idempotency_key: idempotencyKey,
@@ -720,27 +745,45 @@ function buildPayload() {
         to_institution: toInst,
         asset_type: assetType,
         amount: amount,
-        currency: '<?= $currency ?>'
+        currency: '<?= $currency ?>',
+        source_identifier: sourceIdentifier,
+        source_identifier_type: identifierType
     };
     
-    // Add asset-specific fields (voucher_number, voucher_pin, etc.)
+    if (identifierType === 'phone') payload.source_phone = sourceIdentifier;
+    else if (identifierType === 'national_id') payload.source_national_id = sourceIdentifier;
+    else if (identifierType === 'email') payload.source_email = sourceIdentifier;
+    
+    // Asset fields
     document.querySelectorAll('.asset-field').forEach(field => {
         const value = field.value.trim();
-        if (value) {
-            payload[field.id] = value;
-        }
+        if (value) payload[field.id] = value;
     });
     
-    // Add destination-specific fields
+    // Destination fields
     if (swapType === 'CASHOUT') {
-        const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value;
+        const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value.trim();
         if (beneficiaryPhone) {
             payload.beneficiary_phone = beneficiaryPhone;
+            payload.destination_identifier = beneficiaryPhone;
+            payload.destination_identifier_type = 'phone';
         }
     } else if (swapType === 'DEPOSIT') {
-        const destinationAccount = document.getElementById('destinationAccount')?.value;
-        if (destinationAccount) {
-            payload.destination_account = destinationAccount;
+        const destinationIdentifier = document.getElementById('destinationIdentifier')?.value.trim();
+        if (destinationIdentifier) {
+            payload.destination_identifier = destinationIdentifier;
+            payload.destination_identifier_type = 'auto';
+            if (destinationIdentifier.match(/^[\+]?[0-9]{10,15}$/)) {
+                payload.destination_identifier_type = 'phone';
+                payload.destination_phone = destinationIdentifier;
+            } else if (destinationIdentifier.match(/^[A-Z0-9]{6,20}$/i)) {
+                payload.destination_identifier_type = 'national_id';
+                payload.destination_national_id = destinationIdentifier;
+            } else if (destinationIdentifier.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
+                payload.destination_identifier_type = 'email';
+                payload.destination_email = destinationIdentifier;
+            }
+            payload.destination_account = destinationIdentifier;
         }
     }
     
@@ -761,7 +804,6 @@ toInstSelect.addEventListener('change', () => {
 
 assetTypeSelect.addEventListener('change', () => {
     updateAssetFields();
-    validateCorridor();
     updateSummary();
 });
 
@@ -772,7 +814,6 @@ swapTypeSelect.addEventListener('change', () => {
 
 amountInput.addEventListener('input', updateSummary);
 
-// Quick amount buttons
 document.querySelectorAll('.quick-amount').forEach(btn => {
     btn.addEventListener('click', () => {
         amountInput.value = btn.dataset.amount;
@@ -780,38 +821,30 @@ document.querySelectorAll('.quick-amount').forEach(btn => {
     });
 });
 
-// Execute swap
 document.getElementById('executeBtn').addEventListener('click', async () => {
     const fromInst = fromInstSelect.value;
     const toInst = toInstSelect.value;
     const assetType = assetTypeSelect.value;
     const amount = parseFloat(amountInput.value);
     const swapType = swapTypeSelect.value;
+    const sourceIdentifier = sourceIdentifierInput?.value.trim();
     
-    // Validation
-    if (!fromInst) { alert('Select FROM institution'); return; }
-    if (!toInst) { alert('Select TO institution'); return; }
+    if (!fromInst) { alert('Select SOURCE institution'); return; }
+    if (!toInst) { alert('Select DESTINATION institution'); return; }
     if (!assetType) { alert('Select asset type'); return; }
+    if (!sourceIdentifier) { alert('Enter source identifier (who is sending money)'); return; }
     if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
+    if (fromInst === toInst) { alert('Source and destination must be different'); return; }
     
-    if (fromInst === toInst) {
-        alert('Source and destination institutions must be different');
-        return;
-    }
-    
-    // For deposit, validate destination account
-    if (swapType === 'DEPOSIT') {
-        const destAccount = document.getElementById('destinationAccount')?.value;
-        if (!destAccount) {
-            alert('Enter destination account/phone number');
-            return;
-        }
+    if (swapType === 'CASHOUT') {
+        const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value.trim();
+        if (!beneficiaryPhone) { alert('Enter beneficiary phone number for ATM code'); return; }
+    } else if (swapType === 'DEPOSIT') {
+        const destinationIdentifier = document.getElementById('destinationIdentifier')?.value.trim();
+        if (!destinationIdentifier) { alert('Enter destination identifier (who receives money)'); return; }
     }
     
     const payload = buildPayload();
-    
-    console.log('Sending payload:', payload);
-    
     const executeBtn = document.getElementById('executeBtn');
     const resultDiv = document.getElementById('result');
     
@@ -837,27 +870,16 @@ document.getElementById('executeBtn').addEventListener('click', async () => {
                 Reference: ${result.reference || result.swap_reference || 'N/A'}<br>
                 Amount: <?= $currencySymbol ?> ${amount.toFixed(2)}<br>`;
             
-            if (result.amount) {
-                html += `Net Amount: <?= $currencySymbol ?> ${result.amount.toFixed(2)}<br>`;
-            }
-            if (result.fee) {
-                html += `<strong>Fee: <?= $currencySymbol ?> ${result.fee.toFixed(2)}</strong><br>`;
-            }
-            if (result.atm_code) {
-                html += `<br><strong>🏧 ATM Code:</strong> ${result.atm_code}<br>`;
-            }
-            if (result.voucher_number) {
-                html += `<br><strong>🎫 Voucher:</strong> ${result.voucher_number}<br>`;
-            }
+            if (result.fee) html += `<strong>Fee: <?= $currencySymbol ?> ${result.fee.toFixed(2)}</strong><br>`;
+            if (result.atm_code) html += `<br><strong>🏧 ATM Code:</strong> ${result.atm_code}<br>`;
+            if (result.voucher_number) html += `<br><strong>🎫 Voucher:</strong> ${result.voucher_number}<br>`;
             
-            // Show full response in details
             html += `<br><details><summary><strong>📋 Full Response</strong></summary><pre style="margin-top:8px; font-size:11px; overflow-x:auto;">${JSON.stringify(result, null, 2)}</pre></details>`;
             resultDiv.innerHTML = html;
             setTimeout(() => location.reload(), 3000);
         } else {
             resultDiv.className = 'result error';
             let errorMsg = result.message || result.error || 'Unknown error';
-            if (result.data?.message) errorMsg = result.data.message;
             resultDiv.innerHTML = `<strong>❌ Swap Failed</strong><br><br>${errorMsg}<br><br><details><summary>Details</summary><pre style="margin-top:8px; font-size:11px; overflow-x:auto;">${JSON.stringify(result, null, 2)}</pre></details>`;
         }
     } catch (error) {
