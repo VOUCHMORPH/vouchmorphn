@@ -1,43 +1,48 @@
 <?php
-// /public/debug_key.php
+// /public/generate_signature.php
+
+require_once __DIR__ . '/../vendor/autoload.php';
+
+use Infrastructure\Crypto\MessageSigner;
 
 header("Content-Type: text/plain");
 
 echo "========================================\n";
-echo "Debugging Private Key Loading\n";
+echo "Generating Test Signature\n";
 echo "========================================\n\n";
 
-// Get the private key from environment
-$privateKeyEnv = getenv('VOUCHMORPH_PRIVATE_KEY');
+$signer = new MessageSigner();
 
-echo "1. Environment variable check:\n";
-echo "   VOUCHMORPH_PRIVATE_KEY exists: " . ($privateKeyEnv ? "YES" : "NO") . "\n";
-if ($privateKeyEnv) {
-    echo "   Length: " . strlen($privateKeyEnv) . " characters\n";
-    echo "   First 50 chars: " . substr($privateKeyEnv, 0, 50) . "...\n";
-    echo "   Contains 'BEGIN PRIVATE KEY': " . (strpos($privateKeyEnv, 'BEGIN PRIVATE KEY') !== false ? "YES" : "NO") . "\n";
-    echo "   Contains '\\n': " . (strpos($privateKeyEnv, '\\n') !== false ? "YES" : "NO") . "\n";
-    echo "   Contains actual newlines: " . (strpos($privateKeyEnv, "\n") !== false ? "YES" : "NO") . "\n";
+if (!$signer->isReady()) {
+    echo "❌ MessageSigner is not ready - private key not loaded\n";
+    exit;
 }
 
-echo "\n2. Attempting to load with openssl_pkey_get_private():\n";
+echo "✅ MessageSigner is ready\n\n";
 
-// Try with raw value
-$key1 = openssl_pkey_get_private($privateKeyEnv);
-echo "   Direct load: " . ($key1 ? "SUCCESS" : "FAILED - " . openssl_error_string()) . "\n";
+// Create test payload
+$testPayload = [
+    'action' => 'VERIFY_ASSET',
+    'reference' => 'TEST_' . time(),
+    'asset_type' => 'BANK-WALLET',
+    'amount' => 100,
+    'currency' => 'BWP',
+    'institution' => 'SACCUSSALIS',
+    'timestamp' => time(),
+    'swap_type' => 'CASHOUT',
+    'source_identifier' => '+26770000000'
+];
 
-// Try after replacing literal \n with actual newlines
-$fixedKey = str_replace('\\n', "\n", $privateKeyEnv);
-$key2 = openssl_pkey_get_private($fixedKey);
-echo "   After replacing \\n: " . ($key2 ? "SUCCESS" : "FAILED - " . openssl_error_string()) . "\n";
+echo "Test Payload:\n";
+echo json_encode($testPayload, JSON_PRETTY_PRINT) . "\n\n";
 
-// Try after ensuring proper PEM format
-if (strpos($fixedKey, '-----BEGIN PRIVATE KEY-----') === false) {
-    $fixedKey = "-----BEGIN PRIVATE KEY-----\n" . chunk_split(trim($fixedKey), 64, "\n") . "-----END PRIVATE KEY-----\n";
-}
-$key3 = openssl_pkey_get_private($fixedKey);
-echo "   After ensuring PEM format: " . ($key3 ? "SUCCESS" : "FAILED - " . openssl_error_string()) . "\n";
+// Create signed request
+$signedRequest = $signer->createSignedRequest($testPayload, 'VOUCHMORPH');
 
-echo "\n3. Current Railway variable format:\n";
-echo "   If you see '\\n' in the output below, the key is stored with literal backslash-n:\n";
-echo "   " . substr(json_encode($privateKeyEnv), 0, 200) . "...\n";
+echo "========================================\n";
+echo "SIGNATURE GENERATED SUCCESSFULLY!\n";
+echo "========================================\n\n";
+echo "SIGNATURE: " . $signedRequest['signature'] . "\n\n";
+echo "TIMESTAMP: " . $signedRequest['timestamp'] . "\n\n";
+echo "FULL SIGNED PAYLOAD:\n";
+echo json_encode($signedRequest, JSON_PRETTY_PRINT) . "\n";
