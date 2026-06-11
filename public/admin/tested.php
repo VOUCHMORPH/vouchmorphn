@@ -1,17 +1,19 @@
 <?php
-// /public/sign_test.php
+// /public/test_hold_directly.php
 
-require_once __DIR__ . '/../../vendor/autoload.php';
+require_once __DIR__ . '/../vendor/autoload.php';
 use Infrastructure\Crypto\MessageSigner;
-
-header("Content-Type: text/plain");
 
 $signer = new MessageSigner();
 
-// The exact payload that placeHoldSigned sends
+if (!$signer->isReady()) {
+    die("ERROR: Private key not loaded\n");
+}
+
+// Create payload exactly as placeHoldSigned does
 $payload = [
     'action' => 'PLACE_HOLD',
-    'reference' => 'SWAP_TEST_001',
+    'reference' => 'TEST_' . time(),
     'asset_type' => 'BANK-WALLET',
     'amount' => 100,
     'currency' => 'BWP',
@@ -27,26 +29,40 @@ $payload = [
     'email' => '+26770000000'
 ];
 
-// Sort to ensure consistent order
-ksort($payload);
+// Sign the payload
+$signed = $signer->createSignedRequest($payload, 'VOUCHMORPH');
 
-// Get timestamp
-$timestamp = time();
+echo "Sending hold request to Saccussalis...\n";
 
-// Create the exact string that gets signed
-$payloadWithTimestamp = array_merge($payload, ['_timestamp' => $timestamp]);
-ksort($payloadWithTimestamp);
-$jsonToSign = json_encode($payloadWithTimestamp, JSON_UNESCAPED_SLASHES);
+// Send directly to Saccussalis hold endpoint
+$ch = curl_init('https://saccussalis-production.up.railway.app/backend/api/v1/hold.php');
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_POST, true);
+curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode([
+    'action' => $payload['action'],
+    'reference' => $payload['reference'],
+    'asset_type' => $payload['asset_type'],
+    'amount' => $payload['amount'],
+    'currency' => $payload['currency'],
+    'hold_reason' => $payload['hold_reason'],
+    'destination_institution' => $payload['destination_institution'],
+    'expiry' => $payload['expiry'],
+    'source_identifier' => $payload['source_identifier'],
+    'source_identifier_type' => $payload['source_identifier_type'],
+    'asset_id' => $payload['asset_id'],
+    'wallet_phone' => $payload['wallet_phone'],
+    'phone' => $payload['phone'],
+    'national_id' => $payload['national_id'],
+    'email' => $payload['email'],
+    'requester' => 'VOUCHMORPH',
+    'timestamp' => $signed['timestamp'],
+    'signature' => $signed['signature']
+]));
+curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
 
-// Sign it
-$signature = '';
-$privateKey = openssl_pkey_get_private(str_replace('\\n', "\n", getenv('VOUCHMORPH_PRIVATE_KEY')));
-openssl_sign($jsonToSign, $signature, $privateKey, OPENSSL_ALGO_SHA256);
-$signatureBase64 = base64_encode($signature);
+$response = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
 
-echo "=== VOUCHMORPH SIGNING DATA ===\n\n";
-echo "TIMESTAMP: " . $timestamp . "\n";
-echo "SIGNATURE: " . $signatureBase64 . "\n\n";
-echo "JSON THAT WAS SIGNED:\n";
-echo $jsonToSign . "\n\n";
-echo "=== COPY THIS JSON FOR SACCUSSALIS ===\n";
+echo "HTTP Code: $httpCode\n";
+echo "Response: " . $response . "\n";
