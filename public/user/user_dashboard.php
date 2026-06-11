@@ -58,18 +58,25 @@ function parseParticipantsYaml($path) {
     $content = file_get_contents($path);
     $lines = explode("\n", $content);
     $current = null;
+    $inParticipants = false;
     
     foreach ($lines as $line) {
         $line = rtrim($line);
         if (empty($line) || $line[0] === '#') continue;
         
-        if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
+        if (preg_match('/^participants:$/', $line)) {
+            $inParticipants = true;
+            continue;
+        }
+        
+        if ($inParticipants && preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
             $current = $matches[1];
             $participants[$current] = [
                 'code' => $current,
                 'name' => $current,
                 'asset_types' => [],
-                'delivery_modes' => ['CASHOUT', 'DEPOSIT']
+                'delivery_modes' => ['CASHOUT', 'DEPOSIT'],
+                'type' => 'BANK'
             ];
             continue;
         }
@@ -101,6 +108,20 @@ function parseParticipantsYaml($path) {
         
         if ($current && isset($participants[$current]['delivery_modes']) && preg_match('/^      - (.+)$/', $line, $matches)) {
             $participants[$current]['delivery_modes'][] = trim($matches[1]);
+        }
+    }
+    
+    // If no asset_types defined, set default based on institution type
+    foreach ($participants as $code => &$p) {
+        if (empty($p['asset_types'])) {
+            // Default asset types based on institution type
+            if ($code === 'ZURUBANK') {
+                $p['asset_types'] = ['VOUCHER'];
+            } elseif ($code === 'VOUCHMORPH') {
+                $p['asset_types'] = ['VOUCHER', 'ACCOUNT'];
+            } else {
+                $p['asset_types'] = ['ACCOUNT'];
+            }
         }
     }
     
@@ -435,8 +456,10 @@ $denominationsList = implode(', ', $atmDenominations);
                 <select id="fromInstitution">
                     <option value="">-- Select --</option>
                     <?php foreach ($participants as $code => $p): ?>
-                        <option value="<?= htmlspecialchars($code) ?>" data-assets='<?= json_encode($p['asset_types'] ?? ['ACCOUNT']) ?>'>
+                        <option value="<?= htmlspecialchars($code) ?>" 
+                                data-asset-types='<?= json_encode($p['asset_types'] ?? ['ACCOUNT']) ?>'>
                             <?= htmlspecialchars($p['name'] ?? $code) ?>
+                            <span style="font-size: 10px; color: #888;">(<?= implode(', ', $p['asset_types'] ?? ['ACCOUNT']) ?>)</span>
                         </option>
                     <?php endforeach; ?>
                 </select>
@@ -460,6 +483,7 @@ $denominationsList = implode(', ', $atmDenominations);
                 <select id="assetType">
                     <option value="">-- Select Asset Type --</option>
                 </select>
+                <div id="assetTypeHint" style="font-size: 10px; color: #888; margin-top: 5px;"></div>
             </div>
             <div class="form-group">
                 <label>📦 SWAP TYPE</label>
@@ -524,16 +548,20 @@ const participants = <?= json_encode($participants) ?>;
 const assetFields = <?= json_encode($assetFields) ?>;
 const assets = <?= json_encode($assets) ?>;
 
-// Store asset types per institution
+// Store asset types per institution from parsed data
 const institutionAssets = {};
 for (const [code, p] of Object.entries(participants)) {
     institutionAssets[code] = p.asset_types || ['ACCOUNT'];
 }
 
+console.log('Loaded participants:', participants);
+console.log('Institution assets:', institutionAssets);
+
 // DOM Elements
 const fromInstSelect = document.getElementById('fromInstitution');
 const toInstSelect = document.getElementById('toInstitution');
 const assetTypeSelect = document.getElementById('assetType');
+const assetTypeHint = document.getElementById('assetTypeHint');
 const swapTypeSelect = document.getElementById('swapType');
 const assetFieldsContainer = document.getElementById('assetFieldsContainer');
 const destFieldsContainer = document.getElementById('destFieldsContainer');
@@ -547,17 +575,39 @@ function updateAssetTypes() {
     const fromInst = fromInstSelect.value;
     assetTypeSelect.innerHTML = '<option value="">-- Select Asset Type --</option>';
     
-    if (!fromInst) return;
+    if (!fromInst) {
+        assetTypeHint.innerHTML = '';
+        return;
+    }
     
     const assetsList = institutionAssets[fromInst] || ['ACCOUNT'];
+    
+    if (assetsList.length === 0) {
+        assetTypeHint.innerHTML = '⚠️ No asset types defined for this institution';
+        return;
+    }
+    
+    assetTypeHint.innerHTML = `Supported asset types: ${assetsList.join(', ')}`;
+    
     assetsList.forEach(asset => {
         const displayName = assets[asset]?.display_name || asset;
         const icon = assets[asset]?.icon || '';
+        const description = assets[asset]?.description || '';
         const option = document.createElement('option');
         option.value = asset;
         option.textContent = icon ? `${icon} ${displayName}` : displayName;
+        if (description) {
+            option.title = description;
+        }
         assetTypeSelect.appendChild(option);
     });
+    
+    // Auto-select if only one option
+    if (assetsList.length === 1) {
+        assetTypeSelect.value = assetsList[0];
+        updateAssetFields();
+        updateSummary();
+    }
 }
 
 // Generate asset fields (voucher_number, voucher_pin, etc.) based on selected asset type
