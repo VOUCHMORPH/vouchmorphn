@@ -2,7 +2,7 @@
 // generate_test_signature.php
 // Run this on VouchMorph to get a real signature
  
-require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/../../vendor/autoload.php';
 
 use Infrastructure\Crypto\MessageSigner;
 
