@@ -1,23 +1,17 @@
 <?php
-// /public/generate_hold_sig.php
+// /public/sign_test.php
 
-require_once __DIR__ . '/../../vendor/autoload.php';
-
+require_once __DIR__ . '/../vendor/autoload.php';
 use Infrastructure\Crypto\MessageSigner;
 
 header("Content-Type: text/plain");
 
 $signer = new MessageSigner();
 
-if (!$signer->isReady()) {
-    echo "ERROR: Private key not loaded\n";
-    exit;
-}
-
-// This payload matches what placeHoldSigned() sends to hold.php
+// The exact payload that placeHoldSigned sends
 $payload = [
     'action' => 'PLACE_HOLD',
-    'reference' => 'TEST_HOLD_' . time(),
+    'reference' => 'SWAP_TEST_001',
     'asset_type' => 'BANK-WALLET',
     'amount' => 100,
     'currency' => 'BWP',
@@ -33,16 +27,26 @@ $payload = [
     'email' => '+26770000000'
 ];
 
-// Generate signed request
-$signed = $signer->createSignedRequest($payload, 'VOUCHMORPH');
+// Sort to ensure consistent order
+ksort($payload);
 
-echo "========================================\n";
-echo "HOLD SIGNATURE GENERATED\n";
-echo "========================================\n\n";
-echo "SIGNATURE: " . $signed['signature'] . "\n\n";
-echo "TIMESTAMP: " . $signed['timestamp'] . "\n\n";
-echo "PAYLOAD:\n";
-echo json_encode($payload, JSON_PRETTY_PRINT) . "\n\n";
-echo "========================================\n";
-echo "Copy these values to test hold.php\n";
-echo "========================================\n";
+// Get timestamp
+$timestamp = time();
+
+// Create the exact string that gets signed
+$payloadWithTimestamp = array_merge($payload, ['_timestamp' => $timestamp]);
+ksort($payloadWithTimestamp);
+$jsonToSign = json_encode($payloadWithTimestamp, JSON_UNESCAPED_SLASHES);
+
+// Sign it
+$signature = '';
+$privateKey = openssl_pkey_get_private(str_replace('\\n', "\n", getenv('VOUCHMORPH_PRIVATE_KEY')));
+openssl_sign($jsonToSign, $signature, $privateKey, OPENSSL_ALGO_SHA256);
+$signatureBase64 = base64_encode($signature);
+
+echo "=== VOUCHMORPH SIGNING DATA ===\n\n";
+echo "TIMESTAMP: " . $timestamp . "\n";
+echo "SIGNATURE: " . $signatureBase64 . "\n\n";
+echo "JSON THAT WAS SIGNED:\n";
+echo $jsonToSign . "\n\n";
+echo "=== COPY THIS JSON FOR SACCUSSALIS ===\n";
