@@ -1,112 +1,89 @@
 <?php
-// test_php_env.php
-// Run: php test_php_env.php
+// generate_test_signature.php
+// Run this on VouchMorph to get a real signature
 
-require_once __DIR__ . '/../../vendor/autoload.php';
-require_once __DIR__ . '/../../src/Infrastructure/Banks/GenericBankClient.php';
+require_once __DIR__ . '/../vendor/autoload.php';
 
-use Infrastructure\Banks\GenericBankClient;
+use Infrastructure\Crypto\MessageSigner;
 
-echo "═══════════════════════════════════════════════════════════════════\n";
-echo "PHP CONTAINER ENVIRONMENT VARIABLES TEST\n";
-echo "═══════════════════════════════════════════════════════════════════\n\n";
+header("Content-Type: text/plain");
 
-// Read directly from PHP container environment variables
-$zurubankBaseUrl = getenv('ZURUBANK_BASE_URL');
-$zurubankVerifyEndpoint = getenv('ZURUBANK_VERIFY_ENDPOINT');
-$zurubankHoldEndpoint = getenv('ZURUBANK_HOLD_ENDPOINT');
+echo "========================================\n";
+echo "Generating Test Signature from VouchMorph\n";
+echo "========================================\n\n";
 
-$saccussalisBaseUrl = getenv('SACCUSSALIS_BASE_URL');
-$saccussalisGenerateTokenEndpoint = getenv('SACCUSSALIS_GENERATE_TOKEN_ENDPOINT');
-
-$cazacomBaseUrl = getenv('CAZACOM_BASE_URL');
-
-echo "Environment Variables in PHP Container:\n";
-echo "  ZURUBANK_BASE_URL: " . ($zurubankBaseUrl ?: "NOT SET") . "\n";
-echo "  ZURUBANK_VERIFY_ENDPOINT: " . ($zurubankVerifyEndpoint ?: "NOT SET") . "\n";
-echo "  ZURUBANK_HOLD_ENDPOINT: " . ($zurubankHoldEndpoint ?: "NOT SET") . "\n";
-echo "  SACCUSSALIS_BASE_URL: " . ($saccussalisBaseUrl ?: "NOT SET") . "\n";
-echo "  SACCUSSALIS_GENERATE_TOKEN_ENDPOINT: " . ($saccussalisGenerateTokenEndpoint ?: "NOT SET") . "\n";
-echo "  CAZACOM_BASE_URL: " . ($cazacomBaseUrl ?: "NOT SET") . "\n\n";
-
-if (!$zurubankBaseUrl) {
-    echo "❌ ZURUBANK_BASE_URL is NOT SET in PHP container.\n";
-    echo "   Add it via: railway variable set ZURUBANK_BASE_URL=... --service vouchmorphn\n";
-    exit(1);
+// Check if private key is available
+$privateKey = getenv('VOUCHMORPH_PRIVATE_KEY');
+if (!$privateKey) {
+    echo "❌ VOUCHMORPH_PRIVATE_KEY not found in environment!\n";
+    echo "   Please add it to Railway variables.\n";
+    exit;
 }
 
-// Build config from environment variables
-$config = [
-    'name' => 'ZURUBANK',
-    'provider_code' => 'ZURUBANK',
-    'base_url' => $zurubankBaseUrl,
-    'resource_endpoints' => [
-        'verify_asset' => $zurubankVerifyEndpoint ?: '/api/v1/verify_asset.php',
-        'place_hold' => $zurubankHoldEndpoint ?: '/api/v1/hold.php',
-    ],
-    'endpoints' => [
-        'source' => [
-            'verify_asset' => $zurubankVerifyEndpoint ?: '/api/v1/verify_asset.php',
-            'place_hold' => $zurubankHoldEndpoint ?: '/api/v1/hold.php',
-        ]
-    ]
+echo "✅ Private key found (length: " . strlen($privateKey) . " chars)\n\n";
+
+// Create test payload (must match what Saccussalis expects)
+$testPayload = [
+    'action' => 'VERIFY_ASSET',
+    'reference' => 'TEST_' . time(),
+    'asset_type' => 'BANK-WALLET',
+    'amount' => 100,
+    'currency' => 'BWP',
+    'institution' => 'SACCUSSALIS',
+    'timestamp' => time(),
+    'swap_type' => 'CASHOUT',
+    'source_identifier' => '+26770000000'
 ];
 
-echo "Using configuration:\n";
-echo "  Base URL: {$config['base_url']}\n";
-echo "  Verify Endpoint: {$config['resource_endpoints']['verify_asset']}\n";
-echo "  Full URL: {$config['base_url']}{$config['resource_endpoints']['verify_asset']}\n\n";
+echo "Test Payload:\n";
+echo json_encode($testPayload, JSON_PRETTY_PRINT) . "\n\n";
+
+// Create signed request
+$signer = new MessageSigner();
+$signedRequest = $signer->createSignedRequest($testPayload, 'VOUCHMORPH');
+
+echo "========================================\n";
+echo "COPY THESE VALUES TO SACCUSSALIS TEST:\n";
+echo "========================================\n\n";
+echo "SIGNATURE: " . $signedRequest['signature'] . "\n\n";
+echo "TIMESTAMP: " . $signedRequest['timestamp'] . "\n\n";
+echo "PAYLOAD: " . json_encode($testPayload) . "\n\n";
+
+// Also test if the signature can be verified locally (if we have Saccussalis public key)
+echo "========================================\n";
+echo "Local verification test (if Saccussalis public key exists):\n";
+echo "========================================\n";
 
 try {
-    $client = new GenericBankClient($config);
+    $db = \Core\Database\DBConnection::getConnection();
+    $stmt = $db->prepare("SELECT public_key FROM institution_keys WHERE institution = 'SACCUSSALIS' AND is_active = true");
+    $stmt->execute();
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
     
-    // Test 1: Verify Asset
-    echo "▶ TEST 1: verifyAsset()\n";
-    $result = $client->verifyAsset([
-        'asset_type' => 'VOUCHER',
-        'voucher_number' => '710083197',
-        'voucher_pin' => '657250',
-        'amount' => 200
-    ]);
-    
-    echo "   HTTP Status: " . ($result['status_code'] ?? 'N/A') . "\n";
-    echo "   Success: " . ($result['success'] ? 'true' : 'false') . "\n";
-    echo "   Verified: " . (($result['data']['verified'] ?? false) ? 'true' : 'false') . "\n";
-    echo "   Message: " . ($result['data']['message'] ?? 'N/A') . "\n";
-    
-    if ($result['success'] && ($result['data']['verified'] ?? false)) {
-        echo "   ✅ VERIFY PASSED\n\n";
+    if ($row) {
+        $saccussalisPublicKey = $row['public_key'];
         
-        // Test 2: Place Hold
-        echo "▶ TEST 2: placeHold()\n";
-        $holdResult = $client->placeHold([
-            'asset_type' => 'VOUCHER',
-            'voucher_number' => '710083197',
-            'amount' => 200,
-            'reference' => 'TEST_HOLD_' . uniqid(),
-            'hold_reason' => 'PENDING_SWAP',
-            'destination_institution' => 'SACCUSSALIS',
-            'expiry' => date('Y-m-d H:i:s', strtotime('+1 hour'))
-        ]);
+        // Verify the signature
+        $payloadToVerify = $testPayload;
+        $signature = $signedRequest['signature'];
+        $timestamp = $signedRequest['timestamp'];
         
-        echo "   HTTP Status: " . ($holdResult['status_code'] ?? 'N/A') . "\n";
-        echo "   Success: " . ($holdResult['success'] ? 'true' : 'false') . "\n";
-        echo "   Hold Placed: " . (($holdResult['data']['hold_placed'] ?? false) ? 'true' : 'false') . "\n";
-        echo "   Hold Reference: " . ($holdResult['data']['hold_reference'] ?? 'N/A') . "\n";
-        echo "   Message: " . ($holdResult['data']['message'] ?? 'N/A') . "\n";
+        $payloadJson = json_encode(array_merge($payloadToVerify, ['_timestamp' => $timestamp]));
+        $result = openssl_verify(
+            $payloadJson,
+            base64_decode($signature),
+            $saccussalisPublicKey,
+            OPENSSL_ALGO_SHA256
+        );
         
-        if ($holdResult['success'] && ($holdResult['data']['hold_placed'] ?? false)) {
-            echo "   ✅ HOLD PASSED\n";
+        if ($result === 1) {
+            echo "✅ Local verification SUCCESSFUL!\n";
         } else {
-            echo "   ❌ HOLD FAILED\n";
+            echo "❌ Local verification FAILED\n";
         }
-        
     } else {
-        echo "   ❌ VERIFY FAILED - Cannot proceed to hold test\n";
+        echo "⚠️ SACCUSSALIS public key not found in institution_keys\n";
     }
-    
 } catch (Exception $e) {
-    echo "❌ ERROR: " . $e->getMessage() . "\n";
+    echo "⚠️ Could not test local verification: " . $e->getMessage() . "\n";
 }
-
-echo "\n═══════════════════════════════════════════════════════════════════\n";
