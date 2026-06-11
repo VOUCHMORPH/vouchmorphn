@@ -16,26 +16,15 @@ class MessageSigner
             if ($privateKeyContent) {
                 // CRITICAL: Convert literal \n to actual newlines
                 // Railway stores newlines as literal '\n' characters
-                if (strpos($privateKeyContent, '\\n') !== false) {
-                    $privateKeyContent = str_replace('\\n', "\n", $privateKeyContent);
-                }
-                if (strpos($privateKeyContent, '\n') !== false) {
-                    $privateKeyContent = str_replace('\n', "\n", $privateKeyContent);
-                }
+                $privateKeyContent = str_replace('\\n', "\n", $privateKeyContent);
+                $privateKeyContent = str_replace('\n', "\n", $privateKeyContent);
                 
-                // Also ensure the key has proper BEGIN/END lines
+                // Ensure proper PEM format
                 if (strpos($privateKeyContent, '-----BEGIN PRIVATE KEY-----') === false) {
                     $privateKeyContent = "-----BEGIN PRIVATE KEY-----\n" . 
                                          chunk_split(trim($privateKeyContent), 64, "\n") . 
                                          "-----END PRIVATE KEY-----\n";
                 }
-                
-                // Ensure the key ends with a newline
-                if (substr($privateKeyContent, -1) !== "\n") {
-                    $privateKeyContent .= "\n";
-                }
-                
-                error_log("Loading private key. Length: " . strlen($privateKeyContent));
                 
                 $this->privateKey = openssl_pkey_get_private($privateKeyContent);
                 if (!$this->privateKey) {
