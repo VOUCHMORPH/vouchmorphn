@@ -109,7 +109,7 @@ class SwapService
         
         // Initialize crypto
         $this->messageSigner = new MessageSigner();
-        $this->signatureVerifier = new SignatureVerifier();
+        $this->signatureVerifier = new SignatureVerifier($this->swapDB);
         
         // Load configuration
         $this->loadConfiguration($country);
