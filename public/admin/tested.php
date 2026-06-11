@@ -1,48 +1,22 @@
 <?php
-// /public/generate_signature.php
-
-require_once __DIR__ . '/../../vendor/autoload.php'; 
-
-use Infrastructure\Crypto\MessageSigner;
-
 header("Content-Type: text/plain");
 
-echo "========================================\n";
-echo "Generating Test Signature\n";
-echo "========================================\n\n";
+$privateKey = getenv('VOUCHMORPH_PRIVATE_KEY');
 
-$signer = new MessageSigner();
+// Convert literal \n to actual newlines
+$privateKey = str_replace('\\n', "\n", $privateKey);
+$privateKey = str_replace('\n', "\n", $privateKey);
 
-if (!$signer->isReady()) {
-    echo "❌ MessageSigner is not ready - private key not loaded\n";
+$key = openssl_pkey_get_private($privateKey);
+if (!$key) {
+    echo "ERROR: Failed to load private key\n";
     exit;
 }
 
-echo "✅ MessageSigner is ready\n\n";
+// Extract the public key
+$details = openssl_pkey_get_details($key);
+$publicKey = $details['key'];
 
-// Create test payload
-$testPayload = [
-    'action' => 'VERIFY_ASSET',
-    'reference' => 'TEST_' . time(),
-    'asset_type' => 'BANK-WALLET',
-    'amount' => 100,
-    'currency' => 'BWP',
-    'institution' => 'SACCUSSALIS',
-    'timestamp' => time(),
-    'swap_type' => 'CASHOUT',
-    'source_identifier' => '+26770000000'
-];
-
-echo "Test Payload:\n";
-echo json_encode($testPayload, JSON_PRETTY_PRINT) . "\n\n";
-
-// Create signed request
-$signedRequest = $signer->createSignedRequest($testPayload, 'VOUCHMORPH');
-
-echo "========================================\n";
-echo "SIGNATURE GENERATED SUCCESSFULLY!\n";
-echo "========================================\n\n";
-echo "SIGNATURE: " . $signedRequest['signature'] . "\n\n";
-echo "TIMESTAMP: " . $signedRequest['timestamp'] . "\n\n";
-echo "FULL SIGNED PAYLOAD:\n";
-echo json_encode($signedRequest, JSON_PRETTY_PRINT) . "\n";
+echo "=== THIS IS THE EXACT PUBLIC KEY THAT MATCHES YOUR PRIVATE KEY ===\n\n";
+echo $publicKey;
+echo "\n\n=== Copy this entire public key into Saccussalis trusted_partners table ===\n";
