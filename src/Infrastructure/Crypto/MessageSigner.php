@@ -14,9 +14,34 @@ class MessageSigner
         } else {
             $privateKeyContent = getenv('VOUCHMORPH_PRIVATE_KEY');
             if ($privateKeyContent) {
+                // CRITICAL: Convert literal \n to actual newlines
+                // Railway stores newlines as literal '\n' characters
+                if (strpos($privateKeyContent, '\\n') !== false) {
+                    $privateKeyContent = str_replace('\\n', "\n", $privateKeyContent);
+                }
+                if (strpos($privateKeyContent, '\n') !== false) {
+                    $privateKeyContent = str_replace('\n', "\n", $privateKeyContent);
+                }
+                
+                // Also ensure the key has proper BEGIN/END lines
+                if (strpos($privateKeyContent, '-----BEGIN PRIVATE KEY-----') === false) {
+                    $privateKeyContent = "-----BEGIN PRIVATE KEY-----\n" . 
+                                         chunk_split(trim($privateKeyContent), 64, "\n") . 
+                                         "-----END PRIVATE KEY-----\n";
+                }
+                
+                // Ensure the key ends with a newline
+                if (substr($privateKeyContent, -1) !== "\n") {
+                    $privateKeyContent .= "\n";
+                }
+                
+                error_log("Loading private key. Length: " . strlen($privateKeyContent));
+                
                 $this->privateKey = openssl_pkey_get_private($privateKeyContent);
                 if (!$this->privateKey) {
-                    error_log("Failed to load VOUCHMORPH_PRIVATE_KEY: " . openssl_error_string());
+                    error_log("Failed to load private key: " . openssl_error_string());
+                } else {
+                    error_log("Private key loaded successfully!");
                 }
             } else {
                 error_log("VOUCHMORPH_PRIVATE_KEY not found in environment");
@@ -53,12 +78,10 @@ class MessageSigner
     
     /**
      * Sign payload with timestamp (includes timestamp in signed data)
-     * This matches what Saccussalis expects for verification
      */
     public function signWithTimestamp(array $payload, $privateKey = null): array
     {
         $timestamp = time();
-        // IMPORTANT: Add _timestamp to the payload BEFORE signing
         $payloadWithTimestamp = array_merge($payload, ['_timestamp' => $timestamp]);
         $signature = $this->sign($payloadWithTimestamp, $privateKey);
         
@@ -71,14 +94,11 @@ class MessageSigner
     
     /**
      * Create a signed request ready to send to another institution
-     * This is used by GenericBankClient when sending requests to banks
      */
     public function createSignedRequest(array $payload, string $requester = 'VOUCHMORPH'): array
     {
         $signed = $this->signWithTimestamp($payload);
         
-        // Return the payload with signature and timestamp at the root level
-        // This matches what Saccussalis expects in hold.php and verify_asset.php
         return array_merge($payload, [
             'signature' => $signed['signature'],
             'timestamp' => $signed['timestamp'],
@@ -92,5 +112,13 @@ class MessageSigner
     public function getPrivateKey()
     {
         return $this->privateKey;
+    }
+    
+    /**
+     * Check if signer is ready
+     */
+    public function isReady(): bool
+    {
+        return $this->privateKey !== null;
     }
 }
