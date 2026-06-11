@@ -1,6 +1,7 @@
 <?php
 // public/user/dashboard.php - FULLY DYNAMIC, NO HARDCODING
 // Works for any country by loading config from the country folder
+// Backend dictates outcome - this only sends properly formatted payloads
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 use Application\Utils\SessionManager;
@@ -26,6 +27,15 @@ $config = LoadCountry::getConfig();
 $countryCode = $config['country_code'] ?? 'BW';
 $countryName = $config['country'] ?? 'Botswana';
 $currencySymbol = $config['currency_symbol'] ?? 'BWP';
+$currency = $config['currency'] ?? 'BWP';
+
+// Load ATM notes for cashout denomination validation (display only, backend validates)
+$atmNotesPath = __DIR__ . '/../../src/Core/Config/Countries/' . $countryName . '/atm_notes.json';
+$atmDenominations = [200, 100, 50, 20, 10]; // Default
+if (file_exists($atmNotesPath)) {
+    $atmData = json_decode(file_get_contents($atmNotesPath), true);
+    $atmDenominations = $atmData[$currency] ?? $atmDenominations;
+}
 
 try {
     $swapDB = DBConnection::getConnection();
@@ -129,6 +139,11 @@ function parseAssetsYaml($path) {
             continue;
         }
         
+        if ($current && preg_match('/^    description: (.+)$/', $line, $matches)) {
+            $assets[$current]['description'] = trim($matches[1], '"\'');
+            continue;
+        }
+        
         if ($current && preg_match('/^  fields:$/', $line)) {
             $assets[$current]['fields'] = [];
             continue;
@@ -136,6 +151,25 @@ function parseAssetsYaml($path) {
         
         if ($current && isset($assets[$current]['fields']) && preg_match('/^    - name: (.+)$/', $line, $matches)) {
             $assets[$current]['fields'][] = ['name' => trim($matches[1])];
+            continue;
+        }
+        
+        if ($current && isset($assets[$current]['fields']) && preg_match('/^      label: (.+)$/', $line, $matches)) {
+            if (!empty($assets[$current]['fields'])) {
+                $assets[$current]['fields'][count($assets[$current]['fields']) - 1]['label'] = trim($matches[1], '"\'');
+            }
+        }
+        
+        if ($current && isset($assets[$current]['fields']) && preg_match('/^      placeholder: (.+)$/', $line, $matches)) {
+            if (!empty($assets[$current]['fields'])) {
+                $assets[$current]['fields'][count($assets[$current]['fields']) - 1]['placeholder'] = trim($matches[1], '"\'');
+            }
+        }
+        
+        if ($current && isset($assets[$current]['fields']) && preg_match('/^      required: (.+)$/', $line, $matches)) {
+            if (!empty($assets[$current]['fields'])) {
+                $assets[$current]['fields'][count($assets[$current]['fields']) - 1]['required'] = trim($matches[1]) === 'true';
+            }
         }
     }
     
@@ -155,7 +189,7 @@ foreach ($assets as $code => $asset) {
 $recentSwaps = [];
 try {
     $stmt = $swapDB->prepare("
-        SELECT swap_reference, amount, from_institution, to_institution, status, created_at 
+        SELECT swap_reference, amount, from_institution, to_institution, status, created_at, fee_amount 
         FROM swap_ledgers 
         WHERE user_id = ? 
         ORDER BY created_at DESC 
@@ -167,6 +201,8 @@ try {
 
 $apiUrl = '/api/v1/swap/execute.php';
 $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
+
+$denominationsList = implode(', ', $atmDenominations);
 ?>
 
 <!DOCTYPE html>
@@ -266,6 +302,17 @@ $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
         }
         .corridor-warning.show { display: block; }
         
+        .denomination-info {
+            background: rgba(0, 240, 255, 0.05);
+            border-left: 3px solid #00f0ff;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            margin-bottom: 16px;
+            display: none;
+        }
+        .denomination-info.show { display: block; }
+        
         .quick-amounts {
             display: flex;
             gap: 8px;
@@ -326,6 +373,14 @@ $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
         .result.error { background: rgba(244, 67, 54, 0.2); border: 1px solid #f44336; display: block; color: #f44336; }
         .result.loading { background: rgba(255, 193, 7, 0.2); border: 1px solid #ffc107; display: block; color: #ffc107; }
         
+        .note-breakdown {
+            background: rgba(76, 175, 80, 0.1);
+            padding: 10px;
+            border-radius: 6px;
+            margin: 10px 0;
+            font-family: monospace;
+        }
+        
         .swap-item {
             display: flex;
             justify-content: space-between;
@@ -337,6 +392,9 @@ $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
         }
         .swap-status.completed { color: #4caf50; }
         .swap-status.failed { color: #f44336; }
+        .swap-status.pending { color: #ffc107; }
+        
+        .fee-display { color: #ffc107; font-size: 10px; margin-top: 4px; }
         
         @media (max-width: 768px) {
             .form-row { grid-template-columns: 1fr; gap: 16px; }
@@ -366,10 +424,15 @@ $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
             ⚠️ Source and destination must be different institutions.
         </div>
         
+        <div id="denominationInfo" class="denomination-info">
+            💡 Cashout amounts are dispensed using available notes: <strong><?= $denominationsList ?> <?= $currencySymbol ?></strong><br>
+            Any remainder will stay in your account balance (backend validates this).
+        </div>
+        
         <div class="form-row">
             <div class="form-group">
-                <label>📤 SOURCE INSTITUTION</label>
-                <select id="sourceInstitution">
+                <label>📤 FROM INSTITUTION (Source)</label>
+                <select id="fromInstitution">
                     <option value="">-- Select --</option>
                     <?php foreach ($participants as $code => $p): ?>
                         <option value="<?= htmlspecialchars($code) ?>" data-assets='<?= json_encode($p['asset_types'] ?? ['ACCOUNT']) ?>'>
@@ -379,8 +442,8 @@ $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
                 </select>
             </div>
             <div class="form-group">
-                <label>📥 DESTINATION INSTITUTION</label>
-                <select id="destInstitution">
+                <label>📥 TO INSTITUTION (Destination)</label>
+                <select id="toInstitution">
                     <option value="">-- Select --</option>
                     <?php foreach ($participants as $code => $p): ?>
                         <option value="<?= htmlspecialchars($code) ?>">
@@ -399,33 +462,33 @@ $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
                 </select>
             </div>
             <div class="form-group">
-                <label>📦 DELIVERY MODE</label>
-                <select id="deliveryMode">
+                <label>📦 SWAP TYPE</label>
+                <select id="swapType">
                     <option value="CASHOUT">🏧 Cashout (ATM / Agent)</option>
                     <option value="DEPOSIT">💳 Deposit (Bank Account / Wallet)</option>
                 </select>
             </div>
         </div>
 
-        <!-- Dynamic Source Fields Container -->
-        <div id="sourceDynamicFields" class="dynamic-fields"></div>
+        <!-- Dynamic Asset Fields Container (fields like voucher_number, voucher_pin, etc.) -->
+        <div id="assetFieldsContainer" class="dynamic-fields"></div>
 
         <!-- Dynamic Destination Fields Container -->
-        <div id="destDynamicFields" class="dynamic-fields"></div>
+        <div id="destFieldsContainer" class="dynamic-fields"></div>
 
         <div class="form-group">
             <label>AMOUNT (<?= $currencySymbol ?>)</label>
             <input type="number" id="amount" step="0.01" placeholder="0.00">
             <div class="quick-amounts">
-                <span class="quick-amount" data-amount="50">50</span>
-                <span class="quick-amount" data-amount="100">100</span>
-                <span class="quick-amount" data-amount="200">200</span>
+                <?php foreach ($atmDenominations as $denom): ?>
+                    <span class="quick-amount" data-amount="<?= $denom ?>"><?= $denom ?></span>
+                <?php endforeach; ?>
                 <span class="quick-amount" data-amount="500">500</span>
                 <span class="quick-amount" data-amount="1000">1000</span>
             </div>
         </div>
 
-        <div class="summary" id="summary">📋 Select source institution, asset type, and destination</div>
+        <div class="summary" id="summary">📋 Select from institution, asset type, and to institution</div>
 
         <button id="executeBtn">🚀 Execute Swap</button>
     </div>
@@ -439,9 +502,16 @@ $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
         <?php else: ?>
             <?php foreach ($recentSwaps as $swap): ?>
                 <div class="swap-item">
-                    <span><?= htmlspecialchars($swap['from_institution'] ?? '?') ?> → <?= htmlspecialchars($swap['to_institution'] ?? '?') ?></span>
-                    <span><?= number_format($swap['amount'], 2) ?> <?= $currencySymbol ?></span>
-                    <span class="swap-status <?= strtolower($swap['status'] ?? 'completed') ?>"><?= $swap['status'] ?? 'Completed' ?></span>
+                    <div>
+                        <strong><?= htmlspecialchars($swap['from_institution'] ?? '?') ?></strong> → <strong><?= htmlspecialchars($swap['to_institution'] ?? '?') ?></strong>
+                        <?php if (!empty($swap['fee_amount'])): ?>
+                            <div class="fee-display">Fee: <?= number_format($swap['fee_amount'], 2) ?> <?= $currencySymbol ?></div>
+                        <?php endif; ?>
+                    </div>
+                    <div>
+                        <?= number_format($swap['amount'], 2) ?> <?= $currencySymbol ?>
+                        <div class="swap-status <?= strtolower($swap['status'] ?? 'completed') ?>"><?= $swap['status'] ?? 'Completed' ?></div>
+                    </div>
                 </div>
             <?php endforeach; ?>
         <?php endif; ?>
@@ -461,22 +531,25 @@ for (const [code, p] of Object.entries(participants)) {
 }
 
 // DOM Elements
-const sourceInstSelect = document.getElementById('sourceInstitution');
-const destInstSelect = document.getElementById('destInstitution');
+const fromInstSelect = document.getElementById('fromInstitution');
+const toInstSelect = document.getElementById('toInstitution');
 const assetTypeSelect = document.getElementById('assetType');
-const deliveryModeSelect = document.getElementById('deliveryMode');
-const sourceDynamicFields = document.getElementById('sourceDynamicFields');
-const destDynamicFields = document.getElementById('destDynamicFields');
+const swapTypeSelect = document.getElementById('swapType');
+const assetFieldsContainer = document.getElementById('assetFieldsContainer');
+const destFieldsContainer = document.getElementById('destFieldsContainer');
 const corridorWarning = document.getElementById('corridorWarning');
+const denominationInfo = document.getElementById('denominationInfo');
+const amountInput = document.getElementById('amount');
+const summaryDiv = document.getElementById('summary');
 
 // Update asset type dropdown based on selected source institution
 function updateAssetTypes() {
-    const sourceInst = sourceInstSelect.value;
+    const fromInst = fromInstSelect.value;
     assetTypeSelect.innerHTML = '<option value="">-- Select Asset Type --</option>';
     
-    if (!sourceInst) return;
+    if (!fromInst) return;
     
-    const assetsList = institutionAssets[sourceInst] || ['ACCOUNT'];
+    const assetsList = institutionAssets[fromInst] || ['ACCOUNT'];
     assetsList.forEach(asset => {
         const displayName = assets[asset]?.display_name || asset;
         const icon = assets[asset]?.icon || '';
@@ -487,72 +560,78 @@ function updateAssetTypes() {
     });
 }
 
-// Generate source fields based on selected asset type
-function updateSourceFields() {
+// Generate asset fields (voucher_number, voucher_pin, etc.) based on selected asset type
+function updateAssetFields() {
     const assetType = assetTypeSelect.value;
     const fields = assetFields[assetType] || [];
     
-    sourceDynamicFields.innerHTML = '';
-    sourceDynamicFields.classList.remove('active');
+    assetFieldsContainer.innerHTML = '';
+    assetFieldsContainer.classList.remove('active');
     
     if (fields.length === 0 || !assetType) return;
     
     let html = '<div class="form-row">';
     fields.forEach(field => {
         const fieldName = field.name;
-        const label = fieldName.replace(/_/g, ' ').toUpperCase();
+        const label = field.label || fieldName.replace(/_/g, ' ').toUpperCase();
+        const placeholder = field.placeholder || `Enter ${fieldName.replace(/_/g, ' ')}`;
         const inputType = fieldName.includes('pin') ? 'password' : 'text';
+        const required = field.required ? 'required' : '';
         html += `
             <div class="form-group">
                 <label>${label}</label>
-                <input type="${inputType}" name="${fieldName}" class="source-field" placeholder="Enter ${fieldName.replace(/_/g, ' ')}">
+                <input type="${inputType}" name="${fieldName}" id="${fieldName}" class="asset-field" placeholder="${placeholder}" ${required}>
             </div>
         `;
     });
     html += '</div>';
     
-    sourceDynamicFields.innerHTML = html;
-    sourceDynamicFields.classList.add('active');
+    assetFieldsContainer.innerHTML = html;
+    assetFieldsContainer.classList.add('active');
 }
 
-// Generate destination fields based on delivery mode
+// Generate destination fields based on swap type
 function updateDestinationFields() {
-    const deliveryMode = deliveryModeSelect.value;
+    const swapType = swapTypeSelect.value;
     
-    destDynamicFields.innerHTML = '';
-    destDynamicFields.classList.remove('active');
+    destFieldsContainer.innerHTML = '';
+    destFieldsContainer.classList.remove('active');
     
-    if (deliveryMode === 'CASHOUT') {
-        destDynamicFields.innerHTML = `
+    // Show denomination info for cashout
+    if (swapType === 'CASHOUT') {
+        denominationInfo.classList.add('show');
+        destFieldsContainer.innerHTML = `
             <div class="form-group">
-                <label>SMS PHONE NUMBER (Optional)</label>
-                <input type="tel" id="smsPhone" placeholder="Where to send ATM code" value="<?= $loggedPhone ?>">
+                <label>BENEFICIARY PHONE (for ATM code)</label>
+                <input type="tel" id="beneficiaryPhone" placeholder="Phone number for SMS" value="<?= $loggedPhone ?>">
             </div>
-            <div class="info-note">💡 We'll send an ATM cashout code via SMS if provided.</div>
+            <div class="info-note">💡 ATM cashout code will be sent via SMS to this number. Backend will validate amount against available denominations.</div>
         `;
-        destDynamicFields.classList.add('active');
-    } else if (deliveryMode === 'DEPOSIT') {
-        destDynamicFields.innerHTML = `
+        destFieldsContainer.classList.add('active');
+    } else {
+        denominationInfo.classList.remove('show');
+        destFieldsContainer.innerHTML = `
             <div class="form-group">
                 <label>DESTINATION ACCOUNT / PHONE</label>
-                <input type="text" id="destAccount" placeholder="Account number or phone number">
+                <input type="text" id="destinationAccount" placeholder="Account number or phone number">
             </div>
+            <div class="info-note">💡 Deposit amount can be any decimal value. Funds will be credited to the destination account.</div>
         `;
-        destDynamicFields.classList.add('active');
+        destFieldsContainer.classList.add('active');
     }
 }
 
 // Check if source and destination are valid (must differ)
 function validateCorridor() {
-    const sourceInst = sourceInstSelect.value;
-    const destInst = destInstSelect.value;
+    const fromInst = fromInstSelect.value;
+    const toInst = toInstSelect.value;
     
-    if (!sourceInst || !destInst) {
+    if (!fromInst || !toInst) {
         corridorWarning.classList.remove('show');
         return true;
     }
     
-    if (sourceInst === destInst) {
+    if (fromInst === toInst) {
         corridorWarning.classList.add('show');
         return false;
     }
@@ -561,129 +640,127 @@ function validateCorridor() {
     return true;
 }
 
-// Update summary
+// Update summary display
 function updateSummary() {
-    const sourceInst = sourceInstSelect.options[sourceInstSelect.selectedIndex]?.text || '?';
-    const destInst = destInstSelect.options[destInstSelect.selectedIndex]?.text || '?';
+    const fromInst = fromInstSelect.options[fromInstSelect.selectedIndex]?.text || '?';
+    const toInst = toInstSelect.options[toInstSelect.selectedIndex]?.text || '?';
     const asset = assetTypeSelect.options[assetTypeSelect.selectedIndex]?.text || '?';
-    const mode = deliveryModeSelect.options[deliveryModeSelect.selectedIndex]?.text || '?';
-    const amount = document.getElementById('amount').value || '0';
+    const swapType = swapTypeSelect.options[swapTypeSelect.selectedIndex]?.text || '?';
+    let amount = parseFloat(amountInput.value) || 0;
     
-    document.getElementById('summary').innerHTML = `📋 ${sourceInst} (${asset}) → ${destInst} (${mode}) | Amount: <?= $currencySymbol ?> ${parseFloat(amount).toFixed(2)}`;
+    summaryDiv.innerHTML = `📋 ${fromInst} (${asset}) → ${toInst} (${swapType}) | Amount: <?= $currencySymbol ?> ${amount.toFixed(2)}`;
 }
 
-// Build source details object from dynamic fields
-function buildSourceDetails() {
-    const sourceInst = sourceInstSelect.value;
+// Build payload exactly as backend expects
+function buildPayload() {
+    const fromInst = fromInstSelect.value;
+    const toInst = toInstSelect.value;
     const assetType = assetTypeSelect.value;
-    const amount = parseFloat(document.getElementById('amount').value);
+    const swapType = swapTypeSelect.value;
+    const amount = parseFloat(amountInput.value);
+    const reference = 'SWAP_' + Date.now();
+    const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
     
-    let sourceDetails = {
-        institution: sourceInst,
+    // Base payload structure
+    const payload = {
+        reference: reference,
+        idempotency_key: idempotencyKey,
+        swap_type: swapType,
+        from_institution: fromInst,
+        to_institution: toInst,
         asset_type: assetType,
         amount: amount,
-        currency: 'BWP'
+        currency: '<?= $currency ?>'
     };
     
-    // Add dynamic fields
-    document.querySelectorAll('.source-field').forEach(field => {
+    // Add asset-specific fields (voucher_number, voucher_pin, etc.)
+    document.querySelectorAll('.asset-field').forEach(field => {
         const value = field.value.trim();
         if (value) {
-            sourceDetails[field.name] = value;
+            payload[field.id] = value;
         }
     });
     
-    return sourceDetails;
-}
-
-// Build destination details object
-function buildDestinationDetails() {
-    const destInst = destInstSelect.value;
-    const deliveryMode = deliveryModeSelect.value;
-    
-    let destDetails = {
-        institution: destInst,
-        type: deliveryMode,
-        currency: 'BWP'
-    };
-    
-    if (deliveryMode === 'CASHOUT') {
-        const smsPhone = document.getElementById('smsPhone')?.value;
-        if (smsPhone) destDetails.beneficiary_phone = smsPhone;
-    } else if (deliveryMode === 'DEPOSIT') {
-        const destAccount = document.getElementById('destAccount')?.value;
-        if (destAccount) destDetails.account_number = destAccount;
+    // Add destination-specific fields
+    if (swapType === 'CASHOUT') {
+        const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value;
+        if (beneficiaryPhone) {
+            payload.beneficiary_phone = beneficiaryPhone;
+        }
+    } else if (swapType === 'DEPOSIT') {
+        const destinationAccount = document.getElementById('destinationAccount')?.value;
+        if (destinationAccount) {
+            payload.destination_account = destinationAccount;
+        }
     }
     
-    return destDetails;
+    return payload;
 }
 
 // Event listeners
-sourceInstSelect.addEventListener('change', () => {
+fromInstSelect.addEventListener('change', () => {
     updateAssetTypes();
     validateCorridor();
     updateSummary();
 });
 
-destInstSelect.addEventListener('change', () => {
+toInstSelect.addEventListener('change', () => {
     validateCorridor();
     updateSummary();
 });
 
 assetTypeSelect.addEventListener('change', () => {
-    updateSourceFields();
+    updateAssetFields();
     validateCorridor();
     updateSummary();
 });
 
-deliveryModeSelect.addEventListener('change', () => {
+swapTypeSelect.addEventListener('change', () => {
     updateDestinationFields();
     updateSummary();
 });
 
-document.getElementById('amount').addEventListener('input', updateSummary);
+amountInput.addEventListener('input', updateSummary);
 
 // Quick amount buttons
 document.querySelectorAll('.quick-amount').forEach(btn => {
     btn.addEventListener('click', () => {
-        document.getElementById('amount').value = btn.dataset.amount;
+        amountInput.value = btn.dataset.amount;
         updateSummary();
     });
 });
 
 // Execute swap
 document.getElementById('executeBtn').addEventListener('click', async () => {
-    const sourceInst = sourceInstSelect.value;
-    const destInst = destInstSelect.value;
+    const fromInst = fromInstSelect.value;
+    const toInst = toInstSelect.value;
     const assetType = assetTypeSelect.value;
-    const amount = parseFloat(document.getElementById('amount').value);
+    const amount = parseFloat(amountInput.value);
+    const swapType = swapTypeSelect.value;
     
-    if (!sourceInst) { alert('Select source institution'); return; }
-    if (!destInst) { alert('Select destination institution'); return; }
+    // Validation
+    if (!fromInst) { alert('Select FROM institution'); return; }
+    if (!toInst) { alert('Select TO institution'); return; }
     if (!assetType) { alert('Select asset type'); return; }
     if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
     
-    if (sourceInst === destInst) {
+    if (fromInst === toInst) {
         alert('Source and destination institutions must be different');
         return;
     }
     
-    const sourceDetails = buildSourceDetails();
-    const destDetails = buildDestinationDetails();
-    
-    // Validate destination fields
-    if (destDetails.type === 'DEPOSIT' && !destDetails.account_number) {
-        alert('Enter destination account/phone number');
-        return;
+    // For deposit, validate destination account
+    if (swapType === 'DEPOSIT') {
+        const destAccount = document.getElementById('destinationAccount')?.value;
+        if (!destAccount) {
+            alert('Enter destination account/phone number');
+            return;
+        }
     }
     
-    const payload = {
-        reference: 'SWAP_' + Date.now(),
-        idempotency_key: 'IDEMPOTENT_' + Date.now(),
-        swap_type: destDetails.type,
-        source_details: sourceDetails,
-        destination_details: destDetails
-    };
+    const payload = buildPayload();
+    
+    console.log('Sending payload:', payload);
     
     const executeBtn = document.getElementById('executeBtn');
     const resultDiv = document.getElementById('result');
@@ -704,19 +781,34 @@ document.getElementById('executeBtn').addEventListener('click', async () => {
         });
         const result = await response.json();
         
-        if (result.status === 'success' || result.atomic_commit?.status === 'committed') {
+        if (result.success === true || result.status === 'success' || result.atomic_commit?.status === 'committed') {
             resultDiv.className = 'result success';
             let html = `<strong>✅ Swap Successful!</strong><br><br>
                 Reference: ${result.reference || result.swap_reference || 'N/A'}<br>
-                Amount: <?= $currencySymbol ?> ${amount}<br>`;
-            if (result.atm_code) html += `<br><strong>🏧 ATM Code:</strong> ${result.atm_code}`;
-            if (result.voucher_number) html += `<br><strong>🎫 Voucher:</strong> ${result.voucher_number}`;
-            html += `<br><br><details><summary>Details</summary><pre style="margin-top:8px;">${JSON.stringify(result, null, 2)}</pre></details>`;
+                Amount: <?= $currencySymbol ?> ${amount.toFixed(2)}<br>`;
+            
+            if (result.amount) {
+                html += `Net Amount: <?= $currencySymbol ?> ${result.amount.toFixed(2)}<br>`;
+            }
+            if (result.fee) {
+                html += `<strong>Fee: <?= $currencySymbol ?> ${result.fee.toFixed(2)}</strong><br>`;
+            }
+            if (result.atm_code) {
+                html += `<br><strong>🏧 ATM Code:</strong> ${result.atm_code}<br>`;
+            }
+            if (result.voucher_number) {
+                html += `<br><strong>🎫 Voucher:</strong> ${result.voucher_number}<br>`;
+            }
+            
+            // Show full response in details
+            html += `<br><details><summary><strong>📋 Full Response</strong></summary><pre style="margin-top:8px; font-size:11px; overflow-x:auto;">${JSON.stringify(result, null, 2)}</pre></details>`;
             resultDiv.innerHTML = html;
             setTimeout(() => location.reload(), 3000);
         } else {
             resultDiv.className = 'result error';
-            resultDiv.innerHTML = `<strong>❌ Swap Failed</strong><br><br>${result.message || result.error || 'Unknown error'}<br><br><details><summary>Details</summary><pre>${JSON.stringify(result, null, 2)}</pre></details>`;
+            let errorMsg = result.message || result.error || 'Unknown error';
+            if (result.data?.message) errorMsg = result.data.message;
+            resultDiv.innerHTML = `<strong>❌ Swap Failed</strong><br><br>${errorMsg}<br><br><details><summary>Details</summary><pre style="margin-top:8px; font-size:11px; overflow-x:auto;">${JSON.stringify(result, null, 2)}</pre></details>`;
         }
     } catch (error) {
         resultDiv.className = 'result error';
