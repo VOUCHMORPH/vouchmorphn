@@ -8,7 +8,7 @@ use Exception;
 
 class SignatureVerifier
 {
-    private PDO $db;
+    private ?PDO $db = null;  // Allow null by using ?PDO
     
     public function __construct(?PDO $db = null)
     {
@@ -21,7 +21,7 @@ class SignatureVerifier
     public function getInstitutionPublicKey(string $institution): ?string
     {
         if (!$this->db) {
-            error_log("No database connection for SignatureVerifier");
+            error_log("No database connection for SignatureVerifier - cannot get public key for {$institution}");
             return null;
         }
         
