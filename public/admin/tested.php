@@ -3,8 +3,8 @@
 // Uses existing environment variables on VouchMorph
 
 // Include the classes
-require_once 'src/Infrastructure/Crypto/CertificateManager.php';
-require_once 'src/Infrastructure/Crypto/MessagerSigner.php';
+require_once '../../../src/Infrastructure/Crypto/CertificateManager.php';
+require_once '../../../src/Infrastructure/Crypto/MessagerSigner.php';
 
 use Infrastructure\Crypto\CertificateManager;
 use Infrastructure\Crypto\MessagerSigner;
