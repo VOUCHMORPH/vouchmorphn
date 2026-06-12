@@ -1953,7 +1953,7 @@ private function placeHoldSigned(array $payload, string $institution, array $ver
 
     public function getAtmDenominations(string $currency): array
     {
-        return $this->atmNotes[$currency] ?? [200, 100, 50, 20, 10];
+        return $this->atmNotes[$currency] ?? [200, 100, 50, 20, 10]; 
     }
 
     public function calculateNoteBreakdown(float $amount, string $currency): array
