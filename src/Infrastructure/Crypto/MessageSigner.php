@@ -51,7 +51,13 @@ class MessageSigner
             return '';
         }
         
-        $payloadJson = json_encode($payload);
+        // FIX 1: Sort keys alphabetically for consistent JSON
+        ksort($payload);
+        
+        // FIX 2: Use consistent JSON flags (no escaped slashes, unicode preserved)
+        $payloadJson = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        
+        error_log("SIGNING PAYLOAD: " . $payloadJson);
         
         // Generate RSA signature
         $signature = '';
@@ -71,7 +77,13 @@ class MessageSigner
     public function signWithTimestamp(array $payload, $privateKey = null): array
     {
         $timestamp = time();
-        $payloadWithTimestamp = array_merge($payload, ['_timestamp' => $timestamp]);
+        
+        // FIX 3: Use 'timestamp' (not '_timestamp') to match what will be sent
+        $payloadWithTimestamp = array_merge($payload, ['timestamp' => $timestamp]);
+        
+        // FIX 4: Sort keys before signing
+        ksort($payloadWithTimestamp);
+        
         $signature = $this->sign($payloadWithTimestamp, $privateKey);
         
         return [
@@ -88,11 +100,13 @@ class MessageSigner
     {
         $signed = $this->signWithTimestamp($payload);
         
-        return array_merge($payload, [
+        // FIX 5: Use the signed payload directly (not merging with original)
+        // This ensures what we send is EXACTLY what we signed
+        return array_merge($signed['payload'], [
             'signature' => $signed['signature'],
-            'timestamp' => $signed['timestamp'],
             'requester' => $requester
         ]);
+        // Note: 'timestamp' is already in $signed['payload']
     }
     
     /**
