@@ -1,9 +1,9 @@
 <?php
-// src/Infrastructure/Crypto/MessagerSigner.php
+// src/Infrastructure/Crypto/MessageSigner.php
 
 namespace Infrastructure\Crypto;
 
-class MessagerSigner
+class MessageSigner
 {
     private $privateKey;
     private ?CertificateManager $certManager = null;
