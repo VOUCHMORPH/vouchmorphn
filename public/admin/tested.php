@@ -4,7 +4,7 @@
 
 // Include the classes
 require_once __DIR__ . '/../../src/Infrastructure/Crypto/CertificateManager.php';
-require_once __DIR__ . '/../../../src/Infrastructure/Crypto/MessagerSigner.php';
+require_once __DIR__ . '/../../src/Infrastructure/Crypto/MessagerSigner.php';
 
 use Infrastructure\Crypto\CertificateManager;
 use Infrastructure\Crypto\MessagerSigner;
