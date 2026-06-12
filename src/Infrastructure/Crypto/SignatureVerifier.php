@@ -114,10 +114,18 @@ class SignatureVerifier
             return false;
         }
         
-        if ($timestamp) {
-            $payloadToVerify = array_merge($payload, ['_timestamp' => $timestamp]);
-        } else {
-            $payloadToVerify = $payload;
+        // Reconstruct verification dictionary cleanly
+        $payloadToVerify = [];
+        foreach ($payload as $key => $value) {
+            if ($key !== 'signature' && $key !== 'timestamp' && $key !== 'requester') {
+                $payloadToVerify[$key] = $value;
+            }
+        }
+        
+        // Route the tracking timestamp into its signature-calculation field key
+        $targetTimestamp = $timestamp ?? $payload['timestamp'] ?? $payload['_timestamp'] ?? null;
+        if ($targetTimestamp !== null) {
+            $payloadToVerify['_timestamp'] = (int)$targetTimestamp;
         }
         
         return $this->verify($payloadToVerify, $signature, $publicKey);
