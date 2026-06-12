@@ -1,110 +1,135 @@
 <?php
-// VouchMorph Side: test_signature_generation.php
-// Run this on VouchMorph's server to test different signature methods
+// test_vouchmorph_signing.php
+// This uses the EXACT private key from VouchMorph
 
-// Load their private key (from file or environment)
-$privateKeyContent = file_get_contents('path/to/their/private.key');
-// Or from environment: $privateKeyContent = getenv('VOUCHMORPH_PRIVATE_KEY');
+// VouchMorph's actual private key (from your message)
+$privateKeyContent = '-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCwXlaFAGVb1pi7
+yW17EHn+IgQQefzeKQ/Bi7xCi8pFuA3gll9OMQ2R5qD/6ObMOW0hJxaw5+1I8w0q
+m+011/GZ6iINElwaE0fCEZqbpBJZBMKukCdlwx0KeqgoANxjskRcTka7xszgB/Xi
+o8IaYGsYEXB1w+j9A2R6qOoK+jK9p9HRcmQui6vSBJXYLm40/i/AsD39revfLgQA
+ylii9C9sQo0G5yJvkLxA4ISYnRk1mN1J41qSmtH7R8WpdOvOO/IiteVzuN2p6zfl
+SIGclQsMfD95kZ3EhMghaWb75XSvfEIVJLO7f4KWJn6GMqUV3dYGed7cYvPgYu+
+IKkb3+eAVAgMBAAECggEAJNwWf3X5eQPkyExc6+0h3dW8nTfte/2/a/8ZAZxnEgKZ
+LeCnevdAA4fcipdhkvmGf/kEIkVaf1ZCoG7VmNzwgq8e3jYB1zZD10CoHBKifgXD
+bUm13iv0uBGx7qhdZx2k8VivqkNuYnzva+Y3JR2VDELqysX+vdA1cfg278PiEmY1
+R5SOhrjIEpmGjoykC39EiAx4cBbxMurjWBJbUcbpnN6mQAIpFwh/i+9o3atzjmCQ
+7AdWJE/Sn7PToNzhIBAT2/R3Md4qEyigJ4SmIeflA6kPaGWFUtjqqvqKeisedrov
+fk9q3pNZoSh7GK2R7RraVkBeuWGOwxBc0Lu9HdkmkQKBgQDefsioeomeqRarbv17
+BKXgtbAUJie5fCV4V+TJV8QG2UPkS/NAeI0TAKjH++nfFatsXLEVAyjBZ4ggPwos
+OUTHRiRaqQHiKyljNCbwjaNKTd+w0ctu/ZN5jGG+8uOEx49p1by6w3a/cjXho0wE
+4xFomVftMrmk4TJRSmseS2T2sQKBgQDK7Vz7q8wO5nuJK/1sSE4aaezhNF3+IXJR
+5bZJ5da/40Lb1jDwMIE8pCb+ZZD8g7Rt5s3VtDEe9FLdlPwO8qJXfUhaDf1K7vBY
+hewV31zCBOj469/jMed66KXIuJgi/96iwV9mSRO8Bhf60UXHCfC/vNNGnuUe0dNZ
+jAH9Y8zgpQKBgFMIqcYGhRmLLQSplTu1zloANEgwvR6B8FHrK1zgvi14I9gtaAil
+dLCkzFhl8S/qHGGCbivTVABprOmr3RYIAV0FFkgnTqajSPzW17lqgogWa+bHRM6V
+H9Z6x3fFmZdSCnmK5LYmgEiOTQF6OcKRI0wP/jptdc7MpESmKzfRF0rhAoGAXLb8
+b8Q7dGdb8/1UST/z51+UKgTaGP1BFSgGFFdduchkyLphG6ydr440frD7AFRQgJIe
+Y1BzzPfGUJT8YPv8rkqAXxzbKHxo9Zkil4+4+rBxnSFv5obrgx1+eWnVoNAU8Xm2
+U655xMNn+2HYJqtlAsWMJkz81Ar8LIKqehI6Dj0CgYARiHLJnJknkPVMJcS2YJba
+Jue0ErALWSjbJI3UM505ZwMyCD0dntMylj/LBRxpc4Fsk+wlnz3E5sTIEdbNFs+C
+Aqlc5VESXC96ig0NCQIUgUBkIVGXe1mcbsAOF7BCZYXybPChn2SOd4AIjrvsXc9A
+yFSjzxCeoXZW/1pcRqOgyA==
+-----END PRIVATE KEY-----';
 
-// Ensure proper line breaks
+// Clean the private key (replace literal \n with actual newlines)
 $privateKeyContent = str_replace(['\\n', '\n'], "\n", $privateKeyContent);
+
+// Load private key
 $privateKey = openssl_pkey_get_private($privateKeyContent);
-
 if (!$privateKey) {
-    die("Failed to load private key: " . openssl_error_string());
+    die("ERROR: Cannot load private key: " . openssl_error_string() . "\n");
 }
+echo "✓ Private key loaded successfully\n\n";
 
-// Create test payload
+// Create the EXACT payload that hold.php expects
 $payload = [
     'action' => 'PLACE_HOLD',
-    'reference' => 'TEST_' . (time() * 1000), // milliseconds like JS Date.now()
+    'reference' => 'SWAP_TEST_' . time(),
     'asset_type' => 'BANK-WALLET',
     'amount' => 100,
     'currency' => 'BWP',
-    'timestamp' => time()
+    'hold_reason' => 'PENDING_SWAP',
+    'destination_institution' => 'ZURUBANK',
+    'expiry' => date('Y-m-d H:i:s', strtotime('+1 hour')),
+    'source_identifier' => '+26770000000',
+    'source_identifier_type' => 'phone',
+    'asset_id' => 4,
+    'wallet_phone' => '+26770000000',
+    'phone' => '+26770000000',
+    'national_id' => '+26770000000',
+    'email' => '+26770000000'
 ];
 
-echo "========== SIGNATURE GENERATION TESTS ==========\n";
-echo "Test Payload: " . json_encode($payload, JSON_PRETTY_PRINT) . "\n\n";
+// Add timestamp to payload (as VouchMorph does)
+$timestamp = time();
+$payloadWithTimestamp = array_merge($payload, ['timestamp' => $timestamp]);
 
-// Method 1: Standard JSON (no sorting, as-is)
-$json1 = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-$signature1 = '';
-openssl_sign($json1, $signature1, $privateKey, OPENSSL_ALGO_SHA256);
-$signature1_b64 = base64_encode($signature1);
+// SORT KEYS (CRITICAL for consistent JSON)
+ksort($payloadWithTimestamp);
 
-echo "Method 1 (No sort, original order):\n";
-echo "  JSON: " . $json1 . "\n";
-echo "  Signature: " . $signature1_b64 . "\n\n";
+// Convert to JSON with consistent formatting
+$jsonToSign = json_encode($payloadWithTimestamp, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-// Method 2: Sorted keys
-$sorted = $payload;
-ksort($sorted);
-$json2 = json_encode($sorted, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-$signature2 = '';
-openssl_sign($json2, $signature2, $privateKey, OPENSSL_ALGO_SHA256);
-$signature2_b64 = base64_encode($signature2);
+echo "========== WHAT VOUCHMORPH SIGNS ==========\n";
+echo "JSON being signed: " . $jsonToSign . "\n\n";
 
-echo "Method 2 (Sorted keys alphabetically):\n";
-echo "  JSON: " . $json2 . "\n";
-echo "  Signature: " . $signature2_b64 . "\n\n";
+// Generate signature
+$signature = '';
+$signSuccess = openssl_sign($jsonToSign, $signature, $privateKey, OPENSSL_ALGO_SHA256);
 
-// Method 3: With _timestamp instead of timestamp
-$withUnderscore = $payload;
-$withUnderscore['_timestamp'] = $withUnderscore['timestamp'];
-unset($withUnderscore['timestamp']);
-$json3 = json_encode($withUnderscore, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-$signature3 = '';
-openssl_sign($json3, $signature3, $privateKey, OPENSSL_ALGO_SHA256);
-$signature3_b64 = base64_encode($signature3);
-
-echo "Method 3 (_timestamp instead of timestamp):\n";
-echo "  JSON: " . $json3 . "\n";
-echo "  Signature: " . $signature3_b64 . "\n\n";
-
-// Method 4: With JSON_PRESERVE_ZERO_FRACTION (forces .0 on integers)
-$json4 = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
-$signature4 = '';
-openssl_sign($json4, $signature4, $privateKey, OPENSSL_ALGO_SHA256);
-$signature4_b64 = base64_encode($signature4);
-
-echo "Method 4 (JSON_PRESERVE_ZERO_FRACTION):\n";
-echo "  JSON: " . $json4 . "\n";
-echo "  Signature: " . $signature4_b64 . "\n\n";
-
-// Method 5: Without JSON_UNESCAPED_SLASHES (slashes escaped)
-$json5 = json_encode($payload);
-$signature5 = '';
-openssl_sign($json5, $signature5, $privateKey, OPENSSL_ALGO_SHA256);
-$signature5_b64 = base64_encode($signature5);
-
-echo "Method 5 (Slashes escaped - default JSON):\n";
-echo "  JSON: " . $json5 . "\n";
-echo "  Signature: " . $signature5_b64 . "\n\n";
-
-// Method 6: Without any timestamp field
-$noTimestamp = $payload;
-unset($noTimestamp['timestamp']);
-$json6 = json_encode($noTimestamp, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-$signature6 = '';
-openssl_sign($json6, $signature6, $privateKey, OPENSSL_ALGO_SHA256);
-$signature6_b64 = base64_encode($signature6);
-
-echo "Method 6 (No timestamp field):\n";
-echo "  JSON: " . $json6 . "\n";
-echo "  Signature: " . $signature6_b64 . "\n\n";
-
-// Generate public key fingerprint for verification
-$publicKeyDetails = openssl_pkey_get_details(openssl_pkey_get_public($privateKey));
-if ($publicKeyDetails && isset($publicKeyDetails['key'])) {
-    $publicKeyFingerprint = hash('sha256', $publicKeyDetails['key']);
-    echo "Public Key Fingerprint: " . $publicKeyFingerprint . "\n";
+if (!$signSuccess) {
+    die("ERROR: Failed to sign: " . openssl_error_string() . "\n");
 }
 
-echo "\n========== INSTRUCTIONS ==========\n";
-echo "Send these signatures and the public key fingerprint to Saccussalis for testing.\n";
-echo "Also send the EXACT JSON strings used for signing.\n";
+$signature_b64 = base64_encode($signature);
+echo "Signature: " . $signature_b64 . "\n\n";
 
-// Clean up
-openssl_free_key($privateKey);
-?>
+// Build the final request (what VouchMorph sends)
+$finalRequest = $payloadWithTimestamp;
+$finalRequest['signature'] = $signature_b64;
+$finalRequest['requester'] = 'VOUCHMORPH';
+
+echo "========== COMPLETE REQUEST TO SEND ==========\n";
+echo json_encode($finalRequest, JSON_PRETTY_PRINT) . "\n\n";
+
+// Save to file for curl
+file_put_contents('hold_request.json', json_encode($finalRequest));
+
+echo "========== CURL COMMAND TO TEST ==========\n";
+echo "curl -X POST https://saccussalis-production.up.railway.app/backend/api/v1/hold.php \\\n";
+echo "  -H \"Content-Type: application/json\" \\\n";
+echo "  -d @hold_request.json\n\n";
+
+// Also show the public key fingerprint for reference
+$details = openssl_pkey_get_details($privateKey);
+$fingerprint = hash('sha256', $details['key']);
+echo "Public key fingerprint (should match Saccussalis): " . $fingerprint . "\n";
+
+// Compare with what Saccussalis should have
+echo "\n========== VERIFICATION CHECK ==========\n";
+
+// Simulate what Saccussalis will do to verify
+$receivedPayload = $finalRequest;
+$receivedSignature = $receivedPayload['signature'];
+unset($receivedPayload['signature']);
+unset($receivedPayload['requester']);
+
+// Saccussalis should sort the same way
+ksort($receivedPayload);
+$jsonToVerify = json_encode($receivedPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+echo "Saccussalis will verify against: " . $jsonToVerify . "\n\n";
+
+// Verify using the public key (simulating Saccussalis)
+$publicKey = openssl_pkey_get_details($privateKey)['key'];
+$verifyResult = openssl_verify($jsonToVerify, base64_decode($receivedSignature), $publicKey, OPENSSL_ALGO_SHA256);
+
+echo "Local verification result: " . ($verifyResult === 1 ? "✓ VALID" : ($verifyResult === 0 ? "✗ INVALID" : "ERROR")) . "\n";
+
+if ($verifyResult === 1) {
+    echo "\n✓ SUCCESS! The signature is valid. The problem is likely on Saccussalis side.\n";
+    echo "  Check that Saccussalis has the correct VOUCHMORPH_PUBLIC_KEY fingerprint: " . $fingerprint . "\n";
+} else {
+    echo "\n✗ FAILED! The signature failed even locally. Key or payload issue.\n";
+}
