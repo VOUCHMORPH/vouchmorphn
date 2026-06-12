@@ -18,16 +18,17 @@ use Infrastructure\SMS\SmsNotificationService;
 use Infrastructure\Mojaloop\IdempotencyService;
 use Infrastructure\Crypto\SignatureVerifier;
 use Infrastructure\Crypto\MessageSigner;
+use Infrastructure\Crypto\CertificateManager;
 use Psr\Log\LoggerInterface;
 
 /**
  * SIGNED ATOMIC SWAP ORCHESTRATOR
  * 
- * Bank-grade trust model:
- * - VouchMorph does NOT create trust
- * - Trust is carried in cryptographic signatures
- * - Each bank signs its own assertions
- * - Destination verifies source signature directly
+ * Bank-grade trust model with Certificate Authority (Visa/Mastercard style)
+ * - VouchMorph CA acts as trust anchor
+ * - Each member presents certificate signed by CA
+ * - Receivers verify certificate chains to trusted CA root
+ * - NO manual key exchange needed for new members
  * 
  * CORE PRINCIPLE:
  * - "Verify Asset" asks source institution: Is this asset available for swap?
@@ -59,6 +60,7 @@ class SwapService
     // Crypto services
     private MessageSigner $messageSigner;
     private SignatureVerifier $signatureVerifier;
+    private ?CertificateManager $certificateManager = null;
     
     // Atomic state
     private bool $inAtomicSwap = false;
@@ -110,6 +112,16 @@ class SwapService
         // Initialize crypto
         $this->messageSigner = new MessageSigner();
         $this->signatureVerifier = new SignatureVerifier($this->swapDB);
+        
+        // Initialize Certificate Manager for Visa/Mastercard style PKI
+        if (class_exists('Infrastructure\Crypto\CertificateManager')) {
+            $this->certificateManager = new CertificateManager('VOUCHMORPH');
+            if ($this->certificateManager->isConfigured()) {
+                $this->logger->info("CertificateManager initialized for VOUCHMORPH (CA trust model)");
+            } else {
+                $this->logger->warning("CertificateManager not fully configured - falling back to legacy signatures");
+            }
+        }
         
         // Load configuration
         $this->loadConfiguration($country);
@@ -818,8 +830,17 @@ class SwapService
             ];
         }
         
-        // Verify signature if provided
-        if (isset($data['signature']) && isset($data['payload'])) {
+        // Verify signature if provided (certificate preferred)
+        if (isset($data['certificate'])) {
+            // Certificate-based verification (Visa model)
+            if ($this->certificateManager) {
+                $verification = $this->certificateManager->verifySignedRequest($data);
+                if (!$verification['verified']) {
+                    return ['verified' => false, 'message' => 'Invalid certificate - verification cannot be trusted'];
+                }
+            }
+        } elseif (isset($data['signature']) && isset($data['payload'])) {
+            // Legacy signature verification
             try {
                 $publicKey = $this->getInstitutionPublicKey($institution);
                 $isValid = $this->signatureVerifier->verify(
@@ -842,6 +863,7 @@ class SwapService
             'asset_id' => $data['asset_id'] ?? null,
             'original_payload' => $data['payload'] ?? null,
             'signature' => $data['signature'] ?? null,
+            'certificate' => $data['certificate'] ?? null,
             'timestamp' => $data['timestamp'] ?? $timestamp,
             'raw_response' => $result
         ];
@@ -903,8 +925,13 @@ class SwapService
         
         $data = $result['data'] ?? [];
         
-        // Verify signature
-        if (isset($data['signature']) && isset($data['payload'])) {
+        // Verify signature/certificate from response
+        if (isset($data['certificate']) && $this->certificateManager) {
+            $verification = $this->certificateManager->verifySignedRequest($data);
+            if (!$verification['verified']) {
+                return ['hold_placed' => false, 'message' => 'Invalid certificate on hold response'];
+            }
+        } elseif (isset($data['signature']) && isset($data['payload'])) {
             $publicKey = $this->getInstitutionPublicKey($institution);
             $isValid = $this->signatureVerifier->verify(
                 $data['payload'],
@@ -926,6 +953,7 @@ class SwapService
             'message' => $data['message'] ?? 'Hold placed successfully',
             'original_payload' => $data['payload'] ?? null,
             'signature' => $data['signature'] ?? null,
+            'certificate' => $data['certificate'] ?? null,
             'timestamp' => $data['timestamp'] ?? $timestamp
         ];
     }
@@ -957,12 +985,14 @@ class SwapService
             'source_verification' => [
                 'payload' => $verificationProof['payload'],
                 'signature' => $verificationProof['signature'],
+                'certificate' => $verificationProof['certificate'] ?? null,
                 'source' => $verificationProof['source'],
                 'timestamp' => $verificationProof['timestamp']
             ],
             'source_hold' => [
                 'payload' => $holdProof['payload'],
                 'signature' => $holdProof['signature'],
+                'certificate' => $holdProof['certificate'] ?? null,
                 'source' => $holdProof['source'],
                 'timestamp' => $holdProof['timestamp']
             ]
@@ -1006,7 +1036,8 @@ class SwapService
             'success' => true,
             'transaction_reference' => $data['transaction_reference'] ?? null,
             'message' => $data['message'] ?? 'Destination processed successfully',
-            'destination_signature' => $data['signature'] ?? null
+            'destination_signature' => $data['signature'] ?? null,
+            'destination_certificate' => $data['certificate'] ?? null
         ];
     }
 
