@@ -48,6 +48,27 @@ class CertificateManager
         }
     }
     
+    /**
+     * Recursively normalize numeric values to consistent format
+     * Converts strings like "100.00" to float 100.0, and integers to proper types
+     * This fixes signature verification issues caused by type mismatches
+     */
+    private function normalizeNumericValues(array &$array): void
+    {
+        foreach ($array as $key => &$value) {
+            if (is_array($value)) {
+                $this->normalizeNumericValues($value);
+            } elseif (is_string($value) && is_numeric($value)) {
+                // Convert numeric strings to actual numbers
+                if (strpos($value, '.') !== false) {
+                    $array[$key] = (float)$value;
+                } else {
+                    $array[$key] = (int)$value;
+                }
+            }
+        }
+    }
+    
     public function verifyCertificate(string $certificatePem): bool
     {
         if (!$this->caCert) {
@@ -139,13 +160,14 @@ class CertificateManager
         }
         
         // Step 3: Prepare payload for verification
-        // IMPORTANT: Remove signature, certificate, and requester fields
-        // BUT keep 'timestamp' - it was part of the signed payload!
         $payloadToVerify = $request;
         unset($payloadToVerify['signature']);
         unset($payloadToVerify['certificate']);
         unset($payloadToVerify['requester']);
-        // Do NOT unset 'timestamp' - it's part of the signed data
+        
+        // FIX: Normalize numeric values to avoid string/int/float mismatches
+        // This converts "94300.0000" to 94300.0, "100" to 100, etc.
+        $this->normalizeNumericValues($payloadToVerify);
         
         ksort($payloadToVerify);
         
