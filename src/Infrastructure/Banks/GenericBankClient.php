@@ -10,6 +10,7 @@ require_once __DIR__ . '/../MessageAdapters/MessageAdapterFactory.php';
 use Infrastructure\Banks\Contracts\BankAPIInterface;
 use Infrastructure\MessageAdapters\MessageAdapterFactory;
 use Infrastructure\Crypto\MessageSigner;
+use Infrastructure\Crypto\CertificateManager;
 
 class GenericBankClient implements BankAPIInterface
 {
@@ -24,6 +25,7 @@ class GenericBankClient implements BankAPIInterface
     protected ?MessageAdapterFactory $adapterFactory = null;
     protected ?string $bankPrefix = null;
     protected ?MessageSigner $signer = null;
+    protected ?CertificateManager $certManager = null;
 
     public function __construct(array $config, ?array $requestPayload = null, ?array $headers = null, ?string $endpoint = null)
     {
@@ -40,6 +42,16 @@ class GenericBankClient implements BankAPIInterface
             $this->signer = new MessageSigner();
         } catch (\Exception $e) {
             error_log("MessageSigner init failed: " . $e->getMessage());
+        }
+        
+        // Initialize CertificateManager for Visa/Mastercard style PKI
+        try {
+            $this->certManager = new CertificateManager();
+            if ($this->certManager->isConfigured()) {
+                error_log("GenericBankClient: CertificateManager initialized for {$this->bankPrefix}");
+            }
+        } catch (\Exception $e) {
+            error_log("CertificateManager init failed: " . $e->getMessage());
         }
         
         // Initialize MessageAdapterFactory with country from config
@@ -60,6 +72,7 @@ class GenericBankClient implements BankAPIInterface
         error_log("Bank: " . ($this->config['provider_code'] ?? 'unknown'));
         error_log("Bank Prefix: {$this->bankPrefix}");
         error_log("Detected Format: {$this->detectedFormat}");
+        error_log("CertificateManager: " . ($this->certManager && $this->certManager->isConfigured() ? "ENABLED" : "DISABLED"));
     }
     
     public function getDetectedFormat(): ?string { return $this->detectedFormat; }
@@ -671,42 +684,50 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // SIGNED METHODS FOR BANK-GRADE TRUST (RSA)
+    // SIGNED METHODS FOR BANK-GRADE TRUST (RSA + Certificates)
     // ============================================================================
 
     /**
-     * Create a signed payload using RSA private key
-     * This is the proper PKI method like Visa/Mastercard
+     * Create a signed payload using CertificateManager (Visa/Mastercard style)
+     * Falls back to MessageSigner if CertificateManager not available
      */
     protected function createSignedPayload(array $payload, string $requester = 'VOUCHMORPH'): array
     {
         // Add source identifier if not present
         $payload = $this->addSourceIdentifier($payload);
         
-        if ($this->signer) {
-            // Use RSA signing (proper PKI)
-            return $this->signer->createSignedRequest($payload, $requester);
-        } else {
-            // Fallback to HMAC if signer not available
-            error_log("WARNING: MessageSigner not available, using HMAC fallback");
-            $payload['requester'] = $requester;
-            $payload['timestamp'] = time();
-            $privateKey = getenv('VOUCHMORPH_PRIVATE_KEY');
-            if ($privateKey) {
-                $payloadJson = json_encode($payload);
-                $signature = base64_encode(hash_hmac('sha256', $payloadJson, $privateKey, true));
-                $payload['signature'] = $signature;
-            }
-            return $payload;
+        // PRIORITY 1: Use CertificateManager (Visa/Mastercard PKI model)
+        if ($this->certManager && $this->certManager->isConfigured()) {
+            error_log("[GenericBankClient] Using CertificateManager for signing ({$requester})");
+            return $this->certManager->createSignedRequest($payload, $requester);
         }
+        
+        // PRIORITY 2: Use MessageSigner (legacy RSA)
+        if ($this->signer) {
+            error_log("[GenericBankClient] Using MessageSigner for signing ({$requester})");
+            return $this->signer->createSignedRequest($payload, $requester);
+        }
+        
+        // PRIORITY 3: Fallback to HMAC (should not happen in production)
+        error_log("[GenericBankClient] WARNING: No signing method available - using HMAC fallback");
+        $payload['requester'] = $requester;
+        $payload['timestamp'] = time();
+        $privateKey = getenv('VOUCHMORPH_PRIVATE_KEY');
+        if ($privateKey) {
+            $payloadJson = json_encode($payload);
+            $signature = base64_encode(hash_hmac('sha256', $payloadJson, $privateKey, true));
+            $payload['signature'] = $signature;
+        }
+        return $payload;
     }
 
     /**
      * Verify asset and expect signed response from bank
+     * Supports both certificate and legacy signature responses
      */
     public function verifyAssetSigned(array $payload): array
     {
-        error_log("=== GENERIC BANK CLIENT: verifyAssetSigned (RSA) ===");
+        error_log("=== GENERIC BANK CLIENT: verifyAssetSigned ===");
         
         // Create signed payload with source identifier
         $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
@@ -716,10 +737,11 @@ class GenericBankClient implements BankAPIInterface
 
     /**
      * Place hold and expect signed response from bank
+     * Supports both certificate and legacy signature responses
      */
     public function placeHoldSigned(array $payload): array
     {
-        error_log("=== GENERIC BANK CLIENT: placeHoldSigned (RSA) ===");
+        error_log("=== GENERIC BANK CLIENT: placeHoldSigned ===");
         
         // Create signed payload with source identifier
         $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
@@ -729,6 +751,7 @@ class GenericBankClient implements BankAPIInterface
 
     /**
      * Transfer with cryptographic proof from source bank
+     * Includes certificates in the proof chain
      */
     public function transferWithProof(array $payload): array
     {
@@ -741,6 +764,7 @@ class GenericBankClient implements BankAPIInterface
 
     /**
      * Generate ATM token with proof
+     * Includes certificates in the proof chain
      */
     public function generateTokenWithProof(array $payload): array
     {
@@ -753,6 +777,7 @@ class GenericBankClient implements BankAPIInterface
 
     /**
      * Process deposit with proof
+     * Includes certificates in the proof chain
      */
     public function processDepositWithProof(array $payload): array
     {
