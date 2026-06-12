@@ -51,6 +51,7 @@ class CertificateManager
     public function verifyCertificate(string $certificatePem): bool
     {
         if (!$this->caCert) {
+            error_log("CertificateManager: No CA certificate to verify against");
             return false;
         }
         
@@ -67,6 +68,7 @@ class CertificateManager
         unlink($tempCert);
         unlink($tempCA);
         
+        error_log("CertificateManager: Certificate verification: " . ($result ? "PASSED" : "FAILED"));
         return $result;
     }
     
@@ -86,6 +88,7 @@ class CertificateManager
     public function createSignedRequest(array $payload, string $requester): array
     {
         if (!$this->myPrivateKey || !$this->myCertificate) {
+            error_log("CertificateManager: Cannot sign request - missing private key or certificate");
             return $payload;
         }
         
@@ -96,6 +99,8 @@ class CertificateManager
         ksort($payloadWithTimestamp);
         
         $signature = $signer->sign($payloadWithTimestamp);
+        
+        error_log("CertificateManager: Created signed request for {$requester} with timestamp {$timestamp}");
         
         return array_merge($payloadWithTimestamp, [
             'signature' => $signature,
@@ -110,37 +115,66 @@ class CertificateManager
         $signature = $request['signature'] ?? null;
         $requester = $request['requester'] ?? 'UNKNOWN';
         
-        if (!$certificate || !$signature) {
-            return ['verified' => false, 'message' => 'Missing certificate or signature'];
+        if (!$certificate) {
+            error_log("CertificateManager: No certificate provided for {$requester}");
+            return ['verified' => false, 'message' => 'Missing certificate or signature', 'requester' => $requester];
         }
         
+        if (!$signature) {
+            error_log("CertificateManager: No signature provided for {$requester}");
+            return ['verified' => false, 'message' => 'Missing certificate or signature', 'requester' => $requester];
+        }
+        
+        // Step 1: Verify certificate chains to trusted CA
         if (!$this->verifyCertificate($certificate)) {
-            return ['verified' => false, 'message' => 'Certificate not trusted'];
+            error_log("CertificateManager: Certificate not trusted for {$requester}");
+            return ['verified' => false, 'message' => 'Certificate not trusted', 'requester' => $requester];
         }
         
+        // Step 2: Extract public key from certificate
         $publicKey = $this->extractPublicKeyFromCert($certificate);
         if (!$publicKey) {
-            return ['verified' => false, 'message' => 'Cannot extract public key'];
+            error_log("CertificateManager: Cannot extract public key for {$requester}");
+            return ['verified' => false, 'message' => 'Cannot extract public key', 'requester' => $requester];
         }
         
+        // Step 3: Prepare payload for verification
+        // IMPORTANT: Remove signature, certificate, and requester fields
+        // BUT keep 'timestamp' - it was part of the signed payload!
         $payloadToVerify = $request;
         unset($payloadToVerify['signature']);
         unset($payloadToVerify['certificate']);
         unset($payloadToVerify['requester']);
+        // Do NOT unset 'timestamp' - it's part of the signed data
+        
         ksort($payloadToVerify);
         
         $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         $decodedSig = base64_decode($signature);
         
+        error_log("CertificateManager: Verifying payload for {$requester}: " . $jsonToVerify);
+        
+        // Step 4: Verify signature
         $keyResource = openssl_pkey_get_public($publicKey);
         if (!$keyResource) {
-            return ['verified' => false, 'message' => 'Invalid public key'];
+            error_log("CertificateManager: Invalid public key for {$requester}");
+            return ['verified' => false, 'message' => 'Invalid public key', 'requester' => $requester];
         }
         
         $result = openssl_verify($jsonToVerify, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256);
         $isValid = ($result === 1);
         
-        return ['verified' => $isValid, 'requester' => $requester];
+        if ($isValid) {
+            error_log("CertificateManager: Signature verified for {$requester}");
+        } else {
+            error_log("CertificateManager: Invalid signature for {$requester} - openssl result: {$result}");
+        }
+        
+        return [
+            'verified' => $isValid, 
+            'requester' => $requester,
+            'message' => $isValid ? 'Signature verified' : 'Invalid signature'
+        ];
     }
     
     public function getMyCertificate(): ?string
