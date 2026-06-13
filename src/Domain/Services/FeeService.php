@@ -4,27 +4,38 @@ declare(strict_types=1);
 namespace Domain\Services;
 
 /**
- * Comprehensive Fee Service for VouchMorph
- * Handles ALL 4 scenarios:
- * 1. Domestic, Same Currency
- * 2. Domestic, Different Currency  
- * 3. Cross-border, Same Currency
- * 4. Cross-border, Different Currency
+ * PRODUCT-BASED FEE SERVICE
+ * 
+ * Fees are defined by PRODUCTS (CASHOUT, DEPOSIT, etc.)
+ * Each product references universal fee codes (F1-F100)
+ * 
+ * This makes the system:
+ * 1. Country-agnostic - only fees.json changes per country
+ * 2. Participant-flexible - participants can override fees
+ * 3. Regulatory-compliant - easily add new fees without code changes
  */
 class FeeService
 {
-    private array $feesConfig;
+    private array $feeRegistry = [];      // Universal fee types (F1-F100)
+    private array $productConfig = [];    // Country product configurations
+    private array $regulatoryConfig = [];
+    private array $context = [];
     private string $defaultCurrency;
     private array $participants = [];
+    private array $calculatedFees = [];
     
-    public function __construct(array $feesConfig, string $defaultCurrency = 'BWP')
+    public function __construct(array $feeRegistry, array $countryConfig, string $defaultCurrency = 'BWP')
     {
-        $this->feesConfig = $feesConfig;
+        $this->feeRegistry = $feeRegistry;
+        $this->productConfig = $countryConfig['products'] ?? [];
+        $this->regulatoryConfig = $countryConfig['regulatory'] ?? [];
         $this->defaultCurrency = $defaultCurrency;
+        
+        error_log("[FeeService] Loaded " . count($this->productConfig) . " products");
     }
     
     /**
-     * Set participants for country lookup
+     * Set participants for lookup
      */
     public function setParticipants(array $participants): void
     {
@@ -32,341 +43,292 @@ class FeeService
     }
     
     /**
-     * Wrapper method for SwapService compatibility
-     * Calculates fees based on transaction type and amount
+     * Set transaction context
      */
-    public function calculateFees(string $transactionType, float $amount, array $payload = []): array
+    private function setContext(array $payload): void
     {
-        // Extract source and destination details from payload
-        $sourceInstitution = $payload['source_institution'] ?? $payload['from_institution'] ?? 'UNKNOWN';
-        $destInstitution = $payload['destination_institution'] ?? $payload['to_institution'] ?? 'UNKNOWN';
+        $sourceInst = $payload['source_institution'] ?? $payload['from_institution'] ?? 'UNKNOWN';
+        $destInst = $payload['destination_institution'] ?? $payload['to_institution'] ?? 'UNKNOWN';
         
-        // Get participant countries
-        $sourceCountry = $this->getParticipantCountry($sourceInstitution);
-        $destCountry = $this->getParticipantCountry($destInstitution);
-        $sourceCurrency = $payload['currency'] ?? $this->defaultCurrency;
-        $destCurrency = $payload['destination_currency'] ?? $sourceCurrency;
-        
-        // Map transaction type to fee key format
-        $feeType = $this->mapTransactionType($transactionType);
-        
-        // Calculate using the existing method
-        $calculatedFees = $this->calculateAllFees(
-            $amount,
-            $feeType,
-            $sourceCurrency,
-            $destCurrency,
-            $sourceCountry,
-            $destCountry
-        );
-        
-        // Return in format expected by SwapService
-        return [
-            'total_fee' => $calculatedFees['total_fees'],
-            'breakdown' => $this->getFeeBreakdown($calculatedFees),
-            'net_amount' => $calculatedFees['net_amount'],
-            'gross_amount' => $calculatedFees['gross_amount'],
-            'fees' => $calculatedFees,
-            'total_fees' => $calculatedFees['total_fees']
+        $this->context = [
+            'product' => $payload['swap_type'] ?? 'CASHOUT',
+            'source_country' => $this->getParticipantCountry($sourceInst),
+            'destination_country' => $this->getParticipantCountry($destInst),
+            'source_currency' => $payload['currency'] ?? $this->defaultCurrency,
+            'destination_currency' => $payload['destination_currency'] ?? $payload['currency'] ?? $this->defaultCurrency,
+            'source_type' => $payload['asset_type'] ?? $payload['source_type'] ?? 'ACCOUNT',
+            'is_multi_source' => $payload['is_multi_source'] ?? false,
+            'source_count' => count($payload['sources'] ?? []),
+            'is_retry' => $payload['is_retry'] ?? false,
+            'retry_count' => $payload['retry_count'] ?? 0
         ];
+        
+        $this->context['currencies_differ'] = strtoupper($this->context['source_currency']) !== strtoupper($this->context['destination_currency']);
+        $this->context['countries_differ'] = strtoupper($this->context['source_country']) !== strtoupper($this->context['destination_country']);
     }
     
     /**
-     * Helper to get participant country from participants config
+     * Get participant country
      */
     private function getParticipantCountry(string $institution): string
     {
-        // Try to find participant by code (uppercase key)
         foreach ($this->participants as $code => $participant) {
             if (strtoupper($code) === strtoupper($institution)) {
-                return $participant['country'] ?? 'Botswana';
-            }
-            if (isset($participant['id']) && strtoupper($participant['id']) === strtoupper($institution)) {
                 return $participant['country'] ?? 'Botswana';
             }
             if (isset($participant['provider_code']) && strtoupper($participant['provider_code']) === strtoupper($institution)) {
                 return $participant['country'] ?? 'Botswana';
             }
         }
-        
-        // Default to Botswana if not found
         return 'Botswana';
     }
     
     /**
-     * Map transaction type to fee type
+     * Get product configuration
      */
-    private function mapTransactionType(string $transactionType): string
+    private function getProductConfig(string $product): ?array
     {
-        $map = [
-            'CASHOUT' => 'CASHOUT_SWAP_FEE',
-            'DEPOSIT' => 'DEPOSIT_SWAP_FEE',
-            'CARD_LOAD' => 'CARD_LOAD_FEE',
-            'CARD_ISSUE' => 'CARD_ISSUANCE_FEE',
-            'CARD_ISSUANCE' => 'CARD_ISSUANCE_FEE',
-            'SWAP' => 'DEPOSIT_SWAP_FEE',
-            'STANDARD' => 'DEPOSIT_SWAP_FEE',
-            'MULTI_SOURCE' => 'DEPOSIT_SWAP_FEE'
+        return $this->productConfig[$product] ?? null;
+    }
+    
+    /**
+     * Calculate all fees for a product
+     */
+    public function calculateProductFees(float $amount, array $payload = []): array
+    {
+        $this->setContext($payload);
+        $product = $this->context['product'];
+        
+        $productConfig = $this->getProductConfig($product);
+        if (!$productConfig) {
+            error_log("[FeeService] No configuration for product: {$product}");
+            return $this->getDefaultFeeResult($amount);
+        }
+        
+        // Initialize all slots to zero (F1-F100)
+        $slotAmounts = [];
+        for ($i = 1; $i <= 100; $i++) {
+            $slotAmounts["F{$i}"] = 0;
+        }
+        
+        // Calculate each fee component
+        $feeComponents = $productConfig['fee_components'] ?? [];
+        foreach ($feeComponents as $slotKey => $component) {
+            $amountValue = $component['amount'] ?? 0;
+            $slotAmounts[$slotKey] = $amountValue;
+        }
+        
+        // Handle multi-source extra fee
+        if ($this->context['is_multi_source'] && ($this->context['source_count'] ?? 1) > 1) {
+            $multiSourceConfig = $this->productConfig['multi_source'] ?? [];
+            if (!empty($multiSourceConfig)) {
+                $extraFeeSlot = $multiSourceConfig['fee_type'] ?? 'F8';
+                $extraFeeAmount = $multiSourceConfig['extra_source_fee'] ?? 1.00;
+                $extraCount = ($this->context['source_count'] ?? 1) - 1;
+                $calculatedExtra = $extraCount * $extraFeeAmount;
+                $maxTotal = $multiSourceConfig['max_total_fee'] ?? 15.00;
+                $slotAmounts[$extraFeeSlot] = min($calculatedExtra, $maxTotal);
+            }
+        }
+        
+        // Handle retry fees
+        if ($this->context['is_retry'] && isset($productConfig['retry_rules'])) {
+            $retryRules = $productConfig['retry_rules'];
+            $retrySlot = $retryRules['fee_type'] ?? 'F10';
+            $retryAmount = $retryRules['amount'] ?? 0.45;
+            
+            // Clear non-retry fees
+            foreach ($slotAmounts as $slot => $value) {
+                if ($slot !== $retrySlot && $value > 0) {
+                    $slotAmounts[$slot] = 0;
+                }
+            }
+            $slotAmounts[$retrySlot] = $retryAmount;
+        }
+        
+        // Apply VAT
+        $vatSlot = 'F81';
+        $vatConfig = $this->regulatoryConfig[$vatSlot] ?? null;
+        if ($vatConfig && isset($vatConfig['rate'])) {
+            $vatableAmount = 0;
+            $appliesToFees = $vatConfig['applies_to_fees'] ?? ['F1', 'F9'];
+            foreach ($appliesToFees as $feeSlot) {
+                $vatableAmount += $slotAmounts[$feeSlot] ?? 0;
+            }
+            $slotAmounts[$vatSlot] = $vatableAmount * ($vatConfig['rate'] / 100);
+        }
+        
+        // Calculate totals
+        $totalFees = array_sum($slotAmounts);
+        $netAmount = max(0, $amount - $totalFees);
+        
+        // Apply distribution split (after levy fees)
+        $distribution = $this->calculateDistribution($totalFees, $productConfig);
+        
+        $this->calculatedFees = [
+            'gross_amount' => $amount,
+            'net_amount' => $netAmount,
+            'total_fees' => $totalFees,
+            'slots' => $slotAmounts,
+            'active_slots' => array_filter($slotAmounts, fn($v) => $v > 0),
+            'distribution' => $distribution,
+            'destination_split' => $productConfig['destination_split'] ?? null,
+            'earnings_rules' => $productConfig['earnings_rules'] ?? null,
+            'product' => $product,
+            'context' => $this->context
         ];
         
-        return $map[$transactionType] ?? 'DEPOSIT_SWAP_FEE';
+        error_log("[FeeService] Product: {$product}, Total Fees: {$totalFees}, Net: {$netAmount}");
+        
+        return $this->calculatedFees;
     }
     
     /**
-     * Calculate ALL applicable fees based on country AND currency
-     * 
-     * FEE LOGIC MATRIX:
-     * ┌─────────────────────────────────────────────────────────────────┐
-     * │                    SAME COUNTRY      DIFFERENT COUNTRY          │
-     * ├─────────────────────────────────────────────────────────────────┤
-     * │ SAME CURRENCY    │ Swap + Processing  │ Swap + Cross-border     │
-     * │                  │ + Settlement       │ + Processing + Settlement│
-     * │                  │ NO FX              │ NO FX                   │
-     * ├─────────────────────────────────────────────────────────────────┤
-     * │ DIFFERENT        │ Swap + FX          │ Swap + FX               │
-     * │ CURRENCY         │ + Processing       │ + Cross-border          │
-     * │                  │ + Settlement       │ + Processing + Settlement│
-     * └─────────────────────────────────────────────────────────────────┘
+     * Calculate distribution split (after levy fees)
      */
-    public function calculateAllFees(
-        float $amount,
-        string $transactionType,
-        string $sourceCurrency,
-        string $destinationCurrency,
-        string $sourceCountry,
-        string $destinationCountry
-    ): array {
-        $sameCurrency = strtoupper($sourceCurrency) === strtoupper($destinationCurrency);
-        $sameCountry = strtoupper($sourceCountry) === strtoupper($destinationCountry);
+    private function calculateDistribution(float $totalFees, array $productConfig): array
+    {
+        $distributionConfig = $productConfig['distribution'] ?? [];
+        $applyAfterFees = $distributionConfig['apply_after_fees'] ?? [];
+        $splitConfig = $distributionConfig['split'] ?? [];
         
-        // Determine scenario
-        if ($sameCountry && $sameCurrency) {
-            $scenario = 'DOMESTIC_SAME_CURRENCY';
-        } elseif ($sameCountry && !$sameCurrency) {
-            $scenario = 'DOMESTIC_DIFFERENT_CURRENCY';
-        } elseif (!$sameCountry && $sameCurrency) {
-            $scenario = 'CROSS_BORDER_SAME_CURRENCY';
-        } else {
-            $scenario = 'CROSS_BORDER_DIFFERENT_CURRENCY';
+        // Calculate net pool after removing levy fees
+        $levyAmount = 0;
+        foreach ($applyAfterFees as $levySlot) {
+            $levyAmount += $this->calculatedFees['slots'][$levySlot] ?? 0;
         }
         
-        $fees = [];
-        $fees['scenario'] = $scenario;
+        $netPool = $totalFees - $levyAmount;
         
-        // 1. Base Swap Fee (ALWAYS applies in all scenarios)
-        $fees['swap_fee'] = $this->getSwapFee($amount, $transactionType);
+        $platformPercent = $splitConfig['platform_percent'] ?? 0;
+        $sourcePercent = $splitConfig['source_institution_percent'] ?? 0;
+        $destinationPercent = $splitConfig['destination_institution_percent'] ?? 0;
         
-        // 2. FX Fee (applies when currencies differ, regardless of country)
-        $fees['fx_fee'] = $sameCurrency ? 0 : $this->calculateFxFee($amount);
-        
-        // 3. Cross-border Fee (applies when countries differ, regardless of currency)
-        $fees['cross_border_fee'] = $sameCountry ? 0 : $this->calculateCrossBorderFee($amount);
-        
-        // 4. Processing Fee (ALWAYS applies in all scenarios)
-        $fees['processing_fee'] = $this->getProcessingFee($amount, $transactionType);
-        
-        // 5. Settlement Fee (ALWAYS applies in all scenarios)
-        $fees['settlement_fee'] = $this->getSettlementFee($amount, $transactionType);
-        
-        // 6. Subtotal before VAT
-        $subtotalBeforeVat = $fees['swap_fee'] + $fees['processing_fee'] + $fees['settlement_fee'];
-        
-        // Add FX fee and cross-border fee to VATable amount based on config
-        $vatableAmount = $subtotalBeforeVat;
-        
-        if ($this->feesConfig['regulatory']['fx_vatable'] ?? false) {
-            $vatableAmount += $fees['fx_fee'];
-        }
-        if ($this->feesConfig['regulatory']['cross_border_vatable'] ?? false) {
-            $vatableAmount += $fees['cross_border_fee'];
-        }
-        
-        $vatRate = $this->getVatRate();
-        $fees['vat'] = $vatableAmount * $vatRate;
-        $fees['vat_rate'] = $vatRate;
-        
-        // 7. Total fees
-        $fees['total_fees'] = $subtotalBeforeVat + $fees['fx_fee'] + $fees['cross_border_fee'] + $fees['vat'];
-        
-        // 8. Net amount
-        $fees['net_amount'] = max(0, $amount - $fees['total_fees']);
-        $fees['gross_amount'] = $amount;
-        
-        // 9. Context for debugging
-        $fees['context'] = [
-            'same_country' => $sameCountry,
-            'same_currency' => $sameCurrency,
-            'source_country' => $sourceCountry,
-            'destination_country' => $destinationCountry,
-            'source_currency' => $sourceCurrency,
-            'destination_currency' => $destinationCurrency,
-            'scenario' => $scenario
+        return [
+            'levy_fees_total' => $levyAmount,
+            'net_distributable_pool' => $netPool,
+            'platform' => [
+                'percent' => $platformPercent,
+                'amount' => round($netPool * ($platformPercent / 100), 2)
+            ],
+            'source_institution' => [
+                'percent' => $sourcePercent,
+                'amount' => round($netPool * ($sourcePercent / 100), 2)
+            ],
+            'destination_institution' => [
+                'percent' => $destinationPercent,
+                'amount' => round($netPool * ($destinationPercent / 100), 2)
+            ]
         ];
-        
-        return $fees;
     }
     
     /**
-     * Get base swap fee (varies by transaction type)
+     * Get destination split for cashout products
      */
-    private function getSwapFee(float $amount, string $transactionType): float
+    public function getDestinationSplit(float $destinationShare, array $productConfig): array
     {
-        $feeKey = $transactionType;
-        
-        if (isset($this->feesConfig['fees'][$feeKey]['total_amount'])) {
-            return (float)$this->feesConfig['fees'][$feeKey]['total_amount'];
+        $destSplit = $productConfig['destination_split'] ?? null;
+        if (!$destSplit) {
+            return ['destination_share' => $destinationShare];
         }
         
-        // Fallback defaults (should never happen with proper config)
-        $defaults = [
-            'CASHOUT_SWAP_FEE' => 10.00,
-            'DEPOSIT_SWAP_FEE' => 6.00,
-            'CARD_LOAD_FEE' => 6.00,
-            'CARD_ISSUANCE_FEE' => 50.00
+        $generatePercent = $destSplit['generate_code_fee_percent'] ?? 10;
+        $cashoutPercent = $destSplit['cashout_fee_percent'] ?? 90;
+        
+        return [
+            'destination_share' => $destinationShare,
+            'generate_code_fee' => round($destinationShare * ($generatePercent / 100), 2),
+            'generate_code_fee_percent' => $generatePercent,
+            'cashout_completion_fee' => round($destinationShare * ($cashoutPercent / 100), 2),
+            'cashout_fee_percent' => $cashoutPercent,
+            'description' => $destSplit['description'] ?? ''
         ];
-        
-        return $defaults[$feeKey] ?? 5.00;
     }
     
     /**
-     * Calculate FX fee (percentage of amount)
-     * Applied when currencies differ
+     * Get earnings timing for different fee components
      */
-    private function calculateFxFee(float $amount): float
+    public function getEarningsTiming(string $product): array
     {
-        $fxFeePercent = $this->feesConfig['fx']['fee_percent'] ?? 0.015; // Default 1.5%
-        return $amount * $fxFeePercent;
+        $productConfig = $this->getProductConfig($product);
+        return $productConfig['earnings_rules'] ?? [];
     }
     
     /**
-     * Calculate cross-border fee (percentage of amount)
-     * Applied when countries differ
+     * Get retry rules for a product
      */
-    private function calculateCrossBorderFee(float $amount): float
+    public function getRetryRules(string $product): array
     {
-        $crossBorderFeePercent = $this->feesConfig['cross_border']['fee_percent'] ?? 0.005; // Default 0.5%
-        return $amount * $crossBorderFeePercent;
+        $productConfig = $this->getProductConfig($product);
+        return $productConfig['retry_rules'] ?? [];
     }
     
     /**
-     * Get processing fee (flat or percentage)
+     * Get swap-on-swap (free retry) rules
      */
-    private function getProcessingFee(float $amount, string $transactionType): float
+    public function getSwapOnSwapRules(string $product): array
     {
-        // Can be flat fee or percentage based on config
-        $processingFeeType = $this->feesConfig['fees']['processing_fee_type'] ?? 'flat';
-        
-        if ($processingFeeType === 'percentage') {
-            $processingFeePercent = $this->feesConfig['fees']['processing_fee_percent'] ?? 0.005;
-            return $amount * $processingFeePercent;
-        }
-        
-        // Default flat fee
-        return (float)($this->feesConfig['fees']['processing_fee'] ?? 2.00);
+        $productConfig = $this->getProductConfig($product);
+        return $productConfig['swap_on_swap'] ?? [];
     }
     
     /**
-     * Get settlement fee
+     * Get default fee result when no config found
      */
-    private function getSettlementFee(float $amount, string $transactionType): float
+    private function getDefaultFeeResult(float $amount): array
     {
-        $settlementFeePercent = $this->feesConfig['fees']['settlement_fee_percent'] ?? 0.001;
-        return $amount * $settlementFeePercent;
-    }
-    
-    /**
-     * Get VAT rate from config
-     */
-    private function getVatRate(): float
-    {
-        return (float)($this->feesConfig['regulatory']['vat_rate'] ?? 0.12);
-    }
-    
-    /**
-     * Map transaction type to fee key
-     */
-    private function getFeeKeyForTransaction(string $transactionType): string
-    {
-        $map = [
-            'CASHOUT' => 'CASHOUT_SWAP_FEE',
-            'DEPOSIT' => 'DEPOSIT_SWAP_FEE',
-            'CARD_LOAD' => 'CARD_LOAD_FEE',
-            'CARD_ISSUANCE' => 'CARD_ISSUANCE_FEE'
+        return [
+            'gross_amount' => $amount,
+            'net_amount' => $amount,
+            'total_fees' => 0,
+            'slots' => [],
+            'active_slots' => [],
+            'distribution' => [],
+            'product' => 'UNKNOWN',
+            'context' => $this->context,
+            'warning' => 'No fee configuration found'
         ];
-        
-        return $map[$transactionType] ?? 'DEPOSIT_SWAP_FEE';
     }
     
     /**
-     * Get human-readable fee breakdown
+     * Wrapper for SwapService compatibility
      */
-    public function getFeeBreakdown(array $calculatedFees): array
+    public function calculateFees(string $transactionType, float $amount, array $payload = []): array
+    {
+        $payload['swap_type'] = $transactionType;
+        $result = $this->calculateProductFees($amount, $payload);
+        
+        return [
+            'total_fee' => $result['total_fees'],
+            'breakdown' => $this->getBreakdown($result),
+            'net_amount' => $result['net_amount'],
+            'gross_amount' => $result['gross_amount'],
+            'distribution' => $result['distribution'],
+            'destination_split' => $result['destination_split'],
+            'earnings_rules' => $result['earnings_rules'],
+            'fees' => $result
+        ];
+    }
+    
+    /**
+     * Get human-readable breakdown
+     */
+    public function getBreakdown(array $feeResult): array
     {
         $breakdown = [];
         
-        // Scenario description
-        $scenarioDesc = [
-            'DOMESTIC_SAME_CURRENCY' => 'Domestic transfer, same currency',
-            'DOMESTIC_DIFFERENT_CURRENCY' => 'Domestic transfer, foreign currency',
-            'CROSS_BORDER_SAME_CURRENCY' => 'Cross-border transfer, same currency',
-            'CROSS_BORDER_DIFFERENT_CURRENCY' => 'Cross-border transfer, foreign currency'
-        ];
-        
-        $breakdown['scenario'] = $scenarioDesc[$calculatedFees['scenario']] ?? $calculatedFees['scenario'];
-        $breakdown['gross_amount'] = $calculatedFees['gross_amount'];
-        $breakdown['fees'] = [];
-        
-        if ($calculatedFees['swap_fee'] > 0) {
-            $breakdown['fees'][] = [
-                'name' => 'Transaction Fee',
-                'amount' => $calculatedFees['swap_fee'],
-                'currency' => $this->defaultCurrency
-            ];
-        }
-        
-        if ($calculatedFees['fx_fee'] > 0) {
-            $breakdown['fees'][] = [
-                'name' => 'Foreign Exchange Fee',
-                'amount' => $calculatedFees['fx_fee'],
-                'currency' => $this->defaultCurrency
-            ];
-        }
-        
-        if ($calculatedFees['cross_border_fee'] > 0) {
-            $breakdown['fees'][] = [
-                'name' => 'Cross-Border Fee',
-                'amount' => $calculatedFees['cross_border_fee'],
-                'currency' => $this->defaultCurrency
-            ];
-        }
-        
-        if ($calculatedFees['processing_fee'] > 0) {
-            $breakdown['fees'][] = [
-                'name' => 'Processing Fee',
-                'amount' => $calculatedFees['processing_fee'],
-                'currency' => $this->defaultCurrency
-            ];
-        }
-        
-        if ($calculatedFees['settlement_fee'] > 0) {
-            $breakdown['fees'][] = [
-                'name' => 'Settlement Fee',
-                'amount' => $calculatedFees['settlement_fee'],
-                'currency' => $this->defaultCurrency
-            ];
-        }
-        
-        if ($calculatedFees['vat'] > 0) {
-            $breakdown['fees'][] = [
-                'name' => 'VAT',
-                'amount' => $calculatedFees['vat'],
+        foreach ($feeResult['active_slots'] as $slotKey => $amount) {
+            $feeInfo = $this->feeRegistry[$slotKey] ?? null;
+            $breakdown[] = [
+                'slot' => $slotKey,
+                'code' => $slotKey,
+                'name' => $feeInfo['name'] ?? "Fee {$slotKey}",
+                'owner' => $feeInfo['owner'] ?? 'UNKNOWN',
+                'amount' => $amount,
                 'currency' => $this->defaultCurrency,
-                'rate' => ($calculatedFees['vat_rate'] * 100) . '%'
+                'type' => $feeInfo['type'] ?? 'flat'
             ];
         }
-        
-        $breakdown['total_fees'] = $calculatedFees['total_fees'];
-        $breakdown['net_amount'] = $calculatedFees['net_amount'];
         
         return $breakdown;
     }
