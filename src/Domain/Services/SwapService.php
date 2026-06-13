@@ -1483,68 +1483,82 @@ private function placeHoldSigned(array $payload, string $institution, array $ver
     // LOCAL DATABASE OPERATIONS
     // ============================================================
 
-    private function createLocalHold(array $payload, string $institution, ?string $externalHoldRef): int
-    {
-        $sourceId = $this->extractSourceIdentifier($payload);
-        
-        $sql = "
-            INSERT INTO hold_transactions (
-                hold_reference,
-                swap_reference,
-                participant_name,
-                asset_type,
-                amount,
-                currency,
-                status,
-                source_details,
-                source_identifier,
-                source_identifier_type,
-                destination_institution,
-                external_hold_reference,
-                signature_chain,
-                placed_at,
-                created_at,
-                updated_at
-            ) VALUES (
-                :hold_ref,
-                :swap_ref,
-                :participant_name,
-                :asset_type,
-                :amount,
-                :currency,
-                'ACTIVE',
-                :source_details::jsonb,
-                :source_identifier,
-                :source_identifier_type,
-                :destination,
-                :external_ref,
-                :signature_chain::jsonb,
-                NOW(),
-                NOW(),
-                NOW()
-            ) RETURNING hold_id
-        ";
-        
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([
-            ':hold_ref' => 'HOLD_' . $this->currentSwapRef,
-            ':swap_ref' => $this->currentSwapRef,
-            ':participant_name' => $institution,
-            ':asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
-            ':amount' => $payload['amount'] ?? 0,
-            ':currency' => $payload['currency'] ?? 'BWP',
-            ':source_details' => json_encode($payload['source_details'] ?? $payload),
-            ':source_identifier' => $sourceId['identifier'],
-            ':source_identifier_type' => $sourceId['type'],
-            ':destination' => $payload['to_institution'] ?? $payload['destination_institution'] ?? null,
-            ':external_ref' => $externalHoldRef,
-            ':signature_chain' => json_encode($this->signedPayloads)
-        ]);
-        
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        return (int)$row['hold_id'];
-    }
-
+   private function createLocalHold(array $payload, string $institution, ?string $externalHoldRef): int
+{
+    $sourceId = $this->extractSourceIdentifier($payload);
+    
+    // Build source_details JSONB with all source information
+    $sourceDetails = [
+        'source_identifier' => $sourceId['identifier'],
+        'source_identifier_type' => $sourceId['type'],
+        'source_institution' => $institution,
+        'asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
+        'phone' => $payload['phone'] ?? $payload['wallet_phone'] ?? null,
+        'national_id' => $payload['national_id'] ?? null,
+        'email' => $payload['email'] ?? null,
+        'original_payload' => $payload
+    ];
+    
+    // Build metadata JSONB
+    $metadata = [
+        'swap_reference' => $this->currentSwapRef,
+        'external_hold_reference' => $externalHoldRef,
+        'signature_chain' => $this->signedPayloads,
+        'source_identifier' => $sourceId['identifier'],
+        'source_identifier_type' => $sourceId['type']
+    ];
+    
+    $sql = "
+        INSERT INTO hold_transactions (
+            hold_reference,
+            swap_reference,
+            participant_name,
+            asset_type,
+            amount,
+            currency,
+            status,
+            source_details,
+            destination_institution,
+            metadata,
+            placed_at,
+            created_at,
+            updated_at,
+            source_institution
+        ) VALUES (
+            :hold_ref,
+            :swap_ref,
+            :participant_name,
+            :asset_type,
+            :amount,
+            :currency,
+            'ACTIVE',
+            :source_details::jsonb,
+            :destination,
+            :metadata::jsonb,
+            NOW(),
+            NOW(),
+            NOW(),
+            :source_institution
+        ) RETURNING hold_id
+    ";
+    
+    $stmt = $this->swapDB->prepare($sql);
+    $stmt->execute([
+        ':hold_ref' => 'HOLD_' . $this->currentSwapRef,
+        ':swap_ref' => $this->currentSwapRef,
+        ':participant_name' => $institution,
+        ':asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
+        ':amount' => $payload['amount'] ?? 0,
+        ':currency' => $payload['currency'] ?? 'BWP',
+        ':source_details' => json_encode($sourceDetails),
+        ':destination' => $payload['to_institution'] ?? $payload['destination_institution'] ?? null,
+        ':metadata' => json_encode($metadata),
+        ':source_institution' => $institution
+    ]);
+    
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ? (int)$row['hold_id'] : 0;
+}
     private function updateHoldStatus(?int $holdId, string $status): void
     {
         if ($holdId === null) {
