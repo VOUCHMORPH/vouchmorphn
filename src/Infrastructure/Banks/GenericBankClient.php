@@ -175,87 +175,80 @@ class GenericBankClient implements BankAPIInterface
     }
     
     protected function parseEndpointsYaml(string $content): array
-    {
-        $result = [];
-        $lines = explode("\n", $content);
-        $currentBank = null;
-        $currentSection = null;
+{
+    $result = [];
+    $lines = explode("\n", $content);
+    $currentBank = null;
+    $currentSection = null;
+    $currentSubSection = null;
+    
+    foreach ($lines as $line) {
+        $line = rtrim($line);
+        if (empty($line) || $line[0] === '#') continue;
         
-        foreach ($lines as $line) {
-            $line = rtrim($line);
-            if (empty($line) || $line[0] === '#') continue;
-            
-            // Bank header (e.g., "ZURUBANK:")
-            if (preg_match('/^([A-Z_]+):$/', $line, $matches)) {
-                $currentBank = $matches[1];
-                $result[$currentBank] = [];
-                $currentSection = null;
+        // Bank header (e.g., "ZURUBANK:")
+        if (preg_match('/^([A-Z_]+):$/', $line, $matches)) {
+            $currentBank = $matches[1];
+            $result[$currentBank] = [];
+            $currentSection = null;
+            $currentSubSection = null;
+            continue;
+        }
+        
+        if ($currentBank) {
+            // Base URL (2 spaces indentation)
+            if (preg_match('/^  base_url: "?(.+?)"?$/', $line, $matches)) {
+                $result[$currentBank]['base_url'] = rtrim($matches[1], '"');
                 continue;
             }
             
-            if ($currentBank) {
-                // Base URL
-                if (preg_match('/^  base_url: "?(.+?)"?$/', $line, $matches)) {
-                    $result[$currentBank]['base_url'] = rtrim($matches[1], '"');
-                    continue;
-                }
-                
-                // Endpoints section
-                if (preg_match('/^  endpoints:$/', $line)) {
-                    $currentSection = 'endpoints';
-                    $result[$currentBank]['endpoints'] = [];
-                    continue;
-                }
-                
-                // Source endpoints
-                if ($currentSection === 'endpoints' && preg_match('/^    source:$/', $line)) {
-                    $currentSection = 'source';
-                    $result[$currentBank]['endpoints']['source'] = [];
-                    continue;
-                }
-                
-                // Destination cashout endpoints
-                if ($currentSection === 'endpoints' && preg_match('/^    destination_cashout:$/', $line)) {
-                    $currentSection = 'destination_cashout';
-                    $result[$currentBank]['endpoints']['destination_cashout'] = [];
-                    continue;
-                }
-                
-                // Destination deposit endpoints
-                if ($currentSection === 'endpoints' && preg_match('/^    destination_deposit:$/', $line)) {
-                    $currentSection = 'destination_deposit';
-                    $result[$currentBank]['endpoints']['destination_deposit'] = [];
-                    continue;
-                }
-                
-                // Common endpoints
-                if ($currentSection === 'endpoints' && preg_match('/^    common:$/', $line)) {
-                    $currentSection = 'common';
-                    $result[$currentBank]['endpoints']['common'] = [];
-                    continue;
-                }
-                
-                // Endpoint key-value pairs
-                if (preg_match('/^      ([a-z_]+): "?(.+?)"?$/', $line, $matches)) {
-                    $key = $matches[1];
-                    $value = rtrim($matches[2], '"');
-                    
-                    if ($currentSection === 'source') {
-                        $result[$currentBank]['endpoints']['source'][$key] = $value;
-                    } elseif ($currentSection === 'destination_cashout') {
-                        $result[$currentBank]['endpoints']['destination_cashout'][$key] = $value;
-                    } elseif ($currentSection === 'destination_deposit') {
-                        $result[$currentBank]['endpoints']['destination_deposit'][$key] = $value;
-                    } elseif ($currentSection === 'common') {
-                        $result[$currentBank]['endpoints']['common'][$key] = $value;
-                    }
-                    continue;
-                }
+            // Endpoints section (2 spaces)
+            if (preg_match('/^  endpoints:$/', $line)) {
+                $currentSection = 'endpoints';
+                $result[$currentBank]['endpoints'] = [];
+                continue;
+            }
+            
+            // Source endpoints (4 spaces)
+            if ($currentSection === 'endpoints' && preg_match('/^    source:$/', $line)) {
+                $currentSubSection = 'source';
+                $result[$currentBank]['endpoints']['source'] = [];
+                continue;
+            }
+            
+            // Destination cashout endpoints (4 spaces)
+            if ($currentSection === 'endpoints' && preg_match('/^    destination_cashout:$/', $line)) {
+                $currentSubSection = 'destination_cashout';
+                $result[$currentBank]['endpoints']['destination_cashout'] = [];
+                continue;
+            }
+            
+            // Destination deposit endpoints (4 spaces)
+            if ($currentSection === 'endpoints' && preg_match('/^    destination_deposit:$/', $line)) {
+                $currentSubSection = 'destination_deposit';
+                $result[$currentBank]['endpoints']['destination_deposit'] = [];
+                continue;
+            }
+            
+            // Common endpoints (4 spaces)
+            if ($currentSection === 'endpoints' && preg_match('/^    common:$/', $line)) {
+                $currentSubSection = 'common';
+                $result[$currentBank]['endpoints']['common'] = [];
+                continue;
+            }
+            
+            // Endpoint key-value pairs (6 spaces or more)
+            if ($currentSubSection && preg_match('/^      ([a-z_]+): "?(.+?)"?$/', $line, $matches)) {
+                $key = $matches[1];
+                $value = rtrim($matches[2], '"');
+                $result[$currentBank]['endpoints'][$currentSubSection][$key] = $value;
+                continue;
             }
         }
-        
-        return $result;
     }
+    
+    return $result;
+}
     
     public function getDetectedFormat(): ?string { return $this->detectedFormat; }
     public function getDetectionConfidence(): ?int { return $this->detectionConfidence; }
