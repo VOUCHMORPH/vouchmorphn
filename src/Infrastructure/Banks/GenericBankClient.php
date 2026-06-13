@@ -31,6 +31,9 @@ class GenericBankClient implements BankAPIInterface
     {
         $this->config = $config;
         
+        // Increase memory limit for large certificate responses
+        ini_set('memory_limit', '512M');
+        
         // Determine bank prefix for environment variables
         $this->bankPrefix = strtoupper($this->config['provider_code'] ?? '');
         if (empty($this->bankPrefix) && isset($this->config['name'])) {
@@ -86,7 +89,6 @@ class GenericBankClient implements BankAPIInterface
 
     protected function getBaseUrl(): string
     {
-        // Check for bank-specific base URL from environment (Railway vault)
         if ($this->bankPrefix) {
             $envVar = $this->bankPrefix . '_BASE_URL';
             $baseUrl = getenv($envVar);
@@ -96,14 +98,12 @@ class GenericBankClient implements BankAPIInterface
             }
         }
         
-        // Check generic base URL from environment
         $genericBaseUrl = getenv('BANK_BASE_URL');
         if ($genericBaseUrl && !empty($genericBaseUrl)) {
             error_log("Using base URL from generic env: BANK_BASE_URL = {$genericBaseUrl}");
             return rtrim($genericBaseUrl, '/');
         }
         
-        // Fallback to config
         $configUrl = $this->config['base_url'] ?? '';
         if (!empty($configUrl)) {
             error_log("Using base URL from config: {$configUrl}");
@@ -114,13 +114,8 @@ class GenericBankClient implements BankAPIInterface
         return '';
     }
 
-    // ============================================================================
-    // API KEY FROM ENVIRONMENT
-    // ============================================================================
-
     protected function getApiKey(): ?string
     {
-        // Check for bank-specific API key from environment
         if ($this->bankPrefix) {
             $envVar = $this->bankPrefix . '_API_KEY';
             $apiKey = getenv($envVar);
@@ -129,13 +124,11 @@ class GenericBankClient implements BankAPIInterface
             }
         }
         
-        // Check generic API key from environment
         $genericApiKey = getenv('BANK_API_KEY');
         if ($genericApiKey && !empty($genericApiKey)) {
             return $genericApiKey;
         }
         
-        // Check config
         if (isset($this->config['security']['api_key']['value'])) {
             return $this->config['security']['api_key']['value'];
         }
@@ -143,13 +136,8 @@ class GenericBankClient implements BankAPIInterface
         return null;
     }
 
-    // ============================================================================
-    // ENDPOINT RESOLUTION FROM ENVIRONMENT OR CONFIG
-    // ============================================================================
-
     protected function getEndpoint(string $action): ?string
     {
-        // Map actions to environment variable names
         $envMap = [
             'verify_asset' => 'VERIFY_ENDPOINT',
             'place_hold' => 'HOLD_ENDPOINT',
@@ -170,7 +158,6 @@ class GenericBankClient implements BankAPIInterface
         
         $actionKey = $envMap[$action] ?? null;
         
-        // PRIORITY 1: Bank-specific environment variable (Railway vault)
         if ($actionKey && $this->bankPrefix) {
             $envVar = $this->bankPrefix . '_' . $actionKey;
             $endpoint = getenv($envVar);
@@ -180,7 +167,6 @@ class GenericBankClient implements BankAPIInterface
             }
         }
         
-        // PRIORITY 2: Generic environment variable
         if ($actionKey) {
             $genericVar = 'BANK_' . $actionKey;
             $endpoint = getenv($genericVar);
@@ -190,33 +176,23 @@ class GenericBankClient implements BankAPIInterface
             }
         }
         
-        // PRIORITY 3: Check in endpoints.source from config (for source role methods)
         if (isset($this->config['endpoints']['source'][$action])) {
-            error_log("Using endpoint from config endpoints.source: {$action} = " . $this->config['endpoints']['source'][$action]);
             return $this->config['endpoints']['source'][$action];
         }
         
-        // PRIORITY 4: Check in endpoints.destination_cashout (for cashout methods)
         if (isset($this->config['endpoints']['destination_cashout'][$action])) {
-            error_log("Using endpoint from config endpoints.destination_cashout: {$action} = " . $this->config['endpoints']['destination_cashout'][$action]);
             return $this->config['endpoints']['destination_cashout'][$action];
         }
         
-        // PRIORITY 5: Check in endpoints.destination_deposit (for deposit methods)
         if (isset($this->config['endpoints']['destination_deposit'][$action])) {
-            error_log("Using endpoint from config endpoints.destination_deposit: {$action} = " . $this->config['endpoints']['destination_deposit'][$action]);
             return $this->config['endpoints']['destination_deposit'][$action];
         }
         
-        // PRIORITY 6: Check in endpoints.common (for common methods)
         if (isset($this->config['endpoints']['common'][$action])) {
-            error_log("Using endpoint from config endpoints.common: {$action} = " . $this->config['endpoints']['common'][$action]);
             return $this->config['endpoints']['common'][$action];
         }
         
-        // PRIORITY 7: Check in resource_endpoints (legacy)
         if (isset($this->config['resource_endpoints'][$action])) {
-            error_log("Using endpoint from config resource_endpoints: {$action} = " . $this->config['resource_endpoints'][$action]);
             return $this->config['resource_endpoints'][$action];
         }
         
@@ -225,7 +201,7 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // OAUTH METHODS
+    // OAUTH METHODS (kept as is, unchanged)
     // ============================================================================
 
     public function getAuthorizationUrl(string $redirectUri, string $state, array $scope = []): string
@@ -247,7 +223,6 @@ class GenericBankClient implements BankAPIInterface
             'code_challenge_method' => $oauthConfig['code_challenge_method'] ?? 'S256'
         ];
         
-        // Generate PKCE code verifier and challenge
         $codeVerifier = bin2hex(random_bytes(32));
         $codeChallenge = rtrim(strtr(base64_encode(hash('sha256', $codeVerifier, true)), '+/', '-_'), '=');
         
@@ -467,12 +442,8 @@ class GenericBankClient implements BankAPIInterface
     // HELPER: ADD SOURCE IDENTIFIER TO PAYLOAD
     // ============================================================================
 
-    /**
-     * Add source identifier (phone/national ID/email) to payload for wallet verification
-     */
     protected function addSourceIdentifier(array $payload): array
     {
-        // If source identifier already exists, ensure all formats are present
         $sourceIdentifier = $payload['source_identifier'] ?? 
                             $payload['wallet_phone'] ?? 
                             $payload['phone'] ?? 
@@ -480,7 +451,6 @@ class GenericBankClient implements BankAPIInterface
                             $payload['email'] ?? null;
         
         if ($sourceIdentifier) {
-            // Add all possible identifier formats for maximum compatibility
             $payload['source_identifier'] = $sourceIdentifier;
             $payload['wallet_phone'] = $sourceIdentifier;
             $payload['phone'] = $sourceIdentifier;
@@ -619,7 +589,7 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // PROTECTED HELPERS
+    // PROTECTED HELPERS - UPDATED WITH LARGE RESPONSE HANDLING
     // ============================================================================
 
     protected function send(string $action, array $payload, ?string $accessToken = null): array
@@ -652,26 +622,69 @@ class GenericBankClient implements BankAPIInterface
         $headers = $this->buildHeaders($payload, $accessToken);
         
         error_log("Sending request to: {$url}");
-        error_log("Payload: " . json_encode($payload));
+        error_log("Payload length: " . strlen(json_encode($payload)));
+        
+        $jsonPayload = json_encode($payload);
         
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode($payload),
+            CURLOPT_POSTFIELDS => $jsonPayload,
             CURLOPT_HTTPHEADER => $headers,
-            CURLOPT_TIMEOUT => $this->config['timeout_ms'] ?? 30000,
-            CURLOPT_VERBOSE => false
+            CURLOPT_TIMEOUT => $this->config['timeout_ms'] ?? 60000, // Increased to 60s
+            CURLOPT_BUFFERSIZE => 262144, // 256KB buffer for large responses
+            CURLOPT_MAXFILESIZE => 5242880, // 5MB max file size
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_VERBOSE => false,
+            CURLOPT_ENCODING => '', // Allow compressed responses
+            CURLOPT_TCP_KEEPALIVE => 1,
+            CURLOPT_TCP_KEEPIDLE => 30,
+            CURLOPT_TCP_KEEPINTVL => 10
         ]);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlError = curl_error($ch);
+        $contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+        $contentLength = curl_getinfo($ch, CURLINFO_CONTENT_LENGTH_DOWNLOAD);
+        
         curl_close($ch);
         
-        error_log("Response HTTP {$httpCode}: " . substr($response, 0, 500));
+        // Check for response truncation
+        if ($contentLength > 0 && strlen($response) < $contentLength) {
+            error_log("WARNING: Response truncated! Expected {$contentLength} bytes, got " . strlen($response));
+            // Retry with larger buffer
+            $ch2 = curl_init($url);
+            curl_setopt_array($ch2, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $jsonPayload,
+                CURLOPT_HTTPHEADER => $headers,
+                CURLOPT_TIMEOUT => 120,
+                CURLOPT_BUFFERSIZE => 1048576, // 1MB buffer for retry
+                CURLOPT_MAXFILESIZE => 10485760, // 10MB max
+                CURLOPT_ENCODING => ''
+            ]);
+            $response = curl_exec($ch2);
+            $curlError = curl_error($ch2);
+            curl_close($ch2);
+            error_log("Retry response length: " . strlen($response));
+        }
+        
+        error_log("Response HTTP {$httpCode} - Content-Length: {$contentLength}, Actual: " . strlen($response));
+        error_log("Response preview: " . substr($response, 0, 500));
+        
+        if ($curlError) {
+            error_log("cURL error: {$curlError}");
+        }
         
         $decodedResponse = json_decode($response, true);
+        
+        if ($decodedResponse === null && !empty($response)) {
+            error_log("Failed to decode JSON response. Raw response: " . substr($response, 0, 1000));
+        }
         
         return [
             'success' => $httpCode >= 200 && $httpCode < 300,
@@ -679,7 +692,8 @@ class GenericBankClient implements BankAPIInterface
             'data' => $decodedResponse ?? [],
             'raw_response' => $response,
             'curl_error' => $curlError,
-            'detected_format' => $this->detectedFormat
+            'detected_format' => $this->detectedFormat,
+            'response_size' => strlen($response)
         ];
     }
 
@@ -687,28 +701,20 @@ class GenericBankClient implements BankAPIInterface
     // SIGNED METHODS FOR BANK-GRADE TRUST (RSA + Certificates)
     // ============================================================================
 
-    /**
-     * Create a signed payload using CertificateManager (Visa/Mastercard style)
-     * Falls back to MessageSigner if CertificateManager not available
-     */
     protected function createSignedPayload(array $payload, string $requester = 'VOUCHMORPH'): array
     {
-        // Add source identifier if not present
         $payload = $this->addSourceIdentifier($payload);
         
-        // PRIORITY 1: Use CertificateManager (Visa/Mastercard PKI model)
         if ($this->certManager && $this->certManager->isConfigured()) {
             error_log("[GenericBankClient] Using CertificateManager for signing ({$requester})");
             return $this->certManager->createSignedRequest($payload, $requester);
         }
         
-        // PRIORITY 2: Use MessageSigner (legacy RSA)
         if ($this->signer) {
             error_log("[GenericBankClient] Using MessageSigner for signing ({$requester})");
             return $this->signer->createSignedRequest($payload, $requester);
         }
         
-        // PRIORITY 3: Fallback to HMAC (should not happen in production)
         error_log("[GenericBankClient] WARNING: No signing method available - using HMAC fallback");
         $payload['requester'] = $requester;
         $payload['timestamp'] = time();
@@ -721,85 +727,53 @@ class GenericBankClient implements BankAPIInterface
         return $payload;
     }
 
-    /**
-     * Verify asset and expect signed response from bank
-     * Supports both certificate and legacy signature responses
-     */
     public function verifyAssetSigned(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: verifyAssetSigned ===");
-        
-        // Create signed payload with source identifier
         $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
-        
         return $this->send('verify_asset', $signedPayload, $signedPayload['access_token'] ?? null);
     }
 
-    /**
-     * Place hold and expect signed response from bank
-     * Supports both certificate and legacy signature responses
-     */
     public function placeHoldSigned(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: placeHoldSigned ===");
-        
-        // Create signed payload with source identifier
         $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
-        
         return $this->send('place_hold', $signedPayload, $signedPayload['access_token'] ?? null);
     }
 
-    /**
-     * Transfer with cryptographic proof from source bank
-     * Includes certificates in the proof chain
-     */
     public function transferWithProof(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: transferWithProof ===");
-        
         $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
-        
         return $this->send('transfer_with_proof', $signedPayload);
     }
 
-    /**
-     * Generate ATM token with proof
-     * Includes certificates in the proof chain
-     */
     public function generateTokenWithProof(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: generateTokenWithProof ===");
-        
         $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
-        
         return $this->send('generate_token_with_proof', $signedPayload);
     }
 
-    /**
-     * Process deposit with proof
-     * Includes certificates in the proof chain
-     */
     public function processDepositWithProof(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: processDepositWithProof ===");
-        
         $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
-        
         return $this->send('process_deposit_with_proof', $signedPayload);
     }
     
-    /**
-     * Build HTTP headers for request
-     */
     protected function buildHeaders(array $payload, ?string $accessToken = null): array
     {
         $headers = ['Content-Type: application/json'];
+        
+        // Add Accept header for large responses
+        $headers[] = 'Accept: application/json';
+        $headers[] = 'Accept-Encoding: gzip, deflate';
         
         if ($this->detectedFormat) {
             $headers[] = 'X-Detected-Format: ' . $this->detectedFormat;
         }
         
-        // Add OAuth Bearer token if provided
         if ($accessToken) {
             $headers[] = 'Authorization: Bearer ' . $accessToken;
         }
@@ -808,12 +782,10 @@ class GenericBankClient implements BankAPIInterface
             $headers[] = 'X-Correlation-ID: ' . $payload['reference'];
         }
         
-        // Add API key from environment or config
         $apiKey = $this->getApiKey();
         if ($apiKey) {
             $headerName = $this->config['security']['api_key']['header_name'] ?? 'X-API-Key';
             $headers[] = $headerName . ': ' . $apiKey;
-            error_log("Added API key header: {$headerName}");
         }
         
         return $headers;
