@@ -24,15 +24,15 @@ class FeeService
     private array $participants = [];
     private array $calculatedFees = [];
     
-    public function __construct(array $feeRegistry, array $countryConfig, string $defaultCurrency = 'BWP')
-    {
-        $this->feeRegistry = $feeRegistry;
-        $this->productConfig = $countryConfig['products'] ?? [];
-        $this->regulatoryConfig = $countryConfig['regulatory'] ?? [];
-        $this->defaultCurrency = $defaultCurrency;
-        
-        error_log("[FeeService] Loaded " . count($this->productConfig) . " products");
-    }
+  public function __construct(array $feeRegistry, array $countryConfig, string $defaultCurrency = null)
+{
+    $this->feeRegistry = $feeRegistry;
+    $this->productConfig = $countryConfig['products'] ?? [];
+    $this->regulatoryConfig = $countryConfig['regulatory'] ?? [];
+    $this->defaultCurrency = $defaultCurrency ?? ($countryConfig['currency'] ?? 'BWP');
+    
+    error_log("[FeeService] Loaded " . count($this->productConfig) . " products");
+}
     
     /**
      * Set participants for lookup
