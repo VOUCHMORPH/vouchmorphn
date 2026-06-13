@@ -1,7 +1,9 @@
 <?php
-// Save as: test_fixed_cert.php
+// Save as: find_payload_format.php
 
-// The certificate from your logs (with fixes applied)
+$signature_base64 = "g6TjLeAz8mUly8auj66pKDFtb0BXxfsVpegh6jSGDaUC18yiHRrPQ\/O4\/OIJKf+JPRnxUfZva8NesDdMmv1nts8doMUfd2ydmVxLobzCn2L6X1OQNWXmofVK7Ch7Rn+e7JX+bndQcgPnRTPPxO2i9XELtXym2w\/fbBd8Mv0AiS6S\/MJbd9qrmCzvnoB8ysFfsgB8WUSAo9QPm83CJ5IbMPO";
+$signature = base64_decode($signature_base64);
+
 $certificate = <<<CERT
 -----BEGIN CERTIFICATE-----
 MIIEbTCCAlUCFGM7U2vcVe90JNEe6/Mxhts3A+vhMA0GCSqGSIb3DQEBCwUAMHcx
@@ -31,39 +33,55 @@ QQNPdCuu3QqNCq7suNoAEd+hHQVTzYgWKEby+XRZqkFd
 -----END CERTIFICATE-----
 CERT;
 
-echo "Testing cleaned certificate...\n";
+$pub_key = openssl_pkey_get_public($certificate);
 
-// Try to load the certificate
-$cert_data = openssl_x509_read($certificate);
-if ($cert_data) {
-    echo "✓ Certificate loaded successfully!\n";
-    
-    // Get certificate details
-    $cert_info = openssl_x509_parse($cert_data);
-    echo "Certificate Subject: " . ($cert_info['name'] ?? 'Unknown') . "\n";
-    echo "Valid from: " . date('Y-m-d', $cert_info['validFrom_time_t']) . "\n";
-    echo "Valid to: " . date('Y-m-d', $cert_info['validTo_time_t']) . "\n";
-    
-    // Get public key
-    $pub_key = openssl_pkey_get_public($cert_data);
-    if ($pub_key) {
-        echo "✓ Public key extracted successfully\n";
-    }
-} else {
-    echo "✗ Failed to load certificate\n";
-    echo "OpenSSL error: " . openssl_error_string() . "\n";
-}
+// The response from SACCUSSALIS (from your logs)
+$response_data = [
+    "available_balance" => 903850,
+    "held_balance" => 95100,
+    "hold_placed" => true,
+    "hold_reference" => "SWAP_1781311956141",
+    "message" => "Hold placed successfully",
+    "new_balance" => 903850,
+    "session_id" => "SWAP_1781311956141",
+    "signature_verified" => true,
+    "status" => "SUCCESS",
+    "timestamp" => 1781311957
+];
 
-// Test with signature verification
-$payload = '{"available_balance":903850,"held_balance":95100,"hold_placed":true,"hold_reference":"SWAP_1781311956141","message":"Hold placed successfully","new_balance":903850,"session_id":"SWAP_1781311956141","signature_verified":true,"status":"SUCCESS","timestamp":1781311957}';
+echo "Testing different payload formats:\n\n";
 
-$signature_base64 = "g6TjLeAz8mUly8auj66pKDFtb0BXxfsVpegh6jSGDaUC18yiHRrPQ\/O4\/OIJKf+JPRnxUfZva8NesDdMmv1nts8doMUfd2ydmVxLobzCn2L6X1OQNWXmofVK7Ch7Rn+e7JX+bndQcgPnRTPPxO2i9XELtXym2w\/fbBd8Mv0AiS6S\/MJbd9qrmCzvnoB8ysFfsgB8WUSAo9QPm83CJ5IbMPO";
-$signature = base64_decode($signature_base64);
+// Format 1: JSON without spaces (compact)
+$payload1 = json_encode($response_data);
+echo "1. Compact JSON:\n";
+echo "   Payload: " . $payload1 . "\n";
+$result1 = openssl_verify($payload1, $signature, $pub_key, OPENSSL_ALGO_SHA256);
+echo "   Result: " . ($result1 === 1 ? "✓ VALID" : "✗ Invalid") . "\n\n";
 
-$result = openssl_verify($payload, $signature, $pub_key, OPENSSL_ALGO_SHA256);
-if ($result === 1) {
-    echo "\n✓✓✓ SIGNATURE VALID! ✓✓✓\n";
-} else {
-    echo "\nSignature still invalid. Result: $result\n";
-}
-?>
+// Format 2: JSON with spaces (pretty)
+$payload2 = json_encode($response_data, JSON_PRETTY_PRINT);
+echo "2. Pretty JSON:\n";
+$result2 = openssl_verify($payload2, $signature, $pub_key, OPENSSL_ALGO_SHA256);
+echo "   Result: " . ($result2 === 1 ? "✓ VALID" : "✗ Invalid") . "\n\n";
+
+// Format 3: Sorted keys
+ksort($response_data);
+$payload3 = json_encode($response_data);
+echo "3. Sorted keys, compact:\n";
+echo "   Payload: " . $payload3 . "\n";
+$result3 = openssl_verify($payload3, $signature, $pub_key, OPENSSL_ALGO_SHA256);
+echo "   Result: " . ($result3 === 1 ? "✓ VALID" : "✗ Invalid") . "\n\n";
+
+// Format 4: Query string format
+$payload4 = http_build_query($response_data);
+echo "4. Query string format:\n";
+echo "   Payload: " . substr($payload4, 0, 100) . "...\n";
+$result4 = openssl_verify($payload4, $signature, $pub_key, OPENSSL_ALGO_SHA256);
+echo "   Result: " . ($result4 === 1 ? "✓ VALID" : "✗ Invalid") . "\n\n";
+
+// Format 5: Include timestamp as string
+$response_data['timestamp'] = "1781311957";
+$payload5 = json_encode($response_data);
+echo "5. Timestamp as string:\n";
+$result5 = openssl_verify($payload5, $signature, $pub_key, OPENSSL_ALGO_SHA256);
+echo "   Result: " . ($result5 === 1 ? "✓ VALID" : "✗ Invalid") . "\n\n";
