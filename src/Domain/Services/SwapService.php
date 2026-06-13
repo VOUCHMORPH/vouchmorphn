@@ -249,6 +249,63 @@ class SwapService
         return $feeResult;
     }
 
+    /**
+     * ============================================================
+     * NEW: ADJUST AMOUNT FOR DELIVERY METHOD (ATM note limitations)
+     * ============================================================
+     * 
+     * SCENARIOS:
+     * - ATM: Must respect note denominations, remainder stays at source
+     * - AGENT: No limitations, full amount cashable
+     * - VOUCHER: Full amount transferable
+     * - DEPOSIT: Full amount depositable
+     * - WALLET: Full amount transferable
+     */
+    private function adjustAmountForDelivery(float $amount, string $deliveryMethod, string $currency): array
+    {
+        $deliveryMethod = strtoupper($deliveryMethod);
+        
+        // These delivery methods have NO limitations - full amount is delivered
+        if (in_array($deliveryMethod, ['DEPOSIT', 'VOUCHER', 'AGENT', 'WALLET', 'CARD'])) {
+            return [
+                'deliverable_amount' => $amount,
+                'remainder_at_source' => 0,
+                'is_adjusted' => false,
+                'message' => "Full amount {$amount} will be delivered via {$deliveryMethod}"
+            ];
+        }
+        
+        // ATM has note denomination limitations
+        if ($deliveryMethod === 'ATM') {
+            $validation = $this->validateCashoutAmount($amount, $currency);
+            
+            if ($validation['dispensable_amount'] <= 0) {
+                return [
+                    'deliverable_amount' => 0,
+                    'remainder_at_source' => $amount,
+                    'is_adjusted' => true,
+                    'message' => "Amount {$amount} cannot be dispensed by ATM. Please use AGENT cashout."
+                ];
+            }
+            
+            return [
+                'deliverable_amount' => $validation['dispensable_amount'],
+                'remainder_at_source' => $validation['remainder_balance'],
+                'note_breakdown' => $validation['note_breakdown'],
+                'is_adjusted' => $validation['remainder_balance'] > 0,
+                'message' => $validation['message']
+            ];
+        }
+        
+        // Default - no adjustment
+        return [
+            'deliverable_amount' => $amount,
+            'remainder_at_source' => 0,
+            'is_adjusted' => false,
+            'message' => "Amount {$amount} accepted for {$deliveryMethod}"
+        ];
+    }
+
     // ============================================================
     // SOURCE IDENTIFIER EXTRACTION - Who is sending money
     // ============================================================
@@ -456,6 +513,7 @@ class SwapService
 
     // ============================================================
     // EXECUTE SIGNED CASHOUT - With Source Identifier
+    // MODIFIED: Added delivery method adjustment for ATM note limitations
     // ============================================================
 
     private function executeSignedCashout(array $payload): array
@@ -465,6 +523,7 @@ class SwapService
         $amount = (float)($payload['amount'] ?? 0);
         $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
         $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
+        $deliveryMethod = strtoupper($payload['delivery_method'] ?? 'ATM');
         
         if (isset($payload['_cashout_validation'])) {
             $this->feeCalculationDetails['cashout_validation'] = $payload['_cashout_validation'];
@@ -522,47 +581,82 @@ class SwapService
         $feeBreakdown = $this->calculateFeesWithDetails('CASHOUT', $amount, $payload);
         $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
         
-        // STEP 4: GENERATE ATM TOKEN
-        error_log("[SwapService] STEP 4: Generating ATM token");
-        $tokenResult = $this->executeStep('GENERATE_TOKEN_WITH_PROOF', function() use ($payload, $sourceInstitution, $netAmount) {
-            $tokenPayload = $payload;
-            if (isset($this->feeCalculationDetails['note_breakdown'])) {
-                $tokenPayload['note_breakdown'] = $this->feeCalculationDetails['note_breakdown'];
-            }
-            return $this->generateAtmTokenWithProof($tokenPayload, $sourceInstitution, $netAmount);
-        });
+        // STEP 4: ADJUST AMOUNT FOR DELIVERY METHOD (NEW - ADDED)
+        error_log("[SwapService] STEP 4: Adjusting amount for delivery method: {$deliveryMethod}");
+        $deliveryAdjustment = $this->adjustAmountForDelivery($netAmount, $deliveryMethod, $payload['currency'] ?? 'BWP');
         
-        // STEP 5: SEND SMS to beneficiary phone
-        if ($beneficiaryPhone && $this->smsService && isset($tokenResult['atm_pin'])) {
-            error_log("[SwapService] STEP 5: Sending SMS to {$beneficiaryPhone}");
-            $this->executeStep('SEND_SMS', function() use ($beneficiaryPhone, $tokenResult, $netAmount) {
+        $amountToSend = $deliveryAdjustment['deliverable_amount'];
+        $remainderAtSource = $deliveryAdjustment['remainder_at_source'];
+        
+        error_log("[SwapService] Amount after fees: {$netAmount}, Deliverable: {$amountToSend}, Remainder: {$remainderAtSource}");
+        
+        // Check if amount can be delivered
+        if ($amountToSend <= 0) {
+            $errorMsg = "Amount after fees ({$netAmount}) cannot be delivered via {$deliveryMethod}. " . $deliveryAdjustment['message'];
+            error_log("[SwapService] DELIVERY FAILED: {$errorMsg}");
+            throw new RuntimeException($errorMsg);
+        }
+        
+        // STEP 4b: STORE DELIVERY ADJUSTMENT DETAILS
+        $this->feeCalculationDetails['delivery_adjustment'] = [
+            'original_net_amount' => $netAmount,
+            'delivery_method' => $deliveryMethod,
+            'amount_delivered' => $amountToSend,
+            'remainder_at_source' => $remainderAtSource,
+            'note_breakdown' => $deliveryAdjustment['note_breakdown'] ?? null,
+            'message' => $deliveryAdjustment['message']
+        ];
+        
+        // STEP 5: GENERATE ATM TOKEN (OR PROCESS BASED ON DELIVERY METHOD)
+        error_log("[SwapService] STEP 5: Processing delivery via {$deliveryMethod} for amount: {$amountToSend}");
+        
+        $tokenPayload = $payload;
+        $tokenPayload['amount'] = $amountToSend;
+        if (isset($this->feeCalculationDetails['note_breakdown'])) {
+            $tokenPayload['note_breakdown'] = $this->feeCalculationDetails['note_breakdown'];
+        }
+        
+        // Route to appropriate delivery method
+        $deliveryResult = $this->processDeliveryByMethod($tokenPayload, $sourceInstitution, $amountToSend, $deliveryMethod);
+        
+        // STEP 6: SEND SMS to beneficiary phone
+        if ($beneficiaryPhone && $this->smsService && isset($deliveryResult['atm_pin'])) {
+            error_log("[SwapService] STEP 6: Sending SMS to {$beneficiaryPhone}");
+            $this->executeStep('SEND_SMS', function() use ($beneficiaryPhone, $deliveryResult, $amountToSend) {
                 return $this->smsService->sendCashoutCode(
                     $beneficiaryPhone,
-                    $tokenResult['atm_pin'],
-                    $netAmount,
-                    $tokenResult['voucher_number'] ?? null
+                    $deliveryResult['atm_pin'],
+                    $amountToSend,
+                    $deliveryResult['voucher_number'] ?? null
                 );
             });
         }
         
-        // STEP 6: DEBIT SOURCE
-        error_log("[SwapService] STEP 6: Debiting source");
-        $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution) {
-            return $this->debitSource($payload, $sourceInstitution);
+        // STEP 7: DEBIT SOURCE (amount delivered + total fees)
+        $actualDebitAmount = $amountToSend + ($feeBreakdown['total_fee'] ?? 0);
+        error_log("[SwapService] STEP 7: Debiting source for amount: {$actualDebitAmount} (delivered: {$amountToSend} + fees: {$feeBreakdown['total_fee']})");
+        
+        $debitPayload = $payload;
+        $debitPayload['amount'] = $actualDebitAmount;
+        $this->executeStep('DEBIT_SOURCE', function() use ($debitPayload, $sourceInstitution) {
+            return $this->debitSource($debitPayload, $sourceInstitution);
         });
         
-        // STEP 7: UPDATE HOLD STATUS
+        // STEP 8: UPDATE HOLD STATUS
         $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
         
         $result = [
             'status' => 'success',
             'reference' => $this->currentSwapRef,
-            'atm_code' => $tokenResult['atm_pin'] ?? null,
-            'voucher_number' => $tokenResult['voucher_number'] ?? null,
-            'amount' => $netAmount,
+            'atm_code' => $deliveryResult['atm_pin'] ?? null,
+            'voucher_number' => $deliveryResult['voucher_number'] ?? null,
+            'amount' => $amountToSend,
             'original_requested_amount' => $payload['original_requested_amount'] ?? $amount,
-            'remainder_balance' => $payload['remainder_balance'] ?? 0,
+            'original_net_amount' => $netAmount,
+            'remainder_balance' => $payload['remainder_balance'] ?? $remainderAtSource,
             'fee' => $feeBreakdown['total_fee'] ?? 0,
+            'delivery_method' => $deliveryMethod,
+            'delivery_adjustment' => $deliveryAdjustment['message'],
             'fee_calculation_details' => $this->feeCalculationDetails,
             'signature_chain' => $this->signedPayloads
         ];
@@ -570,8 +664,67 @@ class SwapService
         if (isset($payload['note_breakdown'])) {
             $result['note_breakdown'] = $payload['note_breakdown'];
         }
+        if (isset($deliveryAdjustment['note_breakdown'])) {
+            $result['delivery_note_breakdown'] = $deliveryAdjustment['note_breakdown'];
+        }
+        
+        error_log("[SwapService] ===== executeSignedCashout SUCCESS =====");
         
         return $result;
+    }
+
+    /**
+     * NEW: Process delivery by method (ATM, AGENT, VOUCHER, DEPOSIT, WALLET)
+     */
+    private function processDeliveryByMethod(array $payload, string $institution, float $amount, string $method): array
+    {
+        switch ($method) {
+            case 'ATM':
+                return $this->generateAtmTokenWithProof($payload, $institution, $amount);
+            case 'AGENT':
+                return $this->processAgentCashout($payload, $institution, $amount);
+            case 'VOUCHER':
+                return $this->generateVoucher($payload, $institution, $amount);
+            case 'DEPOSIT':
+            case 'WALLET':
+            default:
+                return $this->processDepositWithProof($payload, $institution, $amount);
+        }
+    }
+
+    /**
+     * NEW: Process agent cashout (no ATM note limitations)
+     */
+    private function processAgentCashout(array $payload, string $institution, float $amount): array
+    {
+        // Agent cashout logic - full amount can be cashed out
+        error_log("[SwapService] Processing agent cashout for {$amount}");
+        
+        return [
+            'success' => true,
+            'atm_pin' => str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT),
+            'voucher_number' => 'AGT-' . strtoupper(substr(bin2hex(random_bytes(6)), 0, 10)),
+            'expires_at' => date('Y-m-d H:i:s', strtotime('+24 hours')),
+            'amount' => $amount,
+            'message' => 'Agent cashout code generated successfully'
+        ];
+    }
+
+    /**
+     * NEW: Generate voucher (full amount, no note limitations)
+     */
+    private function generateVoucher(array $payload, string $institution, float $amount): array
+    {
+        error_log("[SwapService] Generating voucher for {$amount}");
+        
+        return [
+            'success' => true,
+            'atm_pin' => str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT),
+            'voucher_number' => 'VCH-' . strtoupper(substr(bin2hex(random_bytes(8)), 0, 12)),
+            'expires_at' => date('Y-m-d H:i:s', strtotime('+30 days')),
+            'amount' => $amount,
+            'message' => 'Voucher generated successfully'
+        ];
     }
 
     // ============================================================
@@ -1177,6 +1330,36 @@ class SwapService
         return $this->settlement->recordSettlementWithProof($settlementData);
     }
 
+    /**
+     * Debit source (unsigned fallback)
+     */
+    private function debitSource(array $payload, string $institution): array
+    {
+        $participant = $this->getParticipant($institution);
+        $bankClient = new GenericBankClient($participant, $payload);
+        
+        $debitPayload = [
+            'reference' => $this->currentSwapRef,
+            'hold_reference' => $this->currentHoldReference,
+            'amount' => $payload['amount'] ?? 0,
+            'reason' => 'Swap completed successfully'
+        ];
+        
+        $result = $bankClient->debitHold($debitPayload);
+        
+        if (!$result['success']) {
+            return ['debited' => false, 'message' => $result['curl_error'] ?? 'Debit failed'];
+        }
+        
+        $data = $result['data'] ?? [];
+        
+        return [
+            'debited' => true,
+            'transaction_reference' => $data['transaction_reference'] ?? null,
+            'message' => $data['message'] ?? 'Debit successful'
+        ];
+    }
+
     // ============================================================
     // UNSIGNED FALLBACK METHODS (backward compatibility)
     // ============================================================
@@ -1283,33 +1466,6 @@ class SwapService
             'hold_reference' => $data['hold_reference'] ?? null,
             'local_hold_id' => $holdId,
             'message' => $data['message'] ?? 'Hold placed successfully'
-        ];
-    }
-
-    private function debitSource(array $payload, string $institution): array
-    {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
-        
-        $debitPayload = [
-            'reference' => $this->currentSwapRef,
-            'hold_reference' => $this->currentHoldReference,
-            'amount' => $payload['amount'] ?? 0,
-            'reason' => 'Swap completed successfully'
-        ];
-        
-        $result = $bankClient->debitHold($debitPayload);
-        
-        if (!$result['success']) {
-            return ['debited' => false, 'message' => $result['curl_error'] ?? 'Debit failed'];
-        }
-        
-        $data = $result['data'] ?? [];
-        
-        return [
-            'debited' => true,
-            'transaction_reference' => $data['transaction_reference'] ?? null,
-            'message' => $data['message'] ?? 'Debit successful'
         ];
     }
 
