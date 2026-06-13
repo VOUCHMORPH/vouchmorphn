@@ -6,6 +6,7 @@ namespace Domain\Services;
 use PDO;
 use Exception;
 use RuntimeException;
+use PDOException;
 use Domain\Services\Settlement\HybridSettlementStrategy;
 use Domain\Services\FeeService;
 use Domain\Services\ForexService;
@@ -716,264 +717,264 @@ class SwapService
         ];
     }
 
- /**
- * Place hold with source identifier
- */
-private function verifyAssetSigned(array $payload, string $institution): array
-{
-    $participant = $this->getParticipant($institution);
-    $bankClient = new GenericBankClient($participant, $payload);
-    
-    $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
-    $timestamp = time();
-    
-    // Extract source identifier (who is sending the money)
-    $sourceId = $this->extractSourceIdentifier($payload);
-    
-    // Build verification request - ask source institution about this asset
-    $verifyPayload = [
-        'action' => 'VERIFY_ASSET',
-        'reference' => $this->currentSwapRef,
-        'asset_type' => $assetType,
-        'amount' => $payload['amount'] ?? 0,
-        'currency' => $payload['currency'] ?? $this->config['currency'] ?? 'BWP',
-        'institution' => $institution,
-        'timestamp' => $timestamp,
-        'swap_type' => $payload['swap_type'] ?? 'STANDARD',
-        'requester' => 'VOUCHMORPH'
-    ];
-    
-    // ADD SOURCE IDENTIFIER TO VERIFICATION PAYLOAD
-    if ($sourceId['has_value']) {
-        $verifyPayload['source_identifier'] = $sourceId['identifier'];
-        $verifyPayload['source_identifier_type'] = $sourceId['type'];
+    /**
+     * Place hold with source identifier
+     */
+    private function verifyAssetSigned(array $payload, string $institution): array
+    {
+        $participant = $this->getParticipant($institution);
+        $bankClient = new GenericBankClient($participant, $payload);
         
-        // Add to all possible fields so bank can find it regardless of naming convention
-        $verifyPayload['wallet_phone'] = $sourceId['identifier'];
-        $verifyPayload['phone'] = $sourceId['identifier'];
-        $verifyPayload['national_id'] = $sourceId['identifier'];
-        $verifyPayload['email'] = $sourceId['identifier'];
-        $verifyPayload['source_phone'] = $sourceId['identifier'];
-        $verifyPayload['source_wallet_phone'] = $sourceId['identifier'];
+        $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
+        $timestamp = time();
         
-        error_log("[SwapService] Source identifier sent to {$institution}: {$sourceId['type']} = {$sourceId['identifier']}");
-    } else {
-        error_log("[SwapService] WARNING: No source identifier found for verification");
-    }
-    
-    // Add asset-specific fields
-    switch ($assetType) {
-        case 'VOUCHER':
-        case 'CASHOUT-VOUCHER':
-            $verifyPayload['voucher_number'] = $payload['voucher_number'] ?? null;
-            $verifyPayload['voucher_pin'] = $payload['voucher_pin'] ?? null;
-            $verifyPayload['claimant_phone'] = $payload['claimant_phone'] ?? null;
-            break;
-        case 'ACCOUNT':
-            $verifyPayload['account_number'] = $payload['account_number'] ?? null;
-            $verifyPayload['account_name'] = $payload['account_name'] ?? null;
-            break;
-        case 'MNO-WALLET':
-        case 'BANK-WALLET':
-            $verifyPayload['wallet_phone'] = $verifyPayload['wallet_phone'] ?: ($payload['wallet_phone'] ?? null);
-            $verifyPayload['wallet_provider'] = $payload['wallet_provider'] ?? null;
-            break;
-        case 'CARD':
-            $verifyPayload['card_number'] = $payload['card_number'] ?? null;
-            $verifyPayload['card_expiry'] = $payload['card_expiry'] ?? null;
-            break;
-        default:
-            foreach ($payload as $key => $value) {
-                if (!in_array($key, ['from_institution', 'to_institution', 'swap_type', 'amount', 'currency', 'reference'])) {
-                    $verifyPayload[$key] = $value;
+        // Extract source identifier (who is sending the money)
+        $sourceId = $this->extractSourceIdentifier($payload);
+        
+        // Build verification request - ask source institution about this asset
+        $verifyPayload = [
+            'action' => 'VERIFY_ASSET',
+            'reference' => $this->currentSwapRef,
+            'asset_type' => $assetType,
+            'amount' => $payload['amount'] ?? 0,
+            'currency' => $payload['currency'] ?? $this->config['currency'] ?? 'BWP',
+            'institution' => $institution,
+            'timestamp' => $timestamp,
+            'swap_type' => $payload['swap_type'] ?? 'STANDARD',
+            'requester' => 'VOUCHMORPH'
+        ];
+        
+        // ADD SOURCE IDENTIFIER TO VERIFICATION PAYLOAD
+        if ($sourceId['has_value']) {
+            $verifyPayload['source_identifier'] = $sourceId['identifier'];
+            $verifyPayload['source_identifier_type'] = $sourceId['type'];
+            
+            // Add to all possible fields so bank can find it regardless of naming convention
+            $verifyPayload['wallet_phone'] = $sourceId['identifier'];
+            $verifyPayload['phone'] = $sourceId['identifier'];
+            $verifyPayload['national_id'] = $sourceId['identifier'];
+            $verifyPayload['email'] = $sourceId['identifier'];
+            $verifyPayload['source_phone'] = $sourceId['identifier'];
+            $verifyPayload['source_wallet_phone'] = $sourceId['identifier'];
+            
+            error_log("[SwapService] Source identifier sent to {$institution}: {$sourceId['type']} = {$sourceId['identifier']}");
+        } else {
+            error_log("[SwapService] WARNING: No source identifier found for verification");
+        }
+        
+        // Add asset-specific fields
+        switch ($assetType) {
+            case 'VOUCHER':
+            case 'CASHOUT-VOUCHER':
+                $verifyPayload['voucher_number'] = $payload['voucher_number'] ?? null;
+                $verifyPayload['voucher_pin'] = $payload['voucher_pin'] ?? null;
+                $verifyPayload['claimant_phone'] = $payload['claimant_phone'] ?? null;
+                break;
+            case 'ACCOUNT':
+                $verifyPayload['account_number'] = $payload['account_number'] ?? null;
+                $verifyPayload['account_name'] = $payload['account_name'] ?? null;
+                break;
+            case 'MNO-WALLET':
+            case 'BANK-WALLET':
+                $verifyPayload['wallet_phone'] = $verifyPayload['wallet_phone'] ?: ($payload['wallet_phone'] ?? null);
+                $verifyPayload['wallet_provider'] = $payload['wallet_provider'] ?? null;
+                break;
+            case 'CARD':
+                $verifyPayload['card_number'] = $payload['card_number'] ?? null;
+                $verifyPayload['card_expiry'] = $payload['card_expiry'] ?? null;
+                break;
+            default:
+                foreach ($payload as $key => $value) {
+                    if (!in_array($key, ['from_institution', 'to_institution', 'swap_type', 'amount', 'currency', 'reference'])) {
+                        $verifyPayload[$key] = $value;
+                    }
                 }
-            }
-            break;
-    }
-    
-    // Request verification from source institution
-    $result = $bankClient->verifyAssetSigned($verifyPayload);
-    
-    if (!$result['success']) {
-        $this->logger->error("Verification request failed", [
+                break;
+        }
+        
+        // Request verification from source institution
+        $result = $bankClient->verifyAssetSigned($verifyPayload);
+        
+        if (!$result['success']) {
+            $this->logger->error("Verification request failed", [
+                'institution' => $institution,
+                'asset_type' => $assetType,
+                'error' => $result['curl_error'] ?? 'Unknown'
+            ]);
+            return [
+                'verified' => false, 
+                'message' => 'Unable to reach source institution: ' . ($result['curl_error'] ?? 'Connection failed')
+            ];
+        }
+        
+        $data = $result['data'] ?? [];
+        
+        $verified = $data['verified'] ?? false;
+        $message = $data['message'] ?? '';
+        $reason = $data['reason'] ?? $data['error'] ?? null;
+        
+        $this->logger->info("Source institution verification response", [
             'institution' => $institution,
             'asset_type' => $assetType,
-            'error' => $result['curl_error'] ?? 'Unknown'
+            'verified' => $verified,
+            'message' => $message,
+            'reason' => $reason
         ]);
-        return [
-            'verified' => false, 
-            'message' => 'Unable to reach source institution: ' . ($result['curl_error'] ?? 'Connection failed')
-        ];
-    }
-    
-    $data = $result['data'] ?? [];
-    
-    $verified = $data['verified'] ?? false;
-    $message = $data['message'] ?? '';
-    $reason = $data['reason'] ?? $data['error'] ?? null;
-    
-    $this->logger->info("Source institution verification response", [
-        'institution' => $institution,
-        'asset_type' => $assetType,
-        'verified' => $verified,
-        'message' => $message,
-        'reason' => $reason
-    ]);
-    
-    if ($verified !== true) {
-        $errorMsg = $message ?: ($reason ?: 'Asset not available for swap');
-        return [
-            'verified' => false,
-            'message' => $errorMsg,
-            'source_response' => $data
-        ];
-    }
-    
-    // FIXED: Verify certificate OR signature from response, with fallback
-    if (isset($data['certificate']) && $this->certificateManager) {
-        $verification = $this->certificateManager->verifySignedRequest($data);
-        if (!$verification['verified']) {
-            error_log("[SwapService] Invalid certificate on verify response from {$institution}");
-            return ['verified' => false, 'message' => 'Invalid certificate - verification cannot be trusted'];
+        
+        if ($verified !== true) {
+            $errorMsg = $message ?: ($reason ?: 'Asset not available for swap');
+            return [
+                'verified' => false,
+                'message' => $errorMsg,
+                'source_response' => $data
+            ];
         }
-        error_log("[SwapService] Certificate verified on verify response from {$institution}");
-    } elseif (isset($data['signature']) && isset($data['payload'])) {
-        try {
-            $publicKey = $this->getInstitutionPublicKey($institution);
-            $isValid = $this->signatureVerifier->verify(
-                $data['payload'],
-                $data['signature'],
-                $publicKey
-            );
-            if (!$isValid) {
-                error_log("[SwapService] Invalid signature on verify response from {$institution}");
-                return ['verified' => false, 'message' => 'Invalid signature - verification cannot be trusted'];
+        
+        // FIXED: Verify certificate OR signature from response, with fallback
+        if (isset($data['certificate']) && $this->certificateManager) {
+            $verification = $this->certificateManager->verifySignedRequest($data);
+            if (!$verification['verified']) {
+                error_log("[SwapService] Invalid certificate on verify response from {$institution}");
+                return ['verified' => false, 'message' => 'Invalid certificate - verification cannot be trusted'];
             }
-            error_log("[SwapService] Signature verified on verify response from {$institution}");
-        } catch (Exception $e) {
-            $this->logger->warning("Signature verification skipped", ['error' => $e->getMessage()]);
+            error_log("[SwapService] Certificate verified on verify response from {$institution}");
+        } elseif (isset($data['signature']) && isset($data['payload'])) {
+            try {
+                $publicKey = $this->getInstitutionPublicKey($institution);
+                $isValid = $this->signatureVerifier->verify(
+                    $data['payload'],
+                    $data['signature'],
+                    $publicKey
+                );
+                if (!$isValid) {
+                    error_log("[SwapService] Invalid signature on verify response from {$institution}");
+                    return ['verified' => false, 'message' => 'Invalid signature - verification cannot be trusted'];
+                }
+                error_log("[SwapService] Signature verified on verify response from {$institution}");
+            } catch (Exception $e) {
+                $this->logger->warning("Signature verification skipped", ['error' => $e->getMessage()]);
+            }
+        } else {
+            // No verification provided - trust the response (backward compatibility)
+            error_log("[SwapService] WARNING: No certificate or signature in verify response from {$institution} - trusting response");
         }
-    } else {
-        // No verification provided - trust the response (backward compatibility)
-        error_log("[SwapService] WARNING: No certificate or signature in verify response from {$institution} - trusting response");
+        
+        return [
+            'verified' => true,
+            'message' => $message ?: 'Asset verified and available',
+            'balance' => $data['available_balance'] ?? $data['balance'] ?? null,
+            'asset_id' => $data['asset_id'] ?? null,
+            'original_payload' => $data['payload'] ?? null,
+            'signature' => $data['signature'] ?? null,
+            'certificate' => $data['certificate'] ?? null,
+            'timestamp' => $data['timestamp'] ?? $timestamp,
+            'raw_response' => $result
+        ];
     }
-    
-    return [
-        'verified' => true,
-        'message' => $message ?: 'Asset verified and available',
-        'balance' => $data['available_balance'] ?? $data['balance'] ?? null,
-        'asset_id' => $data['asset_id'] ?? null,
-        'original_payload' => $data['payload'] ?? null,
-        'signature' => $data['signature'] ?? null,
-        'certificate' => $data['certificate'] ?? null,
-        'timestamp' => $data['timestamp'] ?? $timestamp,
-        'raw_response' => $result
-    ];
-}
 
     /**
- * Place hold with source identifier
- */
-private function placeHoldSigned(array $payload, string $institution, array $verificationResult): array
-{
-    $participant = $this->getParticipant($institution);
-    $bankClient = new GenericBankClient($participant, $payload);
-    
-    $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
-    $timestamp = time();
-    $sourceId = $this->extractSourceIdentifier($payload);
-    
-    $holdPayload = [
-        'action' => 'PLACE_HOLD',
-        'reference' => $this->currentSwapRef,
-        'asset_type' => $assetType,
-        'amount' => $payload['amount'] ?? 0,
-        'currency' => $payload['currency'] ?? $this->config['currency'] ?? 'BWP',
-        'hold_reason' => $payload['hold_reason'] ?? 'PENDING_SWAP',
-        'destination_institution' => $payload['to_institution'] ?? $payload['destination_institution'] ?? null,
-        'expiry' => date('Y-m-d H:i:s', strtotime('+1 hour')),
-        'timestamp' => $timestamp
-    ];
-    
-    // Add source identifier
-    if ($sourceId['has_value']) {
-        $holdPayload['source_identifier'] = $sourceId['identifier'];
-        $holdPayload['source_identifier_type'] = $sourceId['type'];
-    }
-    
-    if (isset($verificationResult['asset_id'])) {
-        $holdPayload['asset_id'] = $verificationResult['asset_id'];
-    }
-    
-    // Add asset-specific fields
-    switch ($assetType) {
-        case 'VOUCHER':
-            $holdPayload['voucher_number'] = $payload['voucher_number'] ?? null;
-            break;
-        case 'ACCOUNT':
-            $holdPayload['account_number'] = $payload['account_number'] ?? null;
-            break;
-        case 'MNO-WALLET':
-        case 'BANK-WALLET':
-            $holdPayload['wallet_phone'] = $sourceId['identifier'] ?: ($payload['wallet_phone'] ?? null);
-            break;
-    }
-    
-    $result = $bankClient->placeHoldSigned($holdPayload);
-    
-    if (!$result['success']) {
-        return ['hold_placed' => false, 'message' => $result['curl_error'] ?? 'Hold request failed'];
-    }
-    
-    $data = $result['data'] ?? [];
-    
-    // FIXED: Verify certificate OR signature from response, with fallback
-    $verificationPassed = true;
-    
-    if (isset($data['certificate']) && $this->certificateManager) {
-        $verification = $this->certificateManager->verifySignedRequest($data);
-        $verificationPassed = $verification['verified'];
-        if (!$verificationPassed) {
-            error_log("[SwapService] Invalid certificate on hold response from {$institution}");
-            return ['hold_placed' => false, 'message' => 'Invalid certificate on hold response'];
+     * Place hold with source identifier
+     */
+    private function placeHoldSigned(array $payload, string $institution, array $verificationResult): array
+    {
+        $participant = $this->getParticipant($institution);
+        $bankClient = new GenericBankClient($participant, $payload);
+        
+        $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
+        $timestamp = time();
+        $sourceId = $this->extractSourceIdentifier($payload);
+        
+        $holdPayload = [
+            'action' => 'PLACE_HOLD',
+            'reference' => $this->currentSwapRef,
+            'asset_type' => $assetType,
+            'amount' => $payload['amount'] ?? 0,
+            'currency' => $payload['currency'] ?? $this->config['currency'] ?? 'BWP',
+            'hold_reason' => $payload['hold_reason'] ?? 'PENDING_SWAP',
+            'destination_institution' => $payload['to_institution'] ?? $payload['destination_institution'] ?? null,
+            'expiry' => date('Y-m-d H:i:s', strtotime('+1 hour')),
+            'timestamp' => $timestamp
+        ];
+        
+        // Add source identifier
+        if ($sourceId['has_value']) {
+            $holdPayload['source_identifier'] = $sourceId['identifier'];
+            $holdPayload['source_identifier_type'] = $sourceId['type'];
         }
-        error_log("[SwapService] Certificate verified on hold response from {$institution}");
-    } elseif (isset($data['signature']) && isset($data['payload'])) {
-        try {
-            $publicKey = $this->getInstitutionPublicKey($institution);
-            $isValid = $this->signatureVerifier->verify(
-                $data['payload'],
-                $data['signature'],
-                $publicKey
-            );
-            if (!$isValid) {
-                error_log("[SwapService] Invalid signature on hold response from {$institution}");
-                return ['hold_placed' => false, 'message' => 'Invalid signature on hold response'];
+        
+        if (isset($verificationResult['asset_id'])) {
+            $holdPayload['asset_id'] = $verificationResult['asset_id'];
+        }
+        
+        // Add asset-specific fields
+        switch ($assetType) {
+            case 'VOUCHER':
+                $holdPayload['voucher_number'] = $payload['voucher_number'] ?? null;
+                break;
+            case 'ACCOUNT':
+                $holdPayload['account_number'] = $payload['account_number'] ?? null;
+                break;
+            case 'MNO-WALLET':
+            case 'BANK-WALLET':
+                $holdPayload['wallet_phone'] = $sourceId['identifier'] ?: ($payload['wallet_phone'] ?? null);
+                break;
+        }
+        
+        $result = $bankClient->placeHoldSigned($holdPayload);
+        
+        if (!$result['success']) {
+            return ['hold_placed' => false, 'message' => $result['curl_error'] ?? 'Hold request failed'];
+        }
+        
+        $data = $result['data'] ?? [];
+        
+        // FIXED: Verify certificate OR signature from response, with fallback
+        $verificationPassed = true;
+        
+        if (isset($data['certificate']) && $this->certificateManager) {
+            $verification = $this->certificateManager->verifySignedRequest($data);
+            $verificationPassed = $verification['verified'];
+            if (!$verificationPassed) {
+                error_log("[SwapService] Invalid certificate on hold response from {$institution}");
+                return ['hold_placed' => false, 'message' => 'Invalid certificate on hold response'];
             }
-            error_log("[SwapService] Signature verified on hold response from {$institution}");
-        } catch (Exception $e) {
-            error_log("[SwapService] Signature verification error: " . $e->getMessage());
-            // Don't fail - trust the response
+            error_log("[SwapService] Certificate verified on hold response from {$institution}");
+        } elseif (isset($data['signature']) && isset($data['payload'])) {
+            try {
+                $publicKey = $this->getInstitutionPublicKey($institution);
+                $isValid = $this->signatureVerifier->verify(
+                    $data['payload'],
+                    $data['signature'],
+                    $publicKey
+                );
+                if (!$isValid) {
+                    error_log("[SwapService] Invalid signature on hold response from {$institution}");
+                    return ['hold_placed' => false, 'message' => 'Invalid signature on hold response'];
+                }
+                error_log("[SwapService] Signature verified on hold response from {$institution}");
+            } catch (Exception $e) {
+                error_log("[SwapService] Signature verification error: " . $e->getMessage());
+                // Don't fail - trust the response
+            }
+        } else {
+            // No verification provided - trust the response (backward compatibility)
+            error_log("[SwapService] WARNING: No certificate or signature in hold response from {$institution} - trusting response");
         }
-    } else {
-        // No verification provided - trust the response (backward compatibility)
-        error_log("[SwapService] WARNING: No certificate or signature in hold response from {$institution} - trusting response");
+        
+        $holdId = $this->createLocalHold($payload, $institution, $data['hold_reference'] ?? null);
+        $this->currentHoldId = $holdId;
+        
+        return [
+            'hold_placed' => true,
+            'hold_reference' => $data['hold_reference'] ?? null,
+            'local_hold_id' => $holdId,
+            'message' => $data['message'] ?? 'Hold placed successfully',
+            'original_payload' => $data['payload'] ?? null,
+            'signature' => $data['signature'] ?? null,
+            'certificate' => $data['certificate'] ?? null,
+            'timestamp' => $data['timestamp'] ?? $timestamp
+        ];
     }
-    
-    $holdId = $this->createLocalHold($payload, $institution, $data['hold_reference'] ?? null);
-    $this->currentHoldId = $holdId;
-    
-    return [
-        'hold_placed' => true,
-        'hold_reference' => $data['hold_reference'] ?? null,
-        'local_hold_id' => $holdId,
-        'message' => $data['message'] ?? 'Hold placed successfully',
-        'original_payload' => $data['payload'] ?? null,
-        'signature' => $data['signature'] ?? null,
-        'certificate' => $data['certificate'] ?? null,
-        'timestamp' => $data['timestamp'] ?? $timestamp
-    ];
-}
 
     /**
      * Process destination with source verification proof and destination identifier
@@ -1483,82 +1484,93 @@ private function placeHoldSigned(array $payload, string $institution, array $ver
     // LOCAL DATABASE OPERATIONS
     // ============================================================
 
-   private function createLocalHold(array $payload, string $institution, ?string $externalHoldRef): int
-{
-    $sourceId = $this->extractSourceIdentifier($payload);
-    
-    // Build source_details JSONB with all source information
-    $sourceDetails = [
-        'source_identifier' => $sourceId['identifier'],
-        'source_identifier_type' => $sourceId['type'],
-        'source_institution' => $institution,
-        'asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
-        'phone' => $payload['phone'] ?? $payload['wallet_phone'] ?? null,
-        'national_id' => $payload['national_id'] ?? null,
-        'email' => $payload['email'] ?? null,
-        'original_payload' => $payload
-    ];
-    
-    // Build metadata JSONB
-    $metadata = [
-        'swap_reference' => $this->currentSwapRef,
-        'external_hold_reference' => $externalHoldRef,
-        'signature_chain' => $this->signedPayloads,
-        'source_identifier' => $sourceId['identifier'],
-        'source_identifier_type' => $sourceId['type']
-    ];
-    
-    $sql = "
-        INSERT INTO hold_transactions (
-            hold_reference,
-            swap_reference,
-            participant_name,
-            asset_type,
-            amount,
-            currency,
-            status,
-            source_details,
-            destination_institution,
-            metadata,
-            placed_at,
-            created_at,
-            updated_at,
-            source_institution
-        ) VALUES (
-            :hold_ref,
-            :swap_ref,
-            :participant_name,
-            :asset_type,
-            :amount,
-            :currency,
-            'ACTIVE',
-            :source_details::jsonb,
-            :destination,
-            :metadata::jsonb,
-            NOW(),
-            NOW(),
-            NOW(),
-            :source_institution
-        ) RETURNING hold_id
-    ";
-    
-    $stmt = $this->swapDB->prepare($sql);
-    $stmt->execute([
-        ':hold_ref' => 'HOLD_' . $this->currentSwapRef,
-        ':swap_ref' => $this->currentSwapRef,
-        ':participant_name' => $institution,
-        ':asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
-        ':amount' => $payload['amount'] ?? 0,
-        ':currency' => $payload['currency'] ?? 'BWP',
-        ':source_details' => json_encode($sourceDetails),
-        ':destination' => $payload['to_institution'] ?? $payload['destination_institution'] ?? null,
-        ':metadata' => json_encode($metadata),
-        ':source_institution' => $institution
-    ]);
-    
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    return $row ? (int)$row['hold_id'] : 0;
-}
+    private function createLocalHold(array $payload, string $institution, ?string $externalHoldRef): int
+    {
+        $sourceId = $this->extractSourceIdentifier($payload);
+        
+        // Build source_details JSONB with all source information
+        $sourceDetails = [
+            'source_identifier' => $sourceId['identifier'],
+            'source_identifier_type' => $sourceId['type'],
+            'source_institution' => $institution,
+            'asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
+            'phone' => $payload['phone'] ?? $payload['wallet_phone'] ?? null,
+            'national_id' => $payload['national_id'] ?? null,
+            'email' => $payload['email'] ?? null,
+            'original_payload' => $payload
+        ];
+        
+        // Build metadata JSONB
+        $metadata = [
+            'swap_reference' => $this->currentSwapRef,
+            'external_hold_reference' => $externalHoldRef,
+            'signature_chain' => $this->signedPayloads,
+            'source_identifier' => $sourceId['identifier'],
+            'source_identifier_type' => $sourceId['type']
+        ];
+        
+        $sql = "
+            INSERT INTO hold_transactions (
+                hold_reference,
+                swap_reference,
+                participant_name,
+                asset_type,
+                amount,
+                currency,
+                status,
+                source_details,
+                destination_institution,
+                metadata,
+                placed_at,
+                created_at,
+                updated_at,
+                source_institution
+            ) VALUES (
+                :hold_ref,
+                :swap_ref,
+                :participant_name,
+                :asset_type,
+                :amount,
+                :currency,
+                'ACTIVE',
+                :source_details::jsonb,
+                :destination,
+                :metadata::jsonb,
+                NOW(),
+                NOW(),
+                NOW(),
+                :source_institution
+            ) RETURNING hold_id
+        ";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute([
+                ':hold_ref' => 'HOLD_' . $this->currentSwapRef,
+                ':swap_ref' => $this->currentSwapRef,
+                ':participant_name' => $institution,
+                ':asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
+                ':amount' => $payload['amount'] ?? 0,
+                ':currency' => $payload['currency'] ?? 'BWP',
+                ':source_details' => json_encode($sourceDetails),
+                ':destination' => $payload['to_institution'] ?? $payload['destination_institution'] ?? null,
+                ':metadata' => json_encode($metadata),
+                ':source_institution' => $institution
+            ]);
+            
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $row ? (int)$row['hold_id'] : 0;
+            
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to create local hold: " . $e->getMessage());
+            $this->logger->error("Failed to create local hold", ['error' => $e->getMessage()]);
+            throw new RuntimeException("Failed to create local hold: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * FIXED: Update hold status with proper CAST to resolve ambiguous parameter error
+     */
     private function updateHoldStatus(?int $holdId, string $status): void
     {
         if ($holdId === null) {
@@ -1566,22 +1578,37 @@ private function placeHoldSigned(array $payload, string $institution, array $ver
             return;
         }
         
+        // Valid statuses
+        $validStatuses = ['ACTIVE', 'HELD', 'DEBITED', 'RELEASED', 'CANCELLED', 'FAILED'];
+        if (!in_array($status, $validStatuses)) {
+            error_log("[SwapService] Invalid status: {$status}");
+            return;
+        }
+        
+        // Using CAST to explicitly tell PostgreSQL the type - FIXES the ambiguous parameter error
         $sql = "
             UPDATE hold_transactions 
-            SET status = :status,
-                debited_at = CASE WHEN :status = 'DEBITED' THEN NOW() ELSE debited_at END,
-                released_at = CASE WHEN :status = 'RELEASED' THEN NOW() ELSE released_at END,
+            SET status = CAST(:status AS VARCHAR(50)),
+                debited_at = CASE WHEN CAST(:status AS VARCHAR(50)) = 'DEBITED' THEN NOW() ELSE debited_at END,
+                released_at = CASE WHEN CAST(:status AS VARCHAR(50)) = 'RELEASED' THEN NOW() ELSE released_at END,
                 updated_at = NOW()
             WHERE hold_id = :hold_id
         ";
         
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([
-            ':status' => $status,
-            ':hold_id' => $holdId
-        ]);
-        
-        error_log("[SwapService] Hold {$holdId} updated to status: {$status}");
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute([
+                ':status' => $status,
+                ':hold_id' => $holdId
+            ]);
+            
+            error_log("[SwapService] Hold {$holdId} updated to status: {$status}");
+            
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to update hold status: " . $e->getMessage());
+            $this->logger->error("Failed to update hold status", ['error' => $e->getMessage()]);
+            throw new RuntimeException("Failed to update hold status: " . $e->getMessage());
+        }
     }
 
     // ============================================================
