@@ -2135,7 +2135,7 @@ class SwapService
                 return $participant;
             }
         }
-        
+         
         throw new RuntimeException("Participant not found: {$institution}");
     }
 
