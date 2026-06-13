@@ -35,6 +35,12 @@ class CertificateManager
                 $this->myPrivateKey = str_replace(['\\n', '\n'], "\n", $this->myPrivateKey);
             }
         }
+
+        public function loadCertificate($certificateString) {
+    // Clean the certificate before loading
+    $cleaned = str_replace(['\/', '\n'], ['/', "\n"], $certificateString);
+    return openssl_x509_read($cleaned);
+}
         
         // Load member's certificate
         $certPath = getenv($this->myName . '_CERT');
@@ -47,6 +53,8 @@ class CertificateManager
             }
         }
     }
+
+
     
     public function verifyCertificate(string $certificatePem): bool
     {
