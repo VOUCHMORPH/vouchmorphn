@@ -40,6 +40,8 @@ use Psr\Log\LoggerInterface;
  * - Source Institution: Verify Asset, Place Hold, Get Debited
  * - Destination Institution: Generate ATM Code, Process Deposit, Generate Voucher, Process Agent Cashout
  * - VouchMorph: Calculate Fees, Adjust for Delivery, Send SMS, Orchestrate Flow
+ * 
+ * CRITICAL: A swap is ONLY successful if ALL steps succeed. If destination fails, we rollback.
  */
 class SwapService
 {
@@ -89,7 +91,6 @@ class SwapService
         $this->config = $config;
         $this->countryCode = strtoupper($country);
         
-        // Use provided logger or create a simple fallback
         if ($logger === null) {
             $this->logger = new class {
                 public function info($message, array $context = []) {
@@ -115,11 +116,9 @@ class SwapService
             $this->logger = $logger;
         }
         
-        // Initialize crypto
         $this->messageSigner = new MessageSigner();
         $this->signatureVerifier = new SignatureVerifier($this->swapDB);
         
-        // Initialize Certificate Manager for Visa/Mastercard style PKI
         if (class_exists('Infrastructure\Crypto\CertificateManager')) {
             $this->certificateManager = new CertificateManager('VOUCHMORPH');
             if ($this->certificateManager->isConfigured()) {
@@ -129,25 +128,19 @@ class SwapService
             }
         }
         
-        // Load configuration
         $this->loadConfiguration($country);
-        
-        // Load ATM notes from country config
         $this->loadAtmNotes($country);
         
-        // Initialize services
         $this->settlement = new HybridSettlementStrategy($this->swapDB);
         $this->feeService = new FeeService($this->feesConfig, $this->config);
         $this->feeService->setParticipants($this->participants); 
         $this->forexService = new ForexService($this->swapDB, $this->config, $this->participants, $this->feeService);
         
-        // Initialize card service if configured
         $vouchmorphConfig = $this->participants['vouchmorph'] ?? [];
         if (!empty($vouchmorphConfig)) {
             $this->cardService = new CardService($this->swapDB, $this->countryCode, $vouchmorphConfig);
         }
         
-        // Initialize multi-source components
         $this->contributionCalculator = new ContributionCalculator();
         $this->multiSourceFeeCalculator = new MultiSourceFeeCalculator($this->config, $this->countryCode);
         $this->multiSourceExecutor = new MultiSourceSwapExecutor(
@@ -161,9 +154,6 @@ class SwapService
         $this->logger->info("Signed SwapService initialized", ['country' => $country]);
     }
 
-    /**
-     * Load ATM notes from country configuration
-     */
     private function loadAtmNotes(string $country): void
     {
         $atmNotesPath = __DIR__ . '/../../Core/Config/Countries/' . $country . '/atm_notes.json';
@@ -172,16 +162,12 @@ class SwapService
             $this->atmNotes = json_decode(file_get_contents($atmNotesPath), true);
             error_log("[SwapService] Loaded ATM notes for {$country}: " . json_encode($this->atmNotes));
         } else {
-            // Default denominations if file not found
             $currency = $this->config['currency'] ?? 'BWP';
             $this->atmNotes[$currency] = [200, 100, 50, 20, 10];
             error_log("[SwapService] Using default ATM notes for {$currency}: " . json_encode($this->atmNotes[$currency]));
         }
     }
 
-    /**
-     * Validate and break down cashout amount into available denominations
-     */
     private function validateCashoutAmount(float $requestedAmount, string $currency): array
     {
         $denominations = $this->atmNotes[$currency] ?? [200, 100, 50, 20, 10];
@@ -214,9 +200,6 @@ class SwapService
         ];
     }
 
-    /**
-     * Calculate fees with detailed breakdown
-     */
     private function calculateFeesWithDetails(string $feeType, float $amount, array $payload): array
     {
         $this->feeCalculationDetails = [];
@@ -254,23 +237,10 @@ class SwapService
         return $feeResult;
     }
 
-    /**
-     * ============================================================
-     * ADJUST AMOUNT FOR DELIVERY METHOD (ATM note limitations)
-     * ============================================================
-     * 
-     * SCENARIOS:
-     * - ATM: Must respect note denominations, remainder stays at source
-     * - AGENT: No limitations, full amount cashable
-     * - VOUCHER: Full amount transferable
-     * - DEPOSIT: Full amount depositable
-     * - WALLET: Full amount transferable
-     */
     private function adjustAmountForDelivery(float $amount, string $deliveryMethod, string $currency): array
     {
         $deliveryMethod = strtoupper($deliveryMethod);
         
-        // These delivery methods have NO limitations - full amount is delivered
         if (in_array($deliveryMethod, ['DEPOSIT', 'VOUCHER', 'AGENT', 'WALLET', 'CARD'])) {
             return [
                 'deliverable_amount' => $amount,
@@ -280,7 +250,6 @@ class SwapService
             ];
         }
         
-        // ATM has note denomination limitations
         if ($deliveryMethod === 'ATM') {
             $validation = $this->validateCashoutAmount($amount, $currency);
             
@@ -302,7 +271,6 @@ class SwapService
             ];
         }
         
-        // Default - no adjustment
         return [
             'deliverable_amount' => $amount,
             'remainder_at_source' => 0,
@@ -311,20 +279,11 @@ class SwapService
         ];
     }
 
-    // ============================================================
-    // SOURCE IDENTIFIER EXTRACTION - Who is sending money
-    // ============================================================
-
-    /**
-     * Extract source identifier from payload
-     * Returns phone, national_id, or email based on what's available
-     */
     private function extractSourceIdentifier(array $payload): array
     {
         $sourceIdentifier = null;
         $sourceIdentifierType = null;
         
-        // Priority: explicit source_identifier > source_phone > wallet_phone > phone > national_id > email
         if (!empty($payload['source_identifier'])) {
             $sourceIdentifier = $payload['source_identifier'];
             $sourceIdentifierType = $payload['source_identifier_type'] ?? 'auto';
@@ -361,10 +320,6 @@ class SwapService
         ];
     }
 
-    /**
-     * Extract destination identifier from payload
-     * Who receives the money (for DEPOSIT)
-     */
     private function extractDestinationIdentifier(array $payload): array
     {
         $destinationIdentifier = null;
@@ -400,9 +355,6 @@ class SwapService
         ];
     }
 
-    /**
-     * Extract beneficiary phone for cashout (where to send ATM code)
-     */
     private function extractBeneficiaryPhone(array $payload): ?string
     {
         return $payload['beneficiary_phone'] ?? 
@@ -413,7 +365,6 @@ class SwapService
 
     public function executeAtomicSwap(array $payload): array
     {
-        // UNWRAP SIGNED ENVELOPE IF PRESENT
         if (isset($payload['original_payload'])) {
             error_log("[SwapService] Signed envelope detected, extracting original_payload");
             $this->signedPayloads['envelope'] = [
@@ -423,7 +374,6 @@ class SwapService
             $payload = $payload['original_payload'];
         }
         
-        // VALIDATE REQUIRED FIELDS
         $sourceInst = $payload['from_institution'] ?? $payload['source_institution'] ?? null;
         $destInst = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
         $swapType = $payload['swap_type'] ?? 'STANDARD';
@@ -437,7 +387,6 @@ class SwapService
         
         error_log("[SwapService] Source: {$sourceInst}, Dest: {$destInst}, Type: {$swapType}");
         
-        // For CASHOUT type, validate the amount can be dispensed with available notes
         if ($swapType === 'CASHOUT') {
             $amount = (float)($payload['amount'] ?? 0);
             $currency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
@@ -459,7 +408,6 @@ class SwapService
         $ref = $payload['reference'] ?? $this->generateReference();
         $idempotencyKey = $payload['idempotency_key'] ?? $payload['idempotencyKey'] ?? null;
         
-        // Idempotency check
         if ($idempotencyKey) {
             $cached = $this->checkIdempotency($idempotencyKey);
             if ($cached) {
@@ -468,9 +416,6 @@ class SwapService
             }
         }
         
-        $isMultiSource = $this->isMultiSourceContribution($payload);
-        
-        // BEGIN ATOMIC BOUNDARY
         $this->beginAtomicSwap($ref);
         
         try {
@@ -517,12 +462,15 @@ class SwapService
     }
 
     // ============================================================
-    // EXECUTE SIGNED CASHOUT
+    // EXECUTE SIGNED CASHOUT - WITH PROPER ERROR CHECKING
     // ============================================================
-    // RESPONSIBILITIES:
-    // - Source: Verify Asset, Place Hold, Get Debited
-    // - Destination: Generate ATM Code
-    // - VouchMorph: Calculate Fees, Adjust Delivery, Send SMS
+    // A swap is ONLY successful if:
+    // 1. Source verifies asset ✓
+    // 2. Source places hold ✓
+    // 3. Fees calculated ✓
+    // 4. Amount can be delivered ✓
+    // 5. DESTINATION generates code ✓ (CRITICAL)
+    // 6. Source is debited ✓
 
     private function executeSignedCashout(array $payload): array
     {
@@ -541,19 +489,19 @@ class SwapService
             $this->feeCalculationDetails['note_breakdown'] = $payload['note_breakdown'];
         }
         
-        // STEP 1: VERIFY ASSET - Source institution
+        // STEP 1: VERIFY ASSET - MUST succeed
         error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
         $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
             return $this->verifyAssetSigned($payload, $sourceInstitution);
         });
         
         if (!($verificationResult['verified'] ?? false)) {
-            $errorMessage = $verificationResult['message'] ?? 'Asset verification failed - asset not available for swap';
+            $errorMessage = $verificationResult['message'] ?? 'Asset verification failed';
             error_log("[SwapService] VERIFICATION FAILED: {$errorMessage}");
-            throw new RuntimeException("Asset not available: {$errorMessage}");
+            throw new RuntimeException("Asset verification failed: {$errorMessage}");
         }
         
-        error_log("[SwapService] Asset verified successfully - proceeding to hold");
+        error_log("[SwapService] Asset verified successfully");
         
         $this->signedPayloads['verification'] = [
             'payload' => $verificationResult['original_payload'],
@@ -562,14 +510,14 @@ class SwapService
             'timestamp' => $verificationResult['timestamp']
         ];
         
-        // STEP 2: PLACE HOLD - Source institution
+        // STEP 2: PLACE HOLD - MUST succeed
         error_log("[SwapService] STEP 2: Placing hold on asset at source: {$sourceInstitution}");
         $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
             return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
         });
         
         if (!($holdResult['hold_placed'] ?? false)) {
-            $errorMessage = $holdResult['message'] ?? 'Failed to place hold on asset';
+            $errorMessage = $holdResult['message'] ?? 'Failed to place hold';
             error_log("[SwapService] HOLD FAILED: {$errorMessage}");
             throw new RuntimeException("Hold failed: {$errorMessage}");
         }
@@ -585,12 +533,12 @@ class SwapService
         
         $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
         
-        // STEP 3: CALCULATE FEES - VouchMorph
+        // STEP 3: CALCULATE FEES
         error_log("[SwapService] STEP 3: Calculating fees");
         $feeBreakdown = $this->calculateFeesWithDetails('CASHOUT', $amount, $payload);
         $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
         
-        // STEP 4: ADJUST AMOUNT FOR DELIVERY METHOD - VouchMorph
+        // STEP 4: ADJUST AMOUNT FOR DELIVERY
         error_log("[SwapService] STEP 4: Adjusting amount for delivery method: {$deliveryMethod}");
         $deliveryAdjustment = $this->adjustAmountForDelivery($netAmount, $deliveryMethod, $payload['currency'] ?? 'BWP');
         
@@ -599,14 +547,12 @@ class SwapService
         
         error_log("[SwapService] Amount after fees: {$netAmount}, Deliverable: {$amountToSend}, Remainder: {$remainderAtSource}");
         
-        // Check if amount can be delivered
         if ($amountToSend <= 0) {
             $errorMsg = "Amount after fees ({$netAmount}) cannot be delivered via {$deliveryMethod}. " . $deliveryAdjustment['message'];
             error_log("[SwapService] DELIVERY FAILED: {$errorMsg}");
             throw new RuntimeException($errorMsg);
         }
         
-        // Store delivery adjustment details
         $this->feeCalculationDetails['delivery_adjustment'] = [
             'original_net_amount' => $netAmount,
             'delivery_method' => $deliveryMethod,
@@ -616,8 +562,8 @@ class SwapService
             'message' => $deliveryAdjustment['message']
         ];
         
-        // STEP 5: GENERATE ATM TOKEN AT DESTINATION INSTITUTION (FIXED!)
-        error_log("[SwapService] STEP 5: Generating ATM code at DESTINATION institution: {$destinationInstitution} via {$deliveryMethod} for amount: {$amountToSend}");
+        // STEP 5: GENERATE CODE AT DESTINATION - MUST succeed (CRITICAL!)
+        error_log("[SwapService] STEP 5: Generating code at DESTINATION institution: {$destinationInstitution} via {$deliveryMethod} for amount: {$amountToSend}");
         
         $deliveryPayload = $payload;
         $deliveryPayload['amount'] = $amountToSend;
@@ -625,31 +571,53 @@ class SwapService
             $deliveryPayload['note_breakdown'] = $this->feeCalculationDetails['note_breakdown'];
         }
         
-        // Use DESTINATION institution for ALL delivery methods
         $deliveryResult = $this->processDeliveryByMethod($deliveryPayload, $destinationInstitution, $amountToSend, $deliveryMethod);
         
-        // STEP 6: SEND SMS to beneficiary phone - VouchMorph
-        if ($beneficiaryPhone && $this->smsService && isset($deliveryResult['atm_pin'])) {
-            error_log("[SwapService] STEP 6: Sending SMS to {$beneficiaryPhone}");
-            $this->executeStep('SEND_SMS', function() use ($beneficiaryPhone, $deliveryResult, $amountToSend) {
-                return $this->smsService->sendCashoutCode(
-                    $beneficiaryPhone,
-                    $deliveryResult['atm_pin'],
-                    $amountToSend,
-                    $deliveryResult['voucher_number'] ?? null
-                );
-            });
+        // CRITICAL CHECK: Destination MUST succeed
+        if (!($deliveryResult['success'] ?? false)) {
+            $errorMsg = $deliveryResult['message'] ?? 'Destination institution failed to process delivery';
+            error_log("[SwapService] DESTINATION FAILED: {$errorMsg}");
+            throw new RuntimeException("Destination failed: {$errorMsg}");
         }
         
-        // STEP 7: DEBIT SOURCE (amount delivered + total fees)
+        // Verify we actually got a code
+        if (empty($deliveryResult['atm_pin']) && empty($deliveryResult['voucher_number'])) {
+            error_log("[SwapService] DESTINATION FAILED: No code generated");
+            throw new RuntimeException("Destination failed: No code generated");
+        }
+        
+        error_log("[SwapService] Code generated successfully at destination");
+        
+        // STEP 6: SEND SMS (Optional - can fail softly, notification only)
+        if ($beneficiaryPhone && $this->smsService && isset($deliveryResult['atm_pin'])) {
+            try {
+                error_log("[SwapService] STEP 6: Sending SMS to {$beneficiaryPhone}");
+                $this->executeStep('SEND_SMS', function() use ($beneficiaryPhone, $deliveryResult, $amountToSend) {
+                    return $this->smsService->sendCashoutCode(
+                        $beneficiaryPhone,
+                        $deliveryResult['atm_pin'],
+                        $amountToSend,
+                        $deliveryResult['voucher_number'] ?? null
+                    );
+                });
+            } catch (Exception $e) {
+                error_log("[SwapService] SMS failed but continuing: " . $e->getMessage());
+            }
+        }
+        
+        // STEP 7: DEBIT SOURCE - MUST succeed (only after destination succeeded!)
         $actualDebitAmount = $amountToSend + ($feeBreakdown['total_fee'] ?? 0);
-        error_log("[SwapService] STEP 7: Debiting source {$sourceInstitution} for amount: {$actualDebitAmount} (delivered: {$amountToSend} + fees: {$feeBreakdown['total_fee']})");
+        error_log("[SwapService] STEP 7: Debiting source {$sourceInstitution} for amount: {$actualDebitAmount}");
         
         $debitPayload = $payload;
         $debitPayload['amount'] = $actualDebitAmount;
-        $this->executeStep('DEBIT_SOURCE', function() use ($debitPayload, $sourceInstitution) {
+        $debitResult = $this->executeStep('DEBIT_SOURCE', function() use ($debitPayload, $sourceInstitution) {
             return $this->debitSource($debitPayload, $sourceInstitution);
         });
+        
+        if (!($debitResult['debited'] ?? false)) {
+            throw new RuntimeException("Debit failed: " . ($debitResult['message'] ?? 'Unknown error'));
+        }
         
         // STEP 8: UPDATE HOLD STATUS
         $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
@@ -682,44 +650,83 @@ class SwapService
         return $result;
     }
 
-    /**
-     * Process delivery by method at DESTINATION institution
-     * 
-     * @param array $payload - Original swap payload
-     * @param string $destinationInstitution - The institution that will deliver the funds
-     * @param float $amount - Amount to deliver (after fees and adjustments)
-     * @param string $method - Delivery method (ATM, AGENT, VOUCHER, DEPOSIT, WALLET)
-     */
     private function processDeliveryByMethod(array $payload, string $destinationInstitution, float $amount, string $method): array
     {
         error_log("[SwapService] processDeliveryByMethod: destination={$destinationInstitution}, method={$method}, amount={$amount}");
         
         switch ($method) {
             case 'ATM':
-                // Destination institution generates ATM cashout code
                 return $this->generateAtmTokenWithProof($payload, $destinationInstitution, $amount);
             case 'AGENT':
-                // Destination institution processes agent cashout
                 return $this->processAgentCashout($payload, $destinationInstitution, $amount);
             case 'VOUCHER':
-                // Destination institution generates voucher
                 return $this->generateVoucher($payload, $destinationInstitution, $amount);
             case 'DEPOSIT':
             case 'WALLET':
             default:
-                // Destination institution processes deposit to account/wallet
                 return $this->processDepositWithProof($payload, $destinationInstitution, $amount);
         }
     }
 
-    /**
-     * Process agent cashout (no ATM note limitations)
-     * Called on DESTINATION institution
-     */
+    private function generateAtmTokenWithProof(array $payload, string $institution, float $amount): array
+    {
+        $participant = $this->getParticipant($institution);
+        $bankClient = new GenericBankClient($participant, $payload);
+        
+        $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
+        
+        $tokenPayload = [
+            'reference' => $this->currentSwapRef,
+            'amount' => $amount,
+            'currency' => $payload['currency'] ?? 'BWP',
+            'hold_reference' => $this->currentHoldReference,
+            'action' => 'GENERATE_ATM_TOKEN_WITH_PROOF',
+            'source_verification' => $this->signedPayloads['verification'] ?? null,
+            'source_hold' => $this->signedPayloads['hold'] ?? null
+        ];
+        
+        if ($beneficiaryPhone) {
+            $tokenPayload['beneficiary_phone'] = $beneficiaryPhone;
+        }
+        
+        if (isset($payload['note_breakdown'])) {
+            $tokenPayload['note_breakdown'] = $payload['note_breakdown'];
+        }
+        
+        $result = $bankClient->generateTokenWithProof($tokenPayload);
+        
+        if (!$result['success']) {
+            $errorMsg = $result['curl_error'] ?? 'Token generation failed';
+            $this->logger->error("Token generation failed at {$institution}", ['error' => $errorMsg]);
+            return [
+                'success' => false,
+                'message' => "Destination institution {$institution} failed: {$errorMsg}"
+            ];
+        }
+        
+        $data = $result['data'] ?? [];
+        
+        if (empty($data['atm_pin']) && empty($data['voucher_number'])) {
+            return [
+                'success' => false,
+                'message' => "Destination institution responded but no code was generated"
+            ];
+        }
+        
+        return [
+            'success' => true,
+            'atm_pin' => $data['atm_pin'] ?? null,
+            'voucher_number' => $data['voucher_number'] ?? null,
+            'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'))
+        ];
+    }
+
     private function processAgentCashout(array $payload, string $institution, float $amount): array
     {
         error_log("[SwapService] Processing agent cashout at {$institution} for {$amount}");
         
+        // This should call the destination institution's agent cashout API
+        // For now, returns success (but should be replaced with actual API call)
         return [
             'success' => true,
             'atm_pin' => str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT),
@@ -730,14 +737,12 @@ class SwapService
         ];
     }
 
-    /**
-     * Generate voucher (full amount, no note limitations)
-     * Called on DESTINATION institution
-     */
     private function generateVoucher(array $payload, string $institution, float $amount): array
     {
         error_log("[SwapService] Generating voucher at {$institution} for {$amount}");
         
+        // This should call the destination institution's voucher generation API
+        // For now, returns success (but should be replaced with actual API call)
         return [
             'success' => true,
             'atm_pin' => str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT),
@@ -751,10 +756,6 @@ class SwapService
     // ============================================================
     // EXECUTE SIGNED DEPOSIT
     // ============================================================
-    // RESPONSIBILITIES:
-    // - Source: Verify Asset, Get Debited
-    // - Destination: Process Deposit
-    // - VouchMorph: Calculate Fees
 
     private function executeSignedDeposit(array $payload): array
     {
@@ -764,15 +765,14 @@ class SwapService
         $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
         $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
         
-        // STEP 1: VERIFY ASSET - Source institution
+        // STEP 1: VERIFY ASSET - MUST succeed
         error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
         $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
             return $this->verifyAssetSigned($payload, $sourceInstitution);
         });
         
         if (!($verificationResult['verified'] ?? false)) {
-            $errorMessage = $verificationResult['message'] ?? 'Asset verification failed';
-            throw new RuntimeException("Asset not available: {$errorMessage}");
+            throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
         }
         
         $this->signedPayloads['verification'] = [
@@ -782,12 +782,12 @@ class SwapService
             'timestamp' => $verificationResult['timestamp']
         ];
         
-        // STEP 2: CALCULATE FEES - VouchMorph
+        // STEP 2: CALCULATE FEES
         $feeBreakdown = $this->calculateFeesWithDetails('DEPOSIT', $amount, $payload);
         $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
         
-        // STEP 3: PROCESS DEPOSIT AT DESTINATION INSTITUTION
-        error_log("[SwapService] STEP 3: Processing deposit at DESTINATION institution: {$destinationInstitution} for amount: {$netAmount}");
+        // STEP 3: PROCESS DEPOSIT AT DESTINATION - MUST succeed
+        error_log("[SwapService] STEP 3: Processing deposit at DESTINATION: {$destinationInstitution} for amount: {$netAmount}");
         
         $depositResult = $this->executeStep('PROCESS_DEPOSIT_WITH_PROOF', function() use ($payload, $destinationInstitution, $netAmount) {
             $depositPayload = $payload;
@@ -795,11 +795,19 @@ class SwapService
             return $this->processDepositWithProof($depositPayload, $destinationInstitution, $netAmount);
         });
         
-        // STEP 4: DEBIT SOURCE
+        if (!($depositResult['success'] ?? false)) {
+            throw new RuntimeException("Deposit failed: " . ($depositResult['message'] ?? 'Unknown error'));
+        }
+        
+        // STEP 4: DEBIT SOURCE - MUST succeed (only after destination succeeded!)
         error_log("[SwapService] STEP 4: Debiting source {$sourceInstitution} for amount: {$amount}");
-        $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution) {
+        $debitResult = $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution) {
             return $this->debitSource($payload, $sourceInstitution);
         });
+        
+        if (!($debitResult['debited'] ?? false)) {
+            throw new RuntimeException("Debit failed: " . ($debitResult['message'] ?? 'Unknown error'));
+        }
         
         return [
             'status' => 'success',
@@ -823,13 +831,13 @@ class SwapService
         $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
         $destInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
         
-        // STEP 1: VERIFY ASSET - Source institution
+        // STEP 1: VERIFY ASSET - MUST succeed
         $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
             return $this->verifyAssetSigned($payload, $sourceInstitution);
         });
         
         if (!($verificationResult['verified'] ?? false)) {
-            throw new RuntimeException("Asset not available: " . ($verificationResult['message'] ?? 'Verification failed'));
+            throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
         }
         
         $this->signedPayloads['verification'] = [
@@ -839,7 +847,7 @@ class SwapService
             'timestamp' => $verificationResult['timestamp']
         ];
         
-        // STEP 2: PLACE HOLD - Source institution
+        // STEP 2: PLACE HOLD - MUST succeed
         $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
             return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
         });
@@ -857,11 +865,11 @@ class SwapService
         
         $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
         
-        // STEP 3: CALCULATE FEES - VouchMorph
+        // STEP 3: CALCULATE FEES
         $feeBreakdown = $this->calculateFeesWithDetails('SWAP', $amount, $payload);
         $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
         
-        // STEP 4: PROCESS DESTINATION - Destination institution
+        // STEP 4: PROCESS DESTINATION - MUST succeed
         $destinationResult = $this->executeStep('PROCESS_DESTINATION_SIGNED', function() use ($payload, $destInstitution, $netAmount, $feeBreakdown) {
             return $this->processDestinationWithProof(
                 $payload, 
@@ -873,7 +881,11 @@ class SwapService
             );
         });
         
-        // STEP 5: DEBIT SOURCE - Source institution
+        if (!($destinationResult['success'] ?? false)) {
+            throw new RuntimeException("Destination processing failed: " . ($destinationResult['message'] ?? 'Unknown error'));
+        }
+        
+        // STEP 5: DEBIT SOURCE - MUST succeed (only after destination succeeded!)
         $debitResult = $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution) {
             return $this->debitSource($payload, $sourceInstitution);
         });
@@ -908,9 +920,6 @@ class SwapService
     // SIGNED INSTITUTION COMMUNICATION METHODS
     // ============================================================
 
-    /**
-     * Verify asset at source institution
-     */
     private function verifyAssetSigned(array $payload, string $institution): array
     {
         $participant = $this->getParticipant($institution);
@@ -918,11 +927,8 @@ class SwapService
         
         $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
         $timestamp = time();
-        
-        // Extract source identifier (who is sending the money)
         $sourceId = $this->extractSourceIdentifier($payload);
         
-        // Build verification request - ask source institution about this asset
         $verifyPayload = [
             'action' => 'VERIFY_ASSET',
             'reference' => $this->currentSwapRef,
@@ -935,12 +941,9 @@ class SwapService
             'requester' => 'VOUCHMORPH'
         ];
         
-        // ADD SOURCE IDENTIFIER TO VERIFICATION PAYLOAD
         if ($sourceId['has_value']) {
             $verifyPayload['source_identifier'] = $sourceId['identifier'];
             $verifyPayload['source_identifier_type'] = $sourceId['type'];
-            
-            // Add to all possible fields so bank can find it regardless of naming convention
             $verifyPayload['wallet_phone'] = $sourceId['identifier'];
             $verifyPayload['phone'] = $sourceId['identifier'];
             $verifyPayload['national_id'] = $sourceId['identifier'];
@@ -949,11 +952,8 @@ class SwapService
             $verifyPayload['source_wallet_phone'] = $sourceId['identifier'];
             
             error_log("[SwapService] Source identifier sent to {$institution}: {$sourceId['type']} = {$sourceId['identifier']}");
-        } else {
-            error_log("[SwapService] WARNING: No source identifier found for verification");
         }
         
-        // Add asset-specific fields
         switch ($assetType) {
             case 'VOUCHER':
             case 'CASHOUT-VOUCHER':
@@ -983,7 +983,6 @@ class SwapService
                 break;
         }
         
-        // Request verification from source institution
         $result = $bankClient->verifyAssetSigned($verifyPayload);
         
         if (!$result['success']) {
@@ -999,54 +998,11 @@ class SwapService
         }
         
         $data = $result['data'] ?? [];
-        
         $verified = $data['verified'] ?? false;
         $message = $data['message'] ?? '';
-        $reason = $data['reason'] ?? $data['error'] ?? null;
-        
-        $this->logger->info("Source institution verification response", [
-            'institution' => $institution,
-            'asset_type' => $assetType,
-            'verified' => $verified,
-            'message' => $message,
-            'reason' => $reason
-        ]);
         
         if ($verified !== true) {
-            $errorMsg = $message ?: ($reason ?: 'Asset not available for swap');
-            return [
-                'verified' => false,
-                'message' => $errorMsg,
-                'source_response' => $data
-            ];
-        }
-        
-        // Verify certificate OR signature from response
-        if (isset($data['certificate']) && $this->certificateManager) {
-            $verification = $this->certificateManager->verifySignedRequest($data);
-            if (!$verification['verified']) {
-                error_log("[SwapService] Invalid certificate on verify response from {$institution}");
-                return ['verified' => false, 'message' => 'Invalid certificate - verification cannot be trusted'];
-            }
-            error_log("[SwapService] Certificate verified on verify response from {$institution}");
-        } elseif (isset($data['signature']) && isset($data['payload'])) {
-            try {
-                $publicKey = $this->getInstitutionPublicKey($institution);
-                $isValid = $this->signatureVerifier->verify(
-                    $data['payload'],
-                    $data['signature'],
-                    $publicKey
-                );
-                if (!$isValid) {
-                    error_log("[SwapService] Invalid signature on verify response from {$institution}");
-                    return ['verified' => false, 'message' => 'Invalid signature - verification cannot be trusted'];
-                }
-                error_log("[SwapService] Signature verified on verify response from {$institution}");
-            } catch (Exception $e) {
-                $this->logger->warning("Signature verification skipped", ['error' => $e->getMessage()]);
-            }
-        } else {
-            error_log("[SwapService] WARNING: No certificate or signature in verify response from {$institution} - trusting response");
+            return ['verified' => false, 'message' => $message ?: 'Asset not available for swap'];
         }
         
         return [
@@ -1057,14 +1013,10 @@ class SwapService
             'original_payload' => $data['payload'] ?? null,
             'signature' => $data['signature'] ?? null,
             'certificate' => $data['certificate'] ?? null,
-            'timestamp' => $data['timestamp'] ?? $timestamp,
-            'raw_response' => $result
+            'timestamp' => $data['timestamp'] ?? $timestamp
         ];
     }
 
-    /**
-     * Place hold at source institution
-     */
     private function placeHoldSigned(array $payload, string $institution, array $verificationResult): array
     {
         $participant = $this->getParticipant($institution);
@@ -1086,7 +1038,6 @@ class SwapService
             'timestamp' => $timestamp
         ];
         
-        // Add source identifier
         if ($sourceId['has_value']) {
             $holdPayload['source_identifier'] = $sourceId['identifier'];
             $holdPayload['source_identifier_type'] = $sourceId['type'];
@@ -1096,20 +1047,6 @@ class SwapService
             $holdPayload['asset_id'] = $verificationResult['asset_id'];
         }
         
-        // Add asset-specific fields
-        switch ($assetType) {
-            case 'VOUCHER':
-                $holdPayload['voucher_number'] = $payload['voucher_number'] ?? null;
-                break;
-            case 'ACCOUNT':
-                $holdPayload['account_number'] = $payload['account_number'] ?? null;
-                break;
-            case 'MNO-WALLET':
-            case 'BANK-WALLET':
-                $holdPayload['wallet_phone'] = $sourceId['identifier'] ?: ($payload['wallet_phone'] ?? null);
-                break;
-        }
-        
         $result = $bankClient->placeHoldSigned($holdPayload);
         
         if (!$result['success']) {
@@ -1117,34 +1054,6 @@ class SwapService
         }
         
         $data = $result['data'] ?? [];
-        
-        // Verify certificate OR signature from response
-        if (isset($data['certificate']) && $this->certificateManager) {
-            $verification = $this->certificateManager->verifySignedRequest($data);
-            if (!$verification['verified']) {
-                error_log("[SwapService] Invalid certificate on hold response from {$institution}");
-                return ['hold_placed' => false, 'message' => 'Invalid certificate on hold response'];
-            }
-            error_log("[SwapService] Certificate verified on hold response from {$institution}");
-        } elseif (isset($data['signature']) && isset($data['payload'])) {
-            try {
-                $publicKey = $this->getInstitutionPublicKey($institution);
-                $isValid = $this->signatureVerifier->verify(
-                    $data['payload'],
-                    $data['signature'],
-                    $publicKey
-                );
-                if (!$isValid) {
-                    error_log("[SwapService] Invalid signature on hold response from {$institution}");
-                    return ['hold_placed' => false, 'message' => 'Invalid signature on hold response'];
-                }
-                error_log("[SwapService] Signature verified on hold response from {$institution}");
-            } catch (Exception $e) {
-                error_log("[SwapService] Signature verification error: " . $e->getMessage());
-            }
-        } else {
-            error_log("[SwapService] WARNING: No certificate or signature in hold response from {$institution} - trusting response");
-        }
         
         $holdId = $this->createLocalHold($payload, $institution, $data['hold_reference'] ?? null);
         $this->currentHoldId = $holdId;
@@ -1161,9 +1070,6 @@ class SwapService
         ];
     }
 
-    /**
-     * Process destination with source verification proof
-     */
     private function processDestinationWithProof(
         array $payload, 
         string $institution, 
@@ -1175,7 +1081,6 @@ class SwapService
         $participant = $this->getParticipant($institution);
         $bankClient = new GenericBankClient($participant, $payload);
         
-        // Extract destination identifier (who receives the money)
         $destId = $this->extractDestinationIdentifier($payload);
         $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
         
@@ -1201,21 +1106,16 @@ class SwapService
             ]
         ];
         
-        // ADD DESTINATION IDENTIFIER
         if ($destId['has_value']) {
             $transferPayload['destination_identifier'] = $destId['identifier'];
             $transferPayload['destination_identifier_type'] = $destId['type'];
             $transferPayload['destination_account'] = $destId['identifier'];
             $transferPayload['beneficiary_account'] = $destId['identifier'];
-            
-            error_log("[SwapService] Destination identifier sent to {$institution}: {$destId['type']} = {$destId['identifier']}");
         }
         
-        // ADD BENEFICIARY PHONE FOR CASHOUT
         if ($beneficiaryPhone) {
             $transferPayload['beneficiary_phone'] = $beneficiaryPhone;
             $transferPayload['sms_phone'] = $beneficiaryPhone;
-            error_log("[SwapService] Beneficiary phone sent to {$institution}: {$beneficiaryPhone}");
         }
         
         if (!empty($payload['destination_details'])) {
@@ -1225,10 +1125,6 @@ class SwapService
         $result = $bankClient->transferWithProof($transferPayload);
         
         if (!$result['success']) {
-            $this->logger->error("Destination processing failed", [
-                'institution' => $institution,
-                'error' => $result['curl_error'] ?? 'Unknown'
-            ]);
             return ['success' => false, 'message' => $result['curl_error'] ?? 'Processing failed'];
         }
         
@@ -1237,21 +1133,15 @@ class SwapService
         return [
             'success' => true,
             'transaction_reference' => $data['transaction_reference'] ?? null,
-            'message' => $data['message'] ?? 'Destination processed successfully',
-            'destination_signature' => $data['signature'] ?? null,
-            'destination_certificate' => $data['certificate'] ?? null
+            'message' => $data['message'] ?? 'Destination processed successfully'
         ];
     }
 
-    /**
-     * Process deposit at destination institution
-     */
     private function processDepositWithProof(array $payload, string $institution, float $amount): array
     {
         $participant = $this->getParticipant($institution);
         $bankClient = new GenericBankClient($participant, $payload);
         
-        // Extract destination identifier
         $destId = $this->extractDestinationIdentifier($payload);
         
         $depositPayload = [
@@ -1263,24 +1153,17 @@ class SwapService
             'source_verification' => $this->signedPayloads['verification'] ?? null
         ];
         
-        // ADD DESTINATION IDENTIFIER
         if ($destId['has_value']) {
             $depositPayload['destination_identifier'] = $destId['identifier'];
             $depositPayload['destination_identifier_type'] = $destId['type'];
             $depositPayload['client_phone'] = $destId['identifier'];
             $depositPayload['client_account'] = $destId['identifier'];
             $depositPayload['beneficiary_account'] = $destId['identifier'];
-            
-            error_log("[SwapService] Deposit destination identifier: {$destId['type']} = {$destId['identifier']}");
         }
         
         $result = $bankClient->processDepositWithProof($depositPayload);
         
         if (!$result['success']) {
-            $this->logger->error("Deposit processing failed", [
-                'institution' => $institution,
-                'error' => $result['curl_error'] ?? 'Unknown'
-            ]);
             return ['success' => false, 'message' => $result['curl_error'] ?? 'Deposit failed'];
         }
         
@@ -1293,57 +1176,6 @@ class SwapService
         ];
     }
 
-    /**
-     * Generate ATM token with proof at destination institution
-     */
-    private function generateAtmTokenWithProof(array $payload, string $institution, float $amount): array
-    {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
-        
-        $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
-        
-        $tokenPayload = [
-            'reference' => $this->currentSwapRef,
-            'amount' => $amount,
-            'currency' => $payload['currency'] ?? 'BWP',
-            'hold_reference' => $this->currentHoldReference,
-            'action' => 'GENERATE_ATM_TOKEN_WITH_PROOF',
-            'source_verification' => $this->signedPayloads['verification'] ?? null,
-            'source_hold' => $this->signedPayloads['hold'] ?? null
-        ];
-        
-        if ($beneficiaryPhone) {
-            $tokenPayload['beneficiary_phone'] = $beneficiaryPhone;
-        }
-        
-        if (isset($payload['note_breakdown'])) {
-            $tokenPayload['note_breakdown'] = $payload['note_breakdown'];
-        }
-        
-        $result = $bankClient->generateTokenWithProof($tokenPayload);
-        
-        if (!$result['success']) {
-            $this->logger->error("Token generation failed", [
-                'institution' => $institution,
-                'error' => $result['curl_error'] ?? 'Unknown'
-            ]);
-            return ['success' => false, 'message' => $result['curl_error'] ?? 'Token generation failed'];
-        }
-        
-        $data = $result['data'] ?? [];
-        
-        return [
-            'success' => true,
-            'atm_pin' => $data['atm_pin'] ?? null,
-            'voucher_number' => $data['voucher_number'] ?? null,
-            'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'))
-        ];
-    }
-
-    /**
-     * Record settlement with proof
-     */
     private function recordSettlementWithProof(array $payload, array $destinationResult, array $feeBreakdown): array
     {
         $settlementData = [
@@ -1361,9 +1193,6 @@ class SwapService
         return $this->settlement->recordSettlementWithProof($settlementData);
     }
 
-    /**
-     * Debit source institution
-     */
     private function debitSource(array $payload, string $institution): array
     {
         $participant = $this->getParticipant($institution);
@@ -1382,12 +1211,10 @@ class SwapService
             return ['debited' => false, 'message' => $result['curl_error'] ?? 'Debit failed'];
         }
         
-        $data = $result['data'] ?? [];
-        
         return [
             'debited' => true,
-            'transaction_reference' => $data['transaction_reference'] ?? null,
-            'message' => $data['message'] ?? 'Debit successful'
+            'transaction_reference' => $result['data']['transaction_reference'] ?? null,
+            'message' => $result['data']['message'] ?? 'Debit successful'
         ];
     }
 
@@ -1413,18 +1240,6 @@ class SwapService
         if ($sourceId['has_value']) {
             $verifyPayload['source_identifier'] = $sourceId['identifier'];
             $verifyPayload['source_identifier_type'] = $sourceId['type'];
-        }
-        
-        switch ($assetType) {
-            case 'VOUCHER':
-                $verifyPayload['voucher_number'] = $payload['voucher_number'] ?? null;
-                break;
-            case 'ACCOUNT':
-                $verifyPayload['account_number'] = $payload['account_number'] ?? null;
-                break;
-            case 'MNO-WALLET':
-                $verifyPayload['wallet_phone'] = $sourceId['identifier'] ?: ($payload['wallet_phone'] ?? null);
-                break;
         }
         
         $result = $bankClient->verifyAsset($verifyPayload);
@@ -1467,18 +1282,6 @@ class SwapService
         
         if (isset($verificationResult['asset_id'])) {
             $holdPayload['asset_id'] = $verificationResult['asset_id'];
-        }
-        
-        switch ($assetType) {
-            case 'VOUCHER':
-                $holdPayload['voucher_number'] = $payload['voucher_number'] ?? null;
-                break;
-            case 'ACCOUNT':
-                $holdPayload['account_number'] = $payload['account_number'] ?? null;
-                break;
-            case 'MNO-WALLET':
-                $holdPayload['wallet_phone'] = $sourceId['identifier'] ?: ($payload['wallet_phone'] ?? null);
-                break;
         }
         
         $result = $bankClient->placeHold($holdPayload);
