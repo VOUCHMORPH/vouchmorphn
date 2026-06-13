@@ -175,12 +175,6 @@ class CertificateManager
         $signature = $response['signature'] ?? null;
         $responder = $response['requester'] ?? 'UNKNOWN';
         
-        // Skip verification for SACCUSSALIS in non-production (temporary fix)
-        if ($responder === 'SACCUSSALIS' && getenv('APP_ENV') !== 'production') {
-            error_log("CertificateManager: Skipping response verification for {$responder} (non-production mode)");
-            return ['verified' => true, 'responder' => $responder, 'message' => 'Skipped (trust mode)'];
-        }
-        
         if (!$certificate || !$signature) {
             error_log("CertificateManager: No certificate/signature in response from {$responder}");
             return ['verified' => false, 'message' => 'Missing certificate or signature', 'responder' => $responder];
@@ -197,19 +191,37 @@ class CertificateManager
             return ['verified' => false, 'message' => 'Cannot extract public key', 'responder' => $responder];
         }
         
+        // CRITICAL: Build payload EXACTLY as SACCUSSALIS does in crypto.php
+        // SACCUSSALIS includes timestamp in signature, so we MUST keep it
+        // They also include requester in the signed payload
         $payloadToVerify = $response;
         unset($payloadToVerify['signature']);
         unset($payloadToVerify['certificate']);
+        // DO NOT unset 'requester' - it's part of SACCUSSALIS's signed payload
+        // DO NOT unset 'timestamp' - it's also part of the signed payload
         ksort($payloadToVerify);
         
         $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         $decodedSig = base64_decode($signature);
         
+        error_log("CertificateManager: Verifying response payload for {$responder}: " . substr($jsonToVerify, 0, 200) . "...");
+        
         $keyResource = openssl_pkey_get_public($publicKey);
+        if (!$keyResource) {
+            error_log("CertificateManager: Invalid public key for {$responder}");
+            return ['verified' => false, 'message' => 'Invalid public key', 'responder' => $responder];
+        }
+        
         $result = openssl_verify($jsonToVerify, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256);
         $isValid = ($result === 1);
         
-        error_log("CertificateManager: Response from {$responder} - Signature: " . ($isValid ? "VALID" : "INVALID"));
+        if ($isValid) {
+            error_log("CertificateManager: Response from {$responder} - SIGNATURE VALID ✓");
+        } else {
+            error_log("CertificateManager: Response from {$responder} - SIGNATURE INVALID ✗ (openssl result: {$result})");
+            // Log the first 500 chars of what we tried to verify
+            error_log("CertificateManager: Failed verification payload: " . $jsonToVerify);
+        }
         
         return ['verified' => $isValid, 'responder' => $responder];
     }
