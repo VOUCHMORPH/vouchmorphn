@@ -185,6 +185,40 @@ class CertificateManager
             'message' => $isValid ? 'Signature verified' : 'Invalid signature'
         ];
     }
+
+    public function verifyResponseSignature($responsePayload, $receivedSignature, $certificate) {
+    // Log exactly what we're verifying
+    $this->logger->debug('Verifying signature for payload: ' . json_encode($responsePayload));
+    
+    // Try different payload constructions
+    $attempts = [
+        'original' => json_encode($responsePayload),
+        'compact' => json_encode($responsePayload, JSON_UNESCAPED_SLASHES),
+        'sorted' => json_encode($this->sortRecursive($responsePayload)),
+    ];
+    
+    foreach ($attempts as $name => $payload) {
+        $this->logger->debug("Attempting $name verification with payload: $payload");
+        $result = openssl_verify($payload, $receivedSignature, $certificate, OPENSSL_ALGO_SHA256);
+        if ($result === 1) {
+            $this->logger->info("✓ Signature verified using $name format");
+            return true;
+        }
+    }
+    
+    $this->logger->error("All signature verification attempts failed");
+    return false;
+}
+
+private function sortRecursive($array) {
+    ksort($array);
+    foreach ($array as &$value) {
+        if (is_array($value)) {
+            $value = $this->sortRecursive($value);
+        }
+    }
+    return $array;
+}
     
     public function getMyCertificate(): ?string
     {
