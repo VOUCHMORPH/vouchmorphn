@@ -1,0 +1,102 @@
+{
+    "country": "Botswana",
+    "currency": "BWP",
+    "version": "3.0",
+    "description": "Botswana fee configuration - maps products to universal fee codes",
+    
+    "products": {
+        "CASHOUT": {
+            "description": "Cashout swap fee - client pays 10 upfront",
+            "fee_components": {
+                "F1": {"amount": 10.00},
+                "F7": {"amount": 1.00}
+            },
+            "distribution": {
+                "apply_after_fees": ["F7"],
+                "split": {
+                    "platform_percent": 35,
+                    "source_institution_percent": 15,
+                    "destination_institution_percent": 50
+                }
+            },
+            "destination_split": {
+                "generate_code_fee_percent": 10,
+                "cashout_fee_percent": 90,
+                "description": "Destination's share (50%) split 10% generate code / 90% cashout"
+            },
+            "earnings_rules": {
+                "generate_code_fee_earned_at": "code_generation",
+                "cashout_fee_earned_at": "cashout_completion",
+                "description": "Generate code fee earned immediately when code is generated. Cashout fee earned only when cashout is successfully completed."
+            },
+            "retry_rules": {
+                "fee_type": "F10",
+                "amount": 0.45,
+                "description": "On retries, only generate code fee is charged"
+            },
+            "swap_on_swap": {
+                "free_first": true,
+                "client_pays": 0,
+                "generate_code_fee_paid_by": "vouchmorph_from_platform_share",
+                "cashout_fee_source": "unearned_cashout_fee_from_failed_attempt",
+                "description": "First retry: VouchMorph pays generate code fee (0.45) from its share. Cashout fee (4.05) comes from the unearned cashout fee of the failed first attempt."
+            }
+        },
+        
+        "DEPOSIT": {
+            "description": "Deposit swap fee - client pays 6 upfront",
+            "fee_components": {
+                "F1": {"amount": 6.00},
+                "F7": {"amount": 1.00}
+            },
+            "distribution": {
+                "apply_after_fees": ["F7"],
+                "split": {
+                    "platform_percent": 35,
+                    "source_institution_percent": 15,
+                    "destination_institution_percent": 50
+                }
+            }
+        },
+        
+        "CARD_LOAD": {
+            "description": "Card load fee - follows deposit fee structure",
+            "fee_components": {
+                "F1": {"amount": 6.00},
+                "F7": {"amount": 1.00}
+            },
+            "distribution": {
+                "apply_after_fees": ["F7"],
+                "split": {
+                    "platform_percent": 35,
+                    "source_institution_percent": 15,
+                    "destination_institution_percent": 50
+                }
+            }
+        },
+        
+        "CARD_ISSUANCE": {
+            "description": "Card issuance fee",
+            "fee_components": {
+                "F9": {"amount": 50.00}
+            }
+        }
+    },
+    
+    "regulatory": {
+        "F81": {
+            "rate": 0.12,
+            "applies_to_products": ["CASHOUT", "DEPOSIT", "CARD_LOAD"],
+            "applies_to_fees": ["F1", "F9"]
+        },
+        "reporting_currency": "BWP"
+    },
+    
+    "multi_source": {
+        "enabled": true,
+        "fee_type": "F8",
+        "extra_source_fee": 1.00,
+        "max_total_fee": 15.00,
+        "description": "Multi-source swap fees: Base fee from above + F8 per extra source, capped at P15"
+    }
+}
