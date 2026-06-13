@@ -26,6 +26,10 @@ class GenericBankClient implements BankAPIInterface
     protected ?string $bankPrefix = null;
     protected ?MessageSigner $signer = null;
     protected ?CertificateManager $certManager = null;
+    
+    // NEW: YAML configuration cache
+    protected ?array $yamlEndpoints = null;
+    protected ?string $yamlBaseUrl = null;
 
     public function __construct(array $config, ?array $requestPayload = null, ?array $headers = null, ?string $endpoint = null)
     {
@@ -39,6 +43,9 @@ class GenericBankClient implements BankAPIInterface
         if (empty($this->bankPrefix) && isset($this->config['name'])) {
             $this->bankPrefix = strtoupper($this->config['name']);
         }
+        
+        // NEW: Load YAML endpoints configuration from country folder
+        $this->loadYamlEndpoints();
         
         // Initialize MessageSigner for RSA signatures
         try {
@@ -78,17 +85,156 @@ class GenericBankClient implements BankAPIInterface
         error_log("CertificateManager: " . ($this->certManager && $this->certManager->isConfigured() ? "ENABLED" : "DISABLED"));
     }
     
+    // ============================================================================
+    // NEW: YAML ENDPOINT LOADING FROM COUNTRY FOLDER
+    // ============================================================================
+    
+    protected function loadYamlEndpoints(): void
+    {
+        $countryName = $this->getCountryFromConfig();
+        $yamlPath = __DIR__ . '/../../Core/Config/Countries/' . $countryName . '/endpoints.yaml';
+        
+        if (!file_exists($yamlPath)) {
+            error_log("No endpoints.yaml found at: {$yamlPath}");
+            return;
+        }
+        
+        error_log("Loading endpoints from YAML: {$yamlPath}");
+        $content = file_get_contents($yamlPath);
+        $parsed = $this->parseEndpointsYaml($content);
+        
+        $bankCode = $this->config['provider_code'] ?? $this->bankPrefix;
+        
+        if (isset($parsed[$bankCode])) {
+            if (isset($parsed[$bankCode]['base_url'])) {
+                $this->yamlBaseUrl = rtrim($parsed[$bankCode]['base_url'], '/');
+                error_log("YAML base URL for {$bankCode}: {$this->yamlBaseUrl}");
+            }
+            if (isset($parsed[$bankCode]['endpoints'])) {
+                $this->yamlEndpoints = $parsed[$bankCode]['endpoints'];
+                error_log("Loaded YAML endpoints for {$bankCode}");
+            }
+        }
+    }
+    
+    protected function getCountryFromConfig(): string
+    {
+        // Try to get from config first
+        if (isset($this->config['country_code'])) {
+            return $this->config['country_code'];
+        }
+        
+        // Try from environment
+        $country = getenv('VOUCHMORPH_COUNTRY');
+        if ($country) {
+            return $country;
+        }
+        
+        // Default to Botswana
+        return 'Botswana';
+    }
+    
+    protected function parseEndpointsYaml(string $content): array
+    {
+        $result = [];
+        $lines = explode("\n", $content);
+        $currentBank = null;
+        $currentSection = null;
+        
+        foreach ($lines as $line) {
+            $line = rtrim($line);
+            if (empty($line) || $line[0] === '#') continue;
+            
+            // Bank header (e.g., "ZURUBANK:")
+            if (preg_match('/^([A-Z_]+):$/', $line, $matches)) {
+                $currentBank = $matches[1];
+                $result[$currentBank] = [];
+                $currentSection = null;
+                continue;
+            }
+            
+            if ($currentBank) {
+                // Base URL
+                if (preg_match('/^  base_url: "?(.+?)"?$/', $line, $matches)) {
+                    $result[$currentBank]['base_url'] = rtrim($matches[1], '"');
+                    continue;
+                }
+                
+                // Endpoints section
+                if (preg_match('/^  endpoints:$/', $line)) {
+                    $currentSection = 'endpoints';
+                    $result[$currentBank]['endpoints'] = [];
+                    continue;
+                }
+                
+                // Source endpoints
+                if ($currentSection === 'endpoints' && preg_match('/^    source:$/', $line)) {
+                    $currentSection = 'source';
+                    $result[$currentBank]['endpoints']['source'] = [];
+                    continue;
+                }
+                
+                // Destination cashout endpoints
+                if ($currentSection === 'endpoints' && preg_match('/^    destination_cashout:$/', $line)) {
+                    $currentSection = 'destination_cashout';
+                    $result[$currentBank]['endpoints']['destination_cashout'] = [];
+                    continue;
+                }
+                
+                // Destination deposit endpoints
+                if ($currentSection === 'endpoints' && preg_match('/^    destination_deposit:$/', $line)) {
+                    $currentSection = 'destination_deposit';
+                    $result[$currentBank]['endpoints']['destination_deposit'] = [];
+                    continue;
+                }
+                
+                // Common endpoints
+                if ($currentSection === 'endpoints' && preg_match('/^    common:$/', $line)) {
+                    $currentSection = 'common';
+                    $result[$currentBank]['endpoints']['common'] = [];
+                    continue;
+                }
+                
+                // Endpoint key-value pairs
+                if (preg_match('/^      ([a-z_]+): "?(.+?)"?$/', $line, $matches)) {
+                    $key = $matches[1];
+                    $value = rtrim($matches[2], '"');
+                    
+                    if ($currentSection === 'source') {
+                        $result[$currentBank]['endpoints']['source'][$key] = $value;
+                    } elseif ($currentSection === 'destination_cashout') {
+                        $result[$currentBank]['endpoints']['destination_cashout'][$key] = $value;
+                    } elseif ($currentSection === 'destination_deposit') {
+                        $result[$currentBank]['endpoints']['destination_deposit'][$key] = $value;
+                    } elseif ($currentSection === 'common') {
+                        $result[$currentBank]['endpoints']['common'][$key] = $value;
+                    }
+                    continue;
+                }
+            }
+        }
+        
+        return $result;
+    }
+    
     public function getDetectedFormat(): ?string { return $this->detectedFormat; }
     public function getDetectionConfidence(): ?int { return $this->detectionConfidence; }
     public function getDetectionSource(): ?string { return $this->detectionSource; }
     public function getDetectionDetails(): array { return $this->detectionDetails; }
 
     // ============================================================================
-    // BASE URL FROM ENVIRONMENT OR CONFIG
+    // BASE URL FROM YAML, ENVIRONMENT, OR CONFIG (UPDATED)
     // ============================================================================
 
     protected function getBaseUrl(): string
     {
+        // Priority 1: YAML config (NEW)
+        if ($this->yamlBaseUrl) {
+            error_log("Using base URL from YAML: {$this->yamlBaseUrl}");
+            return $this->yamlBaseUrl;
+        }
+        
+        // Priority 2: Environment variable
         if ($this->bankPrefix) {
             $envVar = $this->bankPrefix . '_BASE_URL';
             $baseUrl = getenv($envVar);
@@ -98,12 +244,14 @@ class GenericBankClient implements BankAPIInterface
             }
         }
         
+        // Priority 3: Generic env var
         $genericBaseUrl = getenv('BANK_BASE_URL');
         if ($genericBaseUrl && !empty($genericBaseUrl)) {
             error_log("Using base URL from generic env: BANK_BASE_URL = {$genericBaseUrl}");
             return rtrim($genericBaseUrl, '/');
         }
         
+        // Priority 4: Config array
         $configUrl = $this->config['base_url'] ?? '';
         if (!empty($configUrl)) {
             error_log("Using base URL from config: {$configUrl}");
@@ -136,8 +284,64 @@ class GenericBankClient implements BankAPIInterface
         return null;
     }
 
+    // ============================================================================
+    // GET ENDPOINT - UPDATED WITH YAML SUPPORT
+    // ============================================================================
+
     protected function getEndpoint(string $action): ?string
     {
+        // Action to YAML path mapping
+        $yamlPathMap = [
+            // Source actions
+            'verify_asset' => ['source', 'verify_asset'],
+            'verifyAsset' => ['source', 'verify_asset'],
+            'verifyAssetSigned' => ['source', 'verify_asset'],
+            'place_hold' => ['source', 'place_hold'],
+            'placeHold' => ['source', 'place_hold'],
+            'placeHoldSigned' => ['source', 'place_hold'],
+            'debit_funds' => ['source', 'debit_funds'],
+            'debitHold' => ['source', 'debit_funds'],
+            'release_hold' => ['source', 'release_hold'],
+            'releaseHold' => ['source', 'release_hold'],
+            
+            // Destination cashout actions
+            'generate_token' => ['destination_cashout', 'generate_token'],
+            'generateToken' => ['destination_cashout', 'generate_token'],
+            'generateTokenWithProof' => ['destination_cashout', 'generate_token'],
+            'verify_token' => ['destination_cashout', 'verify_token'],
+            'verifyToken' => ['destination_cashout', 'verify_token'],
+            'confirm_cashout' => ['destination_cashout', 'confirm_cashout'],
+            'confirmCashout' => ['destination_cashout', 'confirm_cashout'],
+            
+            // Destination deposit actions
+            'process_deposit' => ['destination_deposit', 'process_deposit'],
+            'processDeposit' => ['destination_deposit', 'process_deposit'],
+            'processDepositWithProof' => ['destination_deposit', 'process_deposit'],
+            'verify_account' => ['destination_deposit', 'verify_account'],
+            'verifyAccount' => ['destination_deposit', 'verify_account'],
+            
+            // Common actions
+            'transfer' => ['common', 'transfer'],
+            'transferWithProof' => ['common', 'transfer'],
+            'reverse' => ['common', 'reverse'],
+            'status' => ['common', 'status'],
+            'check_status' => ['common', 'status'],
+            'reverse_transaction' => ['common', 'reverse'],
+            'account_balance' => ['source', 'get_balance'],
+            'transactions' => ['source', 'get_transactions'],
+        ];
+        
+        // Priority 1: YAML endpoints (NEW)
+        if ($this->yamlEndpoints && isset($yamlPathMap[$action])) {
+            [$section, $key] = $yamlPathMap[$action];
+            if (isset($this->yamlEndpoints[$section][$key])) {
+                $endpoint = $this->yamlEndpoints[$section][$key];
+                error_log("Endpoint from YAML for {$action}: {$endpoint}");
+                return $endpoint;
+            }
+        }
+        
+        // Priority 2: Environment variables (existing)
         $envMap = [
             'verify_asset' => 'VERIFY_ENDPOINT',
             'place_hold' => 'HOLD_ENDPOINT',
@@ -176,6 +380,7 @@ class GenericBankClient implements BankAPIInterface
             }
         }
         
+        // Priority 3: Config array (existing)
         if (isset($this->config['endpoints']['source'][$action])) {
             return $this->config['endpoints']['source'][$action];
         }
@@ -201,7 +406,7 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // OAUTH METHODS (kept as is, unchanged)
+    // OAUTH METHODS (unchanged from original)
     // ============================================================================
 
     public function getAuthorizationUrl(string $redirectUri, string $state, array $scope = []): string
@@ -589,7 +794,7 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // PROTECTED HELPERS - UPDATED WITH LARGE RESPONSE HANDLING
+    // PROTECTED HELPERS - WITH LARGE RESPONSE HANDLING (PRESERVED)
     // ============================================================================
 
     protected function send(string $action, array $payload, ?string $accessToken = null): array
@@ -632,13 +837,13 @@ class GenericBankClient implements BankAPIInterface
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => $jsonPayload,
             CURLOPT_HTTPHEADER => $headers,
-            CURLOPT_TIMEOUT => $this->config['timeout_ms'] ?? 60000, // Increased to 60s
-            CURLOPT_BUFFERSIZE => 262144, // 256KB buffer for large responses
-            CURLOPT_MAXFILESIZE => 5242880, // 5MB max file size
+            CURLOPT_TIMEOUT => $this->config['timeout_ms'] ?? 60000,
+            CURLOPT_BUFFERSIZE => 262144,
+            CURLOPT_MAXFILESIZE => 5242880,
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
             CURLOPT_VERBOSE => false,
-            CURLOPT_ENCODING => '', // Allow compressed responses
+            CURLOPT_ENCODING => '',
             CURLOPT_TCP_KEEPALIVE => 1,
             CURLOPT_TCP_KEEPIDLE => 30,
             CURLOPT_TCP_KEEPINTVL => 10
@@ -663,8 +868,8 @@ class GenericBankClient implements BankAPIInterface
                 CURLOPT_POSTFIELDS => $jsonPayload,
                 CURLOPT_HTTPHEADER => $headers,
                 CURLOPT_TIMEOUT => 120,
-                CURLOPT_BUFFERSIZE => 1048576, // 1MB buffer for retry
-                CURLOPT_MAXFILESIZE => 10485760, // 10MB max
+                CURLOPT_BUFFERSIZE => 1048576,
+                CURLOPT_MAXFILESIZE => 10485760,
                 CURLOPT_ENCODING => ''
             ]);
             $response = curl_exec($ch2);
@@ -752,14 +957,14 @@ class GenericBankClient implements BankAPIInterface
     {
         error_log("=== GENERIC BANK CLIENT: generateTokenWithProof ===");
         $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
-        return $this->send('generate_token_with_proof', $signedPayload);
+        return $this->send('generate_token', $signedPayload);
     }
 
     public function processDepositWithProof(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: processDepositWithProof ===");
         $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
-        return $this->send('process_deposit_with_proof', $signedPayload);
+        return $this->send('process_deposit', $signedPayload);
     }
     
     protected function buildHeaders(array $payload, ?string $accessToken = null): array
