@@ -27,7 +27,7 @@ class GenericBankClient implements BankAPIInterface
     protected ?MessageSigner $signer = null;
     protected ?CertificateManager $certManager = null;
     
-    // NEW: YAML configuration cache
+    // YAML configuration cache
     protected ?array $yamlEndpoints = null;
     protected ?string $yamlBaseUrl = null;
 
@@ -44,7 +44,7 @@ class GenericBankClient implements BankAPIInterface
             $this->bankPrefix = strtoupper($this->config['name']);
         }
         
-        // NEW: Load YAML endpoints configuration from country folder
+        // Load YAML endpoints configuration from country folder
         $this->loadYamlEndpoints();
         
         // Initialize MessageSigner for RSA signatures
@@ -81,12 +81,14 @@ class GenericBankClient implements BankAPIInterface
         error_log("=== GENERIC BANK CLIENT INIT ===");
         error_log("Bank: " . ($this->config['provider_code'] ?? 'unknown'));
         error_log("Bank Prefix: {$this->bankPrefix}");
+        error_log("YAML Base URL: " . ($this->yamlBaseUrl ?? 'NULL'));
+        error_log("YAML Endpoints loaded: " . ($this->yamlEndpoints ? 'YES' : 'NO'));
         error_log("Detected Format: {$this->detectedFormat}");
         error_log("CertificateManager: " . ($this->certManager && $this->certManager->isConfigured() ? "ENABLED" : "DISABLED"));
     }
     
     // ============================================================================
-    // NEW: YAML ENDPOINT LOADING FROM COUNTRY FOLDER
+    // YAML ENDPOINT LOADING FROM COUNTRY FOLDER
     // ============================================================================
     
     protected function loadYamlEndpoints(): void
@@ -103,9 +105,16 @@ class GenericBankClient implements BankAPIInterface
         $content = file_get_contents($yamlPath);
         $parsed = $this->parseEndpointsYaml($content);
         
-        $bankCode = $this->config['provider_code'] ?? $this->bankPrefix;
+        // DEBUG: Log what was parsed
+        error_log("=== YAML PARSING DEBUG ===");
+        error_log("Parsed banks: " . implode(', ', array_keys($parsed)));
         
+        $bankCode = $this->config['provider_code'] ?? $this->bankPrefix;
+        error_log("Looking for bank code: '{$bankCode}'");
+        
+        // Try exact match first
         if (isset($parsed[$bankCode])) {
+            error_log("Exact match found for: {$bankCode}");
             if (isset($parsed[$bankCode]['base_url'])) {
                 $this->yamlBaseUrl = rtrim($parsed[$bankCode]['base_url'], '/');
                 error_log("YAML base URL for {$bankCode}: {$this->yamlBaseUrl}");
@@ -113,8 +122,39 @@ class GenericBankClient implements BankAPIInterface
             if (isset($parsed[$bankCode]['endpoints'])) {
                 $this->yamlEndpoints = $parsed[$bankCode]['endpoints'];
                 error_log("Loaded YAML endpoints for {$bankCode}");
+                error_log("Endpoints sections: " . implode(', ', array_keys($this->yamlEndpoints)));
+                if (isset($this->yamlEndpoints['destination_cashout'])) {
+                    error_log("destination_cashout keys: " . implode(', ', array_keys($this->yamlEndpoints['destination_cashout'])));
+                }
+            }
+        } else {
+            // Try case-insensitive match
+            error_log("Exact match NOT found, trying case-insensitive...");
+            foreach ($parsed as $key => $value) {
+                if (strtoupper($key) === strtoupper($bankCode)) {
+                    error_log("Found case-insensitive match: {$key} for {$bankCode}");
+                    if (isset($value['base_url'])) {
+                        $this->yamlBaseUrl = rtrim($value['base_url'], '/');
+                        error_log("YAML base URL from case-insensitive match: {$this->yamlBaseUrl}");
+                    }
+                    if (isset($value['endpoints'])) {
+                        $this->yamlEndpoints = $value['endpoints'];
+                        error_log("Loaded YAML endpoints from case-insensitive match");
+                        error_log("Endpoints sections: " . implode(', ', array_keys($this->yamlEndpoints)));
+                        if (isset($this->yamlEndpoints['destination_cashout'])) {
+                            error_log("destination_cashout keys: " . implode(', ', array_keys($this->yamlEndpoints['destination_cashout'])));
+                        }
+                    }
+                    break;
+                }
+            }
+            
+            if (!$this->yamlBaseUrl) {
+                error_log("Bank code '{$bankCode}' NOT FOUND in parsed YAML");
+                error_log("Available banks: " . implode(', ', array_keys($parsed)));
             }
         }
+        error_log("=== END YAML PARSING DEBUG ===");
     }
     
     protected function getCountryFromConfig(): string
@@ -223,12 +263,12 @@ class GenericBankClient implements BankAPIInterface
     public function getDetectionDetails(): array { return $this->detectionDetails; }
 
     // ============================================================================
-    // BASE URL FROM YAML, ENVIRONMENT, OR CONFIG (UPDATED)
+    // BASE URL FROM YAML, ENVIRONMENT, OR CONFIG
     // ============================================================================
 
     protected function getBaseUrl(): string
     {
-        // Priority 1: YAML config (NEW)
+        // Priority 1: YAML config
         if ($this->yamlBaseUrl) {
             error_log("Using base URL from YAML: {$this->yamlBaseUrl}");
             return $this->yamlBaseUrl;
@@ -285,7 +325,7 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // GET ENDPOINT - UPDATED WITH YAML SUPPORT
+    // GET ENDPOINT - WITH YAML SUPPORT
     // ============================================================================
 
     protected function getEndpoint(string $action): ?string
@@ -331,17 +371,19 @@ class GenericBankClient implements BankAPIInterface
             'transactions' => ['source', 'get_transactions'],
         ];
         
-        // Priority 1: YAML endpoints (NEW)
+        // Priority 1: YAML endpoints
         if ($this->yamlEndpoints && isset($yamlPathMap[$action])) {
             [$section, $key] = $yamlPathMap[$action];
             if (isset($this->yamlEndpoints[$section][$key])) {
                 $endpoint = $this->yamlEndpoints[$section][$key];
                 error_log("Endpoint from YAML for {$action}: {$endpoint}");
                 return $endpoint;
+            } else {
+                error_log("YAML section '{$section}' key '{$key}' not found for action: {$action}");
             }
         }
         
-        // Priority 2: Environment variables (existing)
+        // Priority 2: Environment variables
         $envMap = [
             'verify_asset' => 'VERIFY_ENDPOINT',
             'place_hold' => 'HOLD_ENDPOINT',
@@ -380,7 +422,7 @@ class GenericBankClient implements BankAPIInterface
             }
         }
         
-        // Priority 3: Config array (existing)
+        // Priority 3: Config array
         if (isset($this->config['endpoints']['source'][$action])) {
             return $this->config['endpoints']['source'][$action];
         }
@@ -406,7 +448,7 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // OAUTH METHODS (unchanged from original)
+    // OAUTH METHODS (unchanged)
     // ============================================================================
 
     public function getAuthorizationUrl(string $redirectUri, string $state, array $scope = []): string
@@ -794,7 +836,7 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // PROTECTED HELPERS - WITH LARGE RESPONSE HANDLING (PRESERVED)
+    // PROTECTED HELPERS - WITH LARGE RESPONSE HANDLING
     // ============================================================================
 
     protected function send(string $action, array $payload, ?string $accessToken = null): array
