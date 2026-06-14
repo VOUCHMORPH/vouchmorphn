@@ -6,14 +6,14 @@ namespace Infrastructure\Crypto;
 class CertificateManager
 {
     private ?string $caCert = null;
-    private ?string $myPrivateKey = null;
+    private ?string $myPrivateKey = null; 
     private ?string $myCertificate = null;
     private ?string $myName = null;
     private $logger;
     
-    public function __construct(?string $memberName = null)
+    public function __construct(?string $vouchmorphpartnerName = null)
     {
-        $this->myName = $memberName ?? getenv('MEMBER_NAME') ?: 'VOUCHMORPH';
+        $this->myName = $vouchmorphpartnerName ?? getenv('VOUCHMORPH_PARTNER_NAME') ?: 'VOUCHMORPH';
         
         // Load CA certificate
         $caPath = getenv('VOUCHMORPH_CA_CERT');
