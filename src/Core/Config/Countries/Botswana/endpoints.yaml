@@ -40,29 +40,29 @@ ZURUBANK:
   endpoints:
     # SOURCE ROLE METHODS
     source:
-      verify_asset: "/api/v1/verify_asset.php"           # verifyAsset()
-      place_hold: "/api/v1/hold.php"                     # placeHold()
-      debit_funds: "/api/v1/settlement/notify_debit.php" # debitFunds()
-      release_hold: "/api/v1/hold.php"                   # releaseHold()
-      get_balance: "/api/v1/balance.php"                 # getAccountBalance()
-      get_transactions: "/api/v1/transactions.php"       # getTransactions()
+      verify_asset: "/api/v1/verify_asset.php"           
+      place_hold: "/api/v1/hold.php"                    
+      debit_funds: "/api/v1/settlement/notify_debit.php" 
+      release_hold: "/api/v1/hold.php"                  
+      get_balance: "/api/v1/balance.php"                
+      get_transactions: "/api/v1/transactions.php"     
     
     # DESTINATION ROLE METHODS - Cashout flow
     destination_cashout:
-      generate_token: "/api/v1/atm/generate_code.php"    # generateToken()
-      verify_token: "/api/v1/atm/atm_cashout.php"        # verifyToken()
-      confirm_cashout: "/api/v1/atm_cashout.php"         # confirmCashout()
+      generate_token: "/api/v1/atm/generate_code.php"    
+      verify_token: "/api/v1/atm/atm_cashout.php"       
+      confirm_cashout: "/api/v1/atm_cashout.php"        
     
     # DESTINATION ROLE METHODS - Deposit flow
     destination_deposit:
-      process_deposit: "/api/v1/deposit/direct.php"      # processDeposit()
-      verify_account: "/api/v1/verify_asset.php"         # verifyAsset() for destination
+      process_deposit: "/api/v1/deposit/direct.php"      
+      verify_account: "/api/v1/verify_asset.php"        
     
     # Common operations (legacy/compatibility)
     common:
-      transfer: "/api/v1/transfer.php"                   # transfer()
-      reverse: "/api/v1/hold.php"                        # reverse()
-      status: "/api/v1/status"                           # checkStatus()
+      transfer: "/api/v1/transfer.php"                 
+      reverse: "/api/v1/hold.php"                       
+      status: "/api/v1/status"                          
       health: "/health"
   
   # Callbacks (where ZURUBANK calls us)
@@ -197,21 +197,21 @@ CAZACOM:
   
   endpoints:
     source:
-      verify_asset: "/api/v1/mno/verify_wallet"          # verifyAsset()
-      place_hold: "/api/v1/mno/hold"                     # placeHold()
-      debit_funds: "/api/v1/mno/debit"                   # debitFunds()
-      release_hold: "/api/v1/mno/release_hold"           # releaseHold()
-      get_balance: "/api/v1/mno/balance"                 # getAccountBalance()
-      get_transactions: "/api/v1/mno/transactions"       # getTransactions()
+      verify_asset: "/api/v1/mno/verify_wallet"         
+      place_hold: "/api/v1/mno/hold"                    
+      debit_funds: "/api/v1/mno/debit"                   
+      release_hold: "/api/v1/mno/release_hold"          
+      get_balance: "/api/v1/mno/balance"                
+      get_transactions: "/api/v1/mno/transactions"      
     
     destination_cashout:
-      generate_token: "/api/v1/mno/generate_code"        # generateToken()
-      verify_token: "/api/v1/mno/verify_code"            # verifyToken()
-      confirm_cashout: "/api/v1/mno/confirm_cashout"     # confirmCashout()
+      generate_token: "/api/v1/mno/generate_code"        
+      verify_token: "/api/v1/mno/verify_code"           
+      confirm_cashout: "/api/v1/mno/confirm_cashout"    
     
     destination_deposit:
-      process_deposit: "/api/v1/mno/credit"              # processDeposit()
-      verify_account: "/api/v1/mno/verify_wallet"        # verifyAsset()
+      process_deposit: "/api/v1/mno/credit"              
+      verify_account: "/api/v1/mno/verify_wallet"       
     
     common:
       transfer: "/api/v1/mno/transfer"
