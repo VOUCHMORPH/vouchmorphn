@@ -1632,37 +1632,41 @@ class SwapService
         }
     }
 
-    private function loadConfiguration(string $country): void
-    {
-        $countryPath = __DIR__ . '/../../Core/Config/Countries/' . $country;
-        
-        $participantsPath = $countryPath . '/participants.yaml';
-        if (file_exists($participantsPath)) {
-            $this->participants = $this->parseYaml($participantsPath);
-        }
-        
-        $feesPath = $countryPath . '/fees.json';
-        if (file_exists($feesPath)) {
-            $feesData = json_decode(file_get_contents($feesPath), true);
-            
-            // Handle both structures: with 'products' key or direct product keys
-            if (!isset($feesData['products']) && (isset($feesData['CASHOUT']) || isset($feesData['DEPOSIT']))) {
-                $products = [];
-                foreach ($feesData as $key => $value) {
-                    if (in_array($key, ['CASHOUT', 'DEPOSIT', 'CARD_LOAD', 'SWAP'])) {
-                        $products[$key] = $value;
-                    }
-                }
-                $this->feesConfig = ['products' => $products, 'regulatory' => $feesData['regulatory'] ?? []];
-            } else {
-                $this->feesConfig = $feesData;
-            }
-            
-            error_log("[SwapService] Loaded fees config with products: " . implode(', ', array_keys($this->feesConfig['products'] ?? [])));
-        }
-        
-        $this->logger->info("Configuration loaded", ['country' => $country]);
+   private function loadConfiguration(string $country): void
+{
+    $countryPath = __DIR__ . '/../../Core/Config/Countries/' . $country;
+    
+    $participantsPath = $countryPath . '/participants.yaml';
+    if (file_exists($participantsPath)) {
+        $this->participants = $this->parseYaml($participantsPath);
     }
+    
+    $feesPath = $countryPath . '/fees.json';
+    if (file_exists($feesPath)) {
+        $feesData = json_decode(file_get_contents($feesPath), true);
+        
+        // Handle both structures: with 'products' key or direct product keys
+        if (!isset($feesData['products']) && (isset($feesData['CASHOUT']) || isset($feesData['DEPOSIT']))) {
+            $products = [];
+            foreach ($feesData as $key => $value) {
+                if (in_array($key, ['CASHOUT', 'DEPOSIT', 'CARD_LOAD', 'SWAP'])) {
+                    $products[$key] = $value;
+                }
+            }
+            $this->feesConfig = ['products' => $products, 'regulatory' => $feesData['regulatory'] ?? []];
+        } else {
+            $this->feesConfig = $feesData;
+        }
+        
+        error_log("[SwapService] Loaded fees config with products: " . implode(', ', array_keys($this->feesConfig['products'] ?? [])));
+    } else {
+        // FIX: Set default empty array structure instead of null
+        $this->feesConfig = ['products' => [], 'regulatory' => []];
+        error_log("[SwapService] No fees config found for {$country}, using empty config");
+    }
+    
+    $this->logger->info("Configuration loaded", ['country' => $country]);
+}
 
     private function parseYaml(string $path): array
     {
