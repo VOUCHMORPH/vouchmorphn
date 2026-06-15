@@ -84,30 +84,30 @@ class SwapService
         $this->config = $config;
         $this->countryCode = strtoupper($country);
         
-        if ($logger === null) {
-            $this->logger = new class {
-                public function info($message, array $context = []) {
-                    error_log("[SwapService][INFO] " . $message . " " . json_encode($context));
-                }
-                public function error($message, array $context = []) {
-                    error_log("[SwapService][ERROR] " . $message . " " . json_encode($context));
-                }
-                public function warning($message, array $context = []) {
-                    error_log("[SwapService][WARNING] " . $message . " " . json_encode($context));
-                }
-                public function debug($message, array $context = []) {
-                    error_log("[SwapService][DEBUG] " . $message . " " . json_encode($context));
-                }
-                public function log($level, $message, array $context = []) {
-                    error_log("[SwapService][{$level}] " . $message . " " . json_encode($context));
-                }
-               public function __call($name, $args) {
-    $arg0 = isset($args[0]) ? $args[0] : '';
-    $arg1 = isset($args[1]) ? $args[1] : [];
-    error_log("[SwapService][{$name}] " . $arg0 . " " . json_encode($arg1));
-}
-            };
-        } else {
+       if ($logger === null) {
+    $this->logger = new class {
+        public function info($message, array $context = []) {
+            error_log("[SwapService][INFO] " . $message . " " . json_encode($context));
+        }
+        public function error($message, array $context = []) {
+            error_log("[SwapService][ERROR] " . $message . " " . json_encode($context));
+        }
+        public function warning($message, array $context = []) {
+            error_log("[SwapService][WARNING] " . $message . " " . json_encode($context));
+        }
+        public function debug($message, array $context = []) {
+            error_log("[SwapService][DEBUG] " . $message . " " . json_encode($context));
+        }
+        public function log($level, $message, array $context = []) {
+            error_log("[SwapService][{$level}] " . $message . " " . json_encode($context));
+        }
+        public function __call($name, $args) {
+            $arg0 = isset($args[0]) ? $args[0] : '';
+            $arg1 = isset($args[1]) ? $args[1] : [];
+            error_log("[SwapService][{$name}] " . $arg0 . " " . json_encode($arg1));
+        }
+    };
+} else {
             $this->logger = $logger;
         }
         
