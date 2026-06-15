@@ -579,22 +579,39 @@ class SwapService
         error_log("  Amount_4 (dispensable): {$amountToSend}");
         error_log("  Remainder_1 (stays at source): {$remainderAtSource}");
         
-        // Handle case where amount is too small for ATM
-        if ($amountToSend <= 0 && $netAmount > 0) {
-            $deliveryMethod = 'AGENT';
-            $amountToSend = $netAmount;
-            $remainderAtSource = 0;
-            error_log("[SwapService] Amount too small for ATM, switching to AGENT cashout: {$amountToSend}"); 
-        }
-        if ($amountToSend <= 0) {
-            $currency = $payload['currency'] ?? 'BWP';
-            
-            // Explicitly extract the array first to avoid inline chain evaluation errors
-            $notes = isset($this->atmNotes[$currency]) ? $this->atmNotes[$currency] :;
-            $minAmount = min($notes);
-            
-            throw new RuntimeException("Amount after fees ({$netAmount}) is too small to deliver. Minimum is {$minAmount} {$currency}");
-        }
+       $currency = $payload['currency'] ?? 'BWP';
+
+$notes = $this->atmNotes[$currency] ?? [];
+
+if (empty($notes)) {
+    throw new RuntimeException(
+        "No ATM denominations configured for {$currency}"
+    );
+}
+
+$lowestDenomination = min($notes);
+
+// If there is some money left, but ATM cannot dispense it,
+// switch to AGENT cashout.
+if ($amountToSend > 0 && $amountToSend < $lowestDenomination) {
+
+    $deliveryMethod = 'AGENT';
+    $amountToSend = $netAmount;
+    $remainderAtSource = 0;
+
+    error_log(
+        "[SwapService] Amount below ATM minimum denomination. "
+        . "Switching to AGENT cashout: {$amountToSend}"
+    );
+}
+
+// If there is nothing left after deductions, fail.
+if ($amountToSend <= 0) {
+
+    throw new RuntimeException(
+        "Amount after fees ({$netAmount} {$currency}) is too small to deliver."
+    );
+}
    
         // STEP 4: GENERATE CODE AT DESTINATION
         error_log("[SwapService] STEP 4: Generating cashout code at DESTINATION: {$destinationInstitution} for amount: {$amountToSend}");
