@@ -101,9 +101,11 @@ class SwapService
                 public function log($level, $message, array $context = []) {
                     error_log("[SwapService][{$level}] " . $message . " " . json_encode($context));
                 }
-                public function __call($name, $args) {
-                    error_log("[SwapService][{$name}] " . ($args[0] ?? '') . " " . json_encode($args[1] ?? []));
-                }
+               public function __call($name, $args) {
+    $arg0 = isset($args[0]) ? $args[0] : '';
+    $arg1 = isset($args[1]) ? $args[1] : [];
+    error_log("[SwapService][{$name}] " . $arg0 . " " . json_encode($arg1));
+}
             };
         } else {
             $this->logger = $logger;
