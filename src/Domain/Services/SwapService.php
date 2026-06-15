@@ -586,7 +586,15 @@ class SwapService
             $remainderAtSource = 0;
             error_log("[SwapService] Amount too small for ATM, switching to AGENT cashout: {$amountToSend}"); 
         }
-        
+        if ($amountToSend <= 0) {
+            $currency = $payload['currency'] ?? 'BWP';
+            
+            // Explicitly extract the array first to avoid inline chain evaluation errors
+            $notes = isset($this->atmNotes[$currency]) ? $this->atmNotes[$currency] :;
+            $minAmount = min($notes);
+            
+            throw new RuntimeException("Amount after fees ({$netAmount}) is too small to deliver. Minimum is {$minAmount} {$currency}");
+        }
    
         // STEP 4: GENERATE CODE AT DESTINATION
         error_log("[SwapService] STEP 4: Generating cashout code at DESTINATION: {$destinationInstitution} for amount: {$amountToSend}");
