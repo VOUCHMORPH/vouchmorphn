@@ -584,7 +584,7 @@ class SwapService
             $deliveryMethod = 'AGENT';
             $amountToSend = $netAmount;
             $remainderAtSource = 0;
-            error_log("[SwapService] Amount too small for ATM, switching to AGENT cashout: {$amountToSend}");
+            error_log("[SwapService] Amount too small for ATM, switching to AGENT cashout: {$amountToSend}"); 
         }
         
      if ($amountToSend <= 0) {
