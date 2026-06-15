@@ -1,6 +1,6 @@
 <?php
-require_once __DIR__ . '/src/Domain/Services/FeeService.php';
-require_once __DIR__ . '/src/Domain/Services/ForexService.php';
+require_once __DIR__ . '/../../src/Domain/Services/FeeService.php';
+require_once __DIR__ . '/../../src/Domain/Services/ForexService.php';
 
 use Domain\Services\FeeService;
 use Domain\Services\ForexService;
@@ -12,7 +12,7 @@ $mockDb = new class {
 };
 
 // Load fees config
-$feesJson = file_get_contents(__DIR__ . '/src/Core/Config/Countries/Botswana/fees.json');
+$feesJson = file_get_contents(__DIR__ . '/../../src/Core/Config/Countries/Botswana/fees.json');
 $feesConfig = json_decode($feesJson, true);
 
 // Create ForexService with mock participants
