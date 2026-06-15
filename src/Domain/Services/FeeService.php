@@ -18,16 +18,11 @@ namespace Domain\Services;
  * - Share_Dest_Base = Pool_Dist × P_destination_percent
  * - Fee_Gen = Share_Dest_Base × P_generate_code_fee_percent
  * - Fee_Comp = Share_Dest_Base × P_cashout_fee_percent
- * 
- * This makes the system:
- * 1. Country-agnostic - only fees.json changes per country
- * 2. Participant-flexible - participants can override fees
- * 3. Regulatory-compliant - easily add new fees without code changes
  */
 class FeeService
 {
-    private array $feeRegistry = [];      // Universal fee types (F1-F100)
-    private array $productConfig = [];    // Country product configurations
+    private array $feeRegistry = [];
+    private array $productConfig = [];
     private array $regulatoryConfig = [];
     private array $context = [];
     private string $defaultCurrency;
@@ -58,17 +53,11 @@ class FeeService
         error_log("[FeeService] Loaded " . count($this->productConfig) . " products: " . implode(', ', array_keys($this->productConfig)));
     }
     
-    /**
-     * Set participants for lookup
-     */
     public function setParticipants(array $participants): void
     {
         $this->participants = $participants;
     }
     
-    /**
-     * Set transaction context
-     */
     private function setContext(array $payload): void
     {
         $sourceInst = $payload['source_institution'] ?? $payload['from_institution'] ?? 'UNKNOWN';
@@ -91,9 +80,6 @@ class FeeService
         $this->context['countries_differ'] = strtoupper($this->context['source_country']) !== strtoupper($this->context['destination_country']);
     }
     
-    /**
-     * Get participant country
-     */
     private function getParticipantCountry(string $institution): string
     {
         foreach ($this->participants as $code => $participant) {
@@ -107,9 +93,6 @@ class FeeService
         return 'Botswana';
     }
     
-    /**
-     * Get product configuration
-     */
     private function getProductConfig(string $product): ?array
     {
         return $this->productConfig[$product] ?? null;
@@ -170,24 +153,20 @@ class FeeService
             $slotAmounts[$retrySlot] = $retryAmount;
         }
         
-        // Apply VAT
-        $vatSlot = 'F81';
-        $vatConfig = $this->regulatoryConfig[$vatSlot] ?? null;
-        if ($vatConfig && isset($vatConfig['rate'])) {
-            $vatableAmount = 0;
-            $appliesToFees = $vatConfig['applies_to_fees'] ?? ['F1'];
-            foreach ($appliesToFees as $feeSlot) {
-                $vatableAmount += $slotAmounts[$feeSlot] ?? 0;
-            }
-            $slotAmounts[$vatSlot] = $vatableAmount * ($vatConfig['rate'] / 100);
-        }
+        // VAT DISABLED FOR NOW - skip VAT calculation
+        // $vatSlot = 'F81';
+        // $vatConfig = $this->regulatoryConfig[$vatSlot] ?? null;
+        // if ($vatConfig && isset($vatConfig['rate'])) {
+        //     $vatableAmount = $slotAmounts['F1'] ?? 0;
+        //     $slotAmounts[$vatSlot] = round($vatableAmount * ($vatConfig['rate'] / 100), 2);
+        // }
         
-        // Calculate totals
-        $totalFees = array_sum($slotAmounts);
-        $netAmount = max(0, $amount - $totalFees);
+        // Calculate total fees (ONLY F1 and F7 for now)
+        $totalFees = $slotAmounts['F1'] + $slotAmounts['F7'];  // Customer fee + levy
+        $netAmount = max(0, $amount - $slotAmounts['F1']);  // Net after customer fee only
         
         // Calculate distribution split (after levy fees)
-        $distribution = $this->calculateDistribution($totalFees, $productConfig, $slotAmounts);
+        $distribution = $this->calculateDistribution($productConfig, $slotAmounts);
         
         $this->calculatedFees = [
             'gross_amount' => $amount,
@@ -203,7 +182,7 @@ class FeeService
         ];
         
         error_log("[FeeService] Product: {$product}, Total Fees: {$totalFees}, Net: {$netAmount}");
-        error_log("[FeeService] Distribution: Platform={$distribution['platform']['amount']}, Source={$distribution['source_institution']['amount']}, Destination={$distribution['destination_institution']['amount']}");
+        error_log("[FeeService] F1={$slotAmounts['F1']}, F7={$slotAmounts['F7']}, Pool_Dist=" . ($distribution['net_distributable_pool'] ?? 0));
         
         return $this->calculatedFees;
     }
@@ -212,36 +191,34 @@ class FeeService
      * Calculate distribution split (after levy fees)
      * 
      * Mathematical formulas:
-     * - Pool_Dist = TotalFees - LevyFees
+     * - Pool_Dist = F1 - F7
      * - Cut_Platform = Pool_Dist × P_platform_percent
      * - Cut_Source = Pool_Dist × P_source_percent
      * - Share_Dest_Base = Pool_Dist × P_destination_percent
      * - Fee_Gen = Share_Dest_Base × P_generate_code_fee_percent
      * - Fee_Comp = Share_Dest_Base × P_cashout_fee_percent
      */
-    private function calculateDistribution(float $totalFees, array $productConfig, array $slotAmounts): array
+    private function calculateDistribution(array $productConfig, array $slotAmounts): array
     {
         $distributionConfig = $productConfig['distribution'] ?? [];
-        $applyAfterFees = $distributionConfig['apply_after_fees'] ?? [];
         $splitConfig = $distributionConfig['split'] ?? [];
         
-        // Calculate net pool after removing levy fees (F7 and any other apply_after_fees)
-        $levyAmount = 0;
-        foreach ($applyAfterFees as $levySlot) {
-            $levyAmount += $slotAmounts[$levySlot] ?? 0;
-        }
+        // Get fee amounts
+        $customerFee = $slotAmounts['F1'] ?? 0;  // Total customer upfront fee
+        $levyFee = $slotAmounts['F7'] ?? 0;      // Swap levy (regulatory fee)
         
-        $netPool = $totalFees - $levyAmount;  // Pool_Dist
+        // Pool_Dist = F1 - F7 (distributable pool after removing levy)
+        $netPool = $customerFee - $levyFee;
         
-        // Get percentages from config (with defaults)
+        // Get percentages from config
         $platformPercent = $splitConfig['platform_percent'] ?? 0;
         $sourcePercent = $splitConfig['source_institution_percent'] ?? 0;
         $destinationPercent = $splitConfig['destination_institution_percent'] ?? 0;
         
         // Calculate individual shares
-        $platformShare = round($netPool * ($platformPercent / 100), 2);  // Cut_Platform
-        $sourceShare = round($netPool * ($sourcePercent / 100), 2);      // Cut_Source
-        $destinationShare = round($netPool * ($destinationPercent / 100), 2);  // Share_Dest_Base
+        $platformShare = round($netPool * ($platformPercent / 100), 2);
+        $sourceShare = round($netPool * ($sourcePercent / 100), 2);
+        $destinationShare = round($netPool * ($destinationPercent / 100), 2);
         
         // Calculate destination split (Fee_Gen and Fee_Comp)
         $destinationSplitConfig = $productConfig['destination_split'] ?? null;
@@ -253,36 +230,36 @@ class FeeService
         if ($destinationSplitConfig) {
             $generatePercent = $destinationSplitConfig['generate_code_fee_percent'] ?? 10;
             $cashoutPercent = $destinationSplitConfig['cashout_fee_percent'] ?? 90;
-            $generateCodeFee = round($destinationShare * ($generatePercent / 100), 2);   // Fee_Gen
-            $cashoutCompletionFee = round($destinationShare * ($cashoutPercent / 100), 2); // Fee_Comp
+            $generateCodeFee = round($destinationShare * ($generatePercent / 100), 2);
+            $cashoutCompletionFee = round($destinationShare * ($cashoutPercent / 100), 2);
         }
         
         return [
             // Levy information
-            'levy_fees_total' => $levyAmount,
-            'levy_slots' => $applyAfterFees,
+            'levy_fees_total' => $levyFee,
+            'levy_slots' => $distributionConfig['apply_after_fees'] ?? ['F7'],
             
             // Distributable pool
-            'net_distributable_pool' => $netPool,  // Pool_Dist
+            'net_distributable_pool' => $netPool,
             
             // Platform share
             'platform' => [
                 'percent' => $platformPercent,
-                'amount' => $platformShare,  // Cut_Platform
+                'amount' => $platformShare,
                 'owner' => $splitConfig['platform_owner'] ?? 'VOUCHMORPH'
             ],
             
             // Source institution share
             'source_institution' => [
                 'percent' => $sourcePercent,
-                'amount' => $sourceShare,  // Cut_Source
+                'amount' => $sourceShare,
                 'owner' => $splitConfig['source_owner'] ?? 'SOURCE_INSTITUTION'
             ],
             
             // Destination institution base share
             'destination_institution' => [
                 'percent' => $destinationPercent,
-                'amount' => $destinationShare,  // Share_Dest_Base
+                'amount' => $destinationShare,
                 'owner' => $splitConfig['destination_owner'] ?? 'DESTINATION_INSTITUTION'
             ],
             
@@ -290,20 +267,16 @@ class FeeService
             'destination_split' => $destinationSplitConfig ? [
                 'base_share' => $destinationShare,
                 'generate_code_fee_percent' => $generatePercent,
-                'generate_code_fee' => $generateCodeFee,  // Fee_Gen
+                'generate_code_fee' => $generateCodeFee,
                 'generate_code_earned_at' => $destinationSplitConfig['generate_code_earned_at'] ?? 'code_generation',
                 'cashout_fee_percent' => $cashoutPercent,
-                'cashout_completion_fee' => $cashoutCompletionFee,  // Fee_Comp
+                'cashout_completion_fee' => $cashoutCompletionFee,
                 'cashout_earned_at' => $destinationSplitConfig['cashout_earned_at'] ?? 'cashout_completion',
                 'description' => $destinationSplitConfig['description'] ?? ''
             ] : null
         ];
     }
     
-    /**
-     * Get destination split for cashout products
-     * Returns Share_Dest_Base split into Fee_Gen and Fee_Comp
-     */
     public function getDestinationSplit(float $destinationShare, array $productConfig): array
     {
         $destSplit = $productConfig['destination_split'] ?? null;
@@ -328,36 +301,24 @@ class FeeService
         ];
     }
     
-    /**
-     * Get earnings timing for different fee components
-     */
     public function getEarningsTiming(string $product): array
     {
         $productConfig = $this->getProductConfig($product);
         return $productConfig['earnings_rules'] ?? [];
     }
     
-    /**
-     * Get retry rules for a product
-     */
     public function getRetryRules(string $product): array
     {
         $productConfig = $this->getProductConfig($product);
         return $productConfig['retry_rules'] ?? [];
     }
     
-    /**
-     * Get swap-on-swap (free retry) rules
-     */
     public function getSwapOnSwapRules(string $product): array
     {
         $productConfig = $this->getProductConfig($product);
         return $productConfig['swap_on_swap'] ?? [];
     }
     
-    /**
-     * Get default fee result when no config found
-     */
     private function getDefaultFeeResult(float $amount): array
     {
         return [
@@ -382,10 +343,11 @@ class FeeService
         $payload['swap_type'] = $transactionType;
         $result = $this->calculateProductFees($amount, $payload);
         
+        // Return the net amount after customer fee (F1 only)
         return [
-            'total_fee' => $result['total_fees'],
+            'total_fee' => $result['slots']['F1'] ?? 0,  // Only customer fee for net amount calculation
             'breakdown' => $this->getBreakdown($result),
-            'net_amount' => $result['net_amount'],
+            'net_amount' => $result['net_amount'],  // amount - F1
             'gross_amount' => $result['gross_amount'],
             'distribution' => $result['distribution'],
             'destination_split' => $result['destination_split'],
@@ -418,13 +380,13 @@ class FeeService
         
         // Add mathematical formula breakdown
         $distribution = $feeResult['distribution'] ?? [];
-        if (!empty($distribution)) {
+        if (!empty($distribution) && $distribution['net_distributable_pool'] > 0) {
             $breakdown[] = [
                 'slot' => 'POOL_DIST',
                 'code' => 'Pool_Dist',
                 'name' => 'Distributable Pool',
                 'owner' => 'SYSTEM',
-                'amount' => $distribution['net_distributable_pool'] ?? 0,
+                'amount' => $distribution['net_distributable_pool'],
                 'currency' => $this->defaultCurrency,
                 'type' => 'calculated',
                 'formula' => 'F1 - F7'
@@ -435,7 +397,7 @@ class FeeService
                 'code' => 'Cut_Platform',
                 'name' => 'Platform Revenue',
                 'owner' => 'VOUCHMORPH',
-                'amount' => $distribution['platform']['amount'] ?? 0,
+                'amount' => $distribution['platform']['amount'],
                 'currency' => $this->defaultCurrency,
                 'type' => 'calculated',
                 'formula' => 'Pool_Dist × platform_percent'
@@ -445,8 +407,8 @@ class FeeService
                 'slot' => 'CUT_SOURCE',
                 'code' => 'Cut_Source',
                 'name' => 'Source Institution Revenue',
-                'owner' => $distribution['source_institution']['owner'] ?? 'SOURCE',
-                'amount' => $distribution['source_institution']['amount'] ?? 0,
+                'owner' => $distribution['source_institution']['owner'],
+                'amount' => $distribution['source_institution']['amount'],
                 'currency' => $this->defaultCurrency,
                 'type' => 'calculated',
                 'formula' => 'Pool_Dist × source_percent'
@@ -456,8 +418,8 @@ class FeeService
                 'slot' => 'SHARE_DEST_BASE',
                 'code' => 'Share_Dest_Base',
                 'name' => 'Destination Base Share',
-                'owner' => $distribution['destination_institution']['owner'] ?? 'DESTINATION',
-                'amount' => $distribution['destination_institution']['amount'] ?? 0,
+                'owner' => $distribution['destination_institution']['owner'],
+                'amount' => $distribution['destination_institution']['amount'],
                 'currency' => $this->defaultCurrency,
                 'type' => 'calculated',
                 'formula' => 'Pool_Dist × destination_percent'
