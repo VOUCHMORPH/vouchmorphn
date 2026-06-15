@@ -587,11 +587,7 @@ class SwapService
             error_log("[SwapService] Amount too small for ATM, switching to AGENT cashout: {$amountToSend}"); 
         }
         
-     if ($amountToSend <= 0) {
-    $currency = $payload['currency'] ?? 'BWP';
-    $minAmount = min($this->atmNotes[$currency] ?? [20]);
-    throw new RuntimeException("Amount after fees ({$netAmount}) is too small to deliver. Minimum is {$minAmount} {$currency}");
-}
+   
         // STEP 4: GENERATE CODE AT DESTINATION
         error_log("[SwapService] STEP 4: Generating cashout code at DESTINATION: {$destinationInstitution} for amount: {$amountToSend}");
         
