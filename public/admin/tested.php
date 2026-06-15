@@ -1,79 +1,41 @@
 <?php
-// test_fees_simple.php - NO DATABASE REQUIRED!
+// test_forex_real.php - Test real forex with different currencies
 require_once __DIR__ . '/../../src/Domain/Services/FeeService.php';
+require_once __DIR__ . '/../../src/Domain/Services/ForexService.php';
 
 use Domain\Services\FeeService;
+use Domain\Services\ForexService;
+
+// Use REAL database connection (not mock)
+$db = new PDO('pgsql:host=localhost;dbname=your_db', 'your_user', 'your_password');
+
+// Load participants from your real YAML
+$participants = [/* Your real participants from YAML */];
 
 // Load fees config
 $feesJson = file_get_contents(__DIR__ . '/../../src/Core/Config/Countries/Botswana/fees.json');
 $feesConfig = json_decode($feesJson, true);
 
-// Create FeeService WITHOUT ForexService (pass null)
-$feeService = new FeeService([], $feesConfig, 'BWP', null);
+// Create REAL ForexService (will fetch real rates from banks/API)
+$forexService = new ForexService($db, [], $participants);
 
-// Set participants for currency lookup
-$participants = [
-    'ZURUBANK' => [
-        'limits' => ['currency' => 'BWP'],
-        'cross_border' => ['supported_currencies' => ['BWP', 'ZAR', 'USD']],
-        'country' => 'BW'
-    ],
-    'SACCUSSALIS' => [
-        'limits' => ['currency' => 'BWP'],
-        'cross_border' => ['supported_currencies' => ['BWP', 'ZAR', 'EUR']],
-        'country' => 'BW'
-    ]
-];
+// Create FeeService with REAL ForexService
+$feeService = new FeeService([], $feesConfig, 'BWP', $forexService);
 $feeService->setParticipants($participants);
 
-echo "=== FEE CALCULATION TEST ===\n\n";
-
-// Test 1: Same currency (BWP → BWP)
-echo "Test 1: Same Currency (BWP → BWP)\n";
-echo "----------------------------------------\n";
-$payload1 = [
+// Test with DIFFERENT currencies - ZAR to BWP
+$payload = [
     'swap_type' => 'CASHOUT',
-    'source_institution' => 'SACCUSSALIS',
-    'destination_institution' => 'ZURUBANK',
-    'currency' => 'BWP',
+    'source_institution' => 'CAZACOM',     // ZAR currency
+    'destination_institution' => 'ZURUBANK', // BWP currency
+    'currency' => 'ZAR',
+    'destination_currency' => 'BWP',
     'amount' => 100
 ];
-$result1 = $feeService->calculateFees('CASHOUT', 100, $payload1);
 
-echo "Total Fee: {$result1['total_fee']} {$result1['total_fee_currency']}\n";
+$result = $feeService->calculateFees('CASHOUT', 100, $payload);
 
-// Fix: Check if net_amount_currency exists, otherwise use gross_amount_currency
-$netCurrency = $result1['net_amount_currency'] ?? $result1['gross_amount_currency'] ?? 'BWP';
-echo "Net Amount (to send): {$result1['net_amount']} {$netCurrency}\n";
-echo "Gross Amount: {$result1['gross_amount']} {$result1['gross_amount_currency']}\n";
-echo "Forex Applied: " . ($result1['forex']['applied'] ? 'YES' : 'NO') . "\n\n";
-
-// Test 2: Show full breakdown
-echo "Test 2: Full Fee Breakdown\n";
-echo "----------------------------------------\n";
-foreach ($result1['breakdown'] as $fee) {
-    $currency = $fee['currency'] ?? 'BWP';
-    echo "  {$fee['name']}: {$fee['amount']} {$currency}\n";
-    if (isset($fee['formula'])) {
-        echo "    Formula: {$fee['formula']}\n";
-    }
-    if (isset($fee['earned_at'])) {
-        echo "    Earned at: {$fee['earned_at']}\n";
-    }
-}
-
-echo "\n✓ Test completed successfully!\n";
-echo "Expected: 10 BWP fee, 90 BWP to send\n";
-
-// Summary
-echo "\n=== SUMMARY ===\n";
-echo "Customer requests: 100 BWP\n";
-echo "Fee deducted: 10 BWP\n";
-echo "Amount to send to ZURUBANK: 90 BWP\n";
-echo "Breakdown:\n";
-echo "  - Levy (F7): 1 BWP (government)\n";
-echo "  - Platform (35%): 3.15 BWP (VouchMorph)\n";
-echo "  - Source (15%): 1.35 BWP (SACCUSSALIS)\n";
-echo "  - Destination (50%): 4.50 BWP (ZURUBANK)\n";
-echo "    - Generate code fee: 0.45 BWP (earned immediately)\n";
-echo "    - Cashout completion: 4.05 BWP (earned on cashout)\n";
+// Now forex WILL be applied because currencies differ
+echo "Forex Applied: " . ($result['forex']['applied'] ? 'YES' : 'NO') . "\n";
+echo "Exchange Rate: {$result['forex']['rate']}\n";
+echo "Amount after forex: {$result['net_amount_destination_currency']} {$result['net_amount_currency']}\n";
