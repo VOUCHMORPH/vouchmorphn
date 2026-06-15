@@ -1669,32 +1669,20 @@ if ($amountToSend <= 0) {
         $feesData = json_decode($feesContent, true);
         
         if (json_last_error() === JSON_ERROR_NONE && is_array($feesData)) {
-            // Handle both structures: with 'products' key or direct product keys
-            if (!isset($feesData['products']) && (isset($feesData['CASHOUT']) || isset($feesData['DEPOSIT']))) {
-                $products = [];
-                foreach ($feesData as $key => $value) {
-                    if (in_array($key, ['CASHOUT', 'DEPOSIT', 'CARD_LOAD', 'SWAP'])) {
-                        $products[$key] = $value;
-                    }
-                }
-                $this->feesConfig = ['products' => $products, 'regulatory' => $feesData['regulatory'] ?? []];
-            } else if (isset($feesData['products'])) {
-                $this->feesConfig = $feesData;
-            } else {
-                // Invalid structure, use default
-                error_log("[SwapService] Invalid fees config structure for {$country}, using empty config");
-                $this->feesConfig = $defaultFeesConfig;
-            }
+            // PASS THE CONFIG AS-IS - FeeService will handle the structure
+            $this->feesConfig = $feesData;
             
-            error_log("[SwapService] Loaded fees config with products: " . implode(', ', array_keys($this->feesConfig['products'] ?? [])));
+            error_log("[SwapService] Loaded fees config for {$country}");
+            error_log("[SwapService] Config keys: " . implode(', ', array_keys($feesData)));
+            if (isset($feesData['CASHOUT'])) {
+                error_log("[SwapService] CASHOUT fee_components found: " . json_encode(array_keys($feesData['CASHOUT']['fee_components'] ?? [])));
+            }
         } else {
-            // JSON parse error
-            error_log("[SwapService] JSON parse error in fees file for {$country}: " . json_last_error_msg() . ", using empty config");
+            error_log("[SwapService] JSON parse error in fees file for {$country}: " . json_last_error_msg());
             $this->feesConfig = $defaultFeesConfig;
         }
     } else {
         error_log("[SwapService] No fees config found for {$country}, using empty config");
-        $this->feesConfig = $defaultFeesConfig;
     }
     
     $this->logger->info("Configuration loaded", ['country' => $country]);
