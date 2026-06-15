@@ -758,10 +758,11 @@ class GenericBankClient implements BankAPIInterface
     // ============================================================================
 
     public function generateToken(array $payload): array
-    {
-        error_log("=== GENERIC BANK CLIENT: generateToken (CASHOUT TOKEN) ===");
-        return $this->send('generate_token', $payload);
-    }
+{
+    error_log("=== GENERIC BANK CLIENT: generateToken (CASHOUT TOKEN) ===");
+    $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+    return $this->send('generate_token', $signedPayload);
+}
 
     public function verifyToken(array $payload): array
     {
