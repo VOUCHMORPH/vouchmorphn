@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-namespace Domain\Services;
+namespace Domain\Services;   
 
 use PDO;
 use Exception;
