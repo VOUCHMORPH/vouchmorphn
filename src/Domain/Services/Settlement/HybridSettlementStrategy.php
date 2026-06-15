@@ -11,17 +11,16 @@ use Exception;
 /**
  * Hybrid Settlement Strategy - NON-CUSTODIAL
  * 
- * VouchMorph NEVER holds customer funds.
- * VouchMorph ONLY:
- * 1. Orchestrates settlement messages between participants
- * 2. Tracks net positions for reconciliation
- * 3. Bills participants for fees into VouchMorph's operational account
- * 4. Routes cross-border settlements through VouchMorph corridor accounts
+ * RESPONSIBILITIES:
+ * - Track net positions between participants (who owes whom)
+ * - Send settlement instructions to participants
+ * - Invoice fees to participants
+ * - Handle cross-border corridor settlements
+ * - Manage cashout retry logic (unearned fees)
+ * - Perform multilateral netting (daily/weekly/monthly)
+ * - Record settlement acknowledgements
  * 
- * Fee Splitting & Retry Logic:
- * - First Attempt: Client pays full fee, unearned cashout fee stored for retry
- * - Free Retry (1st retry): VouchMorph pays generate code fee, cashout from unearned
- * - Paid Retry (2nd+): Client pays generate code fee, cashout from unearned
+ * VouchMorph NEVER holds customer funds. Only orchestrates settlement messages.
  */
 class HybridSettlementStrategy
 {
@@ -209,7 +208,14 @@ class HybridSettlementStrategy
     }
 
     /**
+     * ============================================================
+     * NET POSITION & SETTLEMENT METHODS
+     * ============================================================
+     */
+    
+    /**
      * UPDATE NET POSITION - Track who owes whom
+     * Called by SwapService after successful swap completion
      */
     public function updateNetPosition(
         string $swapRef,
@@ -218,10 +224,12 @@ class HybridSettlementStrategy
         float $amount, 
         string $transactionType,
         string $currency = 'BWP'
-    ): void {
+    ): array {
         try {
+            // Update net positions table
             $this->updateNetPositionsTable($sourceInstitution, $destinationInstitution, $amount, $currency);
             
+            // Send settlement instruction to both parties
             $messageUuid = $this->sendSettlementInstruction(
                 $swapRef, $sourceInstitution, $destinationInstitution, $amount, $currency, $transactionType
             );
@@ -229,6 +237,15 @@ class HybridSettlementStrategy
             $this->logObligation($sourceInstitution, $destinationInstitution, $amount, $currency, $transactionType, $messageUuid);
             
             error_log("[SETTLEMENT] Obligation recorded for swap $swapRef: $sourceInstitution owes $destinationInstitution $amount $currency ($transactionType)");
+            
+            return [
+                'success' => true,
+                'message_uuid' => $messageUuid,
+                'debtor' => $sourceInstitution,
+                'creditor' => $destinationInstitution,
+                'amount' => $amount,
+                'currency' => $currency
+            ];
             
         } catch (Exception $e) {
             error_log("[SETTLEMENT] Failed to update net position: " . $e->getMessage());
@@ -293,6 +310,7 @@ class HybridSettlementStrategy
     
     /**
      * Store unearned cashout fee for future retry
+     * Called when cashout fails after code generation
      */
     public function storeUnearnedCashoutFee(
         string $swapRef,
@@ -396,9 +414,6 @@ class HybridSettlementStrategy
         $retryCount = $this->getRetryCount($originalSwapRef, $clientIdentifier);
         $unearnedFee = $this->getUnearnedCashoutFee($originalSwapRef, $clientIdentifier);
         
-        // Free retry available if:
-        // 1. It's the first retry (retry_count == 0 means first attempt failed, retry_count == 1 means first retry)
-        // 2. There's unearned cashout fee available
         return $retryCount === 0 && $unearnedFee > 0;
     }
     
@@ -410,20 +425,18 @@ class HybridSettlementStrategy
     
     /**
      * Invoice participants for fees
+     * Called by SwapService after fee calculation from UniversalFeeEngine
      * 
      * Fee Types:
-     * - VOUCHMORPH_FEE: Swap levy + platform share
-     * - SOURCE_INSTITUTION_FEE: 15% of after-levy
-     * - GENERATE_CODE_FEE: 10% of destination share (earned immediately)
-     * - CASHOUT_COMPLETION_FEE: 90% of destination share (only on success)
-     * - GENERATE_CODE_FEE_PAID_BY_VM: On free retry, VouchMorph pays
-     * - GENERATE_CODE_FEE_PAID_BY_CLIENT: On paid retry, client pays
-     * - CASHOUT_FEE_FROM_UNEARNED: From stored unearned fee
+     * - VOUCHMORPH_FEE: Platform fee + swap levy
+     * - SOURCE_INSTITUTION_FEE: Source institution's revenue share
+     * - DESTINATION_GENERATE_FEE: Code generation fee (earned immediately)
+     * - DESTINATION_COMPLETION_FEE: Cashout completion fee (earned on success)
      * - CORRIDOR_FEE: Cross-border corridor fee
      */
     public function invoiceFee(
         string $swapReference,
-        string $sourceInstitution,
+        string $institution,
         int $participantId,
         string $feeType,
         float $feeAmount,
@@ -465,13 +478,13 @@ class HybridSettlementStrategy
         ");
         
         $stmt->execute([
-            $invoiceUuid, $swapReference, $participantId, $sourceInstitution,
+            $invoiceUuid, $swapReference, $participantId, $institution,
             $feeType, $feeAmount, $currency, $vatAmount, $totalAmount
         ]);
         
-        $this->deliverToParticipant($sourceInstitution, $invoice);
+        $this->deliverToParticipant($institution, $invoice);
         
-        error_log("[SETTLEMENT] Fee invoice sent to $sourceInstitution: $totalAmount $currency for $feeType");
+        error_log("[SETTLEMENT] Fee invoice sent to $institution: $totalAmount $currency for $feeType");
         
         return $invoiceUuid;
     }
@@ -505,6 +518,20 @@ class HybridSettlementStrategy
             error_log("[SETTLEMENT] Failed to record fee payment: " . $e->getMessage());
             return false;
         }
+    }
+    
+    /**
+     * Get outstanding invoices for an institution
+     */
+    public function getOutstandingInvoices(string $institutionName): array
+    {
+        $stmt = $this->db->prepare("
+            SELECT * FROM fee_invoices 
+            WHERE source_institution = ? AND status = 'SENT'
+            ORDER BY created_at ASC
+        ");
+        $stmt->execute([$institutionName]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
     
     /**
@@ -641,23 +668,13 @@ class HybridSettlementStrategy
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
     
-    public function getOutstandingInvoices(string $institutionName): array
-    {
-        $stmt = $this->db->prepare("
-            SELECT * FROM fee_invoices 
-            WHERE source_institution = ? AND status = 'SENT'
-            ORDER BY created_at ASC
-        ");
-        $stmt->execute([$institutionName]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
-    }
-    
     public function generateReconciliationReport(string $institutionName, string $currency = 'BWP'): array
     {
         $netAsDebtor = $this->getTotalNetPositionAsDebtor($institutionName, $currency);
         $netAsCreditor = $this->getTotalNetPositionAsCreditor($institutionName, $currency);
         $netObligation = $netAsDebtor - $netAsCreditor;
         $pendingMessages = $this->getPendingMessagesForInstitution($institutionName);
+        $outstandingInvoices = $this->getOutstandingInvoices($institutionName);
         
         return [
             'institution' => $institutionName,
@@ -668,8 +685,83 @@ class HybridSettlementStrategy
             'net_position' => $netObligation,
             'net_position_text' => $netObligation > 0 ? "OWES $netObligation $currency" : "IS OWED " . abs($netObligation) . " $currency",
             'pending_settlements' => count($pendingMessages),
-            'pending_messages' => $pendingMessages
+            'pending_messages' => $pendingMessages,
+            'outstanding_invoices' => array_map(function($inv) {
+                return [
+                    'invoice_uuid' => $inv['invoice_uuid'],
+                    'fee_type' => $inv['fee_type'],
+                    'total_amount' => (float)$inv['total_amount'],
+                    'currency' => $inv['currency'],
+                    'created_at' => $inv['created_at']
+                ];
+            }, $outstandingInvoices)
         ];
+    }
+    
+    /**
+     * Calculate multilateral net obligations for all participants
+     * Called by cron job (daily/weekly/monthly)
+     */
+    public function calculateMultilateralNetting(): array
+    {
+        $allPositions = $this->getAllNetPositions();
+        $netObligations = [];
+        $processed = [];
+        
+        foreach ($allPositions as $debtor => $creditorData) {
+            if (in_array($debtor, $processed)) continue;
+            
+            foreach ($creditorData as $creditor => $amounts) {
+                foreach ($amounts as $currency => $amount) {
+                    if ($amount <= 0.01) continue;
+                    
+                    $reverseAmount = $this->getNetPosition($creditor, $debtor, $currency);
+                    
+                    if ($reverseAmount > 0) {
+                        $netAmount = abs($amount - $reverseAmount);
+                        $netObligations[] = [
+                            'debtor' => $amount > $reverseAmount ? $debtor : $creditor,
+                            'creditor' => $amount > $reverseAmount ? $creditor : $debtor,
+                            'gross_amount' => $amount,
+                            'reverse_amount' => $reverseAmount,
+                            'net_amount' => $netAmount,
+                            'currency' => $currency
+                        ];
+                        
+                        // Clear these positions after netting
+                        $this->clearNetPosition($debtor, $creditor, $currency);
+                        $this->clearNetPosition($creditor, $debtor, $currency);
+                        
+                        error_log("[SETTLEMENT] Multilateral netting: $debtor owes $creditor net $netAmount $currency");
+                    } else {
+                        $netObligations[] = [
+                            'debtor' => $debtor,
+                            'creditor' => $creditor,
+                            'gross_amount' => $amount,
+                            'reverse_amount' => 0,
+                            'net_amount' => $amount,
+                            'currency' => $currency
+                        ];
+                    }
+                }
+            }
+            
+            $processed[] = $debtor;
+        }
+        
+        // Send net settlement instructions
+        foreach ($netObligations as $obligation) {
+            $this->sendSettlementInstruction(
+                'NETTING_BATCH_' . date('Ymd'),
+                $obligation['debtor'],
+                $obligation['creditor'],
+                $obligation['net_amount'],
+                $obligation['currency'],
+                'MULTILATERAL_NETTING'
+            );
+        }
+        
+        return $netObligations;
     }
     
     /**
@@ -786,23 +878,9 @@ class HybridSettlementStrategy
     
     /**
      * ============================================================
-     * HELPER METHODS
+     * SETTLEMENT ACKNOWLEDGEMENT METHODS
      * ============================================================
      */
-    
-    private function deliverToParticipant(string $institutionName, array $message): void
-    {
-        error_log("[SETTLEMENT] Message delivered to $institutionName: " . json_encode($message));
-        
-        if (isset($message['instruction_id'])) {
-            $stmt = $this->db->prepare("
-                UPDATE settlement_outbox 
-                SET status = 'SENT', sent_at = NOW()
-                WHERE message_uuid = ?
-            ");
-            $stmt->execute([$message['instruction_id']]);
-        }
-    }
     
     public function acknowledgeSettlement(string $messageUuid, string $institutionName, array $proofData = []): bool
     {
@@ -852,50 +930,24 @@ class HybridSettlementStrategy
         }
     }
     
-    public function calculateNetObligations(array $participantBalances): array
+    /**
+     * ============================================================
+     * HELPER METHODS
+     * ============================================================
+     */
+    
+    private function deliverToParticipant(string $institutionName, array $message): void
     {
-        $netObligations = [];
-        $batchId = 'BATCH_' . bin2hex(random_bytes(8));
+        error_log("[SETTLEMENT] Message delivered to $institutionName: " . json_encode($message));
         
-        foreach ($participantBalances as $debtor => $creditors) {
-            foreach ($creditors as $creditor => $amounts) {
-                foreach ($amounts as $currency => $amount) {
-                    if ($amount <= 0.01) continue;
-                    
-                    $reverseAmount = $this->getNetPosition($creditor, $debtor, $currency);
-                    
-                    if ($reverseAmount > 0) {
-                        $netAmount = abs($amount - $reverseAmount);
-                        $netObligations[] = [
-                            'batch_id' => $batchId,
-                            'debtor' => $amount > $reverseAmount ? $debtor : $creditor,
-                            'creditor' => $amount > $reverseAmount ? $creditor : $debtor,
-                            'gross_amount' => $amount,
-                            'reverse_amount' => $reverseAmount,
-                            'net_amount' => $netAmount,
-                            'currency' => $currency
-                        ];
-                        
-                        $this->clearNetPosition($debtor, $creditor, $currency);
-                        $this->clearNetPosition($creditor, $debtor, $currency);
-                        
-                        error_log("[SETTLEMENT] Net calculation: $debtor owes $creditor $amount $currency, net: $netAmount");
-                    } else {
-                        $netObligations[] = [
-                            'batch_id' => $batchId,
-                            'debtor' => $debtor,
-                            'creditor' => $creditor,
-                            'gross_amount' => $amount,
-                            'reverse_amount' => 0,
-                            'net_amount' => $amount,
-                            'currency' => $currency
-                        ];
-                    }
-                }
-            }
+        if (isset($message['instruction_id'])) {
+            $stmt = $this->db->prepare("
+                UPDATE settlement_outbox 
+                SET status = 'SENT', sent_at = NOW()
+                WHERE message_uuid = ?
+            ");
+            $stmt->execute([$message['instruction_id']]);
         }
-        
-        return $netObligations;
     }
     
     private function updateNetPositionsTable(string $debtor, string $creditor, float $amount, string $currency): void
@@ -929,15 +981,18 @@ class HybridSettlementStrategy
         return (float)($stmt->fetchColumn() ?? 0);
     }
     
-    private function getInstitutionCountry(string $institution, array $participants): string
+    private function getAllNetPositions(): array
     {
-        foreach ($participants as $participant) {
-            if (strtolower($participant['name'] ?? '') === strtolower($institution) ||
-                strtolower($participant['provider_code'] ?? '') === strtolower($institution)) {
-                return $participant['country_code'] ?? 'BW';
-            }
+        $stmt = $this->db->prepare("SELECT debtor, creditor, amount, currency_code FROM net_positions ORDER BY created_at");
+        $stmt->execute();
+        $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $positions = [];
+        foreach ($results as $row) {
+            $positions[$row['debtor']][$row['creditor']][$row['currency_code']] = (float)$row['amount'];
         }
-        return 'BW';
+        
+        return $positions;
     }
     
     private function recordInternalTransfer(string $swapRef, string $fromAccount, string $toAccount, float $amount, string $currency, float $exchangeRate): void
