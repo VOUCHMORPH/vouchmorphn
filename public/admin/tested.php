@@ -1,6 +1,6 @@
 <?php
 // test_forex_with_rates.php - With real exchange rates, NO database
-require_once __DIR__ . '/../src/Domain/Services/FeeService.php';
+require_once __DIR__ . '/../../src/Domain/Services/FeeService.php';
 
 use Domain\Services\FeeService;
 
@@ -41,7 +41,7 @@ class SimpleForexService
 }
 
 // Load your actual fees config
-$feesJson = file_get_contents(__DIR__ . '/../src/Core/Config/Countries/Botswana/fees.json');
+$feesJson = file_get_contents(__DIR__ . '/../../src/Core/Config/Countries/Botswana/fees.json');
 $feesConfig = json_decode($feesJson, true);
 
 // Create ForexService with real rates
