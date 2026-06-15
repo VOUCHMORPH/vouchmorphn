@@ -126,11 +126,15 @@ class SwapService
         $this->loadConfiguration($country);
         $this->loadAtmNotes($country);
         
-        // Initialize settlement services
-        $this->settlement = new HybridSettlementStrategy($this->swapDB);
-        $this->feeService = new FeeService($this->feesConfig, $this->config);
-        $this->feeService->setParticipants($this->participants); 
-        $this->forexService = new ForexService($this->swapDB, $this->config, $this->participants, $this->feeService);
+       // Initialize settlement services
+$this->settlement = new HybridSettlementStrategy($this->swapDB);
+
+// First, initialize ForexService (it doesn't need FeeService yet)
+$this->forexService = new ForexService($this->swapDB, $this->config, $this->participants);
+
+// Then initialize FeeService WITH ForexService
+$this->feeService = new FeeService($this->feesConfig, $this->config, $this->config['currency'] ?? 'BWP', $this->forexService);
+$this->feeService->setParticipants($this->participants);
         
         // Initialize SMS service
         $smsConfig = $this->participants['sms'] ?? [];
