@@ -8,7 +8,6 @@ use Exception;
 use RuntimeException;
 use PDOException;
 use Domain\Services\Settlement\HybridSettlementStrategy;
-use Domain\Services\Settlement\UniversalFeeEngine;
 use Domain\Services\FeeService;
 use Domain\Services\ForexService;
 use Domain\Services\CardService;
@@ -46,7 +45,6 @@ class SwapService
     private array $feeCalculationDetails = [];
     
     private HybridSettlementStrategy $settlement;
-    private UniversalFeeEngine $feeEngine;
     private FeeService $feeService;
     private ForexService $forexService;
     private ?CardService $cardService = null;
@@ -68,8 +66,8 @@ class SwapService
     private array $stepResults = [];
     private array $signedPayloads = [];
     
-    // Current transaction state from fee engine
-    private array $currentTransactionState = [];
+    // Store cashout authorization data
+    private array $pendingCashouts = [];
 
     public function __construct(
         PDO $swapDB, 
@@ -121,15 +119,8 @@ class SwapService
         $this->loadConfiguration($country);
         $this->loadAtmNotes($country);
         
-        // Initialize settlement services
+        // Initialize settlement services - REMOVED UniversalFeeEngine
         $this->settlement = new HybridSettlementStrategy($this->swapDB);
-        $this->feeEngine = new UniversalFeeEngine(
-            $this->swapDB,
-            $this->config,
-            $this->feesConfig,
-            $this->participants,
-            $this->atmNotes[$this->config['currency'] ?? 'BWP'] ?? [200, 100, 50, 20, 10]
-        );
         $this->feeService = new FeeService($this->feesConfig, $this->config);
         $this->feeService->setParticipants($this->participants); 
         $this->forexService = new ForexService($this->swapDB, $this->config, $this->participants, $this->feeService);
@@ -208,34 +199,53 @@ class SwapService
     {
         $this->feeCalculationDetails = [];
         
-        // Use UniversalFeeEngine for mathematical calculation
-        $context = array_merge($payload, [
-            'swap_reference' => $this->currentSwapRef,
-            'multiplier' => $this->atmNotes[$payload['currency'] ?? 'BWP'][0] ?? 100
-        ]);
+        // Use FeeService for fee calculation
+        $feeResult = $this->feeService->calculateFees($feeType, $amount, $payload);
         
-        $this->currentTransactionState = $this->feeEngine->calculateAnticipatedFees($amount, $feeType, $context);
-        
-        $this->feeCalculationDetails = [
+        $details = [
             'fee_type' => $feeType,
             'original_amount' => $amount,
-            'total_fee' => $this->currentTransactionState['total_fee'],
-            'net_amount' => $this->currentTransactionState['target_amount'],
-            'distributable_pool' => $this->currentTransactionState['distributable_pool'],
-            'platform_cut' => $this->currentTransactionState['platform_cut'],
-            'source_cut' => $this->currentTransactionState['source_cut'],
-            'destination_base_share' => $this->currentTransactionState['destination_base_share'],
-            'generate_code_fee' => $this->currentTransactionState['generate_code_fee'],
-            'cashout_completion_fee' => $this->currentTransactionState['cashout_completion_fee'],
-            'dispensable_amount' => $this->currentTransactionState['dispensable_amount'],
-            'remainder_balance' => $this->currentTransactionState['remainder_balance'],
-            'multiplier' => $this->currentTransactionState['multiplier'],
-            'fee_registry' => $this->feeEngine->getFeeRegistry()
+            'total_fee' => $feeResult['total_fee'] ?? 0,
+            'net_amount' => $amount - ($feeResult['total_fee'] ?? 0),
+            'breakdown' => []
         ];
         
+        if (isset($feeResult['components'])) {
+            $details['breakdown'] = $feeResult['components'];
+        } elseif (isset($feeResult['fees'])) {
+            foreach ($feeResult['fees'] as $feeName => $feeValue) {
+                if (is_numeric($feeValue)) {
+                    $details['breakdown'][$feeName] = $feeValue;
+                }
+            }
+        }
+        
+        if (isset($feeResult['swap_levy']) && $feeResult['swap_levy'] > 0) {
+            $details['breakdown']['swap_levy'] = $feeResult['swap_levy'];
+        }
+        
+        if (isset($feeResult['split'])) {
+            $details['revenue_split'] = $feeResult['split'];
+        }
+        
+        $this->feeCalculationDetails = $details;
+        
+        // Calculate dispensable amount based on ATM notes
+        $netAmount = $amount - ($feeResult['total_fee'] ?? 0);
+        $denominations = $this->atmNotes[$payload['currency'] ?? 'BWP'] ?? [200, 100, 50, 20, 10];
+        $multiplier = $denominations[0] ?? 100;
+        $dispensableAmount = $multiplier * floor($netAmount / $multiplier);
+        $remainderBalance = $netAmount - $dispensableAmount;
+        
+        $this->feeCalculationDetails['dispensable_amount'] = $dispensableAmount;
+        $this->feeCalculationDetails['remainder_balance'] = $remainderBalance;
+        $this->feeCalculationDetails['multiplier'] = $multiplier;
+        
         return [
-            'total_fee' => $this->currentTransactionState['total_fee'],
-            'net_amount' => $this->currentTransactionState['target_amount'],
+            'total_fee' => $feeResult['total_fee'] ?? 0,
+            'net_amount' => $netAmount,
+            'dispensable_amount' => $dispensableAmount,
+            'remainder_balance' => $remainderBalance,
             'components' => $this->feeCalculationDetails
         ];
     }
@@ -531,13 +541,13 @@ class SwapService
         
         $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
         
-        // STEP 3: CALCULATE FEES USING UNIVERSAL FEE ENGINE
-        error_log("[SwapService] STEP 3: Calculating fees using UniversalFeeEngine");
+        // STEP 3: CALCULATE FEES USING FEE SERVICE
+        error_log("[SwapService] STEP 3: Calculating fees");
         $feeBreakdown = $this->calculateFeesWithDetails('CASHOUT', $amount, $payload);
-        $amountToSend = $this->currentTransactionState['dispensable_amount'];
-        $remainderAtSource = $this->currentTransactionState['remainder_balance'];
+        $amountToSend = $this->feeCalculationDetails['dispensable_amount'] ?? $this->feeCalculationDetails['net_amount'] ?? $amount;
+        $remainderAtSource = $this->feeCalculationDetails['remainder_balance'] ?? 0;
         
-        error_log("[SwapService] Amount after fees: {$this->currentTransactionState['target_amount']}, Deliverable: {$amountToSend}, Remainder: {$remainderAtSource}");
+        error_log("[SwapService] Amount after fees: {$this->feeCalculationDetails['net_amount']}, Deliverable: {$amountToSend}, Remainder: {$remainderAtSource}");
         
         if ($amountToSend <= 0) {
             throw new RuntimeException("Amount after fees cannot be delivered via {$deliveryMethod}");
@@ -558,7 +568,20 @@ class SwapService
         
         error_log("[SwapService] Cashout code generated successfully");
         
-        // STEP 5: SEND SMS with code (optional)
+        // STEP 5: STORE IN CASHOUT_AUTHORIZATIONS TABLE
+        $authId = $this->storeCashoutAuthorization(
+            $this->currentSwapRef,
+            $beneficiaryPhone,
+            $sourceInstitution,
+            $destinationInstitution,
+            $amountToSend,
+            $feeBreakdown['total_fee'] ?? 0,
+            $generateResult['voucher_number'] ?? $generateResult['swap_code'],
+            $generateResult['atm_pin'],
+            $generateResult['expires_at']
+        );
+        
+        // STEP 6: SEND SMS with code (optional)
         if ($beneficiaryPhone && $this->smsService && isset($generateResult['atm_pin'])) {
             try {
                 $this->smsService->sendCashoutCode(
@@ -572,25 +595,22 @@ class SwapService
             }
         }
         
-        // STEP 6: UPDATE HOLD TO PENDING_CASHOUT (NOT DEBITED YET!)
+        // STEP 7: UPDATE HOLD TO PENDING_CASHOUT (NOT DEBITED YET!)
         $this->updateHoldStatus($this->currentHoldId, 'PENDING_CASHOUT');
-        
-        // Store pending cashout data for later confirmation
-        $this->storePendingCashout($this->currentSwapRef, $this->currentHoldReference, $generateResult, $sourceInstitution, $amountToSend, $feeBreakdown);
-        
-        // IMPORTANT: DO NOT DEBIT SOURCE HERE!
-        // Source will be debited ONLY after user successfully cashes out
         
         $result = [
             'status' => 'pending_cashout',
             'reference' => $this->currentSwapRef,
             'hold_reference' => $this->currentHoldReference,
+            'auth_id' => $authId,
+            'swap_code' => $generateResult['voucher_number'] ?? $generateResult['swap_code'],
             'atm_code' => $generateResult['atm_pin'] ?? null,
             'voucher_number' => $generateResult['voucher_number'] ?? null,
             'amount' => $amountToSend,
             'original_requested_amount' => $payload['original_requested_amount'] ?? $amount,
             'fee' => $feeBreakdown['total_fee'] ?? 0,
             'delivery_method' => $deliveryMethod,
+            'code_expiry' => $generateResult['expires_at'],
             'message' => 'Cashout code generated. User must cash out at ATM/Agent to complete the swap.',
             'fee_calculation_details' => $this->feeCalculationDetails,
             'signature_chain' => $this->signedPayloads
@@ -602,28 +622,184 @@ class SwapService
     }
 
     /**
+     * Store cashout authorization in database
+     */
+    private function storeCashoutAuthorization(
+        string $swapReference,
+        ?string $clientPhone,
+        string $sourceInstitution,
+        string $destinationInstitution,
+        float $amount,
+        float $feeAmount,
+        ?string $swapCode,
+        string $pinCode,
+        string $codeExpiry
+    ): int {
+        $sql = "
+            INSERT INTO cashout_authorizations (
+                swap_reference,
+                client_phone,
+                source_institution,
+                source_wallet,
+                amount,
+                currency,
+                fee_amount,
+                swap_code,
+                pin_code,
+                code_expiry,
+                cashout_point,
+                cashout_provider,
+                status,
+                created_at,
+                updated_at
+            ) VALUES (
+                :swap_ref,
+                :client_phone,
+                :source_inst,
+                :source_wallet,
+                :amount,
+                :currency,
+                :fee_amount,
+                :swap_code,
+                :pin_code,
+                :code_expiry,
+                :cashout_point,
+                :cashout_provider,
+                'PENDING',
+                NOW(),
+                NOW()
+            ) RETURNING auth_id
+        ";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute([
+                ':swap_ref' => $swapReference,
+                ':client_phone' => $clientPhone,
+                ':source_inst' => $sourceInstitution,
+                ':source_wallet' => null,
+                ':amount' => $amount,
+                ':currency' => $this->config['currency'] ?? 'BWP',
+                ':fee_amount' => $feeAmount,
+                ':swap_code' => $swapCode,
+                ':pin_code' => $pinCode,
+                ':code_expiry' => $codeExpiry,
+                ':cashout_point' => 'ATM',
+                ':cashout_provider' => $destinationInstitution
+            ]);
+            
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            $authId = $row ? (int)$row['auth_id'] : 0;
+            
+            error_log("[SwapService] Cashout authorization stored: auth_id={$authId}, swap_ref={$swapReference}");
+            
+            return $authId;
+            
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to store cashout authorization: " . $e->getMessage());
+            throw new RuntimeException("Failed to store cashout authorization: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Get cashout authorization by swap reference or auth ID
+     */
+    private function getCashoutAuthorization(?string $swapRef, ?int $authId): ?array
+    {
+        $sql = "
+            SELECT * FROM cashout_authorizations 
+            WHERE (swap_reference = :swap_ref OR auth_id = :auth_id)
+            AND status IN ('PENDING', 'VERIFIED')
+            AND code_expiry > NOW()
+            ORDER BY created_at DESC LIMIT 1
+        ";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute([
+                ':swap_ref' => $swapRef,
+                ':auth_id' => $authId
+            ]);
+            return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to get cashout authorization: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Update cashout authorization status
+     */
+    private function updateCashoutAuthorizationStatus(int $authId, string $status, ?string $cashoutPoint = null): void
+    {
+        $sql = "
+            UPDATE cashout_authorizations 
+            SET status = :status,
+                updated_at = NOW(),
+                completed_at = CASE WHEN :status = 'COMPLETED' THEN NOW() ELSE completed_at END,
+                cashout_point = COALESCE(:cashout_point, cashout_point)
+            WHERE auth_id = :auth_id
+        ";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute([
+                ':status' => $status,
+                ':auth_id' => $authId,
+                ':cashout_point' => $cashoutPoint
+            ]);
+            error_log("[SwapService] Cashout authorization {$authId} status updated to: {$status}");
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to update cashout authorization: " . $e->getMessage());
+        }
+    }
+
+    /**
      * Verify cashout token - Step 2 of cashout flow
-     * Called when user enters code at ATM/Agent
      */
     public function verifyCashout(array $payload): array
     {
         error_log("[SwapService] ===== verifyCashout START =====");
         
         $code = $payload['code'] ?? null;
-        $voucherNumber = $payload['voucher_number'] ?? null;
+        $swapCode = $payload['swap_code'] ?? null;
+        $authId = $payload['auth_id'] ?? null;
         $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
+        $cashoutPoint = $payload['cashout_point'] ?? 'ATM';
         
-        if (!$code && !$voucherNumber) {
-            throw new RuntimeException("Code or voucher number required");
+        if (!$code && !$swapCode && !$authId) {
+            throw new RuntimeException("Code, swap_code, or auth_id required");
         }
         
+        // Try to find in local database
+        $authorization = null;
+        if ($authId) {
+            $authorization = $this->getCashoutAuthorization(null, $authId);
+        } elseif ($swapCode) {
+            $authorization = $this->getCashoutAuthorization($swapCode, null);
+        }
+        
+        if ($authorization && $authorization['pin_code'] === $code) {
+            $this->updateCashoutAuthorizationStatus($authorization['auth_id'], 'VERIFIED', $cashoutPoint);
+            
+            return [
+                'status' => 'verified',
+                'verified' => true,
+                'auth_id' => $authorization['auth_id'],
+                'amount' => (float)$authorization['amount'],
+                'swap_reference' => $authorization['swap_reference'],
+                'message' => 'Code verified successfully'
+            ];
+        }
+        
+        // Fallback to destination institution verification
         $participant = $this->getParticipant($destinationInstitution);
         $bankClient = new GenericBankClient($participant, $payload);
         
         $verifyPayload = [
             'reference' => $payload['reference'] ?? $this->generateReference(),
             'code' => $code,
-            'voucher_number' => $voucherNumber,
+            'swap_code' => $swapCode,
             'action' => 'VERIFY_TOKEN'
         ];
         
@@ -645,31 +821,30 @@ class SwapService
 
     /**
      * Confirm cashout - Step 3 of cashout flow
-     * Called AFTER user successfully withdraws cash
-     * THIS IS WHERE SOURCE GETS DEBITED
      */
     public function confirmCashout(array $payload): array
     {
         error_log("[SwapService] ===== confirmCashout START =====");
         
         $swapReference = $payload['swap_reference'] ?? null;
-        $holdReference = $payload['hold_reference'] ?? null;
+        $authId = $payload['auth_id'] ?? null;
         $code = $payload['code'] ?? null;
         $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
-        $actualDeliveredAmount = (float)($payload['actual_amount'] ?? 0);
+        $cashoutPoint = $payload['cashout_point'] ?? 'ATM';
         
-        if (!$swapReference && !$holdReference) {
-            throw new RuntimeException("Swap reference or hold reference required");
+        if (!$swapReference && !$authId) {
+            throw new RuntimeException("Swap reference or auth_id required");
         }
         
-        // Get pending cashout data from database
-        $pendingCashout = $this->getPendingCashout($swapReference, $holdReference);
+        $authorization = $this->getCashoutAuthorization($swapReference, $authId);
         
-        if (!$pendingCashout) {
-            throw new RuntimeException("No pending cashout found for reference: {$swapReference}");
+        if (!$authorization) {
+            throw new RuntimeException("No pending cashout authorization found");
         }
         
-        $sourceInstitution = $pendingCashout['source_institution'];
+        $sourceInstitution = $authorization['source_institution'];
+        $amountToSend = (float)$authorization['amount'];
+        $feeAmount = (float)$authorization['fee_amount'];
         
         // STEP 1: Confirm cashout with destination institution
         $participant = $this->getParticipant($destinationInstitution);
@@ -677,10 +852,10 @@ class SwapService
         
         $confirmPayload = [
             'reference' => $swapReference,
-            'hold_reference' => $holdReference,
+            'auth_id' => $authId,
             'code' => $code,
-            'voucher_number' => $pendingCashout['voucher_number'],
-            'amount' => $pendingCashout['amount'],
+            'swap_code' => $authorization['swap_code'],
+            'amount' => $amountToSend,
             'action' => 'CONFIRM_CASHOUT'
         ];
         
@@ -696,16 +871,13 @@ class SwapService
             throw new RuntimeException("Cashout not confirmed by destination institution");
         }
         
-        // STEP 2: CALCULATE STANDARD COMPLETION USING FEE ENGINE
-        $completionResult = $this->feeEngine->calculateStandardCompletion($actualDeliveredAmount ?: $pendingCashout['amount']);
-        
-        // STEP 3: DEBIT SOURCE (ONLY NOW!)
-        error_log("[SwapService] Cashout confirmed, debiting source: {$sourceInstitution} for {$completionResult['final_source_debit']}");
+        // STEP 2: DEBIT SOURCE (ONLY NOW!)
+        error_log("[SwapService] Cashout confirmed, debiting source: {$sourceInstitution} for {$amountToSend}");
         
         $debitPayload = [
             'reference' => $swapReference,
-            'hold_reference' => $holdReference,
-            'amount' => $completionResult['final_source_debit'],
+            'hold_reference' => $authorization['swap_reference'],
+            'amount' => $amountToSend + $feeAmount,
             'reason' => 'Cashout completed successfully'
         ];
         
@@ -715,54 +887,46 @@ class SwapService
             throw new RuntimeException("Debit failed: " . ($debitResult['message'] ?? 'Unknown error'));
         }
         
-        // STEP 4: UPDATE HOLD STATUS
-        $this->updateHoldStatus($pendingCashout['hold_id'], 'DEBITED');
+        // STEP 3: UPDATE HOLD STATUS
+        $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
         
-        // STEP 5: RECORD SETTLEMENT (DELEGATE TO HYBRID SETTLEMENT)
+        // STEP 4: UPDATE CASHOUT AUTHORIZATION STATUS
+        $this->updateCashoutAuthorizationStatus($authorization['auth_id'], 'COMPLETED', $cashoutPoint);
+        
+        // STEP 5: RECORD SETTLEMENT
         $settlementResult = $this->settlement->updateNetPosition(
             $swapReference,
             $sourceInstitution,
             $destinationInstitution,
-            $completionResult['final_source_debit'],
+            $amountToSend,
             'CASHOUT_COMPLETED',
             $this->config['currency'] ?? 'BWP'
         );
         
-        // STEP 6: INVOICE FEES (DELEGATE TO HYBRID SETTLEMENT)
+        // STEP 6: INVOICE FEES
         $this->settlement->invoiceFee(
             $swapReference,
             $sourceInstitution,
             $this->getParticipantId($sourceInstitution),
             'CASHOUT_COMPLETION_FEE',
-            $pendingCashout['fee'],
+            $feeAmount,
             $this->config['currency'] ?? 'BWP'
         );
-        
-        // STEP 7: Mark cashout as completed
-        $this->markCashoutCompleted($swapReference, $holdReference);
-        
-        // STEP 8: Record settlement proof
-        $this->feeEngine->recordSettlementProof([
-            'swap_reference' => $swapReference,
-            'completion_result' => $completionResult,
-            'final_debit' => $completionResult['final_source_debit'],
-            'client_refund' => $completionResult['client_refund']
-        ]);
         
         return [
             'status' => 'completed',
             'reference' => $swapReference,
-            'hold_reference' => $holdReference,
+            'auth_id' => $authorization['auth_id'],
             'message' => 'Cashout completed successfully',
-            'amount' => $pendingCashout['amount'],
-            'fee' => $pendingCashout['fee'],
-            'client_refund' => $completionResult['client_refund'],
+            'amount' => $amountToSend,
+            'fee' => $feeAmount,
+            'client_refund' => 0,
             'settlement' => $settlementResult
         ];
     }
 
     // ============================================================
-    // EXECUTE SIGNED DEPOSIT - With Account Verification
+    // EXECUTE SIGNED DEPOSIT
     // ============================================================
 
     private function executeSignedDeposit(array $payload): array
@@ -774,7 +938,7 @@ class SwapService
         $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
         $destinationIdentifier = $this->extractDestinationIdentifier($payload);
         
-        // STEP 1: VERIFY ASSET AT SOURCE - MUST succeed
+        // STEP 1: VERIFY ASSET AT SOURCE
         error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
         $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
             return $this->verifyAssetSigned($payload, $sourceInstitution);
@@ -791,7 +955,7 @@ class SwapService
             'timestamp' => $verificationResult['timestamp']
         ];
         
-        // STEP 2: VERIFY DESTINATION ACCOUNT - MUST succeed
+        // STEP 2: VERIFY DESTINATION ACCOUNT
         error_log("[SwapService] STEP 2: Verifying destination account at: {$destinationInstitution}");
         
         if (empty($destinationIdentifier['identifier'])) {
@@ -806,10 +970,10 @@ class SwapService
             throw new RuntimeException("Destination account verification failed: " . ($accountVerification['message'] ?? 'Account not found'));
         }
         
-        // STEP 3: CALCULATE FEES USING UNIVERSAL FEE ENGINE
-        error_log("[SwapService] STEP 3: Calculating fees using UniversalFeeEngine");
+        // STEP 3: CALCULATE FEES
+        error_log("[SwapService] STEP 3: Calculating fees");
         $feeBreakdown = $this->calculateFeesWithDetails('DEPOSIT', $amount, $payload);
-        $netAmount = $this->currentTransactionState['target_amount'];
+        $netAmount = $this->feeCalculationDetails['net_amount'] ?? $amount;
         
         // STEP 4: PLACE HOLD ON SOURCE
         error_log("[SwapService] STEP 4: Placing hold on source: {$sourceInstitution}");
@@ -960,76 +1124,11 @@ class SwapService
         
         return [
             'success' => true,
+            'swap_code' => $data['swap_code'] ?? $data['voucher_number'],
             'atm_pin' => $data['atm_pin'] ?? null,
             'voucher_number' => $data['voucher_number'] ?? null,
             'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'))
         ];
-    }
-
-    private function storePendingCashout(string $swapRef, string $holdRef, array $codeData, string $sourceInstitution, float $amount, array $feeBreakdown): void
-    {
-        $sql = "
-            INSERT INTO pending_cashouts (
-                swap_reference, hold_reference, source_institution, destination_institution,
-                amount, fee, atm_pin, voucher_number, expires_at, status, created_at
-            ) VALUES (
-                :swap_ref, :hold_ref, :source_inst, :dest_inst,
-                :amount, :fee, :atm_pin, :voucher_number, :expires_at, 'PENDING', NOW()
-            )
-        ";
-        
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':swap_ref' => $swapRef,
-                ':hold_ref' => $holdRef,
-                ':source_inst' => $sourceInstitution,
-                ':dest_inst' => $this->currentSwapRef,
-                ':amount' => $amount,
-                ':fee' => $feeBreakdown['total_fee'] ?? 0,
-                ':atm_pin' => $codeData['atm_pin'] ?? null,
-                ':voucher_number' => $codeData['voucher_number'] ?? null,
-                ':expires_at' => $codeData['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'))
-            ]);
-        } catch (PDOException $e) {
-            error_log("[SwapService] Failed to store pending cashout: " . $e->getMessage());
-        }
-    }
-
-    private function getPendingCashout(?string $swapRef, ?string $holdRef): ?array
-    {
-        $sql = "
-            SELECT * FROM pending_cashouts 
-            WHERE (swap_reference = :swap_ref OR hold_reference = :hold_ref)
-            AND status = 'PENDING'
-            AND expires_at > NOW()
-            ORDER BY created_at DESC LIMIT 1
-        ";
-        
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([':swap_ref' => $swapRef, ':hold_ref' => $holdRef]);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($row) {
-                $row['hold_id'] = $row['id'] ?? null;
-            }
-            return $row ?: null;
-        } catch (PDOException $e) {
-            error_log("[SwapService] Failed to get pending cashout: " . $e->getMessage());
-            return null;
-        }
-    }
-
-    private function markCashoutCompleted(string $swapRef, string $holdRef): void
-    {
-        $sql = "UPDATE pending_cashouts SET status = 'COMPLETED', completed_at = NOW() WHERE swap_reference = :swap_ref OR hold_reference = :hold_ref";
-        $this->swapDB->prepare($sql)->execute([':swap_ref' => $swapRef, ':hold_ref' => $holdRef]);
-    }
-
-    private function markCashoutExpired(string $swapRef, string $holdRef): void
-    {
-        $sql = "UPDATE pending_cashouts SET status = 'EXPIRED', expired_at = NOW() WHERE swap_reference = :swap_ref OR hold_reference = :hold_ref";
-        $this->swapDB->prepare($sql)->execute([':swap_ref' => $swapRef, ':hold_ref' => $holdRef]);
     }
 
     private function getParticipantId(string $institution): int
@@ -1040,61 +1139,6 @@ class SwapService
             }
         }
         return 0;
-    }
-
-    /**
-     * Handle expired cashout token (called by cron job)
-     */
-    public function handleExpiredCashout(string $swapReference): array
-    {
-        error_log("[SwapService] ===== handleExpiredCashout START for {$swapReference} =====");
-        
-        $pendingCashout = $this->getPendingCashout($swapReference, null);
-        
-        if (!$pendingCashout) {
-            throw new RuntimeException("No pending cashout found for reference: {$swapReference}");
-        }
-        
-        if ($pendingCashout['expires_at'] > date('Y-m-d H:i:s')) {
-            throw new RuntimeException("Cashout has not expired yet");
-        }
-        
-        // Calculate expired settlement using fee engine
-        $expiredResult = $this->feeEngine->calculateExpiredSettlement();
-        
-        // Release hold (no debit, client gets partial refund)
-        $this->updateHoldStatus($pendingCashout['hold_id'], 'RELEASED');
-        
-        // Mark cashout as expired
-        $this->markCashoutExpired($swapReference, $pendingCashout['hold_reference']);
-        
-        // Record settlement
-        $this->settlement->updateNetPosition(
-            $swapReference,
-            $pendingCashout['source_institution'],
-            'VOUCHMORPH',
-            $expiredResult['retained_fee'],
-            'EXPIRED_CASHOUT_PENALTY',
-            $this->config['currency'] ?? 'BWP'
-        );
-        
-        // Record proof
-        $this->feeEngine->recordSettlementProof([
-            'swap_reference' => $swapReference,
-            'expired_result' => $expiredResult,
-            'client_refund' => $expiredResult['client_refund'],
-            'retained_fee' => $expiredResult['retained_fee']
-        ]);
-        
-        return [
-            'status' => 'expired',
-            'reference' => $swapReference,
-            'client_refund' => $expiredResult['client_refund'],
-            'retained_fee' => $expiredResult['retained_fee'],
-            'platform_revenue' => $expiredResult['platform_revenue'],
-            'source_revenue' => $expiredResult['source_revenue'],
-            'destination_revenue' => $expiredResult['destination_revenue']
-        ];
     }
 
     // ============================================================
@@ -1284,7 +1328,7 @@ class SwapService
         $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
         
         $feeBreakdown = $this->calculateFeesWithDetails('SWAP', $amount, $payload);
-        $netAmount = $this->currentTransactionState['target_amount'] ?? ($amount - ($feeBreakdown['total_fee'] ?? 0));
+        $netAmount = $this->feeCalculationDetails['net_amount'] ?? $amount;
         
         $destinationResult = $this->processDestinationWithProof($payload, $destInstitution, $netAmount);
         if (!($destinationResult['success'] ?? false)) {
@@ -1316,7 +1360,6 @@ class SwapService
             'amount' => $amount,
             'currency' => $payload['currency'] ?? 'BWP',
             'destination_type' => $payload['destination_type'] ?? 'ACCOUNT',
-            'destination_identifier' => $payload['destination_identifier'] ?? null,
             'action' => 'PROCESS_TRANSFER_WITH_PROOF',
             'source_verification' => $this->signedPayloads['verification'] ?? null,
             'source_hold' => $this->signedPayloads['hold'] ?? null
