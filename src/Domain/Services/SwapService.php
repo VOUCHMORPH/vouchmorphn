@@ -1316,6 +1316,7 @@ class SwapService
             'amount' => $amount,
             'currency' => $payload['currency'] ?? 'BWP',
             'destination_type' => $payload['destination_type'] ?? 'ACCOUNT',
+            'destination_identifier' => $payload['destination_identifier'] ?? null,
             'action' => 'PROCESS_TRANSFER_WITH_PROOF',
             'source_verification' => $this->signedPayloads['verification'] ?? null,
             'source_hold' => $this->signedPayloads['hold'] ?? null
