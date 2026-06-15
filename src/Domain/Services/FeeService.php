@@ -71,6 +71,21 @@ class FeeService
             $destinationCurrency = $payload['destination_currency'] ?? $payload['currency'] ?? $this->defaultCurrency;
         }
         
+        // Get supported currencies for validation
+        $sourceSupportedCurrencies = $this->getParticipantSupportedCurrencies($sourceInst);
+        $destSupportedCurrencies = $this->getParticipantSupportedCurrencies($destInst);
+        
+        // Validate that requested currencies are supported
+        if (!empty($sourceSupportedCurrencies) && !in_array($sourceCurrency, $sourceSupportedCurrencies)) {
+            error_log("[FeeService] Warning: {$sourceInst} does not support {$sourceCurrency}");
+            error_log("  Supported: " . implode(', ', $sourceSupportedCurrencies));
+        }
+        
+        if (!empty($destSupportedCurrencies) && !in_array($destinationCurrency, $destSupportedCurrencies)) {
+            error_log("[FeeService] Warning: {$destInst} does not support {$destinationCurrency}");
+            error_log("  Supported: " . implode(', ', $destSupportedCurrencies));
+        }
+        
         $this->context = [
             'product' => $payload['swap_type'] ?? 'CASHOUT',
             'source_institution' => $sourceInst,
@@ -79,6 +94,8 @@ class FeeService
             'destination_country' => $this->getParticipantCountry($destInst),
             'source_currency' => strtoupper($sourceCurrency),
             'destination_currency' => strtoupper($destinationCurrency),
+            'source_supported_currencies' => $sourceSupportedCurrencies,
+            'destination_supported_currencies' => $destSupportedCurrencies,
             'client_tier' => $payload['client_tier'] ?? 'retail',
             'is_multi_source' => $payload['is_multi_source'] ?? false,
             'source_count' => count($payload['sources'] ?? []),
@@ -119,30 +136,107 @@ class FeeService
         }
     }
     
+    /**
+     * Get participant country from participants.yaml
+     * Country codes: BW = Botswana, ZA = South Africa, etc.
+     */
     private function getParticipantCountry(string $institution): string
     {
         foreach ($this->participants as $code => $participant) {
             if (strtoupper($code) === strtoupper($institution)) {
-                return $participant['country'] ?? 'Botswana';
+                $countryCode = $participant['country'] ?? 'BW';
+                return $this->getCountryNameFromCode($countryCode);
             }
             if (isset($participant['provider_code']) && strtoupper($participant['provider_code']) === strtoupper($institution)) {
-                return $participant['country'] ?? 'Botswana';
+                $countryCode = $participant['country'] ?? 'BW';
+                return $this->getCountryNameFromCode($countryCode);
             }
         }
         return 'Botswana';
     }
     
+    /**
+     * Convert country code to full name
+     */
+    private function getCountryNameFromCode(string $code): string
+    {
+        $countries = [
+            'BW' => 'Botswana',
+            'ZA' => 'South Africa',
+            'NA' => 'Namibia',
+            'ZM' => 'Zambia',
+            'ZW' => 'Zimbabwe',
+            'MZ' => 'Mozambique',
+            'KE' => 'Kenya',
+            'NG' => 'Nigeria',
+            'GH' => 'Ghana',
+            'US' => 'United States',
+            'GB' => 'United Kingdom',
+            'EU' => 'European Union'
+        ];
+        
+        return $countries[strtoupper($code)] ?? $code;
+    }
+    
+    /**
+     * Get participant primary currency from participants.yaml
+     * Primary currency is from limits.currency
+     */
     private function getParticipantCurrency(string $institution): ?string
     {
         foreach ($this->participants as $code => $participant) {
             if (strtoupper($code) === strtoupper($institution)) {
-                return $participant['currency'] ?? null;
+                // Get primary currency from limits
+                if (isset($participant['limits']['currency'])) {
+                    return $participant['limits']['currency'];
+                }
+                // Fallback to first supported currency
+                if (isset($participant['cross_border']['supported_currencies'][0])) {
+                    return $participant['cross_border']['supported_currencies'][0];
+                }
+                return null;
             }
             if (isset($participant['provider_code']) && strtoupper($participant['provider_code']) === strtoupper($institution)) {
-                return $participant['currency'] ?? null;
+                if (isset($participant['limits']['currency'])) {
+                    return $participant['limits']['currency'];
+                }
+                if (isset($participant['cross_border']['supported_currencies'][0])) {
+                    return $participant['cross_border']['supported_currencies'][0];
+                }
+                return null;
             }
         }
         return null;
+    }
+    
+    /**
+     * Get all supported currencies for a participant from participants.yaml
+     * Supported currencies are from cross_border.supported_currencies
+     */
+    private function getParticipantSupportedCurrencies(string $institution): array
+    {
+        foreach ($this->participants as $code => $participant) {
+            if (strtoupper($code) === strtoupper($institution)) {
+                if (isset($participant['cross_border']['supported_currencies'])) {
+                    return $participant['cross_border']['supported_currencies'];
+                }
+                // Fallback to primary currency
+                if (isset($participant['limits']['currency'])) {
+                    return [$participant['limits']['currency']];
+                }
+                return [];
+            }
+            if (isset($participant['provider_code']) && strtoupper($participant['provider_code']) === strtoupper($institution)) {
+                if (isset($participant['cross_border']['supported_currencies'])) {
+                    return $participant['cross_border']['supported_currencies'];
+                }
+                if (isset($participant['limits']['currency'])) {
+                    return [$participant['limits']['currency']];
+                }
+                return [];
+            }
+        }
+        return [];
     }
     
     private function getProductConfig(string $product): ?array
