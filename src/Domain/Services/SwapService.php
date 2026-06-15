@@ -8,6 +8,7 @@ use Exception;
 use RuntimeException;
 use PDOException;
 use Domain\Services\Settlement\HybridSettlementStrategy;
+use Domain\Services\Settlement\UniversalFeeEngine;
 use Domain\Services\FeeService;
 use Domain\Services\ForexService;
 use Domain\Services\CardService;
@@ -45,6 +46,7 @@ class SwapService
     private array $feeCalculationDetails = [];
     
     private HybridSettlementStrategy $settlement;
+    private UniversalFeeEngine $feeEngine;
     private FeeService $feeService;
     private ForexService $forexService;
     private ?CardService $cardService = null;
@@ -66,8 +68,8 @@ class SwapService
     private array $stepResults = [];
     private array $signedPayloads = [];
     
-    // Store pending cashout data
-    private array $pendingCashouts = [];
+    // Current transaction state from fee engine
+    private array $currentTransactionState = [];
 
     public function __construct(
         PDO $swapDB, 
@@ -119,10 +121,24 @@ class SwapService
         $this->loadConfiguration($country);
         $this->loadAtmNotes($country);
         
+        // Initialize settlement services
         $this->settlement = new HybridSettlementStrategy($this->swapDB);
+        $this->feeEngine = new UniversalFeeEngine(
+            $this->swapDB,
+            $this->config,
+            $this->feesConfig,
+            $this->participants,
+            $this->atmNotes[$this->config['currency'] ?? 'BWP'] ?? [200, 100, 50, 20, 10]
+        );
         $this->feeService = new FeeService($this->feesConfig, $this->config);
         $this->feeService->setParticipants($this->participants); 
         $this->forexService = new ForexService($this->swapDB, $this->config, $this->participants, $this->feeService);
+        
+        // Initialize SMS service
+        $smsConfig = $this->participants['sms'] ?? [];
+        if (!empty($smsConfig)) {
+            $this->smsService = new SmsNotificationService($smsConfig);
+        }
         
         $vouchmorphConfig = $this->participants['vouchmorph'] ?? [];
         if (!empty($vouchmorphConfig)) {
@@ -192,37 +208,36 @@ class SwapService
     {
         $this->feeCalculationDetails = [];
         
-        $feeResult = $this->feeService->calculateFees($feeType, $amount, $payload);
+        // Use UniversalFeeEngine for mathematical calculation
+        $context = array_merge($payload, [
+            'swap_reference' => $this->currentSwapRef,
+            'multiplier' => $this->atmNotes[$payload['currency'] ?? 'BWP'][0] ?? 100
+        ]);
         
-        $details = [
+        $this->currentTransactionState = $this->feeEngine->calculateAnticipatedFees($amount, $feeType, $context);
+        
+        $this->feeCalculationDetails = [
             'fee_type' => $feeType,
             'original_amount' => $amount,
-            'total_fee' => $feeResult['total_fee'] ?? 0,
-            'net_amount' => $amount - ($feeResult['total_fee'] ?? 0),
-            'breakdown' => []
+            'total_fee' => $this->currentTransactionState['total_fee'],
+            'net_amount' => $this->currentTransactionState['target_amount'],
+            'distributable_pool' => $this->currentTransactionState['distributable_pool'],
+            'platform_cut' => $this->currentTransactionState['platform_cut'],
+            'source_cut' => $this->currentTransactionState['source_cut'],
+            'destination_base_share' => $this->currentTransactionState['destination_base_share'],
+            'generate_code_fee' => $this->currentTransactionState['generate_code_fee'],
+            'cashout_completion_fee' => $this->currentTransactionState['cashout_completion_fee'],
+            'dispensable_amount' => $this->currentTransactionState['dispensable_amount'],
+            'remainder_balance' => $this->currentTransactionState['remainder_balance'],
+            'multiplier' => $this->currentTransactionState['multiplier'],
+            'fee_registry' => $this->feeEngine->getFeeRegistry()
         ];
         
-        if (isset($feeResult['components'])) {
-            $details['breakdown'] = $feeResult['components'];
-        } elseif (isset($feeResult['fees'])) {
-            foreach ($feeResult['fees'] as $feeName => $feeValue) {
-                if (is_numeric($feeValue)) {
-                    $details['breakdown'][$feeName] = $feeValue;
-                }
-            }
-        }
-        
-        if (isset($feeResult['swap_levy']) && $feeResult['swap_levy'] > 0) {
-            $details['breakdown']['swap_levy'] = $feeResult['swap_levy'];
-        }
-        
-        if (isset($feeResult['split'])) {
-            $details['revenue_split'] = $feeResult['split'];
-        }
-        
-        $this->feeCalculationDetails = $details;
-        
-        return $feeResult;
+        return [
+            'total_fee' => $this->currentTransactionState['total_fee'],
+            'net_amount' => $this->currentTransactionState['target_amount'],
+            'components' => $this->feeCalculationDetails
+        ];
     }
 
     private function adjustAmountForDelivery(float $amount, string $deliveryMethod, string $currency): array
@@ -454,9 +469,6 @@ class SwapService
     // ============================================================
     // EXECUTE SIGNED CASHOUT - GENERATE CODE ONLY (NO DEBIT)
     // ============================================================
-    // Step 1: Generate cashout code at destination
-    // Source hold remains active until user actually cashes out
-    // DO NOT DEBIT SOURCE HERE!
 
     private function executeSignedCashout(array $payload): array
     {
@@ -519,77 +531,48 @@ class SwapService
         
         $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
         
-        // STEP 3: CALCULATE FEES
-        error_log("[SwapService] STEP 3: Calculating fees");
+        // STEP 3: CALCULATE FEES USING UNIVERSAL FEE ENGINE
+        error_log("[SwapService] STEP 3: Calculating fees using UniversalFeeEngine");
         $feeBreakdown = $this->calculateFeesWithDetails('CASHOUT', $amount, $payload);
-        $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
+        $amountToSend = $this->currentTransactionState['dispensable_amount'];
+        $remainderAtSource = $this->currentTransactionState['remainder_balance'];
         
-        // STEP 4: ADJUST AMOUNT FOR DELIVERY
-        error_log("[SwapService] STEP 4: Adjusting amount for delivery method: {$deliveryMethod}");
-        $deliveryAdjustment = $this->adjustAmountForDelivery($netAmount, $deliveryMethod, $payload['currency'] ?? 'BWP');
-        
-        $amountToSend = $deliveryAdjustment['deliverable_amount'];
-        $remainderAtSource = $deliveryAdjustment['remainder_at_source'];
-        
-        error_log("[SwapService] Amount after fees: {$netAmount}, Deliverable: {$amountToSend}, Remainder: {$remainderAtSource}");
+        error_log("[SwapService] Amount after fees: {$this->currentTransactionState['target_amount']}, Deliverable: {$amountToSend}, Remainder: {$remainderAtSource}");
         
         if ($amountToSend <= 0) {
-            $errorMsg = "Amount after fees ({$netAmount}) cannot be delivered via {$deliveryMethod}. " . $deliveryAdjustment['message'];
-            error_log("[SwapService] DELIVERY FAILED: {$errorMsg}");
-            throw new RuntimeException($errorMsg);
+            throw new RuntimeException("Amount after fees cannot be delivered via {$deliveryMethod}");
         }
         
-        $this->feeCalculationDetails['delivery_adjustment'] = [
-            'original_net_amount' => $netAmount,
-            'delivery_method' => $deliveryMethod,
-            'amount_delivered' => $amountToSend,
-            'remainder_at_source' => $remainderAtSource,
-            'note_breakdown' => $deliveryAdjustment['note_breakdown'] ?? null,
-            'message' => $deliveryAdjustment['message']
-        ];
+        // STEP 4: GENERATE CODE AT DESTINATION
+        error_log("[SwapService] STEP 4: Generating cashout code at DESTINATION: {$destinationInstitution}");
         
-        // STEP 5: GENERATE CODE AT DESTINATION - MUST succeed
-        error_log("[SwapService] STEP 5: Generating cashout code at DESTINATION: {$destinationInstitution}");
-        
-        $deliveryPayload = $payload;
-        $deliveryPayload['amount'] = $amountToSend;
-        if (isset($this->feeCalculationDetails['note_breakdown'])) {
-            $deliveryPayload['note_breakdown'] = $this->feeCalculationDetails['note_breakdown'];
-        }
-        
-        $generateResult = $this->generateCashoutToken($deliveryPayload, $destinationInstitution, $amountToSend);
+        $generateResult = $this->generateCashoutToken($payload, $destinationInstitution, $amountToSend);
         
         if (!($generateResult['success'] ?? false)) {
-            $errorMsg = $generateResult['message'] ?? 'Destination institution failed to generate code';
-            error_log("[SwapService] CODE GENERATION FAILED: {$errorMsg}");
-            throw new RuntimeException("Code generation failed: {$errorMsg}");
+            throw new RuntimeException("Code generation failed: " . ($generateResult['message'] ?? 'Unknown error'));
         }
         
         if (empty($generateResult['atm_pin']) && empty($generateResult['voucher_number'])) {
-            error_log("[SwapService] CODE GENERATION FAILED: No code generated");
             throw new RuntimeException("Destination failed: No code generated");
         }
         
         error_log("[SwapService] Cashout code generated successfully");
         
-        // STEP 6: SEND SMS with code (optional)
+        // STEP 5: SEND SMS with code (optional)
         if ($beneficiaryPhone && $this->smsService && isset($generateResult['atm_pin'])) {
             try {
-                error_log("[SwapService] STEP 6: Sending SMS to {$beneficiaryPhone}");
-                $this->executeStep('SEND_SMS', function() use ($beneficiaryPhone, $generateResult, $amountToSend) {
-                    return $this->smsService->sendCashoutCode(
-                        $beneficiaryPhone,
-                        $generateResult['atm_pin'],
-                        $amountToSend,
-                        $generateResult['voucher_number'] ?? null
-                    );
-                });
+                $this->smsService->sendCashoutCode(
+                    $beneficiaryPhone,
+                    $generateResult['atm_pin'],
+                    $amountToSend,
+                    $generateResult['voucher_number'] ?? null
+                );
             } catch (Exception $e) {
                 error_log("[SwapService] SMS failed but continuing: " . $e->getMessage());
             }
         }
         
-        // STEP 7: UPDATE HOLD TO PENDING_CASHOUT (NOT DEBITED YET!)
+        // STEP 6: UPDATE HOLD TO PENDING_CASHOUT (NOT DEBITED YET!)
         $this->updateHoldStatus($this->currentHoldId, 'PENDING_CASHOUT');
         
         // Store pending cashout data for later confirmation
@@ -673,6 +656,7 @@ class SwapService
         $holdReference = $payload['hold_reference'] ?? null;
         $code = $payload['code'] ?? null;
         $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
+        $actualDeliveredAmount = (float)($payload['actual_amount'] ?? 0);
         
         if (!$swapReference && !$holdReference) {
             throw new RuntimeException("Swap reference or hold reference required");
@@ -686,8 +670,6 @@ class SwapService
         }
         
         $sourceInstitution = $pendingCashout['source_institution'];
-        $amountToSend = $pendingCashout['amount'];
-        $feeAmount = $pendingCashout['fee'];
         
         // STEP 1: Confirm cashout with destination institution
         $participant = $this->getParticipant($destinationInstitution);
@@ -698,7 +680,7 @@ class SwapService
             'hold_reference' => $holdReference,
             'code' => $code,
             'voucher_number' => $pendingCashout['voucher_number'],
-            'amount' => $amountToSend,
+            'amount' => $pendingCashout['amount'],
             'action' => 'CONFIRM_CASHOUT'
         ];
         
@@ -714,13 +696,16 @@ class SwapService
             throw new RuntimeException("Cashout not confirmed by destination institution");
         }
         
-        // STEP 2: DEBIT SOURCE (ONLY NOW!)
-        error_log("[SwapService] Cashout confirmed, debiting source: {$sourceInstitution}");
+        // STEP 2: CALCULATE STANDARD COMPLETION USING FEE ENGINE
+        $completionResult = $this->feeEngine->calculateStandardCompletion($actualDeliveredAmount ?: $pendingCashout['amount']);
+        
+        // STEP 3: DEBIT SOURCE (ONLY NOW!)
+        error_log("[SwapService] Cashout confirmed, debiting source: {$sourceInstitution} for {$completionResult['final_source_debit']}");
         
         $debitPayload = [
             'reference' => $swapReference,
             'hold_reference' => $holdReference,
-            'amount' => $amountToSend + $feeAmount,
+            'amount' => $completionResult['final_source_debit'],
             'reason' => 'Cashout completed successfully'
         ];
         
@@ -730,196 +715,214 @@ class SwapService
             throw new RuntimeException("Debit failed: " . ($debitResult['message'] ?? 'Unknown error'));
         }
         
-        // STEP 3: UPDATE HOLD STATUS
+        // STEP 4: UPDATE HOLD STATUS
         $this->updateHoldStatus($pendingCashout['hold_id'], 'DEBITED');
         
-        // STEP 4: Mark cashout as completed
+        // STEP 5: RECORD SETTLEMENT (DELEGATE TO HYBRID SETTLEMENT)
+        $settlementResult = $this->settlement->updateNetPosition(
+            $swapReference,
+            $sourceInstitution,
+            $destinationInstitution,
+            $completionResult['final_source_debit'],
+            'CASHOUT_COMPLETED',
+            $this->config['currency'] ?? 'BWP'
+        );
+        
+        // STEP 6: INVOICE FEES (DELEGATE TO HYBRID SETTLEMENT)
+        $this->settlement->invoiceFee(
+            $swapReference,
+            $sourceInstitution,
+            $this->getParticipantId($sourceInstitution),
+            'CASHOUT_COMPLETION_FEE',
+            $pendingCashout['fee'],
+            $this->config['currency'] ?? 'BWP'
+        );
+        
+        // STEP 7: Mark cashout as completed
         $this->markCashoutCompleted($swapReference, $holdReference);
+        
+        // STEP 8: Record settlement proof
+        $this->feeEngine->recordSettlementProof([
+            'swap_reference' => $swapReference,
+            'completion_result' => $completionResult,
+            'final_debit' => $completionResult['final_source_debit'],
+            'client_refund' => $completionResult['client_refund']
+        ]);
         
         return [
             'status' => 'completed',
             'reference' => $swapReference,
             'hold_reference' => $holdReference,
             'message' => 'Cashout completed successfully',
-            'amount' => $amountToSend,
-            'fee' => $feeAmount
+            'amount' => $pendingCashout['amount'],
+            'fee' => $pendingCashout['fee'],
+            'client_refund' => $completionResult['client_refund'],
+            'settlement' => $settlementResult
         ];
     }
 
-  // ============================================================
-// EXECUTE SIGNED DEPOSIT - With Account Verification
-// ============================================================
-// DEPOSIT FLOW (2 steps at destination):
-// 1. verify_account - Check if destination account exists and is active
-// 2. process_deposit - Credit funds to account, THEN debit source
+    // ============================================================
+    // EXECUTE SIGNED DEPOSIT - With Account Verification
+    // ============================================================
 
-private function executeSignedDeposit(array $payload): array
-{
-    error_log("[SwapService] ===== executeSignedDeposit START =====");
-    
-    $amount = (float)($payload['amount'] ?? 0);
-    $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
-    $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
-    $destinationIdentifier = $this->extractDestinationIdentifier($payload);
-    
-    // STEP 1: VERIFY ASSET AT SOURCE - MUST succeed
-    error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
-    $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
-        return $this->verifyAssetSigned($payload, $sourceInstitution);
-    });
-    
-    if (!($verificationResult['verified'] ?? false)) {
-        throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
-    }
-    
-    $this->signedPayloads['verification'] = [
-        'payload' => $verificationResult['original_payload'],
-        'signature' => $verificationResult['signature'],
-        'source' => $sourceInstitution,
-        'timestamp' => $verificationResult['timestamp']
-    ];
-    
-    // STEP 2: VERIFY DESTINATION ACCOUNT - MUST succeed (CRITICAL!)
-    error_log("[SwapService] STEP 2: Verifying destination account at: {$destinationInstitution}");
-    
-    if (empty($destinationIdentifier['identifier'])) {
-        throw new RuntimeException("Destination identifier (account number, phone, etc.) is required for deposit");
-    }
-    
-    $accountVerification = $this->executeStep('VERIFY_ACCOUNT', function() use ($payload, $destinationInstitution, $destinationIdentifier) {
-        return $this->verifyAccount($payload, $destinationInstitution, $destinationIdentifier);
-    });
-    
-    if (!($accountVerification['verified'] ?? false)) {
-        throw new RuntimeException("Destination account verification failed: " . ($accountVerification['message'] ?? 'Account not found or inactive'));
-    }
-    
-    error_log("[SwapService] Destination account verified: {$destinationIdentifier['identifier']}");
-    
-    // STEP 3: CALCULATE FEES
-    $feeBreakdown = $this->calculateFeesWithDetails('DEPOSIT', $amount, $payload);
-    $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
-    
-    // STEP 4: PLACE HOLD ON SOURCE (protect funds during deposit)
-    error_log("[SwapService] STEP 3: Placing hold on source: {$sourceInstitution}");
-    $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
-        return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
-    });
-    
-    if (!($holdResult['hold_placed'] ?? false)) {
-        throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown error'));
-    }
-    
-    $this->signedPayloads['hold'] = [
-        'payload' => $holdResult['original_payload'],
-        'signature' => $holdResult['signature'],
-        'source' => $sourceInstitution,
-        'timestamp' => $holdResult['timestamp']
-    ];
-    
-    $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
-    
-    // STEP 5: PROCESS DEPOSIT AT DESTINATION - MUST succeed
-    error_log("[SwapService] STEP 4: Processing deposit at DESTINATION: {$destinationInstitution} for amount: {$netAmount}");
-    
-    $depositResult = $this->executeStep('PROCESS_DEPOSIT_WITH_PROOF', function() use ($payload, $destinationInstitution, $netAmount, $accountVerification) {
-        $depositPayload = $payload;
-        $depositPayload['amount'] = $netAmount;
-        $depositPayload['account_verification'] = $accountVerification;
-        return $this->processDepositWithProof($depositPayload, $destinationInstitution, $netAmount);
-    });
-    
-    if (!($depositResult['success'] ?? false)) {
-        throw new RuntimeException("Deposit failed: " . ($depositResult['message'] ?? 'Unknown error'));
-    }
-    
-    // STEP 6: DEBIT SOURCE (only after deposit succeeded!)
-    error_log("[SwapService] STEP 5: Debiting source {$sourceInstitution} for amount: {$amount}");
-    $debitResult = $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution) {
-        return $this->debitSource($payload, $sourceInstitution);
-    });
-    
-    if (!($debitResult['debited'] ?? false)) {
-        throw new RuntimeException("Debit failed: " . ($debitResult['message'] ?? 'Unknown error'));
-    }
-    
-    // STEP 7: UPDATE HOLD STATUS
-    $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
-    
-    return [
-        'status' => 'success',
-        'reference' => $this->currentSwapRef,
-        'amount' => $netAmount,
-        'original_amount' => $amount,
-        'fee' => $feeBreakdown['total_fee'] ?? 0,
-        'fee_calculation_details' => $this->feeCalculationDetails,
-        'deposit_reference' => $depositResult['transaction_reference'] ?? null,
-        'destination_account' => $destinationIdentifier['identifier'],
-        'destination_account_verified' => true,
-        'signature_chain' => $this->signedPayloads
-    ];
-}
-
-/**
- * Verify destination account before deposit
- * This uses the destination_deposit.verify_account endpoint
- */
-private function verifyAccount(array $payload, string $institution, array $destinationIdentifier): array
-{
-    $participant = $this->getParticipant($institution);
-    $bankClient = new GenericBankClient($participant, $payload);
-    
-    $verifyPayload = [
-        'action' => 'VERIFY_ACCOUNT',
-        'reference' => $this->currentSwapRef,
-        'account_type' => $payload['destination_type'] ?? 'ACCOUNT',
-        'account_identifier' => $destinationIdentifier['identifier'],
-        'identifier_type' => $destinationIdentifier['type'],
-        'requester' => 'VOUCHMORPH',
-        'timestamp' => time()
-    ];
-    
-    // Add specific fields based on identifier type
-    if ($destinationIdentifier['type'] === 'phone') {
-        $verifyPayload['phone'] = $destinationIdentifier['identifier'];
-        $verifyPayload['wallet_phone'] = $destinationIdentifier['identifier'];
-    } elseif ($destinationIdentifier['type'] === 'national_id') {
-        $verifyPayload['national_id'] = $destinationIdentifier['identifier'];
-    } elseif ($destinationIdentifier['type'] === 'email') {
-        $verifyPayload['email'] = $destinationIdentifier['identifier'];
-    } else {
-        $verifyPayload['account_number'] = $destinationIdentifier['identifier'];
-    }
-    
-    // Use the verify_account endpoint from endpoints.yaml
-    $result = $bankClient->verifyAccount($verifyPayload);
-    
-    if (!$result['success']) {
-        $errorMsg = $result['curl_error'] ?? 'Account verification failed';
-        $this->logger->error("Account verification failed at {$institution}", ['error' => $errorMsg]);
+    private function executeSignedDeposit(array $payload): array
+    {
+        error_log("[SwapService] ===== executeSignedDeposit START =====");
+        
+        $amount = (float)($payload['amount'] ?? 0);
+        $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
+        $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
+        $destinationIdentifier = $this->extractDestinationIdentifier($payload);
+        
+        // STEP 1: VERIFY ASSET AT SOURCE - MUST succeed
+        error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
+        $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
+            return $this->verifyAssetSigned($payload, $sourceInstitution);
+        });
+        
+        if (!($verificationResult['verified'] ?? false)) {
+            throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
+        }
+        
+        $this->signedPayloads['verification'] = [
+            'payload' => $verificationResult['original_payload'],
+            'signature' => $verificationResult['signature'],
+            'source' => $sourceInstitution,
+            'timestamp' => $verificationResult['timestamp']
+        ];
+        
+        // STEP 2: VERIFY DESTINATION ACCOUNT - MUST succeed
+        error_log("[SwapService] STEP 2: Verifying destination account at: {$destinationInstitution}");
+        
+        if (empty($destinationIdentifier['identifier'])) {
+            throw new RuntimeException("Destination identifier is required for deposit");
+        }
+        
+        $accountVerification = $this->executeStep('VERIFY_ACCOUNT', function() use ($payload, $destinationInstitution, $destinationIdentifier) {
+            return $this->verifyAccount($payload, $destinationInstitution, $destinationIdentifier);
+        });
+        
+        if (!($accountVerification['verified'] ?? false)) {
+            throw new RuntimeException("Destination account verification failed: " . ($accountVerification['message'] ?? 'Account not found'));
+        }
+        
+        // STEP 3: CALCULATE FEES USING UNIVERSAL FEE ENGINE
+        error_log("[SwapService] STEP 3: Calculating fees using UniversalFeeEngine");
+        $feeBreakdown = $this->calculateFeesWithDetails('DEPOSIT', $amount, $payload);
+        $netAmount = $this->currentTransactionState['target_amount'];
+        
+        // STEP 4: PLACE HOLD ON SOURCE
+        error_log("[SwapService] STEP 4: Placing hold on source: {$sourceInstitution}");
+        $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
+            return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
+        });
+        
+        if (!($holdResult['hold_placed'] ?? false)) {
+            throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown error'));
+        }
+        
+        $this->signedPayloads['hold'] = [
+            'payload' => $holdResult['original_payload'],
+            'signature' => $holdResult['signature'],
+            'source' => $sourceInstitution,
+            'timestamp' => $holdResult['timestamp']
+        ];
+        
+        $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
+        
+        // STEP 5: PROCESS DEPOSIT AT DESTINATION
+        error_log("[SwapService] STEP 5: Processing deposit at DESTINATION: {$destinationInstitution} for amount: {$netAmount}");
+        
+        $depositResult = $this->executeStep('PROCESS_DEPOSIT_WITH_PROOF', function() use ($payload, $destinationInstitution, $netAmount, $accountVerification) {
+            $depositPayload = $payload;
+            $depositPayload['amount'] = $netAmount;
+            $depositPayload['account_verification'] = $accountVerification;
+            return $this->processDepositWithProof($depositPayload, $destinationInstitution, $netAmount);
+        });
+        
+        if (!($depositResult['success'] ?? false)) {
+            throw new RuntimeException("Deposit failed: " . ($depositResult['message'] ?? 'Unknown error'));
+        }
+        
+        // STEP 6: DEBIT SOURCE
+        error_log("[SwapService] STEP 6: Debiting source {$sourceInstitution} for amount: {$amount}");
+        $debitResult = $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution) {
+            return $this->debitSource($payload, $sourceInstitution);
+        });
+        
+        if (!($debitResult['debited'] ?? false)) {
+            throw new RuntimeException("Debit failed: " . ($debitResult['message'] ?? 'Unknown error'));
+        }
+        
+        // STEP 7: UPDATE HOLD STATUS
+        $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
+        
+        // STEP 8: RECORD SETTLEMENT
+        $settlementResult = $this->settlement->updateNetPosition(
+            $this->currentSwapRef,
+            $sourceInstitution,
+            $destinationInstitution,
+            $netAmount,
+            'DEPOSIT_COMPLETED',
+            $this->config['currency'] ?? 'BWP'
+        );
+        
+        // STEP 9: INVOICE FEES
+        $this->settlement->invoiceFee(
+            $this->currentSwapRef,
+            $sourceInstitution,
+            $this->getParticipantId($sourceInstitution),
+            'VOUCHMORPH_FEE',
+            $feeBreakdown['total_fee'] ?? 0,
+            $this->config['currency'] ?? 'BWP'
+        );
+        
         return [
-            'verified' => false,
-            'message' => "Destination institution {$institution} failed: {$errorMsg}"
+            'status' => 'success',
+            'reference' => $this->currentSwapRef,
+            'amount' => $netAmount,
+            'original_amount' => $amount,
+            'fee' => $feeBreakdown['total_fee'] ?? 0,
+            'fee_calculation_details' => $this->feeCalculationDetails,
+            'deposit_reference' => $depositResult['transaction_reference'] ?? null,
+            'destination_account' => $destinationIdentifier['identifier'],
+            'settlement' => $settlementResult,
+            'signature_chain' => $this->signedPayloads
         ];
     }
-    
-    $data = $result['data'] ?? [];
-    $verified = $data['verified'] ?? false;
-    
-    return [
-        'verified' => $verified,
-        'message' => $data['message'] ?? ($verified ? 'Account verified' : 'Account not found'),
-        'account_name' => $data['account_name'] ?? null,
-        'account_status' => $data['status'] ?? null,
-        'original_payload' => $data['payload'] ?? null,
-        'signature' => $data['signature'] ?? null,
-        'certificate' => $data['certificate'] ?? null
-    ];
-}
 
     // ============================================================
-    // CASHOUT HELPER METHODS
+    // HELPER METHODS
     // ============================================================
+
+    private function verifyAccount(array $payload, string $institution, array $destinationIdentifier): array
+    {
+        $participant = $this->getParticipant($institution);
+        $bankClient = new GenericBankClient($participant, $payload);
+        
+        $verifyPayload = [
+            'action' => 'VERIFY_ACCOUNT',
+            'reference' => $this->currentSwapRef,
+            'account_identifier' => $destinationIdentifier['identifier'],
+            'identifier_type' => $destinationIdentifier['type'],
+            'requester' => 'VOUCHMORPH',
+            'timestamp' => time()
+        ];
+        
+        $result = $bankClient->verifyAccount($verifyPayload);
+        
+        if (!$result['success']) {
+            return ['verified' => false, 'message' => $result['curl_error'] ?? 'Account verification failed'];
+        }
+        
+        $data = $result['data'] ?? [];
+        
+        return [
+            'verified' => $data['verified'] ?? false,
+            'message' => $data['message'] ?? null,
+            'account_name' => $data['account_name'] ?? null
+        ];
+    }
 
     private function generateCashoutToken(array $payload, string $institution, float $amount): array
     {
@@ -935,12 +938,9 @@ private function verifyAccount(array $payload, string $institution, array $desti
             'hold_reference' => $this->currentHoldReference,
             'action' => 'GENERATE_TOKEN',
             'source_verification' => $this->signedPayloads['verification'] ?? null,
-            'source_hold' => $this->signedPayloads['hold'] ?? null
+            'source_hold' => $this->signedPayloads['hold'] ?? null,
+            'beneficiary_phone' => $beneficiaryPhone
         ];
-        
-        if ($beneficiaryPhone) {
-            $tokenPayload['beneficiary_phone'] = $beneficiaryPhone;
-        }
         
         if (isset($payload['note_breakdown'])) {
             $tokenPayload['note_breakdown'] = $payload['note_breakdown'];
@@ -949,21 +949,13 @@ private function verifyAccount(array $payload, string $institution, array $desti
         $result = $bankClient->generateToken($tokenPayload);
         
         if (!$result['success']) {
-            $errorMsg = $result['curl_error'] ?? 'Token generation failed';
-            $this->logger->error("Token generation failed at {$institution}", ['error' => $errorMsg]);
-            return [
-                'success' => false,
-                'message' => "Destination institution {$institution} failed: {$errorMsg}"
-            ];
+            return ['success' => false, 'message' => $result['curl_error'] ?? 'Token generation failed'];
         }
         
         $data = $result['data'] ?? [];
         
         if (empty($data['atm_pin']) && empty($data['voucher_number'])) {
-            return [
-                'success' => false,
-                'message' => "Destination institution responded but no code was generated"
-            ];
+            return ['success' => false, 'message' => 'No code generated'];
         }
         
         return [
@@ -978,29 +970,11 @@ private function verifyAccount(array $payload, string $institution, array $desti
     {
         $sql = "
             INSERT INTO pending_cashouts (
-                swap_reference,
-                hold_reference,
-                source_institution,
-                destination_institution,
-                amount,
-                fee,
-                atm_pin,
-                voucher_number,
-                expires_at,
-                status,
-                created_at
+                swap_reference, hold_reference, source_institution, destination_institution,
+                amount, fee, atm_pin, voucher_number, expires_at, status, created_at
             ) VALUES (
-                :swap_ref,
-                :hold_ref,
-                :source_inst,
-                :dest_inst,
-                :amount,
-                :fee,
-                :atm_pin,
-                :voucher_number,
-                :expires_at,
-                'PENDING',
-                NOW()
+                :swap_ref, :hold_ref, :source_inst, :dest_inst,
+                :amount, :fee, :atm_pin, :voucher_number, :expires_at, 'PENDING', NOW()
             )
         ";
         
@@ -1010,7 +984,7 @@ private function verifyAccount(array $payload, string $institution, array $desti
                 ':swap_ref' => $swapRef,
                 ':hold_ref' => $holdRef,
                 ':source_inst' => $sourceInstitution,
-                ':dest_inst' => $this->currentSwapRef ? str_replace('SWAP_', '', $this->currentSwapRef) : null,
+                ':dest_inst' => $this->currentSwapRef,
                 ':amount' => $amount,
                 ':fee' => $feeBreakdown['total_fee'] ?? 0,
                 ':atm_pin' => $codeData['atm_pin'] ?? null,
@@ -1034,11 +1008,12 @@ private function verifyAccount(array $payload, string $institution, array $desti
         
         try {
             $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':swap_ref' => $swapRef,
-                ':hold_ref' => $holdRef
-            ]);
-            return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+            $stmt->execute([':swap_ref' => $swapRef, ':hold_ref' => $holdRef]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row) {
+                $row['hold_id'] = $row['id'] ?? null;
+            }
+            return $row ?: null;
         } catch (PDOException $e) {
             error_log("[SwapService] Failed to get pending cashout: " . $e->getMessage());
             return null;
@@ -1047,113 +1022,83 @@ private function verifyAccount(array $payload, string $institution, array $desti
 
     private function markCashoutCompleted(string $swapRef, string $holdRef): void
     {
-        $sql = "
-            UPDATE pending_cashouts 
-            SET status = 'COMPLETED', completed_at = NOW()
-            WHERE swap_reference = :swap_ref OR hold_reference = :hold_ref
-        ";
-        
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':swap_ref' => $swapRef,
-                ':hold_ref' => $holdRef
-            ]);
-        } catch (PDOException $e) {
-            error_log("[SwapService] Failed to mark cashout completed: " . $e->getMessage());
-        }
+        $sql = "UPDATE pending_cashouts SET status = 'COMPLETED', completed_at = NOW() WHERE swap_reference = :swap_ref OR hold_reference = :hold_ref";
+        $this->swapDB->prepare($sql)->execute([':swap_ref' => $swapRef, ':hold_ref' => $holdRef]);
     }
 
-    // ============================================================
-    // EXECUTE SIGNED STANDARD SWAP
-    // ============================================================
-
-    private function executeSignedStandardSwap(array $payload): array
+    private function markCashoutExpired(string $swapRef, string $holdRef): void
     {
-        $amount = (float)($payload['amount'] ?? 0);
-        $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
-        $destInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
+        $sql = "UPDATE pending_cashouts SET status = 'EXPIRED', expired_at = NOW() WHERE swap_reference = :swap_ref OR hold_reference = :hold_ref";
+        $this->swapDB->prepare($sql)->execute([':swap_ref' => $swapRef, ':hold_ref' => $holdRef]);
+    }
+
+    private function getParticipantId(string $institution): int
+    {
+        foreach ($this->participants as $code => $participant) {
+            if (strtoupper($code) === strtoupper($institution)) {
+                return $participant['id'] ?? 0;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Handle expired cashout token (called by cron job)
+     */
+    public function handleExpiredCashout(string $swapReference): array
+    {
+        error_log("[SwapService] ===== handleExpiredCashout START for {$swapReference} =====");
         
-        $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
-            return $this->verifyAssetSigned($payload, $sourceInstitution);
-        });
+        $pendingCashout = $this->getPendingCashout($swapReference, null);
         
-        if (!($verificationResult['verified'] ?? false)) {
-            throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
+        if (!$pendingCashout) {
+            throw new RuntimeException("No pending cashout found for reference: {$swapReference}");
         }
         
-        $this->signedPayloads['verification'] = [
-            'payload' => $verificationResult['original_payload'],
-            'signature' => $verificationResult['signature'],
-            'source' => $sourceInstitution,
-            'timestamp' => $verificationResult['timestamp']
-        ];
-        
-        $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
-            return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
-        });
-        
-        if (!($holdResult['hold_placed'] ?? false)) {
-            throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown error'));
+        if ($pendingCashout['expires_at'] > date('Y-m-d H:i:s')) {
+            throw new RuntimeException("Cashout has not expired yet");
         }
         
-        $this->signedPayloads['hold'] = [
-            'payload' => $holdResult['original_payload'],
-            'signature' => $holdResult['signature'],
-            'source' => $sourceInstitution,
-            'timestamp' => $holdResult['timestamp']
-        ];
+        // Calculate expired settlement using fee engine
+        $expiredResult = $this->feeEngine->calculateExpiredSettlement();
         
-        $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
+        // Release hold (no debit, client gets partial refund)
+        $this->updateHoldStatus($pendingCashout['hold_id'], 'RELEASED');
         
-        $feeBreakdown = $this->calculateFeesWithDetails('SWAP', $amount, $payload);
-        $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
+        // Mark cashout as expired
+        $this->markCashoutExpired($swapReference, $pendingCashout['hold_reference']);
         
-        $destinationResult = $this->executeStep('PROCESS_DESTINATION_SIGNED', function() use ($payload, $destInstitution, $netAmount, $feeBreakdown) {
-            return $this->processDestinationWithProof(
-                $payload, 
-                $destInstitution, 
-                $netAmount, 
-                $feeBreakdown,
-                $this->signedPayloads['verification'],
-                $this->signedPayloads['hold']
-            );
-        });
+        // Record settlement
+        $this->settlement->updateNetPosition(
+            $swapReference,
+            $pendingCashout['source_institution'],
+            'VOUCHMORPH',
+            $expiredResult['retained_fee'],
+            'EXPIRED_CASHOUT_PENALTY',
+            $this->config['currency'] ?? 'BWP'
+        );
         
-        if (!($destinationResult['success'] ?? false)) {
-            throw new RuntimeException("Destination processing failed: " . ($destinationResult['message'] ?? 'Unknown error'));
-        }
-        
-        $debitResult = $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution) {
-            return $this->debitSource($payload, $sourceInstitution);
-        });
-        
-        if (!($debitResult['debited'] ?? false)) {
-            throw new RuntimeException("Debit failed: " . ($debitResult['message'] ?? 'Unknown error'));
-        }
-        
-        $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
-        
-        $settlementResult = $this->executeStep('RECORD_SETTLEMENT_SIGNED', function() use ($payload, $destinationResult, $feeBreakdown) {
-            return $this->recordSettlementWithProof($payload, $destinationResult, $feeBreakdown);
-        });
+        // Record proof
+        $this->feeEngine->recordSettlementProof([
+            'swap_reference' => $swapReference,
+            'expired_result' => $expiredResult,
+            'client_refund' => $expiredResult['client_refund'],
+            'retained_fee' => $expiredResult['retained_fee']
+        ]);
         
         return [
-            'status' => 'success',
-            'reference' => $this->currentSwapRef,
-            'hold_id' => $this->currentHoldId,
-            'hold_reference' => $this->currentHoldReference,
-            'amount' => $netAmount,
-            'original_amount' => $amount,
-            'fee' => $feeBreakdown['total_fee'] ?? 0,
-            'fee_calculation_details' => $this->feeCalculationDetails,
-            'signature_chain' => $this->signedPayloads,
-            'settlement' => $settlementResult
+            'status' => 'expired',
+            'reference' => $swapReference,
+            'client_refund' => $expiredResult['client_refund'],
+            'retained_fee' => $expiredResult['retained_fee'],
+            'platform_revenue' => $expiredResult['platform_revenue'],
+            'source_revenue' => $expiredResult['source_revenue'],
+            'destination_revenue' => $expiredResult['destination_revenue']
         ];
     }
 
     // ============================================================
-    // SIGNED INSTITUTION COMMUNICATION METHODS (unchanged)
+    // SIGNED INSTITUTION COMMUNICATION METHODS
     // ============================================================
 
     private function verifyAssetSigned(array $payload, string $institution): array
@@ -1180,12 +1125,6 @@ private function verifyAccount(array $payload, string $institution, array $desti
         if ($sourceId['has_value']) {
             $verifyPayload['source_identifier'] = $sourceId['identifier'];
             $verifyPayload['source_identifier_type'] = $sourceId['type'];
-            $verifyPayload['wallet_phone'] = $sourceId['identifier'];
-            $verifyPayload['phone'] = $sourceId['identifier'];
-            $verifyPayload['national_id'] = $sourceId['identifier'];
-            $verifyPayload['email'] = $sourceId['identifier'];
-            $verifyPayload['source_phone'] = $sourceId['identifier'];
-            $verifyPayload['source_wallet_phone'] = $sourceId['identifier'];
         }
         
         $result = $bankClient->verifyAssetSigned($verifyPayload);
@@ -1196,15 +1135,14 @@ private function verifyAccount(array $payload, string $institution, array $desti
         
         $data = $result['data'] ?? [];
         $verified = $data['verified'] ?? false;
-        $message = $data['message'] ?? '';
         
         if ($verified !== true) {
-            return ['verified' => false, 'message' => $message ?: 'Asset not available for swap'];
+            return ['verified' => false, 'message' => $data['message'] ?? 'Asset not available'];
         }
         
         return [
             'verified' => true,
-            'message' => $message ?: 'Asset verified',
+            'message' => $data['message'] ?? 'Asset verified',
             'asset_id' => $data['asset_id'] ?? null,
             'original_payload' => $data['payload'] ?? null,
             'signature' => $data['signature'] ?? null,
@@ -1266,68 +1204,6 @@ private function verifyAccount(array $payload, string $institution, array $desti
         ];
     }
 
-    private function processDestinationWithProof(
-        array $payload, 
-        string $institution, 
-        float $amount, 
-        array $feeBreakdown,
-        array $verificationProof,
-        array $holdProof
-    ): array {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
-        
-        $destId = $this->extractDestinationIdentifier($payload);
-        $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
-        
-        $transferPayload = [
-            'reference' => $this->currentSwapRef,
-            'amount' => $amount,
-            'currency' => $payload['currency'] ?? 'BWP',
-            'destination_type' => $payload['destination_type'] ?? 'ACCOUNT',
-            'action' => 'PROCESS_TRANSFER_WITH_PROOF',
-            'source_verification' => [
-                'payload' => $verificationProof['payload'],
-                'signature' => $verificationProof['signature'],
-                'certificate' => $verificationProof['certificate'] ?? null,
-                'source' => $verificationProof['source'],
-                'timestamp' => $verificationProof['timestamp']
-            ],
-            'source_hold' => [
-                'payload' => $holdProof['payload'],
-                'signature' => $holdProof['signature'],
-                'certificate' => $holdProof['certificate'] ?? null,
-                'source' => $holdProof['source'],
-                'timestamp' => $holdProof['timestamp']
-            ]
-        ];
-        
-        if ($destId['has_value']) {
-            $transferPayload['destination_identifier'] = $destId['identifier'];
-            $transferPayload['destination_identifier_type'] = $destId['type'];
-            $transferPayload['destination_account'] = $destId['identifier'];
-            $transferPayload['beneficiary_account'] = $destId['identifier'];
-        }
-        
-        if ($beneficiaryPhone) {
-            $transferPayload['beneficiary_phone'] = $beneficiaryPhone;
-        }
-        
-        $result = $bankClient->transferWithProof($transferPayload);
-        
-        if (!$result['success']) {
-            return ['success' => false, 'message' => $result['curl_error'] ?? 'Processing failed'];
-        }
-        
-        $data = $result['data'] ?? [];
-        
-        return [
-            'success' => true,
-            'transaction_reference' => $data['transaction_reference'] ?? null,
-            'message' => $data['message'] ?? 'Destination processed successfully'
-        ];
-    }
-
     private function processDepositWithProof(array $payload, string $institution, float $amount): array
     {
         $participant = $this->getParticipant($institution);
@@ -1347,9 +1223,6 @@ private function verifyAccount(array $payload, string $institution, array $desti
         if ($destId['has_value']) {
             $depositPayload['destination_identifier'] = $destId['identifier'];
             $depositPayload['destination_identifier_type'] = $destId['type'];
-            $depositPayload['client_phone'] = $destId['identifier'];
-            $depositPayload['client_account'] = $destId['identifier'];
-            $depositPayload['beneficiary_account'] = $destId['identifier'];
         }
         
         $result = $bankClient->processDepositWithProof($depositPayload);
@@ -1365,23 +1238,6 @@ private function verifyAccount(array $payload, string $institution, array $desti
             'transaction_reference' => $data['transaction_reference'] ?? null,
             'message' => $data['message'] ?? 'Deposit successful'
         ];
-    }
-
-    private function recordSettlementWithProof(array $payload, array $destinationResult, array $feeBreakdown): array
-    {
-        $settlementData = [
-            'swap_reference' => $this->currentSwapRef,
-            'from_institution' => $payload['from_institution'] ?? $payload['source_institution'] ?? null,
-            'to_institution' => $payload['to_institution'] ?? $payload['destination_institution'] ?? null,
-            'amount' => $payload['amount'] ?? 0,
-            'currency' => $payload['currency'] ?? 'BWP',
-            'fee' => $feeBreakdown,
-            'fee_details' => $this->feeCalculationDetails,
-            'signature_chain' => $this->signedPayloads,
-            'destination_proof' => $destinationResult
-        ];
-        
-        return $this->settlement->recordSettlementWithProof($settlementData);
     }
 
     private function debitSource(array $payload, string $institution): array
@@ -1409,245 +1265,74 @@ private function verifyAccount(array $payload, string $institution, array $desti
         ];
     }
 
-    // ============================================================
-    // UNSIGNED FALLBACK METHODS (backward compatibility)
-    // ============================================================
-
-    private function verifyAsset(array $payload, string $institution): array
+    private function executeSignedStandardSwap(array $payload): array
     {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
+        $amount = (float)($payload['amount'] ?? 0);
+        $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
+        $destInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
         
-        $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
-        $sourceId = $this->extractSourceIdentifier($payload);
-        
-        $verifyPayload = [
-            'reference' => $this->currentSwapRef,
-            'asset_type' => $assetType,
-            'amount' => $payload['amount'] ?? 0,
-            'institution' => $institution
-        ];
-        
-        if ($sourceId['has_value']) {
-            $verifyPayload['source_identifier'] = $sourceId['identifier'];
-            $verifyPayload['source_identifier_type'] = $sourceId['type'];
+        $verificationResult = $this->verifyAssetSigned($payload, $sourceInstitution);
+        if (!($verificationResult['verified'] ?? false)) {
+            throw new RuntimeException("Asset verification failed");
         }
         
-        $result = $bankClient->verifyAsset($verifyPayload);
-        
-        if (!$result['success']) {
-            return ['verified' => false, 'message' => $result['curl_error'] ?? 'Verification failed'];
+        $holdResult = $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
+        if (!($holdResult['hold_placed'] ?? false)) {
+            throw new RuntimeException("Hold failed");
         }
         
-        $data = $result['data'] ?? [];
+        $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
+        
+        $feeBreakdown = $this->calculateFeesWithDetails('SWAP', $amount, $payload);
+        $netAmount = $this->currentTransactionState['target_amount'] ?? ($amount - ($feeBreakdown['total_fee'] ?? 0));
+        
+        $destinationResult = $this->processDestinationWithProof($payload, $destInstitution, $netAmount);
+        if (!($destinationResult['success'] ?? false)) {
+            throw new RuntimeException("Destination processing failed");
+        }
+        
+        $debitResult = $this->debitSource($payload, $sourceInstitution);
+        if (!($debitResult['debited'] ?? false)) {
+            throw new RuntimeException("Debit failed");
+        }
         
         return [
-            'verified' => $data['verified'] ?? false,
-            'message' => $data['message'] ?? null,
-            'balance' => $data['available_balance'] ?? null,
-            'asset_id' => $data['asset_id'] ?? null
+            'status' => 'success',
+            'reference' => $this->currentSwapRef,
+            'amount' => $netAmount,
+            'fee' => $feeBreakdown['total_fee'] ?? 0
         ];
     }
 
-    private function placeHold(array $payload, string $institution, array $verificationResult): array
+    private function processDestinationWithProof(array $payload, string $institution, float $amount): array
     {
         $participant = $this->getParticipant($institution);
         $bankClient = new GenericBankClient($participant, $payload);
         
-        $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
-        $sourceId = $this->extractSourceIdentifier($payload);
-        
-        $holdPayload = [
-            'action' => 'PLACE_HOLD',
-            'reference' => $this->currentSwapRef,
-            'asset_type' => $assetType,
-            'amount' => $payload['amount'] ?? 0,
-            'hold_reason' => $payload['hold_reason'] ?? 'PENDING_TRANSACTION',
-            'destination_institution' => $payload['destination_institution'] ?? null,
-            'expiry' => date('Y-m-d H:i:s', strtotime('+1 hour'))
-        ];
-        
-        if ($sourceId['has_value']) {
-            $holdPayload['source_identifier'] = $sourceId['identifier'];
-        }
-        
-        if (isset($verificationResult['asset_id'])) {
-            $holdPayload['asset_id'] = $verificationResult['asset_id'];
-        }
-        
-        $result = $bankClient->placeHold($holdPayload);
-        
-        if (!$result['success']) {
-            return ['hold_placed' => false, 'message' => $result['curl_error'] ?? 'Hold failed'];
-        }
-        
-        $data = $result['data'] ?? [];
-        
-        $holdId = $this->createLocalHold($payload, $institution, $data['hold_reference'] ?? null);
-        $this->currentHoldId = $holdId;
-        
-        return [
-            'hold_placed' => true,
-            'hold_reference' => $data['hold_reference'] ?? null,
-            'local_hold_id' => $holdId,
-            'message' => $data['message'] ?? 'Hold placed successfully'
-        ];
-    }
-
-    private function processDestination(array $payload, string $institution, float $amount, array $feeBreakdown): array
-    {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
-        
-        $netAmount = $amount - ($feeBreakdown['total_fee'] ?? 0);
         $destId = $this->extractDestinationIdentifier($payload);
         
         $transferPayload = [
             'reference' => $this->currentSwapRef,
-            'amount' => $netAmount,
+            'amount' => $amount,
             'currency' => $payload['currency'] ?? 'BWP',
             'destination_type' => $payload['destination_type'] ?? 'ACCOUNT',
-            'destination_details' => $payload['destination_details'] ?? [],
-            'action' => 'PROCESS_TRANSFER'
+            'action' => 'PROCESS_TRANSFER_WITH_PROOF',
+            'source_verification' => $this->signedPayloads['verification'] ?? null,
+            'source_hold' => $this->signedPayloads['hold'] ?? null
         ];
         
         if ($destId['has_value']) {
             $transferPayload['destination_identifier'] = $destId['identifier'];
-            $transferPayload['beneficiary_account'] = $destId['identifier'];
+            $transferPayload['destination_identifier_type'] = $destId['type'];
         }
         
-        $result = $bankClient->transfer($transferPayload);
+        $result = $bankClient->transferWithProof($transferPayload);
         
         if (!$result['success']) {
             return ['success' => false, 'message' => $result['curl_error'] ?? 'Processing failed'];
         }
         
-        $data = $result['data'] ?? [];
-        
-        return [
-            'success' => true,
-            'transaction_reference' => $data['transaction_reference'] ?? null,
-            'message' => $data['message'] ?? 'Destination processed successfully'
-        ];
-    }
-
-    private function processDeposit(array $payload, string $institution, float $amount): array
-    {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
-        
-        $destId = $this->extractDestinationIdentifier($payload);
-        
-        $depositPayload = [
-            'reference' => $this->currentSwapRef,
-            'amount' => $amount,
-            'currency' => $payload['currency'] ?? 'BWP',
-            'source_details' => $payload['source_details'] ?? [],
-            'action' => 'PROCESS_DEPOSIT'
-        ];
-        
-        if ($destId['has_value']) {
-            $depositPayload['client_phone'] = $destId['identifier'];
-            $depositPayload['client_account'] = $destId['identifier'];
-        }
-        
-        $result = $bankClient->processDeposit($depositPayload);
-        
-        if (!$result['success']) {
-            return ['success' => false, 'message' => $result['curl_error'] ?? 'Deposit failed'];
-        }
-        
-        $data = $result['data'] ?? [];
-        
-        return [
-            'success' => true,
-            'transaction_reference' => $data['transaction_reference'] ?? null,
-            'message' => $data['message'] ?? 'Deposit successful'
-        ];
-    }
-
-    private function generateAtmToken(array $payload, string $institution, float $amount): array
-    {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
-        
-        $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
-        
-        $tokenPayload = [
-            'reference' => $this->currentSwapRef,
-            'amount' => $amount,
-            'currency' => $payload['currency'] ?? 'BWP',
-            'hold_reference' => $this->currentHoldReference,
-            'action' => 'GENERATE_ATM_TOKEN'
-        ];
-        
-        if ($beneficiaryPhone) {
-            $tokenPayload['beneficiary_phone'] = $beneficiaryPhone;
-        }
-        
-        $result = $bankClient->generateToken($tokenPayload);
-        
-        if (!$result['success']) {
-            return ['success' => false, 'message' => $result['curl_error'] ?? 'Token generation failed'];
-        }
-        
-        $data = $result['data'] ?? [];
-        
-        return [
-            'success' => true,
-            'atm_pin' => $data['atm_pin'] ?? null,
-            'voucher_number' => $data['voucher_number'] ?? null,
-            'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'))
-        ];
-    }
-
-    private function executeDeposit(array $payload): array
-    {
-        $amount = (float)($payload['amount'] ?? 0);
-        $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
-        
-        $verificationResult = $this->executeStep('VERIFY_ASSET', function() use ($payload, $sourceInstitution) {
-            return $this->verifyAsset($payload, $sourceInstitution);
-        });
-        
-        $depositResult = $this->executeStep('PROCESS_DEPOSIT', function() use ($payload, $sourceInstitution, $amount) {
-            return $this->processDeposit($payload, $sourceInstitution, $amount);
-        });
-        
-        return [
-            'status' => 'success',
-            'reference' => $this->currentSwapRef,
-            'amount' => $amount,
-            'deposit_reference' => $depositResult['transaction_reference'] ?? null
-        ];
-    }
-
-    private function executeCardIssuance(array $payload): array
-    {
-        if (!$this->cardService) {
-            throw new RuntimeException("Card service not initialized");
-        }
-        
-        $userId = $payload['user_id'] ?? null;
-        
-        $eligibilityResult = $this->executeStep('VERIFY_ELIGIBILITY', function() use ($userId) {
-            return $this->cardService->checkEligibility($userId);
-        });
-        
-        $cardResult = $this->executeStep('CREATE_CARD', function() use ($payload) {
-            return $this->cardService->createCard($payload);
-        });
-        
-        $cardDetails = $this->executeStep('GENERATE_CARD_DETAILS', function() use ($cardResult) {
-            return $this->cardService->generateCardDetails($cardResult['card_id']);
-        });
-        
-        return [
-            'status' => 'success',
-            'reference' => $this->currentSwapRef,
-            'card_id' => $cardResult['card_id'] ?? null,
-            'card_last_four' => $cardDetails['last_four'] ?? null
-        ];
+        return ['success' => true];
     }
 
     private function executeMultiSourceSwap(array $payload): array
@@ -1655,10 +1340,15 @@ private function verifyAccount(array $payload, string $institution, array $desti
         if (!$this->multiSourceExecutor) {
             throw new RuntimeException("Multi-source swap executor not initialized");
         }
-        
-        return $this->executeStep('MULTI_SOURCE_EXECUTION', function() use ($payload) {
-            return $this->multiSourceExecutor->execute($payload);
-        });
+        return $this->multiSourceExecutor->execute($payload);
+    }
+
+    private function executeCardIssuance(array $payload): array
+    {
+        if (!$this->cardService) {
+            throw new RuntimeException("Card service not initialized");
+        }
+        return $this->cardService->issueCard($payload);
     }
 
     // ============================================================
@@ -1674,51 +1364,24 @@ private function verifyAccount(array $payload, string $institution, array $desti
             'source_identifier_type' => $sourceId['type'],
             'source_institution' => $institution,
             'asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
-            'phone' => $payload['phone'] ?? $payload['wallet_phone'] ?? null,
-            'national_id' => $payload['national_id'] ?? null,
-            'email' => $payload['email'] ?? null,
             'original_payload' => $payload
         ];
         
         $metadata = [
             'swap_reference' => $this->currentSwapRef,
             'external_hold_reference' => $externalHoldRef,
-            'signature_chain' => $this->signedPayloads,
-            'source_identifier' => $sourceId['identifier'],
-            'source_identifier_type' => $sourceId['type']
+            'signature_chain' => $this->signedPayloads
         ];
         
         $sql = "
             INSERT INTO hold_transactions (
-                hold_reference,
-                swap_reference,
-                participant_name,
-                asset_type,
-                amount,
-                currency,
-                status,
-                source_details,
-                destination_institution,
-                metadata,
-                placed_at,
-                created_at,
-                updated_at,
-                source_institution
+                hold_reference, swap_reference, participant_name, asset_type,
+                amount, currency, status, source_details, destination_institution,
+                metadata, placed_at, created_at, updated_at, source_institution
             ) VALUES (
-                :hold_ref,
-                :swap_ref,
-                :participant_name,
-                :asset_type,
-                :amount,
-                :currency,
-                'ACTIVE',
-                :source_details::jsonb,
-                :destination,
-                :metadata::jsonb,
-                NOW(),
-                NOW(),
-                NOW(),
-                :source_institution
+                :hold_ref, :swap_ref, :participant_name, :asset_type,
+                :amount, :currency, 'ACTIVE', :source_details::jsonb, :destination,
+                :metadata::jsonb, NOW(), NOW(), NOW(), :source_institution
             ) RETURNING hold_id
         ";
         
@@ -1742,46 +1405,31 @@ private function verifyAccount(array $payload, string $institution, array $desti
             
         } catch (PDOException $e) {
             error_log("[SwapService] Failed to create local hold: " . $e->getMessage());
-            $this->logger->error("Failed to create local hold", ['error' => $e->getMessage()]);
             throw new RuntimeException("Failed to create local hold: " . $e->getMessage());
         }
     }
 
     private function updateHoldStatus(?int $holdId, string $status): void
     {
-        if ($holdId === null) {
-            error_log("[SwapService] WARNING: updateHoldStatus called with NULL holdId, status: {$status}");
-            return;
-        }
+        if ($holdId === null) return;
         
         $validStatuses = ['ACTIVE', 'HELD', 'PENDING_CASHOUT', 'DEBITED', 'RELEASED', 'CANCELLED', 'FAILED'];
-        if (!in_array($status, $validStatuses)) {
-            error_log("[SwapService] Invalid status: {$status}");
-            return;
-        }
+        if (!in_array($status, $validStatuses)) return;
         
         $sql = "
             UPDATE hold_transactions 
-            SET status = CAST(:status AS VARCHAR(50)),
-                debited_at = CASE WHEN CAST(:status AS VARCHAR(50)) = 'DEBITED' THEN NOW() ELSE debited_at END,
-                released_at = CASE WHEN CAST(:status AS VARCHAR(50)) = 'RELEASED' THEN NOW() ELSE released_at END,
+            SET status = :status,
+                debited_at = CASE WHEN :status = 'DEBITED' THEN NOW() ELSE debited_at END,
+                released_at = CASE WHEN :status = 'RELEASED' THEN NOW() ELSE released_at END,
                 updated_at = NOW()
             WHERE hold_id = :hold_id
         ";
         
         try {
             $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':status' => $status,
-                ':hold_id' => $holdId
-            ]);
-            
-            error_log("[SwapService] Hold {$holdId} updated to status: {$status}");
-            
+            $stmt->execute([':status' => $status, ':hold_id' => $holdId]);
         } catch (PDOException $e) {
             error_log("[SwapService] Failed to update hold status: " . $e->getMessage());
-            $this->logger->error("Failed to update hold status", ['error' => $e->getMessage()]);
-            throw new RuntimeException("Failed to update hold status: " . $e->getMessage());
         }
     }
 
@@ -1802,8 +1450,6 @@ private function verifyAccount(array $payload, string $institution, array $desti
         $this->signedPayloads = [];
         
         $this->swapDB->beginTransaction();
-        
-        $this->auditLog('SWAP_START', ['reference' => $reference]);
         $this->logger->info("Atomic swap begun", ['reference' => $reference]);
     }
 
@@ -1818,69 +1464,28 @@ private function verifyAccount(array $payload, string $institution, array $desti
             'steps_completed' => count($this->executedSteps)
         ];
         
-        $this->auditLog('SWAP_COMMIT', $result);
         $this->logger->info("Atomic swap committed", $result);
-        
         $this->resetAtomicState();
         return $result;
     }
 
     private function rollbackAtomicSwap(string $reason): array
     {
-        $rollbackSteps = [];
-        
-        if ($this->currentHoldReference) {
-            try {
-                $this->releaseExternalHold();
-                $rollbackSteps[] = 'external_hold_released';
-            } catch (Exception $e) {
-                $this->logger->error("Failed to release external hold", [
-                    'hold_ref' => $this->currentHoldReference,
-                    'error' => $e->getMessage()
-                ]);
-                $rollbackSteps[] = 'external_hold_release_failed';
-            }
-        }
-        
         if ($this->currentHoldId) {
-            try {
-                $this->updateHoldStatus($this->currentHoldId, 'RELEASED');
-                $rollbackSteps[] = 'local_hold_released';
-            } catch (Exception $e) {
-                $this->logger->error("Failed to update local hold", ['error' => $e->getMessage()]);
-                $rollbackSteps[] = 'local_hold_update_failed';
-            }
+            $this->updateHoldStatus($this->currentHoldId, 'RELEASED');
         }
         
-        try {
-            $this->swapDB->rollBack();
-            $rollbackSteps[] = 'db_rolled_back';
-        } catch (Exception $e) {
-            $this->logger->critical("Database rollback failed!", ['error' => $e->getMessage()]);
-            $rollbackSteps[] = 'db_rollback_failed';
-        }
+        $this->swapDB->rollBack();
         
         $result = [
             'status' => 'rolled_back',
             'reference' => $this->currentSwapRef,
-            'reason' => $reason,
-            'rollback_steps' => $rollbackSteps
+            'reason' => $reason
         ];
         
-        $this->auditLog('SWAP_ROLLBACK', $result);
         $this->logger->warning("Atomic swap rolled back", $result);
-        
         $this->resetAtomicState();
         return $result;
-    }
-
-    private function releaseExternalHold(): void
-    {
-        if (!$this->currentHoldReference) {
-            return;
-        }
-        
-        $this->logger->info("Would release external hold", ['hold_reference' => $this->currentHoldReference]);
     }
 
     private function resetAtomicState(): void
@@ -1896,83 +1501,15 @@ private function verifyAccount(array $payload, string $institution, array $desti
 
     private function executeStep(string $stepName, callable $operation)
     {
-        $startTime = microtime(true);
-        $this->recordStep("START_{$stepName}");
-        
-        try {
-            $result = $operation();
-            $duration = (microtime(true) - $startTime) * 1000;
-            $this->recordStep("SUCCESS_{$stepName}", ['duration_ms' => $duration]);
-            $this->stepResults[$stepName] = $result;
-            return $result;
-        } catch (Exception $e) {
-            $duration = (microtime(true) - $startTime) * 1000;
-            $this->recordStep("FAILED_{$stepName}", [
-                'duration_ms' => $duration,
-                'error' => $e->getMessage()
-            ]);
-            throw $e;
-        }
-    }
-
-    private function recordStep(string $step, ?array $data = null): void
-    {
-        $this->executedSteps[] = [
-            'step' => $step,
-            'timestamp' => microtime(true),
-            'data' => $data
-        ];
-        
-        $this->logger->debug("Step completed", [
-            'swap_ref' => $this->currentSwapRef,
-            'step' => $step,
-            'step_number' => count($this->executedSteps)
-        ]);
+        $this->executedSteps[] = ['step' => $stepName, 'timestamp' => microtime(true)];
+        return $operation();
     }
 
     private function getLastStep(): string
     {
-        if (empty($this->executedSteps)) {
-            return 'none';
-        }
+        if (empty($this->executedSteps)) return 'none';
         $last = end($this->executedSteps);
         return $last['step'];
-    }
-
-    private function auditLog(string $action, array $data): void
-    {
-        try {
-            $sql = "
-                INSERT INTO audit_logs (
-                    entity_type,
-                    entity_id,
-                    action,
-                    category,
-                    severity,
-                    new_value,
-                    performed_by_type,
-                    performed_at
-                ) VALUES (
-                    'swap',
-                    :reference,
-                    :action,
-                    'transaction',
-                    'info',
-                    :value::jsonb,
-                    'system',
-                    NOW()
-                )
-            ";
-            
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':reference' => $this->currentSwapRef,
-                ':action' => $action,
-                ':value' => json_encode($data)
-            ]);
-        } catch (Exception $e) {
-            $this->logger->error("Audit log failed", ['error' => $e->getMessage()]);
-        }
     }
 
     // ============================================================
@@ -1981,24 +1518,18 @@ private function verifyAccount(array $payload, string $institution, array $desti
 
     private function generateReference(): string
     {
-        return 'SWAP_' . bin2hex(random_bytes(16));
+        return 'SWAP_' . time() . '_' . bin2hex(random_bytes(8));
     }
 
     private function checkIdempotency(string $key): ?array
     {
         try {
-            if (class_exists('Infrastructure\Mojaloop\IdempotencyService')) {
-                return IdempotencyService::check($this->swapDB, $key);
-            }
-            
             $sql = "SELECT result FROM idempotency_keys WHERE key = :key AND created_at > NOW() - INTERVAL '24 hours'";
             $stmt = $this->swapDB->prepare($sql);
             $stmt->execute([':key' => $key]);
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            
             return $row ? json_decode($row['result'], true) : null;
         } catch (Exception $e) {
-            $this->logger->error("Idempotency check failed", ['error' => $e->getMessage()]);
             return null;
         }
     }
@@ -2006,75 +1537,26 @@ private function verifyAccount(array $payload, string $institution, array $desti
     private function storeIdempotencyResult(string $key, array $result): void
     {
         try {
-            if (class_exists('Infrastructure\Mojaloop\IdempotencyService')) {
-                IdempotencyService::store($this->swapDB, $key, $result);
-                return;
-            }
-            
-            $sql = "
-                INSERT INTO idempotency_keys (key, operation, result, created_at)
-                VALUES (:key, 'swap', :result::jsonb, NOW())
-                ON CONFLICT (key) DO UPDATE SET result = EXCLUDED.result, created_at = NOW()
-            ";
+            $sql = "INSERT INTO idempotency_keys (key, operation, result, created_at) VALUES (:key, 'swap', :result::jsonb, NOW()) ON CONFLICT (key) DO UPDATE SET result = EXCLUDED.result, created_at = NOW()";
             $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':key' => $key,
-                ':result' => json_encode($result)
-            ]);
+            $stmt->execute([':key' => $key, ':result' => json_encode($result)]);
         } catch (Exception $e) {
-            $this->logger->error("Failed to store idempotency result", ['error' => $e->getMessage()]);
+            // Ignore idempotency storage errors
         }
-    }
-
-    private function getInstitutionPublicKey(string $institution): string
-    {
-        $stmt = $this->swapDB->prepare("
-            SELECT public_key FROM institution_keys 
-            WHERE institution = :institution AND is_active = true
-            ORDER BY created_at DESC LIMIT 1
-        ");
-        $stmt->execute([':institution' => $institution]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($row && !empty($row['public_key'])) {
-            return $row['public_key'];
-        }
-        
-        $envKey = strtoupper($institution) . '_PUBLIC_KEY';
-        $publicKey = getenv($envKey);
-        
-        if ($publicKey) {
-            return $publicKey;
-        }
-        
-        throw new RuntimeException("No public key found for institution: {$institution}");
     }
 
     private function loadConfiguration(string $country): void
     {
         $countryPath = __DIR__ . '/../../Core/Config/Countries/' . $country;
         
-        error_log("[SwapService] loadConfiguration called for country: {$country}");
-        error_log("[SwapService] Looking for config at: {$countryPath}");
-        
         $participantsPath = $countryPath . '/participants.yaml';
-        
         if (file_exists($participantsPath)) {
             $this->participants = $this->parseYaml($participantsPath);
-            error_log("[SwapService] Participants loaded. Keys: " . implode(', ', array_keys($this->participants)));
-        } else {
-            error_log("[SwapService] Participants file NOT FOUND!");
-        }
-        
-        $endpointsPath = $countryPath . '/endpoints.yaml';
-        if (file_exists($endpointsPath)) {
-            $this->endpoints = $this->parseYaml($endpointsPath);
         }
         
         $feesPath = $countryPath . '/fees.json';
         if (file_exists($feesPath)) {
             $this->feesConfig = json_decode(file_get_contents($feesPath), true) ?? [];
-            error_log("[SwapService] Loaded fees from: {$feesPath}");
         }
         
         $this->logger->info("Configuration loaded", ['country' => $country]);
@@ -2084,43 +1566,22 @@ private function verifyAccount(array $payload, string $institution, array $desti
     {
         $content = file_get_contents($path);
         $lines = explode("\n", $content);
-        $inParticipants = false;
-        $currentKey = null;
         $participantsData = [];
+        $currentKey = null;
         
         foreach ($lines as $line) {
             $line = rtrim($line);
             if (empty($line) || $line[0] === '#') continue;
             
-            if (preg_match('/^participants:$/', $line)) {
-                $inParticipants = true;
+            if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
+                $currentKey = $matches[1];
+                $participantsData[$currentKey] = [];
                 continue;
             }
             
-            if ($inParticipants) {
-                if (preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
-                    $currentKey = $matches[1];
-                    $participantsData[$currentKey] = [];
-                    continue;
-                }
-                
-                if ($currentKey && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
-                    $key = $matches[1];
-                    $value = trim($matches[2]);
-                    if (preg_match('/^"(.+)"$/', $value, $q)) $value = $q[1];
-                    if (preg_match("/^'(.+)'$/", $value, $q)) $value = $q[1];
-                    $participantsData[$currentKey][$key] = $value;
-                    continue;
-                }
-                
-                if ($currentKey && preg_match('/^    asset_types:$/', $line)) {
-                    $participantsData[$currentKey]['asset_types'] = [];
-                    continue;
-                }
-                
-                if ($currentKey && isset($participantsData[$currentKey]['asset_types']) && preg_match('/^      - (.+)$/', $line, $matches)) {
-                    $participantsData[$currentKey]['asset_types'][] = trim($matches[1]);
-                }
+            if ($currentKey && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
+                $value = trim($matches[2], '"\'');
+                $participantsData[$currentKey][$matches[1]] = $value;
             }
         }
         
@@ -2131,25 +1592,14 @@ private function verifyAccount(array $payload, string $institution, array $desti
     // PUBLIC METHODS
     // ============================================================
 
-    public function isMultiSourceContribution(array $payload): bool
-    {
-        return isset($payload['is_multi_source']) && $payload['is_multi_source'] === true;
-    }
-
     public function getParticipant(string $institution): array
     {
-        error_log("[SwapService] getParticipant called with: '{$institution}'");
-        
         if (isset($this->participants[$institution])) {
-            $participant = $this->participants[$institution];
-            $participant['provider_code'] = $institution;
-            return $participant;
+            return $this->participants[$institution];
         }
         
-        $key = strtolower($institution);
         foreach ($this->participants as $code => $participant) {
-            if (strtolower($code) === $key) {
-                $participant['provider_code'] = $code;
+            if (strtolower($code) === strtolower($institution)) {
                 return $participant;
             }
         }
@@ -2162,13 +1612,12 @@ private function verifyAccount(array $payload, string $institution, array $desti
         $sql = "SELECT * FROM hold_transactions WHERE hold_id = :hold_id";
         $stmt = $this->swapDB->prepare($sql);
         $stmt->execute([':hold_id' => $holdId]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        return $row ?: null;
+        return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
     }
 
     public function getAtmDenominations(string $currency): array
     {
-        return $this->atmNotes[$currency] ?? [200, 100, 50, 20, 10]; 
+        return $this->atmNotes[$currency] ?? [200, 100, 50, 20, 10];
     }
 
     public function calculateNoteBreakdown(float $amount, string $currency): array
