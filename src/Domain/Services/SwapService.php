@@ -206,76 +206,115 @@ $this->feeService->setParticipants($this->participants);
         ];
     }
 
-    /**
-     * Calculate fees with full mathematical model breakdown
-     * 
-     * Formulas:
-     * - Amount_1 = Original request amount
-     * - F1 = Total customer upfront fee
-     * - Amount_2 = Amount_1 - F1
-     * - M = Banknote multiplier (from ATM notes)
-     * - Amount_4 = M × floor(Amount_2 / M)
-     * - Remainder_1 = Amount_2 - Amount_4
-     */
-    private function calculateFeesWithDetails(string $feeType, float $amount, array $payload): array
-    {
-        $this->feeCalculationDetails = [];
-        
-        // Get fee result from FeeService
-        $feeResult = $this->feeService->calculateFees($feeType, $amount, $payload);
-        
-        $totalFee = $feeResult['total_fee'] ?? 0;
-        $netAmount = $amount - $totalFee;  // Amount_2
-        
-        // Get ATM denominations and multiplier (M)
-        $denominations = $this->atmNotes[$payload['currency'] ?? 'BWP'] ?? [200, 100, 50, 20, 10];
-        $multiplier = $denominations[0] ?? 100;  // M
-        
-        // Calculate dispensable amount (Amount_4) and remainder (Remainder_1)
-        $dispensableAmount = $multiplier * floor($netAmount / $multiplier);
-        $remainderBalance = $netAmount - $dispensableAmount;  // Remainder_1
-        
-        // If amount is too small for ATM, try the smallest denomination
-        if ($dispensableAmount <= 0 && $netAmount > 0) {
-            $smallestDenom = min($denominations);
-            $dispensableAmount = $smallestDenom * floor($netAmount / $smallestDenom);
-            $remainderBalance = $netAmount - $dispensableAmount;
-            $multiplier = $smallestDenom;
-            error_log("[SwapService] Using smallest denomination {$smallestDenom} for small amount {$netAmount}");
-        }
-        
-        $this->feeCalculationDetails = [
-            'fee_type' => $feeType,
-            'original_amount' => $amount,           // Amount_1
-            'total_fee' => $totalFee,               // F1
-            'net_amount' => $netAmount,             // Amount_2
-            'multiplier' => $multiplier,            // M
-            'dispensable_amount' => $dispensableAmount,  // Amount_4
-            'remainder_balance' => $remainderBalance,    // Remainder_1
-            'denominations' => $denominations,
-            'breakdown' => $feeResult['breakdown'] ?? [],
-            'revenue_split' => $feeResult['distribution'] ?? [],
-            'destination_split' => $feeResult['destination_split'] ?? [],
-            'mathematical_formulas' => [
-                'Amount_1' => $amount,
-                'F1' => $totalFee,
-                'Amount_2' => $netAmount,
-                'M' => $multiplier,
-                'Amount_4' => $dispensableAmount,
-                'Remainder_1' => $remainderBalance
-            ]
-        ];
-        
-        error_log("[SwapService] Mathematical calculation: Amount_1={$amount}, F1={$totalFee}, Amount_2={$netAmount}, M={$multiplier}, Amount_4={$dispensableAmount}, Remainder_1={$remainderBalance}");
-        
-        return [
-            'total_fee' => $totalFee,
-            'net_amount' => $netAmount,
-            'dispensable_amount' => $dispensableAmount,
-            'remainder_balance' => $remainderBalance,
-            'components' => $this->feeCalculationDetails
-        ];
+   /**
+ * Calculate fees with full mathematical model breakdown including forex
+ * 
+ * Formulas:
+ * - Amount_1 = Original request amount (source currency)
+ * - F1 = Total customer upfront fee (source currency)
+ * - Amount_2 = Amount_1 - F1 (net after fees in source currency)
+ * - Exchange_Rate = rate from source_currency to destination_currency
+ * - Amount_3 = Amount_2 × Exchange_Rate (converted to destination currency)
+ * - M = Banknote multiplier (from destination ATM notes)
+ * - Amount_4 = M × floor(Amount_3 / M) (dispensable amount in destination currency)
+ * - Remainder_1 = Amount_3 - Amount_4 (stays at source in destination currency equivalent)
+ */
+private function calculateFeesWithDetails(string $feeType, float $amount, array $payload): array
+{
+    $this->feeCalculationDetails = [];
+    
+    // Get source and destination currencies from payload
+    $sourceCurrency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
+    $destinationCurrency = $payload['destination_currency'] ?? $sourceCurrency;
+    
+    // Get fee result from FeeService (includes forex if currencies differ)
+    $feeResult = $this->feeService->calculateFees($feeType, $amount, $payload);
+    
+    $totalFee = $feeResult['total_fee'] ?? 0;  // F1 in source currency
+    $netAmountSourceCurrency = $feeResult['net_amount_source_currency'] ?? ($amount - $totalFee);  // Amount_2
+    
+    // Get forex information
+    $forexApplied = $feeResult['forex']['applied'] ?? false;
+    $exchangeRate = $feeResult['forex']['rate'] ?? 1.0;
+    $netAmountDestCurrency = $feeResult['net_amount_destination_currency'] ?? $netAmountSourceCurrency;  // Amount_3
+    
+    // Get ATM denominations for DESTINATION currency
+    $denominations = $this->atmNotes[$destinationCurrency] ?? [200, 100, 50, 20, 10];
+    $multiplier = $denominations[0] ?? 100;  // M
+    
+    // Calculate dispensable amount in DESTINATION currency (Amount_4)
+    $dispensableAmount = $multiplier * floor($netAmountDestCurrency / $multiplier);
+    $remainderBalance = $netAmountDestCurrency - $dispensableAmount;  // Remainder_1
+    
+    // If amount is too small for ATM, try the smallest denomination
+    if ($dispensableAmount <= 0 && $netAmountDestCurrency > 0) {
+        $smallestDenom = min($denominations);
+        $dispensableAmount = $smallestDenom * floor($netAmountDestCurrency / $smallestDenom);
+        $remainderBalance = $netAmountDestCurrency - $dispensableAmount;
+        $multiplier = $smallestDenom;
+        error_log("[SwapService] Using smallest denomination {$smallestDenom} for amount {$netAmountDestCurrency} {$destinationCurrency}");
     }
+    
+    $this->feeCalculationDetails = [
+        'fee_type' => $feeType,
+        'original_amount' => $amount,                       // Amount_1
+        'original_currency' => $sourceCurrency,
+        'total_fee' => $totalFee,                           // F1
+        'total_fee_currency' => $sourceCurrency,
+        'net_amount_source_currency' => $netAmountSourceCurrency,  // Amount_2
+        'forex_applied' => $forexApplied,
+        'exchange_rate' => $exchangeRate,
+        'net_amount_destination_currency' => $netAmountDestCurrency,  // Amount_3
+        'destination_currency' => $destinationCurrency,
+        'multiplier' => $multiplier,                        // M
+        'dispensable_amount' => $dispensableAmount,         // Amount_4
+        'remainder_balance' => $remainderBalance,           // Remainder_1
+        'denominations' => $denominations,
+        'breakdown' => $feeResult['breakdown'] ?? [],
+        'revenue_split' => $feeResult['distribution'] ?? [],
+        'destination_split' => $feeResult['destination_split'] ?? [],
+        'mathematical_formulas' => [
+            'Amount_1' => $amount,
+            'F1' => $totalFee,
+            'Amount_2' => $netAmountSourceCurrency,
+            'Exchange_Rate' => $exchangeRate,
+            'Amount_3' => $netAmountDestCurrency,
+            'M' => $multiplier,
+            'Amount_4' => $dispensableAmount,
+            'Remainder_1' => $remainderBalance
+        ]
+    ];
+    
+    // Log the complete calculation
+    error_log("[SwapService] Mathematical calculation with forex:");
+    error_log("  Amount_1: {$amount} {$sourceCurrency}");
+    error_log("  F1 (fee): {$totalFee} {$sourceCurrency}");
+    error_log("  Amount_2: {$netAmountSourceCurrency} {$sourceCurrency}");
+    if ($forexApplied) {
+        error_log("  Exchange Rate: {$exchangeRate} ({$sourceCurrency} → {$destinationCurrency})");
+        error_log("  Amount_3: {$netAmountDestCurrency} {$destinationCurrency}");
+    }
+    error_log("  M (multiplier): {$multiplier} {$destinationCurrency}");
+    error_log("  Amount_4 (dispensable): {$dispensableAmount} {$destinationCurrency}");
+    error_log("  Remainder_1: {$remainderBalance} {$destinationCurrency}");
+    
+    return [
+        'total_fee' => $totalFee,
+        'total_fee_currency' => $sourceCurrency,
+        'net_amount' => $netAmountDestCurrency,  // Amount to send in destination currency
+        'net_amount_source_currency' => $netAmountSourceCurrency,
+        'net_amount_destination_currency' => $netAmountDestCurrency,
+        'dispensable_amount' => $dispensableAmount,
+        'remainder_balance' => $remainderBalance,
+        'exchange_rate' => $exchangeRate,
+        'forex_applied' => $forexApplied,
+        'source_currency' => $sourceCurrency,
+        'destination_currency' => $destinationCurrency,
+        'multiplier' => $multiplier,
+        'denominations' => $denominations,
+        'components' => $this->feeCalculationDetails
+    ];
+}
 
     private function adjustAmountForDelivery(float $amount, string $deliveryMethod, string $currency): array
     {
