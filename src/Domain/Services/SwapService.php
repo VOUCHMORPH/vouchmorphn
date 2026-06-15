@@ -32,6 +32,14 @@ use Psr\Log\LoggerInterface;
  * 
  * DEPOSIT FLOW (1 step at destination):
  * 1. process_deposit - Direct deposit to account/wallet, THEN debit source
+ * 
+ * MATHEMATICAL MODEL:
+ * - Amount_1 = Requested amount
+ * - F1 = Total customer upfront fee
+ * - Amount_2 = Amount_1 - F1 (net after fees)
+ * - M = Banknote multiplier (from ATM notes)
+ * - Amount_4 = M × floor(Amount_2 / M) (dispensable amount)
+ * - Remainder_1 = Amount_2 - Amount_4 (stays at source)
  */
 class SwapService
 {
@@ -65,9 +73,6 @@ class SwapService
     private array $executedSteps = [];
     private array $stepResults = [];
     private array $signedPayloads = [];
-    
-    // Store cashout authorization data
-    private array $pendingCashouts = [];
 
     public function __construct(
         PDO $swapDB, 
@@ -119,7 +124,7 @@ class SwapService
         $this->loadConfiguration($country);
         $this->loadAtmNotes($country);
         
-        // Initialize settlement services - REMOVED UniversalFeeEngine
+        // Initialize settlement services
         $this->settlement = new HybridSettlementStrategy($this->swapDB);
         $this->feeService = new FeeService($this->feesConfig, $this->config);
         $this->feeService->setParticipants($this->participants); 
@@ -195,54 +200,70 @@ class SwapService
         ];
     }
 
+    /**
+     * Calculate fees with full mathematical model breakdown
+     * 
+     * Formulas:
+     * - Amount_1 = Original request amount
+     * - F1 = Total customer upfront fee
+     * - Amount_2 = Amount_1 - F1
+     * - M = Banknote multiplier (from ATM notes)
+     * - Amount_4 = M × floor(Amount_2 / M)
+     * - Remainder_1 = Amount_2 - Amount_4
+     */
     private function calculateFeesWithDetails(string $feeType, float $amount, array $payload): array
     {
         $this->feeCalculationDetails = [];
         
-        // Use FeeService for fee calculation
+        // Get fee result from FeeService
         $feeResult = $this->feeService->calculateFees($feeType, $amount, $payload);
         
-        $details = [
+        $totalFee = $feeResult['total_fee'] ?? 0;
+        $netAmount = $amount - $totalFee;  // Amount_2
+        
+        // Get ATM denominations and multiplier (M)
+        $denominations = $this->atmNotes[$payload['currency'] ?? 'BWP'] ?? [200, 100, 50, 20, 10];
+        $multiplier = $denominations[0] ?? 100;  // M
+        
+        // Calculate dispensable amount (Amount_4) and remainder (Remainder_1)
+        $dispensableAmount = $multiplier * floor($netAmount / $multiplier);
+        $remainderBalance = $netAmount - $dispensableAmount;  // Remainder_1
+        
+        // If amount is too small for ATM, try the smallest denomination
+        if ($dispensableAmount <= 0 && $netAmount > 0) {
+            $smallestDenom = min($denominations);
+            $dispensableAmount = $smallestDenom * floor($netAmount / $smallestDenom);
+            $remainderBalance = $netAmount - $dispensableAmount;
+            $multiplier = $smallestDenom;
+            error_log("[SwapService] Using smallest denomination {$smallestDenom} for small amount {$netAmount}");
+        }
+        
+        $this->feeCalculationDetails = [
             'fee_type' => $feeType,
-            'original_amount' => $amount,
-            'total_fee' => $feeResult['total_fee'] ?? 0,
-            'net_amount' => $amount - ($feeResult['total_fee'] ?? 0),
-            'breakdown' => []
+            'original_amount' => $amount,           // Amount_1
+            'total_fee' => $totalFee,               // F1
+            'net_amount' => $netAmount,             // Amount_2
+            'multiplier' => $multiplier,            // M
+            'dispensable_amount' => $dispensableAmount,  // Amount_4
+            'remainder_balance' => $remainderBalance,    // Remainder_1
+            'denominations' => $denominations,
+            'breakdown' => $feeResult['breakdown'] ?? [],
+            'revenue_split' => $feeResult['distribution'] ?? [],
+            'destination_split' => $feeResult['destination_split'] ?? [],
+            'mathematical_formulas' => [
+                'Amount_1' => $amount,
+                'F1' => $totalFee,
+                'Amount_2' => $netAmount,
+                'M' => $multiplier,
+                'Amount_4' => $dispensableAmount,
+                'Remainder_1' => $remainderBalance
+            ]
         ];
         
-        if (isset($feeResult['components'])) {
-            $details['breakdown'] = $feeResult['components'];
-        } elseif (isset($feeResult['fees'])) {
-            foreach ($feeResult['fees'] as $feeName => $feeValue) {
-                if (is_numeric($feeValue)) {
-                    $details['breakdown'][$feeName] = $feeValue;
-                }
-            }
-        }
-        
-        if (isset($feeResult['swap_levy']) && $feeResult['swap_levy'] > 0) {
-            $details['breakdown']['swap_levy'] = $feeResult['swap_levy'];
-        }
-        
-        if (isset($feeResult['split'])) {
-            $details['revenue_split'] = $feeResult['split'];
-        }
-        
-        $this->feeCalculationDetails = $details;
-        
-        // Calculate dispensable amount based on ATM notes
-        $netAmount = $amount - ($feeResult['total_fee'] ?? 0);
-        $denominations = $this->atmNotes[$payload['currency'] ?? 'BWP'] ?? [200, 100, 50, 20, 10];
-        $multiplier = $denominations[0] ?? 100;
-        $dispensableAmount = $multiplier * floor($netAmount / $multiplier);
-        $remainderBalance = $netAmount - $dispensableAmount;
-        
-        $this->feeCalculationDetails['dispensable_amount'] = $dispensableAmount;
-        $this->feeCalculationDetails['remainder_balance'] = $remainderBalance;
-        $this->feeCalculationDetails['multiplier'] = $multiplier;
+        error_log("[SwapService] Mathematical calculation: Amount_1={$amount}, F1={$totalFee}, Amount_2={$netAmount}, M={$multiplier}, Amount_4={$dispensableAmount}, Remainder_1={$remainderBalance}");
         
         return [
-            'total_fee' => $feeResult['total_fee'] ?? 0,
+            'total_fee' => $totalFee,
             'net_amount' => $netAmount,
             'dispensable_amount' => $dispensableAmount,
             'remainder_balance' => $remainderBalance,
@@ -254,6 +275,7 @@ class SwapService
     {
         $deliveryMethod = strtoupper($deliveryMethod);
         
+        // These delivery methods have NO limitations - full amount is delivered
         if (in_array($deliveryMethod, ['DEPOSIT', 'VOUCHER', 'AGENT', 'WALLET', 'CARD'])) {
             return [
                 'deliverable_amount' => $amount,
@@ -541,20 +563,35 @@ class SwapService
         
         $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
         
-        // STEP 3: CALCULATE FEES USING FEE SERVICE
-        error_log("[SwapService] STEP 3: Calculating fees");
+        // STEP 3: CALCULATE FEES USING MATHEMATICAL MODEL
+        error_log("[SwapService] STEP 3: Calculating fees with mathematical model");
         $feeBreakdown = $this->calculateFeesWithDetails('CASHOUT', $amount, $payload);
-        $amountToSend = $this->feeCalculationDetails['dispensable_amount'] ?? $this->feeCalculationDetails['net_amount'] ?? $amount;
-        $remainderAtSource = $this->feeCalculationDetails['remainder_balance'] ?? 0;
+        $amountToSend = $feeBreakdown['dispensable_amount'];
+        $remainderAtSource = $feeBreakdown['remainder_balance'];
+        $netAmount = $feeBreakdown['net_amount'];
         
-        error_log("[SwapService] Amount after fees: {$this->feeCalculationDetails['net_amount']}, Deliverable: {$amountToSend}, Remainder: {$remainderAtSource}");
+        error_log("[SwapService] Mathematical breakdown:");
+        error_log("  Amount_1 (requested): {$amount}");
+        error_log("  F1 (total fee): {$feeBreakdown['total_fee']}");
+        error_log("  Amount_2 (net after fees): {$netAmount}");
+        error_log("  Amount_4 (dispensable): {$amountToSend}");
+        error_log("  Remainder_1 (stays at source): {$remainderAtSource}");
+        
+        // Handle case where amount is too small for ATM
+        if ($amountToSend <= 0 && $netAmount > 0) {
+            $deliveryMethod = 'AGENT';
+            $amountToSend = $netAmount;
+            $remainderAtSource = 0;
+            error_log("[SwapService] Amount too small for ATM, switching to AGENT cashout: {$amountToSend}");
+        }
         
         if ($amountToSend <= 0) {
-            throw new RuntimeException("Amount after fees cannot be delivered via {$deliveryMethod}");
+            $minAmount = min($this->atmNotes[$payload['currency'] ?? 'BWP'] ?? [20]);
+            throw new RuntimeException("Amount after fees ({$netAmount}) is too small to deliver. Minimum is {$minAmount} {$payload['currency'] ?? 'BWP'}");
         }
         
         // STEP 4: GENERATE CODE AT DESTINATION
-        error_log("[SwapService] STEP 4: Generating cashout code at DESTINATION: {$destinationInstitution}");
+        error_log("[SwapService] STEP 4: Generating cashout code at DESTINATION: {$destinationInstitution} for amount: {$amountToSend}");
         
         $generateResult = $this->generateCashoutToken($payload, $destinationInstitution, $amountToSend);
         
@@ -973,7 +1010,7 @@ class SwapService
         // STEP 3: CALCULATE FEES
         error_log("[SwapService] STEP 3: Calculating fees");
         $feeBreakdown = $this->calculateFeesWithDetails('DEPOSIT', $amount, $payload);
-        $netAmount = $this->feeCalculationDetails['net_amount'] ?? $amount;
+        $netAmount = $feeBreakdown['net_amount'] ?? $amount;
         
         // STEP 4: PLACE HOLD ON SOURCE
         error_log("[SwapService] STEP 4: Placing hold on source: {$sourceInstitution}");
@@ -1328,7 +1365,7 @@ class SwapService
         $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
         
         $feeBreakdown = $this->calculateFeesWithDetails('SWAP', $amount, $payload);
-        $netAmount = $this->feeCalculationDetails['net_amount'] ?? $amount;
+        $netAmount = $feeBreakdown['net_amount'] ?? $amount;
         
         $destinationResult = $this->processDestinationWithProof($payload, $destInstitution, $netAmount);
         if (!($destinationResult['success'] ?? false)) {
@@ -1600,7 +1637,22 @@ class SwapService
         
         $feesPath = $countryPath . '/fees.json';
         if (file_exists($feesPath)) {
-            $this->feesConfig = json_decode(file_get_contents($feesPath), true) ?? [];
+            $feesData = json_decode(file_get_contents($feesPath), true);
+            
+            // Handle both structures: with 'products' key or direct product keys
+            if (!isset($feesData['products']) && (isset($feesData['CASHOUT']) || isset($feesData['DEPOSIT']))) {
+                $products = [];
+                foreach ($feesData as $key => $value) {
+                    if (in_array($key, ['CASHOUT', 'DEPOSIT', 'CARD_LOAD', 'SWAP'])) {
+                        $products[$key] = $value;
+                    }
+                }
+                $this->feesConfig = ['products' => $products, 'regulatory' => $feesData['regulatory'] ?? []];
+            } else {
+                $this->feesConfig = $feesData;
+            }
+            
+            error_log("[SwapService] Loaded fees config with products: " . implode(', ', array_keys($this->feesConfig['products'] ?? [])));
         }
         
         $this->logger->info("Configuration loaded", ['country' => $country]);
