@@ -1,60 +1,65 @@
 <?php
-require_once __DIR__ . '/../../src/Domain/Services/FeeService.php';
+require_once __DIR__ . '/src/Domain/Services/FeeService.php';
+require_once __DIR__ . '/src/Domain/Services/ForexService.php';
 
 use Domain\Services\FeeService;
+use Domain\Services\ForexService;
 
-// Load your fees.json
-$feesJson = file_get_contents(__DIR__ . '/../../src/Core/Config/Countries/Botswana/fees.json');
+// Mock PDO for testing
+$mockDb = new class {
+    public function prepare($sql) { return new class { public function execute($p) {} public function fetch($f) { return null; } }; }
+    public function exec($sql) { return 0; }
+};
+
+// Load fees config
+$feesJson = file_get_contents(__DIR__ . '/src/Core/Config/Countries/Botswana/fees.json');
 $feesConfig = json_decode($feesJson, true);
 
-echo "=== FEE CALCULATION TEST ===\n\n";
-echo "Loaded fees config with keys: " . implode(', ', array_keys($feesConfig)) . "\n\n";
+// Create ForexService with mock participants
+$participants = [
+    'CAZACOM' => ['currency' => 'ZAR', 'country' => 'South Africa'],
+    'ZURUBANK' => ['currency' => 'BWP', 'country' => 'Botswana']
+];
 
-// Initialize FeeService
-$feeService = new FeeService([], $feesConfig, 'BWP');
+$forexService = new ForexService($mockDb, [], $participants);
+$feeService = new FeeService([], $feesConfig, 'BWP', $forexService);
+$feeService->setParticipants($participants);
 
-// Test CASHOUT product with amount 100
-$payload = [
+echo "=== FOREX FEE CALCULATION TEST ===\n\n";
+
+// Test 1: Same currency (BWP → BWP)
+echo "Test 1: Same Currency (BWP → BWP)\n";
+echo "----------------------------------------\n";
+$payload1 = [
     'swap_type' => 'CASHOUT',
     'source_institution' => 'SACCUSSALIS',
     'destination_institution' => 'ZURUBANK',
     'currency' => 'BWP',
     'amount' => 100
 ];
+$result1 = $feeService->calculateFees('CASHOUT', 100, $payload1);
+echo "Amount to send: {$result1['net_amount']} {$result1['net_amount_currency']}\n";
+echo "Forex applied: " . ($result1['forex']['applied'] ? 'YES' : 'NO') . "\n\n";
 
-echo "Testing CASHOUT with amount: 100 BWP\n";
+// Test 2: Different currencies (ZAR → BWP)
+echo "Test 2: Different Currencies (ZAR → BWP)\n";
 echo "----------------------------------------\n";
+$payload2 = [
+    'swap_type' => 'CASHOUT',
+    'source_institution' => 'CAZACOM',
+    'destination_institution' => 'ZURUBANK',
+    'currency' => 'ZAR',
+    'destination_currency' => 'BWP',
+    'amount' => 100
+];
+$result2 = $feeService->calculateFees('CASHOUT', 100, $payload2);
+echo "Original amount: 100 {$result2['gross_amount_currency']}\n";
+echo "Fee (F1): {$result2['total_fee']} {$result2['total_fee_currency']}\n";
+echo "Net after fee: {$result2['net_amount_source_currency']} {$result2['gross_amount_currency']}\n";
+echo "Forex rate: {$result2['forex']['rate']}\n";
+echo "After forex: {$result2['net_amount_destination_currency']} {$result2['net_amount_currency']}\n";
+echo "Forex applied: " . ($result2['forex']['applied'] ? 'YES' : 'NO') . "\n";
 
-$result = $feeService->calculateFees('CASHOUT', 100, $payload);
-
-echo "Total Fee: " . $result['total_fee'] . " BWP\n";
-echo "Net Amount (after fees): " . $result['net_amount'] . " BWP\n";
-echo "Gross Amount: " . $result['gross_amount'] . " BWP\n\n";
-
-echo "Fee Breakdown:\n";
-foreach ($result['breakdown'] as $fee) {
-    echo "  - {$fee['name']} ({$fee['slot']}): {$fee['amount']} BWP\n";
-    if (isset($fee['formula'])) {
-        echo "    Formula: {$fee['formula']}\n";
-    }
+if ($result2['forex']['applied']) {
+    echo "  VouchMorph profit: {$result2['forex']['vouchmorph_profit']} {$result2['net_amount_currency']}\n";
 }
-
-echo "\nDistribution:\n";
-$distribution = $result['distribution'] ?? [];
-if (!empty($distribution)) {
-    echo "  Levy Fees Total: " . ($distribution['levy_fees_total'] ?? 0) . " BWP\n";
-    echo "  Net Distributable Pool: " . ($distribution['net_distributable_pool'] ?? 0) . " BWP\n";
-    echo "  Platform Share: " . ($distribution['platform']['amount'] ?? 0) . " BWP\n";
-    echo "  Source Share: " . ($distribution['source_institution']['amount'] ?? 0) . " BWP\n";
-    echo "  Destination Base Share: " . ($distribution['destination_institution']['amount'] ?? 0) . " BWP\n";
-    
-    $destSplit = $result['destination_split'] ?? null;
-    if ($destSplit) {
-        echo "    - Generate Code Fee: {$destSplit['generate_code_fee']} BWP\n";
-        echo "    - Cashout Completion Fee: {$destSplit['cashout_completion_fee']} BWP\n";
-    }
-}
-
-echo "\nExpected Results:\n";
-echo "  Amount to send to ZURUBANK: " . $result['net_amount'] . " BWP\n";
-echo "  (Original 100 BWP - 10 BWP fee = 90 BWP)\n";
