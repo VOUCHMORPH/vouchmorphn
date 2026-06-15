@@ -1659,27 +1659,42 @@ if ($amountToSend <= 0) {
     }
     
     $feesPath = $countryPath . '/fees.json';
+    
+    // Default empty config
+    $defaultFeesConfig = ['products' => [], 'regulatory' => []];
+    $this->feesConfig = $defaultFeesConfig;
+    
     if (file_exists($feesPath)) {
-        $feesData = json_decode(file_get_contents($feesPath), true);
+        $feesContent = file_get_contents($feesPath);
+        $feesData = json_decode($feesContent, true);
         
-        // Handle both structures: with 'products' key or direct product keys
-        if (!isset($feesData['products']) && (isset($feesData['CASHOUT']) || isset($feesData['DEPOSIT']))) {
-            $products = [];
-            foreach ($feesData as $key => $value) {
-                if (in_array($key, ['CASHOUT', 'DEPOSIT', 'CARD_LOAD', 'SWAP'])) {
-                    $products[$key] = $value;
+        if (json_last_error() === JSON_ERROR_NONE && is_array($feesData)) {
+            // Handle both structures: with 'products' key or direct product keys
+            if (!isset($feesData['products']) && (isset($feesData['CASHOUT']) || isset($feesData['DEPOSIT']))) {
+                $products = [];
+                foreach ($feesData as $key => $value) {
+                    if (in_array($key, ['CASHOUT', 'DEPOSIT', 'CARD_LOAD', 'SWAP'])) {
+                        $products[$key] = $value;
+                    }
                 }
+                $this->feesConfig = ['products' => $products, 'regulatory' => $feesData['regulatory'] ?? []];
+            } else if (isset($feesData['products'])) {
+                $this->feesConfig = $feesData;
+            } else {
+                // Invalid structure, use default
+                error_log("[SwapService] Invalid fees config structure for {$country}, using empty config");
+                $this->feesConfig = $defaultFeesConfig;
             }
-            $this->feesConfig = ['products' => $products, 'regulatory' => $feesData['regulatory'] ?? []];
+            
+            error_log("[SwapService] Loaded fees config with products: " . implode(', ', array_keys($this->feesConfig['products'] ?? [])));
         } else {
-            $this->feesConfig = $feesData;
+            // JSON parse error
+            error_log("[SwapService] JSON parse error in fees file for {$country}: " . json_last_error_msg() . ", using empty config");
+            $this->feesConfig = $defaultFeesConfig;
         }
-        
-        error_log("[SwapService] Loaded fees config with products: " . implode(', ', array_keys($this->feesConfig['products'] ?? [])));
     } else {
-        // FIX: Set default empty array structure instead of null
-        $this->feesConfig = ['products' => [], 'regulatory' => []];
         error_log("[SwapService] No fees config found for {$country}, using empty config");
+        $this->feesConfig = $defaultFeesConfig;
     }
     
     $this->logger->info("Configuration loaded", ['country' => $country]);
