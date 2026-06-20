@@ -13,13 +13,14 @@ use Domain\Services\ForexService;
 use Domain\Services\CardService;
 use Domain\Services\ContributionCalculator;
 use Domain\Services\MultiSourceFeeCalculator;
-use Domain\Services\MultiSourceSwapExecutor;
+use Domain\Services\MultiSource\MultiSourceSwapOrchestrator;
 use Infrastructure\Banks\GenericBankClient;
 use Infrastructure\SMS\SmsNotificationService;
 use Infrastructure\Mojaloop\IdempotencyService;
 use Infrastructure\Crypto\SignatureVerifier;
 use Infrastructure\Crypto\MessageSigner;
 use Infrastructure\Crypto\CertificateManager;
+use Infrastructure\Crypto\AggregateSigner;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -32,6 +33,15 @@ use Psr\Log\LoggerInterface;
  * 
  * DEPOSIT FLOW (1 step at destination):
  * 1. process_deposit - Direct deposit to account/wallet, THEN debit source
+ * 
+ * MULTI-SOURCE FLOW:
+ * 1. Create Virtual Funding Pool
+ * 2. Calculate contributions from multiple sources
+ * 3. Verify all sources
+ * 4. Place holds on all sources
+ * 5. Execute destination action ONCE
+ * 6. Debit all sources
+ * 7. Settlement & invoicing
  * 
  * MATHEMATICAL MODEL:
  * - Amount_1 = Requested amount
@@ -59,7 +69,7 @@ class SwapService
     private ?SmsNotificationService $smsService = null;
     private ?ContributionCalculator $contributionCalculator = null;
     private ?MultiSourceFeeCalculator $multiSourceFeeCalculator = null;
-    private ?MultiSourceSwapExecutor $multiSourceExecutor = null;
+    private ?MultiSourceSwapOrchestrator $multiSourceOrchestrator = null;
     private $logger = null;
     
     private MessageSigner $messageSigner;
@@ -84,30 +94,30 @@ class SwapService
         $this->config = $config;
         $this->countryCode = strtoupper($country);
         
-       if ($logger === null) {
-    $this->logger = new class {
-        public function info($message, array $context = []) {
-            error_log("[SwapService][INFO] " . $message . " " . json_encode($context));
-        }
-        public function error($message, array $context = []) {
-            error_log("[SwapService][ERROR] " . $message . " " . json_encode($context));
-        }
-        public function warning($message, array $context = []) {
-            error_log("[SwapService][WARNING] " . $message . " " . json_encode($context));
-        }
-        public function debug($message, array $context = []) {
-            error_log("[SwapService][DEBUG] " . $message . " " . json_encode($context));
-        }
-        public function log($level, $message, array $context = []) {
-            error_log("[SwapService][{$level}] " . $message . " " . json_encode($context));
-        }
-        public function __call($name, $args) {
-            $arg0 = isset($args[0]) ? $args[0] : '';
-            $arg1 = isset($args[1]) ? $args[1] : [];
-            error_log("[SwapService][{$name}] " . $arg0 . " " . json_encode($arg1));
-        }
-    };
-} else {
+        if ($logger === null) {
+            $this->logger = new class {
+                public function info($message, array $context = []) {
+                    error_log("[SwapService][INFO] " . $message . " " . json_encode($context));
+                }
+                public function error($message, array $context = []) {
+                    error_log("[SwapService][ERROR] " . $message . " " . json_encode($context));
+                }
+                public function warning($message, array $context = []) {
+                    error_log("[SwapService][WARNING] " . $message . " " . json_encode($context));
+                }
+                public function debug($message, array $context = []) {
+                    error_log("[SwapService][DEBUG] " . $message . " " . json_encode($context));
+                }
+                public function log($level, $message, array $context = []) {
+                    error_log("[SwapService][{$level}] " . $message . " " . json_encode($context));
+                }
+                public function __call($name, $args) {
+                    $arg0 = isset($args[0]) ? $args[0] : '';
+                    $arg1 = isset($args[1]) ? $args[1] : [];
+                    error_log("[SwapService][{$name}] " . $arg0 . " " . json_encode($arg1));
+                }
+            };
+        } else {
             $this->logger = $logger;
         }
         
@@ -126,15 +136,15 @@ class SwapService
         $this->loadConfiguration($country);
         $this->loadAtmNotes($country);
         
-       // Initialize settlement services
-$this->settlement = new HybridSettlementStrategy($this->swapDB);
+        // Initialize settlement services
+        $this->settlement = new HybridSettlementStrategy($this->swapDB);
 
-// First, initialize ForexService (it doesn't need FeeService yet)
-$this->forexService = new ForexService($this->swapDB, $this->config, $this->participants);
+        // First, initialize ForexService (it doesn't need FeeService yet)
+        $this->forexService = new ForexService($this->swapDB, $this->config, $this->participants);
 
-// Then initialize FeeService WITH ForexService
-$this->feeService = new FeeService($this->feesConfig, $this->config, $this->config['currency'] ?? 'BWP', $this->forexService);
-$this->feeService->setParticipants($this->participants);
+        // Then initialize FeeService WITH ForexService
+        $this->feeService = new FeeService($this->feesConfig, $this->config, $this->config['currency'] ?? 'BWP', $this->forexService);
+        $this->feeService->setParticipants($this->participants);
         
         // Initialize SMS service
         $smsConfig = $this->participants['sms'] ?? [];
@@ -147,14 +157,24 @@ $this->feeService->setParticipants($this->participants);
             $this->cardService = new CardService($this->swapDB, $this->countryCode, $vouchmorphConfig);
         }
         
+        // Initialize multi-source components
         $this->contributionCalculator = new ContributionCalculator();
         $this->multiSourceFeeCalculator = new MultiSourceFeeCalculator($this->config, $this->countryCode);
-        $this->multiSourceExecutor = new MultiSourceSwapExecutor(
+        
+        // Initialize the MultiSourceOrchestrator
+        $aggregateSigner = new AggregateSigner(
+            $this->certificateManager ?? new CertificateManager('VOUCHMORPH'),
+            $this->signatureVerifier
+        );
+        
+        $this->multiSourceOrchestrator = new MultiSourceSwapOrchestrator(
             $this->swapDB,
             $this,
             $this->settlement,
+            $aggregateSigner,
             $this->config,
-            $this->countryCode
+            $this->countryCode,
+            $this->logger
         );
         
         $this->logger->info("Signed SwapService initialized", ['country' => $country]);
@@ -206,115 +226,115 @@ $this->feeService->setParticipants($this->participants);
         ];
     }
 
-   /**
- * Calculate fees with full mathematical model breakdown including forex
- * 
- * Formulas:
- * - Amount_1 = Original request amount (source currency)
- * - F1 = Total customer upfront fee (source currency)
- * - Amount_2 = Amount_1 - F1 (net after fees in source currency)
- * - Exchange_Rate = rate from source_currency to destination_currency
- * - Amount_3 = Amount_2 × Exchange_Rate (converted to destination currency)
- * - M = Banknote multiplier (from destination ATM notes)
- * - Amount_4 = M × floor(Amount_3 / M) (dispensable amount in destination currency)
- * - Remainder_1 = Amount_3 - Amount_4 (stays at source in destination currency equivalent)
- */
-private function calculateFeesWithDetails(string $feeType, float $amount, array $payload): array
-{
-    $this->feeCalculationDetails = [];
-    
-    // Get source and destination currencies from payload
-    $sourceCurrency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
-    $destinationCurrency = $payload['destination_currency'] ?? $sourceCurrency;
-    
-    // Get fee result from FeeService (includes forex if currencies differ)
-    $feeResult = $this->feeService->calculateFees($feeType, $amount, $payload);
-    
-    $totalFee = $feeResult['total_fee'] ?? 0;  // F1 in source currency
-    $netAmountSourceCurrency = $feeResult['net_amount_source_currency'] ?? ($amount - $totalFee);  // Amount_2
-    
-    // Get forex information
-    $forexApplied = $feeResult['forex']['applied'] ?? false;
-    $exchangeRate = $feeResult['forex']['rate'] ?? 1.0;
-    $netAmountDestCurrency = $feeResult['net_amount_destination_currency'] ?? $netAmountSourceCurrency;  // Amount_3
-    
-    // Get ATM denominations for DESTINATION currency
-    $denominations = $this->atmNotes[$destinationCurrency] ?? [200, 100, 50, 20, 10];
-    $multiplier = $denominations[0] ?? 100;  // M
-    
-    // Calculate dispensable amount in DESTINATION currency (Amount_4)
-    $dispensableAmount = $multiplier * floor($netAmountDestCurrency / $multiplier);
-    $remainderBalance = $netAmountDestCurrency - $dispensableAmount;  // Remainder_1
-    
-    // If amount is too small for ATM, try the smallest denomination
-    if ($dispensableAmount <= 0 && $netAmountDestCurrency > 0) {
-        $smallestDenom = min($denominations);
-        $dispensableAmount = $smallestDenom * floor($netAmountDestCurrency / $smallestDenom);
-        $remainderBalance = $netAmountDestCurrency - $dispensableAmount;
-        $multiplier = $smallestDenom;
-        error_log("[SwapService] Using smallest denomination {$smallestDenom} for amount {$netAmountDestCurrency} {$destinationCurrency}");
+    /**
+     * Calculate fees with full mathematical model breakdown including forex
+     * 
+     * Formulas:
+     * - Amount_1 = Original request amount (source currency)
+     * - F1 = Total customer upfront fee (source currency)
+     * - Amount_2 = Amount_1 - F1 (net after fees in source currency)
+     * - Exchange_Rate = rate from source_currency to destination_currency
+     * - Amount_3 = Amount_2 × Exchange_Rate (converted to destination currency)
+     * - M = Banknote multiplier (from destination ATM notes)
+     * - Amount_4 = M × floor(Amount_3 / M) (dispensable amount in destination currency)
+     * - Remainder_1 = Amount_3 - Amount_4 (stays at source in destination currency equivalent)
+     */
+    private function calculateFeesWithDetails(string $feeType, float $amount, array $payload): array
+    {
+        $this->feeCalculationDetails = [];
+        
+        // Get source and destination currencies from payload
+        $sourceCurrency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
+        $destinationCurrency = $payload['destination_currency'] ?? $sourceCurrency;
+        
+        // Get fee result from FeeService (includes forex if currencies differ)
+        $feeResult = $this->feeService->calculateFees($feeType, $amount, $payload);
+        
+        $totalFee = $feeResult['total_fee'] ?? 0;  // F1 in source currency
+        $netAmountSourceCurrency = $feeResult['net_amount_source_currency'] ?? ($amount - $totalFee);  // Amount_2
+        
+        // Get forex information
+        $forexApplied = $feeResult['forex']['applied'] ?? false;
+        $exchangeRate = $feeResult['forex']['rate'] ?? 1.0;
+        $netAmountDestCurrency = $feeResult['net_amount_destination_currency'] ?? $netAmountSourceCurrency;  // Amount_3
+        
+        // Get ATM denominations for DESTINATION currency
+        $denominations = $this->atmNotes[$destinationCurrency] ?? [200, 100, 50, 20, 10];
+        $multiplier = $denominations[0] ?? 100;  // M
+        
+        // Calculate dispensable amount in DESTINATION currency (Amount_4)
+        $dispensableAmount = $multiplier * floor($netAmountDestCurrency / $multiplier);
+        $remainderBalance = $netAmountDestCurrency - $dispensableAmount;  // Remainder_1
+        
+        // If amount is too small for ATM, try the smallest denomination
+        if ($dispensableAmount <= 0 && $netAmountDestCurrency > 0) {
+            $smallestDenom = min($denominations);
+            $dispensableAmount = $smallestDenom * floor($netAmountDestCurrency / $smallestDenom);
+            $remainderBalance = $netAmountDestCurrency - $dispensableAmount;
+            $multiplier = $smallestDenom;
+            error_log("[SwapService] Using smallest denomination {$smallestDenom} for amount {$netAmountDestCurrency} {$destinationCurrency}");
+        }
+        
+        $this->feeCalculationDetails = [
+            'fee_type' => $feeType,
+            'original_amount' => $amount,                       // Amount_1
+            'original_currency' => $sourceCurrency,
+            'total_fee' => $totalFee,                           // F1
+            'total_fee_currency' => $sourceCurrency,
+            'net_amount_source_currency' => $netAmountSourceCurrency,  // Amount_2
+            'forex_applied' => $forexApplied,
+            'exchange_rate' => $exchangeRate,
+            'net_amount_destination_currency' => $netAmountDestCurrency,  // Amount_3
+            'destination_currency' => $destinationCurrency,
+            'multiplier' => $multiplier,                        // M
+            'dispensable_amount' => $dispensableAmount,         // Amount_4
+            'remainder_balance' => $remainderBalance,           // Remainder_1
+            'denominations' => $denominations,
+            'breakdown' => $feeResult['breakdown'] ?? [],
+            'revenue_split' => $feeResult['distribution'] ?? [],
+            'destination_split' => $feeResult['destination_split'] ?? [],
+            'mathematical_formulas' => [
+                'Amount_1' => $amount,
+                'F1' => $totalFee,
+                'Amount_2' => $netAmountSourceCurrency,
+                'Exchange_Rate' => $exchangeRate,
+                'Amount_3' => $netAmountDestCurrency,
+                'M' => $multiplier,
+                'Amount_4' => $dispensableAmount,
+                'Remainder_1' => $remainderBalance
+            ]
+        ];
+        
+        // Log the complete calculation
+        error_log("[SwapService] Mathematical calculation with forex:");
+        error_log("  Amount_1: {$amount} {$sourceCurrency}");
+        error_log("  F1 (fee): {$totalFee} {$sourceCurrency}");
+        error_log("  Amount_2: {$netAmountSourceCurrency} {$sourceCurrency}");
+        if ($forexApplied) {
+            error_log("  Exchange Rate: {$exchangeRate} ({$sourceCurrency} → {$destinationCurrency})");
+            error_log("  Amount_3: {$netAmountDestCurrency} {$destinationCurrency}");
+        }
+        error_log("  M (multiplier): {$multiplier} {$destinationCurrency}");
+        error_log("  Amount_4 (dispensable): {$dispensableAmount} {$destinationCurrency}");
+        error_log("  Remainder_1: {$remainderBalance} {$destinationCurrency}");
+        
+        return [
+            'total_fee' => $totalFee,
+            'total_fee_currency' => $sourceCurrency,
+            'net_amount' => $netAmountDestCurrency,  // Amount to send in destination currency
+            'net_amount_source_currency' => $netAmountSourceCurrency,
+            'net_amount_destination_currency' => $netAmountDestCurrency,
+            'dispensable_amount' => $dispensableAmount,
+            'remainder_balance' => $remainderBalance,
+            'exchange_rate' => $exchangeRate,
+            'forex_applied' => $forexApplied,
+            'source_currency' => $sourceCurrency,
+            'destination_currency' => $destinationCurrency,
+            'multiplier' => $multiplier,
+            'denominations' => $denominations,
+            'components' => $this->feeCalculationDetails
+        ];
     }
-    
-    $this->feeCalculationDetails = [
-        'fee_type' => $feeType,
-        'original_amount' => $amount,                       // Amount_1
-        'original_currency' => $sourceCurrency,
-        'total_fee' => $totalFee,                           // F1
-        'total_fee_currency' => $sourceCurrency,
-        'net_amount_source_currency' => $netAmountSourceCurrency,  // Amount_2
-        'forex_applied' => $forexApplied,
-        'exchange_rate' => $exchangeRate,
-        'net_amount_destination_currency' => $netAmountDestCurrency,  // Amount_3
-        'destination_currency' => $destinationCurrency,
-        'multiplier' => $multiplier,                        // M
-        'dispensable_amount' => $dispensableAmount,         // Amount_4
-        'remainder_balance' => $remainderBalance,           // Remainder_1
-        'denominations' => $denominations,
-        'breakdown' => $feeResult['breakdown'] ?? [],
-        'revenue_split' => $feeResult['distribution'] ?? [],
-        'destination_split' => $feeResult['destination_split'] ?? [],
-        'mathematical_formulas' => [
-            'Amount_1' => $amount,
-            'F1' => $totalFee,
-            'Amount_2' => $netAmountSourceCurrency,
-            'Exchange_Rate' => $exchangeRate,
-            'Amount_3' => $netAmountDestCurrency,
-            'M' => $multiplier,
-            'Amount_4' => $dispensableAmount,
-            'Remainder_1' => $remainderBalance
-        ]
-    ];
-    
-    // Log the complete calculation
-    error_log("[SwapService] Mathematical calculation with forex:");
-    error_log("  Amount_1: {$amount} {$sourceCurrency}");
-    error_log("  F1 (fee): {$totalFee} {$sourceCurrency}");
-    error_log("  Amount_2: {$netAmountSourceCurrency} {$sourceCurrency}");
-    if ($forexApplied) {
-        error_log("  Exchange Rate: {$exchangeRate} ({$sourceCurrency} → {$destinationCurrency})");
-        error_log("  Amount_3: {$netAmountDestCurrency} {$destinationCurrency}");
-    }
-    error_log("  M (multiplier): {$multiplier} {$destinationCurrency}");
-    error_log("  Amount_4 (dispensable): {$dispensableAmount} {$destinationCurrency}");
-    error_log("  Remainder_1: {$remainderBalance} {$destinationCurrency}");
-    
-    return [
-        'total_fee' => $totalFee,
-        'total_fee_currency' => $sourceCurrency,
-        'net_amount' => $netAmountDestCurrency,  // Amount to send in destination currency
-        'net_amount_source_currency' => $netAmountSourceCurrency,
-        'net_amount_destination_currency' => $netAmountDestCurrency,
-        'dispensable_amount' => $dispensableAmount,
-        'remainder_balance' => $remainderBalance,
-        'exchange_rate' => $exchangeRate,
-        'forex_applied' => $forexApplied,
-        'source_currency' => $sourceCurrency,
-        'destination_currency' => $destinationCurrency,
-        'multiplier' => $multiplier,
-        'denominations' => $denominations,
-        'components' => $this->feeCalculationDetails
-    ];
-}
 
     private function adjustAmountForDelivery(float $amount, string $deliveryMethod, string $currency): array
     {
@@ -458,14 +478,21 @@ private function calculateFeesWithDetails(string $feeType, float $amount, array 
         $destInst = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
         $swapType = $payload['swap_type'] ?? 'STANDARD';
         
-        if (empty($sourceInst)) {
+        // Check if this is a multi-source swap
+        $isMultiSource = isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 1;
+        
+        if ($isMultiSource) {
+            $swapType = 'MULTI_SOURCE';
+        }
+        
+        if (empty($sourceInst) && !$isMultiSource) {
             throw new RuntimeException("Missing source institution (from_institution or source_institution)");
         }
         if (empty($destInst)) {
             throw new RuntimeException("Missing destination institution (to_institution or destination_institution)");
         }
         
-        error_log("[SwapService] Source: {$sourceInst}, Dest: {$destInst}, Type: {$swapType}");
+        error_log("[SwapService] Source: " . ($sourceInst ?? 'MULTI_SOURCE') . ", Dest: {$destInst}, Type: {$swapType}");
         
         if ($swapType === 'CASHOUT') {
             $amount = (float)($payload['amount'] ?? 0);
@@ -622,40 +649,37 @@ private function calculateFeesWithDetails(string $feeType, float $amount, array 
         error_log("  Amount_4 (dispensable): {$amountToSend}");
         error_log("  Remainder_1 (stays at source): {$remainderAtSource}");
         
-       $currency = $payload['currency'] ?? 'BWP';
+        $currency = $payload['currency'] ?? 'BWP';
 
-$notes = $this->atmNotes[$currency] ?? [];
+        $notes = $this->atmNotes[$currency] ?? [];
 
-if (empty($notes)) {
-    throw new RuntimeException(
-        "No ATM denominations configured for {$currency}"
-    );
-}
+        if (empty($notes)) {
+            throw new RuntimeException(
+                "No ATM denominations configured for {$currency}"
+            );
+        }
 
-$lowestDenomination = min($notes);
+        $lowestDenomination = min($notes);
 
-// If there is some money left, but ATM cannot dispense it,
-// switch to AGENT cashout.
-if ($amountToSend > 0 && $amountToSend < $lowestDenomination) {
+        // If there is some money left, but ATM cannot dispense it,
+        // switch to AGENT cashout.
+        if ($amountToSend > 0 && $amountToSend < $lowestDenomination) {
+            $deliveryMethod = 'AGENT';
+            $amountToSend = $netAmount;
+            $remainderAtSource = 0;
+            error_log(
+                "[SwapService] Amount below ATM minimum denomination. "
+                . "Switching to AGENT cashout: {$amountToSend}"
+            );
+        }
 
-    $deliveryMethod = 'AGENT';
-    $amountToSend = $netAmount;
-    $remainderAtSource = 0;
-
-    error_log(
-        "[SwapService] Amount below ATM minimum denomination. "
-        . "Switching to AGENT cashout: {$amountToSend}"
-    );
-}
-
-// If there is nothing left after deductions, fail.
-if ($amountToSend <= 0) {
-
-    throw new RuntimeException(
-        "Amount after fees ({$netAmount} {$currency}) is too small to deliver."
-    );
-}
-   
+        // If there is nothing left after deductions, fail.
+        if ($amountToSend <= 0) {
+            throw new RuntimeException(
+                "Amount after fees ({$netAmount} {$currency}) is too small to deliver."
+            );
+        }
+        
         // STEP 4: GENERATE CODE AT DESTINATION
         error_log("[SwapService] STEP 4: Generating cashout code at DESTINATION: {$destinationInstitution} for amount: {$amountToSend}");
         
@@ -1234,16 +1258,6 @@ if ($amountToSend <= 0) {
         ];
     }
 
-    private function getParticipantId(string $institution): int
-    {
-        foreach ($this->participants as $code => $participant) {
-            if (strtoupper($code) === strtoupper($institution)) {
-                return $participant['id'] ?? 0;
-            }
-        }
-        return 0;
-    }
-
     // ============================================================
     // SIGNED INSTITUTION COMMUNICATION METHODS
     // ============================================================
@@ -1482,12 +1496,15 @@ if ($amountToSend <= 0) {
         return ['success' => true];
     }
 
+    /**
+     * Execute multi-source swap using the new orchestrator
+     */
     private function executeMultiSourceSwap(array $payload): array
     {
-        if (!$this->multiSourceExecutor) {
-            throw new RuntimeException("Multi-source swap executor not initialized");
+        if (!$this->multiSourceOrchestrator) {
+            throw new RuntimeException("Multi-source swap orchestrator not initialized");
         }
-        return $this->multiSourceExecutor->execute($payload);
+        return $this->multiSourceOrchestrator->execute($payload);
     }
 
     private function executeCardIssuance(array $payload): array
@@ -1692,44 +1709,44 @@ if ($amountToSend <= 0) {
         }
     }
 
-   private function loadConfiguration(string $country): void
-{
-    $countryPath = __DIR__ . '/../../Core/Config/Countries/' . $country;
-    
-    $participantsPath = $countryPath . '/participants.yaml';
-    if (file_exists($participantsPath)) {
-        $this->participants = $this->parseYaml($participantsPath);
-    }
-    
-    $feesPath = $countryPath . '/fees.json';
-    
-    // Default empty config
-    $defaultFeesConfig = ['products' => [], 'regulatory' => []];
-    $this->feesConfig = $defaultFeesConfig;
-    
-    if (file_exists($feesPath)) {
-        $feesContent = file_get_contents($feesPath);
-        $feesData = json_decode($feesContent, true);
+    private function loadConfiguration(string $country): void
+    {
+        $countryPath = __DIR__ . '/../../Core/Config/Countries/' . $country;
         
-        if (json_last_error() === JSON_ERROR_NONE && is_array($feesData)) {
-            // PASS THE CONFIG AS-IS - FeeService will handle the structure
-            $this->feesConfig = $feesData;
+        $participantsPath = $countryPath . '/participants.yaml';
+        if (file_exists($participantsPath)) {
+            $this->participants = $this->parseYaml($participantsPath);
+        }
+        
+        $feesPath = $countryPath . '/fees.json';
+        
+        // Default empty config
+        $defaultFeesConfig = ['products' => [], 'regulatory' => []];
+        $this->feesConfig = $defaultFeesConfig;
+        
+        if (file_exists($feesPath)) {
+            $feesContent = file_get_contents($feesPath);
+            $feesData = json_decode($feesContent, true);
             
-            error_log("[SwapService] Loaded fees config for {$country}");
-            error_log("[SwapService] Config keys: " . implode(', ', array_keys($feesData)));
-            if (isset($feesData['CASHOUT'])) {
-                error_log("[SwapService] CASHOUT fee_components found: " . json_encode(array_keys($feesData['CASHOUT']['fee_components'] ?? [])));
+            if (json_last_error() === JSON_ERROR_NONE && is_array($feesData)) {
+                // PASS THE CONFIG AS-IS - FeeService will handle the structure
+                $this->feesConfig = $feesData;
+                
+                error_log("[SwapService] Loaded fees config for {$country}");
+                error_log("[SwapService] Config keys: " . implode(', ', array_keys($feesData)));
+                if (isset($feesData['CASHOUT'])) {
+                    error_log("[SwapService] CASHOUT fee_components found: " . json_encode(array_keys($feesData['CASHOUT']['fee_components'] ?? [])));
+                }
+            } else {
+                error_log("[SwapService] JSON parse error in fees file for {$country}: " . json_last_error_msg());
+                $this->feesConfig = $defaultFeesConfig;
             }
         } else {
-            error_log("[SwapService] JSON parse error in fees file for {$country}: " . json_last_error_msg());
-            $this->feesConfig = $defaultFeesConfig;
+            error_log("[SwapService] No fees config found for {$country}, using empty config");
         }
-    } else {
-        error_log("[SwapService] No fees config found for {$country}, using empty config");
+        
+        $this->logger->info("Configuration loaded", ['country' => $country]);
     }
-    
-    $this->logger->info("Configuration loaded", ['country' => $country]);
-}
 
     private function parseYaml(string $path): array
     {
@@ -1776,6 +1793,16 @@ if ($amountToSend <= 0) {
         throw new RuntimeException("Participant not found: {$institution}");
     }
 
+    public function getParticipantId(string $institution): int
+    {
+        foreach ($this->participants as $code => $participant) {
+            if (strtoupper($code) === strtoupper($institution)) {
+                return $participant['id'] ?? 0;
+            }
+        }
+        return 0;
+    }
+
     public function getHoldStatus(int $holdId): ?array
     {
         $sql = "SELECT * FROM hold_transactions WHERE hold_id = :hold_id";
@@ -1792,5 +1819,53 @@ if ($amountToSend <= 0) {
     public function calculateNoteBreakdown(float $amount, string $currency): array
     {
         return $this->validateCashoutAmount($amount, $currency);
+    }
+
+    /**
+     * Get available balance for a source
+     */
+    public function getSourceAvailableBalance(array $source): float
+    {
+        try {
+            $participant = $this->getParticipant($source['institution']);
+            $bankClient = new GenericBankClient($participant);
+            
+            $payload = [
+                'action' => 'GET_BALANCE',
+                'asset_type' => $source['asset_type'] ?? 'ACCOUNT',
+                'source_identifier' => $source['identifier']
+            ];
+            
+            $result = $bankClient->getBalance($payload);
+            return (float)($result['data']['balance'] ?? 0);
+        } catch (Exception $e) {
+            $this->logger->warning("Failed to get balance for source", [
+                'source' => $source['institution'],
+                'error' => $e->getMessage()
+            ]);
+            return 0;
+        }
+    }
+
+    /**
+     * Get the status of a multi-source pool
+     */
+    public function getMultiSourceStatus(string $poolId): array
+    {
+        if (!$this->multiSourceOrchestrator) {
+            throw new RuntimeException("Multi-source swap orchestrator not initialized");
+        }
+        return $this->multiSourceOrchestrator->getStatus($poolId);
+    }
+
+    /**
+     * Cancel a multi-source pool
+     */
+    public function cancelMultiSourcePool(string $poolId, string $reason): array
+    {
+        if (!$this->multiSourceOrchestrator) {
+            throw new RuntimeException("Multi-source swap orchestrator not initialized");
+        }
+        return $this->multiSourceOrchestrator->cancel($poolId, $reason);
     }
 }
