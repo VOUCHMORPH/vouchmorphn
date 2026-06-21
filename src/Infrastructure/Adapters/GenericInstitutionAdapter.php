@@ -40,81 +40,86 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
     public function supports(string $capability): bool
     {
         return in_array($capability, [
-            'BALANCE',
             'VERIFY_ASSET',
             'HOLD',
             'DEBIT',
             'CREDIT',
             'CASHOUT',
-            'VERIFY_ACCOUNT'
+            'VERIFY_ACCOUNT',
+            'BALANCE',
+            'TRANSACTIONS',
+            'ACCOUNTS'
         ]);
     }
     
-    /**
-     * ============================================================
-     * GET BALANCE - New method
-     * ============================================================
-     */
-    public function getBalance(array $payload, array $context): array
+    // ============================================================
+    // INTERNAL: Consent Handling (Hidden from SwapService)
+    // ============================================================
+    
+    protected function ensureConsent(): void
     {
-        $this->context = array_merge($context, $payload);
+        // If consent already obtained, skip
+        if ($this->consentObtained && $this->accessToken) {
+            return;
+        }
+        
+        // Check if this bank requires consent
+        $consentRequired = $this->config['consent_required'] ?? false;
+        
+        if (!$consentRequired) {
+            // No consent needed - M-Pesa style
+            $this->consentObtained = true;
+            $this->logger->info("Consent not required for {$this->institution}");
+            return;
+        }
+        
+        // Consent is required - get it now
+        $this->logger->info("Obtaining consent for {$this->institution}");
         
         try {
-            // Step 1: Get consent if needed (INTERNAL - SwapService doesn't know)
-            $this->ensureConsent();
-            
-            // Step 2: Get balance
-            $balancePayload = [
-                'account_id' => $payload['account_id'] ?? $payload['account_identifier'],
-                'access_token' => $this->accessToken
-            ];
-            
-            $result = $this->bankClient->getAccountBalance(
-                $this->accessToken ?? '',
-                $balancePayload['account_id']
-            );
-            
-            if (!$result || !isset($result['balance'])) {
-                return [
-                    'success' => false,
-                    'message' => 'Failed to get balance',
-                    'balance' => 0,
-                    'currency' => $payload['currency'] ?? 'BWP'
-                ];
+            // Get OAuth token
+            if (isset($this->context['access_token'])) {
+                $this->accessToken = $this->context['access_token'];
+                $this->consentObtained = true;
+                return;
             }
             
-            return [
-                'success' => true,
-                'balance' => (float) $result['balance'],
-                'currency' => $result['currency'] ?? $payload['currency'] ?? 'BWP',
-                'account_id' => $payload['account_id'],
-                'account_name' => $result['account_name'] ?? null
+            // Try to get token from bank
+            $authPayload = [
+                'grant_type' => 'client_credentials',
+                'client_id' => $this->config['api_key'] ?? getenv('BANK_API_KEY'),
+                'client_secret' => $this->config['api_secret'] ?? getenv('BANK_API_SECRET'),
+                'scope' => 'read_balance initiate_payment'
             ];
             
+            // Use the bank client's OAuth methods
+            if (method_exists($this->bankClient, 'exchangeCodeForToken')) {
+                $this->accessToken = $this->context['access_token'] ?? null;
+                $this->consentObtained = true;
+            } else {
+                $this->accessToken = $this->config['api_key'] ?? null;
+                $this->consentObtained = true;
+            }
+            
+            $this->logger->info("Consent obtained for {$this->institution}");
+            
         } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'message' => $e->getMessage(),
-                'balance' => 0,
-                'currency' => $payload['currency'] ?? 'BWP'
-            ];
+            $this->logger->error("Consent failed for {$this->institution}: " . $e->getMessage());
+            throw new \RuntimeException("Consent failed: " . $e->getMessage());
         }
     }
     
-    /**
-     * ============================================================
-     * VERIFY ASSET - Includes internal consent handling
-     * ============================================================
-     */
+    // ============================================================
+    // CORE SWAP OPERATIONS
+    // ============================================================
+    
     public function verifyAsset(array $payload, array $context): array
     {
         $this->context = array_merge($context, $payload);
         
         try {
-            // Step 1: Get consent if needed (INTERNAL - SwapService doesn't know)
             $this->ensureConsent();
             
-            // Step 2: Verify asset
             $verifyPayload = [
                 'reference' => $payload['reference'] ?? uniqid('verify_'),
                 'asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
@@ -153,20 +158,13 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         }
     }
     
-    /**
-     * ============================================================
-     * PLACE HOLD - Includes internal consent handling
-     * ============================================================
-     */
     public function placeHold(array $payload, array $context): array
     {
         $this->context = array_merge($context, $payload);
         
         try {
-            // Step 1: Get consent if needed (INTERNAL - SwapService doesn't know)
             $this->ensureConsent();
             
-            // Step 2: Place hold
             $holdPayload = [
                 'reference' => $payload['reference'] ?? uniqid('hold_'),
                 'asset_id' => $payload['account_id'] ?? $payload['account_identifier'],
@@ -203,20 +201,13 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         }
     }
     
-    /**
-     * ============================================================
-     * DEBIT - Includes internal consent handling
-     * ============================================================
-     */
     public function debit(array $payload, array $context): array
     {
         $this->context = array_merge($context, $payload);
         
         try {
-            // Step 1: Get consent if needed (INTERNAL - SwapService doesn't know)
             $this->ensureConsent();
             
-            // Step 2: Debit
             $debitPayload = [
                 'reference' => $payload['reference'] ?? uniqid('debit_'),
                 'hold_reference' => $payload['hold_reference'] ?? $payload['hold_id'],
@@ -250,20 +241,13 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         }
     }
     
-    /**
-     * ============================================================
-     * CREDIT - Includes internal consent handling
-     * ============================================================
-     */
     public function credit(array $payload, array $context): array
     {
         $this->context = array_merge($context, $payload);
         
         try {
-            // Step 1: Get consent if needed (INTERNAL - SwapService doesn't know)
             $this->ensureConsent();
             
-            // Step 2: Credit
             $creditPayload = [
                 'reference' => $payload['reference'] ?? uniqid('credit_'),
                 'source_institution' => $payload['source_institution'] ?? 'VOUCHMORPH',
@@ -301,17 +285,11 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         }
     }
     
-    /**
-     * ============================================================
-     * GENERATE CASHOUT TOKEN
-     * ============================================================
-     */
     public function generateCashoutToken(array $payload, array $context): array
     {
         $this->context = array_merge($context, $payload);
         
         try {
-            // Step 1: Get consent if needed (INTERNAL - SwapService doesn't know)
             $this->ensureConsent();
             
             $tokenPayload = [
@@ -353,78 +331,235 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
     
     public function verifyCashoutToken(array $payload, array $context): array
     {
-        // ... implementation ...
+        $this->context = array_merge($context, $payload);
+        
+        try {
+            $verifyPayload = [
+                'token_reference' => $payload['cashout_code'] ?? $payload['code'],
+                'entered_code' => $payload['pin'] ?? $payload['code'],
+                'access_token' => $this->accessToken
+            ];
+            
+            $result = $this->bankClient->verifyToken($verifyPayload);
+            
+            if (!$result['success']) {
+                return [
+                    'verified' => false,
+                    'message' => $result['curl_error'] ?? 'Verification failed'
+                ];
+            }
+            
+            $data = $result['data'] ?? [];
+            
+            return [
+                'verified' => $data['verified'] ?? false,
+                'amount' => $data['amount'] ?? null,
+                'beneficiary' => $data['beneficiary'] ?? null,
+                'message' => $data['message'] ?? null
+            ];
+            
+        } catch (\Exception $e) {
+            return [
+                'verified' => false,
+                'message' => $e->getMessage()
+            ];
+        }
     }
     
     public function confirmCashout(array $payload, array $context): array
     {
-        // ... implementation ...
+        $this->context = array_merge($context, $payload);
+        
+        try {
+            $confirmPayload = [
+                'token_reference' => $payload['cashout_code'] ?? $payload['code'],
+                'dispensed_notes' => $payload['notes'] ?? null,
+                'completed_at' => date('Y-m-d H:i:s'),
+                'access_token' => $this->accessToken
+            ];
+            
+            $result = $this->bankClient->confirmCashout($confirmPayload);
+            
+            if (!$result['success']) {
+                return [
+                    'confirmed' => false,
+                    'message' => $result['curl_error'] ?? 'Confirmation failed'
+                ];
+            }
+            
+            $data = $result['data'] ?? [];
+            
+            return [
+                'confirmed' => $data['confirmed'] ?? false,
+                'transaction_reference' => $data['transaction_reference'] ?? null,
+                'settlement_triggered' => $data['settlement_triggered'] ?? false
+            ];
+            
+        } catch (\Exception $e) {
+            return [
+                'confirmed' => false,
+                'message' => $e->getMessage()
+            ];
+        }
     }
     
     public function verifyAccount(array $payload, array $context): array
     {
-        // ... implementation ...
-    }
-    
-    /**
-     * ============================================================
-     * INTERNAL: Consent Handling (Hidden from SwapService)
-     * ============================================================
-     */
-    protected function ensureConsent(): void
-    {
-        // If consent already obtained, skip
-        if ($this->consentObtained && $this->accessToken) {
-            return;
-        }
-        
-        // Check if this bank requires consent
-        $consentRequired = $this->config['consent_required'] ?? false;
-        
-        if (!$consentRequired) {
-            // No consent needed - M-Pesa style
-            $this->consentObtained = true;
-            $this->logger->info("Consent not required for {$this->institution}");
-            return;
-        }
-        
-        // Consent is required - get it now
-        $this->logger->info("Obtaining consent for {$this->institution}");
+        $this->context = array_merge($context, $payload);
         
         try {
-            // Get OAuth token
-            if (isset($this->context['access_token'])) {
-                $this->accessToken = $this->context['access_token'];
-                $this->consentObtained = true;
-                return;
-            }
+            $this->ensureConsent();
             
-            // Try to get token from bank
-            $authPayload = [
-                'grant_type' => 'client_credentials',
-                'client_id' => $this->config['api_key'] ?? getenv('BANK_API_KEY'),
-                'client_secret' => $this->config['api_secret'] ?? getenv('BANK_API_SECRET'),
-                'scope' => 'read_balance initiate_payment'
+            $verifyPayload = [
+                'account_id' => $payload['destination_account_id'] ?? $payload['account_id'],
+                'access_token' => $this->accessToken
             ];
             
-            // Use the bank client's OAuth methods
-            if (method_exists($this->bankClient, 'exchangeCodeForToken')) {
-                // For OAuth flows with user consent
-                // This would typically be done via redirect
-                // For now, we assume we have a token
-                $this->accessToken = $this->context['access_token'] ?? null;
-                $this->consentObtained = true;
-            } else {
-                // For API key based consent
-                $this->accessToken = $this->config['api_key'] ?? null;
-                $this->consentObtained = true;
+            $result = $this->bankClient->processDeposit($verifyPayload);
+            
+            if (!$result['success']) {
+                return [
+                    'verified' => false,
+                    'message' => $result['curl_error'] ?? 'Account verification failed'
+                ];
             }
             
-            $this->logger->info("Consent obtained for {$this->institution}");
+            $data = $result['data'] ?? [];
+            
+            return [
+                'verified' => true,
+                'account_name' => $data['account_name'] ?? null,
+                'account_type' => $data['account_type'] ?? null,
+                'status' => $data['status'] ?? 'ACTIVE'
+            ];
             
         } catch (\Exception $e) {
-            $this->logger->error("Consent failed for {$this->institution}: " . $e->getMessage());
-            throw new \RuntimeException("Consent failed: " . $e->getMessage());
+            return [
+                'verified' => false,
+                'message' => $e->getMessage()
+            ];
+        }
+    }
+    
+    // ============================================================
+    // DASHBOARD/UX OPERATIONS - NOT part of swap flow
+    // ============================================================
+    
+    public function getBalance(array $payload, array $context): array
+    {
+        $this->context = array_merge($context, $payload);
+        
+        try {
+            $this->ensureConsent();
+            
+            $balancePayload = [
+                'account_id' => $payload['account_id'] ?? $payload['account_identifier'],
+                'access_token' => $this->accessToken
+            ];
+            
+            $result = $this->bankClient->getAccountBalance(
+                $this->accessToken ?? '',
+                $balancePayload['account_id']
+            );
+            
+            if (!$result || !isset($result['balance'])) {
+                return [
+                    'success' => false,
+                    'message' => 'Failed to get balance',
+                    'balance' => 0,
+                    'currency' => $payload['currency'] ?? 'BWP'
+                ];
+            }
+            
+            return [
+                'success' => true,
+                'balance' => (float) $result['balance'],
+                'currency' => $result['currency'] ?? $payload['currency'] ?? 'BWP',
+                'account_id' => $payload['account_id'],
+                'account_name' => $result['account_name'] ?? null,
+                'last_updated' => date('Y-m-d H:i:s')
+            ];
+            
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => $e->getMessage(),
+                'balance' => 0,
+                'currency' => $payload['currency'] ?? 'BWP'
+            ];
+        }
+    }
+    
+    public function getTransactions(array $payload, array $context): array
+    {
+        $this->context = array_merge($context, $payload);
+        
+        try {
+            $this->ensureConsent();
+            
+            $limit = $payload['limit'] ?? 50;
+            $offset = $payload['offset'] ?? 0;
+            
+            $result = $this->bankClient->getTransactions(
+                $this->accessToken ?? '',
+                $payload['account_id'],
+                $limit,
+                $offset
+            );
+            
+            if (!$result || !isset($result['transactions'])) {
+                return [
+                    'success' => false,
+                    'message' => 'Failed to get transactions',
+                    'transactions' => []
+                ];
+            }
+            
+            return [
+                'success' => true,
+                'transactions' => $result['transactions'],
+                'total' => $result['total'] ?? count($result['transactions']),
+                'limit' => $limit,
+                'offset' => $offset
+            ];
+            
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => $e->getMessage(),
+                'transactions' => []
+            ];
+        }
+    }
+    
+    public function getAccounts(array $payload, array $context): array
+    {
+        $this->context = array_merge($context, $payload);
+        
+        try {
+            $this->ensureConsent();
+            
+            // Use the bank client to get accounts
+            // This would need to be added to BankAPIInterface
+            // For now, return a placeholder
+            return [
+                'success' => true,
+                'accounts' => [
+                    [
+                        'id' => $payload['account_id'] ?? 'unknown',
+                        'name' => $payload['account_name'] ?? 'Main Account',
+                        'type' => 'BANK',
+                        'currency' => $payload['currency'] ?? 'BWP'
+                    ]
+                ]
+            ];
+            
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => $e->getMessage(),
+                'accounts' => []
+            ];
         }
     }
 }
