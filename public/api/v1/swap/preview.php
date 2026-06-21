@@ -6,7 +6,6 @@ declare(strict_types=1);
  * Calculates fees and returns preview WITHOUT executing
  */
 
-// Load bootstrap
 require_once __DIR__ . '/../../../../src/bootstrap.php';
 
 use Core\Database\DBConnection;
@@ -24,10 +23,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 ini_set('display_errors', 0);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
-
-// ============================================
-// AUTHENTICATION
-// ============================================
 
 function getAllApiKeysFromEnvironment(): array {
     $keys = [];
@@ -98,39 +93,21 @@ try {
         throw new Exception('Invalid JSON payload', 400);
     }
     
-    // Get country from headers or payload
-    $headers = getallheaders();
-    $headersLower = array_change_key_case($headers ?: [], CASE_LOWER);
-    $countryCode = $headersLower['x-country-code'] ?? $headersLower['x-country'] ?? $input['country'] ?? null;
-    
-    // Load country config using LoadCountry
     $countryConfig = \Core\Config\LoadCountry::getConfig();
     
     if (!$countryConfig) {
         throw new Exception('Country configuration not found', 500);
     }
     
-    $countryName = $countryConfig['country'] ?? 'Botswana';
     $currency = $countryConfig['currency'] ?? 'BWP';
     
-    // Database connection - use the one from bootstrap
     $db = $container->get(PDO::class);
     if (!$db) {
         throw new Exception("Database connection failed");
     }
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
-    // Get participants and fees
     $participants = $countryConfig['participants'] ?? [];
-    $feesConfig = $countryConfig['fees'] ?? [];
-    
-    // Debug: Log what we have
-    error_log("[PREVIEW] Fees config keys: " . implode(', ', array_keys($feesConfig)));
-    error_log("[PREVIEW] Participants count: " . count($participants));
-    
-    // ============================================================
-    // CALCULATE PREVIEW (NO EXECUTION)
-    // ============================================================
     
     $amount = (float)($input['amount'] ?? 0);
     $sourceInst = $input['from_institution'] ?? $input['source_institution'] ?? null;
@@ -143,7 +120,6 @@ try {
         throw new Exception("Missing required fields: from_institution, to_institution, amount");
     }
     
-    // Create fee payload
     $feePayload = [
         'amount' => $amount,
         'currency' => $sourceCurrency,
@@ -156,49 +132,34 @@ try {
         'client_tier' => $input['client_tier'] ?? 'retail'
     ];
     
-    // Build ForexService
     $forexService = new \Domain\Services\ForexService(
         $db,
         $countryConfig,
         $participants
     );
     
-    // Build FeeService with the country config
-    // FeeService expects: $feeRegistry (for breakdown names) and $countryConfig (with products)
+    // FeeService - products are now at top level from LoadCountry
     $feeService = new \Domain\Services\FeeService(
-        $feesConfig,      // Fee registry (for breakdown names like F1, F7)
-        $countryConfig,   // Country config (should contain 'products' key)
+        $countryConfig['fees'] ?? [],
+        $countryConfig,
         $currency,
         $forexService
     );
     $feeService->setParticipants($participants);
     
-    // Calculate fees
     $feeResult = $feeService->calculateFees($swapType, $amount, $feePayload);
     
-    // Debug logging
-    error_log("[PREVIEW] Fee Result total_fee: " . ($feeResult['total_fee'] ?? 0));
-    error_log("[PREVIEW] Fee Result breakdown count: " . count($feeResult['breakdown'] ?? []));
-    
     $totalFee = $feeResult['total_fee'] ?? 0;
-    $netAmount = $feeResult['net_amount'] ?? $amount;
-    $netAmountSourceCurrency = $feeResult['net_amount_source_currency'] ?? $amount;
     $netAmountDestCurrency = $feeResult['net_amount_destination_currency'] ?? $amount;
-    
-    // Get forex details
+    $breakdown = $feeResult['breakdown'] ?? [];
     $forexApplied = $feeResult['forex']['applied'] ?? false;
     $exchangeRate = $feeResult['forex']['rate'] ?? 1.0;
     $forexProfit = $feeResult['forex']['vouchmorph_profit'] ?? 0;
     
-    // Get breakdown
-    $breakdown = $feeResult['breakdown'] ?? [];
-    
-    // Get destination split details
     $destinationSplit = $feeResult['destination_split'] ?? null;
     $generateCodeFee = $destinationSplit['generate_code_fee'] ?? 0;
     $cashoutCompletionFee = $destinationSplit['cashout_completion_fee'] ?? 0;
     
-    // Build preview response
     $preview = [
         'success' => true,
         'preview' => [
@@ -207,29 +168,19 @@ try {
             'destination_institution' => $destInst,
             'source_currency' => $sourceCurrency,
             'destination_currency' => $destinationCurrency,
-            
-            // Amounts
             'amount_requested' => $amount,
             'total_fee' => $totalFee,
-            'net_amount' => $netAmount,
-            'net_amount_source_currency' => $netAmountSourceCurrency,
+            'net_amount' => $netAmountDestCurrency,
+            'net_amount_source_currency' => $feeResult['net_amount_source_currency'] ?? $amount,
             'net_amount_destination_currency' => $netAmountDestCurrency,
-            
-            // Forex
             'forex_applied' => $forexApplied,
             'exchange_rate' => $exchangeRate,
             'forex_profit' => $forexProfit,
-            
-            // Fee breakdown
             'fee_breakdown' => $breakdown,
-            
-            // Destination split
             'destination_split' => $destinationSplit ? [
                 'generate_code_fee' => $generateCodeFee,
                 'cashout_completion_fee' => $cashoutCompletionFee
             ] : null,
-            
-            // Summary for display
             'summary' => [
                 'amount_requested_formatted' => number_format($amount, 2) . ' ' . $sourceCurrency,
                 'total_fee_formatted' => number_format($totalFee, 2) . ' ' . $sourceCurrency,
