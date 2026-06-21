@@ -27,8 +27,25 @@ class MultiSourceSwapOrchestrator
         AggregateSigner $aggregateSigner,
         array $config,
         string $countryCode,
-        LoggerInterface $logger
+        ?LoggerInterface $logger = null  // Make it optional
     ) {
+        // Use a default logger if none provided
+        if ($logger === null) {
+            $logger = new class implements LoggerInterface {
+                public function emergency($message, array $context = []) { error_log("[MULTI] EMERGENCY: $message"); }
+                public function alert($message, array $context = []) { error_log("[MULTI] ALERT: $message"); }
+                public function critical($message, array $context = []) { error_log("[MULTI] CRITICAL: $message"); }
+                public function error($message, array $context = []) { error_log("[MULTI] ERROR: $message"); }
+                public function warning($message, array $context = []) { error_log("[MULTI] WARNING: $message"); }
+                public function notice($message, array $context = []) { error_log("[MULTI] NOTICE: $message"); }
+                public function info($message, array $context = []) { error_log("[MULTI] INFO: $message"); }
+                public function debug($message, array $context = []) { error_log("[MULTI] DEBUG: $message"); }
+                public function log($level, $message, array $context = []) { error_log("[MULTI] $level: $message"); }
+            };
+        }
+        
+        $this->logger = $logger;
+        
         $this->coordinator = new PoolCoordinator(
             $db,
             $swapService,
@@ -36,9 +53,8 @@ class MultiSourceSwapOrchestrator
             $aggregateSigner,
             $config,
             $countryCode,
-            $logger
+            $this->logger
         );
-        $this->logger = $logger;
     }
 
     public function execute(array $payload): array
