@@ -95,9 +95,15 @@ class SwapService
         $this->countryCode = strtoupper($country);
         
         if ($logger === null) {
-            $this->logger = new class {
-                public function info($message, array $context = []) {
-                    error_log("[SwapService][INFO] " . $message . " " . json_encode($context));
+            $this->logger = new class implements LoggerInterface {
+                public function emergency($message, array $context = []) {
+                    error_log("[SwapService][EMERGENCY] " . $message . " " . json_encode($context));
+                }
+                public function alert($message, array $context = []) {
+                    error_log("[SwapService][ALERT] " . $message . " " . json_encode($context));
+                }
+                public function critical($message, array $context = []) {
+                    error_log("[SwapService][CRITICAL] " . $message . " " . json_encode($context));
                 }
                 public function error($message, array $context = []) {
                     error_log("[SwapService][ERROR] " . $message . " " . json_encode($context));
@@ -105,16 +111,17 @@ class SwapService
                 public function warning($message, array $context = []) {
                     error_log("[SwapService][WARNING] " . $message . " " . json_encode($context));
                 }
+                public function notice($message, array $context = []) {
+                    error_log("[SwapService][NOTICE] " . $message . " " . json_encode($context));
+                }
+                public function info($message, array $context = []) {
+                    error_log("[SwapService][INFO] " . $message . " " . json_encode($context));
+                }
                 public function debug($message, array $context = []) {
                     error_log("[SwapService][DEBUG] " . $message . " " . json_encode($context));
                 }
                 public function log($level, $message, array $context = []) {
                     error_log("[SwapService][{$level}] " . $message . " " . json_encode($context));
-                }
-                public function __call($name, $args) {
-                    $arg0 = isset($args[0]) ? $args[0] : '';
-                    $arg1 = isset($args[1]) ? $args[1] : [];
-                    error_log("[SwapService][{$name}] " . $arg0 . " " . json_encode($arg1));
                 }
             };
         } else {
@@ -133,17 +140,40 @@ class SwapService
             }
         }
         
-        $this->loadConfiguration($country);
-        $this->loadAtmNotes($country);
+        // ============================================================
+        // LOAD COUNTRY CONFIGURATION USING LOADCOUNTRY
+        // ============================================================
+        $countryConfig = \Core\Config\LoadCountry::getConfig();
+        
+        // Load participants from country config
+        $this->participants = $countryConfig['participants'] ?? [];
+        $this->feesConfig = $countryConfig['fees'] ?? [];
+        $this->atmNotes = $countryConfig['atm_notes'] ?? [];
+        
+        error_log("[SwapService] Loaded fees config from LoadCountry");
+        error_log("[SwapService] Config keys: " . implode(', ', array_keys($this->feesConfig)));
+        if (isset($this->feesConfig['CASHOUT'])) {
+            error_log("[SwapService] CASHOUT fee_components found: " . json_encode(array_keys($this->feesConfig['CASHOUT']['fee_components'] ?? [])));
+        }
+        error_log("[SwapService] Participants loaded: " . count($this->participants));
         
         // Initialize settlement services
         $this->settlement = new HybridSettlementStrategy($this->swapDB);
 
         // First, initialize ForexService (it doesn't need FeeService yet)
-        $this->forexService = new ForexService($this->swapDB, $this->config, $this->participants);
+        $this->forexService = new ForexService(
+            $this->swapDB, 
+            $countryConfig,  // Use country config
+            $this->participants
+        );
 
         // Then initialize FeeService WITH ForexService
-        $this->feeService = new FeeService($this->feesConfig, $this->config, $this->config['currency'] ?? 'BWP', $this->forexService);
+        $this->feeService = new FeeService(
+            $this->feesConfig,        // Raw fees.json
+            $countryConfig,           // Country config with products at top level
+            $countryConfig['currency'] ?? 'BWP',
+            $this->forexService
+        );
         $this->feeService->setParticipants($this->participants);
         
         // Initialize SMS service
@@ -1711,41 +1741,9 @@ class SwapService
 
     private function loadConfiguration(string $country): void
     {
-        $countryPath = __DIR__ . '/../../Core/Config/Countries/' . $country;
-        
-        $participantsPath = $countryPath . '/participants.yaml';
-        if (file_exists($participantsPath)) {
-            $this->participants = $this->parseYaml($participantsPath);
-        }
-        
-        $feesPath = $countryPath . '/fees.json';
-        
-        // Default empty config
-        $defaultFeesConfig = ['products' => [], 'regulatory' => []];
-        $this->feesConfig = $defaultFeesConfig;
-        
-        if (file_exists($feesPath)) {
-            $feesContent = file_get_contents($feesPath);
-            $feesData = json_decode($feesContent, true);
-            
-            if (json_last_error() === JSON_ERROR_NONE && is_array($feesData)) {
-                // PASS THE CONFIG AS-IS - FeeService will handle the structure
-                $this->feesConfig = $feesData;
-                
-                error_log("[SwapService] Loaded fees config for {$country}");
-                error_log("[SwapService] Config keys: " . implode(', ', array_keys($feesData)));
-                if (isset($feesData['CASHOUT'])) {
-                    error_log("[SwapService] CASHOUT fee_components found: " . json_encode(array_keys($feesData['CASHOUT']['fee_components'] ?? [])));
-                }
-            } else {
-                error_log("[SwapService] JSON parse error in fees file for {$country}: " . json_last_error_msg());
-                $this->feesConfig = $defaultFeesConfig;
-            }
-        } else {
-            error_log("[SwapService] No fees config found for {$country}, using empty config");
-        }
-        
-        $this->logger->info("Configuration loaded", ['country' => $country]);
+        // This method is now deprecated - we use LoadCountry::getConfig() in constructor
+        // Keeping for backward compatibility but no longer used
+        $this->logger->warning("loadConfiguration() called but deprecated - config loaded from LoadCountry");
     }
 
     private function parseYaml(string $path): array
