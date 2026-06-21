@@ -5,7 +5,9 @@ declare(strict_types=1);
  * VouchMorph - Swap Preview API
  * Calculates fees and returns preview WITHOUT executing
  */
-require_once __DIR__ . '/../../../../src/bootstrap.php';
+
+// Load bootstrap - this defines ROOT_PATH and everything else
+require_once __DIR__ . '/../../../src/bootstrap.php';
 
 use Core\Database\DBConnection;
 
@@ -96,14 +98,13 @@ try {
         throw new Exception('Invalid JSON payload', 400);
     }
     
-    // Get country
+    // Get country from headers or payload
     $headers = getallheaders();
     $headersLower = array_change_key_case($headers ?: [], CASE_LOWER);
     $countryCode = $headersLower['x-country-code'] ?? $headersLower['x-country'] ?? $input['country'] ?? null;
     
-    // Define ROOT_PATH
-    $rootPath = dirname(__DIR__, 5);
-    $registryFile = $rootPath . '/src/Core/Config/countries_registry.json';
+    // Load country config
+    $registryFile = ROOT_PATH . '/src/Core/Config/countries_registry.json';
     
     if (!file_exists($registryFile)) {
         throw new Exception('Country registry not found', 500);
@@ -127,36 +128,21 @@ try {
         $countryConfig = $registry['countries'][$default];
     }
     
-    // Database connection
-    $db = DBConnection::getConnection();
+    // Database connection - use the one from bootstrap
+    $db = $container->get(PDO::class);
     if (!$db) {
         throw new Exception("Database connection failed");
     }
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
-    // Load SwapService
-    $composerPath = $rootPath . '/vendor/autoload.php';
-    if (file_exists($composerPath)) {
-        require_once $composerPath;
-    }
-    
-    if (!class_exists('Domain\Services\SwapService')) {
-        throw new Exception("SwapService not found");
-    }
-    
-    $settings = [];
-    $configFile = $rootPath . '/' . $countryConfig['config_path'] . '/config.php';
-    if (file_exists($configFile)) {
-        $settings = require $configFile;
-    }
+    // Get settings from container
+    $settings = $container->get('settings');
+    $participants = $container->get('participants');
+    $feesConfig = $container->get('fees');
+    $atmNotes = $container->get('atmNotes');
     
     $countryName = $countryConfig['name'] ?? 'Botswana';
-    
-    $swapService = new \Domain\Services\SwapService(
-        $db,
-        $settings,
-        $countryName
-    );
+    $currency = $settings['currency'] ?? 'BWP';
     
     // ============================================================
     // CALCULATE PREVIEW (NO EXECUTION)
@@ -166,14 +152,14 @@ try {
     $sourceInst = $input['from_institution'] ?? $input['source_institution'] ?? null;
     $destInst = $input['to_institution'] ?? $input['destination_institution'] ?? null;
     $swapType = $input['swap_type'] ?? 'CASHOUT';
-    $sourceCurrency = $input['currency'] ?? $settings['currency'] ?? 'BWP';
+    $sourceCurrency = $input['currency'] ?? $currency;
     $destinationCurrency = $input['destination_currency'] ?? $sourceCurrency;
     
     if (!$sourceInst || !$destInst || $amount <= 0) {
         throw new Exception("Missing required fields: from_institution, to_institution, amount");
     }
     
-    // Create a lightweight payload for fee calculation
+    // Create fee payload
     $feePayload = [
         'amount' => $amount,
         'currency' => $sourceCurrency,
@@ -186,27 +172,23 @@ try {
         'client_tier' => $input['client_tier'] ?? 'retail'
     ];
     
-    // Get fee service via reflection
-    $feeService = null;
-    $forexService = null;
+    // Build fee service and forex service manually
+    $forexService = new \Domain\Services\ForexService(
+        $db,
+        $settings,
+        $participants
+    );
     
-    try {
-        $reflection = new \ReflectionClass($swapService);
-        
-        $feeProperty = $reflection->getProperty('feeService');
-        $feeProperty->setAccessible(true);
-        $feeService = $feeProperty->getValue($swapService);
-        
-        $forexProperty = $reflection->getProperty('forexService');
-        $forexProperty->setAccessible(true);
-        $forexService = $forexProperty->getValue($swapService);
-        
-    } catch (Exception $e) {
-        error_log("[PREVIEW] Could not access fee service: " . $e->getMessage());
-    }
+    $feeService = new \Domain\Services\FeeService(
+        $feesConfig,
+        $settings,
+        $currency,
+        $forexService
+    );
+    $feeService->setParticipants($participants);
     
     // Calculate fees
-    $feeResult = $feeService ? $feeService->calculateFees($swapType, $amount, $feePayload) : null;
+    $feeResult = $feeService->calculateFees($swapType, $amount, $feePayload);
     
     $totalFee = $feeResult['total_fee'] ?? 0;
     $netAmount = $feeResult['net_amount'] ?? $amount;
