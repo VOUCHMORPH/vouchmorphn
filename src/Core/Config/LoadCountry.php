@@ -9,29 +9,20 @@ final class LoadCountry
     {
         $countryMeta = require __DIR__ . '/SystemCountry.php';
 
-        // Get the country NAME (Botswana, Nigeria, etc.) for the directory
         $countryName = defined('SYSTEM_COUNTRY')
             ? SYSTEM_COUNTRY
             : ($countryMeta['name'] ?? 'Botswana');
         
-        // Get the country CODE (BW, NG, KE, etc.) for other uses
         $countryCode = defined('SYSTEM_COUNTRY_CODE')
             ? SYSTEM_COUNTRY_CODE
             : ($countryMeta['code'] ?? 'BW');
 
-        $countrySlug = defined('SYSTEM_COUNTRY_SLUG')
-            ? SYSTEM_COUNTRY_SLUG
-            : ($countryMeta['slug'] ?? strtolower($countryName));
-
         $projectRoot = dirname(__DIR__, 3);
-        
-        // USE THE COUNTRY NAME (Botswana) not the code (BW)
         $countryDir = $projectRoot . "/src/Core/Config/Countries/{$countryName}";
         
         error_log("[LoadCountry] Looking for config in: {$countryDir}");
         
-        // All config files in the country directory
-        $configFile       = $countryDir . "/config.php";
+        // Config files
         $databaseFile     = $countryDir . "/database.php";
         $participantsFile = $countryDir . "/participants.yaml";
         $feesFile         = $countryDir . "/fees.json";
@@ -39,17 +30,13 @@ final class LoadCountry
         $cardsFile        = $countryDir . "/cards.json";
         $commFile         = $countryDir . "/communication.json";
 
-        $countryConfig = [];
+        $countryConfig = [
+            'country' => $countryName,
+            'country_code' => $countryCode,
+            'currency' => 'BWP'
+        ];
         
-        // 1. Load main config.php
-        if (file_exists($configFile)) {
-            $countryConfig = require $configFile;
-            error_log("[LoadCountry] Loaded config from: {$configFile}");
-        } else {
-            error_log("[LoadCountry] Config file not found: {$configFile}");
-        }
-
-        // 2. Load participants from YAML
+        // 1. Load participants from YAML
         if (file_exists($participantsFile)) {
             $participantsConfig = self::parseYamlFile($participantsFile);
             if (!empty($participantsConfig)) {
@@ -65,13 +52,25 @@ final class LoadCountry
             $countryConfig['participants'] = [];
         }
 
-        // 3. Load fees.json - KEEP ALL PRODUCTS
+        // 2. Load fees.json - PUT PRODUCTS AT TOP LEVEL
         if (file_exists($feesFile)) {
             $feesConfig = json_decode(file_get_contents($feesFile), true);
             if (json_last_error() === JSON_ERROR_NONE) {
-                $countryConfig['fees'] = self::resolveFees($feesConfig);
+                $countryConfig['fees'] = $feesConfig;
+                
+                // Put products at top level
+                $productKeys = ['CASHOUT', 'DEPOSIT', 'CARD_LOAD'];
+                foreach ($productKeys as $key) {
+                    if (isset($feesConfig[$key])) {
+                        $countryConfig[$key] = $feesConfig[$key];
+                    }
+                }
+                
+                if (isset($feesConfig['regulatory'])) {
+                    $countryConfig['regulatory'] = $feesConfig['regulatory'];
+                }
+                
                 error_log("[LoadCountry] Loaded fees from: {$feesFile}");
-                error_log("[LoadCountry] Fee keys: " . implode(', ', array_keys($countryConfig['fees'] ?? [])));
             } else {
                 error_log("[LoadCountry] JSON parse error in fees file: " . json_last_error_msg());
                 $countryConfig['fees'] = [];
@@ -81,139 +80,41 @@ final class LoadCountry
             $countryConfig['fees'] = [];
         }
 
-        // 4. Load atm_notes.json
+        // 3. Load atm_notes.json
         if (file_exists($atmNotesFile)) {
             $atmNotesConfig = json_decode(file_get_contents($atmNotesFile), true);
             if (json_last_error() === JSON_ERROR_NONE) {
                 $countryConfig['atm_notes'] = $atmNotesConfig;
                 error_log("[LoadCountry] Loaded ATM notes from: {$atmNotesFile}");
-            } else {
-                error_log("[LoadCountry] JSON parse error in ATM notes file: " . json_last_error_msg());
             }
-        } else {
-            error_log("[LoadCountry] ATM notes file not found: {$atmNotesFile}");
-            $countryConfig['atm_notes'] = [];
         }
 
-        // 5. Load cards.json
+        // 4. Load cards.json
         if (file_exists($cardsFile)) {
             $cardsConfig = json_decode(file_get_contents($cardsFile), true);
             if (json_last_error() === JSON_ERROR_NONE) {
                 $countryConfig['card_config'] = $cardsConfig;
                 error_log("[LoadCountry] Loaded card config from: {$cardsFile}");
-            } else {
-                error_log("[LoadCountry] JSON parse error in cards file: " . json_last_error_msg());
             }
-        } else {
-            error_log("[LoadCountry] Cards file not found: {$cardsFile}");
-            $countryConfig['card_config'] = [];
         }
 
-        // 6. Load communication.json
+        // 5. Load communication.json
         if (file_exists($commFile)) {
             $commConfig = json_decode(file_get_contents($commFile), true);
             if (json_last_error() === JSON_ERROR_NONE) {
                 $countryConfig['communication'] = $commConfig;
                 error_log("[LoadCountry] Loaded communication config from: {$commFile}");
-            } else {
-                error_log("[LoadCountry] JSON parse error in communication file: " . json_last_error_msg());
             }
-        } else {
-            error_log("[LoadCountry] Communication file not found: {$commFile}");
-            $countryConfig['communication'] = [];
         }
 
-        // 7. Database configuration
+        // 6. Database configuration
         if (file_exists($databaseFile)) {
             $dbConfig = require $databaseFile;
             $countryConfig['db']['swap'] = $dbConfig;
             error_log("[LoadCountry] Loaded database for {$countryName} from: {$databaseFile}");
         } else {
-            error_log("[LoadCountry] Database file not found: {$databaseFile}, using environment variables");
-            
-            $dbName = getenv("DB_NAME_{$countryCode}") ?: getenv('DB_NAME') ?: "swap_system_" . strtolower($countryCode);
-            $dbHost = getenv("DB_HOST_{$countryCode}") ?: getenv('DB_HOST') ?: 'localhost';
-            $dbPort = getenv("DB_PORT_{$countryCode}") ?: getenv('DB_PORT') ?: '5432';
-            $dbUser = getenv("DB_USER_{$countryCode}") ?: getenv('DB_USER') ?: 'postgres';
-            $dbPass = getenv("DB_PASS_{$countryCode}") ?: getenv('DB_PASSWORD') ?: '';
-            
-            $databaseUrl = getenv("DATABASE_URL_{$countryCode}") ?: getenv('DATABASE_URL');
-            if ($databaseUrl) {
-                $db = parse_url($databaseUrl);
-                $countryConfig['db']['swap'] = [
-                    'type' => 'pgsql',
-                    'host' => $db['host'] ?? $dbHost,
-                    'port' => (int)($db['port'] ?? $dbPort),
-                    'database' => ltrim($db['path'] ?? '', '/'),
-                    'username' => $db['user'] ?? $dbUser,
-                    'password' => $db['pass'] ?? $dbPass,
-                ];
-            } else {
-                $countryConfig['db']['swap'] = [
-                    'type' => 'pgsql',
-                    'host' => $dbHost,
-                    'port' => (int)$dbPort,
-                    'database' => $dbName,
-                    'username' => $dbUser,
-                    'password' => $dbPass,
-                ];
-            }
-        }
-
-        // Add country code and name to config
-        $countryConfig['country_code'] = $countryCode;
-        $countryConfig['country'] = $countryName;
-        $countryConfig['currency'] = $countryConfig['currency'] ?? ($countryCode === 'BW' ? 'BWP' : 'USD');
-
-        // Source providers configuration
-        $countryConfig['source_providers'] = [];
-        
-        if (isset($countryConfig['participants'])) {
-            foreach ($countryConfig['participants'] as $providerName => $providerData) {
-                if (isset($providerData['type']) && $providerData['type'] === 'SOURCE_PROVIDER') {
-                    $countryConfig['source_providers'][$providerName] = [
-                        'type' => 'api',
-                        'name' => $providerData['name'] ?? $providerName,
-                        'api_config' => [
-                            'base_url' => $providerData['base_url'] ?? getenv("{$providerName}_API_URL"),
-                            'api_key' => $providerData['api_key'] ?? getenv("{$providerName}_API_KEY"),
-                            'api_secret' => $providerData['api_secret'] ?? getenv("{$providerName}_API_SECRET"),
-                            'timeout' => $providerData['timeout'] ?? 30,
-                        ],
-                        'endpoints' => $providerData['endpoints'] ?? [],
-                    ];
-                }
-            }
-        }
-        
-        $countryConfig['default_source_provider'] = 'CAZACOM';
-        
-        if (empty($countryConfig['source_providers'])) {
-            $countryConfig['source_providers']['CAZACOM'] = [
-                'type' => 'api',
-                'name' => 'CazaCom Botswana',
-                'api_config' => [
-                    'base_url' => getenv('CAZACOM_API_URL') ?: 'https://api.cazacom.co.bw/v1',
-                    'api_key' => getenv('CAZACOM_API_KEY') ?: '',
-                    'api_secret' => getenv('CAZACOM_API_SECRET') ?: '',
-                    'timeout' => (int)(getenv('CAZACOM_API_TIMEOUT') ?: 30),
-                ],
-                'endpoints' => [
-                    'verify_user' => '/users/verify',
-                    'get_user_by_phone' => '/users/phone/{phone}',
-                    'get_user_by_id' => '/users/id/{id}',
-                    'get_user_by_email' => '/users/email/{email}',
-                ],
-            ];
-        }
-
-        // Format decimal values
-        if (isset($countryConfig['settings']['swap_fee'])) {
-            $countryConfig['settings']['swap_fee'] = self::decimal($countryConfig['settings']['swap_fee']);
-        }
-
-        if (isset($countryConfig['fees']['regulatory']['vat_rate'])) {
-            $countryConfig['fees']['regulatory']['vat_rate'] = self::decimal($countryConfig['fees']['regulatory']['vat_rate']);
+            error_log("[LoadCountry] Database file not found: {$databaseFile}");
+            $countryConfig['db'] = [];
         }
 
         $GLOBALS['country_config'] = $countryConfig;
@@ -230,7 +131,6 @@ final class LoadCountry
      */
     private static function parseYamlFile(string $path): array
     {
-        // Try native YAML extension first
         if (function_exists('yaml_parse_file')) {
             $data = yaml_parse_file($path);
             if ($data !== false) {
@@ -238,12 +138,10 @@ final class LoadCountry
             }
         }
         
-        // Try Symfony YAML component
         if (class_exists('\Symfony\Component\Yaml\Yaml')) {
             return \Symfony\Component\Yaml\Yaml::parseFile($path);
         }
         
-        // Fallback to manual parsing for participants.yaml
         return self::parseYamlManually($path);
     }
     
@@ -281,82 +179,6 @@ final class LoadCountry
         }
         
         return ['participants' => $participants];
-    }
-
-    private static function decimal($value): string
-    {
-        if (!is_numeric($value)) {
-            return is_bool($value) ? ($value ? 'true' : 'false') : (string) $value;
-        }
-        return number_format((float) $value, 6, '.', '');
-    }
-
-    /**
-     * RESOLVE FEES - KEEP ALL PRODUCTS (CASHOUT, DEPOSIT, CARD_LOAD, etc.)
-     * FeeService needs the product keys to calculate fees
-     */
-    private static function resolveFees(array $feeConfig): array
-    {
-        $resolved = [];
-        
-        // List of known product keys
-        $productKeys = ['CASHOUT', 'DEPOSIT', 'CARD_LOAD', 'SWAP', 'CARD_ISSUE', 'CARD_LOAD'];
-        
-        // List of special sections that are NOT products
-        $specialSections = ['regulatory', 'metadata', 'limits', 'currency', 'aliases', 'rules', 'example_calculation'];
-        
-        // First, try to get products from 'fees' key if it exists
-        if (isset($feeConfig['fees']) && is_array($feeConfig['fees'])) {
-            foreach ($feeConfig['fees'] as $key => $value) {
-                if (in_array($key, $productKeys)) {
-                    // This is a product - keep it
-                    $resolved[$key] = $value;
-                } elseif (in_array($key, $specialSections)) {
-                    // This is a special section - keep it
-                    $resolved[$key] = $value;
-                } elseif (is_array($value) && (isset($value['fee_components']) || isset($value['distribution']))) {
-                    // This looks like a product config - keep it
-                    $resolved[$key] = $value;
-                }
-            }
-        }
-        
-        // Second, check if the top-level keys are products directly
-        foreach ($feeConfig as $key => $value) {
-            // Skip if already processed
-            if (isset($resolved[$key])) {
-                continue;
-            }
-            
-            if (in_array($key, $productKeys)) {
-                // This is a product at the top level
-                $resolved[$key] = $value;
-            } elseif (in_array($key, $specialSections)) {
-                // This is a special section at the top level
-                $resolved[$key] = $value;
-            } elseif (is_array($value) && (isset($value['fee_components']) || isset($value['distribution']))) {
-                // This looks like a product config - keep it
-                $resolved[$key] = $value;
-            }
-        }
-        
-        // Ensure regulatory is always present
-        if (!isset($resolved['regulatory']) && isset($feeConfig['regulatory'])) {
-            $resolved['regulatory'] = $feeConfig['regulatory'];
-        }
-        
-        // If no products found, log warning
-        $foundProducts = array_filter(array_keys($resolved), function($key) use ($productKeys) {
-            return in_array($key, $productKeys);
-        });
-        
-        if (empty($foundProducts)) {
-            error_log("[LoadCountry] WARNING: No product fees found! Available keys: " . implode(', ', array_keys($feeConfig)));
-        } else {
-            error_log("[LoadCountry] Found products: " . implode(', ', $foundProducts));
-        }
-        
-        return $resolved;
     }
 }
 
