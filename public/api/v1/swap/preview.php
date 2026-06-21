@@ -104,7 +104,7 @@ try {
     $countryCode = $headersLower['x-country-code'] ?? $headersLower['x-country'] ?? $input['country'] ?? null;
     
     // Load country config using LoadCountry
-    $countryConfig = \Core\Config\LoadCountry::getConfig($countryCode);
+    $countryConfig = \Core\Config\LoadCountry::getConfig();
     
     if (!$countryConfig) {
         throw new Exception('Country configuration not found', 500);
@@ -120,9 +120,13 @@ try {
     }
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
-    // Get participants
+    // Get participants and fees
     $participants = $countryConfig['participants'] ?? [];
     $feesConfig = $countryConfig['fees'] ?? [];
+    
+    // Debug: Log what we have
+    error_log("[PREVIEW] Fees config keys: " . implode(', ', array_keys($feesConfig)));
+    error_log("[PREVIEW] Participants count: " . count($participants));
     
     // ============================================================
     // CALCULATE PREVIEW (NO EXECUTION)
@@ -139,7 +143,7 @@ try {
         throw new Exception("Missing required fields: from_institution, to_institution, amount");
     }
     
-    // Create fee payload - this is what FeeService expects
+    // Create fee payload
     $feePayload = [
         'amount' => $amount,
         'currency' => $sourceCurrency,
@@ -159,10 +163,11 @@ try {
         $participants
     );
     
-    // Build FeeService with the FULL country config (which contains 'products' key)
+    // Build FeeService with the country config
+    // FeeService expects: $feeRegistry (for breakdown names) and $countryConfig (with products)
     $feeService = new \Domain\Services\FeeService(
-        $feesConfig,      // Fee registry
-        $countryConfig,   // Country config with 'products' structure
+        $feesConfig,      // Fee registry (for breakdown names like F1, F7)
+        $countryConfig,   // Country config (should contain 'products' key)
         $currency,
         $forexService
     );
@@ -170,6 +175,10 @@ try {
     
     // Calculate fees
     $feeResult = $feeService->calculateFees($swapType, $amount, $feePayload);
+    
+    // Debug logging
+    error_log("[PREVIEW] Fee Result total_fee: " . ($feeResult['total_fee'] ?? 0));
+    error_log("[PREVIEW] Fee Result breakdown count: " . count($feeResult['breakdown'] ?? []));
     
     $totalFee = $feeResult['total_fee'] ?? 0;
     $netAmount = $feeResult['net_amount'] ?? $amount;
