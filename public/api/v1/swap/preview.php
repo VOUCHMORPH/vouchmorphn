@@ -5,7 +5,7 @@ declare(strict_types=1);
  * VouchMorph - Swap Preview API
  * Calculates fees and returns preview WITHOUT executing
  */
-require_once __DIR__ . '/../../../../vendor/autoload.php';
+require_once __DIR__ . '/../../../../src/bootstrap.php';
 
 use Core\Database\DBConnection;
 
@@ -101,7 +101,10 @@ try {
     $headersLower = array_change_key_case($headers ?: [], CASE_LOWER);
     $countryCode = $headersLower['x-country-code'] ?? $headersLower['x-country'] ?? $input['country'] ?? null;
     
-    $registryFile = ROOT_PATH . '/src/Core/Config/countries_registry.json';
+    // Define ROOT_PATH
+    $rootPath = dirname(__DIR__, 5);
+    $registryFile = $rootPath . '/src/Core/Config/countries_registry.json';
+    
     if (!file_exists($registryFile)) {
         throw new Exception('Country registry not found', 500);
     }
@@ -132,7 +135,7 @@ try {
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
     // Load SwapService
-    $composerPath = ROOT_PATH . '/vendor/autoload.php';
+    $composerPath = $rootPath . '/vendor/autoload.php';
     if (file_exists($composerPath)) {
         require_once $composerPath;
     }
@@ -142,7 +145,7 @@ try {
     }
     
     $settings = [];
-    $configFile = ROOT_PATH . '/' . $countryConfig['config_path'] . '/config.php';
+    $configFile = $rootPath . '/' . $countryConfig['config_path'] . '/config.php';
     if (file_exists($configFile)) {
         $settings = require $configFile;
     }
@@ -183,7 +186,7 @@ try {
         'client_tier' => $input['client_tier'] ?? 'retail'
     ];
     
-    // Get fee service via reflection or use the public method
+    // Get fee service via reflection
     $feeService = null;
     $forexService = null;
     
@@ -260,9 +263,7 @@ try {
                 'total_fee_formatted' => number_format($totalFee, 2) . ' ' . $sourceCurrency,
                 'net_amount_formatted' => number_format($netAmountDestCurrency, 2) . ' ' . $destinationCurrency,
                 'exchange_rate_formatted' => $forexApplied ? "1 {$sourceCurrency} = {$exchangeRate} {$destinationCurrency}" : 'N/A'
-            ],
-            
-            'raw_fee_result' => $feeResult
+            ]
         ]
     ];
     
