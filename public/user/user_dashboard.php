@@ -272,11 +272,11 @@ try {
 } catch (Exception $e) {}
 
 $apiUrl = '/api/v1/swap/execute.php';
+$previewUrl = '/api/v1/swap/preview.php';
 $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
 
 $denominationsList = implode(', ', $atmDenominations);
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -570,9 +570,168 @@ $denominationsList = implode(', ', $atmDenominations);
             margin-bottom: 20px;
         }
         
+        /* ============================================================
+           CONFIRMATION MODAL STYLES
+           ============================================================ */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.85);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .modal-overlay.show { display: flex; }
+
+        .modal {
+            background: #12162e;
+            border-radius: 16px;
+            padding: 30px;
+            max-width: 600px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            border: 1px solid rgba(255,255,255,0.1);
+            position: relative;
+        }
+
+        .modal h2 {
+            font-size: 22px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .confirmation-details {
+            background: #0a0e27;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 20px;
+        }
+
+        .confirmation-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #1a1f3a;
+        }
+
+        .confirmation-row:last-child { border-bottom: none; }
+
+        .confirmation-row .label {
+            color: #888;
+            font-size: 13px;
+        }
+
+        .confirmation-row .value {
+            font-weight: bold;
+            font-size: 14px;
+        }
+
+        .confirmation-row .value.positive { color: #4caf50; }
+        .confirmation-row .value.negative { color: #ff6b6b; }
+        .confirmation-row .value.highlight { color: #00f0ff; }
+
+        .fee-breakdown-item {
+            padding: 6px 0;
+            font-size: 13px;
+            color: #ccc;
+            border-bottom: 1px solid #1a1f3a;
+        }
+
+        .fee-breakdown-item:last-child { border-bottom: none; }
+
+        .fee-breakdown-item .fee-name { color: #888; }
+        .fee-breakdown-item .fee-amount {
+            float: right;
+            font-weight: bold;
+        }
+
+        .total-row {
+            font-size: 18px;
+            padding-top: 12px;
+            margin-top: 8px;
+            border-top: 2px solid #00f0ff;
+            color: #00f0ff;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 20px;
+        }
+
+        .modal-actions button {
+            flex: 1;
+            padding: 14px;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            font-size: 15px;
+            border: none;
+        }
+
+        .btn-cancel {
+            background: transparent;
+            border: 1px solid #ff6b6b !important;
+            color: #ff6b6b;
+        }
+
+        .btn-cancel:hover { background: rgba(255,107,107,0.1); }
+
+        .btn-confirm {
+            background: linear-gradient(135deg, #00f0ff, #b000ff);
+            border: none;
+            color: #0a0e27;
+        }
+
+        .btn-confirm:hover { transform: translateY(-1px); filter: brightness(1.05); }
+        .btn-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: #00f0ff;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .forex-info {
+            background: rgba(255, 193, 7, 0.1);
+            border-left: 3px solid #ffc107;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            margin: 8px 0;
+        }
+
+        .modal-error {
+            color: #ff6b6b;
+            font-size: 13px;
+            display: none;
+            margin-bottom: 12px;
+            padding: 10px;
+            background: rgba(255,107,107,0.1);
+            border-radius: 6px;
+        }
+        
         @media (max-width: 768px) {
             .two-columns { grid-template-columns: 1fr; gap: 16px; }
             .three-columns { grid-template-columns: 1fr; }
+            .modal { padding: 20px; }
+            .modal-actions { flex-direction: column; }
         }
     </style>
 </head>
@@ -593,7 +752,7 @@ $denominationsList = implode(', ', $atmDenominations);
     </div>
 
     <!-- ============================================================ -->
-    <!-- NEW: DETAILED SWAP VIEW (shown when ?id=xxx is present) -->
+    <!-- DETAILED SWAP VIEW (shown when ?id=xxx is present) -->
     <!-- ============================================================ -->
     <?php if ($selectedSwap && $swapId): ?>
         <a href="dashboard.php" class="back-link">← Back to Dashboard</a>
@@ -756,7 +915,7 @@ $denominationsList = implode(', ', $atmDenominations);
         
     <?php else: ?>
         <!-- ============================================================ -->
-        <!-- ORIGINAL NEW SWAP FORM (UNCHANGED) -->
+        <!-- NEW SWAP FORM -->
         <!-- ============================================================ -->
         <div class="card">
             <h3>🔄 New Swap</h3>
@@ -862,7 +1021,30 @@ $denominationsList = implode(', ', $atmDenominations);
     <?php endif; ?>
 
     <!-- ============================================================ -->
-    <!-- RECENT SWAPS SECTION (UPDATED: now clickable to view details) -->
+    <!-- CONFIRMATION MODAL -->
+    <!-- ============================================================ -->
+    <div id="confirmModal" class="modal-overlay">
+        <div class="modal">
+            <h2>🔄 Confirm Swap</h2>
+            
+            <div id="confirmationDetails" class="confirmation-details">
+                <div style="text-align:center; padding:20px;">
+                    <div class="loading-spinner"></div>
+                    <br>Calculating fees...
+                </div>
+            </div>
+            
+            <div id="modalError" class="modal-error"></div>
+            
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="closeConfirmation()">Cancel</button>
+                <button id="confirmBtn" class="btn-confirm">✅ Confirm & Execute</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- RECENT SWAPS SECTION -->
     <!-- ============================================================ -->
     <div class="card">
         <h3>📋 Recent Swaps</h3>
@@ -893,7 +1075,7 @@ $denominationsList = implode(', ', $atmDenominations);
 </div>
 
 <!-- ============================================================ -->
-<!-- ORIGINAL JAVASCRIPT (UNCHANGED except added showTab function) -->
+<!-- JAVASCRIPT -->
 <!-- ============================================================ -->
 <script>
 // Dynamic data from PHP (loaded from YAML)
@@ -920,6 +1102,15 @@ const amountInput = document.getElementById('amount');
 const summaryDiv = document.getElementById('summary');
 const sourceIdentifierInput = document.getElementById('sourceIdentifier');
 const identifierTypeSelect = document.getElementById('identifierType');
+
+// Modal elements
+const confirmModal = document.getElementById('confirmModal');
+const confirmationDetails = document.getElementById('confirmationDetails');
+const modalError = document.getElementById('modalError');
+const confirmBtn = document.getElementById('confirmBtn');
+
+let pendingPayload = null;
+let previewData = null;
 
 function updateAssetTypes() {
     const fromInst = fromInstSelect.value;
@@ -1113,7 +1304,151 @@ function buildPayload() {
     return payload;
 }
 
-// NEW: Tab switching function for detailed view
+// ============================================================
+// CONFIRMATION MODAL FUNCTIONS
+// ============================================================
+
+async function showConfirmation(payload) {
+    modalError.style.display = 'none';
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = '⏳ Loading...';
+    confirmationDetails.innerHTML = `
+        <div style="text-align:center; padding:20px;">
+            <div class="loading-spinner"></div>
+            <br>Calculating fees...
+        </div>
+    `;
+    confirmModal.classList.add('show');
+    
+    try {
+        const response = await fetch('<?= $previewUrl ?>', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': '<?= $apiKey ?>'
+            },
+            body: JSON.stringify(payload)
+        });
+        
+        const result = await response.json();
+        
+        if (!result.success) {
+            throw new Error(result.error || 'Failed to calculate fees');
+        }
+        
+        previewData = result.preview;
+        pendingPayload = payload;
+        
+        buildConfirmationUI(previewData);
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = '✅ Confirm & Execute';
+        
+    } catch (error) {
+        modalError.textContent = '❌ ' + error.message;
+        modalError.style.display = 'block';
+        confirmationDetails.innerHTML = `
+            <div style="text-align:center; padding:20px; color:#ff6b6b;">
+                ❌ Failed to calculate fees
+            </div>
+        `;
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = '❌ Error';
+    }
+}
+
+function buildConfirmationUI(preview) {
+    const sourceCurrency = preview.source_currency || '<?= $currency ?>';
+    const destCurrency = preview.destination_currency || sourceCurrency;
+    const amount = preview.amount_requested || 0;
+    const totalFee = preview.total_fee || 0;
+    const netAmount = preview.net_amount_destination_currency || amount;
+    const exchangeRate = preview.exchange_rate || 1.0;
+    const forexApplied = preview.forex_applied || false;
+    const breakdown = preview.fee_breakdown || [];
+    
+    // Build fee breakdown HTML
+    let breakdownHTML = '';
+    if (breakdown.length > 0) {
+        breakdownHTML = '<div style="margin-top:12px; padding-top:12px; border-top:1px solid #1a1f3a;">';
+        breakdownHTML += '<div style="font-size:12px; color:#888; margin-bottom:8px;">Fee Breakdown:</div>';
+        
+        breakdown.forEach(item => {
+            const amountVal = item.amount || 0;
+            const name = item.name || item.slot || 'Fee';
+            const owner = item.owner || '';
+            if (amountVal > 0) {
+                breakdownHTML += `
+                    <div class="fee-breakdown-item">
+                        <span class="fee-name">${name} ${owner ? '(' + owner + ')' : ''}</span>
+                        <span class="fee-amount">${amountVal.toFixed(2)} ${sourceCurrency}</span>
+                    </div>
+                `;
+            }
+        });
+        
+        breakdownHTML += '</div>';
+    }
+    
+    // Forex info
+    let forexHTML = '';
+    if (forexApplied) {
+        forexHTML = `
+            <div class="forex-info">
+                🌍 Exchange Rate: 1 ${sourceCurrency} = ${exchangeRate.toFixed(6)} ${destCurrency}
+                ${preview.forex_profit > 0 ? `<br>💹 FX Profit: ${preview.forex_profit.toFixed(2)} ${destCurrency}` : ''}
+            </div>
+        `;
+    }
+    
+    // Destination split info
+    let destSplitHTML = '';
+    if (preview.destination_split) {
+        const ds = preview.destination_split;
+        destSplitHTML = `
+            <div style="margin-top:8px; font-size:12px; color:#888;">
+                <div>🏧 Generate Code Fee: ${ds.generate_code_fee.toFixed(2)} ${sourceCurrency}</div>
+                <div>✅ Cashout Completion Fee: ${ds.cashout_completion_fee.toFixed(2)} ${sourceCurrency}</div>
+            </div>
+        `;
+    }
+    
+    confirmationDetails.innerHTML = `
+        <div style="margin-bottom:12px;">
+            <div style="font-size:12px; color:#888;">${preview.swap_type || 'Swap'}</div>
+            <div style="font-size:14px; color:#00f0ff;">${preview.source_institution} → ${preview.destination_institution}</div>
+        </div>
+        
+        <div class="confirmation-row">
+            <span class="label">💰 Amount Requested</span>
+            <span class="value">${amount.toFixed(2)} ${sourceCurrency}</span>
+        </div>
+        
+        <div class="confirmation-row">
+            <span class="label">📊 Total Fee</span>
+            <span class="value negative">${totalFee.toFixed(2)} ${sourceCurrency}</span>
+        </div>
+        
+        ${forexHTML}
+        ${breakdownHTML}
+        ${destSplitHTML}
+        
+        <div class="confirmation-row total-row">
+            <span class="label">📥 You Will Receive</span>
+            <span class="value highlight">${netAmount.toFixed(2)} ${destCurrency}</span>
+        </div>
+    `;
+}
+
+function closeConfirmation() {
+    confirmModal.classList.remove('show');
+    pendingPayload = null;
+    previewData = null;
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = '✅ Confirm & Execute';
+    modalError.style.display = 'none';
+}
+
+// Tab switching function for detailed view
 function showTab(tabName) {
     const tabs = document.querySelectorAll('.tab-content');
     const tabButtons = document.querySelectorAll('.tab');
@@ -1122,10 +1457,112 @@ function showTab(tabName) {
     tabButtons.forEach(btn => btn.classList.remove('active'));
     
     document.getElementById(`tab-${tabName}`).classList.add('active');
-    if (event && event.target) event.target.classList.add('active');
+    if (window.event && window.event.target) window.event.target.classList.add('active');
 }
 
-// Event listeners (only if elements exist - for new swap form)
+// ============================================================
+// EXECUTE BUTTON - Shows confirmation first
+// ============================================================
+
+const executeBtn = document.getElementById('executeBtn');
+if (executeBtn) {
+    executeBtn.addEventListener('click', async function(e) {
+        const fromInst = fromInstSelect.value;
+        const toInst = toInstSelect.value;
+        const assetType = assetTypeSelect.value;
+        const amount = parseFloat(amountInput.value);
+        const swapType = swapTypeSelect.value;
+        const sourceIdentifier = sourceIdentifierInput?.value.trim();
+        
+        // Validation
+        if (!fromInst) { alert('Select SOURCE institution'); return; }
+        if (!toInst) { alert('Select DESTINATION institution'); return; }
+        if (!assetType) { alert('Select asset type'); return; }
+        if (!sourceIdentifier) { alert('Enter source identifier (who is sending money)'); return; }
+        if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
+        if (fromInst === toInst) { alert('Source and destination must be different'); return; }
+        
+        if (swapType === 'CASHOUT') {
+            const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value.trim();
+            if (!beneficiaryPhone) { alert('Enter beneficiary phone number for ATM code'); return; }
+        } else if (swapType === 'DEPOSIT') {
+            const destinationIdentifier = document.getElementById('destinationIdentifier')?.value.trim();
+            if (!destinationIdentifier) { alert('Enter destination identifier (who receives money)'); return; }
+        }
+        
+        // Build payload and show confirmation
+        const payload = buildPayload();
+        await showConfirmation(payload);
+    });
+}
+
+// ============================================================
+// CONFIRM BUTTON - Executes the swap
+// ============================================================
+
+confirmBtn.addEventListener('click', async function() {
+    if (!pendingPayload) return;
+    
+    const btn = this;
+    const resultDiv = document.getElementById('result');
+    
+    btn.disabled = true;
+    btn.innerHTML = '<div class="loading-spinner"></div> Executing...';
+    modalError.style.display = 'none';
+    
+    try {
+        const response = await fetch('<?= $apiUrl ?>', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': '<?= $apiKey ?>'
+            },
+            body: JSON.stringify(pendingPayload)
+        });
+        
+        const result = await response.json();
+        
+        if (result.success === true || result.status === 'success' || result.atomic_commit?.status === 'committed') {
+            // Success - close modal and show result
+            closeConfirmation();
+            
+            resultDiv.className = 'result success';
+            let html = `<strong>✅ Swap Successful!</strong><br><br>
+                Reference: ${result.reference || result.swap_reference || 'N/A'}<br>
+                Amount: <?= $currencySymbol ?> ${pendingPayload.amount.toFixed(2)}<br>`;
+            
+            if (result.fee) html += `<strong>Fee: <?= $currencySymbol ?> ${result.fee.toFixed(2)}</strong><br>`;
+            if (result.atm_code) html += `<br><strong>🏧 ATM Code:</strong> ${result.atm_code}<br>`;
+            if (result.voucher_number) html += `<br><strong>🎫 Voucher:</strong> ${result.voucher_number}<br>`;
+            
+            html += `<br><details><summary><strong>📋 Full Response</strong></summary><pre style="margin-top:8px; font-size:11px; overflow-x:auto;">${JSON.stringify(result, null, 2)}</pre></details>`;
+            html += `<br><a href="?id=${result.reference || result.swap_reference}" style="color:#00f0ff;">View Full Details →</a>`;
+            resultDiv.innerHTML = html;
+            resultDiv.scrollIntoView({ behavior: 'smooth' });
+            
+            setTimeout(() => location.reload(), 3000);
+        } else {
+            // Failed - show error in modal
+            let errorMsg = result.message || result.error || 'Unknown error';
+            modalError.textContent = '❌ ' + errorMsg;
+            modalError.style.display = 'block';
+            
+            btn.disabled = false;
+            btn.innerHTML = '🔄 Try Again';
+        }
+        
+    } catch (error) {
+        modalError.textContent = '❌ Network error: ' + error.message;
+        modalError.style.display = 'block';
+        btn.disabled = false;
+        btn.innerHTML = '🔄 Try Again';
+    }
+});
+
+// ============================================================
+// EVENT LISTENERS
+// ============================================================
+
 if (fromInstSelect) {
     fromInstSelect.addEventListener('change', () => {
         updateAssetTypes();
@@ -1166,81 +1603,10 @@ document.querySelectorAll('.quick-amount').forEach(btn => {
     });
 });
 
-const executeBtn = document.getElementById('executeBtn');
-if (executeBtn) {
-    executeBtn.addEventListener('click', async () => {
-        const fromInst = fromInstSelect.value;
-        const toInst = toInstSelect.value;
-        const assetType = assetTypeSelect.value;
-        const amount = parseFloat(amountInput.value);
-        const swapType = swapTypeSelect.value;
-        const sourceIdentifier = sourceIdentifierInput?.value.trim();
-        
-        if (!fromInst) { alert('Select SOURCE institution'); return; }
-        if (!toInst) { alert('Select DESTINATION institution'); return; }
-        if (!assetType) { alert('Select asset type'); return; }
-        if (!sourceIdentifier) { alert('Enter source identifier (who is sending money)'); return; }
-        if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
-        if (fromInst === toInst) { alert('Source and destination must be different'); return; }
-        
-        if (swapType === 'CASHOUT') {
-            const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value.trim();
-            if (!beneficiaryPhone) { alert('Enter beneficiary phone number for ATM code'); return; }
-        } else if (swapType === 'DEPOSIT') {
-            const destinationIdentifier = document.getElementById('destinationIdentifier')?.value.trim();
-            if (!destinationIdentifier) { alert('Enter destination identifier (who receives money)'); return; }
-        }
-        
-        const payload = buildPayload();
-        const resultDiv = document.getElementById('result');
-        
-        executeBtn.disabled = true;
-        executeBtn.textContent = '⏳ Processing...';
-        resultDiv.className = 'result loading';
-        resultDiv.innerHTML = 'Processing swap...';
-        
-        try {
-            const response = await fetch('<?= $apiUrl ?>', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-API-Key': '<?= $apiKey ?>'
-                },
-                body: JSON.stringify(payload)
-            });
-            const result = await response.json();
-            
-            if (result.success === true || result.status === 'success' || result.atomic_commit?.status === 'committed') {
-                resultDiv.className = 'result success';
-                let html = `<strong>✅ Swap Successful!</strong><br><br>
-                    Reference: ${result.reference || result.swap_reference || 'N/A'}<br>
-                    Amount: <?= $currencySymbol ?> ${amount.toFixed(2)}<br>`;
-                
-                if (result.fee) html += `<strong>Fee: <?= $currencySymbol ?> ${result.fee.toFixed(2)}</strong><br>`;
-                if (result.atm_code) html += `<br><strong>🏧 ATM Code:</strong> ${result.atm_code}<br>`;
-                if (result.voucher_number) html += `<br><strong>🎫 Voucher:</strong> ${result.voucher_number}<br>`;
-                
-                html += `<br><details><summary><strong>📋 Full Response</strong></summary><pre style="margin-top:8px; font-size:11px; overflow-x:auto;">${JSON.stringify(result, null, 2)}</pre></details>`;
-                html += `<br><a href="?id=${result.reference || result.swap_reference}" style="color:#00f0ff;">View Full Details →</a>`;
-                resultDiv.innerHTML = html;
-                setTimeout(() => location.reload(), 3000);
-            } else {
-                resultDiv.className = 'result error';
-                let errorMsg = result.message || result.error || 'Unknown error';
-                resultDiv.innerHTML = `<strong>❌ Swap Failed</strong><br><br>${errorMsg}<br><br><details><summary>Details</summary><pre style="margin-top:8px; font-size:11px; overflow-x:auto;">${JSON.stringify(result, null, 2)}</pre></details>`;
-            }
-        } catch (error) {
-            resultDiv.className = 'result error';
-            resultDiv.innerHTML = `<strong>❌ Error</strong><br><br>${error.message}`;
-        } finally {
-            executeBtn.disabled = false;
-            executeBtn.textContent = '🚀 Execute Swap';
-            resultDiv.scrollIntoView({ behavior: 'smooth' });
-        }
-    });
-}
+// ============================================================
+// INITIALIZATION
+// ============================================================
 
-// Initialize (only if elements exist)
 if (typeof updateAssetTypes === 'function') updateAssetTypes();
 if (typeof updateDestinationFields === 'function') updateDestinationFields();
 </script>
