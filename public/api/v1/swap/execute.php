@@ -165,22 +165,20 @@ try {
     }
     
     if (class_exists('Domain\Services\SwapService')) {
-        $settings = [];
-        $configFile = ROOT_PATH . '/' . $countryConfig['config_path'] . '/config.php';
-        if (file_exists($configFile)) {
-            $settings = require $configFile;
-        }
+        // ============================================================
+        // LOAD FULL COUNTRY CONFIG USING LoadCountry
+        // ============================================================
+        $fullCountryConfig = \Core\Config\LoadCountry::getConfig();
         
-        // FIX: Pass the COUNTRY NAME (Botswana) not the code (BW)
-        // The country config has 'name' field (e.g., 'Botswana') which matches the folder name
         $countryName = $countryConfig['name'] ?? 'Botswana';
         
         error_log("[EXECUTE] Using country name: {$countryName}");
+        error_log("[EXECUTE] Country config keys: " . implode(', ', array_keys($fullCountryConfig)));
         
         $swapService = new \Domain\Services\SwapService(
-            $db,                           // PDO
-            $settings,                     // array config
-            $countryName                   // string country (name, not code)
+            $db,                    // PDO
+            $fullCountryConfig,     // Full country config (NOT $settings)
+            $countryName            // string country (name, not code)
         );
         
         $result = $swapService->executeAtomicSwap($input);
