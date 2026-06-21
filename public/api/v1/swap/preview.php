@@ -7,7 +7,7 @@ declare(strict_types=1);
  */
 
 // Load bootstrap - this defines ROOT_PATH and everything else
-require_once __DIR__ . '/../../../src/bootstrap.php';
+require_once __DIR__ . '/../../../../src/bootstrap.php';
 
 use Core\Database\DBConnection;
 
