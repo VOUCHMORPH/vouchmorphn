@@ -6,7 +6,7 @@ declare(strict_types=1);
  * Calculates fees and returns preview WITHOUT executing
  */
 
-// Load bootstrap - this defines ROOT_PATH and everything else
+// Load bootstrap
 require_once __DIR__ . '/../../../../src/bootstrap.php';
 
 use Core\Database\DBConnection;
@@ -103,30 +103,15 @@ try {
     $headersLower = array_change_key_case($headers ?: [], CASE_LOWER);
     $countryCode = $headersLower['x-country-code'] ?? $headersLower['x-country'] ?? $input['country'] ?? null;
     
-    // Load country config
-    $registryFile = ROOT_PATH . '/src/Core/Config/countries_registry.json';
-    
-    if (!file_exists($registryFile)) {
-        throw new Exception('Country registry not found', 500);
-    }
-    
-    $registry = json_decode(file_get_contents($registryFile), true);
-    $countryConfig = null;
-    
-    if ($countryCode) {
-        foreach ($registry['countries'] as $name => $config) {
-            if (strtolower($name) === strtolower($countryCode) || 
-                strtolower($config['code']) === strtolower($countryCode)) {
-                $countryConfig = $config;
-                break;
-            }
-        }
-    }
+    // Load country config using LoadCountry
+    $countryConfig = \Core\Config\LoadCountry::getConfig($countryCode);
     
     if (!$countryConfig) {
-        $default = $registry['default_country'] ?? array_key_first($registry['countries']);
-        $countryConfig = $registry['countries'][$default];
+        throw new Exception('Country configuration not found', 500);
     }
+    
+    $countryName = $countryConfig['country'] ?? 'Botswana';
+    $currency = $countryConfig['currency'] ?? 'BWP';
     
     // Database connection - use the one from bootstrap
     $db = $container->get(PDO::class);
@@ -135,14 +120,9 @@ try {
     }
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
-    // Get settings from container
-    $settings = $container->get('settings');
-    $participants = $container->get('participants');
-    $feesConfig = $container->get('fees');
-    $atmNotes = $container->get('atmNotes');
-    
-    $countryName = $countryConfig['name'] ?? 'Botswana';
-    $currency = $settings['currency'] ?? 'BWP';
+    // Get participants
+    $participants = $countryConfig['participants'] ?? [];
+    $feesConfig = $countryConfig['fees'] ?? [];
     
     // ============================================================
     // CALCULATE PREVIEW (NO EXECUTION)
@@ -159,7 +139,7 @@ try {
         throw new Exception("Missing required fields: from_institution, to_institution, amount");
     }
     
-    // Create fee payload
+    // Create fee payload - this is what FeeService expects
     $feePayload = [
         'amount' => $amount,
         'currency' => $sourceCurrency,
@@ -172,16 +152,17 @@ try {
         'client_tier' => $input['client_tier'] ?? 'retail'
     ];
     
-    // Build fee service and forex service manually
+    // Build ForexService
     $forexService = new \Domain\Services\ForexService(
         $db,
-        $settings,
+        $countryConfig,
         $participants
     );
     
+    // Build FeeService with the FULL country config (which contains 'products' key)
     $feeService = new \Domain\Services\FeeService(
-        $feesConfig,
-        $settings,
+        $feesConfig,      // Fee registry
+        $countryConfig,   // Country config with 'products' structure
         $currency,
         $forexService
     );
