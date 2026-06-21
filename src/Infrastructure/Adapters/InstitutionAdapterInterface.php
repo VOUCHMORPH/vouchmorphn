@@ -5,86 +5,81 @@ namespace Infrastructure\Adapters;
 
 interface InstitutionAdapterInterface
 {
-    /**
-     * Get balance for an account/wallet
-     * 
-     * @param array $payload Contains: account_id, amount (optional), currency (optional)
-     * @param array $context Previous results (hold_id, etc.)
-     * @return array ['success' => bool, 'balance' => float, 'currency' => string, 'account_id' => string]
-     */
-    public function getBalance(array $payload, array $context): array;
+    // ============================================================
+    // CORE SWAP OPERATIONS - Required for swaps to work
+    // ============================================================
     
     /**
      * Verify asset exists and has sufficient funds
-     * 
-     * @param array $payload Contains: account_id, amount, currency
-     * @param array $context Previous results (balance, etc.)
-     * @return array ['verified' => bool, 'account_id' => string, 'balance' => float]
+     * INTERNAL: Handles consent if needed (PSD2) or not (M-Pesa)
      */
     public function verifyAsset(array $payload, array $context): array;
     
     /**
      * Place a hold on an asset
-     * 
-     * @param array $payload Contains: account_id, amount, currency
-     * @param array $context Previous results (verification, etc.)
-     * @return array ['hold_placed' => bool, 'hold_id' => string, 'hold_reference' => string]
+     * INTERNAL: Handles consent if needed
      */
     public function placeHold(array $payload, array $context): array;
     
     /**
      * Debit funds from source
-     * 
-     * @param array $payload Contains: hold_id, amount, currency
-     * @param array $context Previous results (hold, etc.)
-     * @return array ['debited' => bool, 'transaction_reference' => string]
+     * INTERNAL: Handles consent if needed
      */
     public function debit(array $payload, array $context): array;
     
     /**
      * Credit funds to destination
-     * 
-     * @param array $payload Contains: account_id, amount, currency
-     * @param array $context Previous results
-     * @return array ['credited' => bool, 'transaction_reference' => string]
+     * INTERNAL: Handles consent if needed
      */
     public function credit(array $payload, array $context): array;
     
     /**
      * Generate cashout token
-     * 
-     * @param array $payload Contains: account_id, amount, currency, phone
-     * @param array $context Previous results
-     * @return array ['success' => bool, 'cashout_code' => string, 'expires_at' => string]
+     * INTERNAL: Handles consent if needed
      */
     public function generateCashoutToken(array $payload, array $context): array;
     
     /**
      * Verify cashout token
-     * 
-     * @param array $payload Contains: cashout_code
-     * @param array $context Previous results
-     * @return array ['verified' => bool, 'amount' => float]
      */
     public function verifyCashoutToken(array $payload, array $context): array;
     
     /**
      * Confirm cashout
-     * 
-     * @param array $payload Contains: cashout_code
-     * @param array $context Previous results
-     * @return array ['confirmed' => bool, 'transaction_reference' => string]
      */
     public function confirmCashout(array $payload, array $context): array;
     
     /**
-     * Verify account exists
-     * 
-     * @param array $payload Contains: account_id
-     * @param array $context Previous results
-     * @return array ['verified' => bool, 'account_name' => string]
+     * Verify account exists (for destination validation)
      */
     public function verifyAccount(array $payload, array $context): array;
+    
+    // ============================================================
+    // DASHBOARD/UX OPERATIONS - Optional, for UI display
+    // ============================================================
+    
+    /**
+     * Get balance for dashboard display
+     * Called when user views their account in the dashboard
+     * NOT part of swap flow
+     */
+    public function getBalance(array $payload, array $context): array;
+    
+    /**
+     * Get transaction history for dashboard display
+     * NOT part of swap flow
+     */
+    public function getTransactions(array $payload, array $context): array;
+    
+    /**
+     * Get list of accounts for dashboard display
+     * NOT part of swap flow
+     */
+    public function getAccounts(array $payload, array $context): array;
+    
+    // ============================================================
+    // ADAPTER METADATA
+    // ============================================================
     
     /**
      * Check if this adapter supports a capability
