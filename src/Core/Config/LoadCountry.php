@@ -65,14 +65,16 @@ final class LoadCountry
             $countryConfig['participants'] = [];
         }
 
-        // 3. Load fees.json
+        // 3. Load fees.json - KEEP ALL PRODUCTS
         if (file_exists($feesFile)) {
             $feesConfig = json_decode(file_get_contents($feesFile), true);
             if (json_last_error() === JSON_ERROR_NONE) {
                 $countryConfig['fees'] = self::resolveFees($feesConfig);
                 error_log("[LoadCountry] Loaded fees from: {$feesFile}");
+                error_log("[LoadCountry] Fee keys: " . implode(', ', array_keys($countryConfig['fees'] ?? [])));
             } else {
                 error_log("[LoadCountry] JSON parse error in fees file: " . json_last_error_msg());
+                $countryConfig['fees'] = [];
             }
         } else {
             error_log("[LoadCountry] Fees file not found: {$feesFile}");
@@ -289,31 +291,71 @@ final class LoadCountry
         return number_format((float) $value, 6, '.', '');
     }
 
+    /**
+     * RESOLVE FEES - KEEP ALL PRODUCTS (CASHOUT, DEPOSIT, CARD_LOAD, etc.)
+     * FeeService needs the product keys to calculate fees
+     */
     private static function resolveFees(array $feeConfig): array
     {
         $resolved = [];
-
-        if (isset($feeConfig['fees'])) {
+        
+        // List of known product keys
+        $productKeys = ['CASHOUT', 'DEPOSIT', 'CARD_LOAD', 'SWAP', 'CARD_ISSUE', 'CARD_LOAD'];
+        
+        // List of special sections that are NOT products
+        $specialSections = ['regulatory', 'metadata', 'limits', 'currency', 'aliases', 'rules', 'example_calculation'];
+        
+        // First, try to get products from 'fees' key if it exists
+        if (isset($feeConfig['fees']) && is_array($feeConfig['fees'])) {
             foreach ($feeConfig['fees'] as $key => $value) {
-                if (is_array($value)) {
-                    foreach ($value as $subKey => $subValue) {
-                        if (is_numeric($subValue) && !is_string($subValue)) {
-                            $value[$subKey] = self::decimal($subValue);
-                        }
-                    }
+                if (in_array($key, $productKeys)) {
+                    // This is a product - keep it
                     $resolved[$key] = $value;
-                } else {
-                    $resolved[$key] = is_numeric($value) ? self::decimal($value) : $value;
+                } elseif (in_array($key, $specialSections)) {
+                    // This is a special section - keep it
+                    $resolved[$key] = $value;
+                } elseif (is_array($value) && (isset($value['fee_components']) || isset($value['distribution']))) {
+                    // This looks like a product config - keep it
+                    $resolved[$key] = $value;
                 }
             }
         }
-
-        foreach (['metadata', 'regulatory', 'limits', 'currency', 'aliases', 'rules'] as $section) {
-            if (isset($feeConfig[$section])) {
-                $resolved[$section] = $feeConfig[$section];
+        
+        // Second, check if the top-level keys are products directly
+        foreach ($feeConfig as $key => $value) {
+            // Skip if already processed
+            if (isset($resolved[$key])) {
+                continue;
+            }
+            
+            if (in_array($key, $productKeys)) {
+                // This is a product at the top level
+                $resolved[$key] = $value;
+            } elseif (in_array($key, $specialSections)) {
+                // This is a special section at the top level
+                $resolved[$key] = $value;
+            } elseif (is_array($value) && (isset($value['fee_components']) || isset($value['distribution']))) {
+                // This looks like a product config - keep it
+                $resolved[$key] = $value;
             }
         }
-
+        
+        // Ensure regulatory is always present
+        if (!isset($resolved['regulatory']) && isset($feeConfig['regulatory'])) {
+            $resolved['regulatory'] = $feeConfig['regulatory'];
+        }
+        
+        // If no products found, log warning
+        $foundProducts = array_filter(array_keys($resolved), function($key) use ($productKeys) {
+            return in_array($key, $productKeys);
+        });
+        
+        if (empty($foundProducts)) {
+            error_log("[LoadCountry] WARNING: No product fees found! Available keys: " . implode(', ', array_keys($feeConfig)));
+        } else {
+            error_log("[LoadCountry] Found products: " . implode(', ', $foundProducts));
+        }
+        
         return $resolved;
     }
 }
