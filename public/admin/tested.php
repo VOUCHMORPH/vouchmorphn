@@ -1,414 +1,249 @@
 <?php
-/**
- * VouchMorph - GenericBankClient Test Tool
- * This file tests how the dashboard payload is processed by GenericBankClient
- */
+// public/test_dashboard_debug.php
+// This script tests the dashboard's PIN detection and payload building
 
-require_once __DIR__ . '/../../src/bootstrap.php';
+require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
+use Application\Utils\SessionManager;
 
-use Core\Database\DBConnection;
-use Infrastructure\Banks\GenericBankClient;
+SessionManager::start();
 
-header("Content-Type: text/html; charset=UTF-8");
-
-// Get database connection
-$db = DBConnection::getConnection();
-if (!$db) {
-    die("Database connection failed");
+// If not logged in, redirect
+if (!SessionManager::isLoggedIn()) {
+    header("Location: login.php");
+    exit;
 }
 
-// Load country config
-$countryConfig = \Core\Config\LoadCountry::getConfig();
-$participants = $countryConfig['participants'] ?? [];
+$user = SessionManager::getUser();
+$loggedPhone = htmlspecialchars($user['phone'] ?? '');
+$userId = $user['user_id'] ?? null;
 
-// Get available participants
-$participantList = [];
-foreach ($participants as $code => $participant) {
-    if (isset($participant['type']) && $participant['type'] === 'BANK') {
-        $participantList[] = $code;
-    }
-}
+// Get the dashboard HTML but inject debugging
+ob_start();
+include __DIR__ . '/user/dashboard.php';
+$dashboardHtml = ob_get_clean();
 
-// Handle test request
-$testResult = null;
-$testPayload = null;
-$testResponse = null;
-$testError = null;
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    $action = $_POST['action'];
-    $institution = $_POST['institution'] ?? '';
-    $amount = floatval($_POST['amount'] ?? 100);
-    $assetType = $_POST['asset_type'] ?? 'BANK-WALLET';
-    $phone = $_POST['phone'] ?? '+26770000000';
-    $pin = $_POST['wallet_pin'] ?? $_POST['pin'] ?? null;
-    $reference = 'TEST_' . time();
+// Inject debug overlay
+$debugJs = <<<'JS'
+<script>
+// Override the buildPayload function to log everything
+(function() {
+    console.log('🔍 [DEBUG] Dashboard debug mode active');
     
-    // Build test payload similar to dashboard
-    $testPayload = [
-        'action' => $action,
-        'reference' => $reference,
-        'amount' => $amount,
-        'asset_type' => $assetType,
-        'currency' => 'BWP',
-        'phone' => $phone,
-        'wallet_phone' => $phone,
-        'source_identifier' => $phone,
-        'source_identifier_type' => 'phone',
-        'institution' => $institution,
-        'requester' => 'VOUCHMORPH',
-        'timestamp' => time()
-    ];
+    // Store reference to original functions
+    let originalBuildPayload = window.buildPayload;
+    let originalGetPin = window.getPinFromForm;
     
-    // Add PIN if provided
-    if ($pin) {
-        $testPayload['pin'] = $pin;
-        $testPayload['wallet_pin'] = $pin;
-        $testPayload['asset_fields'] = ['wallet_pin' => $pin];
-    }
-    
-    try {
-        // Get participant config
-        $participantConfig = $participants[$institution] ?? null;
-        if (!$participantConfig) {
-            throw new Exception("Participant not found: $institution");
-        }
+    // Override getPinFromForm with logging
+    window.getPinFromForm = function() {
+        console.log('🔍 [DEBUG] getPinFromForm called');
         
-        // Add base_url to config if not present
-        if (!isset($participantConfig['base_url'])) {
-            $participantConfig['base_url'] = "https://{$institution}-production.up.railway.app/backend";
-        }
+        // Log all form fields
+        console.log('🔍 [DEBUG] All password fields:');
+        document.querySelectorAll('input[type="password"]').forEach(el => {
+            console.log('  - ID:', el.id, 'Name:', el.name, 'Value:', el.value ? '****' : '(empty)');
+        });
         
-        // Create GenericBankClient
-        $bankClient = new GenericBankClient($participantConfig);
+        console.log('🔍 [DEBUG] All .asset-field elements:');
+        document.querySelectorAll('.asset-field').forEach(el => {
+            console.log('  - ID:', el.id, 'Type:', el.type, 'Value:', el.value ? '****' : '(empty)');
+        });
         
-        // Execute the requested action
-        if ($action === 'verify_asset') {
-            $testResponse = $bankClient->verifyAssetSigned($testPayload);
-        } elseif ($action === 'place_hold') {
-            $testResponse = $bankClient->placeHoldSigned($testPayload);
-        } elseif ($action === 'generate_token') {
-            $testResponse = $bankClient->generateTokenWithProof($testPayload);
+        // Check specific PIN fields
+        const pinIds = ['wallet_pin', 'pin', 'walletPin', 'atm_pin', 'card_pin'];
+        console.log('🔍 [DEBUG] Specific PIN field checks:');
+        pinIds.forEach(id => {
+            const el = document.getElementById(id);
+            console.log('  - #' + id + ':', el ? (el.value ? 'FOUND (****)' : 'EMPTY') : 'NOT FOUND');
+        });
+        
+        // Call original if it exists
+        let result = null;
+        if (typeof originalGetPin === 'function') {
+            result = originalGetPin();
+            console.log('🔍 [DEBUG] original getPinFromForm returned:', result ? 'PIN (****)' : 'null');
         } else {
-            throw new Exception("Unknown action: $action");
+            // Fallback implementation
+            let pin = null;
+            document.querySelectorAll('input[type="password"]').forEach(el => {
+                if (!pin && el.value && el.value.trim()) {
+                    pin = el.value.trim();
+                }
+            });
+            if (!pin) {
+                document.querySelectorAll('.asset-field').forEach(el => {
+                    if (!pin && el.value && el.value.trim() && (el.type === 'password' || el.id.includes('pin'))) {
+                        pin = el.value.trim();
+                    }
+                });
+            }
+            result = pin;
+            console.log('🔍 [DEBUG] fallback getPinFromForm returned:', result ? 'PIN (****)' : 'null');
         }
         
-        $testResult = 'success';
-    } catch (Exception $e) {
-        $testError = $e->getMessage();
-        $testResult = 'error';
-    }
-}
-?>
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GenericBankClient Test Tool</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0a0e27;
-            padding: 30px;
-            color: #fff;
-        }
-        .container { max-width: 1000px; margin: 0 auto; }
-        h1 { 
-            font-size: 28px; 
-            background: linear-gradient(135deg, #fff, #00f0ff);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 8px;
-        }
-        .subtitle { color: #888; margin-bottom: 30px; font-size: 14px; }
+        return result;
+    };
+    
+    // Override buildPayload with logging
+    window.buildPayload = function() {
+        console.log('🔍 [DEBUG] ===== buildPayload called =====');
         
-        .card {
+        // Log current form state
+        console.log('🔍 [DEBUG] Current form values:');
+        console.log('  - fromInstitution:', document.getElementById('fromInstitution')?.value || 'NOT SET');
+        console.log('  - toInstitution:', document.getElementById('toInstitution')?.value || 'NOT SET');
+        console.log('  - assetType:', document.getElementById('assetType')?.value || 'NOT SET');
+        console.log('  - swapType:', document.getElementById('swapType')?.value || 'NOT SET');
+        console.log('  - amount:', document.getElementById('amount')?.value || '0');
+        console.log('  - sourceIdentifier:', document.getElementById('sourceIdentifier')?.value || 'NOT SET');
+        
+        // Get PIN using our overridden function
+        const pin = window.getPinFromForm();
+        console.log('🔍 [DEBUG] PIN from getPinFromForm():', pin ? '****' : 'null');
+        
+        // Call original if it exists
+        let payload = null;
+        if (typeof originalBuildPayload === 'function') {
+            payload = originalBuildPayload();
+            console.log('🔍 [DEBUG] original buildPayload returned:', payload);
+        } else {
+            // Build payload manually for debugging
+            const fromInst = document.getElementById('fromInstitution')?.value || '';
+            const toInst = document.getElementById('toInstitution')?.value || '';
+            const assetType = document.getElementById('assetType')?.value || '';
+            const swapType = document.getElementById('swapType')?.value || 'CASHOUT';
+            const amount = parseFloat(document.getElementById('amount')?.value || 0);
+            const sourceIdentifier = document.getElementById('sourceIdentifier')?.value || '';
+            
+            payload = {
+                reference: 'DEBUG_' + Date.now(),
+                from_institution: fromInst,
+                to_institution: toInst,
+                asset_type: assetType,
+                swap_type: swapType,
+                amount: amount,
+                source_identifier: sourceIdentifier
+            };
+            
+            // Add PIN if found
+            if (pin) {
+                payload.wallet_pin = pin;
+                payload.pin = pin;
+                payload.asset_fields = { wallet_pin: pin, pin: pin };
+            }
+            
+            // Collect asset fields
+            const assetFieldsData = {};
+            document.querySelectorAll('.asset-field').forEach(field => {
+                const value = field.value.trim();
+                if (value) {
+                    assetFieldsData[field.id] = value;
+                    payload[field.id] = value;
+                }
+            });
+            if (Object.keys(assetFieldsData).length > 0) {
+                payload.asset_fields = { ...payload.asset_fields, ...assetFieldsData };
+            }
+        }
+        
+        console.log('🔍 [DEBUG] Final payload:');
+        console.log('  - wallet_pin:', payload.wallet_pin ? '****' : 'MISSING');
+        console.log('  - pin:', payload.pin ? '****' : 'MISSING');
+        console.log('  - asset_fields:', payload.asset_fields);
+        console.log('  - Full payload:', JSON.stringify(payload, null, 2));
+        
+        // Display payload on screen for debugging
+        const debugOutput = document.getElementById('debugPayloadOutput');
+        if (debugOutput) {
+            const displayPayload = { ...payload };
+            if (displayPayload.wallet_pin) displayPayload.wallet_pin = '****';
+            if (displayPayload.pin) displayPayload.pin = '****';
+            if (displayPayload.asset_fields) {
+                if (displayPayload.asset_fields.wallet_pin) displayPayload.asset_fields.wallet_pin = '****';
+                if (displayPayload.asset_fields.pin) displayPayload.asset_fields.pin = '****';
+            }
+            debugOutput.textContent = JSON.stringify(displayPayload, null, 2);
+            debugOutput.style.display = 'block';
+        }
+        
+        // Show PIN status
+        const pinStatus = document.getElementById('debugPinStatus');
+        if (pinStatus) {
+            pinStatus.innerHTML = payload.wallet_pin ? 
+                '✅ PIN FOUND (length: ' + payload.wallet_pin.length + ')' : 
+                '❌ PIN MISSING';
+            pinStatus.style.color = payload.wallet_pin ? '#4caf50' : '#ff6b6b';
+        }
+        
+        return payload;
+    };
+    
+    // Intercept the execute button click
+    document.addEventListener('DOMContentLoaded', function() {
+        const executeBtn = document.getElementById('executeBtn');
+        if (executeBtn) {
+            const originalClick = executeBtn.click;
+            executeBtn.addEventListener('click', function(e) {
+                console.log('🔍 [DEBUG] Execute button clicked');
+                // Call our buildPayload to show debug info
+                window.buildPayload();
+            });
+        }
+        
+        // Add debug panel to the page
+        const debugPanel = document.createElement('div');
+        debugPanel.style.cssText = `
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
             background: #12162e;
+            border: 2px solid #00f0ff;
             border-radius: 12px;
-            padding: 24px;
-            margin-bottom: 24px;
-            border: 1px solid rgba(255,255,255,0.08);
-        }
-        .card h3 { 
-            font-size: 16px; 
-            margin-bottom: 16px;
-            color: #00f0ff;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .two-columns {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-        .form-group { margin-bottom: 14px; }
-        label {
-            display: block;
-            font-size: 11px;
-            font-weight: 600;
-            margin-bottom: 4px;
-            color: #a0a0b0;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        select, input {
-            width: 100%;
-            padding: 10px 12px;
-            background: #1a1f3a;
-            border: 1px solid #2a2f4a;
-            border-radius: 8px;
-            color: #fff;
-            font-size: 14px;
-        }
-        select:focus, input:focus { outline: none; border-color: #00f0ff; }
-        select option { background: #1a1f3a; }
-        
-        button {
-            padding: 12px 24px;
-            background: linear-gradient(135deg, #00f0ff, #b000ff);
-            color: #0a0e27;
-            border: none;
-            border-radius: 8px;
-            font-size: 15px;
-            font-weight: bold;
-            cursor: pointer;
-            margin-top: 8px;
-        }
-        button:hover { transform: translateY(-1px); filter: brightness(1.05); }
-        
-        .btn-group {
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-        .btn-secondary {
-            background: #1a1f3a;
-            color: #fff;
-            border: 1px solid #2a2f4a;
-        }
-        .btn-secondary:hover { background: #2a2f4a; }
-        
-        .payload-box, .response-box {
-            background: #0a0e27;
-            border-radius: 8px;
             padding: 16px;
-            font-family: 'Monaco', 'Menlo', monospace;
-            font-size: 12px;
-            overflow-x: auto;
-            white-space: pre-wrap;
-            word-break: break-all;
-            border: 1px solid #2a2f4a;
+            max-width: 500px;
             max-height: 400px;
             overflow-y: auto;
-            margin-top: 8px;
-        }
-        
-        .status-badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 20px;
+            z-index: 9999;
+            font-family: monospace;
             font-size: 12px;
-            font-weight: bold;
-        }
-        .status-success { background: rgba(76,175,80,0.2); color: #4caf50; border: 1px solid #4caf50; }
-        .status-error { background: rgba(244,67,54,0.2); color: #f44336; border: 1px solid #f44336; }
-        .status-pending { background: rgba(255,193,7,0.2); color: #ffc107; border: 1px solid #ffc107; }
+            color: #fff;
+            box-shadow: 0 0 30px rgba(0,240,255,0.2);
+        `;
+        debugPanel.innerHTML = `
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <strong style="color:#00f0ff;">🔍 Dashboard Debug</strong>
+                <button onclick="this.parentElement.parentElement.style.display='none'" 
+                        style="background:#ff6b6b; border:none; color:#fff; padding:2px 8px; border-radius:4px; cursor:pointer;">×</button>
+            </div>
+            <div style="margin-bottom:8px;">
+                <span style="color:#888;">PIN Status:</span> 
+                <span id="debugPinStatus" style="color:#ff6b6b;">❌ Not checked</span>
+            </div>
+            <div style="margin-bottom:8px;">
+                <button onclick="window.buildPayload()" 
+                        style="background:#00f0ff; color:#0a0e27; border:none; padding:4px 12px; border-radius:4px; cursor:pointer; font-weight:bold;">
+                    🔍 Test buildPayload
+                </button>
+                <button onclick="document.getElementById('wallet_pin')?.value='77777'" 
+                        style="background:#1a1f3a; color:#fff; border:1px solid #2a2f4a; padding:4px 12px; border-radius:4px; cursor:pointer; margin-left:4px;">
+                    Set PIN 77777
+                </button>
+            </div>
+            <div style="background:#0a0e27; padding:8px; border-radius:4px; max-height:200px; overflow-y:auto;">
+                <pre id="debugPayloadOutput" style="margin:0; font-size:11px; white-space:pre-wrap; word-break:break-all; display:none;"></pre>
+            </div>
+        `;
+        document.body.appendChild(debugPanel);
         
-        .info-note {
-            background: rgba(0,240,255,0.05);
-            border-left: 3px solid #00f0ff;
-            padding: 10px;
-            border-radius: 6px;
-            font-size: 12px;
-            color: #a0a0b0;
-            margin: 8px 0;
-        }
-        
-        .pin-field {
-            border-color: #b000ff !important;
-        }
-        .pin-field:focus {
-            border-color: #00f0ff !important;
-        }
-        
-        @media (max-width: 768px) {
-            .two-columns { grid-template-columns: 1fr; }
-        }
-    </style>
-</head>
-<body>
-<div class="container">
-    <h1>🧪 GenericBankClient Test Tool</h1>
-    <div class="subtitle">Test how dashboard payload is processed by GenericBankClient</div>
+        console.log('🔍 [DEBUG] Debug panel added to page');
+    });
     
-    <!-- Test Form -->
-    <div class="card">
-        <h3>📤 Test Request</h3>
-        <form method="POST" action="">
-            <div class="two-columns">
-                <div>
-                    <div class="form-group">
-                        <label>🏦 Institution</label>
-                        <select name="institution" required>
-                            <option value="">-- Select --</option>
-                            <?php foreach ($participantList as $code): ?>
-                                <option value="<?= htmlspecialchars($code) ?>" <?= isset($_POST['institution']) && $_POST['institution'] === $code ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars($code) ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>📦 Asset Type</label>
-                        <select name="asset_type">
-                            <option value="BANK-WALLET" <?= isset($_POST['asset_type']) && $_POST['asset_type'] === 'BANK-WALLET' ? 'selected' : '' ?>>BANK-WALLET</option>
-                            <option value="ACCOUNT" <?= isset($_POST['asset_type']) && $_POST['asset_type'] === 'ACCOUNT' ? 'selected' : '' ?>>ACCOUNT</option>
-                            <option value="MNO-WALLET" <?= isset($_POST['asset_type']) && $_POST['asset_type'] === 'MNO-WALLET' ? 'selected' : '' ?>>MNO-WALLET</option>
-                            <option value="CASHOUT-VOUCHER" <?= isset($_POST['asset_type']) && $_POST['asset_type'] === 'CASHOUT-VOUCHER' ? 'selected' : '' ?>>CASHOUT-VOUCHER</option>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>📱 Phone Number</label>
-                        <input type="text" name="phone" value="<?= htmlspecialchars($_POST['phone'] ?? '+26770000000') ?>">
-                    </div>
-                </div>
-                
-                <div>
-                    <div class="form-group">
-                        <label>⚡ Action</label>
-                        <select name="action" required>
-                            <option value="verify_asset" <?= isset($_POST['action']) && $_POST['action'] === 'verify_asset' ? 'selected' : '' ?>>verify_asset</option>
-                            <option value="place_hold" <?= isset($_POST['action']) && $_POST['action'] === 'place_hold' ? 'selected' : '' ?>>place_hold</option>
-                            <option value="generate_token" <?= isset($_POST['action']) && $_POST['action'] === 'generate_token' ? 'selected' : '' ?>>generate_token</option>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>💰 Amount</label>
-                        <input type="number" name="amount" step="0.01" value="<?= htmlspecialchars($_POST['amount'] ?? '100') ?>">
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>🔑 Wallet PIN (wallet_pin)</label>
-                        <input type="password" name="wallet_pin" class="pin-field" 
-                               placeholder="Enter PIN (e.g., 77777)" 
-                               value="<?= htmlspecialchars($_POST['wallet_pin'] ?? '') ?>">
-                        <div class="info-note">💡 This simulates the wallet_pin from the dashboard</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="btn-group">
-                <button type="submit">🚀 Send Request</button>
-                <button type="reset" class="btn-secondary">🔄 Reset</button>
-            </div>
-        </form>
-    </div>
-    
-    <!-- Results -->
-    <?php if ($testResult !== null): ?>
-        <div class="card">
-            <h3>
-                📬 Test Result
-                <span class="status-badge <?= $testResult === 'success' ? 'status-success' : 'status-error' ?>">
-                    <?= $testResult === 'success' ? '✅ SUCCESS' : '❌ ERROR' ?>
-                </span>
-            </h3>
-            
-            <?php if ($testError): ?>
-                <div style="background: rgba(244,67,54,0.1); border-left: 3px solid #f44336; padding: 12px; border-radius: 6px; margin-bottom: 16px;">
-                    <strong style="color: #f44336;">Error:</strong> <?= htmlspecialchars($testError) ?>
-                </div>
-            <?php endif; ?>
-            
-            <div class="two-columns">
-                <div>
-                    <h4 style="font-size: 13px; color: #888; margin-bottom: 6px;">📨 Request Payload</h4>
-                    <div class="payload-box">
-                        <?php 
-                        $displayPayload = $testPayload ?? [];
-                        // Mask PIN in display
-                        if (isset($displayPayload['pin']) && $displayPayload['pin']) {
-                            $displayPayload['pin'] = substr($displayPayload['pin'], 0, 2) . '****';
-                        }
-                        if (isset($displayPayload['wallet_pin']) && $displayPayload['wallet_pin']) {
-                            $displayPayload['wallet_pin'] = substr($displayPayload['wallet_pin'], 0, 2) . '****';
-                        }
-                        if (isset($displayPayload['asset_fields']) && isset($displayPayload['asset_fields']['wallet_pin'])) {
-                            $displayPayload['asset_fields']['wallet_pin'] = substr($displayPayload['asset_fields']['wallet_pin'], 0, 2) . '****';
-                        }
-                        echo htmlspecialchars(json_encode($displayPayload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-                        ?>
-                    </div>
-                </div>
-                <div>
-                    <h4 style="font-size: 13px; color: #888; margin-bottom: 6px;">📬 Response</h4>
-                    <div class="response-box">
-                        <?php 
-                        $displayResponse = $testResponse ?? ['error' => 'No response'];
-                        echo htmlspecialchars(json_encode($displayResponse, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-                        ?>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- PIN Detection Info -->
-            <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #2a2f4a;">
-                <h4 style="font-size: 13px; color: #888; margin-bottom: 8px;">🔍 PIN Detection</h4>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px;">
-                    <div>
-                        <strong>wallet_pin in payload:</strong>
-                        <span style="color: <?= isset($testPayload['wallet_pin']) ? '#4caf50' : '#f44336' ?>">
-                            <?= isset($testPayload['wallet_pin']) ? '✅ YES' : '❌ NO' ?>
-                        </span>
-                    </div>
-                    <div>
-                        <strong>pin in payload:</strong>
-                        <span style="color: <?= isset($testPayload['pin']) ? '#4caf50' : '#f44336' ?>">
-                            <?= isset($testPayload['pin']) ? '✅ YES' : '❌ NO' ?>
-                        </span>
-                    </div>
-                    <div>
-                        <strong>asset_fields.wallet_pin:</strong>
-                        <span style="color: <?= isset($testPayload['asset_fields']['wallet_pin']) ? '#4caf50' : '#f44336' ?>">
-                            <?= isset($testPayload['asset_fields']['wallet_pin']) ? '✅ YES' : '❌ NO' ?>
-                        </span>
-                    </div>
-                    <div>
-                        <strong>PIN sent to bank:</strong>
-                        <span style="color: <?= ($testPayload['wallet_pin'] ?? $testPayload['pin'] ?? null) ? '#4caf50' : '#f44336' ?>">
-                            <?= ($testPayload['wallet_pin'] ?? $testPayload['pin'] ?? null) ? '✅ YES' : '❌ NO' ?>
-                        </span>
-                    </div>
-                </div>
-            </div>
-        </div>
-    <?php endif; ?>
-    
-    <!-- Instructions -->
-    <div class="card">
-        <h3>📖 How to Use</h3>
-        <div style="font-size: 13px; color: #a0a0b0; line-height: 1.8;">
-            <ol style="padding-left: 20px;">
-                <li>Select an <strong>Institution</strong> (e.g., SACCUSSALIS)</li>
-                <li>Select the <strong>Asset Type</strong> (BANK-WALLET for PIN testing)</li>
-                <li>Enter a <strong>Phone Number</strong></li>
-                <li>Select the <strong>Action</strong> (verify_asset, place_hold, generate_token)</li>
-                <li>Enter a <strong>Wallet PIN</strong> (e.g., 77777) - this simulates the dashboard input</li>
-                <li>Click <strong>Send Request</strong></li>
-            </ol>
-            <div class="info-note" style="margin-top: 12px;">
-                💡 <strong>Test PIN 77777:</strong> Make sure this PIN exists in the <code>ewallet_pins</code> table.
-            </div>
-        </div>
-    </div>
-</div>
-</body>
-</html>
+    console.log('🔍 [DEBUG] Dashboard debugging active!');
+})();
+</script>
+JS;
+
+// Inject the debug JS before the closing body tag
+$dashboardHtml = str_replace('</body>', $debugJs . '</body>', $dashboardHtml);
+
+echo $dashboardHtml;
+?>
