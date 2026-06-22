@@ -28,6 +28,8 @@ ini_set('display_errors', 0);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
 
+error_log("[EXECUTE] Checking psr/log: " . (interface_exists('Psr\Log\LoggerInterface') ? 'FOUND' : 'MISSING'));
+
 // ============================================
 // 2. DYNAMIC API KEY LOADER
 // ============================================
