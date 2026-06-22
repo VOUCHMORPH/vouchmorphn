@@ -117,7 +117,6 @@ function parseParticipantsYaml($path) {
     // If no asset_types defined, set default based on institution type
     foreach ($participants as $code => &$p) {
         if (empty($p['asset_types'])) {
-            // Default asset types based on institution type
             if ($code === 'ZURUBANK') {
                 $p['asset_types'] = ['VOUCHER', 'ACCOUNT'];
             } elseif ($code === 'VOUCHMORPH') {
@@ -230,7 +229,6 @@ $requestPayload = null;
 
 if ($swapId) {
     try {
-        // Try to find by swap_reference or reference column
         $stmt = $swapDB->prepare("
             SELECT sl.*, 
                    sl.request_payload, 
@@ -245,7 +243,6 @@ if ($swapId) {
         $stmt->execute([$swapId, $swapId, $userId]);
         $selectedSwap = $stmt->fetch(PDO::FETCH_ASSOC);
         
-        // If not found, try without user_id (for debugging)
         if (!$selectedSwap) {
             $stmt = $swapDB->prepare("
                 SELECT sl.*, 
@@ -591,9 +588,6 @@ $denominationsList = implode(', ', $atmDenominations);
             margin-bottom: 20px;
         }
         
-        /* ============================================================
-           CONFIRMATION MODAL STYLES
-           ============================================================ */
         .modal-overlay {
             display: none;
             position: fixed;
@@ -772,16 +766,13 @@ $denominationsList = implode(', ', $atmDenominations);
         </div>
     </div>
 
-    <!-- ============================================================ -->
-    <!-- DETAILED SWAP VIEW (shown when ?id=xxx is present) -->
-    <!-- ============================================================ -->
     <?php if ($selectedSwap && $swapId): ?>
+        <!-- DETAILED SWAP VIEW -->
         <a href="dashboard.php" class="back-link">← Back to Dashboard</a>
         
         <div class="card">
             <h3>🔍 Swap Details: <?= htmlspecialchars($selectedSwap['swap_reference'] ?? $selectedSwap['reference'] ?? 'N/A') ?></h3>
             
-            <!-- Generated Codes -->
             <?php if (!empty($generatedCodes) && (!empty($generatedCodes['atm_pin']) || !empty($generatedCodes['voucher_number']))): ?>
                 <div class="generated-code">
                     <div style="font-size: 12px; margin-bottom: 10px;">🎫 Generated Codes</div>
@@ -799,7 +790,6 @@ $denominationsList = implode(', ', $atmDenominations);
                 </div>
             <?php endif; ?>
             
-            <!-- Basic Info -->
             <div class="three-columns">
                 <div class="info-box">
                     <div class="info-label">Status</div>
@@ -842,7 +832,6 @@ $denominationsList = implode(', ', $atmDenominations);
                 </div>
             </div>
             
-            <!-- Delivery Details -->
             <?php if (!empty($deliveryDetails)): ?>
                 <h4>📦 Delivery Details</h4>
                 <div class="delivery-info">
@@ -865,7 +854,6 @@ $denominationsList = implode(', ', $atmDenominations);
                 </div>
             <?php endif; ?>
             
-            <!-- Fee Calculation Details -->
             <?php if (!empty($feeCalcDetails)): ?>
                 <h4>💰 Fee Calculation</h4>
                 <div class="fee-breakdown">
@@ -890,7 +878,6 @@ $denominationsList = implode(', ', $atmDenominations);
                 </div>
             <?php endif; ?>
             
-            <!-- Payload Tabs -->
             <h4>📄 Request & Response Data</h4>
             <div class="tabs">
                 <button class="tab active" onclick="showTab('request')">📨 Request Payload</button>
@@ -935,9 +922,7 @@ $denominationsList = implode(', ', $atmDenominations);
         </div>
         
     <?php else: ?>
-        <!-- ============================================================ -->
-        <!-- NEW SWAP FORM - FULLY DYNAMIC FROM assets.yaml -->
-        <!-- ============================================================ -->
+        <!-- NEW SWAP FORM -->
         <div class="card">
             <h3>🔄 New Swap</h3>
             
@@ -950,7 +935,6 @@ $denominationsList = implode(', ', $atmDenominations);
             </div>
             
             <div class="two-columns">
-                <!-- LEFT COLUMN - SOURCE -->
                 <div>
                     <div class="form-group">
                         <label>📤 SOURCE INSTITUTION</label>
@@ -985,7 +969,6 @@ $denominationsList = implode(', ', $atmDenominations);
                     <div id="assetFieldsContainer" class="dynamic-fields"></div>
                 </div>
                 
-                <!-- RIGHT COLUMN - DESTINATION -->
                 <div>
                     <div class="form-group">
                         <label>📥 DESTINATION INSTITUTION</label>
@@ -1041,9 +1024,7 @@ $denominationsList = implode(', ', $atmDenominations);
         <div id="result" class="result"></div>
     <?php endif; ?>
 
-    <!-- ============================================================ -->
     <!-- CONFIRMATION MODAL -->
-    <!-- ============================================================ -->
     <div id="confirmModal" class="modal-overlay">
         <div class="modal">
             <h2>🔄 Confirm Swap</h2>
@@ -1064,9 +1045,7 @@ $denominationsList = implode(', ', $atmDenominations);
         </div>
     </div>
 
-    <!-- ============================================================ -->
-    <!-- RECENT SWAPS SECTION -->
-    <!-- ============================================================ -->
+    <!-- RECENT SWAPS -->
     <div class="card">
         <h3>📋 Recent Swaps</h3>
         <?php if (empty($recentSwaps)): ?>
@@ -1099,11 +1078,8 @@ $denominationsList = implode(', ', $atmDenominations);
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- JAVASCRIPT -->
-<!-- ============================================================ -->
 <script>
-// Dynamic data from PHP (loaded from YAML)
+// Dynamic data from PHP
 const participants = <?= json_encode($participants) ?>;
 const assetFields = <?= json_encode($assetFields) ?>;
 const assets = <?= json_encode($assets) ?>;
@@ -1137,6 +1113,10 @@ const confirmBtn = document.getElementById('confirmBtn');
 let pendingPayload = null;
 let previewData = null;
 
+// ============================================================
+// CORE FUNCTIONS
+// ============================================================
+
 function updateAssetTypes() {
     const fromInst = fromInstSelect.value;
     assetTypeSelect.innerHTML = '<option value="">-- Select Asset Type --</option>';
@@ -1147,12 +1127,6 @@ function updateAssetTypes() {
     }
     
     const assetsList = institutionAssets[fromInst] || ['ACCOUNT'];
-    
-    if (assetsList.length === 0) {
-        assetTypeHint.innerHTML = '⚠️ No asset types defined for this institution';
-        return;
-    }
-    
     assetTypeHint.innerHTML = `Supported asset types: ${assetsList.join(', ')}`;
     
     assetsList.forEach(asset => {
@@ -1173,47 +1147,47 @@ function updateAssetTypes() {
 
 function updateAssetFields() {
     const assetType = assetTypeSelect.value;
-    const fields = assetFields[assetType] || [];
+    let fields = assetFields[assetType] || [];
     
-    assetFieldsContainer.innerHTML = '';
-    assetFieldsContainer.classList.remove('active');
-    
-    if (fields.length === 0 || !assetType) {
-        // Check if this asset type has a default PIN field
-        if (assetType && assetType !== '') {
-            // Some asset types like ACCOUNT may need a PIN
-            const defaultFields = getDefaultFieldsForAssetType(assetType);
-            if (defaultFields.length > 0) {
-                renderFields(defaultFields);
-            }
+    // CRITICAL: Always ensure PIN field for wallet-type assets
+    const needsPin = ['ACCOUNT', 'BANK-WALLET', 'MNO-WALLET', 'WALLET'].includes(assetType);
+    if (needsPin && fields.length > 0) {
+        const hasPin = fields.some(f => f.name === 'wallet_pin' || f.name === 'pin');
+        if (!hasPin) {
+            fields = [...fields, {
+                name: 'wallet_pin',
+                label: 'Wallet PIN',
+                placeholder: 'Enter your PIN',
+                type: 'password',
+                required: true
+            }];
         }
-        return;
+    }
+    
+    // If no fields and asset type is set, use defaults
+    if (fields.length === 0 && assetType) {
+        fields = getDefaultFields(assetType);
     }
     
     renderFields(fields);
 }
 
-function getDefaultFieldsForAssetType(assetType) {
-    // Return default fields based on asset type
+function getDefaultFields(assetType) {
     const defaults = {
         'ACCOUNT': [
             { name: 'account_number', label: 'Account Number', placeholder: 'Enter account number' },
-            { name: 'pin', label: 'PIN', placeholder: 'Enter PIN', type: 'password' }
+            { name: 'wallet_pin', label: 'Wallet PIN', placeholder: 'Enter your PIN', type: 'password', required: true }
         ],
         'BANK-WALLET': [
-            { name: 'wallet_phone', label: 'Wallet Phone', placeholder: 'Enter wallet phone number' },
-            { name: 'wallet_pin', label: 'Wallet PIN', placeholder: 'Enter wallet PIN', type: 'password' }
+            { name: 'wallet_phone', label: 'Wallet Phone', placeholder: 'Enter wallet phone' },
+            { name: 'wallet_pin', label: 'Wallet PIN', placeholder: 'Enter your PIN', type: 'password', required: true }
         ],
         'MNO-WALLET': [
-            { name: 'wallet_phone', label: 'Wallet Phone', placeholder: 'Enter wallet phone number' },
-            { name: 'wallet_pin', label: 'Wallet PIN', placeholder: 'Enter wallet PIN', type: 'password' }
+            { name: 'wallet_phone', label: 'Wallet Phone', placeholder: 'Enter wallet phone' },
+            { name: 'wallet_pin', label: 'Wallet PIN', placeholder: 'Enter your PIN', type: 'password', required: true }
         ],
         'VOUCHER': [
             { name: 'voucher_number', label: 'Voucher Number', placeholder: 'Enter voucher number' }
-        ],
-        'CASHOUT-VOUCHER': [
-            { name: 'voucher_number', label: 'Voucher Number', placeholder: 'Enter voucher number' },
-            { name: 'pin', label: 'PIN', placeholder: 'Enter PIN', type: 'password' }
         ]
     };
     return defaults[assetType] || [];
@@ -1232,16 +1206,15 @@ function renderFields(fields) {
         const placeholder = field.placeholder || `Enter ${fieldName.replace(/_/g, ' ')}`;
         const isPin = fieldName.includes('pin') || field.type === 'password';
         const inputType = isPin ? 'password' : 'text';
-        const vaultAttr = field.vault_field ? ` data-vault="${field.vault_field}"` : '';
-        const isWalletPin = fieldName === 'wallet_pin' || fieldName === 'pin';
-        const pinNote = isWalletPin ? `<div style="font-size:10px; color:#00f0ff; margin-top:4px;">Enter your PIN (e.g., 77777)</div>` : '';
         const requiredAttr = field.required ? ' required' : '';
+        const pinNote = isPin ? `<div style="font-size:10px; color:#b000ff; margin-top:4px;">🔑 Enter your PIN (e.g., 77777)</div>` : '';
+        
         html += `
             <div class="form-group">
                 <label>${label}</label>
                 <input type="${inputType}" id="${fieldName}" class="asset-field" 
                        placeholder="${placeholder}" autocomplete="${isPin ? 'new-password' : 'on'}"
-                       ${vaultAttr}${requiredAttr}>
+                       ${requiredAttr}>
                 ${pinNote}
             </div>
         `;
@@ -1250,13 +1223,10 @@ function renderFields(fields) {
     
     assetFieldsContainer.innerHTML = html;
     assetFieldsContainer.classList.add('active');
-    
-    console.log('[updateAssetFields] Rendered fields for', assetTypeSelect.value, ':', fields.map(f => f.name));
 }
 
 function updateDestinationFields() {
     const swapType = swapTypeSelect.value;
-    
     destFieldsContainer.innerHTML = '';
     destFieldsContainer.classList.remove('active');
     
@@ -1264,7 +1234,7 @@ function updateDestinationFields() {
         denominationInfo.classList.add('show');
         destFieldsContainer.innerHTML = `
             <div class="form-group">
-                <label>📱 BENEFICIARY PHONE (Where to send ATM code)</label>
+                <label>📱 BENEFICIARY PHONE</label>
                 <input type="tel" id="beneficiaryPhone" placeholder="+267XXXXXXXX" value="<?= $loggedPhone ?>">
             </div>
             <div class="info-note">💡 ATM cashout code will be sent via SMS to this number.</div>
@@ -1274,7 +1244,7 @@ function updateDestinationFields() {
         denominationInfo.classList.remove('show');
         destFieldsContainer.innerHTML = `
             <div class="form-group">
-                <label>🏦 DESTINATION IDENTIFIER (Who receives money)</label>
+                <label>🏦 DESTINATION IDENTIFIER</label>
                 <input type="text" id="destinationIdentifier" placeholder="Phone number or National ID or Account number">
             </div>
             <div class="info-note">💡 The person receiving the money.</div>
@@ -1311,6 +1281,49 @@ function updateSummary() {
     summaryDiv.innerHTML = `📋 ${fromInst} (${asset}) → ${toInst} (${swapType}) | Amount: <?= $currencySymbol ?> ${amount.toFixed(2)}`;
 }
 
+// ============================================================
+// CRITICAL: BUILD PAYLOAD WITH PIN CAPTURE
+// ============================================================
+
+function getPinFromForm() {
+    // Try multiple ways to find the PIN
+    let pin = null;
+    
+    // 1. Direct ID lookup
+    const pinIds = ['wallet_pin', 'pin', 'walletPin'];
+    for (const id of pinIds) {
+        const el = document.getElementById(id);
+        if (el && el.value && el.value.trim()) {
+            pin = el.value.trim();
+            console.log('[getPin] Found PIN via ID:', id, pin.substring(0, 2) + '****');
+            return pin;
+        }
+    }
+    
+    // 2. Look for password fields
+    document.querySelectorAll('input[type="password"]').forEach(el => {
+        if (!pin && el.value && el.value.trim().length >= 4) {
+            pin = el.value.trim();
+            console.log('[getPin] Found PIN via password field:', el.id, pin.substring(0, 2) + '****');
+        }
+    });
+    
+    // 3. Look in asset fields
+    if (!pin) {
+        document.querySelectorAll('.asset-field').forEach(el => {
+            if (!pin && el.value && el.value.trim().length >= 4) {
+                const id = el.id || '';
+                if (id.includes('pin') || id.includes('wallet')) {
+                    pin = el.value.trim();
+                    console.log('[getPin] Found PIN via asset-field:', id, pin.substring(0, 2) + '****');
+                }
+            }
+        });
+    }
+    
+    return pin;
+}
+
 function buildPayload() {
     const fromInst = fromInstSelect.value;
     const toInst = toInstSelect.value;
@@ -1320,17 +1333,17 @@ function buildPayload() {
     const reference = 'SWAP_' + Date.now();
     const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
     
-    // SOURCE IDENTIFIER
+    // Source identifier
     const sourceIdentifier = sourceIdentifierInput?.value.trim() || '';
     let identifierType = identifierTypeSelect?.value || 'auto';
     
-    // Auto-detect if set to auto
     if (identifierType === 'auto' && sourceIdentifier) {
         if (sourceIdentifier.match(/^[\+]?[0-9]{10,15}$/)) identifierType = 'phone';
         else if (sourceIdentifier.match(/^[A-Z0-9]{6,20}$/i)) identifierType = 'national_id';
         else if (sourceIdentifier.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) identifierType = 'email';
     }
     
+    // Base payload
     const payload = {
         reference: reference,
         idempotency_key: idempotencyKey,
@@ -1351,77 +1364,45 @@ function buildPayload() {
     else if (identifierType === 'email') payload.source_email = sourceIdentifier;
     
     // ============================================================
-    // DYNAMICALLY PROCESS ALL ASSET FIELDS FROM assets.yaml
+    // COLLECT ALL ASSET FIELDS
     // ============================================================
     const assetFieldsData = {};
-    let walletPin = null;
-    
-    // First pass: collect all field values
     document.querySelectorAll('.asset-field').forEach(field => {
         const value = field.value.trim();
         if (value) {
-            const fieldId = field.id;
-            assetFieldsData[fieldId] = value;
-            
-            // Also store at top level for backward compatibility
-            payload[fieldId] = value;
-            
-            // If this is a PIN field, store it
-            if (fieldId === 'wallet_pin' || fieldId === 'pin' || fieldId.includes('pin')) {
-                walletPin = value;
-                payload.wallet_pin = value;
-                payload.pin = value;
-                console.log('[buildPayload] Found wallet_pin:', value.substring(0, 2) + '****');
-            }
+            assetFieldsData[field.id] = value;
+            payload[field.id] = value;
         }
     });
     
-    // Second pass: ensure wallet_pin is set even if field wasn't captured
-    if (!walletPin) {
-        // Check for any password field
-        document.querySelectorAll('input[type="password"]').forEach(field => {
-            const value = field.value.trim();
-            if (value && value.length >= 4) {
-                const fieldId = field.id;
-                if (fieldId.includes('pin') || fieldId.includes('wallet')) {
-                    walletPin = value;
-                    payload.wallet_pin = value;
-                    payload.pin = value;
-                    assetFieldsData[fieldId] = value;
-                    console.log('[buildPayload] wallet_pin from password field:', value.substring(0, 2) + '****');
-                }
-            }
-        });
+    // ============================================================
+    // CRITICAL: GET AND ADD THE PIN
+    // ============================================================
+    const pin = getPinFromForm();
+    
+    if (pin) {
+        // Add at top level - this is what the API expects
+        payload.wallet_pin = pin;
+        payload.pin = pin;
         
-        // Check by specific IDs
-        ['wallet_pin', 'pin', 'walletPin', 'Pin'].forEach(id => {
-            if (!walletPin) {
-                const el = document.getElementById(id);
-                if (el && el.value && el.value.trim().length >= 4) {
-                    walletPin = el.value.trim();
-                    payload.wallet_pin = walletPin;
-                    payload.pin = walletPin;
-                    assetFieldsData[id] = walletPin;
-                    console.log('[buildPayload] wallet_pin from ID ' + id + ':', walletPin.substring(0, 2) + '****');
-                }
-            }
-        });
+        // Also add to asset_fields
+        if (!payload.asset_fields) payload.asset_fields = {};
+        payload.asset_fields.wallet_pin = pin;
+        payload.asset_fields.pin = pin;
+        
+        console.log('[buildPayload] ✅ PIN added to payload:', pin.substring(0, 2) + '****');
+    } else {
+        console.warn('[buildPayload] ⚠️ No PIN found in form!');
     }
     
-    // Add asset_fields to payload if there are any
+    // Add asset_fields if there are any
     if (Object.keys(assetFieldsData).length > 0) {
-        payload.asset_fields = assetFieldsData;
+        payload.asset_fields = { ...payload.asset_fields, ...assetFieldsData };
     }
     
-    // Ensure wallet_pin is in asset_fields as well
-    if (walletPin && payload.asset_fields) {
-        payload.asset_fields.wallet_pin = walletPin;
-        payload.asset_fields.pin = walletPin;
-    }
-    
-    console.log('[buildPayload] final wallet_pin included:', !!payload.wallet_pin);
-    
-    // Destination fields
+    // ============================================================
+    // DESTINATION FIELDS
+    // ============================================================
     if (swapType === 'CASHOUT') {
         const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value.trim();
         if (beneficiaryPhone) {
@@ -1448,11 +1429,12 @@ function buildPayload() {
         }
     }
     
+    console.log('[buildPayload] Final payload PIN status:', !!payload.wallet_pin);
     return payload;
 }
 
 // ============================================================
-// CONFIRMATION MODAL FUNCTIONS
+// CONFIRMATION MODAL
 // ============================================================
 
 async function showConfirmation(payload) {
@@ -1513,12 +1495,10 @@ function buildConfirmationUI(preview) {
     const forexApplied = preview.forex_applied || false;
     const breakdown = preview.fee_breakdown || [];
     
-    // Build fee breakdown HTML
     let breakdownHTML = '';
     if (breakdown.length > 0) {
         breakdownHTML = '<div style="margin-top:12px; padding-top:12px; border-top:1px solid #1a1f3a;">';
         breakdownHTML += '<div style="font-size:12px; color:#888; margin-bottom:8px;">Fee Breakdown:</div>';
-        
         breakdown.forEach(item => {
             const amountVal = item.amount || 0;
             const name = item.name || item.slot || 'Fee';
@@ -1532,11 +1512,9 @@ function buildConfirmationUI(preview) {
                 `;
             }
         });
-        
         breakdownHTML += '</div>';
     }
     
-    // Forex info
     let forexHTML = '';
     if (forexApplied) {
         forexHTML = `
@@ -1547,7 +1525,6 @@ function buildConfirmationUI(preview) {
         `;
     }
     
-    // Destination split info
     let destSplitHTML = '';
     if (preview.destination_split) {
         const ds = preview.destination_split;
@@ -1595,20 +1572,15 @@ function closeConfirmation() {
     modalError.style.display = 'none';
 }
 
-// Tab switching function for detailed view
 function showTab(tabName) {
-    const tabs = document.querySelectorAll('.tab-content');
-    const tabButtons = document.querySelectorAll('.tab');
-    
-    tabs.forEach(tab => tab.classList.remove('active'));
-    tabButtons.forEach(btn => btn.classList.remove('active'));
-    
+    document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(btn => btn.classList.remove('active'));
     document.getElementById(`tab-${tabName}`).classList.add('active');
     if (window.event && window.event.target) window.event.target.classList.add('active');
 }
 
 // ============================================================
-// EXECUTE BUTTON - Shows confirmation first
+// EXECUTE BUTTON
 // ============================================================
 
 const executeBtn = document.getElementById('executeBtn');
@@ -1621,30 +1593,38 @@ if (executeBtn) {
         const swapType = swapTypeSelect.value;
         const sourceIdentifier = sourceIdentifierInput?.value.trim();
         
-        // Validation
         if (!fromInst) { alert('Select SOURCE institution'); return; }
         if (!toInst) { alert('Select DESTINATION institution'); return; }
         if (!assetType) { alert('Select asset type'); return; }
-        if (!sourceIdentifier) { alert('Enter source identifier (who is sending money)'); return; }
+        if (!sourceIdentifier) { alert('Enter source identifier'); return; }
         if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
         if (fromInst === toInst) { alert('Source and destination must be different'); return; }
         
-        if (swapType === 'CASHOUT') {
-            const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value.trim();
-            if (!beneficiaryPhone) { alert('Enter beneficiary phone number for ATM code'); return; }
-        } else if (swapType === 'DEPOSIT') {
-            const destinationIdentifier = document.getElementById('destinationIdentifier')?.value.trim();
-            if (!destinationIdentifier) { alert('Enter destination identifier (who receives money)'); return; }
+        // Check for PIN if needed
+        const needsPin = ['ACCOUNT', 'BANK-WALLET', 'MNO-WALLET', 'WALLET'].includes(assetType);
+        if (needsPin) {
+            const pin = getPinFromForm();
+            if (!pin) {
+                alert('🔑 Please enter your PIN for ' + assetType);
+                return;
+            }
         }
         
-        // Build payload and show confirmation
+        if (swapType === 'CASHOUT') {
+            const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value.trim();
+            if (!beneficiaryPhone) { alert('Enter beneficiary phone number'); return; }
+        } else if (swapType === 'DEPOSIT') {
+            const destinationIdentifier = document.getElementById('destinationIdentifier')?.value.trim();
+            if (!destinationIdentifier) { alert('Enter destination identifier'); return; }
+        }
+        
         const payload = buildPayload();
         await showConfirmation(payload);
     });
 }
 
 // ============================================================
-// CONFIRM BUTTON - Executes the swap
+// CONFIRM BUTTON
 // ============================================================
 
 confirmBtn.addEventListener('click', async function() {
@@ -1669,32 +1649,26 @@ confirmBtn.addEventListener('click', async function() {
         
         const result = await response.json();
         
-        // Check if swap was successful
         const isSuccess = result.success === true || 
                           result.status === 'success' || 
                           result.status === 'pending_cashout' ||
                           result.atomic_commit?.status === 'committed';
         
         if (isSuccess) {
-            // Success - close modal and show result
             closeConfirmation();
             
             resultDiv.className = 'result success';
-            
-            // Determine reference
             const ref = result.reference || result.swap_reference || result.data?.reference || 'N/A';
             
             let html = `<strong>✅ Swap Successful!</strong><br><br>
                 Reference: ${ref}<br>
                 Amount: <?= $currencySymbol ?> ${pendingPayload.amount.toFixed(2)}<br>`;
             
-            // Check various places for fee
             const fee = result.fee || result.data?.fee || result.fee_amount || 0;
             if (parseFloat(fee) > 0) {
                 html += `<strong>Fee: <?= $currencySymbol ?> ${parseFloat(fee).toFixed(2)}</strong><br>`;
             }
             
-            // Check for ATM code in various places
             const atmCode = result.atm_code || result.atm_pin || 
                            result.data?.atm_code || result.data?.atm_pin || 
                            result.data?.generated_codes?.atm_pin || 
@@ -1715,13 +1689,6 @@ confirmBtn.addEventListener('click', async function() {
                 html += `<br><strong>⏰ Expires:</strong> ${expires}<br>`;
             }
             
-            // Show auth code if present
-            const authCode = result.auth_code || result.data?.auth_code || 
-                            result.data?.generated_codes?.auth_code || null;
-            if (authCode) {
-                html += `<br><strong>🔐 Auth Code:</strong> ${authCode}<br>`;
-            }
-            
             html += `<br><details><summary><strong>📋 Full Response</strong></summary><pre style="margin-top:8px; font-size:11px; overflow-x:auto;">${JSON.stringify(result, null, 2)}</pre></details>`;
             html += `<br><a href="?id=${ref}" style="color:#00f0ff;">View Full Details →</a>`;
             resultDiv.innerHTML = html;
@@ -1729,11 +1696,9 @@ confirmBtn.addEventListener('click', async function() {
             
             setTimeout(() => location.reload(), 3000);
         } else {
-            // Failed - show error in modal
             let errorMsg = result.message || result.error || 'Unknown error';
             modalError.textContent = '❌ ' + errorMsg;
             modalError.style.display = 'block';
-            
             btn.disabled = false;
             btn.innerHTML = '🔄 Try Again';
         }
@@ -1794,16 +1759,10 @@ document.querySelectorAll('.quick-amount').forEach(btn => {
 // INITIALIZATION
 // ============================================================
 
-if (typeof updateAssetTypes === 'function') updateAssetTypes();
-if (typeof updateDestinationFields === 'function') updateDestinationFields();
+updateAssetTypes();
+updateDestinationFields();
 
-// Ensure PIN fields are properly handled when form is loaded
-document.addEventListener('DOMContentLoaded', function() {
-    console.log('[DOMContentLoaded] Dashboard ready');
-    // Log PIN fields
-    const pinFields = document.querySelectorAll('input[type="password"]');
-    console.log('[DOMContentLoaded] Found ' + pinFields.length + ' password fields');
-});
+console.log('[Dashboard] ✅ Initialized');
 </script>
 </body>
 </html>
