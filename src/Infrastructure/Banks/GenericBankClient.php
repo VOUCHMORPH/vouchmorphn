@@ -175,80 +175,80 @@ class GenericBankClient implements BankAPIInterface
     }
     
     protected function parseEndpointsYaml(string $content): array
-{
-    $result = [];
-    $lines = explode("\n", $content);
-    $currentBank = null;
-    $currentSection = null;
-    $currentSubSection = null;
-    
-    foreach ($lines as $line) {
-        $line = rtrim($line);
-        if (empty($line) || $line[0] === '#') continue;
+    {
+        $result = [];
+        $lines = explode("\n", $content);
+        $currentBank = null;
+        $currentSection = null;
+        $currentSubSection = null;
         
-        // Bank header (e.g., "ZURUBANK:")
-        if (preg_match('/^([A-Z_]+):$/', $line, $matches)) {
-            $currentBank = $matches[1];
-            $result[$currentBank] = [];
-            $currentSection = null;
-            $currentSubSection = null;
-            continue;
+        foreach ($lines as $line) {
+            $line = rtrim($line);
+            if (empty($line) || $line[0] === '#') continue;
+            
+            // Bank header (e.g., "ZURUBANK:")
+            if (preg_match('/^([A-Z_]+):$/', $line, $matches)) {
+                $currentBank = $matches[1];
+                $result[$currentBank] = [];
+                $currentSection = null;
+                $currentSubSection = null;
+                continue;
+            }
+            
+            if ($currentBank) {
+                // Base URL (2 spaces indentation)
+                if (preg_match('/^  base_url: "?(.+?)"?$/', $line, $matches)) {
+                    $result[$currentBank]['base_url'] = rtrim($matches[1], '"');
+                    continue;
+                }
+                
+                // Endpoints section (2 spaces)
+                if (preg_match('/^  endpoints:$/', $line)) {
+                    $currentSection = 'endpoints';
+                    $result[$currentBank]['endpoints'] = [];
+                    continue;
+                }
+                
+                // Source endpoints (4 spaces)
+                if ($currentSection === 'endpoints' && preg_match('/^    source:$/', $line)) {
+                    $currentSubSection = 'source';
+                    $result[$currentBank]['endpoints']['source'] = [];
+                    continue;
+                }
+                
+                // Destination cashout endpoints (4 spaces)
+                if ($currentSection === 'endpoints' && preg_match('/^    destination_cashout:$/', $line)) {
+                    $currentSubSection = 'destination_cashout';
+                    $result[$currentBank]['endpoints']['destination_cashout'] = [];
+                    continue;
+                }
+                
+                // Destination deposit endpoints (4 spaces)
+                if ($currentSection === 'endpoints' && preg_match('/^    destination_deposit:$/', $line)) {
+                    $currentSubSection = 'destination_deposit';
+                    $result[$currentBank]['endpoints']['destination_deposit'] = [];
+                    continue;
+                }
+                
+                // Common endpoints (4 spaces)
+                if ($currentSection === 'endpoints' && preg_match('/^    common:$/', $line)) {
+                    $currentSubSection = 'common';
+                    $result[$currentBank]['endpoints']['common'] = [];
+                    continue;
+                }
+                
+                // Endpoint key-value pairs (6 spaces or more)
+                if ($currentSubSection && preg_match('/^      ([a-z_]+): "?(.+?)"?$/', $line, $matches)) {
+                    $key = $matches[1];
+                    $value = rtrim($matches[2], '"');
+                    $result[$currentBank]['endpoints'][$currentSubSection][$key] = $value;
+                    continue;
+                }
+            }
         }
         
-        if ($currentBank) {
-            // Base URL (2 spaces indentation)
-            if (preg_match('/^  base_url: "?(.+?)"?$/', $line, $matches)) {
-                $result[$currentBank]['base_url'] = rtrim($matches[1], '"');
-                continue;
-            }
-            
-            // Endpoints section (2 spaces)
-            if (preg_match('/^  endpoints:$/', $line)) {
-                $currentSection = 'endpoints';
-                $result[$currentBank]['endpoints'] = [];
-                continue;
-            }
-            
-            // Source endpoints (4 spaces)
-            if ($currentSection === 'endpoints' && preg_match('/^    source:$/', $line)) {
-                $currentSubSection = 'source';
-                $result[$currentBank]['endpoints']['source'] = [];
-                continue;
-            }
-            
-            // Destination cashout endpoints (4 spaces)
-            if ($currentSection === 'endpoints' && preg_match('/^    destination_cashout:$/', $line)) {
-                $currentSubSection = 'destination_cashout';
-                $result[$currentBank]['endpoints']['destination_cashout'] = [];
-                continue;
-            }
-            
-            // Destination deposit endpoints (4 spaces)
-            if ($currentSection === 'endpoints' && preg_match('/^    destination_deposit:$/', $line)) {
-                $currentSubSection = 'destination_deposit';
-                $result[$currentBank]['endpoints']['destination_deposit'] = [];
-                continue;
-            }
-            
-            // Common endpoints (4 spaces)
-            if ($currentSection === 'endpoints' && preg_match('/^    common:$/', $line)) {
-                $currentSubSection = 'common';
-                $result[$currentBank]['endpoints']['common'] = [];
-                continue;
-            }
-            
-            // Endpoint key-value pairs (6 spaces or more)
-            if ($currentSubSection && preg_match('/^      ([a-z_]+): "?(.+?)"?$/', $line, $matches)) {
-                $key = $matches[1];
-                $value = rtrim($matches[2], '"');
-                $result[$currentBank]['endpoints'][$currentSubSection][$key] = $value;
-                continue;
-            }
-        }
+        return $result;
     }
-    
-    return $result;
-}
     
     public function getDetectedFormat(): ?string { return $this->detectedFormat; }
     public function getDetectionConfidence(): ?int { return $this->detectionConfidence; }
@@ -947,20 +947,75 @@ class GenericBankClient implements BankAPIInterface
         $payload = $this->addSourceIdentifier($payload);
         
         // ============================================================
-        // DETECT PIN IN PAYLOAD AND ADD TO SIGNED PAYLOAD
+        // DETECT PIN IN PAYLOAD - CHECK ALL POSSIBLE LOCATIONS
         // ============================================================
-        // Check for PIN in various possible locations
+        $pinFound = false;
+        
+        // Check top-level pin fields
         if (isset($payload['pin']) && !empty($payload['pin'])) {
-            $payload['asset_type'] = 'PIN';
-            error_log("[GenericBankClient] PIN found in payload: " . substr($payload['pin'], -4));
-        } elseif (isset($payload['asset_fields']['pin']) && !empty($payload['asset_fields']['pin'])) {
-            $payload['pin'] = $payload['asset_fields']['pin'];
-            $payload['asset_type'] = 'PIN';
-            error_log("[GenericBankClient] PIN found in asset_fields: " . substr($payload['pin'], -4));
-        } elseif (isset($payload['wallet_pin']) && !empty($payload['wallet_pin'])) {
+            $pinFound = true;
+            error_log("[GenericBankClient] PIN found at top level 'pin': " . substr($payload['pin'], -4));
+        }
+        // Check wallet_pin
+        elseif (isset($payload['wallet_pin']) && !empty($payload['wallet_pin'])) {
             $payload['pin'] = $payload['wallet_pin'];
+            $pinFound = true;
+            error_log("[GenericBankClient] PIN found in 'wallet_pin': " . substr($payload['pin'], -4));
+        }
+        // Check atm_pin
+        elseif (isset($payload['atm_pin']) && !empty($payload['atm_pin'])) {
+            $payload['pin'] = $payload['atm_pin'];
+            $pinFound = true;
+            error_log("[GenericBankClient] PIN found in 'atm_pin': " . substr($payload['pin'], -4));
+        }
+        // Check asset_fields.wallet_pin (BANK-WALLET)
+        elseif (isset($payload['asset_fields']['wallet_pin']) && !empty($payload['asset_fields']['wallet_pin'])) {
+            $payload['pin'] = $payload['asset_fields']['wallet_pin'];
+            $pinFound = true;
+            error_log("[GenericBankClient] PIN found in asset_fields.wallet_pin: " . substr($payload['pin'], -4));
+        }
+        // Check asset_fields.pin
+        elseif (isset($payload['asset_fields']['pin']) && !empty($payload['asset_fields']['pin'])) {
+            $payload['pin'] = $payload['asset_fields']['pin'];
+            $pinFound = true;
+            error_log("[GenericBankClient] PIN found in asset_fields.pin: " . substr($payload['pin'], -4));
+        }
+        // Check asset_fields.voucher_pin (CASHOUT-VOUCHER)
+        elseif (isset($payload['asset_fields']['voucher_pin']) && !empty($payload['asset_fields']['voucher_pin'])) {
+            $payload['pin'] = $payload['asset_fields']['voucher_pin'];
+            $pinFound = true;
+            error_log("[GenericBankClient] PIN found in asset_fields.voucher_pin: " . substr($payload['pin'], -4));
+        }
+        // Check asset_fields.card_pin (CARD)
+        elseif (isset($payload['asset_fields']['card_pin']) && !empty($payload['asset_fields']['card_pin'])) {
+            $payload['pin'] = $payload['asset_fields']['card_pin'];
+            $pinFound = true;
+            error_log("[GenericBankClient] PIN found in asset_fields.card_pin: " . substr($payload['pin'], -4));
+        }
+        // Check asset_fields.atm_pin (ATM)
+        elseif (isset($payload['asset_fields']['atm_pin']) && !empty($payload['asset_fields']['atm_pin'])) {
+            $payload['pin'] = $payload['asset_fields']['atm_pin'];
+            $pinFound = true;
+            error_log("[GenericBankClient] PIN found in asset_fields.atm_pin: " . substr($payload['pin'], -4));
+        }
+        // Check source.pin (nested)
+        elseif (isset($payload['source']['pin']) && !empty($payload['source']['pin'])) {
+            $payload['pin'] = $payload['source']['pin'];
+            $pinFound = true;
+            error_log("[GenericBankClient] PIN found in source.pin: " . substr($payload['pin'], -4));
+        }
+        // Check source.wallet_pin
+        elseif (isset($payload['source']['wallet_pin']) && !empty($payload['source']['wallet_pin'])) {
+            $payload['pin'] = $payload['source']['wallet_pin'];
+            $pinFound = true;
+            error_log("[GenericBankClient] PIN found in source.wallet_pin: " . substr($payload['pin'], -4));
+        }
+        
+        if ($pinFound) {
             $payload['asset_type'] = 'PIN';
-            error_log("[GenericBankClient] PIN found in wallet_pin: " . substr($payload['pin'], -4));
+            error_log("[GenericBankClient] Setting asset_type to PIN, pin: " . substr($payload['pin'], -4));
+        } else {
+            error_log("[GenericBankClient] No PIN found in payload");
         }
         
         if ($this->certManager && $this->certManager->isConfigured()) {
