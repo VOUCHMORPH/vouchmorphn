@@ -2,21 +2,22 @@
 
 echo "<pre>";
 
-$vendor = '/var/www/html/vendor';
+require_once '/var/www/html/vendor/autoload.php';
 
-echo "Vendor exists: ";
-echo is_dir($vendor) ? "YES\n" : "NO\n";
+echo "Loaded classes:\n\n";
 
-echo "\nContents:\n";
+print_r(scandir('/var/www/html/vendor'));
 
-print_r(scandir($vendor));
+echo "\n\nPSR exists: ";
 
-echo "\nComposer folder:\n";
+echo is_dir('/var/www/html/vendor/psr')
+    ? "YES\n"
+    : "NO\n";
 
-if (is_dir($vendor.'/composer')) {
-    print_r(scandir($vendor.'/composer'));
-} else {
-    echo "composer folder missing";
-}
+echo "vlucas exists: ";
+
+echo is_dir('/var/www/html/vendor/vlucas')
+    ? "YES\n"
+    : "NO\n";
 
 echo "</pre>";
