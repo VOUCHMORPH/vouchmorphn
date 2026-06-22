@@ -3,6 +3,178 @@ declare(strict_types=1);
 
 namespace Domain\Services\MultiSource;
 
+use RuntimeException;
+
+/**
+ * Pool State Machine
+ * Manages state transitions for multi-source funding pools
+ */
+class PoolStateMachine
+{
+    /**
+     * Valid state transitions
+     * Current state => [allowed next states]
+     */
+    private array $transitions = [
+        'CREATED' => ['VERIFYING', 'CANCELLED'],
+        'VERIFYING' => ['HOLDING', 'FAILED', 'CANCELLED'],
+        'HOLDING' => ['FUNDED', 'FAILED', 'ROLLED_BACK'],
+        'FUNDED' => ['DESTINATION_PENDING', 'FAILED'],
+        'DESTINATION_PENDING' => ['DESTINATION_COMPLETED', 'FAILED'],
+        'DESTINATION_COMPLETED' => ['DEBITING', 'FAILED'],
+        'DEBITING' => ['SETTLING', 'FAILED', 'ROLLED_BACK'],
+        'SETTLING' => ['INVOICING', 'FAILED'],
+        'INVOICING' => ['COMPLETED', 'FAILED'],
+        'COMPLETED' => [],
+        'FAILED' => [],
+        'CANCELLED' => [],
+        'ROLLED_BACK' => []
+    ];
+
+    /**
+     * Transition a pool to a new state
+     * 
+     * @param array $pool Pool data (must have 'status' and 'id' keys)
+     * @param string $newStatus New status to transition to
+     * @param array $metadata Additional metadata to merge
+     * @throws RuntimeException If transition is invalid
+     */
+    public function transition(array &$pool, string $newStatus, array $metadata = []): void
+    {
+        $currentStatus = $pool['status'] ?? 'CREATED';
+        
+        // If already in target state, skip
+        if ($currentStatus === $newStatus) {
+            return;
+        }
+
+        // Check if transition is allowed
+        if (!$this->canTransition($currentStatus, $newStatus)) {
+            throw new RuntimeException(
+                "Invalid state transition from {$currentStatus} to {$newStatus}"
+            );
+        }
+
+        // Update status
+        $pool['status'] = $newStatus;
+        $pool['updated_at'] = date('Y-m-d H:i:s');
+        
+        // Merge metadata
+        if (!empty($metadata)) {
+            $pool['metadata'] = array_merge($pool['metadata'] ?? [], $metadata);
+        }
+
+        error_log(sprintf(
+            "[PoolStateMachine] Pool %s: %s → %s",
+            $pool['id'] ?? 'unknown',
+            $currentStatus,
+            $newStatus
+        ));
+    }
+
+    /**
+     * Check if a transition is valid
+     * 
+     * @param string $current Current state
+     * @param string $new Target state
+     * @return bool True if transition is allowed
+     */
+    public function canTransition(string $current, string $new): bool
+    {
+        $allowed = $this->transitions[$current] ?? [];
+        return in_array($new, $allowed);
+    }
+
+    /**
+     * Get all allowed next states for a given state
+     * 
+     * @param string $current Current state
+     * @return array List of allowed next states
+     */
+    public function getAllowedTransitions(string $current): array
+    {
+        return $this->transitions[$current] ?? [];
+    }
+
+    /**
+     * Check if a state is terminal (no further transitions allowed)
+     * 
+     * @param string $state State to check
+     * @return bool True if terminal
+     */
+    public function isTerminal(string $state): bool
+    {
+        return empty($this->transitions[$state] ?? []);
+    }
+
+    /**
+     * Check if a state is a failure state
+     * 
+     * @param string $state State to check
+     * @return bool True if failed
+     */
+    public function isFailureState(string $state): bool
+    {
+        return in_array($state, ['FAILED', 'CANCELLED', 'ROLLED_BACK']);
+    }
+
+    /**
+     * Check if a state is a success state
+     * 
+     * @param string $state State to check
+     * @return bool True if completed
+     */
+    public function isSuccessState(string $state): bool
+    {
+        return $state === 'COMPLETED';
+    }
+
+    /**
+     * Get the transition path from start to end
+     * 
+     * @param string $start Starting state
+     * @param string $end Target state
+     * @return array|null Path of states, or null if no path exists
+     */
+    public function getTransitionPath(string $start, string $end): ?array
+    {
+        if ($start === $end) {
+            return [$start];
+        }
+
+        $visited = [];
+        $queue = [[$start]];
+
+        while (!empty($queue)) {
+            $path = array_shift($queue);
+            $current = end($path);
+
+            if ($current === $end) {
+                return $path;
+            }
+
+            if (in_array($current, $visited)) {
+                continue;
+            }
+
+            $visited[] = $current;
+
+            foreach ($this->transitions[$current] ?? [] as $next) {
+                if (!in_array($next, $visited)) {
+                    $newPath = $path;
+                    $newPath[] = $next;
+                    $queue[] = $newPath;
+                }
+            }
+        }
+
+        return null;
+    }
+}<?php
+declare(strict_types=1);
+
+namespace Domain\Services\MultiSource;
+
 use PDO;
 use Exception;
 use RuntimeException;
