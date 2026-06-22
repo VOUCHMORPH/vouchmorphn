@@ -2,56 +2,31 @@
 
 echo "<pre>";
 
-echo "CURRENT FILE:\n";
-echo __FILE__ . "\n\n";
+$root = '/var/www/html';
 
-echo "CURRENT DIR:\n";
-echo __DIR__ . "\n\n";
+require_once $root . '/vendor/autoload.php';
 
-echo "Searching...\n\n";
+echo "Autoload loaded\n\n";
 
-$path = __DIR__;
+echo "Logger interface: ";
 
-while ($path !== '/') {
+echo interface_exists('Psr\\Log\\LoggerInterface')
+    ? "YES\n"
+    : "NO\n";
 
-    echo $path . "\n";
+echo "\n";
 
-    if (file_exists($path . '/composer.json')) {
+echo "Installed packages:\n";
 
-        echo "\nPROJECT ROOT FOUND:\n";
+if (file_exists($root.'/vendor/composer/installed.php')) {
 
-        echo $path . "\n\n";
+    $packages = require $root.'/vendor/composer/installed.php';
 
-        echo "composer.json: YES\n";
+    print_r(array_keys($packages['versions']));
 
-        echo "composer.lock: ";
+} else {
 
-        echo file_exists($path.'/composer.lock')
-            ? "YES\n"
-            : "NO\n";
-
-        echo "vendor: ";
-
-        echo file_exists($path.'/vendor')
-            ? "YES\n"
-            : "NO\n";
-
-        echo "autoload: ";
-
-        echo file_exists($path.'/vendor/autoload.php')
-            ? "YES\n"
-            : "NO\n";
-
-        echo "psr/log: ";
-
-        echo interface_exists('Psr\\Log\\LoggerInterface')
-            ? "YES\n"
-            : "NOT LOADED\n";
-
-        break;
-    }
-
-    $path = dirname($path);
+    echo "installed.php missing";
 }
 
 echo "</pre>";
