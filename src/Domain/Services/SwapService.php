@@ -20,7 +20,7 @@ use Infrastructure\Mojaloop\IdempotencyService;
 use Infrastructure\Crypto\SignatureVerifier;
 use Infrastructure\Crypto\MessageSigner;
 use Infrastructure\Crypto\CertificateManager;
-use Infrastructure\Crypto\AggregateSigner;
+use Infrastructure\Crypto\AggregateSigner; 
 
 
 /**
