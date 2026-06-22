@@ -13,8 +13,8 @@ use Domain\Services\ForexService;
 use Domain\Services\CardService;
 use Domain\Services\ContributionCalculator;
 use Domain\Services\MultiSourceFeeCalculator;
-// Comment out MultiSource import
-// use Domain\Services\MultiSource\MultiSourceSwapOrchestrator;
+// UNCOMMENTED: MultiSource imports
+use Domain\Services\MultiSource\MultiSourceSwapOrchestrator;
 use Infrastructure\Banks\GenericBankClient;
 use Infrastructure\SMS\SmsNotificationService;
 use Infrastructure\Mojaloop\IdempotencyService;
@@ -70,7 +70,7 @@ class SwapService
     private ?SmsNotificationService $smsService = null;
     private ?ContributionCalculator $contributionCalculator = null;
     private ?MultiSourceFeeCalculator $multiSourceFeeCalculator = null;
-    private $multiSourceOrchestrator = null; // Changed type to allow null
+    private ?MultiSourceSwapOrchestrator $multiSourceOrchestrator = null; // Changed to proper type
     private $logger = null;
     
     private MessageSigner $messageSigner;
@@ -189,32 +189,42 @@ class SwapService
         }
         
         // ============================================================
-        // MULTI-SOURCE DISABLED - Missing dependencies
-        // To enable: install missing repositories and uncomment below
+        // MULTI-SOURCE ENABLED
         // ============================================================
-        /*
-        // Initialize multi-source components
-        $this->contributionCalculator = new ContributionCalculator();
-        $this->multiSourceFeeCalculator = new MultiSourceFeeCalculator($this->config, $this->countryCode);
+        error_log("[SwapService] Initializing Multi-Source components...");
         
-        // Initialize the MultiSourceOrchestrator
-        $aggregateSigner = new AggregateSigner(
-            $this->certificateManager ?? new CertificateManager('VOUCHMORPH'),
-            $this->signatureVerifier
-        );
+        try {
+            // Initialize multi-source components
+            $this->contributionCalculator = new ContributionCalculator();
+            $this->multiSourceFeeCalculator = new MultiSourceFeeCalculator($this->config, $this->countryCode);
+            
+            // Initialize the MultiSourceOrchestrator
+            $aggregateSigner = new AggregateSigner(
+                $this->certificateManager ?? new CertificateManager('VOUCHMORPH'),
+                $this->signatureVerifier
+            );
+            
+            $this->multiSourceOrchestrator = new MultiSourceSwapOrchestrator(
+                $this->swapDB,
+                $this,
+                $this->settlement,
+                $aggregateSigner,
+                $this->config,
+                $this->countryCode,
+                $this->logger
+            );
+            
+            error_log("[SwapService] Multi-Source components initialized successfully");
+            $this->logger->info("Multi-Source Swap Orchestrator initialized");
+            
+        } catch (Exception $e) {
+            error_log("[SwapService] ERROR initializing Multi-Source: " . $e->getMessage());
+            $this->logger->error("Multi-Source initialization failed", ['error' => $e->getMessage()]);
+            // Don't fail the whole service - multi-source just won't work
+            $this->multiSourceOrchestrator = null;
+        }
         
-        $this->multiSourceOrchestrator = new MultiSourceSwapOrchestrator(
-            $this->swapDB,
-            $this,
-            $this->settlement,
-            $aggregateSigner,
-            $this->config,
-            $this->countryCode,
-            $this->logger
-        );
-        */
-        
-        $this->logger->info("Signed SwapService initialized (multi-source disabled)", ['country' => $country]);
+        $this->logger->info("Signed SwapService initialized (multi-source " . ($this->multiSourceOrchestrator ? 'ENABLED' : 'DISABLED') . ")", ['country' => $country]);
     }
 
     private function loadAtmNotes(string $country): void
@@ -502,6 +512,12 @@ class SwapService
 
     public function executeAtomicSwap(array $payload): array
     {
+        // Log incoming payload for debugging
+        error_log("[SwapService] executeAtomicSwap called");
+        error_log("[SwapService] Payload keys: " . implode(', ', array_keys($payload)));
+        error_log("[SwapService] swap_type: " . ($payload['swap_type'] ?? 'NOT SET'));
+        error_log("[SwapService] has sources: " . (isset($payload['sources']) ? 'YES (' . count($payload['sources']) . ')' : 'NO'));
+        
         if (isset($payload['original_payload'])) {
             error_log("[SwapService] Signed envelope detected, extracting original_payload");
             $this->signedPayloads['envelope'] = [
@@ -520,6 +536,12 @@ class SwapService
         
         if ($isMultiSource) {
             $swapType = 'MULTI_SOURCE';
+            error_log("[SwapService] MULTI-SOURCE DETECTED: " . count($payload['sources']) . " sources");
+            
+            // Log each source for debugging
+            foreach ($payload['sources'] as $idx => $source) {
+                error_log("[SwapService] Source " . ($idx + 1) . ": " . ($source['institution'] ?? 'unknown') . " - " . ($source['amount'] ?? 0) . " " . ($source['currency'] ?? 'BWP'));
+            }
         }
         
         if (empty($sourceInst) && !$isMultiSource) {
@@ -1583,21 +1605,50 @@ class SwapService
     }
 
     /**
-     * Execute multi-source swap - DISABLED, falls back to standard swap
+     * Execute multi-source swap - NOW ENABLED
      */
     private function executeMultiSourceSwap(array $payload): array
     {
-        $this->logger->warning("Multi-source swap requested but disabled - falling back to standard swap");
+        error_log("[SwapService] ===== executeMultiSourceSwap START =====");
+        error_log("[SwapService] Multi-Source payload has " . count($payload['sources'] ?? []) . " sources");
         
-        // For now, just use the first source if available
-        if (isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0) {
-            $firstSource = $payload['sources'][0];
-            $payload['from_institution'] = $firstSource['institution'] ?? $payload['from_institution'];
-            $payload['account_id'] = $firstSource['account_id'] ?? $payload['account_id'];
-            $payload['amount'] = $firstSource['amount'] ?? $payload['amount'];
+        // Check if multi-source orchestrator is available
+        if ($this->multiSourceOrchestrator === null) {
+            error_log("[SwapService] Multi-Source orchestrator not available - falling back to standard swap");
+            $this->logger->warning("Multi-source swap requested but orchestrator not initialized - falling back to standard swap");
+            
+            // For now, just use the first source if available
+            if (isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0) {
+                $firstSource = $payload['sources'][0];
+                $payload['from_institution'] = $firstSource['institution'] ?? $payload['from_institution'];
+                $payload['account_id'] = $firstSource['account_id'] ?? $payload['account_id'];
+                $payload['amount'] = $firstSource['amount'] ?? $payload['amount'];
+            }
+            
+            return $this->executeSignedStandardSwap($payload);
         }
         
-        return $this->executeSignedStandardSwap($payload);
+        try {
+            error_log("[SwapService] Delegating to MultiSourceOrchestrator");
+            $result = $this->multiSourceOrchestrator->execute($payload);
+            error_log("[SwapService] MultiSourceOrchestrator returned: " . ($result['success'] ? 'SUCCESS' : 'FAILED'));
+            return $result;
+        } catch (Exception $e) {
+            error_log("[SwapService] MultiSourceOrchestrator threw exception: " . $e->getMessage());
+            $this->logger->error("Multi-source swap failed", ['error' => $e->getMessage()]);
+            
+            // Fallback to first source
+            if (isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0) {
+                $firstSource = $payload['sources'][0];
+                $payload['from_institution'] = $firstSource['institution'] ?? $payload['from_institution'];
+                $payload['account_id'] = $firstSource['account_id'] ?? $payload['account_id'];
+                $payload['amount'] = $firstSource['amount'] ?? $payload['amount'];
+                $this->logger->warning("Falling back to standard swap with first source");
+                return $this->executeSignedStandardSwap($payload);
+            }
+            
+            throw new RuntimeException("Multi-source swap failed: " . $e->getMessage());
+        }
     }
 
     private function executeCardIssuance(array $payload): array
@@ -1910,24 +1961,46 @@ class SwapService
     }
 
     /**
-     * Get the status of a multi-source pool - DISABLED
+     * Get the status of a multi-source pool - NOW ENABLED
      */
     public function getMultiSourceStatus(string $poolId): array
     {
-        return [
-            'success' => false,
-            'message' => 'Multi-source swaps are not enabled'
-        ];
+        if ($this->multiSourceOrchestrator === null) {
+            return [
+                'success' => false,
+                'message' => 'Multi-source swaps are not enabled'
+            ];
+        }
+        
+        try {
+            return $this->multiSourceOrchestrator->getStatus($poolId);
+        } catch (Exception $e) {
+            return [
+                'success' => false,
+                'message' => 'Error getting pool status: ' . $e->getMessage()
+            ];
+        }
     }
 
     /**
-     * Cancel a multi-source pool - DISABLED
+     * Cancel a multi-source pool - NOW ENABLED
      */
     public function cancelMultiSourcePool(string $poolId, string $reason): array
     {
-        return [
-            'success' => false,
-            'message' => 'Multi-source swaps are not enabled'
-        ];
+        if ($this->multiSourceOrchestrator === null) {
+            return [
+                'success' => false,
+                'message' => 'Multi-source swaps are not enabled'
+            ];
+        }
+        
+        try {
+            return $this->multiSourceOrchestrator->cancel($poolId, $reason);
+        } catch (Exception $e) {
+            return [
+                'success' => false,
+                'message' => 'Error cancelling pool: ' . $e->getMessage()
+            ];
+        }
     }
 }
