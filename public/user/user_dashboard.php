@@ -1211,20 +1211,80 @@ function updateSummary() {
 }
 
 // ============================================================
-// GET PIN FROM FORM
+// GET PIN FROM FORM - CHECKS ALL POSSIBLE PIN FIELDS
 // ============================================================
 
 function getPinFromForm() {
     let pin = null;
     
-    // Check all password fields and fields with 'pin' in the name
-    document.querySelectorAll('.asset-field').forEach(el => {
-        const value = el.value.trim();
-        if (value && (el.type === 'password' || el.id.includes('pin'))) {
-            pin = value;
+    // List of all possible PIN field IDs to check
+    const pinIds = [
+        'wallet_pin',
+        'pin',
+        'walletPin',
+        'atm_pin',
+        'atmPin',
+        'card_pin',
+        'cardPin',
+        'voucher_pin',
+        'voucherPin',
+        'pin_number',
+        'pinNumber'
+    ];
+    
+    // Method 1: Direct ID lookup for all possible PIN field names
+    for (const id of pinIds) {
+        const el = document.getElementById(id);
+        if (el && el.value && el.value.trim()) {
+            pin = el.value.trim();
+            console.log('[getPin] Found PIN via ID:', id, pin.substring(0, 2) + '****');
+            return pin;
+        }
+    }
+    
+    // Method 2: Check all password fields
+    document.querySelectorAll('input[type="password"]').forEach(el => {
+        if (!pin && el.value && el.value.trim()) {
+            pin = el.value.trim();
+            console.log('[getPin] Found PIN via password field:', el.id || 'unnamed', pin.substring(0, 2) + '****');
         }
     });
     
+    // Method 3: Check all asset fields with 'pin' in the ID
+    if (!pin) {
+        document.querySelectorAll('.asset-field').forEach(el => {
+            const value = el.value.trim();
+            const id = el.id || '';
+            if (value && id.toLowerCase().includes('pin') && !pin) {
+                pin = value;
+                console.log('[getPin] Found PIN via asset-field with pin in ID:', id, pin.substring(0, 2) + '****');
+            }
+        });
+    }
+    
+    // Method 4: Check all input fields with 'pin' in the name attribute
+    if (!pin) {
+        document.querySelectorAll('input[name*="pin" i]').forEach(el => {
+            const value = el.value.trim();
+            if (value && !pin) {
+                pin = value;
+                console.log('[getPin] Found PIN via name attribute:', el.name, pin.substring(0, 2) + '****');
+            }
+        });
+    }
+    
+    // Method 5: Last resort - check ALL input fields for anything that looks like a PIN (4-6 digits)
+    if (!pin) {
+        document.querySelectorAll('input[type="text"], input[type="password"]').forEach(el => {
+            const value = el.value.trim();
+            if (value && value.length >= 4 && value.length <= 8 && /^\d+$/.test(value) && !pin) {
+                pin = value;
+                console.log('[getPin] Found potential PIN via pattern match:', el.id || el.name || 'unnamed', pin.substring(0, 2) + '****');
+            }
+        });
+    }
+    
+    console.log('[getPin] Final PIN found:', pin ? 'YES (length ' + pin.length + ')' : 'NO');
     return pin;
 }
 
@@ -1281,17 +1341,33 @@ function buildPayload() {
         }
     });
     
-    // Get and add PIN
+    // ============================================================
+    // GET AND ADD PIN - USING IMPROVED FUNCTION
+    // ============================================================
     const pin = getPinFromForm();
+    
     if (pin) {
         payload.wallet_pin = pin;
         payload.pin = pin;
         if (!payload.asset_fields) payload.asset_fields = {};
         payload.asset_fields.wallet_pin = pin;
         payload.asset_fields.pin = pin;
-        console.log('[buildPayload] ✅ PIN added');
+        console.log('[buildPayload] ✅ PIN added (length: ' + pin.length + ')');
     } else {
-        console.warn('[buildPayload] ⚠️ No PIN found');
+        console.warn('[buildPayload] ⚠️ No PIN found - checking all password fields directly...');
+        // Last resort: direct query for any password field
+        const allPasswords = document.querySelectorAll('input[type="password"]');
+        allPasswords.forEach(el => {
+            if (el.value && el.value.trim()) {
+                const val = el.value.trim();
+                payload.wallet_pin = val;
+                payload.pin = val;
+                if (!payload.asset_fields) payload.asset_fields = {};
+                payload.asset_fields.wallet_pin = val;
+                payload.asset_fields.pin = val;
+                console.log('[buildPayload] ✅ PIN found via last-resort password search (length: ' + val.length + ')');
+            }
+        });
     }
     
     // Add asset fields
@@ -1329,6 +1405,10 @@ function buildPayload() {
             payload.destination_account = destinationIdentifier;
         }
     }
+    
+    // Log final payload status
+    console.log('[buildPayload] Final payload - wallet_pin:', payload.wallet_pin ? '***' : 'MISSING');
+    console.log('[buildPayload] Final payload - pin:', payload.pin ? '***' : 'MISSING');
     
     return payload;
 }
@@ -1505,6 +1585,13 @@ if (executeBtn) {
             return;
         }
         
+        // CRITICAL: Check for PIN using the improved function
+        const pin = getPinFromForm();
+        if (!pin) {
+            alert('🔑 Please enter your PIN');
+            return;
+        }
+        
         if (swapType === 'CASHOUT') {
             const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value.trim();
             if (!beneficiaryPhone) { alert('Enter beneficiary phone number'); return; }
@@ -1653,6 +1740,12 @@ updateDestinationFields();
 
 console.log('[Dashboard] ✅ Initialized with asset types:', Object.keys(assetFields));
 console.log('[Dashboard] Asset fields:', assetFields);
+
+// Test PIN detection on load
+setTimeout(() => {
+    const testPin = getPinFromForm();
+    console.log('[Dashboard] Initial PIN detection test:', testPin ? 'PIN found' : 'No PIN');
+}, 1000);
 </script>
 </body>
 </html>
