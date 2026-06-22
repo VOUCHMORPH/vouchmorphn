@@ -1,7 +1,6 @@
 <?php
-// public/user/dashboard.php - FULLY DYNAMIC, ASSET-DRIVEN
-// Loads assets from global /src/Core/Config/assets.yaml
-// No hardcoding - everything comes from configuration
+// public/user/dashboard.php - FULLY DYNAMIC WITH DEBUG PANEL
+// This version shows you EXACTLY what payload is being sent
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
@@ -686,11 +685,121 @@ $denominationsList = implode(', ', $atmDenominations);
             border-radius: 6px;
         }
         
+        /* ============================================================
+           DEBUG PANEL STYLES
+           ============================================================ */
+        .debug-panel {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            right: 10px;
+            max-width: 800px;
+            margin: 0 auto;
+            background: #12162e;
+            border: 2px solid #00f0ff;
+            border-radius: 12px;
+            padding: 16px;
+            z-index: 9999;
+            font-size: 12px;
+            color: #fff;
+            max-height: 500px;
+            overflow-y: auto;
+            box-shadow: 0 0 40px rgba(0,240,255,0.15);
+            display: none;
+        }
+        .debug-panel.show { display: block; }
+        .debug-panel .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #2a2f4a;
+        }
+        .debug-panel .header h4 {
+            color: #00f0ff;
+            margin: 0;
+            font-size: 14px;
+        }
+        .debug-panel .header .close-btn {
+            background: #ff6b6b;
+            border: none;
+            color: #fff;
+            padding: 2px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .debug-panel .section {
+            margin-bottom: 10px;
+            padding: 8px;
+            background: #0a0e27;
+            border-radius: 6px;
+        }
+        .debug-panel .section-title {
+            color: #888;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+        .debug-panel .pin-status {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            display: inline-block;
+        }
+        .debug-panel .pin-status.found { background: rgba(76,175,80,0.2); color: #4caf50; }
+        .debug-panel .pin-status.missing { background: rgba(244,67,54,0.2); color: #ff6b6b; }
+        .debug-panel pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+            font-size: 11px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        .debug-panel .btn-debug {
+            background: #00f0ff;
+            color: #0a0e27;
+            border: none;
+            padding: 4px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 12px;
+            margin-right: 4px;
+        }
+        .debug-panel .btn-debug:hover { filter: brightness(1.1); }
+        .debug-panel .btn-debug.secondary {
+            background: #1a1f3a;
+            color: #fff;
+            border: 1px solid #2a2f4a;
+        }
+        .debug-toggle {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            background: #00f0ff;
+            color: #0a0e27;
+            border: none;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            font-size: 24px;
+            cursor: pointer;
+            z-index: 9998;
+            box-shadow: 0 0 20px rgba(0,240,255,0.3);
+        }
+        .debug-toggle:hover { transform: scale(1.05); }
+        
         @media (max-width: 768px) {
             .two-columns { grid-template-columns: 1fr; gap: 16px; }
             .three-columns { grid-template-columns: 1fr; }
             .modal { padding: 20px; }
             .modal-actions { flex-direction: column; }
+            .debug-panel { max-height: 60vh; font-size: 11px; }
         }
     </style>
 </head>
@@ -1025,6 +1134,44 @@ $denominationsList = implode(', ', $atmDenominations);
     </div>
 </div>
 
+<!-- ============================================================
+     DEBUG TOGGLE BUTTON
+     ============================================================ -->
+<button class="debug-toggle" onclick="toggleDebugPanel()">🐛</button>
+
+<!-- ============================================================
+     DEBUG PANEL
+     ============================================================ -->
+<div id="debugPanel" class="debug-panel">
+    <div class="header">
+        <h4>🐛 Dashboard Debug Panel</h4>
+        <button class="close-btn" onclick="toggleDebugPanel()">×</button>
+    </div>
+    
+    <div class="section">
+        <div class="section-title">📋 PIN Status</div>
+        <div id="debugPinStatus">Checking...</div>
+    </div>
+    
+    <div class="section">
+        <div class="section-title">📦 Payload to be sent to GenericBankClient</div>
+        <pre id="debugPayload">No payload built yet</pre>
+    </div>
+    
+    <div class="section">
+        <div class="section-title">🔍 Form Data</div>
+        <pre id="debugFormData">No data</pre>
+    </div>
+    
+    <div class="section">
+        <div class="section-title">⚡ Actions</div>
+        <button class="btn-debug" onclick="buildAndShowPayload()">🔍 Build Payload</button>
+        <button class="btn-debug secondary" onclick="setPin77777()">🔑 Set PIN: 77777</button>
+        <button class="btn-debug secondary" onclick="clearDebug()">🗑️ Clear</button>
+        <button class="btn-debug secondary" onclick="copyPayload()">📋 Copy Payload</button>
+    </div>
+</div>
+
 <script>
 // ============================================================
 // ASSET-DRIVEN JAVASCRIPT - LOADS FROM GLOBAL assets.yaml
@@ -1063,11 +1210,246 @@ const confirmationDetails = document.getElementById('confirmationDetails');
 const modalError = document.getElementById('modalError');
 const confirmBtn = document.getElementById('confirmBtn');
 
+// Debug elements
+const debugPanel = document.getElementById('debugPanel');
+const debugPinStatus = document.getElementById('debugPinStatus');
+const debugPayload = document.getElementById('debugPayload');
+const debugFormData = document.getElementById('debugFormData');
+
 let pendingPayload = null;
 let previewData = null;
 
 // ============================================================
-// CORE FUNCTIONS
+// DEBUG FUNCTIONS
+// ============================================================
+
+function toggleDebugPanel() {
+    debugPanel.classList.toggle('show');
+    if (debugPanel.classList.contains('show')) {
+        buildAndShowPayload();
+    }
+}
+
+function setPin77777() {
+    // Find and set all PIN fields
+    document.querySelectorAll('input[type="password"]').forEach(el => {
+        el.value = '77777';
+    });
+    document.querySelectorAll('.asset-field').forEach(el => {
+        if (el.id.includes('pin') || el.type === 'password') {
+            el.value = '77777';
+        }
+    });
+    // Specific IDs
+    ['wallet_pin', 'pin', 'walletPin', 'atm_pin', 'card_pin'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '77777';
+    });
+    updateDebugInfo();
+    buildAndShowPayload();
+}
+
+function clearDebug() {
+    debugPayload.textContent = 'Cleared';
+    debugFormData.textContent = 'Cleared';
+}
+
+function copyPayload() {
+    const text = debugPayload.textContent;
+    if (text && text !== 'No payload built yet' && text !== 'Cleared') {
+        navigator.clipboard.writeText(text).then(() => {
+            alert('✅ Payload copied to clipboard!');
+        }).catch(() => {
+            // Fallback
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+            alert('✅ Payload copied to clipboard!');
+        });
+    }
+}
+
+function updateDebugInfo() {
+    const pin = getPinFromForm();
+    const statusEl = document.getElementById('debugPinStatus');
+    if (pin) {
+        statusEl.innerHTML = `
+            <span class="pin-status found">✅ PIN FOUND</span>
+            <span style="color:#4caf50; margin-left:8px;">Length: ${pin.length} chars</span>
+            <span style="color:#888; margin-left:8px;">Value: ${'•'.repeat(pin.length)}</span>
+            <div style="font-size:10px; color:#888; margin-top:4px;">
+                Raw value: <code style="background:#0a0e27; padding:2px 6px; border-radius:3px;">${pin}</code>
+            </div>
+        `;
+    } else {
+        statusEl.innerHTML = `<span class="pin-status missing">❌ NO PIN FOUND</span>`;
+    }
+    
+    // Update form data
+    const formData = {
+        fromInstitution: fromInstSelect.value || '(empty)',
+        toInstitution: toInstSelect.value || '(empty)',
+        assetType: assetTypeSelect.value || '(empty)',
+        swapType: swapTypeSelect.value || '(empty)',
+        amount: amountInput.value || '0',
+        sourceIdentifier: sourceIdentifierInput?.value || '(empty)',
+        identifierType: identifierTypeSelect?.value || 'auto'
+    };
+    debugFormData.textContent = JSON.stringify(formData, null, 2);
+}
+
+function buildAndShowPayload() {
+    // This mimics exactly what the dashboard's buildPayload does
+    const fromInst = fromInstSelect.value;
+    const toInst = toInstSelect.value;
+    const assetType = assetTypeSelect.value;
+    const swapType = swapTypeSelect.value;
+    const amount = parseFloat(amountInput.value) || 0;
+    const sourceIdentifier = sourceIdentifierInput?.value.trim() || '';
+    const reference = 'DEBUG_' + Date.now();
+    const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+    
+    // Identifier type
+    let identifierType = identifierTypeSelect?.value || 'auto';
+    if (identifierType === 'auto' && sourceIdentifier) {
+        if (sourceIdentifier.match(/^[\+]?[0-9]{10,15}$/)) identifierType = 'phone';
+        else if (sourceIdentifier.match(/^[A-Z0-9]{6,20}$/i)) identifierType = 'national_id';
+        else if (sourceIdentifier.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) identifierType = 'email';
+    }
+    
+    // Build payload
+    const payload = {
+        reference: reference,
+        idempotency_key: idempotencyKey,
+        swap_type: swapType,
+        from_institution: fromInst,
+        to_institution: toInst,
+        asset_type: assetType,
+        amount: amount,
+        currency: '<?= $currency ?>',
+        source_identifier: sourceIdentifier,
+        source_identifier_type: identifierType,
+        phone: sourceIdentifier,
+        wallet_phone: sourceIdentifier
+    };
+    
+    if (identifierType === 'phone') payload.source_phone = sourceIdentifier;
+    else if (identifierType === 'national_id') payload.source_national_id = sourceIdentifier;
+    else if (identifierType === 'email') payload.source_email = sourceIdentifier;
+    
+    // Collect asset fields
+    const assetFieldsData = {};
+    document.querySelectorAll('.asset-field').forEach(field => {
+        const value = field.value.trim();
+        if (value) {
+            assetFieldsData[field.id] = value;
+            payload[field.id] = value;
+        }
+    });
+    
+    // Get PIN
+    const pin = getPinFromForm();
+    if (pin) {
+        payload.wallet_pin = pin;
+        payload.pin = pin;
+        if (!payload.asset_fields) payload.asset_fields = {};
+        payload.asset_fields.wallet_pin = pin;
+        payload.asset_fields.pin = pin;
+    } else {
+        // Last resort: check all password fields directly
+        document.querySelectorAll('input[type="password"]').forEach(el => {
+            if (el.value && el.value.trim()) {
+                const val = el.value.trim();
+                payload.wallet_pin = val;
+                payload.pin = val;
+                if (!payload.asset_fields) payload.asset_fields = {};
+                payload.asset_fields.wallet_pin = val;
+                payload.asset_fields.pin = val;
+            }
+        });
+    }
+    
+    // Add asset fields
+    if (Object.keys(assetFieldsData).length > 0) {
+        payload.asset_fields = { ...payload.asset_fields, ...assetFieldsData };
+    }
+    
+    // Add rules
+    const rules = assetRules[assetType] || {};
+    if (rules.hold_required) {
+        payload.hold_required = true;
+        payload.hold_expiry_seconds = rules.hold_expiry_seconds || 300;
+    }
+    
+    // Destination fields
+    if (swapType === 'CASHOUT') {
+        const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value.trim();
+        if (beneficiaryPhone) {
+            payload.beneficiary_phone = beneficiaryPhone;
+            payload.destination_identifier = beneficiaryPhone;
+            payload.destination_identifier_type = 'phone';
+        }
+    } else if (swapType === 'DEPOSIT') {
+        const destinationIdentifier = document.getElementById('destinationIdentifier')?.value.trim();
+        if (destinationIdentifier) {
+            payload.destination_identifier = destinationIdentifier;
+            payload.destination_identifier_type = 'auto';
+            if (destinationIdentifier.match(/^[\+]?[0-9]{10,15}$/)) {
+                payload.destination_identifier_type = 'phone';
+                payload.destination_phone = destinationIdentifier;
+            } else if (destinationIdentifier.match(/^[A-Z0-9]{6,20}$/i)) {
+                payload.destination_identifier_type = 'national_id';
+                payload.destination_national_id = destinationIdentifier;
+            }
+            payload.destination_account = destinationIdentifier;
+        }
+    }
+    
+    // Display the payload
+    const displayPayload = { ...payload };
+    if (displayPayload.wallet_pin) displayPayload.wallet_pin = '****';
+    if (displayPayload.pin) displayPayload.pin = '****';
+    if (displayPayload.asset_fields) {
+        if (displayPayload.asset_fields.wallet_pin) displayPayload.asset_fields.wallet_pin = '****';
+        if (displayPayload.asset_fields.pin) displayPayload.asset_fields.pin = '****';
+    }
+    
+    // Add metadata
+    const metadata = {
+        timestamp: new Date().toISOString(),
+        user_id: '<?= $userId ?>',
+        phone: '<?= $loggedPhone ?>',
+        country: '<?= $countryName ?>',
+        country_code: '<?= $countryCode ?>',
+        currency: '<?= $currency ?>',
+        api_endpoint: '<?= $apiUrl ?>',
+        pin_found: !!pin,
+        pin_length: pin ? pin.length : 0,
+        asset_fields_count: Object.keys(assetFieldsData).length,
+        from_institution_config: institutionAssets[fromInst] || null
+    };
+    
+    const output = {
+        metadata: metadata,
+        payload: displayPayload,
+        raw_payload: payload // This has the actual PIN (will be masked in display)
+    };
+    
+    debugPayload.textContent = JSON.stringify(output, null, 2);
+    updateDebugInfo();
+    
+    console.log('🔍 [DEBUG] Full payload with PIN:', payload);
+    console.log('🔍 [DEBUG] Display payload:', displayPayload);
+    console.log('🔍 [DEBUG] Metadata:', metadata);
+    
+    return payload;
+}
+
+// ============================================================
+// ORIGINAL DASHBOARD FUNCTIONS (kept for compatibility)
 // ============================================================
 
 function updateAssetTypes() {
@@ -1091,7 +1473,6 @@ function updateAssetTypes() {
         assetTypeSelect.appendChild(option);
     });
     
-    // Show hint
     const typeNames = assetsList.map(code => {
         const ui = assetUI[code] || {};
         return ui.display_name || code;
@@ -1115,7 +1496,6 @@ function updateAssetFields() {
     
     if (!assetType) return;
     
-    // If no fields defined, show a message
     if (fields.length === 0) {
         assetFieldsContainer.innerHTML = `
             <div class="info-note">✅ No additional fields required for ${ui.display_name || assetType}</div>
@@ -1289,7 +1669,7 @@ function getPinFromForm() {
 }
 
 // ============================================================
-// BUILD PAYLOAD
+// BUILD PAYLOAD (with debug integration)
 // ============================================================
 
 function buildPayload() {
@@ -1341,11 +1721,8 @@ function buildPayload() {
         }
     });
     
-    // ============================================================
-    // GET AND ADD PIN - USING IMPROVED FUNCTION
-    // ============================================================
+    // Get and add PIN
     const pin = getPinFromForm();
-    
     if (pin) {
         payload.wallet_pin = pin;
         payload.pin = pin;
@@ -1355,7 +1732,6 @@ function buildPayload() {
         console.log('[buildPayload] ✅ PIN added (length: ' + pin.length + ')');
     } else {
         console.warn('[buildPayload] ⚠️ No PIN found - checking all password fields directly...');
-        // Last resort: direct query for any password field
         const allPasswords = document.querySelectorAll('input[type="password"]');
         allPasswords.forEach(el => {
             if (el.value && el.value.trim()) {
@@ -1409,6 +1785,9 @@ function buildPayload() {
     // Log final payload status
     console.log('[buildPayload] Final payload - wallet_pin:', payload.wallet_pin ? '***' : 'MISSING');
     console.log('[buildPayload] Final payload - pin:', payload.pin ? '***' : 'MISSING');
+    
+    // Update debug panel
+    updateDebugInfo();
     
     return payload;
 }
@@ -1585,7 +1964,7 @@ if (executeBtn) {
             return;
         }
         
-        // CRITICAL: Check for PIN using the improved function
+        // Check for PIN
         const pin = getPinFromForm();
         if (!pin) {
             alert('🔑 Please enter your PIN');
@@ -1740,11 +2119,13 @@ updateDestinationFields();
 
 console.log('[Dashboard] ✅ Initialized with asset types:', Object.keys(assetFields));
 console.log('[Dashboard] Asset fields:', assetFields);
+console.log('[Dashboard] 🐛 Debug panel available - click the bug button bottom-right');
 
 // Test PIN detection on load
 setTimeout(() => {
     const testPin = getPinFromForm();
     console.log('[Dashboard] Initial PIN detection test:', testPin ? 'PIN found' : 'No PIN');
+    updateDebugInfo();
 }, 1000);
 </script>
 </body>
