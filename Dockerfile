@@ -34,14 +34,23 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /var/www/html
 
-COPY composer.json composer.lock* ./
-RUN composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist --verbose
+# -------------------------------
+# Composer install (FIXED)
+# -------------------------------
+COPY composer.json composer.lock ./
+RUN composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
 
+# -------------------------------
+# App code
+# -------------------------------
 COPY src/ src/
 COPY public/ public/
 COPY docker/nginx.conf /etc/nginx/sites-enabled/default
 
-RUN composer dump-autoload --optimize --no-interaction || true
+# -------------------------------
+# Autoload optimization (FIXED)
+# -------------------------------
+RUN composer dump-autoload --optimize --no-interaction
 
 EXPOSE 9000
 
