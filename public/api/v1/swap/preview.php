@@ -5,7 +5,7 @@ declare(strict_types=1);
  * VouchMorph - Swap Preview API
  * Calculates fees and returns preview WITHOUT executing
  */
-
+require_once __DIR__ . '/../../../../vendor/autoload.php';
 require_once __DIR__ . '/../../../../src/bootstrap.php';
 
 use Core\Database\DBConnection;
