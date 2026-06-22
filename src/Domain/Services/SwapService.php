@@ -786,8 +786,7 @@ class SwapService
     }
 
     /**
-     * Store cashout authorization in database
-     */
+     * Store cashout authorization in database     */
     private function storeCashoutAuthorization(
         string $swapReference,
         ?string $clientPhone,
@@ -1299,6 +1298,29 @@ class SwapService
     // SIGNED INSTITUTION COMMUNICATION METHODS
     // ============================================================
 
+    /**
+     * Forward PIN from original payload to verification payload
+     */
+    private function forwardPin(array $originalPayload, array &$targetPayload): void
+    {
+        // Check for wallet_pin at top level
+        if (!empty($originalPayload['wallet_pin'])) {
+            $targetPayload['wallet_pin'] = $originalPayload['wallet_pin'];
+            $targetPayload['pin'] = $originalPayload['wallet_pin'];
+            error_log("[SwapService] Forwarded wallet_pin to payload");
+        } elseif (!empty($originalPayload['pin'])) {
+            $targetPayload['pin'] = $originalPayload['pin'];
+            $targetPayload['wallet_pin'] = $originalPayload['pin'];
+            error_log("[SwapService] Forwarded pin to payload");
+        }
+        
+        // Also forward asset_fields if present
+        if (!empty($originalPayload['asset_fields']) && is_array($originalPayload['asset_fields'])) {
+            $targetPayload['asset_fields'] = $originalPayload['asset_fields'];
+            error_log("[SwapService] Forwarded asset_fields to payload");
+        }
+    }
+
     private function verifyAssetSigned(array $payload, string $institution): array
     {
         $participant = $this->getParticipant($institution);
@@ -1320,10 +1342,19 @@ class SwapService
             'requester' => 'VOUCHMORPH'
         ];
         
+        // ============================================================
+        // CRITICAL FIX: Forward PIN from original payload
+        // ============================================================
+        $this->forwardPin($payload, $verifyPayload);
+        
         if ($sourceId['has_value']) {
             $verifyPayload['source_identifier'] = $sourceId['identifier'];
             $verifyPayload['source_identifier_type'] = $sourceId['type'];
         }
+        
+        // Log what we're sending
+        error_log("[SwapService] verifyAssetSigned payload has PIN: " . 
+            (isset($verifyPayload['wallet_pin']) || isset($verifyPayload['pin']) ? 'YES' : 'NO'));
         
         $result = $bankClient->verifyAssetSigned($verifyPayload);
         
@@ -1370,6 +1401,11 @@ class SwapService
             'timestamp' => $timestamp
         ];
         
+        // ============================================================
+        // CRITICAL FIX: Forward PIN from original payload
+        // ============================================================
+        $this->forwardPin($payload, $holdPayload);
+        
         if ($sourceId['has_value']) {
             $holdPayload['source_identifier'] = $sourceId['identifier'];
             $holdPayload['source_identifier_type'] = $sourceId['type'];
@@ -1378,6 +1414,10 @@ class SwapService
         if (isset($verificationResult['asset_id'])) {
             $holdPayload['asset_id'] = $verificationResult['asset_id'];
         }
+        
+        // Log what we're sending
+        error_log("[SwapService] placeHoldSigned payload has PIN: " . 
+            (isset($holdPayload['wallet_pin']) || isset($holdPayload['pin']) ? 'YES' : 'NO'));
         
         $result = $bankClient->placeHoldSigned($holdPayload);
         
@@ -1418,6 +1458,9 @@ class SwapService
             'source_verification' => $this->signedPayloads['verification'] ?? null
         ];
         
+        // Forward PIN for deposit as well
+        $this->forwardPin($payload, $depositPayload);
+        
         if ($destId['has_value']) {
             $depositPayload['destination_identifier'] = $destId['identifier'];
             $depositPayload['destination_identifier_type'] = $destId['type'];
@@ -1449,6 +1492,9 @@ class SwapService
             'amount' => $payload['amount'] ?? 0,
             'reason' => $payload['reason'] ?? 'Swap completed successfully'
         ];
+        
+        // Forward PIN for debit as well
+        $this->forwardPin($payload, $debitPayload);
         
         $result = $bankClient->debitFunds($debitPayload);
         
@@ -1518,6 +1564,9 @@ class SwapService
             'source_verification' => $this->signedPayloads['verification'] ?? null,
             'source_hold' => $this->signedPayloads['hold'] ?? null
         ];
+        
+        // Forward PIN for transfer as well
+        $this->forwardPin($payload, $transferPayload);
         
         if ($destId['has_value']) {
             $transferPayload['destination_identifier'] = $destId['identifier'];
@@ -1618,29 +1667,29 @@ class SwapService
     }
 
     private function updateHoldStatus(?int $holdId, string $status): void
-{
-    if ($holdId === null) return;
-    
-    $validStatuses = ['ACTIVE', 'HELD', 'PENDING_CASHOUT', 'DEBITED', 'RELEASED', 'CANCELLED', 'FAILED'];
-    if (!in_array($status, $validStatuses)) return;
-    
-    $sql = "
-        UPDATE hold_transactions 
-        SET status = :status::text,
-            debited_at = CASE WHEN :status::text = 'DEBITED' THEN NOW() ELSE debited_at END,
-            released_at = CASE WHEN :status::text = 'RELEASED' THEN NOW() ELSE released_at END,
-            updated_at = NOW()
-        WHERE hold_id = :hold_id
-    ";
-    
-    try {
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([':status' => $status, ':hold_id' => $holdId]);
-        error_log("[SwapService] Hold status updated to: {$status} for hold_id: {$holdId}");
-    } catch (PDOException $e) {
-        error_log("[SwapService] Failed to update hold status: " . $e->getMessage());
+    {
+        if ($holdId === null) return;
+        
+        $validStatuses = ['ACTIVE', 'HELD', 'PENDING_CASHOUT', 'DEBITED', 'RELEASED', 'CANCELLED', 'FAILED'];
+        if (!in_array($status, $validStatuses)) return;
+        
+        $sql = "
+            UPDATE hold_transactions 
+            SET status = :status::text,
+                debited_at = CASE WHEN :status::text = 'DEBITED' THEN NOW() ELSE debited_at END,
+                released_at = CASE WHEN :status::text = 'RELEASED' THEN NOW() ELSE released_at END,
+                updated_at = NOW()
+            WHERE hold_id = :hold_id
+        ";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute([':status' => $status, ':hold_id' => $holdId]);
+            error_log("[SwapService] Hold status updated to: {$status} for hold_id: {$holdId}");
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to update hold status: " . $e->getMessage());
+        }
     }
-}
 
     // ============================================================
     // ATOMIC BOUNDARY METHODS
