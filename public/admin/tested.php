@@ -2,31 +2,21 @@
 
 echo "<pre>";
 
-$root = '/var/www/html';
+$vendor = '/var/www/html/vendor';
 
-require_once $root . '/vendor/autoload.php';
+echo "Vendor exists: ";
+echo is_dir($vendor) ? "YES\n" : "NO\n";
 
-echo "Autoload loaded\n\n";
+echo "\nContents:\n";
 
-echo "Logger interface: ";
+print_r(scandir($vendor));
 
-echo interface_exists('Psr\\Log\\LoggerInterface')
-    ? "YES\n"
-    : "NO\n";
+echo "\nComposer folder:\n";
 
-echo "\n";
-
-echo "Installed packages:\n";
-
-if (file_exists($root.'/vendor/composer/installed.php')) {
-
-    $packages = require $root.'/vendor/composer/installed.php';
-
-    print_r(array_keys($packages['versions']));
-
+if (is_dir($vendor.'/composer')) {
+    print_r(scandir($vendor.'/composer'));
 } else {
-
-    echo "installed.php missing";
+    echo "composer folder missing";
 }
 
 echo "</pre>";
