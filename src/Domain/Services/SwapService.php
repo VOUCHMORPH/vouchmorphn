@@ -1618,28 +1618,29 @@ class SwapService
     }
 
     private function updateHoldStatus(?int $holdId, string $status): void
-    {
-        if ($holdId === null) return;
-        
-        $validStatuses = ['ACTIVE', 'HELD', 'PENDING_CASHOUT', 'DEBITED', 'RELEASED', 'CANCELLED', 'FAILED'];
-        if (!in_array($status, $validStatuses)) return;
-        
-        $sql = "
-            UPDATE hold_transactions 
-            SET status = :status,
-                debited_at = CASE WHEN :status = 'DEBITED' THEN NOW() ELSE debited_at END,
-                released_at = CASE WHEN :status = 'RELEASED' THEN NOW() ELSE released_at END,
-                updated_at = NOW()
-            WHERE hold_id = :hold_id
-        ";
-        
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([':status' => $status, ':hold_id' => $holdId]);
-        } catch (PDOException $e) {
-            error_log("[SwapService] Failed to update hold status: " . $e->getMessage());
-        }
+{
+    if ($holdId === null) return;
+    
+    $validStatuses = ['ACTIVE', 'HELD', 'PENDING_CASHOUT', 'DEBITED', 'RELEASED', 'CANCELLED', 'FAILED'];
+    if (!in_array($status, $validStatuses)) return;
+    
+    $sql = "
+        UPDATE hold_transactions 
+        SET status = :status::text,
+            debited_at = CASE WHEN :status::text = 'DEBITED' THEN NOW() ELSE debited_at END,
+            released_at = CASE WHEN :status::text = 'RELEASED' THEN NOW() ELSE released_at END,
+            updated_at = NOW()
+        WHERE hold_id = :hold_id
+    ";
+    
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([':status' => $status, ':hold_id' => $holdId]);
+        error_log("[SwapService] Hold status updated to: {$status} for hold_id: {$holdId}");
+    } catch (PDOException $e) {
+        error_log("[SwapService] Failed to update hold status: " . $e->getMessage());
     }
+}
 
     // ============================================================
     // ATOMIC BOUNDARY METHODS
