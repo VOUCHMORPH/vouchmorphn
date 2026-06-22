@@ -279,7 +279,7 @@ if ($swapId) {
 $recentSwaps = [];
 try {
     $stmt = $swapDB->prepare("
-        SELECT swap_reference, reference, amount, from_institution, to_institution, 
+        SELECT swap_reference, amount, from_institution, to_institution, 
                status, created_at, fee_amount, swap_type
         FROM swap_ledgers 
         WHERE user_id = ? 
@@ -1074,7 +1074,7 @@ $denominationsList = implode(', ', $atmDenominations);
         <?php else: ?>
             <?php foreach ($recentSwaps as $swap): ?>
                 <?php 
-                $ref = $swap['swap_reference'] ?? $swap['reference'] ?? null;
+                $ref = $swap['swap_reference'] ?? null;
                 if (!$ref) continue;
                 ?>
                 <div class="swap-item" onclick="window.location.href='?id=<?= urlencode($ref) ?>'">
@@ -1185,12 +1185,18 @@ function updateAssetFields() {
         const fieldName = field.name;
         const label = field.label || fieldName.replace(/_/g, ' ').toUpperCase();
         const placeholder = field.placeholder || `Enter ${fieldName.replace(/_/g, ' ')}`;
-        const inputType = fieldName.includes('pin') || field.vault_field === 'pin' ? 'password' : 'text';
+        const isPin = fieldName.includes('pin') || field.vault_field === 'pin';
+        const inputType = isPin ? 'password' : 'text';
         const vaultAttr = field.vault_field ? ` data-vault="${field.vault_field}"` : '';
+        const isWalletPin = fieldName === 'wallet_pin';
+        const pinNote = isWalletPin ? `<div style="font-size:10px; color:#00f0ff; margin-top:4px;">Enter your wallet PIN (e.g., 77777)</div>` : '';
         html += `
             <div class="form-group">
                 <label>${label}</label>
-                <input type="${inputType}" id="${fieldName}" class="asset-field" placeholder="${placeholder}" ${vaultAttr}>
+                <input type="${inputType}" id="${fieldName}" class="asset-field" 
+                       placeholder="${placeholder}" autocomplete="${isPin ? 'off' : 'on'}"
+                       ${vaultAttr}>
+                ${pinNote}
             </div>
         `;
     });
@@ -1198,6 +1204,8 @@ function updateAssetFields() {
     
     assetFieldsContainer.innerHTML = html;
     assetFieldsContainer.classList.add('active');
+    
+    console.log('[updateAssetFields] Rendered fields for', assetType, ':', fields.map(f => f.name));
 }
 
 function updateDestinationFields() {
@@ -1287,7 +1295,9 @@ function buildPayload() {
         amount: amount,
         currency: '<?= $currency ?>',
         source_identifier: sourceIdentifier,
-        source_identifier_type: identifierType
+        source_identifier_type: identifierType,
+        phone: sourceIdentifier,
+        wallet_phone: sourceIdentifier
     };
     
     if (identifierType === 'phone') payload.source_phone = sourceIdentifier;
@@ -1298,6 +1308,8 @@ function buildPayload() {
     // DYNAMICALLY PROCESS ALL ASSET FIELDS FROM assets.yaml
     // ============================================================
     const assetFieldsData = {};
+    let walletPin = null;
+    
     document.querySelectorAll('.asset-field').forEach(field => {
         const value = field.value.trim();
         if (value) {
@@ -1305,6 +1317,14 @@ function buildPayload() {
             assetFieldsData[field.id] = value;
             // Also store at top level for backward compatibility
             payload[field.id] = value;
+            
+            // If this is the wallet_pin field, store it
+            if (field.id === 'wallet_pin' || field.id === 'pin') {
+                walletPin = value;
+                payload.wallet_pin = value;
+                payload.pin = value;
+                console.log('[buildPayload] Found wallet_pin:', value.substring(0, 2) + '****');
+            }
         }
     });
     
@@ -1314,39 +1334,39 @@ function buildPayload() {
     }
     
     // ============================================================
-    // SPECIFICALLY HANDLE wallet_pin FROM assets.yaml
-    // This is the PIN the user enters at the dashboard
+    // CRITICAL: Ensure wallet_pin is included
     // ============================================================
-    // Check if wallet_pin exists in assetFieldsData
-    if (assetFieldsData.wallet_pin) {
-        payload.wallet_pin = assetFieldsData.wallet_pin;
-        payload.pin = assetFieldsData.wallet_pin;
-        console.log('[buildPayload] wallet_pin from assets.yaml:', assetFieldsData.wallet_pin.substring(0, 2) + '****');
-    }
-    
-    // Also check by direct ID (fallback)
-    const walletPinField = document.getElementById('wallet_pin');
-    if (walletPinField && walletPinField.value.trim()) {
-        const pinValue = walletPinField.value.trim();
-        if (!payload.wallet_pin) {
-            payload.wallet_pin = pinValue;
-            payload.pin = pinValue;
+    // If walletPin was found above, it's already set
+    // If not, check by direct ID
+    if (!walletPin) {
+        const walletPinField = document.getElementById('wallet_pin');
+        if (walletPinField && walletPinField.value.trim()) {
+            walletPin = walletPinField.value.trim();
+            payload.wallet_pin = walletPin;
+            payload.pin = walletPin;
             if (!payload.asset_fields) payload.asset_fields = {};
-            payload.asset_fields.wallet_pin = pinValue;
-            console.log('[buildPayload] wallet_pin by ID:', pinValue.substring(0, 2) + '****');
+            payload.asset_fields.wallet_pin = walletPin;
+            console.log('[buildPayload] wallet_pin by ID:', walletPin.substring(0, 2) + '****');
         }
     }
     
-    // Handle any other vault fields (vault_field attribute)
-    document.querySelectorAll('[data-vault]').forEach(field => {
-        const vaultField = field.getAttribute('data-vault');
-        const value = field.value.trim();
-        if (value) {
-            if (!payload.asset_fields) payload.asset_fields = {};
-            payload.asset_fields[vaultField] = value;
-            payload[vaultField] = value;
-        }
-    });
+    // If still no walletPin, check for any password field
+    if (!walletPin) {
+        document.querySelectorAll('input[type="password"]').forEach(field => {
+            const value = field.value.trim();
+            if (value && value.length >= 4) {
+                const fieldId = field.id;
+                if (fieldId.includes('pin') || fieldId.includes('wallet')) {
+                    walletPin = value;
+                    payload.wallet_pin = value;
+                    payload.pin = value;
+                    if (!payload.asset_fields) payload.asset_fields = {};
+                    payload.asset_fields.wallet_pin = value;
+                    console.log('[buildPayload] wallet_pin from password field:', value.substring(0, 2) + '****');
+                }
+            }
+        });
+    }
     
     // Destination fields
     if (swapType === 'CASHOUT') {
@@ -1375,11 +1395,7 @@ function buildPayload() {
         }
     }
     
-    // Log what was built (debug)
-    console.log('[buildPayload] Payload built with fields:', Object.keys(payload));
-    if (payload.wallet_pin) {
-        console.log('[buildPayload] wallet_pin included');
-    }
+    console.log('[buildPayload] wallet_pin included:', !!payload.wallet_pin);
     
     return payload;
 }
