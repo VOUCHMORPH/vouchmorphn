@@ -1,75 +1,57 @@
 <?php
 
-echo "<h2>Composer Diagnostic</h2>";
-
 echo "<pre>";
 
-echo "PHP: " . PHP_VERSION . "\n\n";
+echo "CURRENT FILE:\n";
+echo __FILE__ . "\n\n";
 
-echo "Root: " . dirname(__DIR__, 3) . "\n\n";
+echo "CURRENT DIR:\n";
+echo __DIR__ . "\n\n";
 
-$vendor = dirname(__DIR__,3) . '/vendor';
+echo "Searching...\n\n";
 
-echo "Vendor directory:\n";
-echo $vendor . "\n";
+$path = __DIR__;
 
-echo file_exists($vendor)
-    ? "EXISTS\n\n"
-    : "MISSING\n\n";
+while ($path !== '/') {
 
-$autoload = $vendor . '/autoload.php';
+    echo $path . "\n";
 
-echo "Autoload:\n";
+    if (file_exists($path . '/composer.json')) {
 
-if (file_exists($autoload)) {
+        echo "\nPROJECT ROOT FOUND:\n";
 
-    echo "FOUND\n";
+        echo $path . "\n\n";
 
-    require_once $autoload;
+        echo "composer.json: YES\n";
 
-} else {
+        echo "composer.lock: ";
 
-    die("MISSING");
-}
+        echo file_exists($path.'/composer.lock')
+            ? "YES\n"
+            : "NO\n";
 
-echo "\n";
+        echo "vendor: ";
 
-echo "PSR Logger:\n";
+        echo file_exists($path.'/vendor')
+            ? "YES\n"
+            : "NO\n";
 
-if (interface_exists('Psr\\Log\\LoggerInterface')) {
+        echo "autoload: ";
 
-    echo "FOUND\n";
+        echo file_exists($path.'/vendor/autoload.php')
+            ? "YES\n"
+            : "NO\n";
 
-} else {
+        echo "psr/log: ";
 
-    echo "MISSING\n";
-}
+        echo interface_exists('Psr\\Log\\LoggerInterface')
+            ? "YES\n"
+            : "NOT LOADED\n";
 
-echo "\n";
-
-echo "Installed packages:\n";
-
-$installed = $vendor.'/composer/installed.php';
-
-if (file_exists($installed)) {
-
-    $packages = require $installed;
-
-    if (isset($packages['versions'])) {
-
-        foreach ($packages['versions'] as $name => $info) {
-
-            echo $name."\n";
-        }
-
-    } else {
-
-        print_r($packages);
+        break;
     }
 
-} else {
-
-    echo "installed.php missing\n";
+    $path = dirname($path);
 }
 
 echo "</pre>";
