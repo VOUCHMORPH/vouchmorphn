@@ -936,7 +936,7 @@ $denominationsList = implode(', ', $atmDenominations);
         
     <?php else: ?>
         <!-- ============================================================ -->
-        <!-- NEW SWAP FORM -->
+        <!-- NEW SWAP FORM - FULLY DYNAMIC FROM assets.yaml -->
         <!-- ============================================================ -->
         <div class="card">
             <h3>🔄 New Swap</h3>
@@ -1185,11 +1185,12 @@ function updateAssetFields() {
         const fieldName = field.name;
         const label = field.label || fieldName.replace(/_/g, ' ').toUpperCase();
         const placeholder = field.placeholder || `Enter ${fieldName.replace(/_/g, ' ')}`;
-        const inputType = fieldName.includes('pin') ? 'password' : 'text';
+        const inputType = fieldName.includes('pin') || field.vault_field === 'pin' ? 'password' : 'text';
+        const vaultAttr = field.vault_field ? ` data-vault="${field.vault_field}"` : '';
         html += `
             <div class="form-group">
                 <label>${label}</label>
-                <input type="${inputType}" id="${fieldName}" class="asset-field" placeholder="${placeholder}">
+                <input type="${inputType}" id="${fieldName}" class="asset-field" placeholder="${placeholder}" ${vaultAttr}>
             </div>
         `;
     });
@@ -1293,10 +1294,58 @@ function buildPayload() {
     else if (identifierType === 'national_id') payload.source_national_id = sourceIdentifier;
     else if (identifierType === 'email') payload.source_email = sourceIdentifier;
     
-    // Asset fields
+    // ============================================================
+    // DYNAMICALLY PROCESS ALL ASSET FIELDS FROM assets.yaml
+    // ============================================================
+    const assetFieldsData = {};
     document.querySelectorAll('.asset-field').forEach(field => {
         const value = field.value.trim();
-        if (value) payload[field.id] = value;
+        if (value) {
+            // Store in asset_fields object
+            assetFieldsData[field.id] = value;
+            // Also store at top level for backward compatibility
+            payload[field.id] = value;
+        }
+    });
+    
+    // Add asset_fields to payload if there are any
+    if (Object.keys(assetFieldsData).length > 0) {
+        payload.asset_fields = assetFieldsData;
+    }
+    
+    // ============================================================
+    // SPECIFICALLY HANDLE wallet_pin FROM assets.yaml
+    // This is the PIN the user enters at the dashboard
+    // ============================================================
+    // Check if wallet_pin exists in assetFieldsData
+    if (assetFieldsData.wallet_pin) {
+        payload.wallet_pin = assetFieldsData.wallet_pin;
+        payload.pin = assetFieldsData.wallet_pin;
+        console.log('[buildPayload] wallet_pin from assets.yaml:', assetFieldsData.wallet_pin.substring(0, 2) + '****');
+    }
+    
+    // Also check by direct ID (fallback)
+    const walletPinField = document.getElementById('wallet_pin');
+    if (walletPinField && walletPinField.value.trim()) {
+        const pinValue = walletPinField.value.trim();
+        if (!payload.wallet_pin) {
+            payload.wallet_pin = pinValue;
+            payload.pin = pinValue;
+            if (!payload.asset_fields) payload.asset_fields = {};
+            payload.asset_fields.wallet_pin = pinValue;
+            console.log('[buildPayload] wallet_pin by ID:', pinValue.substring(0, 2) + '****');
+        }
+    }
+    
+    // Handle any other vault fields (vault_field attribute)
+    document.querySelectorAll('[data-vault]').forEach(field => {
+        const vaultField = field.getAttribute('data-vault');
+        const value = field.value.trim();
+        if (value) {
+            if (!payload.asset_fields) payload.asset_fields = {};
+            payload.asset_fields[vaultField] = value;
+            payload[vaultField] = value;
+        }
     });
     
     // Destination fields
@@ -1324,6 +1373,12 @@ function buildPayload() {
             }
             payload.destination_account = destinationIdentifier;
         }
+    }
+    
+    // Log what was built (debug)
+    console.log('[buildPayload] Payload built with fields:', Object.keys(payload));
+    if (payload.wallet_pin) {
+        console.log('[buildPayload] wallet_pin included');
     }
     
     return payload;
