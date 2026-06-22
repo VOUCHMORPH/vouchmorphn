@@ -62,45 +62,50 @@ class ForexService
         error_log("[ForexService] Initialized with " . count($this->partnerBanks) . " partner banks");
     }
     
-    /**
-     * Initialize cache table for FX rates
-     */
-    private function initializeCacheTable(): void
-    {
-        try {
-            $this->db->exec("
-                CREATE TABLE IF NOT EXISTS fx_cached_rates (
-                    id SERIAL PRIMARY KEY,
-                    currency_pair VARCHAR(7) NOT NULL,
-                    rate DECIMAL(20,6) NOT NULL,
-                    rate_type VARCHAR(20) DEFAULT 'wholesale',
-                    source VARCHAR(50),
-                    fetched_at TIMESTAMP DEFAULT NOW(),
-                    expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '1 hour',
-                    INDEX idx_pair_type (currency_pair, rate_type),
-                    INDEX idx_expires (expires_at)
-                )
-            ");
-            
-            $this->db->exec("
-                CREATE TABLE IF NOT EXISTS fx_profit_records (
-                    id SERIAL PRIMARY KEY,
-                    swap_reference VARCHAR(100),
-                    currency_pair VARCHAR(7) NOT NULL,
-                    wholesale_rate DECIMAL(20,6) NOT NULL,
-                    client_rate DECIMAL(20,6) NOT NULL,
-                    profit_per_unit DECIMAL(20,6) NOT NULL,
-                    amount DECIMAL(20,2),
-                    client_tier VARCHAR(20),
-                    recorded_at TIMESTAMP DEFAULT NOW(),
-                    INDEX idx_pair (currency_pair),
-                    INDEX idx_recorded (recorded_at)
-                )
-            ");
-        } catch (Exception $e) {
-            error_log("[ForexService] Failed to create cache table: " . $e->getMessage());
-        }
+   private function initializeCacheTable(): void
+{
+    try {
+        // Create fx_cached_rates with proper PostgreSQL syntax
+        $this->db->exec("
+            CREATE TABLE IF NOT EXISTS fx_cached_rates (
+                id SERIAL PRIMARY KEY,
+                currency_pair VARCHAR(7) NOT NULL,
+                rate DECIMAL(20,6) NOT NULL,
+                rate_type VARCHAR(20) DEFAULT 'wholesale',
+                source VARCHAR(50),
+                fetched_at TIMESTAMP DEFAULT NOW(),
+                expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '1 hour'
+            )
+        ");
+        
+        // Create indexes separately (PostgreSQL syntax)
+        $this->db->exec("CREATE INDEX IF NOT EXISTS idx_fx_pair_type ON fx_cached_rates (currency_pair, rate_type)");
+        $this->db->exec("CREATE INDEX IF NOT EXISTS idx_fx_expires ON fx_cached_rates (expires_at)");
+        
+        // Create fx_profit_records
+        $this->db->exec("
+            CREATE TABLE IF NOT EXISTS fx_profit_records (
+                id SERIAL PRIMARY KEY,
+                swap_reference VARCHAR(100),
+                currency_pair VARCHAR(7) NOT NULL,
+                wholesale_rate DECIMAL(20,6) NOT NULL,
+                client_rate DECIMAL(20,6) NOT NULL,
+                profit_per_unit DECIMAL(20,6) NOT NULL,
+                amount DECIMAL(20,2),
+                client_tier VARCHAR(20),
+                recorded_at TIMESTAMP DEFAULT NOW()
+            )
+        ");
+        
+        $this->db->exec("CREATE INDEX IF NOT EXISTS idx_fx_profit_pair ON fx_profit_records (currency_pair)");
+        $this->db->exec("CREATE INDEX IF NOT EXISTS idx_fx_profit_recorded ON fx_profit_records (recorded_at)");
+        
+        error_log("[ForexService] Cache tables created successfully");
+        
+    } catch (Exception $e) {
+        error_log("[ForexService] Failed to create cache table: " . $e->getMessage());
     }
+}
     
     /**
      * Get client rate with VouchMorph markup
