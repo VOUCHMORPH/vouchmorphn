@@ -15,7 +15,6 @@ use Domain\Repositories\PoolContributionRepository;
 use Domain\ValueObjects\PoolStatus;
 use Infrastructure\Crypto\AggregateSigner;
 use Infrastructure\Banks\GenericBankClient;
-use Psr\Log\LoggerInterface;
 
 class PoolCoordinator
 {
@@ -28,7 +27,7 @@ class PoolCoordinator
     private FundingPoolRepository $poolRepository;
     private PoolContributionRepository $contributionRepository;
     private PoolStateMachine $stateMachine;
-    private LoggerInterface $logger;
+    private $logger;
     private array $config;
     private string $countryCode;
 
@@ -39,7 +38,7 @@ class PoolCoordinator
         AggregateSigner $aggregateSigner,
         array $config,
         string $countryCode,
-        ?LoggerInterface $logger = null
+        $logger = null
     ) {
         $this->db = $db;
         $this->swapService = $swapService;
@@ -50,20 +49,26 @@ class PoolCoordinator
         
         // Use default logger if none provided
         if ($logger === null) {
-            $logger = new class implements LoggerInterface {
-                public function emergency($message, array $context = []) { error_log("[POOL] EMERGENCY: $message"); }
-                public function alert($message, array $context = []) { error_log("[POOL] ALERT: $message"); }
-                public function critical($message, array $context = []) { error_log("[POOL] CRITICAL: $message"); }
-                public function error($message, array $context = []) { error_log("[POOL] ERROR: $message"); }
-                public function warning($message, array $context = []) { error_log("[POOL] WARNING: $message"); }
-                public function notice($message, array $context = []) { error_log("[POOL] NOTICE: $message"); }
-                public function info($message, array $context = []) { error_log("[POOL] INFO: $message"); }
-                public function debug($message, array $context = []) { error_log("[POOL] DEBUG: $message"); }
-                public function log($level, $message, array $context = []) { error_log("[POOL] $level: $message"); }
+            $this->logger = new class {
+                public function info($message, array $context = []) {
+                    error_log("[POOL] INFO: " . $message . " " . json_encode($context));
+                }
+                public function error($message, array $context = []) {
+                    error_log("[POOL] ERROR: " . $message . " " . json_encode($context));
+                }
+                public function warning($message, array $context = []) {
+                    error_log("[POOL] WARNING: " . $message . " " . json_encode($context));
+                }
+                public function debug($message, array $context = []) {
+                    error_log("[POOL] DEBUG: " . $message . " " . json_encode($context));
+                }
+                public function log($level, $message, array $context = []) {
+                    error_log("[POOL] {$level}: " . $message . " " . json_encode($context));
+                }
             };
+        } else {
+            $this->logger = $logger;
         }
-        
-        $this->logger = $logger;
         
         // Initialize dependencies
         $this->contributionCalculator = new ContributionCalculator();
