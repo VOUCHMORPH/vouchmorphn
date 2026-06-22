@@ -217,7 +217,7 @@ foreach ($assets as $code => $asset) {
 }
 
 // ============================================================
-// NEW: GET SELECTED SWAP DETAILS FOR DETAILED VIEW
+// GET SELECTED SWAP DETAILS FOR DETAILED VIEW
 // ============================================================
 $swapId = $_GET['id'] ?? null;
 $selectedSwap = null;
@@ -230,6 +230,7 @@ $requestPayload = null;
 
 if ($swapId) {
     try {
+        // Try to find by swap_reference or reference column
         $stmt = $swapDB->prepare("
             SELECT sl.*, 
                    sl.request_payload, 
@@ -239,10 +240,27 @@ if ($swapId) {
                    sl.signature_chain,
                    sl.delivery_details
             FROM swap_ledgers sl
-            WHERE sl.swap_reference = ? AND sl.user_id = ?
+            WHERE (sl.swap_reference = ? OR sl.reference = ?) AND sl.user_id = ?
         ");
-        $stmt->execute([$swapId, $userId]);
+        $stmt->execute([$swapId, $swapId, $userId]);
         $selectedSwap = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        // If not found, try without user_id (for debugging)
+        if (!$selectedSwap) {
+            $stmt = $swapDB->prepare("
+                SELECT sl.*, 
+                       sl.request_payload, 
+                       sl.response_payload,
+                       sl.fee_calculation_details,
+                       sl.generated_codes,
+                       sl.signature_chain,
+                       sl.delivery_details
+                FROM swap_ledgers sl
+                WHERE sl.swap_reference = ? OR sl.reference = ?
+            ");
+            $stmt->execute([$swapId, $swapId]);
+            $selectedSwap = $stmt->fetch(PDO::FETCH_ASSOC);
+        }
         
         if ($selectedSwap) {
             $fullResponse = json_decode($selectedSwap['response_payload'] ?? '{}', true);
@@ -257,11 +275,12 @@ if ($swapId) {
     }
 }
 
-// Get recent swaps for this user (updated to include swap_id for linking)
+// Get recent swaps for this user
 $recentSwaps = [];
 try {
     $stmt = $swapDB->prepare("
-        SELECT swap_reference, amount, from_institution, to_institution, status, created_at, fee_amount, swap_type
+        SELECT swap_reference, reference, amount, from_institution, to_institution, 
+               status, created_at, fee_amount, swap_type
         FROM swap_ledgers 
         WHERE user_id = ? 
         ORDER BY created_at DESC 
@@ -269,7 +288,9 @@ try {
     ");
     $stmt->execute([$userId]);
     $recentSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) {}
+} catch (Exception $e) {
+    error_log("Error fetching recent swaps: " . $e->getMessage());
+}
 
 $apiUrl = '/api/v1/swap/execute.php';
 $previewUrl = '/api/v1/swap/preview.php';
@@ -758,7 +779,7 @@ $denominationsList = implode(', ', $atmDenominations);
         <a href="dashboard.php" class="back-link">← Back to Dashboard</a>
         
         <div class="card">
-            <h3>🔍 Swap Details: <?= htmlspecialchars($selectedSwap['swap_reference'] ?? 'N/A') ?></h3>
+            <h3>🔍 Swap Details: <?= htmlspecialchars($selectedSwap['swap_reference'] ?? $selectedSwap['reference'] ?? 'N/A') ?></h3>
             
             <!-- Generated Codes -->
             <?php if (!empty($generatedCodes) && (!empty($generatedCodes['atm_pin']) || !empty($generatedCodes['voucher_number']))): ?>
@@ -1052,20 +1073,24 @@ $denominationsList = implode(', ', $atmDenominations);
             <div style="text-align:center; padding:20px; color:#a0a0b0;">No swaps yet</div>
         <?php else: ?>
             <?php foreach ($recentSwaps as $swap): ?>
-                <div class="swap-item" onclick="window.location.href='?id=<?= urlencode($swap['swap_reference']) ?>'">
+                <?php 
+                $ref = $swap['swap_reference'] ?? $swap['reference'] ?? null;
+                if (!$ref) continue;
+                ?>
+                <div class="swap-item" onclick="window.location.href='?id=<?= urlencode($ref) ?>'">
                     <div>
                         <strong><?= htmlspecialchars($swap['from_institution'] ?? '?') ?></strong> → <strong><?= htmlspecialchars($swap['to_institution'] ?? '?') ?></strong>
                         <?php if (!empty($swap['swap_type'])): ?>
                             <div style="font-size: 10px; color: #888;"><?= htmlspecialchars($swap['swap_type']) ?></div>
                         <?php endif; ?>
-                        <?php if (!empty($swap['fee_amount'])): ?>
+                        <?php if (!empty($swap['fee_amount']) && $swap['fee_amount'] > 0): ?>
                             <div class="fee-display">Fee: <?= number_format($swap['fee_amount'], 2) ?> <?= $currencySymbol ?></div>
                         <?php endif; ?>
                     </div>
                     <div style="text-align: right;">
-                        <div><?= number_format($swap['amount'], 2) ?> <?= $currencySymbol ?></div>
+                        <div><?= number_format($swap['amount'] ?? 0, 2) ?> <?= $currencySymbol ?></div>
                         <div class="swap-status <?= strtolower($swap['status'] ?? 'completed') ?>"><?= $swap['status'] ?? 'Completed' ?></div>
-                        <div style="font-size: 10px; color: #888;"><?= date('Y-m-d H:i', strtotime($swap['created_at'])) ?></div>
+                        <div style="font-size: 10px; color: #888;"><?= date('Y-m-d H:i', strtotime($swap['created_at'] ?? 'now')) ?></div>
                         <div style="font-size: 10px; color: #00f0ff; margin-top: 4px;">Click to view details →</div>
                     </div>
                 </div>
@@ -1522,21 +1547,61 @@ confirmBtn.addEventListener('click', async function() {
         
         const result = await response.json();
         
-        if (result.success === true || result.status === 'success' || result.atomic_commit?.status === 'committed') {
+        // Check if swap was successful
+        const isSuccess = result.success === true || 
+                          result.status === 'success' || 
+                          result.status === 'pending_cashout' ||
+                          result.atomic_commit?.status === 'committed';
+        
+        if (isSuccess) {
             // Success - close modal and show result
             closeConfirmation();
             
             resultDiv.className = 'result success';
+            
+            // Determine reference
+            const ref = result.reference || result.swap_reference || result.data?.reference || 'N/A';
+            
             let html = `<strong>✅ Swap Successful!</strong><br><br>
-                Reference: ${result.reference || result.swap_reference || 'N/A'}<br>
+                Reference: ${ref}<br>
                 Amount: <?= $currencySymbol ?> ${pendingPayload.amount.toFixed(2)}<br>`;
             
-            if (result.fee) html += `<strong>Fee: <?= $currencySymbol ?> ${result.fee.toFixed(2)}</strong><br>`;
-            if (result.atm_code) html += `<br><strong>🏧 ATM Code:</strong> ${result.atm_code}<br>`;
-            if (result.voucher_number) html += `<br><strong>🎫 Voucher:</strong> ${result.voucher_number}<br>`;
+            // Check various places for fee
+            const fee = result.fee || result.data?.fee || result.fee_amount || 0;
+            if (parseFloat(fee) > 0) {
+                html += `<strong>Fee: <?= $currencySymbol ?> ${parseFloat(fee).toFixed(2)}</strong><br>`;
+            }
+            
+            // Check for ATM code in various places
+            const atmCode = result.atm_code || result.atm_pin || 
+                           result.data?.atm_code || result.data?.atm_pin || 
+                           result.data?.generated_codes?.atm_pin || 
+                           result.data?.generated_codes?.atm_code || null;
+            if (atmCode) {
+                html += `<br><strong>🏧 ATM Code:</strong> <span style="font-size:24px; color:#00f0ff;">${atmCode}</span><br>`;
+            }
+            
+            const voucher = result.voucher_number || result.data?.voucher_number || 
+                           result.data?.generated_codes?.voucher_number || null;
+            if (voucher) {
+                html += `<br><strong>🎫 Voucher:</strong> ${voucher}<br>`;
+            }
+            
+            const expires = result.code_expiry || result.data?.expires_at || 
+                           result.data?.generated_codes?.expires_at || null;
+            if (expires) {
+                html += `<br><strong>⏰ Expires:</strong> ${expires}<br>`;
+            }
+            
+            // Show auth code if present
+            const authCode = result.auth_code || result.data?.auth_code || 
+                            result.data?.generated_codes?.auth_code || null;
+            if (authCode) {
+                html += `<br><strong>🔐 Auth Code:</strong> ${authCode}<br>`;
+            }
             
             html += `<br><details><summary><strong>📋 Full Response</strong></summary><pre style="margin-top:8px; font-size:11px; overflow-x:auto;">${JSON.stringify(result, null, 2)}</pre></details>`;
-            html += `<br><a href="?id=${result.reference || result.swap_reference}" style="color:#00f0ff;">View Full Details →</a>`;
+            html += `<br><a href="?id=${ref}" style="color:#00f0ff;">View Full Details →</a>`;
             resultDiv.innerHTML = html;
             resultDiv.scrollIntoView({ behavior: 'smooth' });
             
