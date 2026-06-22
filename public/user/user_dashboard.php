@@ -1,6 +1,5 @@
 <?php
-// public/user/dashboard.php - FULLY DYNAMIC WITH DEBUG PANEL
-// This version shows you EXACTLY what payload is being sent
+// public/user/dashboard.php - FULLY DYNAMIC WITH MULTI-SOURCE SUPPORT
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
@@ -237,6 +236,15 @@ $previewUrl = '/api/v1/swap/preview.php';
 $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
 
 $denominationsList = implode(', ', $atmDenominations);
+
+// Generate participant options for JavaScript
+$participantOptions = [];
+foreach ($participants as $code => $p) {
+    $participantOptions[$code] = [
+        'name' => $p['name'] ?? $code,
+        'asset_types' => $p['asset_types'] ?? ['ACCOUNT']
+    ];
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -387,6 +395,35 @@ $denominationsList = implode(', ', $atmDenominations);
         button:hover { transform: translateY(-1px); filter: brightness(1.05); }
         button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
         
+        .btn-secondary {
+            background: #1a1f3a;
+            color: #fff;
+            border: 1px solid #2a2f4a;
+            width: auto;
+            padding: 8px 16px;
+            margin-top: 0;
+        }
+        .btn-secondary:hover { background: #2a2f4a; transform: none; filter: none; }
+        
+        .btn-danger {
+            background: #ff6b6b;
+            color: #fff;
+            width: auto;
+            padding: 4px 12px;
+            margin-top: 0;
+            font-size: 12px;
+        }
+        .btn-danger:hover { background: #ff4444; transform: none; filter: none; }
+        
+        .btn-success {
+            background: #4caf50;
+            color: #fff;
+            width: auto;
+            padding: 8px 16px;
+            margin-top: 0;
+        }
+        .btn-success:hover { background: #388e3c; transform: none; filter: none; }
+        
         .summary {
             background: rgba(0, 240, 255, 0.05);
             padding: 14px;
@@ -405,14 +442,6 @@ $denominationsList = implode(', ', $atmDenominations);
         .result.success { background: rgba(76, 175, 80, 0.2); border: 1px solid #4caf50; display: block; color: #4caf50; }
         .result.error { background: rgba(244, 67, 54, 0.2); border: 1px solid #f44336; display: block; color: #f44336; }
         .result.loading { background: rgba(255, 193, 7, 0.2); border: 1px solid #ffc107; display: block; color: #ffc107; }
-        
-        .note-breakdown {
-            background: rgba(76, 175, 80, 0.1);
-            padding: 10px;
-            border-radius: 6px;
-            margin: 10px 0;
-            font-family: monospace;
-        }
         
         .swap-item {
             display: flex;
@@ -581,17 +610,8 @@ $denominationsList = implode(', ', $atmDenominations);
         }
 
         .confirmation-row:last-child { border-bottom: none; }
-
-        .confirmation-row .label {
-            color: #888;
-            font-size: 13px;
-        }
-
-        .confirmation-row .value {
-            font-weight: bold;
-            font-size: 14px;
-        }
-
+        .confirmation-row .label { color: #888; font-size: 13px; }
+        .confirmation-row .value { font-weight: bold; font-size: 14px; }
         .confirmation-row .value.positive { color: #4caf50; }
         .confirmation-row .value.negative { color: #ff6b6b; }
         .confirmation-row .value.highlight { color: #00f0ff; }
@@ -602,14 +622,9 @@ $denominationsList = implode(', ', $atmDenominations);
             color: #ccc;
             border-bottom: 1px solid #1a1f3a;
         }
-
         .fee-breakdown-item:last-child { border-bottom: none; }
-
         .fee-breakdown-item .fee-name { color: #888; }
-        .fee-breakdown-item .fee-amount {
-            float: right;
-            font-weight: bold;
-        }
+        .fee-breakdown-item .fee-amount { float: right; font-weight: bold; }
 
         .total-row {
             font-size: 18px;
@@ -624,7 +639,6 @@ $denominationsList = implode(', ', $atmDenominations);
             gap: 12px;
             margin-top: 20px;
         }
-
         .modal-actions button {
             flex: 1;
             padding: 14px;
@@ -640,7 +654,6 @@ $denominationsList = implode(', ', $atmDenominations);
             border: 1px solid #ff6b6b !important;
             color: #ff6b6b;
         }
-
         .btn-cancel:hover { background: rgba(255,107,107,0.1); }
 
         .btn-confirm {
@@ -648,7 +661,6 @@ $denominationsList = implode(', ', $atmDenominations);
             border: none;
             color: #0a0e27;
         }
-
         .btn-confirm:hover { transform: translateY(-1px); filter: brightness(1.05); }
         .btn-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -684,122 +696,111 @@ $denominationsList = implode(', ', $atmDenominations);
             background: rgba(255,107,107,0.1);
             border-radius: 6px;
         }
-        
+
         /* ============================================================
-           DEBUG PANEL STYLES
+           MULTI-SOURCE STYLES
            ============================================================ */
-        .debug-panel {
-            position: fixed;
-            bottom: 10px;
-            left: 10px;
-            right: 10px;
-            max-width: 800px;
-            margin: 0 auto;
-            background: #12162e;
-            border: 2px solid #00f0ff;
-            border-radius: 12px;
+        .source-entry {
+            background: #0a0e27;
+            border-radius: 8px;
             padding: 16px;
-            z-index: 9999;
-            font-size: 12px;
-            color: #fff;
-            max-height: 500px;
-            overflow-y: auto;
-            box-shadow: 0 0 40px rgba(0,240,255,0.15);
-            display: none;
+            margin-bottom: 12px;
+            border: 1px solid #2a2f4a;
+            position: relative;
         }
-        .debug-panel.show { display: block; }
-        .debug-panel .header {
+        .source-entry .source-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-bottom: 12px;
-            padding-bottom: 8px;
-            border-bottom: 1px solid #2a2f4a;
         }
-        .debug-panel .header h4 {
-            color: #00f0ff;
-            margin: 0;
-            font-size: 14px;
+        .source-entry .source-header .source-number {
+            color: #888;
+            font-size: 12px;
         }
-        .debug-panel .header .close-btn {
+        .source-entry .source-fields {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 12px;
+        }
+        .source-entry .source-fields .form-group { margin-bottom: 0; }
+        .source-entry .remove-source {
             background: #ff6b6b;
-            border: none;
             color: #fff;
+            border: none;
             padding: 2px 10px;
             border-radius: 4px;
             cursor: pointer;
-            font-weight: bold;
-        }
-        .debug-panel .section {
-            margin-bottom: 10px;
-            padding: 8px;
-            background: #0a0e27;
-            border-radius: 6px;
-        }
-        .debug-panel .section-title {
-            color: #888;
-            font-size: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 4px;
-        }
-        .debug-panel .pin-status {
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-weight: bold;
-            display: inline-block;
-        }
-        .debug-panel .pin-status.found { background: rgba(76,175,80,0.2); color: #4caf50; }
-        .debug-panel .pin-status.missing { background: rgba(244,67,54,0.2); color: #ff6b6b; }
-        .debug-panel pre {
-            margin: 0;
-            white-space: pre-wrap;
-            word-break: break-all;
-            font-size: 11px;
-            font-family: 'Monaco', 'Menlo', monospace;
-            max-height: 150px;
-            overflow-y: auto;
-        }
-        .debug-panel .btn-debug {
-            background: #00f0ff;
-            color: #0a0e27;
-            border: none;
-            padding: 4px 12px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: bold;
             font-size: 12px;
-            margin-right: 4px;
         }
-        .debug-panel .btn-debug:hover { filter: brightness(1.1); }
-        .debug-panel .btn-debug.secondary {
-            background: #1a1f3a;
-            color: #fff;
+        .source-entry .remove-source:hover { background: #ff4444; }
+        
+        .multi-source-toggle {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 16px;
+            padding: 12px;
+            background: #0a0e27;
+            border-radius: 8px;
             border: 1px solid #2a2f4a;
         }
-        .debug-toggle {
-            position: fixed;
-            bottom: 10px;
-            right: 10px;
-            background: #00f0ff;
-            color: #0a0e27;
-            border: none;
-            border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            font-size: 24px;
+        .multi-source-toggle label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
             cursor: pointer;
-            z-index: 9998;
-            box-shadow: 0 0 20px rgba(0,240,255,0.3);
+            color: #fff;
+            font-size: 14px;
+            margin: 0;
         }
-        .debug-toggle:hover { transform: scale(1.05); }
+        .multi-source-toggle input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            accent-color: #00f0ff;
+            cursor: pointer;
+        }
+        .multi-source-toggle .source-count {
+            color: #00f0ff;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        
+        .source-summary {
+            background: rgba(0, 240, 255, 0.05);
+            border-radius: 8px;
+            padding: 12px;
+            margin: 12px 0;
+            border: 1px solid rgba(0, 240, 255, 0.2);
+            font-size: 13px;
+        }
+        .source-summary .total-label { color: #888; }
+        .source-summary .total-amount { color: #00f0ff; font-weight: bold; font-size: 16px; }
+        .source-summary .source-list { color: #a0a0b0; font-size: 12px; margin-top: 4px; }
+        
+        .btn-add-source {
+            background: transparent;
+            border: 2px dashed #2a2f4a;
+            color: #888;
+            padding: 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            width: 100%;
+            font-size: 14px;
+            margin-top: 8px;
+        }
+        .btn-add-source:hover {
+            border-color: #00f0ff;
+            color: #00f0ff;
+            background: rgba(0,240,255,0.05);
+        }
         
         @media (max-width: 768px) {
-            .two-columns { grid-template-columns: 1fr; gap: 16px; }
-            .three-columns { grid-template-columns: 1fr; }
+            .two-columns, .three-columns { grid-template-columns: 1fr; gap: 16px; }
+            .source-entry .source-fields { grid-template-columns: 1fr; }
             .modal { padding: 20px; }
             .modal-actions { flex-direction: column; }
-            .debug-panel { max-height: 60vh; font-size: 11px; }
+            .multi-source-toggle { flex-wrap: wrap; }
         }
     </style>
 </head>
@@ -987,31 +988,8 @@ $denominationsList = implode(', ', $atmDenominations);
                 💡 Cashout amounts are dispensed using available notes: <strong><?= $denominationsList ?> <?= $currencySymbol ?></strong>
             </div>
             
+            <!-- DESTINATION SECTION (Always visible) -->
             <div class="two-columns">
-                <div>
-                    <div class="form-group">
-                        <label>📤 SOURCE INSTITUTION</label>
-                        <select id="fromInstitution">
-                            <option value="">-- Select --</option>
-                            <?php foreach ($participants as $code => $p): ?>
-                                <option value="<?= htmlspecialchars($code) ?>">
-                                    <?= htmlspecialchars($p['name'] ?? $code) ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>🔑 SOURCE IDENTIFIER</label>
-                        <input type="text" id="sourceIdentifier" 
-                               placeholder="Phone number or National ID or Email"
-                               value="<?= !empty($userPhone) ? $userPhone : (!empty($userNationalId) ? $userNationalId : '') ?>">
-                        <div class="info-note">
-                            💡 This identifies who is sending money.
-                        </div>
-                    </div>
-                </div>
-                
                 <div>
                     <div class="form-group">
                         <label>📥 DESTINATION INSTITUTION</label>
@@ -1043,24 +1021,55 @@ $denominationsList = implode(', ', $atmDenominations);
                         </select>
                     </div>
                 </div>
+                
+                <div>
+                    <div class="form-group">
+                        <label>🏷️ ASSET TYPE</label>
+                        <select id="assetType">
+                            <option value="">-- Select Asset Type --</option>
+                        </select>
+                        <div id="assetTypeHint" style="font-size: 10px; color: #888; margin-top: 5px;"></div>
+                    </div>
+                    
+                    <!-- DYNAMIC FIELDS - RENDERED FROM assets.yaml -->
+                    <div id="assetFieldsContainer" class="dynamic-fields"></div>
+                    
+                    <!-- DESTINATION FIELDS (CASHOUT/DEPOSIT specific) -->
+                    <div id="destFieldsContainer" class="dynamic-fields"></div>
+                </div>
             </div>
 
-            <!-- ASSET TYPE SELECTION - FROM GLOBAL assets.yaml -->
-            <div class="form-group">
-                <label>🏷️ ASSET TYPE</label>
-                <select id="assetType">
-                    <option value="">-- Select Asset Type --</option>
-                </select>
-                <div id="assetTypeHint" style="font-size: 10px; color: #888; margin-top: 5px;"></div>
+            <!-- ============================================================
+                 MULTI-SOURCE TOGGLE AND SOURCES
+                 ============================================================ -->
+            <div class="multi-source-toggle">
+                <label>
+                    <input type="checkbox" id="multiSourceToggle" onchange="toggleMultiSource()">
+                    🔗 Multi-Source Swap
+                </label>
+                <span style="color:#888; font-size:12px;">
+                    Combine funds from multiple sources (different institutions or accounts)
+                </span>
+                <span class="source-count" id="sourceCount">0 sources</span>
             </div>
             
-            <!-- DYNAMIC FIELDS - RENDERED FROM assets.yaml -->
-            <div id="assetFieldsContainer" class="dynamic-fields"></div>
-            
-            <!-- DESTINATION FIELDS (CASHOUT/DEPOSIT specific) -->
-            <div id="destFieldsContainer" class="dynamic-fields"></div>
+            <!-- SOURCES CONTAINER -->
+            <div id="sourcesContainer" style="display:none;">
+                <div id="sourceEntries"></div>
+                <button class="btn-add-source" onclick="addSource()">➕ Add Source</button>
+                
+                <!-- Source Summary -->
+                <div id="sourceSummary" class="source-summary" style="display:none;">
+                    <div>
+                        <span class="total-label">💰 Total from all sources:</span>
+                        <span class="total-amount" id="totalSourceAmount"><?= $currencySymbol ?> 0.00</span>
+                    </div>
+                    <div class="source-list" id="sourceList"></div>
+                </div>
+            </div>
 
-            <div class="form-group">
+            <!-- SINGLE SOURCE AMOUNT (hidden when multi-source is enabled) -->
+            <div id="singleAmountContainer" class="form-group">
                 <label>💰 AMOUNT (<?= $currencySymbol ?>)</label>
                 <input type="number" id="amount" step="0.01" placeholder="0.00">
                 <div class="quick-amounts">
@@ -1134,54 +1143,16 @@ $denominationsList = implode(', ', $atmDenominations);
     </div>
 </div>
 
-<!-- ============================================================
-     DEBUG TOGGLE BUTTON
-     ============================================================ -->
-<button class="debug-toggle" onclick="toggleDebugPanel()">🐛</button>
-
-<!-- ============================================================
-     DEBUG PANEL
-     ============================================================ -->
-<div id="debugPanel" class="debug-panel">
-    <div class="header">
-        <h4>🐛 Dashboard Debug Panel</h4>
-        <button class="close-btn" onclick="toggleDebugPanel()">×</button>
-    </div>
-    
-    <div class="section">
-        <div class="section-title">📋 PIN Status</div>
-        <div id="debugPinStatus">Checking...</div>
-    </div>
-    
-    <div class="section">
-        <div class="section-title">📦 Payload to be sent to GenericBankClient</div>
-        <pre id="debugPayload">No payload built yet</pre>
-    </div>
-    
-    <div class="section">
-        <div class="section-title">🔍 Form Data</div>
-        <pre id="debugFormData">No data</pre>
-    </div>
-    
-    <div class="section">
-        <div class="section-title">⚡ Actions</div>
-        <button class="btn-debug" onclick="buildAndShowPayload()">🔍 Build Payload</button>
-        <button class="btn-debug secondary" onclick="setPin77777()">🔑 Set PIN: 77777</button>
-        <button class="btn-debug secondary" onclick="clearDebug()">🗑️ Clear</button>
-        <button class="btn-debug secondary" onclick="copyPayload()">📋 Copy Payload</button>
-    </div>
-</div>
-
 <script>
 // ============================================================
-// ASSET-DRIVEN JAVASCRIPT - LOADS FROM GLOBAL assets.yaml
+// CONFIGURATION
 // ============================================================
-
-// Asset data from PHP (loaded from global /src/Core/Config/assets.yaml)
 const assetFields = <?= json_encode($assetFieldsMap) ?>;
 const assetUI = <?= json_encode($assetUIMap) ?>;
 const assetRules = <?= json_encode($assetRulesMap) ?>;
-const participants = <?= json_encode($participants) ?>;
+const participants = <?= json_encode($participantOptions) ?>;
+const currencySymbol = '<?= $currencySymbol ?>';
+const loggedPhone = '<?= $loggedPhone ?>';
 
 // Build institution asset mapping
 const institutionAssets = {};
@@ -1204,112 +1175,234 @@ const summaryDiv = document.getElementById('summary');
 const sourceIdentifierInput = document.getElementById('sourceIdentifier');
 const identifierTypeSelect = document.getElementById('identifierType');
 
+// Multi-source elements
+const multiSourceToggle = document.getElementById('multiSourceToggle');
+const sourcesContainer = document.getElementById('sourcesContainer');
+const sourceEntries = document.getElementById('sourceEntries');
+const sourceSummary = document.getElementById('sourceSummary');
+const totalSourceAmount = document.getElementById('totalSourceAmount');
+const sourceList = document.getElementById('sourceList');
+const sourceCount = document.getElementById('sourceCount');
+const singleAmountContainer = document.getElementById('singleAmountContainer');
+
 // Modal elements
 const confirmModal = document.getElementById('confirmModal');
 const confirmationDetails = document.getElementById('confirmationDetails');
 const modalError = document.getElementById('modalError');
 const confirmBtn = document.getElementById('confirmBtn');
 
-// Debug elements
-const debugPanel = document.getElementById('debugPanel');
-const debugPinStatus = document.getElementById('debugPinStatus');
-const debugPayload = document.getElementById('debugPayload');
-const debugFormData = document.getElementById('debugFormData');
-
 let pendingPayload = null;
 let previewData = null;
+let sourceCounter = 0;
+let sources = [];
 
 // ============================================================
-// DEBUG FUNCTIONS
+// MULTI-SOURCE FUNCTIONS
 // ============================================================
 
-function toggleDebugPanel() {
-    debugPanel.classList.toggle('show');
-    if (debugPanel.classList.contains('show')) {
-        buildAndShowPayload();
+function toggleMultiSource() {
+    const enabled = multiSourceToggle.checked;
+    sourcesContainer.style.display = enabled ? 'block' : 'none';
+    singleAmountContainer.style.display = enabled ? 'none' : 'block';
+    
+    if (enabled && sources.length === 0) {
+        addSource();
     }
+    updateSummary();
 }
 
-function setPin77777() {
-    // Find and set all PIN fields
-    document.querySelectorAll('input[type="password"]').forEach(el => {
-        el.value = '77777';
-    });
-    document.querySelectorAll('.asset-field').forEach(el => {
-        if (el.id.includes('pin') || el.type === 'password') {
-            el.value = '77777';
-        }
-    });
-    // Specific IDs
-    ['wallet_pin', 'pin', 'walletPin', 'atm_pin', 'card_pin'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.value = '77777';
-    });
-    updateDebugInfo();
-    buildAndShowPayload();
-}
-
-function clearDebug() {
-    debugPayload.textContent = 'Cleared';
-    debugFormData.textContent = 'Cleared';
-}
-
-function copyPayload() {
-    const text = debugPayload.textContent;
-    if (text && text !== 'No payload built yet' && text !== 'Cleared') {
-        navigator.clipboard.writeText(text).then(() => {
-            alert('✅ Payload copied to clipboard!');
-        }).catch(() => {
-            // Fallback
-            const textarea = document.createElement('textarea');
-            textarea.value = text;
-            document.body.appendChild(textarea);
-            textarea.select();
-            document.execCommand('copy');
-            document.body.removeChild(textarea);
-            alert('✅ Payload copied to clipboard!');
-        });
-    }
-}
-
-function updateDebugInfo() {
-    const pin = getPinFromForm();
-    const statusEl = document.getElementById('debugPinStatus');
-    if (pin) {
-        statusEl.innerHTML = `
-            <span class="pin-status found">✅ PIN FOUND</span>
-            <span style="color:#4caf50; margin-left:8px;">Length: ${pin.length} chars</span>
-            <span style="color:#888; margin-left:8px;">Value: ${'•'.repeat(pin.length)}</span>
-            <div style="font-size:10px; color:#888; margin-top:4px;">
-                Raw value: <code style="background:#0a0e27; padding:2px 6px; border-radius:3px;">${pin}</code>
+function addSource() {
+    sourceCounter++;
+    const sourceId = 'source_' + sourceCounter;
+    
+    const entry = document.createElement('div');
+    entry.className = 'source-entry';
+    entry.id = sourceId;
+    entry.innerHTML = `
+        <div class="source-header">
+            <span class="source-number">📤 Source ${sourceCounter}</span>
+            <button class="remove-source" onclick="removeSource('${sourceId}')">✕ Remove</button>
+        </div>
+        <div class="source-fields">
+            <div class="form-group">
+                <label>Institution</label>
+                <select id="${sourceId}_institution" onchange="updateSourceAssetTypes('${sourceId}')">
+                    <option value="">-- Select --</option>
+                    ${Object.entries(participants).map(([code, p]) => 
+                        `<option value="${code}">${p.name}</option>`
+                    ).join('')}
+                </select>
             </div>
-        `;
-    } else {
-        statusEl.innerHTML = `<span class="pin-status missing">❌ NO PIN FOUND</span>`;
+            <div class="form-group">
+                <label>Asset Type</label>
+                <select id="${sourceId}_assetType" onchange="updateSourceFields('${sourceId}')">
+                    <option value="">-- Select --</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Amount (${currencySymbol})</label>
+                <input type="number" id="${sourceId}_amount" step="0.01" placeholder="0.00" oninput="updateSummary()">
+            </div>
+        </div>
+        <div id="${sourceId}_fields" class="dynamic-fields" style="margin-top:12px; padding-top:12px; border-top:1px solid #2a2f4a;"></div>
+        <div class="form-group" style="margin-top:8px;">
+            <label>Identifier (Phone/National ID/Email)</label>
+            <input type="text" id="${sourceId}_identifier" placeholder="Enter identifier" value="${loggedPhone}" oninput="updateSummary()">
+        </div>
+    `;
+    
+    sourceEntries.appendChild(entry);
+    
+    // Store source reference
+    sources.push({
+        id: sourceId,
+        counter: sourceCounter
+    });
+    
+    updateSourceCount();
+    updateSummary();
+}
+
+function removeSource(sourceId) {
+    const entry = document.getElementById(sourceId);
+    if (entry) {
+        entry.remove();
+        sources = sources.filter(s => s.id !== sourceId);
+        updateSourceCount();
+        updateSummary();
     }
     
-    // Update form data
-    const formData = {
-        fromInstitution: fromInstSelect.value || '(empty)',
-        toInstitution: toInstSelect.value || '(empty)',
-        assetType: assetTypeSelect.value || '(empty)',
-        swapType: swapTypeSelect.value || '(empty)',
-        amount: amountInput.value || '0',
-        sourceIdentifier: sourceIdentifierInput?.value || '(empty)',
-        identifierType: identifierTypeSelect?.value || 'auto'
-    };
-    debugFormData.textContent = JSON.stringify(formData, null, 2);
+    if (sources.length === 0) {
+        // Auto-add a source if none left
+        addSource();
+    }
 }
 
-function buildAndShowPayload() {
-    // This mimics exactly what the dashboard's buildPayload does
+function updateSourceCount() {
+    sourceCount.textContent = sources.length + ' source' + (sources.length > 1 ? 's' : '');
+}
+
+function updateSourceAssetTypes(sourceId) {
+    const instSelect = document.getElementById(sourceId + '_institution');
+    const assetSelect = document.getElementById(sourceId + '_assetType');
+    const inst = instSelect.value;
+    
+    assetSelect.innerHTML = '<option value="">-- Select --</option>';
+    
+    if (inst && institutionAssets[inst]) {
+        const types = institutionAssets[inst];
+        types.forEach(type => {
+            const ui = assetUI[type] || {};
+            const option = document.createElement('option');
+            option.value = type;
+            option.textContent = (ui.icon || '') + ' ' + (ui.display_name || type);
+            assetSelect.appendChild(option);
+        });
+    }
+    
+    updateSourceFields(sourceId);
+    updateSummary();
+}
+
+function updateSourceFields(sourceId) {
+    const assetSelect = document.getElementById(sourceId + '_assetType');
+    const fieldsContainer = document.getElementById(sourceId + '_fields');
+    const assetType = assetSelect.value;
+    
+    fieldsContainer.innerHTML = '';
+    fieldsContainer.classList.remove('active');
+    
+    if (!assetType) return;
+    
+    const fields = assetFields[assetType] || [];
+    if (fields.length === 0) {
+        fieldsContainer.innerHTML = `<div class="info-note">✅ No additional fields required</div>`;
+        fieldsContainer.classList.add('active');
+        return;
+    }
+    
+    let html = '<div class="two-columns" style="margin-bottom:0;">';
+    fields.forEach(field => {
+        const fieldName = field.name;
+        const label = field.label || fieldName.replace(/_/g, ' ').toUpperCase();
+        const placeholder = field.placeholder || `Enter ${fieldName.replace(/_/g, ' ')}`;
+        const isPin = fieldName.includes('pin') || field.type === 'password';
+        const inputType = isPin ? 'password' : (field.type || 'text');
+        const requiredAttr = field.required ? ' required' : '';
+        
+        html += `
+            <div class="form-group">
+                <label>${label}</label>
+                <input type="${inputType}" id="${sourceId}_${fieldName}" class="source-asset-field" 
+                       placeholder="${placeholder}" autocomplete="${isPin ? 'new-password' : 'on'}"
+                       ${requiredAttr}>
+                ${isPin ? `<div style="font-size:10px; color:#b000ff; margin-top:4px;">🔑 Enter PIN</div>` : ''}
+            </div>
+        `;
+    });
+    html += '</div>';
+    
+    fieldsContainer.innerHTML = html;
+    fieldsContainer.classList.add('active');
+    updateSummary();
+}
+
+function updateSummary() {
+    const isMulti = multiSourceToggle.checked;
+    
+    if (isMulti) {
+        // Calculate total from all sources
+        let total = 0;
+        let sourceDetails = [];
+        
+        sources.forEach(s => {
+            const amountEl = document.getElementById(s.id + '_amount');
+            const instEl = document.getElementById(s.id + '_institution');
+            const assetEl = document.getElementById(s.id + '_assetType');
+            const identEl = document.getElementById(s.id + '_identifier');
+            
+            const amount = parseFloat(amountEl?.value) || 0;
+            total += amount;
+            
+            const instName = instEl?.options[instEl.selectedIndex]?.text || '?';
+            const assetName = assetEl?.options[assetEl.selectedIndex]?.text || '?';
+            const ident = identEl?.value || '?';
+            
+            if (amount > 0) {
+                sourceDetails.push(`${currencySymbol}${amount.toFixed(2)} from ${instName} (${assetName})`);
+            }
+        });
+        
+        totalSourceAmount.textContent = currencySymbol + ' ' + total.toFixed(2);
+        sourceList.textContent = sourceDetails.length > 0 ? sourceDetails.join('; ') : 'No sources configured';
+        sourceSummary.style.display = total > 0 ? 'block' : 'none';
+        
+        summaryDiv.innerHTML = `📋 Multi-Source Swap | Total: ${currencySymbol} ${total.toFixed(2)} | ${sources.length} source(s)`;
+    } else {
+        // Single source
+        const amount = parseFloat(amountInput.value) || 0;
+        const fromInst = fromInstSelect.options[fromInstSelect.selectedIndex]?.text || '?';
+        const toInst = toInstSelect.options[toInstSelect.selectedIndex]?.text || '?';
+        const asset = assetTypeSelect.options[assetTypeSelect.selectedIndex]?.text || '?';
+        const swapType = swapTypeSelect.options[swapTypeSelect.selectedIndex]?.text || '?';
+        
+        summaryDiv.innerHTML = `📋 ${fromInst} (${asset}) → ${toInst} (${swapType}) | Amount: ${currencySymbol} ${amount.toFixed(2)}`;
+    }
+}
+
+// ============================================================
+// BUILD PAYLOAD (with Multi-Source support)
+// ============================================================
+
+function buildPayload() {
     const fromInst = fromInstSelect.value;
     const toInst = toInstSelect.value;
     const assetType = assetTypeSelect.value;
     const swapType = swapTypeSelect.value;
-    const amount = parseFloat(amountInput.value) || 0;
     const sourceIdentifier = sourceIdentifierInput?.value.trim() || '';
-    const reference = 'DEBUG_' + Date.now();
+    
+    const isMulti = multiSourceToggle.checked;
+    const reference = 'SWAP_' + Date.now();
     const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
     
     // Identifier type
@@ -1320,15 +1413,13 @@ function buildAndShowPayload() {
         else if (sourceIdentifier.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) identifierType = 'email';
     }
     
-    // Build payload
+    // Base payload
     const payload = {
         reference: reference,
         idempotency_key: idempotencyKey,
         swap_type: swapType,
-        from_institution: fromInst,
         to_institution: toInst,
         asset_type: assetType,
-        amount: amount,
         currency: '<?= $currency ?>',
         source_identifier: sourceIdentifier,
         source_identifier_type: identifierType,
@@ -1340,48 +1431,83 @@ function buildAndShowPayload() {
     else if (identifierType === 'national_id') payload.source_national_id = sourceIdentifier;
     else if (identifierType === 'email') payload.source_email = sourceIdentifier;
     
-    // Collect asset fields
-    const assetFieldsData = {};
-    document.querySelectorAll('.asset-field').forEach(field => {
-        const value = field.value.trim();
-        if (value) {
-            assetFieldsData[field.id] = value;
-            payload[field.id] = value;
-        }
-    });
-    
-    // Get PIN
-    const pin = getPinFromForm();
-    if (pin) {
-        payload.wallet_pin = pin;
-        payload.pin = pin;
-        if (!payload.asset_fields) payload.asset_fields = {};
-        payload.asset_fields.wallet_pin = pin;
-        payload.asset_fields.pin = pin;
-    } else {
-        // Last resort: check all password fields directly
-        document.querySelectorAll('input[type="password"]').forEach(el => {
-            if (el.value && el.value.trim()) {
-                const val = el.value.trim();
-                payload.wallet_pin = val;
-                payload.pin = val;
-                if (!payload.asset_fields) payload.asset_fields = {};
-                payload.asset_fields.wallet_pin = val;
-                payload.asset_fields.pin = val;
+    if (isMulti) {
+        // Multi-Source: Build sources array
+        const sourcesList = [];
+        let totalAmount = 0;
+        
+        sources.forEach(s => {
+            const instEl = document.getElementById(s.id + '_institution');
+            const assetEl = document.getElementById(s.id + '_assetType');
+            const amountEl = document.getElementById(s.id + '_amount');
+            const identEl = document.getElementById(s.id + '_identifier');
+            
+            const inst = instEl?.value || '';
+            const asset = assetEl?.value || 'ACCOUNT';
+            const amount = parseFloat(amountEl?.value) || 0;
+            const ident = identEl?.value.trim() || '';
+            
+            if (inst && amount > 0) {
+                // Collect asset fields for this source
+                const fields = {};
+                const assetFieldsList = assetFields[asset] || [];
+                assetFieldsList.forEach(field => {
+                    const fieldEl = document.getElementById(s.id + '_' + field.name);
+                    if (fieldEl && fieldEl.value.trim()) {
+                        fields[field.name] = fieldEl.value.trim();
+                    }
+                });
+                
+                sourcesList.push({
+                    institution: inst,
+                    asset_type: asset,
+                    amount: amount,
+                    identifier: ident,
+                    identifier_type: 'auto',
+                    asset_fields: fields
+                });
+                
+                totalAmount += amount;
             }
         });
-    }
-    
-    // Add asset fields
-    if (Object.keys(assetFieldsData).length > 0) {
-        payload.asset_fields = { ...payload.asset_fields, ...assetFieldsData };
-    }
-    
-    // Add rules
-    const rules = assetRules[assetType] || {};
-    if (rules.hold_required) {
-        payload.hold_required = true;
-        payload.hold_expiry_seconds = rules.hold_expiry_seconds || 300;
+        
+        payload.sources = sourcesList;
+        payload.amount = totalAmount;
+        payload.from_institution = sourcesList.length > 0 ? sourcesList[0].institution : '';
+        
+        // Also add as multi-source flag
+        payload.swap_type = 'MULTI_SOURCE';
+        
+        console.log('[buildPayload] Multi-source payload with', sourcesList.length, 'sources:', sourcesList);
+    } else {
+        // Single Source
+        const amount = parseFloat(amountInput.value) || 0;
+        payload.from_institution = fromInst;
+        payload.amount = amount;
+        
+        // Collect asset fields
+        const assetFieldsData = {};
+        document.querySelectorAll('.asset-field').forEach(field => {
+            const value = field.value.trim();
+            if (value) {
+                assetFieldsData[field.id] = value;
+                payload[field.id] = value;
+            }
+        });
+        
+        // Get PIN
+        const pin = getPinFromForm();
+        if (pin) {
+            payload.wallet_pin = pin;
+            payload.pin = pin;
+            if (!payload.asset_fields) payload.asset_fields = {};
+            payload.asset_fields.wallet_pin = pin;
+            payload.asset_fields.pin = pin;
+        }
+        
+        if (Object.keys(assetFieldsData).length > 0) {
+            payload.asset_fields = { ...payload.asset_fields, ...assetFieldsData };
+        }
     }
     
     // Destination fields
@@ -1408,43 +1534,14 @@ function buildAndShowPayload() {
         }
     }
     
-    // Display the payload
-    const displayPayload = { ...payload };
-    if (displayPayload.wallet_pin) displayPayload.wallet_pin = '****';
-    if (displayPayload.pin) displayPayload.pin = '****';
-    if (displayPayload.asset_fields) {
-        if (displayPayload.asset_fields.wallet_pin) displayPayload.asset_fields.wallet_pin = '****';
-        if (displayPayload.asset_fields.pin) displayPayload.asset_fields.pin = '****';
+    // Add rules from assets.yaml
+    const rules = assetRules[assetType] || {};
+    if (rules.hold_required) {
+        payload.hold_required = true;
+        payload.hold_expiry_seconds = rules.hold_expiry_seconds || 300;
     }
     
-    // Add metadata
-    const metadata = {
-        timestamp: new Date().toISOString(),
-        user_id: '<?= $userId ?>',
-        phone: '<?= $loggedPhone ?>',
-        country: '<?= $countryName ?>',
-        country_code: '<?= $countryCode ?>',
-        currency: '<?= $currency ?>',
-        api_endpoint: '<?= $apiUrl ?>',
-        pin_found: !!pin,
-        pin_length: pin ? pin.length : 0,
-        asset_fields_count: Object.keys(assetFieldsData).length,
-        from_institution_config: institutionAssets[fromInst] || null
-    };
-    
-    const output = {
-        metadata: metadata,
-        payload: displayPayload,
-        raw_payload: payload // This has the actual PIN (will be masked in display)
-    };
-    
-    debugPayload.textContent = JSON.stringify(output, null, 2);
-    updateDebugInfo();
-    
-    console.log('🔍 [DEBUG] Full payload with PIN:', payload);
-    console.log('🔍 [DEBUG] Display payload:', displayPayload);
-    console.log('🔍 [DEBUG] Metadata:', metadata);
-    
+    console.log('[buildPayload] Final payload:', payload);
     return payload;
 }
 
@@ -1580,216 +1677,30 @@ function validateCorridor() {
     return true;
 }
 
-function updateSummary() {
-    const fromInst = fromInstSelect.options[fromInstSelect.selectedIndex]?.text || '?';
-    const toInst = toInstSelect.options[toInstSelect.selectedIndex]?.text || '?';
-    const asset = assetTypeSelect.options[assetTypeSelect.selectedIndex]?.text || '?';
-    const swapType = swapTypeSelect.options[swapTypeSelect.selectedIndex]?.text || '?';
-    let amount = parseFloat(amountInput.value) || 0;
-    
-    summaryDiv.innerHTML = `📋 ${fromInst} (${asset}) → ${toInst} (${swapType}) | Amount: <?= $currencySymbol ?> ${amount.toFixed(2)}`;
-}
-
 // ============================================================
-// GET PIN FROM FORM - CHECKS ALL POSSIBLE PIN FIELDS
+// GET PIN FROM FORM
 // ============================================================
 
 function getPinFromForm() {
     let pin = null;
     
-    // List of all possible PIN field IDs to check
-    const pinIds = [
-        'wallet_pin',
-        'pin',
-        'walletPin',
-        'atm_pin',
-        'atmPin',
-        'card_pin',
-        'cardPin',
-        'voucher_pin',
-        'voucherPin',
-        'pin_number',
-        'pinNumber'
-    ];
-    
-    // Method 1: Direct ID lookup for all possible PIN field names
-    for (const id of pinIds) {
-        const el = document.getElementById(id);
-        if (el && el.value && el.value.trim()) {
-            pin = el.value.trim();
-            console.log('[getPin] Found PIN via ID:', id, pin.substring(0, 2) + '****');
-            return pin;
-        }
-    }
-    
-    // Method 2: Check all password fields
-    document.querySelectorAll('input[type="password"]').forEach(el => {
-        if (!pin && el.value && el.value.trim()) {
-            pin = el.value.trim();
-            console.log('[getPin] Found PIN via password field:', el.id || 'unnamed', pin.substring(0, 2) + '****');
+    // Check all password fields and fields with 'pin' in the name
+    document.querySelectorAll('.asset-field').forEach(el => {
+        const value = el.value.trim();
+        if (value && (el.type === 'password' || el.id.includes('pin'))) {
+            pin = value;
         }
     });
     
-    // Method 3: Check all asset fields with 'pin' in the ID
-    if (!pin) {
-        document.querySelectorAll('.asset-field').forEach(el => {
-            const value = el.value.trim();
-            const id = el.id || '';
-            if (value && id.toLowerCase().includes('pin') && !pin) {
-                pin = value;
-                console.log('[getPin] Found PIN via asset-field with pin in ID:', id, pin.substring(0, 2) + '****');
-            }
-        });
-    }
+    // Also check source fields
+    document.querySelectorAll('.source-asset-field').forEach(el => {
+        const value = el.value.trim();
+        if (value && (el.type === 'password' || el.id.includes('pin'))) {
+            pin = value;
+        }
+    });
     
-    // Method 4: Check all input fields with 'pin' in the name attribute
-    if (!pin) {
-        document.querySelectorAll('input[name*="pin" i]').forEach(el => {
-            const value = el.value.trim();
-            if (value && !pin) {
-                pin = value;
-                console.log('[getPin] Found PIN via name attribute:', el.name, pin.substring(0, 2) + '****');
-            }
-        });
-    }
-    
-    // Method 5: Last resort - check ALL input fields for anything that looks like a PIN (4-6 digits)
-    if (!pin) {
-        document.querySelectorAll('input[type="text"], input[type="password"]').forEach(el => {
-            const value = el.value.trim();
-            if (value && value.length >= 4 && value.length <= 8 && /^\d+$/.test(value) && !pin) {
-                pin = value;
-                console.log('[getPin] Found potential PIN via pattern match:', el.id || el.name || 'unnamed', pin.substring(0, 2) + '****');
-            }
-        });
-    }
-    
-    console.log('[getPin] Final PIN found:', pin ? 'YES (length ' + pin.length + ')' : 'NO');
     return pin;
-}
-
-// ============================================================
-// BUILD PAYLOAD (with debug integration)
-// ============================================================
-
-function buildPayload() {
-    const fromInst = fromInstSelect.value;
-    const toInst = toInstSelect.value;
-    const assetType = assetTypeSelect.value;
-    const swapType = swapTypeSelect.value;
-    const amount = parseFloat(amountInput.value);
-    const reference = 'SWAP_' + Date.now();
-    const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
-    
-    // Source identifier
-    const sourceIdentifier = sourceIdentifierInput?.value.trim() || '';
-    let identifierType = identifierTypeSelect?.value || 'auto';
-    
-    if (identifierType === 'auto' && sourceIdentifier) {
-        if (sourceIdentifier.match(/^[\+]?[0-9]{10,15}$/)) identifierType = 'phone';
-        else if (sourceIdentifier.match(/^[A-Z0-9]{6,20}$/i)) identifierType = 'national_id';
-        else if (sourceIdentifier.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) identifierType = 'email';
-    }
-    
-    // Base payload
-    const payload = {
-        reference: reference,
-        idempotency_key: idempotencyKey,
-        swap_type: swapType,
-        from_institution: fromInst,
-        to_institution: toInst,
-        asset_type: assetType,
-        amount: amount,
-        currency: '<?= $currency ?>',
-        source_identifier: sourceIdentifier,
-        source_identifier_type: identifierType,
-        phone: sourceIdentifier,
-        wallet_phone: sourceIdentifier
-    };
-    
-    if (identifierType === 'phone') payload.source_phone = sourceIdentifier;
-    else if (identifierType === 'national_id') payload.source_national_id = sourceIdentifier;
-    else if (identifierType === 'email') payload.source_email = sourceIdentifier;
-    
-    // Collect all asset fields
-    const assetFieldsData = {};
-    document.querySelectorAll('.asset-field').forEach(field => {
-        const value = field.value.trim();
-        if (value) {
-            assetFieldsData[field.id] = value;
-            payload[field.id] = value;
-        }
-    });
-    
-    // Get and add PIN
-    const pin = getPinFromForm();
-    if (pin) {
-        payload.wallet_pin = pin;
-        payload.pin = pin;
-        if (!payload.asset_fields) payload.asset_fields = {};
-        payload.asset_fields.wallet_pin = pin;
-        payload.asset_fields.pin = pin;
-        console.log('[buildPayload] ✅ PIN added (length: ' + pin.length + ')');
-    } else {
-        console.warn('[buildPayload] ⚠️ No PIN found - checking all password fields directly...');
-        const allPasswords = document.querySelectorAll('input[type="password"]');
-        allPasswords.forEach(el => {
-            if (el.value && el.value.trim()) {
-                const val = el.value.trim();
-                payload.wallet_pin = val;
-                payload.pin = val;
-                if (!payload.asset_fields) payload.asset_fields = {};
-                payload.asset_fields.wallet_pin = val;
-                payload.asset_fields.pin = val;
-                console.log('[buildPayload] ✅ PIN found via last-resort password search (length: ' + val.length + ')');
-            }
-        });
-    }
-    
-    // Add asset fields
-    if (Object.keys(assetFieldsData).length > 0) {
-        payload.asset_fields = { ...payload.asset_fields, ...assetFieldsData };
-    }
-    
-    // Add rules from assets.yaml
-    const rules = assetRules[assetType] || {};
-    if (rules.hold_required) {
-        payload.hold_required = true;
-        payload.hold_expiry_seconds = rules.hold_expiry_seconds || 300;
-    }
-    
-    // Destination fields
-    if (swapType === 'CASHOUT') {
-        const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value.trim();
-        if (beneficiaryPhone) {
-            payload.beneficiary_phone = beneficiaryPhone;
-            payload.destination_identifier = beneficiaryPhone;
-            payload.destination_identifier_type = 'phone';
-        }
-    } else if (swapType === 'DEPOSIT') {
-        const destinationIdentifier = document.getElementById('destinationIdentifier')?.value.trim();
-        if (destinationIdentifier) {
-            payload.destination_identifier = destinationIdentifier;
-            payload.destination_identifier_type = 'auto';
-            if (destinationIdentifier.match(/^[\+]?[0-9]{10,15}$/)) {
-                payload.destination_identifier_type = 'phone';
-                payload.destination_phone = destinationIdentifier;
-            } else if (destinationIdentifier.match(/^[A-Z0-9]{6,20}$/i)) {
-                payload.destination_identifier_type = 'national_id';
-                payload.destination_national_id = destinationIdentifier;
-            }
-            payload.destination_account = destinationIdentifier;
-        }
-    }
-    
-    // Log final payload status
-    console.log('[buildPayload] Final payload - wallet_pin:', payload.wallet_pin ? '***' : 'MISSING');
-    console.log('[buildPayload] Final payload - pin:', payload.pin ? '***' : 'MISSING');
-    
-    // Update debug panel
-    updateDebugInfo();
-    
-    return payload;
 }
 
 // ============================================================
@@ -1933,19 +1844,51 @@ function showTab(tabName) {
 const executeBtn = document.getElementById('executeBtn');
 if (executeBtn) {
     executeBtn.addEventListener('click', async function(e) {
-        const fromInst = fromInstSelect.value;
         const toInst = toInstSelect.value;
         const assetType = assetTypeSelect.value;
-        const amount = parseFloat(amountInput.value);
         const swapType = swapTypeSelect.value;
-        const sourceIdentifier = sourceIdentifierInput?.value.trim();
+        const isMulti = multiSourceToggle.checked;
         
-        if (!fromInst) { alert('Select SOURCE institution'); return; }
         if (!toInst) { alert('Select DESTINATION institution'); return; }
         if (!assetType) { alert('Select asset type'); return; }
-        if (!sourceIdentifier) { alert('Enter source identifier'); return; }
-        if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
-        if (fromInst === toInst) { alert('Source and destination must be different'); return; }
+        
+        if (isMulti) {
+            // Validate multi-source
+            let hasError = false;
+            let totalAmount = 0;
+            
+            sources.forEach(s => {
+                const instEl = document.getElementById(s.id + '_institution');
+                const amountEl = document.getElementById(s.id + '_amount');
+                const identEl = document.getElementById(s.id + '_identifier');
+                const assetEl = document.getElementById(s.id + '_assetType');
+                
+                if (!instEl?.value) { hasError = true; alert('Select institution for source ' + s.counter); return; }
+                if (!assetEl?.value) { hasError = true; alert('Select asset type for source ' + s.counter); return; }
+                if (!amountEl?.value || parseFloat(amountEl.value) <= 0) { 
+                    hasError = true; 
+                    alert('Enter valid amount for source ' + s.counter); 
+                    return; 
+                }
+                if (!identEl?.value) { hasError = true; alert('Enter identifier for source ' + s.counter); return; }
+                
+                totalAmount += parseFloat(amountEl.value) || 0;
+            });
+            
+            if (hasError) return;
+            if (totalAmount <= 0) { alert('Total amount must be greater than 0'); return; }
+            if (sources.length < 2) { alert('Add at least 2 sources for multi-source swap'); return; }
+        } else {
+            // Single source validation
+            const fromInst = fromInstSelect.value;
+            const amount = parseFloat(amountInput.value);
+            const sourceIdentifier = sourceIdentifierInput?.value.trim();
+            
+            if (!fromInst) { alert('Select SOURCE institution'); return; }
+            if (!sourceIdentifier) { alert('Enter source identifier'); return; }
+            if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
+            if (fromInst === toInst) { alert('Source and destination must be different'); return; }
+        }
         
         // Validate required fields from assets.yaml
         const fields = assetFields[assetType] || [];
@@ -1966,7 +1909,7 @@ if (executeBtn) {
         
         // Check for PIN
         const pin = getPinFromForm();
-        if (!pin) {
+        if (!pin && !isMulti) {
             alert('🔑 Please enter your PIN');
             return;
         }
@@ -2044,6 +1987,11 @@ confirmBtn.addEventListener('click', async function() {
                 html += `<br><strong>🎫 Voucher:</strong> ${voucher}<br>`;
             }
             
+            // Show multi-source info if applicable
+            if (pendingPayload.sources && pendingPayload.sources.length > 0) {
+                html += `<br><strong>📤 Sources:</strong> ${pendingPayload.sources.length} source(s)`;
+            }
+            
             html += `<br><details><summary><strong>📋 Full Response</strong></summary><pre style="margin-top:8px; font-size:11px; overflow-x:auto;">${JSON.stringify(result, null, 2)}</pre></details>`;
             html += `<br><a href="?id=${ref}" style="color:#00f0ff;">View Full Details →</a>`;
             resultDiv.innerHTML = html;
@@ -2070,38 +2018,28 @@ confirmBtn.addEventListener('click', async function() {
 // EVENT LISTENERS
 // ============================================================
 
-if (fromInstSelect) {
-    fromInstSelect.addEventListener('change', () => {
-        updateAssetTypes();
-        validateCorridor();
-        updateSummary();
-    });
-}
+fromInstSelect.addEventListener('change', () => {
+    updateAssetTypes();
+    validateCorridor();
+    updateSummary();
+});
 
-if (toInstSelect) {
-    toInstSelect.addEventListener('change', () => {
-        validateCorridor();
-        updateSummary();
-    });
-}
+toInstSelect.addEventListener('change', () => {
+    validateCorridor();
+    updateSummary();
+});
 
-if (assetTypeSelect) {
-    assetTypeSelect.addEventListener('change', () => {
-        updateAssetFields();
-        updateSummary();
-    });
-}
+assetTypeSelect.addEventListener('change', () => {
+    updateAssetFields();
+    updateSummary();
+});
 
-if (swapTypeSelect) {
-    swapTypeSelect.addEventListener('change', () => {
-        updateDestinationFields();
-        updateSummary();
-    });
-}
+swapTypeSelect.addEventListener('change', () => {
+    updateDestinationFields();
+    updateSummary();
+});
 
-if (amountInput) {
-    amountInput.addEventListener('input', updateSummary);
-}
+amountInput.addEventListener('input', updateSummary);
 
 document.querySelectorAll('.quick-amount').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -2117,16 +2055,15 @@ document.querySelectorAll('.quick-amount').forEach(btn => {
 updateAssetTypes();
 updateDestinationFields();
 
-console.log('[Dashboard] ✅ Initialized with asset types:', Object.keys(assetFields));
-console.log('[Dashboard] Asset fields:', assetFields);
-console.log('[Dashboard] 🐛 Debug panel available - click the bug button bottom-right');
+// Add initial source if multi-source is enabled by default
+// (disabled by default)
 
-// Test PIN detection on load
-setTimeout(() => {
-    const testPin = getPinFromForm();
-    console.log('[Dashboard] Initial PIN detection test:', testPin ? 'PIN found' : 'No PIN');
-    updateDebugInfo();
-}, 1000);
+console.log('[Dashboard] ✅ Initialized with Multi-Source support');
+console.log('[Dashboard] Asset types:', Object.keys(assetFields));
+console.log('[Dashboard] Participants:', Object.keys(participants));
+
+// Update summary periodically
+setInterval(updateSummary, 500);
 </script>
 </body>
 </html>
