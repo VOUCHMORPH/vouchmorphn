@@ -84,49 +84,49 @@ class SwapService
     private array $stepResults = [];
     private array $signedPayloads = [];
 
-    public function __construct(
-        PDO $swapDB, 
-        array $config, 
-        string $country,
-        ?LoggerInterface $logger = null
-    ) {
-        $this->swapDB = $swapDB;
-        $this->config = $config;
-        $this->countryCode = strtoupper($country);
-        
-        if ($logger === null) {
-    $this->logger = new class {  // Remove "implements LoggerInterface"
-    public function emergency($message, array $context = []) {
-        error_log("[SwapService][EMERGENCY] " . $message . " " . json_encode($context));
+   public function __construct(
+    PDO $swapDB, 
+    array $config, 
+    string $country,
+    $logger = null
+) {
+    $this->swapDB = $swapDB;
+    $this->config = $config;
+    $this->countryCode = strtoupper($country);
+    
+    if ($logger === null) {
+        $this->logger = new class {
+            public function emergency($message, array $context = []) {
+                error_log("[SwapService][EMERGENCY] " . $message . " " . json_encode($context));
+            }
+            public function alert($message, array $context = []) {
+                error_log("[SwapService][ALERT] " . $message . " " . json_encode($context));
+            }
+            public function critical($message, array $context = []) {
+                error_log("[SwapService][CRITICAL] " . $message . " " . json_encode($context));
+            }
+            public function error($message, array $context = []) {
+                error_log("[SwapService][ERROR] " . $message . " " . json_encode($context));
+            }
+            public function warning($message, array $context = []) {
+                error_log("[SwapService][WARNING] " . $message . " " . json_encode($context));
+            }
+            public function notice($message, array $context = []) {
+                error_log("[SwapService][NOTICE] " . $message . " " . json_encode($context));
+            }
+            public function info($message, array $context = []) {
+                error_log("[SwapService][INFO] " . $message . " " . json_encode($context));
+            }
+            public function debug($message, array $context = []) {
+                error_log("[SwapService][DEBUG] " . $message . " " . json_encode($context));
+            }
+            public function log($level, $message, array $context = []) {
+                error_log("[SwapService][{$level}] " . $message . " " . json_encode($context));
+            }
+        };
+    } else {
+        $this->logger = $logger;
     }
-    public function alert($message, array $context = []) {
-        error_log("[SwapService][ALERT] " . $message . " " . json_encode($context));
-    }
-    public function critical($message, array $context = []) {
-        error_log("[SwapService][CRITICAL] " . $message . " " . json_encode($context));
-    }
-    public function error($message, array $context = []) {
-        error_log("[SwapService][ERROR] " . $message . " " . json_encode($context));
-    }
-    public function warning($message, array $context = []) {
-        error_log("[SwapService][WARNING] " . $message . " " . json_encode($context));
-    }
-    public function notice($message, array $context = []) {
-        error_log("[SwapService][NOTICE] " . $message . " " . json_encode($context));
-    }
-    public function info($message, array $context = []) {
-        error_log("[SwapService][INFO] " . $message . " " . json_encode($context));
-    }
-    public function debug($message, array $context = []) {
-        error_log("[SwapService][DEBUG] " . $message . " " . json_encode($context));
-    }
-    public function log($level, $message, array $context = []) {
-        error_log("[SwapService][{$level}] " . $message . " " . json_encode($context));
-    }
-};
-} else {
-    $this->logger = $logger;
-}
         
         $this->messageSigner = new MessageSigner();
         $this->signatureVerifier = new SignatureVerifier($this->swapDB);
