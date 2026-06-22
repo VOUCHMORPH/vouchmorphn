@@ -758,11 +758,11 @@ class GenericBankClient implements BankAPIInterface
     // ============================================================================
 
     public function generateToken(array $payload): array
-{
-    error_log("=== GENERIC BANK CLIENT: generateToken (CASHOUT TOKEN) ===");
-    $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
-    return $this->send('generate_token', $signedPayload);
-}
+    {
+        error_log("=== GENERIC BANK CLIENT: generateToken (CASHOUT TOKEN) ===");
+        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+        return $this->send('generate_token', $signedPayload);
+    }
 
     public function verifyToken(array $payload): array
     {
@@ -945,6 +945,23 @@ class GenericBankClient implements BankAPIInterface
     protected function createSignedPayload(array $payload, string $requester = 'VOUCHMORPH'): array
     {
         $payload = $this->addSourceIdentifier($payload);
+        
+        // ============================================================
+        // DETECT PIN IN PAYLOAD AND ADD TO SIGNED PAYLOAD
+        // ============================================================
+        // Check for PIN in various possible locations
+        if (isset($payload['pin']) && !empty($payload['pin'])) {
+            $payload['asset_type'] = 'PIN';
+            error_log("[GenericBankClient] PIN found in payload: " . substr($payload['pin'], -4));
+        } elseif (isset($payload['asset_fields']['pin']) && !empty($payload['asset_fields']['pin'])) {
+            $payload['pin'] = $payload['asset_fields']['pin'];
+            $payload['asset_type'] = 'PIN';
+            error_log("[GenericBankClient] PIN found in asset_fields: " . substr($payload['pin'], -4));
+        } elseif (isset($payload['wallet_pin']) && !empty($payload['wallet_pin'])) {
+            $payload['pin'] = $payload['wallet_pin'];
+            $payload['asset_type'] = 'PIN';
+            error_log("[GenericBankClient] PIN found in wallet_pin: " . substr($payload['pin'], -4));
+        }
         
         if ($this->certManager && $this->certManager->isConfigured()) {
             error_log("[GenericBankClient] Using CertificateManager for signing ({$requester})");
