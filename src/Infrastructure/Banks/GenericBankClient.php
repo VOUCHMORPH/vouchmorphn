@@ -105,7 +105,6 @@ class GenericBankClient implements BankAPIInterface
         $content = file_get_contents($yamlPath);
         $parsed = $this->parseEndpointsYaml($content);
         
-        // DEBUG: Log what was parsed
         error_log("=== YAML PARSING DEBUG ===");
         error_log("Parsed banks: " . implode(', ', array_keys($parsed)));
         
@@ -122,10 +121,11 @@ class GenericBankClient implements BankAPIInterface
             if (isset($parsed[$bankCode]['endpoints'])) {
                 $this->yamlEndpoints = $parsed[$bankCode]['endpoints'];
                 error_log("Loaded YAML endpoints for {$bankCode}");
-                error_log("Endpoints sections: " . implode(', ', array_keys($this->yamlEndpoints)));
-                if (isset($this->yamlEndpoints['destination_cashout'])) {
-                    error_log("destination_cashout keys: " . implode(', ', array_keys($this->yamlEndpoints['destination_cashout'])));
-                }
+            }
+            // Also load source_linking if present
+            if (isset($parsed[$bankCode]['source_linking'])) {
+                $this->yamlEndpoints['source_linking'] = $parsed[$bankCode]['source_linking'];
+                error_log("Loaded source_linking endpoints for {$bankCode}");
             }
         } else {
             // Try case-insensitive match
@@ -140,10 +140,10 @@ class GenericBankClient implements BankAPIInterface
                     if (isset($value['endpoints'])) {
                         $this->yamlEndpoints = $value['endpoints'];
                         error_log("Loaded YAML endpoints from case-insensitive match");
-                        error_log("Endpoints sections: " . implode(', ', array_keys($this->yamlEndpoints)));
-                        if (isset($this->yamlEndpoints['destination_cashout'])) {
-                            error_log("destination_cashout keys: " . implode(', ', array_keys($this->yamlEndpoints['destination_cashout'])));
-                        }
+                    }
+                    if (isset($value['source_linking'])) {
+                        $this->yamlEndpoints['source_linking'] = $value['source_linking'];
+                        error_log("Loaded source_linking endpoints from case-insensitive match");
                     }
                     break;
                 }
@@ -159,18 +159,13 @@ class GenericBankClient implements BankAPIInterface
     
     protected function getCountryFromConfig(): string
     {
-        // Try to get from config first
         if (isset($this->config['country_code'])) {
             return $this->config['country_code'];
         }
-        
-        // Try from environment
         $country = getenv('VOUCHMORPH_COUNTRY');
         if ($country) {
             return $country;
         }
-        
-        // Default to Botswana
         return 'Botswana';
     }
     
@@ -186,7 +181,6 @@ class GenericBankClient implements BankAPIInterface
             $line = rtrim($line);
             if (empty($line) || $line[0] === '#') continue;
             
-            // Bank header (e.g., "ZURUBANK:")
             if (preg_match('/^([A-Z_]+):$/', $line, $matches)) {
                 $currentBank = $matches[1];
                 $result[$currentBank] = [];
@@ -196,48 +190,63 @@ class GenericBankClient implements BankAPIInterface
             }
             
             if ($currentBank) {
-                // Base URL (2 spaces indentation)
+                // Base URL
                 if (preg_match('/^  base_url: "?(.+?)"?$/', $line, $matches)) {
                     $result[$currentBank]['base_url'] = rtrim($matches[1], '"');
                     continue;
                 }
                 
-                // Endpoints section (2 spaces)
+                // Source linking section
+                if (preg_match('/^  source_linking:$/', $line)) {
+                    $currentSection = 'source_linking';
+                    $result[$currentBank]['source_linking'] = [];
+                    continue;
+                }
+                
+                // Source linking endpoints (4 spaces)
+                if ($currentSection === 'source_linking' && preg_match('/^    ([a-z_]+): "?(.+?)"?$/', $line, $matches)) {
+                    $key = $matches[1];
+                    $value = rtrim($matches[2], '"');
+                    $result[$currentBank]['source_linking'][$key] = $value;
+                    continue;
+                }
+                
+                // Endpoints section
                 if (preg_match('/^  endpoints:$/', $line)) {
                     $currentSection = 'endpoints';
                     $result[$currentBank]['endpoints'] = [];
                     continue;
                 }
                 
-                // Source endpoints (4 spaces)
+                // Source endpoints
                 if ($currentSection === 'endpoints' && preg_match('/^    source:$/', $line)) {
                     $currentSubSection = 'source';
                     $result[$currentBank]['endpoints']['source'] = [];
                     continue;
                 }
                 
-                // Destination cashout endpoints (4 spaces)
+                // Destination cashout endpoints
                 if ($currentSection === 'endpoints' && preg_match('/^    destination_cashout:$/', $line)) {
                     $currentSubSection = 'destination_cashout';
                     $result[$currentBank]['endpoints']['destination_cashout'] = [];
                     continue;
                 }
                 
-                // Destination deposit endpoints (4 spaces)
+                // Destination deposit endpoints
                 if ($currentSection === 'endpoints' && preg_match('/^    destination_deposit:$/', $line)) {
                     $currentSubSection = 'destination_deposit';
                     $result[$currentBank]['endpoints']['destination_deposit'] = [];
                     continue;
                 }
                 
-                // Common endpoints (4 spaces)
+                // Common endpoints
                 if ($currentSection === 'endpoints' && preg_match('/^    common:$/', $line)) {
                     $currentSubSection = 'common';
                     $result[$currentBank]['endpoints']['common'] = [];
                     continue;
                 }
                 
-                // Endpoint key-value pairs (6 spaces or more)
+                // Endpoint key-value pairs
                 if ($currentSubSection && preg_match('/^      ([a-z_]+): "?(.+?)"?$/', $line, $matches)) {
                     $key = $matches[1];
                     $value = rtrim($matches[2], '"');
@@ -261,13 +270,11 @@ class GenericBankClient implements BankAPIInterface
 
     protected function getBaseUrl(): string
     {
-        // Priority 1: YAML config
         if ($this->yamlBaseUrl) {
             error_log("Using base URL from YAML: {$this->yamlBaseUrl}");
             return $this->yamlBaseUrl;
         }
         
-        // Priority 2: Environment variable
         if ($this->bankPrefix) {
             $envVar = $this->bankPrefix . '_BASE_URL';
             $baseUrl = getenv($envVar);
@@ -277,14 +284,12 @@ class GenericBankClient implements BankAPIInterface
             }
         }
         
-        // Priority 3: Generic env var
         $genericBaseUrl = getenv('BANK_BASE_URL');
         if ($genericBaseUrl && !empty($genericBaseUrl)) {
             error_log("Using base URL from generic env: BANK_BASE_URL = {$genericBaseUrl}");
             return rtrim($genericBaseUrl, '/');
         }
         
-        // Priority 4: Config array
         $configUrl = $this->config['base_url'] ?? '';
         if (!empty($configUrl)) {
             error_log("Using base URL from config: {$configUrl}");
@@ -297,6 +302,20 @@ class GenericBankClient implements BankAPIInterface
 
     protected function getApiKey(): ?string
     {
+        // Check config auth section
+        $authConfig = $this->config['auth'] ?? null;
+        if ($authConfig && isset($authConfig['secret_source'])) {
+            if ($authConfig['secret_source']['type'] === 'env_var') {
+                $envName = $authConfig['secret_source']['name'] ?? '';
+                if ($envName) {
+                    $apiKey = getenv($envName);
+                    if ($apiKey && !empty($apiKey)) {
+                        return $apiKey;
+                    }
+                }
+            }
+        }
+        
         if ($this->bankPrefix) {
             $envVar = $this->bankPrefix . '_API_KEY';
             $apiKey = getenv($envVar);
@@ -323,9 +342,7 @@ class GenericBankClient implements BankAPIInterface
 
     protected function getEndpoint(string $action): ?string
     {
-        // Action to YAML path mapping
         $yamlPathMap = [
-            // Source actions
             'verify_asset' => ['source', 'verify_asset'],
             'verifyAsset' => ['source', 'verify_asset'],
             'verifyAssetSigned' => ['source', 'verify_asset'],
@@ -336,8 +353,6 @@ class GenericBankClient implements BankAPIInterface
             'debitHold' => ['source', 'debit_funds'],
             'release_hold' => ['source', 'release_hold'],
             'releaseHold' => ['source', 'release_hold'],
-            
-            // Destination cashout actions
             'generate_token' => ['destination_cashout', 'generate_token'],
             'generateToken' => ['destination_cashout', 'generate_token'],
             'generateTokenWithProof' => ['destination_cashout', 'generate_token'],
@@ -345,15 +360,11 @@ class GenericBankClient implements BankAPIInterface
             'verifyToken' => ['destination_cashout', 'verify_token'],
             'confirm_cashout' => ['destination_cashout', 'confirm_cashout'],
             'confirmCashout' => ['destination_cashout', 'confirm_cashout'],
-            
-            // Destination deposit actions
             'process_deposit' => ['destination_deposit', 'process_deposit'],
             'processDeposit' => ['destination_deposit', 'process_deposit'],
             'processDepositWithProof' => ['destination_deposit', 'process_deposit'],
             'verify_account' => ['destination_deposit', 'verify_account'],
             'verifyAccount' => ['destination_deposit', 'verify_account'],
-            
-            // Common actions
             'transfer' => ['common', 'transfer'],
             'transferWithProof' => ['common', 'transfer'],
             'reverse' => ['common', 'reverse'],
@@ -364,30 +375,24 @@ class GenericBankClient implements BankAPIInterface
             'transactions' => ['source', 'get_transactions'],
         ];
         
-        // Priority 1: YAML endpoints
         if ($this->yamlEndpoints && isset($yamlPathMap[$action])) {
             [$section, $key] = $yamlPathMap[$action];
             if (isset($this->yamlEndpoints[$section][$key])) {
                 $endpoint = $this->yamlEndpoints[$section][$key];
                 error_log("Endpoint from YAML for {$action}: {$endpoint}");
                 return $endpoint;
-            } else {
-                error_log("YAML section '{$section}' key '{$key}' not found for action: {$action}");
             }
         }
         
-        // Priority 2: Environment variables
         $envMap = [
             'verify_asset' => 'VERIFY_ENDPOINT',
             'place_hold' => 'HOLD_ENDPOINT',
             'release_hold' => 'RELEASE_HOLD_ENDPOINT',
             'debit_funds' => 'DEBIT_ENDPOINT',
             'generate_token' => 'GENERATE_TOKEN_ENDPOINT',
-            'generate_token_with_proof' => 'GENERATE_TOKEN_ENDPOINT',
             'verify_token' => 'VERIFY_TOKEN_ENDPOINT',
             'confirm_cashout' => 'CONFIRM_CASHOUT_ENDPOINT',
             'process_deposit' => 'PROCESS_DEPOSIT_ENDPOINT',
-            'process_deposit_with_proof' => 'PROCESS_DEPOSIT_ENDPOINT',
             'check_status' => 'STATUS_ENDPOINT',
             'reverse_transaction' => 'REVERSE_ENDPOINT',
             'account_balance' => 'BALANCE_ENDPOINT',
@@ -415,23 +420,18 @@ class GenericBankClient implements BankAPIInterface
             }
         }
         
-        // Priority 3: Config array
         if (isset($this->config['endpoints']['source'][$action])) {
             return $this->config['endpoints']['source'][$action];
         }
-        
         if (isset($this->config['endpoints']['destination_cashout'][$action])) {
             return $this->config['endpoints']['destination_cashout'][$action];
         }
-        
         if (isset($this->config['endpoints']['destination_deposit'][$action])) {
             return $this->config['endpoints']['destination_deposit'][$action];
         }
-        
         if (isset($this->config['endpoints']['common'][$action])) {
             return $this->config['endpoints']['common'][$action];
         }
-        
         if (isset($this->config['resource_endpoints'][$action])) {
             return $this->config['resource_endpoints'][$action];
         }
@@ -441,26 +441,364 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // OAUTH METHODS (unchanged)
+    // SOURCE LINKING METHODS (Hooking)
+    // ============================================================================
+
+    /**
+     * Get source linking endpoint from YAML
+     */
+    protected function getSourceLinkingEndpoint(string $action): ?string
+    {
+        if ($this->yamlEndpoints && isset($this->yamlEndpoints['source_linking'][$action])) {
+            $endpoint = $this->yamlEndpoints['source_linking'][$action];
+            error_log("[GenericBankClient] Source linking endpoint from YAML for {$action}: {$endpoint}");
+            return $endpoint;
+        }
+        
+        error_log("[GenericBankClient] No source linking endpoint found for: {$action}");
+        return null;
+    }
+
+    /**
+     * Initiate source linking (Step 1)
+     * - ZURUBANK: returns redirect URL
+     * - SACCUSSALIS: sends OTP
+     */
+    public function initiateSourceLink(array $params): array
+    {
+        error_log("[GenericBankClient] initiateSourceLink called");
+        
+        $endpoint = $this->getSourceLinkingEndpoint('initiate');
+        if (!$endpoint) {
+            return ['success' => false, 'message' => 'Source linking not configured for this institution'];
+        }
+        
+        $baseUrl = $this->getBaseUrl();
+        $url = $baseUrl . '/' . ltrim($endpoint, '/');
+        
+        // Check if this is ZURUBANK (OAuth - GET method)
+        $oauthConfig = $this->config['oauth'] ?? null;
+        if ($oauthConfig) {
+            $clientId = $oauthConfig['client_id'] ?? getenv('ZURUBANK_CLIENT_ID') ?? 'VOUCHMORPH_APP_ID';
+            $redirectUri = $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn.com/api/v1/source/auth/callback';
+            $state = $params['state'] ?? bin2hex(random_bytes(16));
+            $scopes = $params['scope'] ?? $oauthConfig['scopes'] ?? ['balance', 'transactions', 'payments'];
+            
+            $authUrl = $url . '?' . http_build_query([
+                'client_id' => $clientId,
+                'redirect_uri' => $redirectUri,
+                'response_type' => 'code',
+                'scope' => implode(' ', $scopes),
+                'state' => $state
+            ]);
+            
+            $_SESSION['oauth_state_' . $state] = $params['user_id'] ?? 'unknown';
+            
+            return [
+                'success' => true,
+                'auth_type' => 'oauth',
+                'redirect_url' => $authUrl,
+                'state' => $state,
+                'message' => 'Redirect to bank authorization page'
+            ];
+        }
+        
+        // For SACCUSSALIS (OTP-based)
+        $authId = $params['auth_id'] ?? 'AUTH_' . date('Ymd') . '_' . bin2hex(random_bytes(6));
+        $identifier = $params['identifier'] ?? '';
+        $assetType = $params['asset_type'] ?? 'BANK-WALLET';
+        
+        $payload = [
+            'auth_id' => $authId,
+            'identifier' => $identifier,
+            'asset_type' => $assetType,
+            'action' => 'link_source',
+            'timestamp' => time()
+        ];
+        
+        $result = $this->sendSourceLinkingRequest('initiate', $payload);
+        
+        if (!$result['success']) {
+            return ['success' => false, 'message' => $result['message'] ?? 'Failed to initiate'];
+        }
+        
+        $data = $result['data'] ?? [];
+        
+        return [
+            'success' => true,
+            'auth_id' => $authId,
+            'message' => $data['message'] ?? 'OTP sent to your phone',
+            'expires_in' => $data['expires_in'] ?? 300,
+            'method' => $data['method'] ?? 'sms'
+        ];
+    }
+
+    /**
+     * Verify source linking (Step 2)
+     * - ZURUBANK: exchange code for token
+     * - SACCUSSALIS: verify OTP
+     */
+    public function verifySourceLink(array $params): array
+    {
+        error_log("[GenericBankClient] verifySourceLink called");
+        
+        $endpoint = $this->getSourceLinkingEndpoint('verify');
+        if (!$endpoint) {
+            return ['success' => false, 'message' => 'Source linking not configured for this institution'];
+        }
+        
+        $baseUrl = $this->getBaseUrl();
+        $url = $baseUrl . '/' . ltrim($endpoint, '/');
+        
+        $oauthConfig = $this->config['oauth'] ?? null;
+        
+        // For ZURUBANK (OAuth) - exchange code for token
+        if ($oauthConfig && isset($params['code'])) {
+            $payload = [
+                'grant_type' => 'authorization_code',
+                'code' => $params['code'],
+                'redirect_uri' => $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn.com/api/v1/source/auth/callback',
+                'client_id' => $oauthConfig['client_id'] ?? getenv('ZURUBANK_CLIENT_ID') ?? 'VOUCHMORPH_APP_ID',
+                'client_secret' => $oauthConfig['client_secret'] ?? getenv('ZURUBANK_CLIENT_SECRET') ?? 'YOUR_BANK_SECRET'
+            ];
+            
+            $result = $this->sendSourceLinkingRequest('verify', $payload, 'application/x-www-form-urlencoded');
+            
+            if (!$result['success']) {
+                return ['success' => false, 'message' => $result['message'] ?? 'Failed to exchange code'];
+            }
+            
+            $data = $result['data'] ?? $result;
+            
+            return [
+                'success' => true,
+                'authorized' => true,
+                'source_reference' => 'SRC_' . date('Ymd') . '_' . bin2hex(random_bytes(8)),
+                'access_token' => $data['access_token'] ?? null,
+                'refresh_token' => $data['refresh_token'] ?? null,
+                'expires_at' => date('Y-m-d H:i:s', time() + ($data['expires_in'] ?? 3600)),
+                'token_type' => $data['token_type'] ?? 'Bearer'
+            ];
+        }
+        
+        // For SACCUSSALIS (OTP-based)
+        $payload = [
+            'auth_id' => $params['auth_id'],
+            'otp' => $params['otp'],
+            'timestamp' => time()
+        ];
+        
+        $result = $this->sendSourceLinkingRequest('verify', $payload);
+        
+        if (!$result['success']) {
+            return ['success' => false, 'message' => $result['message'] ?? 'Invalid OTP'];
+        }
+        
+        $data = $result['data'] ?? [];
+        
+        return [
+            'success' => true,
+            'authorized' => true,
+            'source_reference' => $data['source_reference'] ?? 'SRC_' . bin2hex(random_bytes(8)),
+            'access_token' => $data['access_token'],
+            'refresh_token' => $data['refresh_token'] ?? null,
+            'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', time() + 3600),
+            'holder_name' => $data['holder_name'] ?? null
+        ];
+    }
+
+    /**
+     * Refresh source token
+     */
+    public function refreshSourceToken(array $params): array
+    {
+        error_log("[GenericBankClient] refreshSourceToken called");
+        
+        $endpoint = $this->getSourceLinkingEndpoint('refresh');
+        if (!$endpoint) {
+            return ['success' => false, 'message' => 'Source linking not configured for this institution'];
+        }
+        
+        $baseUrl = $this->getBaseUrl();
+        $url = $baseUrl . '/' . ltrim($endpoint, '/');
+        
+        $oauthConfig = $this->config['oauth'] ?? null;
+        $payload = ['refresh_token' => $params['refresh_token']];
+        
+        if ($oauthConfig) {
+            $payload['grant_type'] = 'refresh_token';
+            $payload['client_id'] = $oauthConfig['client_id'] ?? getenv('ZURUBANK_CLIENT_ID') ?? 'VOUCHMORPH_APP_ID';
+            $payload['client_secret'] = $oauthConfig['client_secret'] ?? getenv('ZURUBANK_CLIENT_SECRET') ?? 'YOUR_BANK_SECRET';
+        }
+        
+        $result = $this->sendSourceLinkingRequest('refresh', $payload, 'application/x-www-form-urlencoded');
+        
+        if (!$result['success']) {
+            return ['success' => false, 'message' => $result['message'] ?? 'Failed to refresh token'];
+        }
+        
+        $data = $result['data'] ?? [];
+        
+        return [
+            'success' => true,
+            'access_token' => $data['access_token'],
+            'expires_at' => date('Y-m-d H:i:s', time() + ($data['expires_in'] ?? 3600))
+        ];
+    }
+
+    /**
+     * Revoke source token
+     */
+    public function revokeSourceToken(array $params): array
+    {
+        error_log("[GenericBankClient] revokeSourceToken called");
+        
+        $endpoint = $this->getSourceLinkingEndpoint('revoke');
+        if (!$endpoint) {
+            return ['success' => false, 'message' => 'Source linking not configured for this institution'];
+        }
+        
+        $baseUrl = $this->getBaseUrl();
+        $url = $baseUrl . '/' . ltrim($endpoint, '/');
+        
+        $oauthConfig = $this->config['oauth'] ?? null;
+        $payload = [
+            'token' => $params['token'],
+            'token_type_hint' => $params['token_type'] ?? 'access_token'
+        ];
+        
+        if ($oauthConfig) {
+            $payload['client_id'] = $oauthConfig['client_id'] ?? getenv('ZURUBANK_CLIENT_ID') ?? 'VOUCHMORPH_APP_ID';
+            $payload['client_secret'] = $oauthConfig['client_secret'] ?? getenv('ZURUBANK_CLIENT_SECRET') ?? 'YOUR_BANK_SECRET';
+        }
+        
+        $result = $this->sendSourceLinkingRequest('revoke', $payload, 'application/x-www-form-urlencoded');
+        
+        return [
+            'success' => $result['success'],
+            'message' => $result['message'] ?? 'Token revoked successfully'
+        ];
+    }
+
+    /**
+     * Use source token to verify asset (Step 3)
+     */
+    public function useSourceToken(array $params): array
+    {
+        error_log("[GenericBankClient] useSourceToken called");
+        
+        $endpoint = $this->getSourceLinkingEndpoint('use');
+        if (!$endpoint) {
+            return ['success' => false, 'message' => 'Source linking not configured for this institution'];
+        }
+        
+        $baseUrl = $this->getBaseUrl();
+        $url = $baseUrl . '/' . ltrim($endpoint, '/');
+        
+        $payload = [
+            'source_reference' => $params['source_reference'],
+            'access_token' => $params['access_token'],
+            'action' => 'VERIFY_ASSET',
+            'amount' => $params['amount'] ?? 0,
+            'currency' => $params['currency'] ?? 'BWP',
+            'timestamp' => time()
+        ];
+        
+        $result = $this->sendSourceLinkingRequest('use', $payload);
+        
+        if (!$result['success']) {
+            return ['success' => false, 'message' => $result['message'] ?? 'Failed to use source'];
+        }
+        
+        $data = $result['data'] ?? [];
+        
+        return [
+            'success' => true,
+            'verified' => $data['verified'] ?? true,
+            'balance' => $data['balance'] ?? 0,
+            'available_balance' => $data['available_balance'] ?? 0,
+            'holder_name' => $data['holder_name'] ?? null
+        ];
+    }
+
+    /**
+     * Send source linking request
+     */
+    protected function sendSourceLinkingRequest(string $action, array $payload, string $contentType = 'application/json'): array
+    {
+        $endpoint = $this->getSourceLinkingEndpoint($action);
+        if (!$endpoint) {
+            return ['success' => false, 'message' => "Endpoint not found for: {$action}"];
+        }
+        
+        $baseUrl = $this->getBaseUrl();
+        $url = $baseUrl . '/' . ltrim($endpoint, '/');
+        
+        $headers = ['Accept: application/json'];
+        $headers[] = 'Content-Type: ' . $contentType;
+        
+        $apiKey = $this->getApiKey();
+        if ($apiKey) {
+            $authConfig = $this->config['auth'] ?? [];
+            $headerName = $authConfig['header_name'] ?? 'X-API-Key';
+            $headers[] = $headerName . ': ' . $apiKey;
+        }
+        
+        if ($contentType === 'application/x-www-form-urlencoded') {
+            $postFields = http_build_query($payload);
+        } else {
+            $postFields = json_encode($payload);
+        }
+        
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+        
+        if ($error) {
+            error_log("[GenericBankClient] Request error: " . $error);
+            return ['success' => false, 'message' => 'Connection error: ' . $error];
+        }
+        
+        $decoded = json_decode($response, true);
+        
+        return [
+            'success' => $httpCode >= 200 && $httpCode < 300,
+            'http_code' => $httpCode,
+            'data' => $decoded ?? [],
+            'message' => $decoded['message'] ?? ($httpCode < 300 ? 'Success' : 'HTTP ' . $httpCode)
+        ];
+    }
+
+    // ============================================================================
+    // OAUTH METHODS
     // ============================================================================
 
     public function getAuthorizationUrl(string $redirectUri, string $state, array $scope = []): string
     {
-        $oauthConfig = $this->config['security']['oauth2'] ?? null;
+        $oauthConfig = $this->config['oauth'] ?? null;
         if (!$oauthConfig) {
             throw new \RuntimeException("OAuth2 not configured for " . ($this->config['provider_code'] ?? 'unknown'));
         }
         
         $baseUrl = $this->getBaseUrl();
-        $authEndpoint = $oauthConfig['authorization_endpoint'] ?? '/oauth/authorize';
+        $authEndpoint = $oauthConfig['authorization_url'] ?? '/oauth/authorize';
         
         $params = [
             'response_type' => 'code',
-            'client_id' => getenv($oauthConfig['client_id_env']) ?: $oauthConfig['client_id'] ?? '',
+            'client_id' => $oauthConfig['client_id'] ?? getenv('ZURUBANK_CLIENT_ID') ?? '',
             'redirect_uri' => $redirectUri,
             'state' => $state,
-            'scope' => implode(' ', $scope ?: explode(' ', $oauthConfig['scope'] ?? 'read_balance')),
-            'code_challenge_method' => $oauthConfig['code_challenge_method'] ?? 'S256'
+            'scope' => implode(' ', $scope ?: $oauthConfig['scopes'] ?? ['read_balance']),
+            'code_challenge_method' => 'S256'
         ];
         
         $codeVerifier = bin2hex(random_bytes(32));
@@ -474,41 +812,29 @@ class GenericBankClient implements BankAPIInterface
 
     public function exchangeCodeForToken(string $code, string $redirectUri): array
     {
-        $oauthConfig = $this->config['security']['oauth2'] ?? null;
+        $oauthConfig = $this->config['oauth'] ?? null;
         if (!$oauthConfig) {
             throw new \RuntimeException("OAuth2 not configured");
         }
         
         $baseUrl = $this->getBaseUrl();
-        $tokenEndpoint = $oauthConfig['token_endpoint'] ?? '/oauth/token';
+        $tokenEndpoint = $oauthConfig['token_url'] ?? '/oauth/token';
         
         $payload = [
             'grant_type' => 'authorization_code',
             'code' => $code,
             'redirect_uri' => $redirectUri,
-            'client_id' => getenv($oauthConfig['client_id_env']) ?: $oauthConfig['client_id'] ?? '',
-            'client_secret' => getenv($oauthConfig['client_secret_env']) ?: $oauthConfig['client_secret'] ?? ''
+            'client_id' => $oauthConfig['client_id'] ?? getenv('ZURUBANK_CLIENT_ID') ?? '',
+            'client_secret' => $oauthConfig['client_secret'] ?? getenv('ZURUBANK_CLIENT_SECRET') ?? ''
         ];
         
-        $ch = curl_init($baseUrl . $tokenEndpoint);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => http_build_query($payload),
-            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
-            CURLOPT_TIMEOUT => 30
-        ]);
+        $result = $this->sendSourceLinkingRequest('verify', $payload, 'application/x-www-form-urlencoded');
         
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        
-        if ($httpCode !== 200) {
-            error_log("Token exchange failed: HTTP $httpCode, Response: $response");
-            throw new \RuntimeException("Failed to exchange code for token");
+        if (!$result['success']) {
+            throw new \RuntimeException("Failed to exchange code for token: " . ($result['message'] ?? 'Unknown error'));
         }
         
-        $data = json_decode($response, true);
+        $data = $result['data'] ?? [];
         
         $this->cachedAccessToken = $data['access_token'] ?? null;
         $this->tokenExpiresAt = time() + ($data['expires_in'] ?? 3600);
@@ -524,87 +850,34 @@ class GenericBankClient implements BankAPIInterface
 
     public function refreshAccessToken(string $refreshToken): array
     {
-        $oauthConfig = $this->config['security']['oauth2'] ?? null;
+        $oauthConfig = $this->config['oauth'] ?? null;
         if (!$oauthConfig) {
             throw new \RuntimeException("OAuth2 not configured");
         }
         
-        $baseUrl = $this->getBaseUrl();
-        $tokenEndpoint = $oauthConfig['token_endpoint'] ?? '/oauth/token';
+        $result = $this->refreshSourceToken(['refresh_token' => $refreshToken]);
         
-        $payload = [
-            'grant_type' => 'refresh_token',
-            'refresh_token' => $refreshToken,
-            'client_id' => getenv($oauthConfig['client_id_env']) ?: $oauthConfig['client_id'] ?? '',
-            'client_secret' => getenv($oauthConfig['client_secret_env']) ?: $oauthConfig['client_secret'] ?? ''
-        ];
-        
-        $ch = curl_init($baseUrl . $tokenEndpoint);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => http_build_query($payload),
-            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
-            CURLOPT_TIMEOUT => 30
-        ]);
-        
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        
-        if ($httpCode !== 200) {
-            throw new \RuntimeException("Failed to refresh token");
+        if (!$result['success']) {
+            throw new \RuntimeException("Failed to refresh token: " . ($result['message'] ?? 'Unknown error'));
         }
         
-        $data = json_decode($response, true);
-        
-        $this->cachedAccessToken = $data['access_token'] ?? null;
-        $this->tokenExpiresAt = time() + ($data['expires_in'] ?? 3600);
-        
         return [
-            'access_token' => $data['access_token'] ?? '',
-            'expires_in' => $data['expires_in'] ?? 3600
+            'access_token' => $result['access_token'],
+            'expires_in' => 3600
         ];
     }
 
     public function revokeToken(string $token, string $tokenType = 'access_token'): bool
     {
-        $oauthConfig = $this->config['security']['oauth2'] ?? null;
-        if (!$oauthConfig) {
-            return false;
-        }
-        
-        $baseUrl = $this->getBaseUrl();
-        $revokeEndpoint = $oauthConfig['revoke_endpoint'] ?? '/oauth/revoke';
-        
-        $payload = [
-            'token' => $token,
-            'token_type_hint' => $tokenType,
-            'client_id' => getenv($oauthConfig['client_id_env']) ?: $oauthConfig['client_id'] ?? '',
-            'client_secret' => getenv($oauthConfig['client_secret_env']) ?: $oauthConfig['client_secret'] ?? ''
-        ];
-        
-        $ch = curl_init($baseUrl . $revokeEndpoint);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => http_build_query($payload),
-            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
-            CURLOPT_TIMEOUT => 30
-        ]);
-        
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        
-        return $httpCode === 200;
+        $result = $this->revokeSourceToken(['token' => $token, 'token_type' => $tokenType]);
+        return $result['success'] ?? false;
     }
 
     public function getUserInfo(string $accessToken): array
     {
-        $oauthConfig = $this->config['security']['oauth2'] ?? null;
+        $oauthConfig = $this->config['oauth'] ?? null;
         $baseUrl = $this->getBaseUrl();
-        $userinfoEndpoint = $oauthConfig['userinfo_endpoint'] ?? '/oauth/userinfo';
+        $userinfoEndpoint = $oauthConfig['userinfo_url'] ?? '/oauth/userinfo';
         
         $ch = curl_init($baseUrl . $userinfoEndpoint);
         curl_setopt_array($ch, [
@@ -893,10 +1166,8 @@ class GenericBankClient implements BankAPIInterface
         
         curl_close($ch);
         
-        // Check for response truncation
         if ($contentLength > 0 && strlen($response) < $contentLength) {
             error_log("WARNING: Response truncated! Expected {$contentLength} bytes, got " . strlen($response));
-            // Retry with larger buffer
             $ch2 = curl_init($url);
             curl_setopt_array($ch2, [
                 CURLOPT_RETURNTRANSFER => true,
@@ -946,74 +1217,53 @@ class GenericBankClient implements BankAPIInterface
     {
         $payload = $this->addSourceIdentifier($payload);
         
-        // ============================================================
-        // DETECT PIN IN PAYLOAD - CHECK ALL POSSIBLE LOCATIONS
-        // ============================================================
+        // Detect PIN
         $pinFound = false;
         
-        // Check top-level pin fields
         if (isset($payload['pin']) && !empty($payload['pin'])) {
             $pinFound = true;
-            error_log("[GenericBankClient] PIN found at top level 'pin': " . substr($payload['pin'], -4));
-        }
-        // Check wallet_pin
-        elseif (isset($payload['wallet_pin']) && !empty($payload['wallet_pin'])) {
+            error_log("[GenericBankClient] PIN found at top level 'pin'");
+        } elseif (isset($payload['wallet_pin']) && !empty($payload['wallet_pin'])) {
             $payload['pin'] = $payload['wallet_pin'];
             $pinFound = true;
-            error_log("[GenericBankClient] PIN found in 'wallet_pin': " . substr($payload['pin'], -4));
-        }
-        // Check atm_pin
-        elseif (isset($payload['atm_pin']) && !empty($payload['atm_pin'])) {
+            error_log("[GenericBankClient] PIN found in 'wallet_pin'");
+        } elseif (isset($payload['atm_pin']) && !empty($payload['atm_pin'])) {
             $payload['pin'] = $payload['atm_pin'];
             $pinFound = true;
-            error_log("[GenericBankClient] PIN found in 'atm_pin': " . substr($payload['pin'], -4));
-        }
-        // Check asset_fields.wallet_pin (BANK-WALLET)
-        elseif (isset($payload['asset_fields']['wallet_pin']) && !empty($payload['asset_fields']['wallet_pin'])) {
+            error_log("[GenericBankClient] PIN found in 'atm_pin'");
+        } elseif (isset($payload['asset_fields']['wallet_pin']) && !empty($payload['asset_fields']['wallet_pin'])) {
             $payload['pin'] = $payload['asset_fields']['wallet_pin'];
             $pinFound = true;
-            error_log("[GenericBankClient] PIN found in asset_fields.wallet_pin: " . substr($payload['pin'], -4));
-        }
-        // Check asset_fields.pin
-        elseif (isset($payload['asset_fields']['pin']) && !empty($payload['asset_fields']['pin'])) {
+            error_log("[GenericBankClient] PIN found in asset_fields.wallet_pin");
+        } elseif (isset($payload['asset_fields']['pin']) && !empty($payload['asset_fields']['pin'])) {
             $payload['pin'] = $payload['asset_fields']['pin'];
             $pinFound = true;
-            error_log("[GenericBankClient] PIN found in asset_fields.pin: " . substr($payload['pin'], -4));
-        }
-        // Check asset_fields.voucher_pin (CASHOUT-VOUCHER)
-        elseif (isset($payload['asset_fields']['voucher_pin']) && !empty($payload['asset_fields']['voucher_pin'])) {
+            error_log("[GenericBankClient] PIN found in asset_fields.pin");
+        } elseif (isset($payload['asset_fields']['voucher_pin']) && !empty($payload['asset_fields']['voucher_pin'])) {
             $payload['pin'] = $payload['asset_fields']['voucher_pin'];
             $pinFound = true;
-            error_log("[GenericBankClient] PIN found in asset_fields.voucher_pin: " . substr($payload['pin'], -4));
-        }
-        // Check asset_fields.card_pin (CARD)
-        elseif (isset($payload['asset_fields']['card_pin']) && !empty($payload['asset_fields']['card_pin'])) {
+            error_log("[GenericBankClient] PIN found in asset_fields.voucher_pin");
+        } elseif (isset($payload['asset_fields']['card_pin']) && !empty($payload['asset_fields']['card_pin'])) {
             $payload['pin'] = $payload['asset_fields']['card_pin'];
             $pinFound = true;
-            error_log("[GenericBankClient] PIN found in asset_fields.card_pin: " . substr($payload['pin'], -4));
-        }
-        // Check asset_fields.atm_pin (ATM)
-        elseif (isset($payload['asset_fields']['atm_pin']) && !empty($payload['asset_fields']['atm_pin'])) {
+            error_log("[GenericBankClient] PIN found in asset_fields.card_pin");
+        } elseif (isset($payload['asset_fields']['atm_pin']) && !empty($payload['asset_fields']['atm_pin'])) {
             $payload['pin'] = $payload['asset_fields']['atm_pin'];
             $pinFound = true;
-            error_log("[GenericBankClient] PIN found in asset_fields.atm_pin: " . substr($payload['pin'], -4));
-        }
-        // Check source.pin (nested)
-        elseif (isset($payload['source']['pin']) && !empty($payload['source']['pin'])) {
+            error_log("[GenericBankClient] PIN found in asset_fields.atm_pin");
+        } elseif (isset($payload['source']['pin']) && !empty($payload['source']['pin'])) {
             $payload['pin'] = $payload['source']['pin'];
             $pinFound = true;
-            error_log("[GenericBankClient] PIN found in source.pin: " . substr($payload['pin'], -4));
-        }
-        // Check source.wallet_pin
-        elseif (isset($payload['source']['wallet_pin']) && !empty($payload['source']['wallet_pin'])) {
+            error_log("[GenericBankClient] PIN found in source.pin");
+        } elseif (isset($payload['source']['wallet_pin']) && !empty($payload['source']['wallet_pin'])) {
             $payload['pin'] = $payload['source']['wallet_pin'];
             $pinFound = true;
-            error_log("[GenericBankClient] PIN found in source.wallet_pin: " . substr($payload['pin'], -4));
+            error_log("[GenericBankClient] PIN found in source.wallet_pin");
         }
         
         if ($pinFound) {
             $payload['asset_type'] = 'PIN';
-            error_log("[GenericBankClient] Setting asset_type to PIN, pin: " . substr($payload['pin'], -4));
+            error_log("[GenericBankClient] Setting asset_type to PIN");
         } else {
             error_log("[GenericBankClient] No PIN found in payload");
         }
@@ -1078,8 +1328,6 @@ class GenericBankClient implements BankAPIInterface
     protected function buildHeaders(array $payload, ?string $accessToken = null): array
     {
         $headers = ['Content-Type: application/json'];
-        
-        // Add Accept header for large responses
         $headers[] = 'Accept: application/json';
         $headers[] = 'Accept-Encoding: gzip, deflate';
         
@@ -1097,7 +1345,8 @@ class GenericBankClient implements BankAPIInterface
         
         $apiKey = $this->getApiKey();
         if ($apiKey) {
-            $headerName = $this->config['security']['api_key']['header_name'] ?? 'X-API-Key';
+            $authConfig = $this->config['auth'] ?? [];
+            $headerName = $authConfig['header_name'] ?? 'X-API-Key';
             $headers[] = $headerName . ': ' . $apiKey;
         }
         
