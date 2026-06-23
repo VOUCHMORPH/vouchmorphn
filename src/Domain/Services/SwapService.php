@@ -13,7 +13,6 @@ use Domain\Services\ForexService;
 use Domain\Services\CardService;
 use Domain\Services\ContributionCalculator;
 use Domain\Services\MultiSourceFeeCalculator;
-// UNCOMMENTED: MultiSource imports
 use Domain\Services\MultiSource\MultiSourceSwapOrchestrator;
 use Infrastructure\Banks\GenericBankClient;
 use Infrastructure\SMS\SmsNotificationService;
@@ -70,7 +69,7 @@ class SwapService
     private ?SmsNotificationService $smsService = null;
     private ?ContributionCalculator $contributionCalculator = null;
     private ?MultiSourceFeeCalculator $multiSourceFeeCalculator = null;
-    private ?MultiSourceSwapOrchestrator $multiSourceOrchestrator = null; // Changed to proper type
+    private ?MultiSourceSwapOrchestrator $multiSourceOrchestrator = null;
     private $logger = null;
     
     private MessageSigner $messageSigner;
@@ -146,7 +145,6 @@ class SwapService
         // ============================================================
         $countryConfig = \Core\Config\LoadCountry::getConfig();
         
-        // Load participants from country config
         $this->participants = $countryConfig['participants'] ?? [];
         $this->feesConfig = $countryConfig['fees'] ?? [];
         $this->atmNotes = $countryConfig['atm_notes'] ?? [];
@@ -158,26 +156,22 @@ class SwapService
         }
         error_log("[SwapService] Participants loaded: " . count($this->participants));
         
-        // Initialize settlement services
         $this->settlement = new HybridSettlementStrategy($this->swapDB);
 
-        // First, initialize ForexService (it doesn't need FeeService yet)
         $this->forexService = new ForexService(
             $this->swapDB, 
-            $countryConfig,  // Use country config
+            $countryConfig,
             $this->participants
         );
 
-        // Then initialize FeeService WITH ForexService
         $this->feeService = new FeeService(
-            $this->feesConfig,        // Raw fees.json
-            $countryConfig,           // Country config with products at top level
+            $this->feesConfig,
+            $countryConfig,
             $countryConfig['currency'] ?? 'BWP',
             $this->forexService
         );
         $this->feeService->setParticipants($this->participants);
         
-        // Initialize SMS service
         $smsConfig = $this->participants['sms'] ?? [];
         if (!empty($smsConfig)) {
             $this->smsService = new SmsNotificationService($smsConfig);
@@ -194,11 +188,9 @@ class SwapService
         error_log("[SwapService] Initializing Multi-Source components...");
         
         try {
-            // Initialize multi-source components
             $this->contributionCalculator = new ContributionCalculator();
             $this->multiSourceFeeCalculator = new MultiSourceFeeCalculator($this->config, $this->countryCode);
             
-            // Initialize the MultiSourceOrchestrator
             $aggregateSigner = new AggregateSigner(
                 $this->certificateManager ?? new CertificateManager('VOUCHMORPH'),
                 $this->signatureVerifier
@@ -220,11 +212,291 @@ class SwapService
         } catch (Exception $e) {
             error_log("[SwapService] ERROR initializing Multi-Source: " . $e->getMessage());
             $this->logger->error("Multi-Source initialization failed", ['error' => $e->getMessage()]);
-            // Don't fail the whole service - multi-source just won't work
             $this->multiSourceOrchestrator = null;
         }
         
         $this->logger->info("Signed SwapService initialized (multi-source " . ($this->multiSourceOrchestrator ? 'ENABLED' : 'DISABLED') . ")", ['country' => $country]);
+    }
+
+    // ============================================================================
+    // SOURCE LINKING METHODS (Hooking)
+    // ============================================================================
+
+    /**
+     * Initialize source linking - Step 1
+     * - For ZURUBANK: Returns redirect URL
+     * - For SACCUSSALIS: Sends OTP
+     */
+    public function initiateSourceLink(array $params): array
+    {
+        error_log("[SwapService] initiateSourceLink called");
+        
+        $institution = $params['institution'] ?? null;
+        if (!$institution) {
+            return ['success' => false, 'message' => 'Institution required'];
+        }
+        
+        $participant = $this->getParticipant($institution);
+        $bankClient = new GenericBankClient($participant);
+        
+        return $bankClient->initiateSourceLink($params);
+    }
+
+    /**
+     * Verify source linking - Step 2
+     * - For ZURUBANK: Exchange code for token
+     * - For SACCUSSALIS: Verify OTP
+     */
+    public function verifySourceLink(array $params): array
+    {
+        error_log("[SwapService] verifySourceLink called");
+        
+        $institution = $params['institution'] ?? null;
+        if (!$institution) {
+            return ['success' => false, 'message' => 'Institution required'];
+        }
+        
+        $participant = $this->getParticipant($institution);
+        $bankClient = new GenericBankClient($participant);
+        
+        return $bankClient->verifySourceLink($params);
+    }
+
+    /**
+     * Get all hooked sources for a user
+     */
+    public function getHookedSources(int $userId): array
+    {
+        error_log("[SwapService] getHookedSources called for user: {$userId}");
+        
+        $sql = "SELECT * FROM user_authorized_sources WHERE user_id = :user_id AND status = 'active'";
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([':user_id' => $userId]);
+        $sources = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Check token expiry and refresh if needed
+        foreach ($sources as &$source) {
+            if ($this->isTokenExpired($source['token_expires_at'])) {
+                try {
+                    $refreshed = $this->refreshHookedSource($userId, $source['source_reference']);
+                    $source['access_token'] = $refreshed['access_token'];
+                    $source['token_expires_at'] = $refreshed['expires_at'];
+                } catch (Exception $e) {
+                    error_log("[SwapService] Failed to refresh token for source: " . $source['source_reference']);
+                    $source['status'] = 'expired';
+                }
+            }
+        }
+        
+        return $sources;
+    }
+
+    /**
+     * Refresh a hooked source token
+     */
+    public function refreshHookedSource(int $userId, string $sourceReference): array
+    {
+        error_log("[SwapService] refreshHookedSource: {$sourceReference}");
+        
+        $sql = "SELECT * FROM user_authorized_sources WHERE source_reference = :source_ref AND user_id = :user_id";
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([':source_ref' => $sourceReference, ':user_id' => $userId]);
+        $source = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$source) {
+            throw new RuntimeException("Source not found");
+        }
+        
+        $participant = $this->getParticipant($source['institution']);
+        $bankClient = new GenericBankClient($participant);
+        
+        $result = $bankClient->refreshSourceToken(['refresh_token' => $source['refresh_token']]);
+        
+        if (!$result['success']) {
+            throw new RuntimeException("Failed to refresh token: " . ($result['message'] ?? 'Unknown error'));
+        }
+        
+        $sql = "UPDATE user_authorized_sources SET access_token = :access_token, token_expires_at = :expires_at WHERE source_reference = :source_ref";
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':access_token' => $result['access_token'],
+            ':expires_at' => $result['expires_at'],
+            ':source_ref' => $sourceReference
+        ]);
+        
+        return [
+            'success' => true,
+            'access_token' => $result['access_token'],
+            'expires_at' => $result['expires_at']
+        ];
+    }
+
+    /**
+     * Revoke a hooked source
+     */
+    public function revokeHookedSource(int $userId, string $sourceReference): array
+    {
+        error_log("[SwapService] revokeHookedSource: {$sourceReference}");
+        
+        $sql = "SELECT * FROM user_authorized_sources WHERE source_reference = :source_ref AND user_id = :user_id";
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([':source_ref' => $sourceReference, ':user_id' => $userId]);
+        $source = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$source) {
+            throw new RuntimeException("Source not found");
+        }
+        
+        $participant = $this->getParticipant($source['institution']);
+        $bankClient = new GenericBankClient($participant);
+        
+        $bankClient->revokeSourceToken(['token' => $source['access_token']]);
+        
+        $sql = "UPDATE user_authorized_sources SET status = 'revoked' WHERE source_reference = :source_ref";
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([':source_ref' => $sourceReference]);
+        
+        return ['success' => true, 'message' => 'Source revoked successfully'];
+    }
+
+    /**
+     * Check if token is expired
+     */
+    private function isTokenExpired(?string $expiresAt): bool
+    {
+        if (!$expiresAt) return true;
+        return strtotime($expiresAt) < time();
+    }
+
+    // ============================================================================
+    // EXECUTE SWAP WITH HOOKED SOURCE
+    // ============================================================================
+
+    /**
+     * Execute a swap using a hooked source (no PIN required)
+     */
+    public function executeSwapWithHookedSource(array $payload): array
+    {
+        error_log("[SwapService] executeSwapWithHookedSource called");
+        
+        $sourceReference = $payload['source_reference'] ?? null;
+        if (!$sourceReference) {
+            throw new RuntimeException("source_reference required");
+        }
+        
+        $userId = $payload['user_id'] ?? null;
+        if (!$userId) {
+            throw new RuntimeException("user_id required");
+        }
+        
+        // Get the hooked source
+        $sql = "SELECT * FROM user_authorized_sources WHERE source_reference = :source_ref AND user_id = :user_id AND status = 'active'";
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([':source_ref' => $sourceReference, ':user_id' => $userId]);
+        $source = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$source) {
+            throw new RuntimeException("Hooked source not found or inactive");
+        }
+        
+        // Check token expiry
+        if ($this->isTokenExpired($source['token_expires_at'])) {
+            $refreshed = $this->refreshHookedSource($userId, $sourceReference);
+            $source['access_token'] = $refreshed['access_token'];
+            $source['token_expires_at'] = $refreshed['expires_at'];
+        }
+        
+        // Build payload with source token
+        $swapPayload = $payload;
+        $swapPayload['from_institution'] = $source['institution'];
+        $swapPayload['asset_type'] = $source['asset_type'];
+        $swapPayload['source_identifier'] = $source['identifier'];
+        $swapPayload['access_token'] = $source['access_token'];
+        $swapPayload['_is_hooked'] = true;
+        
+        // Update last used
+        $sql = "UPDATE user_authorized_sources SET last_used_at = NOW() WHERE source_reference = :source_ref";
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([':source_ref' => $sourceReference]);
+        
+        // Execute the swap
+        return $this->executeAtomicSwap($swapPayload);
+    }
+
+    // ============================================================================
+    // MULTI-SOURCE WITH HOOKED SOURCES
+    // ============================================================================
+
+    /**
+     * Execute multi-source swap with hooked sources
+     */
+    public function executeMultiSourceWithHookedSources(array $payload): array
+    {
+        error_log("[SwapService] executeMultiSourceWithHookedSources called");
+        
+        $userId = $payload['user_id'] ?? null;
+        if (!$userId) {
+            throw new RuntimeException("user_id required");
+        }
+        
+        $sources = $payload['sources'] ?? [];
+        if (empty($sources) || count($sources) < 2) {
+            throw new RuntimeException("At least 2 sources required for multi-source swap");
+        }
+        
+        $resolvedSources = [];
+        $totalAmount = 0;
+        
+        foreach ($sources as $source) {
+            $sourceRef = $source['source_reference'] ?? null;
+            $amount = (float)($source['amount'] ?? 0);
+            
+            if (!$sourceRef) {
+                throw new RuntimeException("source_reference required for each source");
+            }
+            
+            if ($amount <= 0) {
+                throw new RuntimeException("Amount must be greater than 0 for each source");
+            }
+            
+            // Get hooked source
+            $sql = "SELECT * FROM user_authorized_sources WHERE source_reference = :source_ref AND user_id = :user_id AND status = 'active'";
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute([':source_ref' => $sourceRef, ':user_id' => $userId]);
+            $hookedSource = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$hookedSource) {
+                throw new RuntimeException("Hooked source not found: {$sourceRef}");
+            }
+            
+            // Check token expiry
+            if ($this->isTokenExpired($hookedSource['token_expires_at'])) {
+                $refreshed = $this->refreshHookedSource($userId, $sourceRef);
+                $hookedSource['access_token'] = $refreshed['access_token'];
+                $hookedSource['token_expires_at'] = $refreshed['expires_at'];
+            }
+            
+            $resolvedSources[] = [
+                'institution' => $hookedSource['institution'],
+                'asset_type' => $hookedSource['asset_type'],
+                'identifier' => $hookedSource['identifier'],
+                'amount' => $amount,
+                'access_token' => $hookedSource['access_token'],
+                'source_reference' => $sourceRef,
+                'currency' => $hookedSource['currency'] ?? 'BWP',
+                'is_hooked' => true
+            ];
+            
+            $totalAmount += $amount;
+        }
+        
+        // Build payload for multi-source swap
+        $multiPayload = $payload;
+        $multiPayload['sources'] = $resolvedSources;
+        $multiPayload['amount'] = $totalAmount;
+        $multiPayload['_is_multi_hooked'] = true;
+        
+        return $this->executeAtomicSwap($multiPayload);
     }
 
     private function loadAtmNotes(string $country): void
@@ -273,47 +545,28 @@ class SwapService
         ];
     }
 
-    /**
-     * Calculate fees with full mathematical model breakdown including forex
-     * 
-     * Formulas:
-     * - Amount_1 = Original request amount (source currency)
-     * - F1 = Total customer upfront fee (source currency)
-     * - Amount_2 = Amount_1 - F1 (net after fees in source currency)
-     * - Exchange_Rate = rate from source_currency to destination_currency
-     * - Amount_3 = Amount_2 × Exchange_Rate (converted to destination currency)
-     * - M = Banknote multiplier (from destination ATM notes)
-     * - Amount_4 = M × floor(Amount_3 / M) (dispensable amount in destination currency)
-     * - Remainder_1 = Amount_3 - Amount_4 (stays at source in destination currency equivalent)
-     */
     private function calculateFeesWithDetails(string $feeType, float $amount, array $payload): array
     {
         $this->feeCalculationDetails = [];
         
-        // Get source and destination currencies from payload
         $sourceCurrency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
         $destinationCurrency = $payload['destination_currency'] ?? $sourceCurrency;
         
-        // Get fee result from FeeService (includes forex if currencies differ)
         $feeResult = $this->feeService->calculateFees($feeType, $amount, $payload);
         
-        $totalFee = $feeResult['total_fee'] ?? 0;  // F1 in source currency
-        $netAmountSourceCurrency = $feeResult['net_amount_source_currency'] ?? ($amount - $totalFee);  // Amount_2
+        $totalFee = $feeResult['total_fee'] ?? 0;
+        $netAmountSourceCurrency = $feeResult['net_amount_source_currency'] ?? ($amount - $totalFee);
         
-        // Get forex information
         $forexApplied = $feeResult['forex']['applied'] ?? false;
         $exchangeRate = $feeResult['forex']['rate'] ?? 1.0;
-        $netAmountDestCurrency = $feeResult['net_amount_destination_currency'] ?? $netAmountSourceCurrency;  // Amount_3
+        $netAmountDestCurrency = $feeResult['net_amount_destination_currency'] ?? $netAmountSourceCurrency;
         
-        // Get ATM denominations for DESTINATION currency
         $denominations = $this->atmNotes[$destinationCurrency] ?? [200, 100, 50, 20, 10];
-        $multiplier = $denominations[0] ?? 100;  // M
+        $multiplier = $denominations[0] ?? 100;
         
-        // Calculate dispensable amount in DESTINATION currency (Amount_4)
         $dispensableAmount = $multiplier * floor($netAmountDestCurrency / $multiplier);
-        $remainderBalance = $netAmountDestCurrency - $dispensableAmount;  // Remainder_1
+        $remainderBalance = $netAmountDestCurrency - $dispensableAmount;
         
-        // If amount is too small for ATM, try the smallest denomination
         if ($dispensableAmount <= 0 && $netAmountDestCurrency > 0) {
             $smallestDenom = min($denominations);
             $dispensableAmount = $smallestDenom * floor($netAmountDestCurrency / $smallestDenom);
@@ -324,18 +577,18 @@ class SwapService
         
         $this->feeCalculationDetails = [
             'fee_type' => $feeType,
-            'original_amount' => $amount,                       // Amount_1
+            'original_amount' => $amount,
             'original_currency' => $sourceCurrency,
-            'total_fee' => $totalFee,                           // F1
+            'total_fee' => $totalFee,
             'total_fee_currency' => $sourceCurrency,
-            'net_amount_source_currency' => $netAmountSourceCurrency,  // Amount_2
+            'net_amount_source_currency' => $netAmountSourceCurrency,
             'forex_applied' => $forexApplied,
             'exchange_rate' => $exchangeRate,
-            'net_amount_destination_currency' => $netAmountDestCurrency,  // Amount_3
+            'net_amount_destination_currency' => $netAmountDestCurrency,
             'destination_currency' => $destinationCurrency,
-            'multiplier' => $multiplier,                        // M
-            'dispensable_amount' => $dispensableAmount,         // Amount_4
-            'remainder_balance' => $remainderBalance,           // Remainder_1
+            'multiplier' => $multiplier,
+            'dispensable_amount' => $dispensableAmount,
+            'remainder_balance' => $remainderBalance,
             'denominations' => $denominations,
             'breakdown' => $feeResult['breakdown'] ?? [],
             'revenue_split' => $feeResult['distribution'] ?? [],
@@ -352,7 +605,6 @@ class SwapService
             ]
         ];
         
-        // Log the complete calculation
         error_log("[SwapService] Mathematical calculation with forex:");
         error_log("  Amount_1: {$amount} {$sourceCurrency}");
         error_log("  F1 (fee): {$totalFee} {$sourceCurrency}");
@@ -368,7 +620,7 @@ class SwapService
         return [
             'total_fee' => $totalFee,
             'total_fee_currency' => $sourceCurrency,
-            'net_amount' => $netAmountDestCurrency,  // Amount to send in destination currency
+            'net_amount' => $netAmountDestCurrency,
             'net_amount_source_currency' => $netAmountSourceCurrency,
             'net_amount_destination_currency' => $netAmountDestCurrency,
             'dispensable_amount' => $dispensableAmount,
@@ -387,7 +639,6 @@ class SwapService
     {
         $deliveryMethod = strtoupper($deliveryMethod);
         
-        // These delivery methods have NO limitations - full amount is delivered
         if (in_array($deliveryMethod, ['DEPOSIT', 'VOUCHER', 'AGENT', 'WALLET', 'CARD'])) {
             return [
                 'deliverable_amount' => $amount,
@@ -431,6 +682,21 @@ class SwapService
         $sourceIdentifier = null;
         $sourceIdentifierType = null;
         
+        // Check for hooked source first
+        if (!empty($payload['_is_hooked']) && !empty($payload['source_reference'])) {
+            // Source identifier already resolved, use it
+            $sourceIdentifier = $payload['source_identifier'] ?? null;
+            $sourceIdentifierType = $payload['source_identifier_type'] ?? 'auto';
+            if ($sourceIdentifier) {
+                return [
+                    'identifier' => $sourceIdentifier,
+                    'type' => $sourceIdentifierType,
+                    'has_value' => true,
+                    'is_hooked' => true
+                ];
+            }
+        }
+        
         if (!empty($payload['source_identifier'])) {
             $sourceIdentifier = $payload['source_identifier'];
             $sourceIdentifierType = $payload['source_identifier_type'] ?? 'auto';
@@ -463,7 +729,8 @@ class SwapService
         return [
             'identifier' => $sourceIdentifier,
             'type' => $sourceIdentifierType,
-            'has_value' => !empty($sourceIdentifier)
+            'has_value' => !empty($sourceIdentifier),
+            'is_hooked' => !empty($payload['_is_hooked'])
         ];
     }
 
@@ -512,7 +779,6 @@ class SwapService
 
     public function executeAtomicSwap(array $payload): array
     {
-        // Log incoming payload for debugging
         error_log("[SwapService] executeAtomicSwap called");
         error_log("[SwapService] Payload keys: " . implode(', ', array_keys($payload)));
         error_log("[SwapService] swap_type: " . ($payload['swap_type'] ?? 'NOT SET'));
@@ -531,16 +797,17 @@ class SwapService
         $destInst = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
         $swapType = $payload['swap_type'] ?? 'STANDARD';
         
-        // Check if this is a multi-source swap
         $isMultiSource = isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 1;
         
         if ($isMultiSource) {
             $swapType = 'MULTI_SOURCE';
             error_log("[SwapService] MULTI-SOURCE DETECTED: " . count($payload['sources']) . " sources");
             
-            // Log each source for debugging
             foreach ($payload['sources'] as $idx => $source) {
-                error_log("[SwapService] Source " . ($idx + 1) . ": " . ($source['institution'] ?? 'unknown') . " - " . ($source['amount'] ?? 0) . " " . ($source['currency'] ?? 'BWP'));
+                $isHooked = isset($source['is_hooked']) && $source['is_hooked'] === true;
+                error_log("[SwapService] Source " . ($idx + 1) . ": " . ($source['institution'] ?? 'unknown') . 
+                    " - " . ($source['amount'] ?? 0) . " " . ($source['currency'] ?? 'BWP') .
+                    ($isHooked ? " [HOOKED]" : ""));
             }
         }
         
@@ -643,6 +910,12 @@ class SwapService
         $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
         $deliveryMethod = strtoupper($payload['delivery_method'] ?? 'ATM');
         
+        // Check if using hooked source
+        $isHooked = isset($payload['_is_hooked']) && $payload['_is_hooked'] === true;
+        if ($isHooked) {
+            error_log("[SwapService] Using HOOKED source: " . ($payload['source_reference'] ?? 'unknown'));
+        }
+        
         if (isset($payload['_cashout_validation'])) {
             $this->feeCalculationDetails['cashout_validation'] = $payload['_cashout_validation'];
         }
@@ -650,7 +923,7 @@ class SwapService
             $this->feeCalculationDetails['note_breakdown'] = $payload['note_breakdown'];
         }
         
-        // STEP 1: VERIFY ASSET - MUST succeed
+        // STEP 1: VERIFY ASSET
         error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
         $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
             return $this->verifyAssetSigned($payload, $sourceInstitution);
@@ -668,10 +941,11 @@ class SwapService
             'payload' => $verificationResult['original_payload'],
             'signature' => $verificationResult['signature'],
             'source' => $sourceInstitution,
-            'timestamp' => $verificationResult['timestamp']
+            'timestamp' => $verificationResult['timestamp'],
+            'is_hooked' => $isHooked
         ];
         
-        // STEP 2: PLACE HOLD - MUST succeed
+        // STEP 2: PLACE HOLD
         error_log("[SwapService] STEP 2: Placing hold on asset at source: {$sourceInstitution}");
         $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
             return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
@@ -689,12 +963,13 @@ class SwapService
             'payload' => $holdResult['original_payload'],
             'signature' => $holdResult['signature'],
             'source' => $sourceInstitution,
-            'timestamp' => $holdResult['timestamp']
+            'timestamp' => $holdResult['timestamp'],
+            'is_hooked' => $isHooked
         ];
         
         $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
         
-        // STEP 3: CALCULATE FEES USING MATHEMATICAL MODEL
+        // STEP 3: CALCULATE FEES
         error_log("[SwapService] STEP 3: Calculating fees with mathematical model");
         $feeBreakdown = $this->calculateFeesWithDetails('CASHOUT', $amount, $payload);
         $amountToSend = $feeBreakdown['dispensable_amount'];
@@ -720,8 +995,6 @@ class SwapService
 
         $lowestDenomination = min($notes);
 
-        // If there is some money left, but ATM cannot dispense it,
-        // switch to AGENT cashout.
         if ($amountToSend > 0 && $amountToSend < $lowestDenomination) {
             $deliveryMethod = 'AGENT';
             $amountToSend = $netAmount;
@@ -732,7 +1005,6 @@ class SwapService
             );
         }
 
-        // If there is nothing left after deductions, fail.
         if ($amountToSend <= 0) {
             throw new RuntimeException(
                 "Amount after fees ({$netAmount} {$currency}) is too small to deliver."
@@ -767,7 +1039,6 @@ class SwapService
             $generateResult['expires_at']
         );
         
-        // STEP 6: SEND SMS with code (optional)
         if ($beneficiaryPhone && $this->smsService && isset($generateResult['atm_pin'])) {
             try {
                 $this->smsService->sendCashoutCode(
@@ -781,7 +1052,6 @@ class SwapService
             }
         }
         
-        // STEP 7: UPDATE HOLD TO PENDING_CASHOUT (NOT DEBITED YET!)
         $this->updateHoldStatus($this->currentHoldId, 'PENDING_CASHOUT');
         
         $result = [
@@ -799,7 +1069,8 @@ class SwapService
             'code_expiry' => $generateResult['expires_at'],
             'message' => 'Cashout code generated. User must cash out at ATM/Agent to complete the swap.',
             'fee_calculation_details' => $this->feeCalculationDetails,
-            'signature_chain' => $this->signedPayloads
+            'signature_chain' => $this->signedPayloads,
+            'is_hooked' => $isHooked
         ];
         
         error_log("[SwapService] ===== executeSignedCashout SUCCESS (pending cashout) =====");
@@ -807,8 +1078,6 @@ class SwapService
         return $result;
     }
 
-    /**
-     * Store cashout authorization in database     */
     private function storeCashoutAuthorization(
         string $swapReference,
         ?string $clientPhone,
@@ -886,9 +1155,6 @@ class SwapService
         }
     }
 
-    /**
-     * Get cashout authorization by swap reference or auth ID
-     */
     private function getCashoutAuthorization(?string $swapRef, ?int $authId): ?array
     {
         $sql = "
@@ -912,9 +1178,6 @@ class SwapService
         }
     }
 
-    /**
-     * Update cashout authorization status
-     */
     private function updateCashoutAuthorizationStatus(int $authId, string $status, ?string $cashoutPoint = null): void
     {
         $sql = "
@@ -939,9 +1202,6 @@ class SwapService
         }
     }
 
-    /**
-     * Verify cashout token - Step 2 of cashout flow
-     */
     public function verifyCashout(array $payload): array
     {
         error_log("[SwapService] ===== verifyCashout START =====");
@@ -956,7 +1216,6 @@ class SwapService
             throw new RuntimeException("Code, swap_code, or auth_id required");
         }
         
-        // Try to find in local database
         $authorization = null;
         if ($authId) {
             $authorization = $this->getCashoutAuthorization(null, $authId);
@@ -977,7 +1236,6 @@ class SwapService
             ];
         }
         
-        // Fallback to destination institution verification
         $participant = $this->getParticipant($destinationInstitution);
         $bankClient = new GenericBankClient($participant, $payload);
         
@@ -1004,9 +1262,6 @@ class SwapService
         ];
     }
 
-    /**
-     * Confirm cashout - Step 3 of cashout flow
-     */
     public function confirmCashout(array $payload): array
     {
         error_log("[SwapService] ===== confirmCashout START =====");
@@ -1031,7 +1286,6 @@ class SwapService
         $amountToSend = (float)$authorization['amount'];
         $feeAmount = (float)$authorization['fee_amount'];
         
-        // STEP 1: Confirm cashout with destination institution
         $participant = $this->getParticipant($destinationInstitution);
         $bankClient = new GenericBankClient($participant, $payload);
         
@@ -1056,7 +1310,6 @@ class SwapService
             throw new RuntimeException("Cashout not confirmed by destination institution");
         }
         
-        // STEP 2: DEBIT SOURCE (ONLY NOW!)
         error_log("[SwapService] Cashout confirmed, debiting source: {$sourceInstitution} for {$amountToSend}");
         
         $debitPayload = [
@@ -1072,13 +1325,9 @@ class SwapService
             throw new RuntimeException("Debit failed: " . ($debitResult['message'] ?? 'Unknown error'));
         }
         
-        // STEP 3: UPDATE HOLD STATUS
         $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
-        
-        // STEP 4: UPDATE CASHOUT AUTHORIZATION STATUS
         $this->updateCashoutAuthorizationStatus($authorization['auth_id'], 'COMPLETED', $cashoutPoint);
         
-        // STEP 5: RECORD SETTLEMENT
         $settlementResult = $this->settlement->updateNetPosition(
             $swapReference,
             $sourceInstitution,
@@ -1088,7 +1337,6 @@ class SwapService
             $this->config['currency'] ?? 'BWP'
         );
         
-        // STEP 6: INVOICE FEES
         $this->settlement->invoiceFee(
             $swapReference,
             $sourceInstitution,
@@ -1123,7 +1371,11 @@ class SwapService
         $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
         $destinationIdentifier = $this->extractDestinationIdentifier($payload);
         
-        // STEP 1: VERIFY ASSET AT SOURCE
+        $isHooked = isset($payload['_is_hooked']) && $payload['_is_hooked'] === true;
+        if ($isHooked) {
+            error_log("[SwapService] Using HOOKED source for deposit");
+        }
+        
         error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
         $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
             return $this->verifyAssetSigned($payload, $sourceInstitution);
@@ -1137,10 +1389,10 @@ class SwapService
             'payload' => $verificationResult['original_payload'],
             'signature' => $verificationResult['signature'],
             'source' => $sourceInstitution,
-            'timestamp' => $verificationResult['timestamp']
+            'timestamp' => $verificationResult['timestamp'],
+            'is_hooked' => $isHooked
         ];
         
-        // STEP 2: VERIFY DESTINATION ACCOUNT
         error_log("[SwapService] STEP 2: Verifying destination account at: {$destinationInstitution}");
         
         if (empty($destinationIdentifier['identifier'])) {
@@ -1155,12 +1407,10 @@ class SwapService
             throw new RuntimeException("Destination account verification failed: " . ($accountVerification['message'] ?? 'Account not found'));
         }
         
-        // STEP 3: CALCULATE FEES
         error_log("[SwapService] STEP 3: Calculating fees");
         $feeBreakdown = $this->calculateFeesWithDetails('DEPOSIT', $amount, $payload);
         $netAmount = $feeBreakdown['net_amount'] ?? $amount;
         
-        // STEP 4: PLACE HOLD ON SOURCE
         error_log("[SwapService] STEP 4: Placing hold on source: {$sourceInstitution}");
         $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
             return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
@@ -1174,12 +1424,12 @@ class SwapService
             'payload' => $holdResult['original_payload'],
             'signature' => $holdResult['signature'],
             'source' => $sourceInstitution,
-            'timestamp' => $holdResult['timestamp']
+            'timestamp' => $holdResult['timestamp'],
+            'is_hooked' => $isHooked
         ];
         
         $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
         
-        // STEP 5: PROCESS DEPOSIT AT DESTINATION
         error_log("[SwapService] STEP 5: Processing deposit at DESTINATION: {$destinationInstitution} for amount: {$netAmount}");
         
         $depositResult = $this->executeStep('PROCESS_DEPOSIT_WITH_PROOF', function() use ($payload, $destinationInstitution, $netAmount, $accountVerification) {
@@ -1193,7 +1443,6 @@ class SwapService
             throw new RuntimeException("Deposit failed: " . ($depositResult['message'] ?? 'Unknown error'));
         }
         
-        // STEP 6: DEBIT SOURCE
         error_log("[SwapService] STEP 6: Debiting source {$sourceInstitution} for amount: {$amount}");
         $debitResult = $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution) {
             return $this->debitSource($payload, $sourceInstitution);
@@ -1203,10 +1452,8 @@ class SwapService
             throw new RuntimeException("Debit failed: " . ($debitResult['message'] ?? 'Unknown error'));
         }
         
-        // STEP 7: UPDATE HOLD STATUS
         $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
         
-        // STEP 8: RECORD SETTLEMENT
         $settlementResult = $this->settlement->updateNetPosition(
             $this->currentSwapRef,
             $sourceInstitution,
@@ -1216,7 +1463,6 @@ class SwapService
             $this->config['currency'] ?? 'BWP'
         );
         
-        // STEP 9: INVOICE FEES
         $this->settlement->invoiceFee(
             $this->currentSwapRef,
             $sourceInstitution,
@@ -1236,7 +1482,8 @@ class SwapService
             'deposit_reference' => $depositResult['transaction_reference'] ?? null,
             'destination_account' => $destinationIdentifier['identifier'],
             'settlement' => $settlementResult,
-            'signature_chain' => $this->signedPayloads
+            'signature_chain' => $this->signedPayloads,
+            'is_hooked' => $isHooked
         ];
     }
 
@@ -1320,12 +1567,26 @@ class SwapService
     // SIGNED INSTITUTION COMMUNICATION METHODS
     // ============================================================
 
-    /**
-     * Forward PIN from original payload to verification payload
-     */
     private function forwardPin(array $originalPayload, array &$targetPayload): void
     {
-        // Check for wallet_pin at top level
+        // If using hooked source, we might not need PIN
+        $isHooked = isset($originalPayload['_is_hooked']) && $originalPayload['_is_hooked'] === true;
+        
+        if ($isHooked) {
+            error_log("[SwapService] Using hooked source - skipping PIN check");
+            // Hooked sources use access_token, not PIN
+            if (!empty($originalPayload['access_token'])) {
+                $targetPayload['access_token'] = $originalPayload['access_token'];
+                error_log("[SwapService] Forwarded access_token from hooked source");
+            }
+            if (!empty($originalPayload['source_reference'])) {
+                $targetPayload['source_reference'] = $originalPayload['source_reference'];
+                error_log("[SwapService] Forwarded source_reference from hooked source");
+            }
+            return;
+        }
+        
+        // Regular PIN-based flow
         if (!empty($originalPayload['wallet_pin'])) {
             $targetPayload['wallet_pin'] = $originalPayload['wallet_pin'];
             $targetPayload['pin'] = $originalPayload['wallet_pin'];
@@ -1336,7 +1597,6 @@ class SwapService
             error_log("[SwapService] Forwarded pin to payload");
         }
         
-        // Also forward asset_fields if present
         if (!empty($originalPayload['asset_fields']) && is_array($originalPayload['asset_fields'])) {
             $targetPayload['asset_fields'] = $originalPayload['asset_fields'];
             error_log("[SwapService] Forwarded asset_fields to payload");
@@ -1364,9 +1624,6 @@ class SwapService
             'requester' => 'VOUCHMORPH'
         ];
         
-        // ============================================================
-        // CRITICAL FIX: Forward PIN from original payload
-        // ============================================================
         $this->forwardPin($payload, $verifyPayload);
         
         if ($sourceId['has_value']) {
@@ -1374,7 +1631,6 @@ class SwapService
             $verifyPayload['source_identifier_type'] = $sourceId['type'];
         }
         
-        // Log what we're sending
         error_log("[SwapService] verifyAssetSigned payload has PIN: " . 
             (isset($verifyPayload['wallet_pin']) || isset($verifyPayload['pin']) ? 'YES' : 'NO'));
         
@@ -1423,9 +1679,6 @@ class SwapService
             'timestamp' => $timestamp
         ];
         
-        // ============================================================
-        // CRITICAL FIX: Forward PIN from original payload
-        // ============================================================
         $this->forwardPin($payload, $holdPayload);
         
         if ($sourceId['has_value']) {
@@ -1437,7 +1690,6 @@ class SwapService
             $holdPayload['asset_id'] = $verificationResult['asset_id'];
         }
         
-        // Log what we're sending
         error_log("[SwapService] placeHoldSigned payload has PIN: " . 
             (isset($holdPayload['wallet_pin']) || isset($holdPayload['pin']) ? 'YES' : 'NO'));
         
@@ -1480,7 +1732,6 @@ class SwapService
             'source_verification' => $this->signedPayloads['verification'] ?? null
         ];
         
-        // Forward PIN for deposit as well
         $this->forwardPin($payload, $depositPayload);
         
         if ($destId['has_value']) {
@@ -1515,7 +1766,6 @@ class SwapService
             'reason' => $payload['reason'] ?? 'Swap completed successfully'
         ];
         
-        // Forward PIN for debit as well
         $this->forwardPin($payload, $debitPayload);
         
         $result = $bankClient->debitFunds($debitPayload);
@@ -1587,7 +1837,6 @@ class SwapService
             'source_hold' => $this->signedPayloads['hold'] ?? null
         ];
         
-        // Forward PIN for transfer as well
         $this->forwardPin($payload, $transferPayload);
         
         if ($destId['has_value']) {
@@ -1604,20 +1853,15 @@ class SwapService
         return ['success' => true];
     }
 
-    /**
-     * Execute multi-source swap - NOW ENABLED
-     */
     private function executeMultiSourceSwap(array $payload): array
     {
         error_log("[SwapService] ===== executeMultiSourceSwap START =====");
         error_log("[SwapService] Multi-Source payload has " . count($payload['sources'] ?? []) . " sources");
         
-        // Check if multi-source orchestrator is available
         if ($this->multiSourceOrchestrator === null) {
             error_log("[SwapService] Multi-Source orchestrator not available - falling back to standard swap");
             $this->logger->warning("Multi-source swap requested but orchestrator not initialized - falling back to standard swap");
             
-            // For now, just use the first source if available
             if (isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0) {
                 $firstSource = $payload['sources'][0];
                 $payload['from_institution'] = $firstSource['institution'] ?? $payload['from_institution'];
@@ -1637,7 +1881,6 @@ class SwapService
             error_log("[SwapService] MultiSourceOrchestrator threw exception: " . $e->getMessage());
             $this->logger->error("Multi-source swap failed", ['error' => $e->getMessage()]);
             
-            // Fallback to first source
             if (isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0) {
                 $firstSource = $payload['sources'][0];
                 $payload['from_institution'] = $firstSource['institution'] ?? $payload['from_institution'];
@@ -1672,7 +1915,8 @@ class SwapService
             'source_identifier_type' => $sourceId['type'],
             'source_institution' => $institution,
             'asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
-            'original_payload' => $payload
+            'original_payload' => $payload,
+            'is_hooked' => $sourceId['is_hooked'] ?? false
         ];
         
         $metadata = [
@@ -1856,8 +2100,6 @@ class SwapService
 
     private function loadConfiguration(string $country): void
     {
-        // This method is now deprecated - we use LoadCountry::getConfig() in constructor
-        // Keeping for backward compatibility but no longer used
         $this->logger->warning("loadConfiguration() called but deprecated - config loaded from LoadCountry");
     }
 
@@ -1934,9 +2176,6 @@ class SwapService
         return $this->validateCashoutAmount($amount, $currency);
     }
 
-    /**
-     * Get available balance for a source
-     */
     public function getSourceAvailableBalance(array $source): float
     {
         try {
@@ -1960,9 +2199,6 @@ class SwapService
         }
     }
 
-    /**
-     * Get the status of a multi-source pool - NOW ENABLED
-     */
     public function getMultiSourceStatus(string $poolId): array
     {
         if ($this->multiSourceOrchestrator === null) {
@@ -1982,9 +2218,6 @@ class SwapService
         }
     }
 
-    /**
-     * Cancel a multi-source pool - NOW ENABLED
-     */
     public function cancelMultiSourcePool(string $poolId, string $reason): array
     {
         if ($this->multiSourceOrchestrator === null) {
