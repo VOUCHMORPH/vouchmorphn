@@ -1,5 +1,7 @@
 <?php
 // public/user/dashboard.php - FULLY DYNAMIC WITH MULTI-SOURCE SUPPORT
+// Uses ONLY identifiers that the user has added
+// Requires OTP verification when adding new identifiers
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
@@ -15,8 +17,67 @@ if (!SessionManager::isLoggedIn()) {
 }
 
 $user = SessionManager::getUser();
-$loggedPhone = htmlspecialchars($user['phone'] ?? '');
 $userId = $user['user_id'] ?? null;
+
+// Get ALL identifiers from session (only those the user has)
+$userIdentifiers = [];
+$userIdentifiers['phone'] = $user['phone'] ?? null;
+$userIdentifiers['phone2'] = $user['phone2'] ?? null;
+$userIdentifiers['phone3'] = $user['phone3'] ?? null;
+$userIdentifiers['email'] = $user['email'] ?? null;
+$userIdentifiers['national_id'] = $user['national_id'] ?? null;
+$userIdentifiers['drivers_license'] = $user['drivers_license'] ?? null;
+$userIdentifiers['passport'] = $user['passport'] ?? null;
+
+// Get the primary identifier for display (first non-empty)
+$primaryIdentifier = '';
+$primaryType = 'phone';
+$displayIdentifier = '';
+
+if (!empty($user['phone'])) {
+    $primaryIdentifier = $user['phone'];
+    $primaryType = 'phone';
+    $displayIdentifier = $user['phone'];
+} elseif (!empty($user['email'])) {
+    $primaryIdentifier = $user['email'];
+    $primaryType = 'email';
+    $displayIdentifier = $user['email'];
+} elseif (!empty($user['national_id'])) {
+    $primaryIdentifier = $user['national_id'];
+    $primaryType = 'national_id';
+    $displayIdentifier = $user['national_id'];
+} elseif (!empty($user['drivers_license'])) {
+    $primaryIdentifier = $user['drivers_license'];
+    $primaryType = 'drivers_license';
+    $displayIdentifier = $user['drivers_license'];
+} elseif (!empty($user['passport'])) {
+    $primaryIdentifier = $user['passport'];
+    $primaryType = 'passport';
+    $displayIdentifier = $user['passport'];
+} elseif (!empty($user['phone2'])) {
+    $primaryIdentifier = $user['phone2'];
+    $primaryType = 'phone';
+    $displayIdentifier = $user['phone2'];
+} elseif (!empty($user['phone3'])) {
+    $primaryIdentifier = $user['phone3'];
+    $primaryType = 'phone';
+    $displayIdentifier = $user['phone3'];
+}
+
+// Build list of valid identifiers for display
+$validIdentifiers = [];
+foreach ($userIdentifiers as $type => $value) {
+    if (!empty($value)) {
+        $validIdentifiers[] = [
+            'type' => $type,
+            'value' => $value,
+            'display' => $type . ': ' . $value
+        ];
+    }
+}
+
+// Get phone for beneficiary (primary phone)
+$loggedPhone = htmlspecialchars($user['phone'] ?? $displayIdentifier);
 $userPhone = htmlspecialchars($user['phone'] ?? '');
 $userNationalId = htmlspecialchars($user['national_id'] ?? '');
 $userEmail = htmlspecialchars($user['email'] ?? '');
@@ -245,6 +306,9 @@ foreach ($participants as $code => $p) {
         'asset_types' => $p['asset_types'] ?? ['ACCOUNT']
     ];
 }
+
+// Pass valid identifiers to JavaScript
+$identifiersJson = json_encode($validIdentifiers);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -253,6 +317,7 @@ foreach ($participants as $code => $p) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VouchMorph | Swap | <?= htmlspecialchars($countryName) ?></title>
     <style>
+        /* ... existing styles ... */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -795,12 +860,62 @@ foreach ($participants as $code => $p) {
             background: rgba(0,240,255,0.05);
         }
         
+        /* Identifier display styles */
+        .identifier-badge {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            background: rgba(0, 240, 255, 0.1);
+            border: 1px solid rgba(0, 240, 255, 0.2);
+            color: #00f0ff;
+            margin: 2px;
+        }
+        .identifier-badge .type { color: #888; }
+        .identifier-badge .value { color: #00f0ff; }
+        
+        .add-identifier-section {
+            margin-top: 12px;
+            padding: 12px;
+            background: rgba(0, 240, 255, 0.03);
+            border: 1px dashed rgba(0, 240, 255, 0.2);
+            border-radius: 8px;
+        }
+        .add-identifier-section .row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .add-identifier-section select, 
+        .add-identifier-section input {
+            flex: 1;
+            min-width: 120px;
+        }
+        .add-identifier-section button {
+            width: auto;
+            padding: 10px 20px;
+            margin-top: 0;
+        }
+        
+        .otp-verify-section {
+            display: none;
+            margin-top: 12px;
+            padding: 12px;
+            background: rgba(0, 240, 255, 0.05);
+            border: 1px solid rgba(0, 240, 255, 0.3);
+            border-radius: 8px;
+        }
+        .otp-verify-section.show { display: block; }
+        
         @media (max-width: 768px) {
             .two-columns, .three-columns { grid-template-columns: 1fr; gap: 16px; }
             .source-entry .source-fields { grid-template-columns: 1fr; }
             .modal { padding: 20px; }
             .modal-actions { flex-direction: column; }
             .multi-source-toggle { flex-wrap: wrap; }
+            .add-identifier-section .row { flex-direction: column; }
+            .add-identifier-section button { width: 100%; }
         }
     </style>
 </head>
@@ -814,7 +929,7 @@ foreach ($participants as $code => $p) {
         <div style="display: flex; gap: 12px; align-items: center;">
             <div class="country-badge"><?= htmlspecialchars($countryCode) ?></div>
             <div class="user-info">
-                <div>👤 <span class="user-phone"><?= $loggedPhone ?></span></div>
+                <div>👤 <span class="user-phone"><?= htmlspecialchars($primaryIdentifier) ?></span></div>
                 <div style="font-size: 10px; margin-top: 4px;"><a href="logout.php" style="color: #888;">Logout</a></div>
             </div>
         </div>
@@ -980,6 +1095,25 @@ foreach ($participants as $code => $p) {
         <div class="card">
             <h3>🔄 New Swap</h3>
             
+            <!-- ============================================================
+                 IDENTIFIER DISPLAY SECTION - ONLY SHOWS ADDED IDENTIFIERS
+                 ============================================================ -->
+            <div class="info-note" style="margin-bottom: 16px;">
+                <strong>📋 Your Identifiers:</strong><br>
+                <div id="identifiersDisplay" style="margin-top: 6px;">
+                    <?php if (empty($validIdentifiers)): ?>
+                        <span style="color: #888;">No identifiers added yet. Add one below.</span>
+                    <?php else: ?>
+                        <?php foreach ($validIdentifiers as $id): ?>
+                            <span class="identifier-badge">
+                                <span class="type"><?= htmlspecialchars($id['type']) ?>:</span>
+                                <span class="value"><?= htmlspecialchars($id['value']) ?></span>
+                            </span>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </div>
+            </div>
+            
             <div id="corridorWarning" class="corridor-warning">
                 ⚠️ Source and destination institutions must be different.
             </div>
@@ -1081,6 +1215,32 @@ foreach ($participants as $code => $p) {
                 </div>
             </div>
 
+            <!-- ============================================================
+                 ADD IDENTIFIER SECTION - WITH OTP VERIFICATION
+                 ============================================================ -->
+            <div class="add-identifier-section">
+                <div class="row">
+                    <select id="newIdentifierType">
+                        <option value="phone">📱 Phone</option>
+                        <option value="email">✉️ Email</option>
+                        <option value="national_id">🆔 National ID</option>
+                        <option value="drivers_license">🚗 Driver's License</option>
+                        <option value="passport">📖 Passport</option>
+                    </select>
+                    <input type="text" id="newIdentifierValue" placeholder="Enter identifier value">
+                    <button onclick="initiateAddIdentifier()" class="btn-success">➕ Add Identifier</button>
+                </div>
+                <div id="otpVerifySection" class="otp-verify-section">
+                    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                        <span style="color: #00f0ff; font-size: 13px;">📱 OTP sent to: <span id="otpTarget"></span></span>
+                        <input type="text" id="otpCode" placeholder="Enter OTP" maxlength="6" style="width: 120px;">
+                        <button onclick="verifyAddIdentifier()" class="btn-success">✅ Verify</button>
+                        <button onclick="cancelAddIdentifier()" class="btn-secondary">Cancel</button>
+                        <span id="otpTimer" style="color: #888; font-size: 12px;"></span>
+                    </div>
+                </div>
+            </div>
+
             <div class="summary" id="summary">📋 Fill in the fields above</div>
 
             <button id="executeBtn">🚀 Execute Swap</button>
@@ -1153,6 +1313,13 @@ const assetRules = <?= json_encode($assetRulesMap) ?>;
 const participants = <?= json_encode($participantOptions) ?>;
 const currencySymbol = '<?= $currencySymbol ?>';
 const loggedPhone = '<?= $loggedPhone ?>';
+const userIdentifiers = <?= $identifiersJson ?>;
+
+// Store pending identifier for OTP verification
+let pendingIdentifierType = null;
+let pendingIdentifierValue = null;
+let otpTimerInterval = null;
+let otpSecondsLeft = 0;
 
 // Build institution asset mapping
 const institutionAssets = {};
@@ -1195,6 +1362,156 @@ let pendingPayload = null;
 let previewData = null;
 let sourceCounter = 0;
 let sources = [];
+
+// ============================================================
+// IDENTIFIER MANAGEMENT - ONLY ADDED IDENTIFIERS ARE USED
+// ============================================================
+
+function getAvailableIdentifiers() {
+    // Return only identifiers that exist in the session
+    const identifiers = <?= $identifiersJson ?>;
+    return identifiers;
+}
+
+function updateIdentifiersDisplay() {
+    const container = document.getElementById('identifiersDisplay');
+    const ids = getAvailableIdentifiers();
+    
+    if (ids.length === 0) {
+        container.innerHTML = '<span style="color: #888;">No identifiers added yet. Add one below.</span>';
+        return;
+    }
+    
+    container.innerHTML = ids.map(id => 
+        `<span class="identifier-badge">
+            <span class="type">${id.type}:</span>
+            <span class="value">${id.value}</span>
+        </span>`
+    ).join('');
+}
+
+// ============================================================
+// ADD IDENTIFIER WITH OTP VERIFICATION
+// ============================================================
+
+function initiateAddIdentifier() {
+    const type = document.getElementById('newIdentifierType').value;
+    const value = document.getElementById('newIdentifierValue').value.trim();
+    
+    if (!value) {
+        alert('Please enter the identifier value.');
+        return;
+    }
+    
+    // Check if already exists
+    const existing = userIdentifiers.find(id => id.type === type && id.value === value);
+    if (existing) {
+        alert('This identifier is already added to your account.');
+        return;
+    }
+    
+    pendingIdentifierType = type;
+    pendingIdentifierValue = value;
+    
+    // Send OTP
+    fetch('/api/v1/user/send_otp.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            identifier_type: type,
+            identifier_value: value,
+            purpose: 'add_identifier'
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            document.getElementById('otpTarget').textContent = value;
+            document.getElementById('otpVerifySection').classList.add('show');
+            document.getElementById('otpCode').value = '';
+            startOtpTimer(60);
+            alert('OTP sent to your ' + type + '. Please enter it to verify.');
+        } else {
+            alert('Failed to send OTP: ' + data.message);
+        }
+    })
+    .catch(error => {
+        alert('Error sending OTP: ' + error.message);
+    });
+}
+
+function verifyAddIdentifier() {
+    const otp = document.getElementById('otpCode').value.trim();
+    
+    if (!otp || otp.length < 4) {
+        alert('Please enter the OTP code.');
+        return;
+    }
+    
+    fetch('/api/v1/user/verify_otp.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            identifier_type: pendingIdentifierType,
+            identifier_value: pendingIdentifierValue,
+            otp: otp,
+            purpose: 'add_identifier'
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            // Add identifier to user's session and database
+            return fetch('/api/v1/user/add_identifier.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    type: pendingIdentifierType,
+                    value: pendingIdentifierValue
+                })
+            });
+        } else {
+            throw new Error(data.message || 'Invalid OTP');
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('Identifier added successfully!');
+            // Refresh the page to update session
+            location.reload();
+        } else {
+            alert('Failed to add identifier: ' + data.message);
+        }
+    })
+    .catch(error => {
+        alert('Error: ' + error.message);
+    });
+}
+
+function cancelAddIdentifier() {
+    document.getElementById('otpVerifySection').classList.remove('show');
+    document.getElementById('otpCode').value = '';
+    pendingIdentifierType = null;
+    pendingIdentifierValue = null;
+    clearInterval(otpTimerInterval);
+}
+
+function startOtpTimer(seconds) {
+    otpSecondsLeft = seconds;
+    const timerEl = document.getElementById('otpTimer');
+    clearInterval(otpTimerInterval);
+    
+    otpTimerInterval = setInterval(() => {
+        otpSecondsLeft--;
+        if (otpSecondsLeft <= 0) {
+            clearInterval(otpTimerInterval);
+            timerEl.textContent = 'Expired';
+        } else {
+            timerEl.textContent = `${otpSecondsLeft}s remaining`;
+        }
+    }, 1000);
+}
 
 // ============================================================
 // MULTI-SOURCE FUNCTIONS
@@ -1253,7 +1570,6 @@ function addSource() {
     
     sourceEntries.appendChild(entry);
     
-    // Store source reference
     sources.push({
         id: sourceId,
         counter: sourceCounter
@@ -1273,7 +1589,6 @@ function removeSource(sourceId) {
     }
     
     if (sources.length === 0) {
-        // Auto-add a source if none left
         addSource();
     }
 }
@@ -1351,7 +1666,6 @@ function updateSummary() {
     const isMulti = multiSourceToggle.checked;
     
     if (isMulti) {
-        // Calculate total from all sources
         let total = 0;
         let sourceDetails = [];
         
@@ -1379,7 +1693,6 @@ function updateSummary() {
         
         summaryDiv.innerHTML = `📋 Multi-Source Swap | Total: ${currencySymbol} ${total.toFixed(2)} | ${sources.length} source(s)`;
     } else {
-        // Single source
         const amount = parseFloat(amountInput.value) || 0;
         const fromInst = fromInstSelect.options[fromInstSelect.selectedIndex]?.text || '?';
         const toInst = toInstSelect.options[toInstSelect.selectedIndex]?.text || '?';
@@ -1405,7 +1718,7 @@ function buildPayload() {
     const reference = 'SWAP_' + Date.now();
     const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
     
-    // Identifier type
+    // Identifier type - ONLY use added identifiers
     let identifierType = identifierTypeSelect?.value || 'auto';
     if (identifierType === 'auto' && sourceIdentifier) {
         if (sourceIdentifier.match(/^[\+]?[0-9]{10,15}$/)) identifierType = 'phone';
@@ -1432,7 +1745,6 @@ function buildPayload() {
     else if (identifierType === 'email') payload.source_email = sourceIdentifier;
     
     if (isMulti) {
-        // Multi-Source: Build sources array
         const sourcesList = [];
         let totalAmount = 0;
         
@@ -1448,7 +1760,6 @@ function buildPayload() {
             const ident = identEl?.value.trim() || '';
             
             if (inst && amount > 0) {
-                // Collect asset fields for this source
                 const fields = {};
                 const assetFieldsList = assetFields[asset] || [];
                 assetFieldsList.forEach(field => {
@@ -1474,18 +1785,14 @@ function buildPayload() {
         payload.sources = sourcesList;
         payload.amount = totalAmount;
         payload.from_institution = sourcesList.length > 0 ? sourcesList[0].institution : '';
-        
-        // Also add as multi-source flag
         payload.swap_type = 'MULTI_SOURCE';
         
         console.log('[buildPayload] Multi-source payload with', sourcesList.length, 'sources:', sourcesList);
     } else {
-        // Single Source
         const amount = parseFloat(amountInput.value) || 0;
         payload.from_institution = fromInst;
         payload.amount = amount;
         
-        // Collect asset fields
         const assetFieldsData = {};
         document.querySelectorAll('.asset-field').forEach(field => {
             const value = field.value.trim();
@@ -1495,7 +1802,6 @@ function buildPayload() {
             }
         });
         
-        // Get PIN
         const pin = getPinFromForm();
         if (pin) {
             payload.wallet_pin = pin;
@@ -1534,7 +1840,6 @@ function buildPayload() {
         }
     }
     
-    // Add rules from assets.yaml
     const rules = assetRules[assetType] || {};
     if (rules.hold_required) {
         payload.hold_required = true;
@@ -1684,7 +1989,6 @@ function validateCorridor() {
 function getPinFromForm() {
     let pin = null;
     
-    // Check all password fields and fields with 'pin' in the name
     document.querySelectorAll('.asset-field').forEach(el => {
         const value = el.value.trim();
         if (value && (el.type === 'password' || el.id.includes('pin'))) {
@@ -1692,7 +1996,6 @@ function getPinFromForm() {
         }
     });
     
-    // Also check source fields
     document.querySelectorAll('.source-asset-field').forEach(el => {
         const value = el.value.trim();
         if (value && (el.type === 'password' || el.id.includes('pin'))) {
@@ -1853,7 +2156,6 @@ if (executeBtn) {
         if (!assetType) { alert('Select asset type'); return; }
         
         if (isMulti) {
-            // Validate multi-source
             let hasError = false;
             let totalAmount = 0;
             
@@ -1879,7 +2181,6 @@ if (executeBtn) {
             if (totalAmount <= 0) { alert('Total amount must be greater than 0'); return; }
             if (sources.length < 2) { alert('Add at least 2 sources for multi-source swap'); return; }
         } else {
-            // Single source validation
             const fromInst = fromInstSelect.value;
             const amount = parseFloat(amountInput.value);
             const sourceIdentifier = sourceIdentifierInput?.value.trim();
@@ -1890,7 +2191,6 @@ if (executeBtn) {
             if (fromInst === toInst) { alert('Source and destination must be different'); return; }
         }
         
-        // Validate required fields from assets.yaml
         const fields = assetFields[assetType] || [];
         let missingFields = [];
         fields.forEach(field => {
@@ -1907,7 +2207,6 @@ if (executeBtn) {
             return;
         }
         
-        // Check for PIN
         const pin = getPinFromForm();
         if (!pin && !isMulti) {
             alert('🔑 Please enter your PIN');
@@ -1987,7 +2286,6 @@ confirmBtn.addEventListener('click', async function() {
                 html += `<br><strong>🎫 Voucher:</strong> ${voucher}<br>`;
             }
             
-            // Show multi-source info if applicable
             if (pendingPayload.sources && pendingPayload.sources.length > 0) {
                 html += `<br><strong>📤 Sources:</strong> ${pendingPayload.sources.length} source(s)`;
             }
@@ -2054,15 +2352,13 @@ document.querySelectorAll('.quick-amount').forEach(btn => {
 
 updateAssetTypes();
 updateDestinationFields();
-
-// Add initial source if multi-source is enabled by default
-// (disabled by default)
+updateIdentifiersDisplay();
 
 console.log('[Dashboard] ✅ Initialized with Multi-Source support');
 console.log('[Dashboard] Asset types:', Object.keys(assetFields));
 console.log('[Dashboard] Participants:', Object.keys(participants));
+console.log('[Dashboard] Your identifiers:', userIdentifiers);
 
-// Update summary periodically
 setInterval(updateSummary, 500);
 </script>
 </body>
