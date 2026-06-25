@@ -54,7 +54,7 @@ ZURUBANK:
       place_hold: "/api/v1/hold.php"                    
       debit_funds: "/api/v1/settlement/notify_debit.php" 
       release_hold: "/api/v1/hold.php"                  
-      get_balance: "/api/v1/balance.php"                
+      get_balance: "/api/v1/accounts/balance.php"                
       get_transactions: "/api/v1/transactions.php"     
     
     destination_cashout:
