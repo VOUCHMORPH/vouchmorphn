@@ -403,7 +403,6 @@ $sourceOptionsJson = json_encode($sourceOptions);
         select:focus, input:focus { outline: none; border-color: #00f0ff; }
         select option { background: #1a1f3a; }
         
-        /* Source identifier dropdown with icons */
         .source-identifier-select {
             width: 100%;
             padding: 12px;
@@ -477,6 +476,36 @@ $sourceOptionsJson = json_encode($sourceOptions);
             color: #a0a0b0;
             margin: 12px 0;
         }
+        
+        /* Strategy dropdown styles */
+        .strategy-select {
+            background: #1a1f3a;
+            border: 1px solid #2a2f4a;
+            border-radius: 8px;
+            color: #fff;
+            padding: 12px;
+            width: 100%;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .strategy-select:focus { outline: none; border-color: #00f0ff; }
+        .strategy-select option { background: #1a1f3a; padding: 8px; }
+        .strategy-select optgroup { 
+            background: #0a0e27; 
+            color: #00f0ff;
+            font-weight: bold;
+            font-size: 12px;
+        }
+        .strategy-help {
+            font-size: 11px;
+            color: #888;
+            margin-top: 4px;
+            padding: 6px 10px;
+            background: rgba(0, 240, 255, 0.03);
+            border-radius: 4px;
+            border-left: 2px solid #00f0ff;
+        }
+        .strategy-help .highlight { color: #00f0ff; }
         
         button {
             width: 100%;
@@ -893,7 +922,6 @@ $sourceOptionsJson = json_encode($sourceOptions);
             background: rgba(0,240,255,0.05);
         }
         
-        /* Identifier display styles */
         .identifier-badge {
             display: inline-block;
             padding: 2px 10px;
@@ -1253,6 +1281,24 @@ $sourceOptionsJson = json_encode($sourceOptions);
             </div>
 
             <!-- ============================================================
+                 CONTRIBUTION STRATEGY - FOR MULTI-SOURCE
+                 ============================================================ -->
+            <div class="form-group" id="strategyContainer" style="display: none;">
+                <label>📊 CONTRIBUTION STRATEGY</label>
+                <select id="contributionStrategy" class="strategy-select" onchange="updateStrategyHelp()">
+                    <option value="EQUAL">⚖️ Equal Split</option>
+                    <option value="SMART" selected>🧠 Smart (Balanced)</option>
+                    <option value="RATIO">📊 Ratio (Proportional)</option>
+                    <option value="DRAIN_SMALLEST">🪣 Drain Smallest First</option>
+                    <option value="PRIORITY">⭐ Priority Order</option>
+                    <option value="USER_SPECIFIED">✏️ User Specified</option>
+                </select>
+                <div id="strategyHelp" class="strategy-help">
+                    💡 <span class="highlight">Smart</span>: Balances contributions across sources to minimize impact
+                </div>
+            </div>
+
+            <!-- ============================================================
                  MULTI-SOURCE TOGGLE AND SOURCES
                  ============================================================ -->
             <div class="multi-source-toggle">
@@ -1261,7 +1307,7 @@ $sourceOptionsJson = json_encode($sourceOptions);
                     🔗 Multi-Source Swap
                 </label>
                 <span style="color:#888; font-size:12px;">
-                    Combine funds from multiple sources (different institutions or accounts)
+                    Combine funds from multiple sources
                 </span>
                 <span class="source-count" id="sourceCount">0 sources</span>
             </div>
@@ -1407,6 +1453,16 @@ for (const [code, p] of Object.entries(participants)) {
     institutionAssets[code] = p.asset_types || ['ACCOUNT'];
 }
 
+// Strategy descriptions
+const strategyDescriptions = {
+    'EQUAL': '⚖️ Splits the amount equally across all sources',
+    'SMART': '🧠 Balances contributions to minimize impact on each source',
+    'RATIO': '📊 Contributions proportional to each source\'s available balance',
+    'DRAIN_SMALLEST': '🪣 Drains smallest balances first, then next smallest',
+    'PRIORITY': '⭐ Uses sources in priority order (set priority per source)',
+    'USER_SPECIFIED': '✏️ You specify exact amount for each source'
+};
+
 // DOM Elements
 const fromInstSelect = document.getElementById('fromInstitution');
 const toInstSelect = document.getElementById('toInstitution');
@@ -1421,6 +1477,9 @@ const amountInput = document.getElementById('amount');
 const summaryDiv = document.getElementById('summary');
 const sourceIdentifierSelect = document.getElementById('sourceIdentifierSelect');
 const identifierTypeSelect = document.getElementById('identifierType');
+const contributionStrategy = document.getElementById('contributionStrategy');
+const strategyContainer = document.getElementById('strategyContainer');
+const strategyHelp = document.getElementById('strategyHelp');
 
 // Multi-source elements
 const multiSourceToggle = document.getElementById('multiSourceToggle');
@@ -1444,7 +1503,16 @@ let sourceCounter = 0;
 let sources = [];
 
 // ============================================================
-// SOURCE IDENTIFIER MANAGEMENT - DROPDOWN FROM ADDED IDENTIFIERS
+// STRATEGY HELP
+// ============================================================
+
+function updateStrategyHelp() {
+    const strategy = contributionStrategy.value;
+    strategyHelp.innerHTML = `💡 <span class="highlight">${strategyDescriptions[strategy] || 'Smart'}</span>`;
+}
+
+// ============================================================
+// SOURCE IDENTIFIER MANAGEMENT
 // ============================================================
 
 function updateSourceIdentifier() {
@@ -1452,7 +1520,6 @@ function updateSourceIdentifier() {
     const option = sourceIdentifierSelect.options[sourceIdentifierSelect.selectedIndex];
     const type = option?.dataset?.type || 'auto';
     
-    // Update the identifier type dropdown to match
     if (type && type !== 'auto') {
         const typeOptions = {
             'phone': 'phone',
@@ -1503,7 +1570,6 @@ function initiateAddIdentifier() {
         return;
     }
     
-    // Check if already exists
     const existing = userIdentifiers.find(id => id.type === type && id.value === value);
     if (existing) {
         alert('This identifier is already added to your account.');
@@ -1513,7 +1579,6 @@ function initiateAddIdentifier() {
     pendingIdentifierType = type;
     pendingIdentifierValue = value;
     
-    // Send OTP
     fetch('/api/v1/user/send_otp.php', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1561,7 +1626,6 @@ function verifyAddIdentifier() {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            // Add identifier to user's session and database
             return fetch('/api/v1/user/add_identifier.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1578,7 +1642,6 @@ function verifyAddIdentifier() {
     .then(data => {
         if (data.success) {
             alert('Identifier added successfully!');
-            // Refresh the page to update session
             location.reload();
         } else {
             alert('Failed to add identifier: ' + data.message);
@@ -1621,6 +1684,7 @@ function toggleMultiSource() {
     const enabled = multiSourceToggle.checked;
     sourcesContainer.style.display = enabled ? 'block' : 'none';
     singleAmountContainer.style.display = enabled ? 'none' : 'block';
+    strategyContainer.style.display = enabled ? 'block' : 'none';
     
     if (enabled && sources.length === 0) {
         addSource();
@@ -1671,6 +1735,10 @@ function addSource() {
                     `<optgroup label="${type.toUpperCase()}">${values.map(v => `<option value="${v}" data-type="${type}">${v}</option>`).join('')}</optgroup>` : ''
                 ).join('')}
             </select>
+        </div>
+        <div class="form-group" style="margin-top:8px;">
+            <label>Priority (1 = highest)</label>
+            <input type="number" id="${sourceId}_priority" min="1" max="10" value="${sourceCounter}" style="width:80px; padding:8px; background:#1a1f3a; border:1px solid #2a2f4a; border-radius:8px; color:#fff;">
         </div>
     `;
     
@@ -1770,6 +1838,7 @@ function updateSourceFields(sourceId) {
 
 function updateSummary() {
     const isMulti = multiSourceToggle.checked;
+    const strategy = contributionStrategy?.value || 'SMART';
     
     if (isMulti) {
         let total = 0;
@@ -1797,7 +1866,7 @@ function updateSummary() {
         sourceList.textContent = sourceDetails.length > 0 ? sourceDetails.join('; ') : 'No sources configured';
         sourceSummary.style.display = total > 0 ? 'block' : 'none';
         
-        summaryDiv.innerHTML = `📋 Multi-Source Swap | Total: ${currencySymbol} ${total.toFixed(2)} | ${sources.length} source(s)`;
+        summaryDiv.innerHTML = `📋 Multi-Source Swap | Strategy: ${strategy} | Total: ${currencySymbol} ${total.toFixed(2)} | ${sources.length} source(s)`;
     } else {
         const amount = parseFloat(amountInput.value) || 0;
         const fromInst = fromInstSelect.options[fromInstSelect.selectedIndex]?.text || '?';
@@ -1821,6 +1890,7 @@ function buildPayload() {
     const sourceIdentifier = sourceIdentifierSelect?.value || '';
     
     const isMulti = multiSourceToggle.checked;
+    const strategy = contributionStrategy?.value || 'SMART';
     const reference = 'SWAP_' + Date.now();
     const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
     
@@ -1849,7 +1919,6 @@ function buildPayload() {
     else if (identifierType === 'national_id') payload.source_national_id = sourceIdentifier;
     else if (identifierType === 'email') payload.source_email = sourceIdentifier;
     else {
-        // Auto-detect if not specified
         if (sourceIdentifier.match(/^[\+]?[0-9]{10,15}$/)) {
             payload.source_identifier_type = 'phone';
             payload.source_phone = sourceIdentifier;
@@ -1862,6 +1931,9 @@ function buildPayload() {
         }
     }
     
+    // Add strategy for multi-source
+    payload.contribution_strategy = strategy;
+    
     if (isMulti) {
         const sourcesList = [];
         let totalAmount = 0;
@@ -1871,12 +1943,14 @@ function buildPayload() {
             const assetEl = document.getElementById(s.id + '_assetType');
             const amountEl = document.getElementById(s.id + '_amount');
             const identEl = document.getElementById(s.id + '_identifierSelect');
+            const priorityEl = document.getElementById(s.id + '_priority');
             
             const inst = instEl?.value || '';
             const asset = assetEl?.value || 'ACCOUNT';
             const amount = parseFloat(amountEl?.value) || 0;
             const ident = identEl?.value || '';
             const identType = identEl?.options[identEl.selectedIndex]?.dataset?.type || 'auto';
+            const priority = parseInt(priorityEl?.value) || 1;
             
             if (inst && amount > 0) {
                 const fields = {};
@@ -1894,6 +1968,7 @@ function buildPayload() {
                     amount: amount,
                     identifier: ident,
                     identifier_type: identType,
+                    priority: priority,
                     asset_fields: fields
                 });
                 
@@ -1906,7 +1981,7 @@ function buildPayload() {
         payload.from_institution = sourcesList.length > 0 ? sourcesList[0].institution : '';
         payload.swap_type = 'MULTI_SOURCE';
         
-        console.log('[buildPayload] Multi-source payload with', sourcesList.length, 'sources:', sourcesList);
+        console.log('[buildPayload] Multi-source payload with', sourcesList.length, 'sources, strategy:', strategy);
     } else {
         const amount = parseFloat(amountInput.value) || 0;
         payload.from_institution = fromInst;
@@ -1970,7 +2045,7 @@ function buildPayload() {
 }
 
 // ============================================================
-// ORIGINAL DASHBOARD FUNCTIONS (kept for compatibility)
+// ORIGINAL DASHBOARD FUNCTIONS
 // ============================================================
 
 function updateAssetTypes() {
@@ -2270,11 +2345,11 @@ if (executeBtn) {
         const assetType = assetTypeSelect.value;
         const swapType = swapTypeSelect.value;
         const isMulti = multiSourceToggle.checked;
+        const strategy = contributionStrategy?.value || 'SMART';
         
         if (!toInst) { alert('Select DESTINATION institution'); return; }
         if (!assetType) { alert('Select asset type'); return; }
         
-        // Check source identifier
         const sourceIdentifier = sourceIdentifierSelect?.value;
         if (!sourceIdentifier && !isMulti) {
             alert('Please select your source identifier');
@@ -2413,6 +2488,7 @@ confirmBtn.addEventListener('click', async function() {
             
             if (pendingPayload.sources && pendingPayload.sources.length > 0) {
                 html += `<br><strong>📤 Sources:</strong> ${pendingPayload.sources.length} source(s)`;
+                html += `<br><strong>📊 Strategy:</strong> ${pendingPayload.contribution_strategy || 'SMART'}`;
             }
             
             html += `<br><details><summary><strong>📋 Full Response</strong></summary><pre style="margin-top:8px; font-size:11px; overflow-x:auto;">${JSON.stringify(result, null, 2)}</pre></details>`;
@@ -2478,6 +2554,7 @@ document.querySelectorAll('.quick-amount').forEach(btn => {
 updateAssetTypes();
 updateDestinationFields();
 updateIdentifiersDisplay();
+updateStrategyHelp();
 
 console.log('[Dashboard] ✅ Initialized with Multi-Source support');
 console.log('[Dashboard] Asset types:', Object.keys(assetFields));
