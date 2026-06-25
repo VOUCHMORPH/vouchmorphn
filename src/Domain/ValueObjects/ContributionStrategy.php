@@ -10,4 +10,5 @@ enum ContributionStrategy: string
     case PRIORITY = 'PRIORITY';
     case USER_SPECIFIED = 'USER_SPECIFIED';
     case SMART = 'SMART';
+    case DRAIN_SMALLEST = 'DRAIN_SMALLEST';
 }
