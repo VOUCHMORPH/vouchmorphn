@@ -1026,6 +1026,42 @@ class GenericBankClient implements BankAPIInterface
         return $this->debitFunds($debitPayload);
     }
 
+    // Add this method after debitHold() - around line 400
+
+/**
+ * Get account balance
+ * 
+ * @param array $payload Contains:
+ *   - asset_type: string
+ *   - source_identifier: string
+ *   - currency: string (optional)
+ *   - pin: string (optional for wallet)
+ *   - wallet_pin: string (optional)
+ *   - access_token: string (optional for hooked sources)
+ * @return array ['success' => bool, 'data' => ['balance' => float, 'currency' => string]]
+ */
+public function getBalance(array $payload): array
+{
+    error_log("=== GENERIC BANK CLIENT: getBalance ===");
+    
+    // Add source identifier if missing
+    $payload = $this->addSourceIdentifier($payload);
+    
+    // Detect PIN if present
+    if (isset($payload['pin']) && !empty($payload['pin'])) {
+        $payload['wallet_pin'] = $payload['pin'];
+        error_log("[GenericBankClient] PIN found for balance check");
+    } elseif (isset($payload['wallet_pin']) && !empty($payload['wallet_pin'])) {
+        $payload['pin'] = $payload['wallet_pin'];
+        error_log("[GenericBankClient] wallet_pin found for balance check");
+    }
+    
+    // Use access_token if present (hooked source)
+    $accessToken = $payload['access_token'] ?? null;
+    
+    return $this->send('get_balance', $payload, $accessToken);
+}
+
     // ============================================================================
     // DESTINATION ROLE METHODS - CASHOUT TOKEN
     // ============================================================================
