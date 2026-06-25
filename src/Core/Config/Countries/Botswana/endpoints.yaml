@@ -138,7 +138,7 @@ SACCUSSALIS:
       place_hold: "/api/v1/hold.php"
       debit_funds: "/api/v1/notify_debit.php"
       release_hold: "/api/v1/hold.php"
-      get_balance: "/api/v1/balance"
+      get_balance: "/api/v1/balance.php"
       get_transactions: "/api/v1/transactions"
     
     destination_cashout:
