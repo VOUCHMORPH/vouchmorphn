@@ -293,7 +293,7 @@ try {
                     'total_contributions_formatted' => number_format($totalContributions, 2) . ' ' . $sourceCurrency,
                     'total_available_balance_formatted' => number_format($totalAvailableBalance, 2) . ' ' . $sourceCurrency,
                     'coverage_percentage' => ($totalRequested > 0) ? round(($totalContributions / $totalRequested) * 100, 2) : 0,
-                    'strategy_description' => $this->getStrategyDescription($strategy)
+                    'strategy_description' => getStrategyDescription($strategy)
                 ]
             ];
             
