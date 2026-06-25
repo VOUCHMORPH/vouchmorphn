@@ -28,7 +28,7 @@ try {
     die("Failed to load configuration: " . $e->getMessage());
 }
 
-// Set system country - safely define constants
+// Set system country
 $systemCountry = $config['country'] ?? getenv('VM_COUNTRY') ?? 'BW';
 if (!defined('SYSTEM_COUNTRY')) {
     define('SYSTEM_COUNTRY', $systemCountry);
@@ -127,7 +127,7 @@ try {
 }
 
 // ----------------------------------------
-// Create/update tables
+// Create/update tables with ALL identifier columns
 // ----------------------------------------
 try {
     $columns = [];
@@ -143,11 +143,70 @@ try {
         }
     }
     
-    $idColumns = ['national_id', 'drivers_license', 'passport', 'id_type', 'date_of_birth', 'email'];
-    foreach ($idColumns as $col) {
+    // All identifier columns - up to 3 phone numbers
+    $idColumns = [
+        'phone2' => 'VARCHAR(50) DEFAULT NULL',
+        'phone3' => 'VARCHAR(50) DEFAULT NULL',
+        'national_id' => 'VARCHAR(100) DEFAULT NULL',
+        'drivers_license' => 'VARCHAR(100) DEFAULT NULL',
+        'passport' => 'VARCHAR(100) DEFAULT NULL',
+        'id_type' => 'VARCHAR(50) DEFAULT NULL',
+        'date_of_birth' => 'DATE DEFAULT NULL',
+        'email' => 'VARCHAR(255) DEFAULT NULL'
+    ];
+    
+    foreach ($idColumns as $col => $definition) {
         if (!in_array($col, $columns)) {
-            $swapDb->exec("ALTER TABLE users ADD COLUMN {$col} VARCHAR(255) DEFAULT NULL");
+            $swapDb->exec("ALTER TABLE users ADD COLUMN {$col} {$definition}");
         }
+    }
+    
+    // Add indexes for faster lookups
+    if ($isPostgres) {
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_phone2 ON users(phone2)");
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_phone3 ON users(phone3)");
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_national_id ON users(national_id)");
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_drivers_license ON users(drivers_license)");
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_passport ON users(passport)");
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)");
+    } else {
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_phone2 ON users(phone2)");
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_phone3 ON users(phone3)");
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_national_id ON users(national_id)");
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_drivers_license ON users(drivers_license)");
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_passport ON users(passport)");
+        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)");
+    }
+    
+    // Create user_identifiers table for additional identifiers
+    if ($isPostgres) {
+        $swapDb->exec("
+            CREATE TABLE IF NOT EXISTS user_identifiers (
+                id SERIAL PRIMARY KEY,
+                user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                identifier_type VARCHAR(50) NOT NULL,
+                identifier_value VARCHAR(255) NOT NULL,
+                is_verified BOOLEAN DEFAULT FALSE,
+                verified_at TIMESTAMP NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(identifier_type, identifier_value)
+            )
+        ");
+    } else {
+        $swapDb->exec("
+            CREATE TABLE IF NOT EXISTS user_identifiers (
+                id INT(11) NOT NULL AUTO_INCREMENT,
+                user_id INT(11) NOT NULL,
+                identifier_type VARCHAR(50) NOT NULL,
+                identifier_value VARCHAR(255) NOT NULL,
+                is_verified TINYINT(1) DEFAULT 0,
+                verified_at DATETIME NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                UNIQUE KEY uk_identifier (identifier_type, identifier_value),
+                KEY idx_user_id (user_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ");
     }
     
     // Create otp_logs table
@@ -209,7 +268,6 @@ function generateOTP(): string
     return str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
 }
 
-// Simple email function (replace with PHPMailer in production)
 function sendEmailOTP($to, $otp, $countryName)
 {
     $subject = "Your VouchMorph Verification Code";
@@ -234,7 +292,6 @@ function sendEmailOTP($to, $otp, $countryName)
     return mail($to, $subject, $message, $headers);
 }
 
-// API function to verify identifier exists in source database
 function verifyIdentifierInSourceDB($sourceDb, $identifierType, $identifierValue, $countryDialCode)
 {
     $userData = [];
@@ -330,13 +387,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $fullName = trim($_POST['full_name'] ?? '');
         $dateOfBirth = trim($_POST['date_of_birth'] ?? '');
         $verificationMethod = $_POST['verification_method'] ?? 'sms';
+        $phone2 = trim($_POST['phone2'] ?? '');
+        $phone3 = trim($_POST['phone3'] ?? '');
         
         if (empty($inputValue)) {
             echo json_encode(['success' => false, 'message' => 'Please provide your identifier.']);
             exit;
         }
         
-        // Basic email validation if type is email
+        // Basic validation
         if ($inputType === 'email') {
             if (!filter_var($inputValue, FILTER_VALIDATE_EMAIL)) {
                 echo json_encode(['success' => false, 'message' => 'Invalid email address format.']);
@@ -344,7 +403,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
         
-        // For phone, basic cleaning
         if ($inputType === 'phone') {
             $inputValue = preg_replace('/[^\d+]/', '', $inputValue);
             if (empty($inputValue)) {
@@ -353,7 +411,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
         
-        // Verify identifier exists in source database via API/DB lookup
+        // Normalize additional phone numbers if provided
+        if (!empty($phone2)) {
+            $phone2 = normalizePhone($phone2, $countryDialCode);
+        }
+        if (!empty($phone3)) {
+            $phone3 = normalizePhone($phone3, $countryDialCode);
+        }
+        
+        // Verify identifier exists in source database
         $verification = verifyIdentifierInSourceDB($sourceDb, $inputType, $inputValue, $countryDialCode);
         
         if (!$verification['valid']) {
@@ -365,9 +431,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $phoneNumber = $verification['phoneNumber'];
         $emailAddress = $verification['emailAddress'];
         
-        // Determine identifier column for this type
+        // Map type to column
         $columnMap = [
-            'phone' => 'phone_number',
+            'phone' => 'phone',
             'email' => 'email',
             'national_id' => 'national_id',
             'drivers_license' => 'drivers_license',
@@ -376,7 +442,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $identifierColumn = $columnMap[$inputType];
         $identifierValue = ($inputType === 'phone') ? normalizePhone($inputValue, $countryDialCode) : $inputValue;
         
-        // Check if already registered in swap DB
+        // Check if already registered in swap DB (check ALL identifiers)
         $checkQuery = "SELECT user_id FROM users WHERE ";
         $conditions = [];
         $checkParams = [];
@@ -388,6 +454,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($emailAddress) {
             $conditions[] = "email = :email";
             $checkParams[':email'] = $emailAddress;
+        }
+        if (!empty($phone2)) {
+            $conditions[] = "phone2 = :phone2";
+            $checkParams[':phone2'] = $phone2;
+        }
+        if (!empty($phone3)) {
+            $conditions[] = "phone3 = :phone3";
+            $checkParams[':phone3'] = $phone3;
         }
         if ($identifierColumn && $identifierValue && !in_array($inputType, ['phone', 'email'])) {
             $conditions[] = "{$identifierColumn} = :identifier";
@@ -433,11 +507,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ':user_agent' => $userAgent
         ]);
         
-        // Store OTP in session for verification
+        // Store OTP in session
         $_SESSION['otp_verification'][$identifierValue] = $otpPlain;
         $_SESSION['otp_verification_expires'][$identifierValue] = time() + 300;
         
-        // Store registration data
+        // Store registration data with multiple phones
         $_SESSION['temp_registration'] = [
             'identifier_type' => $inputType,
             'identifier_value' => $identifierValue,
@@ -446,11 +520,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'date_of_birth' => $dateOfBirth,
             'source_user_id' => $userData['id'] ?? null,
             'phone_number' => $phoneNumber,
+            'phone2' => $phone2,
+            'phone3' => $phone3,
             'email' => $emailAddress,
             'verification_method' => $verificationMethod
         ];
         
-        // Send OTP via selected method(s)
+        // Send OTP
         $sentVia = [];
         $otpSent = false;
         
@@ -482,12 +558,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
         
-        // Response
         if ($otpSent) {
             $message = "Verification code sent via " . implode(' & ', $sentVia) . "!";
             echo json_encode(['success' => true, 'message' => $message, 'has_contact' => true]);
         } else {
-            // Development mode fallback
             if (getenv('APP_ENV') === 'development') {
                 echo json_encode(['success' => true, 'message' => "DEV MODE: Your code is {$otpPlain}", 'show_otp' => true, 'otp' => $otpPlain]);
             } else {
@@ -512,12 +586,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
     <link href="https://api.fontshare.com/v2/css?f[]=clash-display@400,500,600,700&f[]=general-sans@400,500,600&f[]=space-grotesk@400,500,600&display=swap" rel="stylesheet">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             background: #050505;
             font-family: 'Inter', sans-serif;
@@ -530,7 +599,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             position: relative;
             overflow-x: hidden;
         }
-
         body::before {
             content: '';
             position: fixed;
@@ -545,32 +613,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             pointer-events: none;
             z-index: 0;
         }
-
-        .cursor {
-            width: 8px;
-            height: 8px;
-            background: #00F0FF;
-            position: fixed;
-            pointer-events: none;
-            z-index: 9999;
-            mix-blend-mode: difference;
-            transition: transform 0.1s ease;
-        }
-
-        .cursor-follower {
-            width: 40px;
-            height: 40px;
-            border: 1px solid rgba(0, 240, 255, 0.5);
-            position: fixed;
-            pointer-events: none;
-            z-index: 9998;
-            transition: 0.15s ease;
-        }
-
-        @media (max-width: 768px) {
-            .cursor, .cursor-follower { display: none; }
-        }
-
+        .cursor { width: 8px; height: 8px; background: #00F0FF; position: fixed; pointer-events: none; z-index: 9999; mix-blend-mode: difference; transition: transform 0.1s ease; }
+        .cursor-follower { width: 40px; height: 40px; border: 1px solid rgba(0, 240, 255, 0.5); position: fixed; pointer-events: none; z-index: 9998; transition: 0.15s ease; }
+        @media (max-width: 768px) { .cursor, .cursor-follower { display: none; } }
         .register-container {
             position: relative;
             z-index: 2;
@@ -582,13 +627,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-radius: 0px;
             box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
         }
-
         .register-header {
             padding: 2rem 2rem 1.5rem;
             text-align: center;
             border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         }
-
         .register-header h1 {
             font-family: 'Clash Display', sans-serif;
             font-size: 2rem;
@@ -600,13 +643,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: transparent;
             margin-bottom: 0.5rem;
         }
-
-        .subtitle {
-            font-size: 0.875rem;
-            color: #A0A0B0;
-            margin-bottom: 1rem;
-        }
-
+        .subtitle { font-size: 0.875rem; color: #A0A0B0; margin-bottom: 1rem; }
         .system-badge {
             display: inline-block;
             padding: 0.25rem 0.75rem;
@@ -619,15 +656,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-radius: 0px;
             color: #00F0FF;
         }
-
-        .register-form {
-            padding: 2rem;
-        }
-
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-
+        .register-form { padding: 2rem; }
+        .form-group { margin-bottom: 1.5rem; }
         .form-group label {
             display: block;
             margin-bottom: 0.5rem;
@@ -637,7 +667,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             letter-spacing: 0.05em;
             color: #C0C0D0;
         }
-
         .selector-tabs {
             display: flex;
             gap: 0.5rem;
@@ -646,7 +675,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             padding-bottom: 0.5rem;
             flex-wrap: wrap;
         }
-
         .selector-tab {
             padding: 0.5rem 1rem;
             background: transparent;
@@ -660,16 +688,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             transition: all 0.2s;
             border-radius: 0px;
         }
-
-        .selector-tab.active {
-            color: #00F0FF;
-            border-bottom: 2px solid #00F0FF;
-        }
-
-        .selector-tab:hover {
-            color: #00F0FF;
-        }
-
+        .selector-tab.active { color: #00F0FF; border-bottom: 2px solid #00F0FF; }
+        .selector-tab:hover { color: #00F0FF; }
         .input-container {
             display: flex;
             border: 1px solid rgba(255, 255, 255, 0.15);
@@ -677,12 +697,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             transition: all 0.2s ease;
             border-radius: 0px;
         }
-
-        .input-container:focus-within {
-            border-color: #00F0FF;
-            box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.2);
-        }
-
+        .input-container:focus-within { border-color: #00F0FF; box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.2); }
         .input-prefix {
             padding: 0.875rem 1rem;
             font-family: 'Space Grotesk', monospace;
@@ -692,7 +707,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-right: 1px solid rgba(255, 255, 255, 0.1);
             letter-spacing: 0.5px;
         }
-
         .form-control {
             flex: 1;
             border: none;
@@ -703,41 +717,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #FFFFFF;
             outline: none;
         }
-
-        .form-control::placeholder {
-            color: #505060;
-        }
-
+        .form-control::placeholder { color: #505060; }
         .form-control.otp-input {
             font-family: 'Space Grotesk', monospace;
             font-size: 1.25rem;
             letter-spacing: 0.5rem;
             text-align: center;
         }
-
-        .verification-options {
-            display: flex;
-            gap: 1.5rem;
-            margin-top: 0.5rem;
-            flex-wrap: wrap;
-        }
-
-        .verification-option {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            cursor: pointer;
-            font-size: 0.875rem;
-            color: #C0C0D0;
-        }
-
-        .verification-option input {
-            width: 18px;
-            height: 18px;
-            cursor: pointer;
-            accent-color: #00F0FF;
-        }
-
         .btn {
             width: 100%;
             padding: 1rem;
@@ -754,25 +740,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-top: 0.5rem;
             border-radius: 0px;
         }
-
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 30px -10px rgba(0, 240, 255, 0.4);
-        }
-
-        .btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
-        }
-
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 10px 30px -10px rgba(0, 240, 255, 0.4); }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
         .btn-secondary {
             background: transparent;
             border: 1px solid rgba(255, 255, 255, 0.3);
             color: #FFFFFF;
             margin-top: 0;
         }
-
         .message {
             margin-top: 1rem;
             padding: 0.75rem;
@@ -783,23 +758,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #A0A0B0;
             min-height: 50px;
         }
-
-        .message.error {
-            background: rgba(255, 48, 48, 0.1);
-            border-left-color: #FF3030;
-            color: #FF6060;
-        }
-
-        .message.success {
-            background: rgba(0, 240, 255, 0.1);
-            border-left-color: #00F0FF;
-            color: #00F0FF;
-        }
-
-        .otp-section {
-            display: none;
-        }
-
+        .message.error { background: rgba(255, 48, 48, 0.1); border-left-color: #FF3030; color: #FF6060; }
+        .message.success { background: rgba(0, 240, 255, 0.1); border-left-color: #00F0FF; color: #00F0FF; }
+        .otp-section { display: none; }
         .otp-display {
             background: rgba(0, 240, 255, 0.2);
             padding: 1rem;
@@ -810,14 +771,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin: 1rem 0;
             border: 1px solid rgba(0, 240, 255, 0.3);
         }
-
         .register-footer {
             padding: 1.25rem 2rem;
             border-top: 1px solid rgba(255, 255, 255, 0.05);
             background: rgba(10, 10, 20, 0.3);
             text-align: center;
         }
-
         .register-footer a {
             color: #808090;
             text-decoration: none;
@@ -825,55 +784,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             font-weight: 500;
             transition: color 0.2s;
         }
-
-        .register-footer a:hover {
-            color: #00F0FF;
-        }
-
-        .help-text {
-            font-size: 0.7rem;
-            color: #606070;
-            margin-top: 0.5rem;
-        }
-
+        .register-footer a:hover { color: #00F0FF; }
+        .help-text { font-size: 0.7rem; color: #606070; margin-top: 0.5rem; }
         @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
         }
-
-        .fade-in {
-            animation: fadeInUp 0.4s ease;
+        .fade-in { animation: fadeInUp 0.4s ease; }
+        .additional-phones {
+            display: none;
+            margin-top: 0.5rem;
+            padding: 0.75rem;
+            background: rgba(0, 240, 255, 0.03);
+            border: 1px dashed rgba(0, 240, 255, 0.2);
         }
-
+        .additional-phones.show { display: block; }
         @media (max-width: 640px) {
-            .register-container {
-                margin: 1rem;
-            }
-            .register-header {
-                padding: 1.5rem 1.5rem 1rem;
-            }
-            .register-header h1 {
-                font-size: 1.5rem;
-            }
-            .register-form {
-                padding: 1.5rem;
-            }
-            .selector-tabs {
-                gap: 0.25rem;
-            }
-            .selector-tab {
-                padding: 0.5rem 0.75rem;
-                font-size: 0.7rem;
-            }
-            .verification-options {
-                gap: 1rem;
-            }
+            .register-container { margin: 1rem; }
+            .register-header { padding: 1.5rem 1.5rem 1rem; }
+            .register-header h1 { font-size: 1.5rem; }
+            .register-form { padding: 1.5rem; }
+            .selector-tabs { gap: 0.25rem; }
+            .selector-tab { padding: 0.5rem 0.75rem; font-size: 0.7rem; }
         }
     </style>
 </head>
@@ -892,7 +824,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
 
     <div class="register-form">
-        <!-- Identifier Type Selector -->
         <div class="selector-tabs">
             <button class="selector-tab active" data-type="phone">📱 Phone</button>
             <button class="selector-tab" data-type="email">✉️ Email</button>
@@ -919,6 +850,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="form-group" id="dob-group" style="display: none;">
                 <label>DATE OF BIRTH (Optional)</label>
                 <input type="date" id="date_of_birth" class="form-control">
+            </div>
+            
+            <!-- Additional Phone Numbers (up to 3 total) -->
+            <div class="form-group">
+                <label style="cursor:pointer;" onclick="toggleAdditionalPhones()">
+                    📞 <span id="additionalPhonesToggle">Add Additional Phone Numbers (Optional)</span>
+                </label>
+                <div class="additional-phones" id="additionalPhones">
+                    <div class="help-text">You can add up to 3 phone numbers total</div>
+                    <div style="margin-top: 0.75rem;">
+                        <div class="input-container" style="margin-bottom: 0.5rem;">
+                            <span class="input-prefix"><?= htmlspecialchars($countryDialCode) ?></span>
+                            <input type="tel" id="phone2" class="form-control" placeholder="Second phone number" autocomplete="off">
+                        </div>
+                        <div class="input-container">
+                            <span class="input-prefix"><?= htmlspecialchars($countryDialCode) ?></span>
+                            <input type="tel" id="phone3" class="form-control" placeholder="Third phone number" autocomplete="off">
+                        </div>
+                    </div>
+                </div>
             </div>
             
             <div class="form-group" id="verification-method-group">
@@ -959,15 +910,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </div>
 
 <script>
-// Configuration
 const countryDialCode = '<?= $countryDialCode ?>';
 const localLength = <?= $localLength ?>;
 
 let currentIdentifierType = 'phone';
 let resendTimerInterval = null;
 let resendSecondsLeft = 0;
+let additionalPhonesVisible = false;
 
-// Tab switching
+function toggleAdditionalPhones() {
+    additionalPhonesVisible = !additionalPhonesVisible;
+    document.getElementById('additionalPhones').classList.toggle('show');
+    document.getElementById('additionalPhonesToggle').textContent = 
+        additionalPhonesVisible ? 'Hide Additional Phone Numbers' : 'Add Additional Phone Numbers (Optional)';
+}
+
 document.querySelectorAll('.selector-tab').forEach(tab => {
     tab.addEventListener('click', function() {
         document.querySelectorAll('.selector-tab').forEach(t => t.classList.remove('active'));
@@ -986,11 +943,11 @@ function updateFormForIdentifierType(type) {
     const dobGroup = document.getElementById('dob-group');
     
     if (type === 'phone') {
-        labelEl.textContent = 'MOBILE NUMBER';
+        labelEl.textContent = 'PRIMARY PHONE NUMBER';
         prefixEl.style.display = 'flex';
         prefixEl.textContent = countryDialCode;
         inputEl.placeholder = '71 234 567';
-        helpTextEl.textContent = 'Enter your phone number (we\'ll verify it exists in our records)';
+        helpTextEl.textContent = 'Enter your primary phone number';
         inputEl.maxLength = 20;
         inputEl.type = 'tel';
         fullnameGroup.style.display = 'none';
@@ -999,7 +956,7 @@ function updateFormForIdentifierType(type) {
         labelEl.textContent = 'EMAIL ADDRESS';
         prefixEl.style.display = 'none';
         inputEl.placeholder = 'you@example.com';
-        helpTextEl.textContent = 'Enter your email address (we\'ll verify it exists in our records)';
+        helpTextEl.textContent = 'Enter your email address';
         inputEl.maxLength = 100;
         inputEl.type = 'email';
         fullnameGroup.style.display = 'none';
@@ -1038,7 +995,6 @@ function showMessage(text, type = 'info') {
     const msgEl = document.getElementById('message');
     msgEl.textContent = text;
     msgEl.className = 'message ' + type;
-    
     setTimeout(() => {
         if (document.getElementById('message').textContent === text) {
             msgEl.textContent = '';
@@ -1052,6 +1008,8 @@ function sendOTP() {
     const fullName = document.getElementById('full_name')?.value.trim() || '';
     const dateOfBirth = document.getElementById('date_of_birth')?.value || '';
     const verificationMethod = document.querySelector('input[name="verification_method"]:checked')?.value || 'sms';
+    const phone2 = document.getElementById('phone2')?.value.trim() || '';
+    const phone3 = document.getElementById('phone3')?.value.trim() || '';
     
     if (!identifier) {
         showMessage('Please enter your identifier.', 'error');
@@ -1059,7 +1017,6 @@ function sendOTP() {
         return;
     }
     
-    // Basic validation for email format
     if (currentIdentifierType === 'email') {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(identifier)) {
@@ -1068,7 +1025,6 @@ function sendOTP() {
         }
     }
     
-    // For phone, just clean it (no strict length validation)
     if (currentIdentifierType === 'phone') {
         const phoneClean = identifier.replace(/\D/g, '');
         if (phoneClean.length < 5) {
@@ -1090,6 +1046,8 @@ function sendOTP() {
     formData.append('full_name', fullName);
     formData.append('date_of_birth', dateOfBirth);
     formData.append('verification_method', verificationMethod);
+    if (phone2) formData.append('phone2', phone2);
+    if (phone3) formData.append('phone3', phone3);
     
     fetch(window.location.href, {
         method: 'POST',
@@ -1130,9 +1088,7 @@ function sendOTP() {
 function startResendTimer(seconds) {
     resendSecondsLeft = seconds;
     updateResendTimerDisplay();
-    
     if (resendTimerInterval) clearInterval(resendTimerInterval);
-    
     resendTimerInterval = setInterval(() => {
         if (resendSecondsLeft <= 0) {
             clearInterval(resendTimerInterval);
@@ -1147,7 +1103,6 @@ function startResendTimer(seconds) {
 function updateResendTimerDisplay(isExpired = false) {
     const timerDiv = document.getElementById('resendTimer');
     if (!timerDiv) return;
-    
     if (isExpired) {
         timerDiv.innerHTML = '<a onclick="resendOTP()" style="cursor: pointer; color: #00F0FF;">Didn\'t receive code? Resend →</a>';
     } else {
@@ -1251,7 +1206,6 @@ function backToIdentifier() {
     if (resendTimerInterval) clearInterval(resendTimerInterval);
 }
 
-// Enter key handlers
 document.getElementById('identifier')?.addEventListener('keypress', function(e) {
     if (e.key === 'Enter') sendOTP();
 });
@@ -1259,7 +1213,6 @@ document.getElementById('otp')?.addEventListener('keypress', function(e) {
     if (e.key === 'Enter') verifyOTP();
 });
 
-// Focus on load
 window.addEventListener('load', function() {
     document.getElementById('identifier')?.focus();
     updateFormForIdentifierType('phone');
