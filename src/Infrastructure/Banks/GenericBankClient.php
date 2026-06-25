@@ -1028,20 +1028,8 @@ class GenericBankClient implements BankAPIInterface
         return $this->debitFunds($debitPayload);
     }
 
-    // Add this method after debitHold() - around line 400
+  // In GenericBankClient.php, update getBalance() method:
 
-/**
- * Get account balance
- * 
- * @param array $payload Contains:
- *   - asset_type: string
- *   - source_identifier: string
- *   - currency: string (optional)
- *   - pin: string (optional for wallet)
- *   - wallet_pin: string (optional)
- *   - access_token: string (optional for hooked sources)
- * @return array ['success' => bool, 'data' => ['balance' => float, 'currency' => string]]
- */
 public function getBalance(array $payload): array
 {
     error_log("=== GENERIC BANK CLIENT: getBalance ===");
@@ -1061,7 +1049,40 @@ public function getBalance(array $payload): array
     // Use access_token if present (hooked source)
     $accessToken = $payload['access_token'] ?? null;
     
-    return $this->send('get_balance', $payload, $accessToken);
+    // Determine if we should use GET or POST
+    $result = $this->send('get_balance', $payload, $accessToken);
+    
+    // Check if the response contains nested data
+    if ($result['success'] && isset($result['data'])) {
+        $data = $result['data'];
+        
+        // If data has a 'data' key (nested response), use that
+        if (isset($data['data']) && is_array($data['data'])) {
+            $result['data'] = $data['data'];
+            $balance = $result['data']['balance'] ?? $result['data']['available_balance'] ?? 0;
+            error_log("[GenericBankClient] Balance from nested data: {$balance}");
+        } 
+        // If data has balance directly
+        elseif (isset($data['balance'])) {
+            $balance = $data['balance'];
+            error_log("[GenericBankClient] Balance from top-level data: {$balance}");
+        }
+        // If data has available_balance
+        elseif (isset($data['available_balance'])) {
+            $balance = $data['available_balance'];
+            error_log("[GenericBankClient] Balance from available_balance: {$balance}");
+        }
+        
+        // Ensure balance is set
+        if (!isset($result['data']['balance']) && isset($balance)) {
+            $result['data']['balance'] = $balance;
+        }
+        if (!isset($result['data']['available_balance']) && isset($balance)) {
+            $result['data']['available_balance'] = $balance;
+        }
+    }
+    
+    return $result;
 }
 
     // ============================================================================
