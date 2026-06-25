@@ -1,7 +1,6 @@
 <?php
 // public/user/dashboard.php - FULLY DYNAMIC WITH MULTI-SOURCE SUPPORT
-// Uses ONLY identifiers that the user has added
-// Requires OTP verification when adding new identifiers
+// Source identifiers are DROPDOWN from user's added identifiers only
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
@@ -62,6 +61,20 @@ if (!empty($user['phone'])) {
     $primaryIdentifier = $user['phone3'];
     $primaryType = 'phone';
     $displayIdentifier = $user['phone3'];
+}
+
+// Build list of valid identifiers for the dropdown
+$sourceOptions = [];
+$sourceOptions['phone'] = [];
+$sourceOptions['email'] = [];
+$sourceOptions['national_id'] = [];
+$sourceOptions['drivers_license'] = [];
+$sourceOptions['passport'] = [];
+
+foreach ($userIdentifiers as $type => $value) {
+    if (!empty($value)) {
+        $sourceOptions[$type][] = $value;
+    }
 }
 
 // Build list of valid identifiers for display
@@ -309,6 +322,7 @@ foreach ($participants as $code => $p) {
 
 // Pass valid identifiers to JavaScript
 $identifiersJson = json_encode($validIdentifiers);
+$sourceOptionsJson = json_encode($sourceOptions);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -388,6 +402,25 @@ $identifiersJson = json_encode($validIdentifiers);
         }
         select:focus, input:focus { outline: none; border-color: #00f0ff; }
         select option { background: #1a1f3a; }
+        
+        /* Source identifier dropdown with icons */
+        .source-identifier-select {
+            width: 100%;
+            padding: 12px;
+            background: #1a1f3a;
+            border: 1px solid #2a2f4a;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 14px;
+        }
+        .source-identifier-select:focus { outline: none; border-color: #00f0ff; }
+        .source-identifier-select option { background: #1a1f3a; padding: 8px; }
+        .source-identifier-select optgroup { 
+            background: #0a0e27; 
+            color: #00f0ff;
+            font-weight: bold;
+            font-size: 12px;
+        }
         
         .dynamic-fields {
             margin-top: 16px;
@@ -1174,6 +1207,52 @@ $identifiersJson = json_encode($validIdentifiers);
             </div>
 
             <!-- ============================================================
+                 SOURCE IDENTIFIER - DROPDOWN FROM USER'S ADDED IDENTIFIERS
+                 ============================================================ -->
+            <div class="form-group">
+                <label>📤 SOURCE IDENTIFIER (Select your identifier)</label>
+                <select id="sourceIdentifierSelect" class="source-identifier-select" onchange="updateSourceIdentifier()">
+                    <option value="">-- Select your identifier --</option>
+                    <?php if (!empty($sourceOptions['phone'])): ?>
+                        <optgroup label="📱 Phone Numbers">
+                            <?php foreach ($sourceOptions['phone'] as $phone): ?>
+                                <option value="<?= htmlspecialchars($phone) ?>" data-type="phone">📱 <?= htmlspecialchars($phone) ?></option>
+                            <?php endforeach; ?>
+                        </optgroup>
+                    <?php endif; ?>
+                    <?php if (!empty($sourceOptions['email'])): ?>
+                        <optgroup label="✉️ Email">
+                            <?php foreach ($sourceOptions['email'] as $email): ?>
+                                <option value="<?= htmlspecialchars($email) ?>" data-type="email">✉️ <?= htmlspecialchars($email) ?></option>
+                            <?php endforeach; ?>
+                        </optgroup>
+                    <?php endif; ?>
+                    <?php if (!empty($sourceOptions['national_id'])): ?>
+                        <optgroup label="🆔 National ID">
+                            <?php foreach ($sourceOptions['national_id'] as $id): ?>
+                                <option value="<?= htmlspecialchars($id) ?>" data-type="national_id">🆔 <?= htmlspecialchars($id) ?></option>
+                            <?php endforeach; ?>
+                        </optgroup>
+                    <?php endif; ?>
+                    <?php if (!empty($sourceOptions['drivers_license'])): ?>
+                        <optgroup label="🚗 Driver's License">
+                            <?php foreach ($sourceOptions['drivers_license'] as $dl): ?>
+                                <option value="<?= htmlspecialchars($dl) ?>" data-type="drivers_license">🚗 <?= htmlspecialchars($dl) ?></option>
+                            <?php endforeach; ?>
+                        </optgroup>
+                    <?php endif; ?>
+                    <?php if (!empty($sourceOptions['passport'])): ?>
+                        <optgroup label="📖 Passport">
+                            <?php foreach ($sourceOptions['passport'] as $passport): ?>
+                                <option value="<?= htmlspecialchars($passport) ?>" data-type="passport">📖 <?= htmlspecialchars($passport) ?></option>
+                            <?php endforeach; ?>
+                        </optgroup>
+                    <?php endif; ?>
+                </select>
+                <div class="help-text" style="margin-top: 4px;">Only identifiers you have added are shown. <a href="#" onclick="document.getElementById('addIdentifierSection').scrollIntoView({behavior:'smooth'}); return false;" style="color: #00f0ff;">Add a new identifier</a></div>
+            </div>
+
+            <!-- ============================================================
                  MULTI-SOURCE TOGGLE AND SOURCES
                  ============================================================ -->
             <div class="multi-source-toggle">
@@ -1218,7 +1297,7 @@ $identifiersJson = json_encode($validIdentifiers);
             <!-- ============================================================
                  ADD IDENTIFIER SECTION - WITH OTP VERIFICATION
                  ============================================================ -->
-            <div class="add-identifier-section">
+            <div id="addIdentifierSection" class="add-identifier-section">
                 <div class="row">
                     <select id="newIdentifierType">
                         <option value="phone">📱 Phone</option>
@@ -1314,6 +1393,7 @@ const participants = <?= json_encode($participantOptions) ?>;
 const currencySymbol = '<?= $currencySymbol ?>';
 const loggedPhone = '<?= $loggedPhone ?>';
 const userIdentifiers = <?= $identifiersJson ?>;
+const sourceOptions = <?= $sourceOptionsJson ?>;
 
 // Store pending identifier for OTP verification
 let pendingIdentifierType = null;
@@ -1339,7 +1419,7 @@ const corridorWarning = document.getElementById('corridorWarning');
 const denominationInfo = document.getElementById('denominationInfo');
 const amountInput = document.getElementById('amount');
 const summaryDiv = document.getElementById('summary');
-const sourceIdentifierInput = document.getElementById('sourceIdentifier');
+const sourceIdentifierSelect = document.getElementById('sourceIdentifierSelect');
 const identifierTypeSelect = document.getElementById('identifierType');
 
 // Multi-source elements
@@ -1364,13 +1444,33 @@ let sourceCounter = 0;
 let sources = [];
 
 // ============================================================
-// IDENTIFIER MANAGEMENT - ONLY ADDED IDENTIFIERS ARE USED
+// SOURCE IDENTIFIER MANAGEMENT - DROPDOWN FROM ADDED IDENTIFIERS
 // ============================================================
 
+function updateSourceIdentifier() {
+    const selected = sourceIdentifierSelect.value;
+    const option = sourceIdentifierSelect.options[sourceIdentifierSelect.selectedIndex];
+    const type = option?.dataset?.type || 'auto';
+    
+    // Update the identifier type dropdown to match
+    if (type && type !== 'auto') {
+        const typeOptions = {
+            'phone': 'phone',
+            'email': 'email',
+            'national_id': 'national_id',
+            'drivers_license': 'national_id',
+            'passport': 'national_id'
+        };
+        if (identifierTypeSelect) {
+            identifierTypeSelect.value = typeOptions[type] || 'auto';
+        }
+    }
+    
+    updateSummary();
+}
+
 function getAvailableIdentifiers() {
-    // Return only identifiers that exist in the session
-    const identifiers = <?= $identifiersJson ?>;
-    return identifiers;
+    return userIdentifiers;
 }
 
 function updateIdentifiersDisplay() {
@@ -1563,8 +1663,14 @@ function addSource() {
         </div>
         <div id="${sourceId}_fields" class="dynamic-fields" style="margin-top:12px; padding-top:12px; border-top:1px solid #2a2f4a;"></div>
         <div class="form-group" style="margin-top:8px;">
-            <label>Identifier (Phone/National ID/Email)</label>
-            <input type="text" id="${sourceId}_identifier" placeholder="Enter identifier" value="${loggedPhone}" oninput="updateSummary()">
+            <label>Identifier</label>
+            <select id="${sourceId}_identifierSelect" class="source-identifier-select" style="width:100%; padding:8px; background:#1a1f3a; border:1px solid #2a2f4a; border-radius:8px; color:#fff; font-size:13px;">
+                <option value="">-- Select identifier --</option>
+                ${Object.entries(sourceOptions).map(([type, values]) => 
+                    values.length > 0 ? 
+                    `<optgroup label="${type.toUpperCase()}">${values.map(v => `<option value="${v}" data-type="${type}">${v}</option>`).join('')}</optgroup>` : ''
+                ).join('')}
+            </select>
         </div>
     `;
     
@@ -1673,7 +1779,7 @@ function updateSummary() {
             const amountEl = document.getElementById(s.id + '_amount');
             const instEl = document.getElementById(s.id + '_institution');
             const assetEl = document.getElementById(s.id + '_assetType');
-            const identEl = document.getElementById(s.id + '_identifier');
+            const identEl = document.getElementById(s.id + '_identifierSelect');
             
             const amount = parseFloat(amountEl?.value) || 0;
             total += amount;
@@ -1712,18 +1818,17 @@ function buildPayload() {
     const toInst = toInstSelect.value;
     const assetType = assetTypeSelect.value;
     const swapType = swapTypeSelect.value;
-    const sourceIdentifier = sourceIdentifierInput?.value.trim() || '';
+    const sourceIdentifier = sourceIdentifierSelect?.value || '';
     
     const isMulti = multiSourceToggle.checked;
     const reference = 'SWAP_' + Date.now();
     const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
     
-    // Identifier type - ONLY use added identifiers
-    let identifierType = identifierTypeSelect?.value || 'auto';
-    if (identifierType === 'auto' && sourceIdentifier) {
-        if (sourceIdentifier.match(/^[\+]?[0-9]{10,15}$/)) identifierType = 'phone';
-        else if (sourceIdentifier.match(/^[A-Z0-9]{6,20}$/i)) identifierType = 'national_id';
-        else if (sourceIdentifier.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) identifierType = 'email';
+    // Get identifier type from selected option
+    let identifierType = 'auto';
+    const option = sourceIdentifierSelect.options[sourceIdentifierSelect.selectedIndex];
+    if (option && option.dataset.type) {
+        identifierType = option.dataset.type;
     }
     
     // Base payload
@@ -1743,6 +1848,19 @@ function buildPayload() {
     if (identifierType === 'phone') payload.source_phone = sourceIdentifier;
     else if (identifierType === 'national_id') payload.source_national_id = sourceIdentifier;
     else if (identifierType === 'email') payload.source_email = sourceIdentifier;
+    else {
+        // Auto-detect if not specified
+        if (sourceIdentifier.match(/^[\+]?[0-9]{10,15}$/)) {
+            payload.source_identifier_type = 'phone';
+            payload.source_phone = sourceIdentifier;
+        } else if (sourceIdentifier.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
+            payload.source_identifier_type = 'email';
+            payload.source_email = sourceIdentifier;
+        } else {
+            payload.source_identifier_type = 'national_id';
+            payload.source_national_id = sourceIdentifier;
+        }
+    }
     
     if (isMulti) {
         const sourcesList = [];
@@ -1752,12 +1870,13 @@ function buildPayload() {
             const instEl = document.getElementById(s.id + '_institution');
             const assetEl = document.getElementById(s.id + '_assetType');
             const amountEl = document.getElementById(s.id + '_amount');
-            const identEl = document.getElementById(s.id + '_identifier');
+            const identEl = document.getElementById(s.id + '_identifierSelect');
             
             const inst = instEl?.value || '';
             const asset = assetEl?.value || 'ACCOUNT';
             const amount = parseFloat(amountEl?.value) || 0;
-            const ident = identEl?.value.trim() || '';
+            const ident = identEl?.value || '';
+            const identType = identEl?.options[identEl.selectedIndex]?.dataset?.type || 'auto';
             
             if (inst && amount > 0) {
                 const fields = {};
@@ -1774,7 +1893,7 @@ function buildPayload() {
                     asset_type: asset,
                     amount: amount,
                     identifier: ident,
-                    identifier_type: 'auto',
+                    identifier_type: identType,
                     asset_fields: fields
                 });
                 
@@ -1946,7 +2065,7 @@ function updateDestinationFields() {
         destFieldsContainer.innerHTML = `
             <div class="form-group">
                 <label>📱 BENEFICIARY PHONE</label>
-                <input type="tel" id="beneficiaryPhone" placeholder="+267XXXXXXXX" value="<?= $loggedPhone ?>">
+                <input type="tel" id="beneficiaryPhone" placeholder="+267XXXXXXXX" value="${loggedPhone}">
             </div>
             <div class="info-note">💡 ATM cashout code will be sent via SMS to this number.</div>
         `;
@@ -2155,6 +2274,14 @@ if (executeBtn) {
         if (!toInst) { alert('Select DESTINATION institution'); return; }
         if (!assetType) { alert('Select asset type'); return; }
         
+        // Check source identifier
+        const sourceIdentifier = sourceIdentifierSelect?.value;
+        if (!sourceIdentifier && !isMulti) {
+            alert('Please select your source identifier');
+            sourceIdentifierSelect.focus();
+            return;
+        }
+        
         if (isMulti) {
             let hasError = false;
             let totalAmount = 0;
@@ -2162,7 +2289,7 @@ if (executeBtn) {
             sources.forEach(s => {
                 const instEl = document.getElementById(s.id + '_institution');
                 const amountEl = document.getElementById(s.id + '_amount');
-                const identEl = document.getElementById(s.id + '_identifier');
+                const identEl = document.getElementById(s.id + '_identifierSelect');
                 const assetEl = document.getElementById(s.id + '_assetType');
                 
                 if (!instEl?.value) { hasError = true; alert('Select institution for source ' + s.counter); return; }
@@ -2172,7 +2299,7 @@ if (executeBtn) {
                     alert('Enter valid amount for source ' + s.counter); 
                     return; 
                 }
-                if (!identEl?.value) { hasError = true; alert('Enter identifier for source ' + s.counter); return; }
+                if (!identEl?.value) { hasError = true; alert('Select identifier for source ' + s.counter); return; }
                 
                 totalAmount += parseFloat(amountEl.value) || 0;
             });
@@ -2183,10 +2310,8 @@ if (executeBtn) {
         } else {
             const fromInst = fromInstSelect.value;
             const amount = parseFloat(amountInput.value);
-            const sourceIdentifier = sourceIdentifierInput?.value.trim();
             
             if (!fromInst) { alert('Select SOURCE institution'); return; }
-            if (!sourceIdentifier) { alert('Enter source identifier'); return; }
             if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
             if (fromInst === toInst) { alert('Source and destination must be different'); return; }
         }
