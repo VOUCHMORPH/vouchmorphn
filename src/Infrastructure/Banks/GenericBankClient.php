@@ -353,6 +353,8 @@ class GenericBankClient implements BankAPIInterface
             'debitHold' => ['source', 'debit_funds'],
             'release_hold' => ['source', 'release_hold'],
             'releaseHold' => ['source', 'release_hold'],
+             'get_balance' => ['source', 'get_balance'],         
+        'balance' => ['source', 'get_balance'], 
             'generate_token' => ['destination_cashout', 'generate_token'],
             'generateToken' => ['destination_cashout', 'generate_token'],
             'generateTokenWithProof' => ['destination_cashout', 'generate_token'],
