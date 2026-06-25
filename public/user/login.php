@@ -1,5 +1,7 @@
 <?php
 // public/user/login.php - COMPLETE FIXED VERSION
+// Supports: phone, phone2, phone3, email, national_id, drivers_license, passport
+
 ob_start();
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
@@ -23,7 +25,7 @@ if (SessionManager::isLoggedIn()) {
 }
 
 // --------------------------------------------------
-// 2️⃣ Load Country & Config
+// Load Country & Config
 // --------------------------------------------------
 try {
     $config = LoadCountry::getConfig();
@@ -50,7 +52,7 @@ $countryName       = $countryConfig['name'] ?? $systemCountry;
 $phonePattern = '[0-9]{' . $localLength . '}';
 
 // --------------------------------------------------
-// 3️⃣ DB Bootstrap - Using DBConnection
+// DB Bootstrap - Using DBConnection
 // --------------------------------------------------
 try {
     $db = DBConnection::getConnection();
@@ -73,7 +75,7 @@ try {
 }
 
 // --------------------------------------------------
-// 4️⃣ Helpers
+// Helpers
 // --------------------------------------------------
 function normalizePhone(string $phoneInput, string $dialCode): string
 {
@@ -99,29 +101,37 @@ function getLocalPhonePart(string $fullPhone, string $dialCode): string
 }
 
 // -------------------------------------------------
-// 5️⃣ Handle Login POST
+// Handle Login POST - Supports ALL identifiers
 // -------------------------------------------------
 $error = '';
-$phone = '';
-$formattedPhone = '';
+$inputValue = '';
+$formattedValue = '';
 $loginMethod = $_POST['login_method'] ?? 'phone';
+$identifierType = $_POST['identifier_type'] ?? 'phone';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    error_log("[USER LOGIN] POST request received - Method: {$loginMethod}");
+    error_log("[USER LOGIN] POST request received - Method: {$loginMethod}, Type: {$identifierType}");
     
-    $phoneInput = trim($_POST['phone'] ?? '');
-    $formattedPhone = normalizePhone($phoneInput, $countryDialCode);
-    $phone = getLocalPhonePart($formattedPhone, $countryDialCode);
+    $rawInput = trim($_POST['identifier'] ?? $_POST['phone'] ?? '');
     
-    error_log("[USER LOGIN] Phone input: {$phoneInput}, Formatted: {$formattedPhone}");
+    // Normalize based on type
+    if ($identifierType === 'phone' || $loginMethod === 'phone' || $loginMethod === 'pin') {
+        $formattedValue = normalizePhone($rawInput, $countryDialCode);
+        $inputValue = getLocalPhonePart($formattedValue, $countryDialCode);
+    } else {
+        $formattedValue = $rawInput;
+        $inputValue = $rawInput;
+    }
+    
+    error_log("[USER LOGIN] Input: {$rawInput}, Formatted: {$formattedValue}, Type: {$identifierType}");
 
     if ($loginMethod === 'pin') {
         // PIN LOGIN
         $pin = trim($_POST['pin'] ?? '');
 
-        if ($phoneInput === '' || $pin === '') {
-            $error = "Phone number and PIN are required.";
-            error_log("[USER LOGIN] Missing phone or PIN");
+        if ($rawInput === '' || $pin === '') {
+            $error = "Identifier and PIN are required.";
+            error_log("[USER LOGIN] Missing identifier or PIN");
         } else {
             try {
                 $tableCheck = $db->query("SELECT 1 FROM users LIMIT 1");
@@ -129,15 +139,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     error_log("[USER LOGIN] Users table may not exist");
                     $error = "System configuration error. Please contact support.";
                 } else {
-                    // FIXED: Use correct column names from your table
-                    $stmt = $db->prepare(
-                        "SELECT user_id, phone, username, full_name, password_hash, verified, created_at, 
-                                has_transaction_pin as pin_enabled
-                         FROM users
-                         WHERE phone = :phone
-                         LIMIT 1"
-                    );
-                    $stmt->execute([':phone' => $formattedPhone]);
+                    // Search ALL identifier columns
+                    $stmt = $db->prepare("
+                        SELECT user_id, phone, phone2, phone3, email, 
+                               national_id, drivers_license, passport,
+                               username, full_name, password_hash, verified, 
+                               created_at, has_transaction_pin as pin_enabled
+                        FROM users
+                        WHERE phone = :identifier
+                           OR phone2 = :identifier
+                           OR phone3 = :identifier
+                           OR email = :identifier
+                           OR national_id = :identifier
+                           OR drivers_license = :identifier
+                           OR passport = :identifier
+                        LIMIT 1
+                    ");
+                    $stmt->execute([':identifier' => $formattedValue]);
                     $user = $stmt->fetch(\PDO::FETCH_ASSOC);
                     
                     error_log("[USER LOGIN] User found: " . ($user ? 'YES' : 'NO'));
@@ -147,7 +165,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         error_log("[USER LOGIN] User not found or not verified");
                     } elseif (!password_verify($pin, $user['password_hash'])) {
                         $error = "Invalid PIN.";
-                        error_log("[USER LOGIN] PIN verification failed for {$formattedPhone}");
+                        error_log("[USER LOGIN] PIN verification failed for {$formattedValue}");
                     } else {
                         session_regenerate_id(true);
 
@@ -156,13 +174,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'username'    => $user['username'] ?? '',
                             'full_name'   => $user['full_name'] ?? $user['username'],
                             'phone'       => $user['phone'],
+                            'phone2'      => $user['phone2'] ?? null,
+                            'phone3'      => $user['phone3'] ?? null,
+                            'email'       => $user['email'] ?? null,
+                            'national_id' => $user['national_id'] ?? null,
+                            'drivers_license' => $user['drivers_license'] ?? null,
+                            'passport'    => $user['passport'] ?? null,
                             'role'        => 'USER',
                             'country'     => $systemCountry,
                             'created_at'  => $user['created_at'] ?? null,
                             'pin_enabled' => (int)($user['pin_enabled'] ?? 0) === 1
                         ]);
 
-                        error_log("[USER LOGIN] PIN LOGIN SUCCESS: {$formattedPhone}");
+                        error_log("[USER LOGIN] PIN LOGIN SUCCESS: {$formattedValue}");
                         header('Location: user_dashboard.php');
                         exit();
                     }
@@ -174,10 +198,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
     } else {
-        // PHONE LOGIN
-        if ($phoneInput === '') {
-            $error = "Phone number is required.";
-            error_log("[USER LOGIN] Missing phone number");
+        // PHONE/IDENTIFIER LOGIN
+        if ($rawInput === '') {
+            $error = "Identifier is required.";
+            error_log("[USER LOGIN] Missing identifier");
         } else {
             try {
                 $tableCheck = $db->query("SELECT 1 FROM users LIMIT 1");
@@ -185,15 +209,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     error_log("[USER LOGIN] Users table may not exist");
                     $error = "System configuration error. Please contact support.";
                 } else {
-                    // FIXED: Use correct column names from your table
-                    $stmt = $db->prepare(
-                        "SELECT user_id, phone, username, full_name, created_at, verified, 
-                                has_transaction_pin as pin_enabled
-                         FROM users
-                         WHERE phone = :phone
-                         LIMIT 1"
-                    );
-                    $stmt->execute([':phone' => $formattedPhone]);
+                    // Search ALL identifier columns
+                    $stmt = $db->prepare("
+                        SELECT user_id, phone, phone2, phone3, email, 
+                               national_id, drivers_license, passport,
+                               username, full_name, created_at, verified, 
+                               has_transaction_pin as pin_enabled
+                        FROM users
+                        WHERE phone = :identifier
+                           OR phone2 = :identifier
+                           OR phone3 = :identifier
+                           OR email = :identifier
+                           OR national_id = :identifier
+                           OR drivers_license = :identifier
+                           OR passport = :identifier
+                        LIMIT 1
+                    ");
+                    $stmt->execute([':identifier' => $formattedValue]);
                     $user = $stmt->fetch(\PDO::FETCH_ASSOC);
                     
                     error_log("[USER LOGIN] User found: " . ($user ? 'YES' : 'NO'));
@@ -209,19 +241,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'username'    => $user['username'] ?? '',
                             'full_name'   => $user['full_name'] ?? $user['username'],
                             'phone'       => $user['phone'],
+                            'phone2'      => $user['phone2'] ?? null,
+                            'phone3'      => $user['phone3'] ?? null,
+                            'email'       => $user['email'] ?? null,
+                            'national_id' => $user['national_id'] ?? null,
+                            'drivers_license' => $user['drivers_license'] ?? null,
+                            'passport'    => $user['passport'] ?? null,
                             'role'        => 'USER',
                             'country'     => $systemCountry,
                             'created_at'  => $user['created_at'] ?? null,
                             'pin_enabled' => (int)($user['pin_enabled'] ?? 0) === 1
                         ]);
 
-                        error_log("[USER LOGIN] PHONE LOGIN SUCCESS: {$formattedPhone}");
+                        error_log("[USER LOGIN] IDENTIFIER LOGIN SUCCESS: {$formattedValue}");
                         header('Location: user_dashboard.php');
                         exit();
                     }
                 }
             } catch (\Throwable $e) {
-                error_log("[USER LOGIN] PHONE LOGIN QUERY ERROR: " . $e->getMessage());
+                error_log("[USER LOGIN] IDENTIFIER LOGIN QUERY ERROR: " . $e->getMessage());
                 error_log("[USER LOGIN] Stack trace: " . $e->getTraceAsString());
                 $error = "System error. Please try again.";
             }
@@ -292,9 +330,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     .tab-pane.active { display: block; animation: fadeInUp 0.4s ease; }
     .form-group { margin-bottom: 1.5rem; }
     .form-group label { display: block; margin-bottom: 0.5rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #C0C0D0; }
+    .identifier-type-selector {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        margin-bottom: 0.75rem;
+    }
+    .id-type-btn {
+        padding: 0.4rem 0.8rem;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.1);
+        color: #808090;
+        font-size: 0.7rem;
+        font-weight: 500;
+        text-transform: uppercase;
+        cursor: pointer;
+        transition: all 0.2s;
+        border-radius: 0px;
+        font-family: 'Inter', sans-serif;
+    }
+    .id-type-btn.active {
+        border-color: #00F0FF;
+        color: #00F0FF;
+        background: rgba(0, 240, 255, 0.1);
+    }
+    .id-type-btn:hover { color: #FFFFFF; }
     .phone-input-container { display: flex; border: 1px solid rgba(255, 255, 255, 0.15); background: rgba(0, 0, 0, 0.5); transition: all 0.2s ease; border-radius: 0px; }
     .phone-input-container:focus-within { border-color: #00F0FF; box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.2); }
-    .phone-prefix { padding: 0.875rem 1rem; font-family: 'Space Grotesk', monospace; font-weight: 500; color: #00F0FF; background: rgba(0, 240, 255, 0.05); border-right: 1px solid rgba(255, 255, 255, 0.1); letter-spacing: 0.5px; }
+    .phone-prefix { padding: 0.875rem 1rem; font-family: 'Space Grotesk', monospace; font-weight: 500; color: #00F0FF; background: rgba(0, 240, 255, 0.05); border-right: 1px solid rgba(255, 255, 255, 0.1); letter-spacing: 0.5px; display: none; }
+    .phone-prefix.show { display: flex; }
     .form-control { flex: 1; border: none; padding: 0.875rem 1rem; font-size: 1rem; font-family: 'Inter', sans-serif; background: transparent; color: #FFFFFF; outline: none; }
     .form-control::placeholder { color: #505060; }
     .pin-input { font-family: 'Space Grotesk', monospace; font-size: 1.25rem; letter-spacing: 0.5rem; text-align: center; }
@@ -317,6 +381,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .login-form { padding: 1.5rem; }
         .login-footer { padding: 1rem 1.5rem; }
         .login-links { gap: 1rem; }
+        .identifier-type-selector { gap: 0.25rem; }
+        .id-type-btn { font-size: 0.6rem; padding: 0.3rem 0.6rem; }
     }
 </style>
 </head>
@@ -335,7 +401,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
 
     <div class="login-tabs">
-        <button type="button" class="tab-btn active" data-tab="phone">📱 PHONE LOGIN</button>
+        <button type="button" class="tab-btn active" data-tab="phone">📱 IDENTIFIER LOGIN</button>
         <button type="button" class="tab-btn" data-tab="pin">🔐 PIN LOGIN</button>
     </div>
 
@@ -344,49 +410,73 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="error-message"><?= htmlspecialchars($error) ?></div>
         <?php endif; ?>
 
+        <!-- IDENTIFIER LOGIN -->
         <div id="phone-tab" class="tab-pane active">
             <form method="POST" novalidate>
                 <input type="hidden" name="login_method" value="phone">
                 <div class="form-group">
-                    <label>MOBILE NUMBER</label>
+                    <label>IDENTIFIER TYPE</label>
+                    <div class="identifier-type-selector">
+                        <button type="button" class="id-type-btn active" data-type="phone" onclick="setIdentifierType('phone')">📱 Phone</button>
+                        <button type="button" class="id-type-btn" data-type="email" onclick="setIdentifierType('email')">✉️ Email</button>
+                        <button type="button" class="id-type-btn" data-type="national_id" onclick="setIdentifierType('national_id')">🆔 National ID</button>
+                        <button type="button" class="id-type-btn" data-type="drivers_license" onclick="setIdentifierType('drivers_license')">🚗 License</button>
+                        <button type="button" class="id-type-btn" data-type="passport" onclick="setIdentifierType('passport')">📖 Passport</button>
+                    </div>
+                    <input type="hidden" name="identifier_type" id="identifier_type" value="phone">
+                </div>
+                <div class="form-group">
+                    <label id="identifier-label">MOBILE NUMBER</label>
                     <div class="phone-input-container">
-                        <span class="phone-prefix"><?= htmlspecialchars($countryDialCode) ?></span>
+                        <span class="phone-prefix show" id="phone-prefix"><?= htmlspecialchars($countryDialCode) ?></span>
                         <input
-                            type="tel"
-                            name="phone"
+                            type="text"
+                            name="identifier"
+                            id="identifier-input"
                             class="form-control"
                             required
-                            value="<?= htmlspecialchars($phone) ?>"
+                            value="<?= htmlspecialchars($inputValue) ?>"
                             placeholder="<?= htmlspecialchars($phonePlaceholder) ?>"
-                            pattern="<?= htmlspecialchars($phonePattern) ?>"
-                            inputmode="numeric"
-                            autocomplete="tel-national"
+                            autocomplete="off"
                         >
                     </div>
+                    <div style="font-size: 0.7rem; color: #606070; margin-top: 0.5rem;" id="identifier-help">Enter your primary phone number</div>
                 </div>
                 <button type="submit" class="login-btn">ACCESS PLATFORM →</button>
             </form>
         </div>
 
+        <!-- PIN LOGIN -->
         <div id="pin-tab" class="tab-pane">
             <form method="POST" novalidate>
                 <input type="hidden" name="login_method" value="pin">
+                <input type="hidden" name="identifier_type" id="pin_identifier_type" value="phone">
                 <div class="form-group">
-                    <label>MOBILE NUMBER</label>
+                    <label>IDENTIFIER TYPE</label>
+                    <div class="identifier-type-selector">
+                        <button type="button" class="id-type-btn active" data-type="phone" onclick="setPinIdentifierType('phone')">📱 Phone</button>
+                        <button type="button" class="id-type-btn" data-type="email" onclick="setPinIdentifierType('email')">✉️ Email</button>
+                        <button type="button" class="id-type-btn" data-type="national_id" onclick="setPinIdentifierType('national_id')">🆔 National ID</button>
+                        <button type="button" class="id-type-btn" data-type="drivers_license" onclick="setPinIdentifierType('drivers_license')">🚗 License</button>
+                        <button type="button" class="id-type-btn" data-type="passport" onclick="setPinIdentifierType('passport')">📖 Passport</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label id="pin-identifier-label">MOBILE NUMBER</label>
                     <div class="phone-input-container">
-                        <span class="phone-prefix"><?= htmlspecialchars($countryDialCode) ?></span>
+                        <span class="phone-prefix show" id="pin-phone-prefix"><?= htmlspecialchars($countryDialCode) ?></span>
                         <input
-                            type="tel"
-                            name="phone"
+                            type="text"
+                            name="identifier"
+                            id="pin-identifier-input"
                             class="form-control"
                             required
-                            value="<?= htmlspecialchars($phone) ?>"
+                            value="<?= htmlspecialchars($inputValue) ?>"
                             placeholder="<?= htmlspecialchars($phonePlaceholder) ?>"
-                            pattern="<?= htmlspecialchars($phonePattern) ?>"
-                            inputmode="numeric"
-                            autocomplete="tel-national"
+                            autocomplete="off"
                         >
                     </div>
+                    <div style="font-size: 0.7rem; color: #606070; margin-top: 0.5rem;" id="pin-identifier-help">Enter your primary phone number</div>
                 </div>
                 <div class="form-group">
                     <label>PIN CODE</label>
@@ -404,7 +494,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <button type="submit" class="login-btn">LOGIN WITH PIN →</button>
             </form>
             <div class="security-notice">
-                <strong>🔐 Forgot PIN?</strong> Use phone login to recover your account.
+                <strong>🔐 Forgot PIN?</strong> Use identifier login to recover your account.
             </div>
         </div>
     </div>
@@ -419,35 +509,139 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </div>
 
 <script>
-    const cursor = document.querySelector('.cursor');
-    const follower = document.querySelector('.cursor-follower');
+const countryDialCode = '<?= $countryDialCode ?>';
+
+// --- Identifier Login ---
+function setIdentifierType(type) {
+    document.querySelectorAll('#phone-tab .id-type-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelector(`#phone-tab .id-type-btn[data-type="${type}"]`)?.classList.add('active');
+    document.getElementById('identifier_type').value = type;
+    updateIdentifierFields('phone', type);
+}
+
+function updateIdentifierFields(tab, type) {
+    const isPhone = type === 'phone';
+    const prefix = document.getElementById('phone-prefix');
+    const input = document.getElementById('identifier-input');
+    const label = document.getElementById('identifier-label');
+    const help = document.getElementById('identifier-help');
     
-    if (cursor && follower) {
-        document.addEventListener('mousemove', (e) => {
-            cursor.style.left = e.clientX + 'px';
-            cursor.style.top = e.clientY + 'px';
-            follower.style.left = e.clientX - 16 + 'px';
-            follower.style.top = e.clientY - 16 + 'px';
-        });
+    if (isPhone) {
+        prefix.classList.add('show');
+        input.type = 'tel';
+        input.placeholder = '<?= htmlspecialchars($phonePlaceholder) ?>';
+        label.textContent = 'MOBILE NUMBER';
+        help.textContent = 'Enter your primary phone number';
+    } else {
+        prefix.classList.remove('show');
+        input.type = 'text';
+        const labels = {
+            'email': 'EMAIL ADDRESS',
+            'national_id': 'NATIONAL ID NUMBER',
+            'drivers_license': "DRIVER'S LICENSE NUMBER",
+            'passport': 'PASSPORT NUMBER'
+        };
+        const helps = {
+            'email': 'Enter your email address',
+            'national_id': 'Enter your National ID number',
+            'drivers_license': "Enter your Driver's License number",
+            'passport': 'Enter your Passport number'
+        };
+        const placeholders = {
+            'email': 'you@example.com',
+            'national_id': 'Enter National ID',
+            'drivers_license': "Enter Driver's License",
+            'passport': 'Enter Passport number'
+        };
+        label.textContent = labels[type] || 'IDENTIFIER';
+        input.placeholder = placeholders[type] || 'Enter your identifier';
+        help.textContent = helps[type] || 'Enter your identifier';
     }
+    input.value = '';
+}
+
+// --- PIN Login ---
+function setPinIdentifierType(type) {
+    document.querySelectorAll('#pin-tab .id-type-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelector(`#pin-tab .id-type-btn[data-type="${type}"]`)?.classList.add('active');
+    document.getElementById('pin_identifier_type').value = type;
+    updatePinIdentifierFields(type);
+}
+
+function updatePinIdentifierFields(type) {
+    const isPhone = type === 'phone';
+    const prefix = document.getElementById('pin-phone-prefix');
+    const input = document.getElementById('pin-identifier-input');
+    const label = document.getElementById('pin-identifier-label');
+    const help = document.getElementById('pin-identifier-help');
     
-    // Tab switching
-    document.querySelectorAll('.tab-btn').forEach(button => {
-        button.addEventListener('click', function () {
-            const tab = this.dataset.tab;
+    if (isPhone) {
+        prefix.classList.add('show');
+        input.type = 'tel';
+        input.placeholder = '<?= htmlspecialchars($phonePlaceholder) ?>';
+        label.textContent = 'MOBILE NUMBER';
+        help.textContent = 'Enter your primary phone number';
+    } else {
+        prefix.classList.remove('show');
+        input.type = 'text';
+        const labels = {
+            'email': 'EMAIL ADDRESS',
+            'national_id': 'NATIONAL ID NUMBER',
+            'drivers_license': "DRIVER'S LICENSE NUMBER",
+            'passport': 'PASSPORT NUMBER'
+        };
+        const helps = {
+            'email': 'Enter your email address',
+            'national_id': 'Enter your National ID number',
+            'drivers_license': "Enter your Driver's License number",
+            'passport': 'Enter your Passport number'
+        };
+        const placeholders = {
+            'email': 'you@example.com',
+            'national_id': 'Enter National ID',
+            'drivers_license': "Enter Driver's License",
+            'passport': 'Enter Passport number'
+        };
+        label.textContent = labels[type] || 'IDENTIFIER';
+        input.placeholder = placeholders[type] || 'Enter your identifier';
+        help.textContent = helps[type] || 'Enter your identifier';
+    }
+    input.value = '';
+}
 
-            document.querySelectorAll('.tab-pane').forEach(pane => {
-                pane.classList.remove('active');
-            });
-
-            document.querySelectorAll('.tab-btn').forEach(btn => {
-                btn.classList.remove('active');
-            });
-
-            document.getElementById(tab + '-tab').classList.add('active');
-            this.classList.add('active');
-        });
+// --- Tab switching ---
+document.querySelectorAll('.tab-btn').forEach(button => {
+    button.addEventListener('click', function () {
+        const tab = this.dataset.tab;
+        document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('active'));
+        document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+        document.getElementById(tab + '-tab').classList.add('active');
+        this.classList.add('active');
     });
+});
+
+// --- Cursor ---
+const cursor = document.querySelector('.cursor');
+const follower = document.querySelector('.cursor-follower');
+if (cursor && follower) {
+    document.addEventListener('mousemove', (e) => {
+        cursor.style.left = e.clientX + 'px';
+        cursor.style.top = e.clientY + 'px';
+        follower.style.left = e.clientX - 16 + 'px';
+        follower.style.top = e.clientY - 16 + 'px';
+    });
+}
+
+// --- Enter key handlers ---
+document.getElementById('identifier-input')?.addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') this.closest('form').submit();
+});
+document.getElementById('pin-identifier-input')?.addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') this.closest('form').submit();
+});
+document.querySelector('#pin-tab input[name="pin"]')?.addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') this.closest('form').submit();
+});
 </script>
 </body>
 </html>
