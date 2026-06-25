@@ -126,7 +126,7 @@ try {
     $destInst = $input['to_institution'] ?? $input['destination_institution'] ?? null;
     $sourceCurrency = $input['currency'] ?? $currency;
     $destinationCurrency = $input['destination_currency'] ?? $sourceCurrency;
-    $strategy = $input['contribution_strategy'] ?? 'RATIO'; // RATIO, USER_SPECIFIED, DRAIN_SMALLEST
+    $strategy = $input['contribution_strategy'] ?? 'RATIO';
     
     // ============================================================
     // MULTI-SOURCE: GET BALANCES & CALCULATE CONTRIBUTIONS
@@ -271,7 +271,6 @@ try {
             
             if (abs($totalContributions - $totalRequested) > 0.01) {
                 error_log("[PREVIEW] Warning: Contributions total ({$totalContributions}) doesn't match requested ({$totalRequested})");
-                // Adjust the last contribution to match
                 if (count($sourceContributions) > 0) {
                     $lastIdx = count($sourceContributions) - 1;
                     $adjustment = $totalRequested - $totalContributions;
@@ -309,7 +308,7 @@ try {
     }
     
     // ============================================================
-    // FEE CALCULATION (works for both single and multi-source)
+    // FEE CALCULATION
     // ============================================================
     $feePayload = [
         'amount' => $amount,
@@ -323,7 +322,6 @@ try {
         'client_tier' => $input['client_tier'] ?? 'retail'
     ];
     
-    // If multi-source, add source count for fee calculation
     if ($isMultiSource && $multiSourceBreakdown) {
         $feePayload['source_count'] = count($sourceContributions);
         $feePayload['is_multi_source'] = true;
@@ -414,7 +412,8 @@ try {
                 'contribution_amount' => $sourceAmount,
                 'contribution_percentage' => $contrib['percentage_of_total'],
                 'fee_share' => round($sourceFee, 2),
-                'fee_share_percentage' => round(($sourceFee / $totalFee) * 100, 2),
+                // FIX: Only calculate percentage if totalFee > 0
+                'fee_share_percentage' => $totalFee > 0 ? round(($sourceFee / $totalFee) * 100, 2) : 0,
                 'net_contribution' => round($sourceAmount - $sourceFee, 2)
             ];
         }
