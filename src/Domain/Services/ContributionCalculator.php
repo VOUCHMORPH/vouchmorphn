@@ -3,29 +3,17 @@ declare(strict_types=1);
 
 namespace Domain\Services;
 
+use Domain\ValueObjects\ContributionStrategy;
+
 /**
- * Contribution Calculator - VOUCHER AWARE
+ * Contribution Calculator - VOUCHER AWARE with SMART Strategy
  * 
- * Vouchers are FIXED AMOUNTS - they cannot be split.
- * The full voucher amount must be used, and the remaining
- * balance comes from other flexible sources.
- * 
- * Asset Types that are FIXED (cannot be split):
- * - VOUCHER
- * - CASHOUT-VOUCHER
- * 
- * Asset Types that are FLEXIBLE (can be split/partial):
- * - ACCOUNT
- * - BANK-WALLET
- * - MNO-WALLET
- * - E-WALLET
- * - CARD (if tied to wallet/account)
- * - ATM (if tied to wallet/account, not a voucher)
- * 
- * The key distinction: 
- * - VOUCHER = fixed amount, cannot be split
- * - ATM code = can be split IF it's backed by a wallet (flexible)
- * - ATM code = cannot be split IF it's a voucher (fixed)
+ * Strategies:
+ * - EQUAL: Split equally among all sources (up to available balance)
+ * - RATIO: Proportional to available balance (default, but skewed)
+ * - PRIORITY: User-defined priority order
+ * - USER_SPECIFIED: User specifies exact amounts
+ * - SMART: Intelligent distribution - balances user preference with source limits
  */
 class ContributionCalculator
 {
@@ -40,7 +28,6 @@ class ContributionCalculator
     
     /**
      * Asset types that are FLEXIBLE (can be split/partial)
-     * These can be partially used
      */
     private array $flexibleAssetTypes = [
         'ACCOUNT',
@@ -54,15 +41,15 @@ class ContributionCalculator
 
     /**
      * Calculate contributions based on selected strategy
-     * VOUCHER-AWARE: Fixed amounts are used in full
      */
     public function calculateContributions(
         float $targetAmount,
-        array $sources, // Each source has ['institution', 'asset_type', 'identifier', 'available_balance']
-        string $strategy, // 'user_specified', 'ratio', 'drain_smallest'
-        ?array $userSpecified = null
+        array $sources,
+        string $strategy, // 'EQUAL', 'RATIO', 'SMART', 'PRIORITY', 'USER_SPECIFIED'
+        ?array $userSpecified = null,
+        ?array $priorityOrder = null
     ): array {
-        // First, separate fixed and flexible sources based on asset type AND context
+        // Separate fixed and flexible sources
         $fixedSources = [];
         $flexibleSources = [];
         $fixedTotal = 0;
@@ -70,14 +57,10 @@ class ContributionCalculator
         foreach ($sources as $source) {
             $assetType = strtoupper($source['asset_type'] ?? 'ACCOUNT');
             $isVoucher = $this->isVoucher($assetType);
-            
-            // Check if this is a voucher (fixed)
             $isFixed = $this->isFixedAsset($assetType);
             
-            // Special case: ATM code that is a voucher is fixed
-            // ATM code tied to wallet is flexible
+            // ATM special handling
             if ($assetType === 'ATM') {
-                // Check if this ATM is a voucher or wallet-backed
                 $isVoucherATM = $this->isVoucherATM($source);
                 if ($isVoucherATM) {
                     $isFixed = true;
@@ -88,14 +71,13 @@ class ContributionCalculator
                 }
             }
             
-            // Special case: CARD is flexible (can be split)
+            // CARD is flexible
             if ($assetType === 'CARD') {
                 $isFixed = false;
                 error_log("[ContributionCalculator] CARD is flexible");
             }
             
             if ($isFixed) {
-                // Fixed asset - full amount must be used
                 $fixedAmount = $source['available_balance'] ?? $source['amount'] ?? 0;
                 $fixedSources[] = [
                     'source' => $source,
@@ -128,12 +110,10 @@ class ContributionCalculator
         
         // Remaining amount to be covered by flexible sources
         $remainingAmount = $targetAmount - $fixedTotal;
-        
         error_log("[ContributionCalculator] Voucher total: {$fixedTotal}, Remaining: {$remainingAmount}");
         
         // If no remaining amount, only fixed sources are used
         if ($remainingAmount <= 0.01) {
-            // Return fixed sources only
             $result = [];
             foreach ($fixedSources as $fs) {
                 $result[] = [
@@ -155,7 +135,8 @@ class ContributionCalculator
             $remainingAmount,
             $flexibleSources,
             $strategy,
-            $userSpecified
+            $userSpecified,
+            $priorityOrder
         );
         
         // Combine fixed and flexible contributions
@@ -193,55 +174,14 @@ class ContributionCalculator
     }
     
     /**
-     * Check if an asset type is a voucher (fixed)
-     */
-    private function isFixedAsset(string $assetType): bool
-    {
-        $assetType = strtoupper($assetType);
-        return in_array($assetType, $this->fixedAssetTypes);
-    }
-    
-    /**
-     * Check if an asset type is a voucher
-     */
-    private function isVoucher(string $assetType): bool
-    {
-        $assetType = strtoupper($assetType);
-        return in_array($assetType, ['VOUCHER', 'CASHOUT-VOUCHER']);
-    }
-    
-    /**
-     * Check if ATM code is a voucher (fixed) or wallet-backed (flexible)
-     */
-    private function isVoucherATM(array $source): bool
-    {
-        // Check if the ATM has a voucher flag
-        if (isset($source['is_voucher']) && $source['is_voucher'] === true) {
-            return true;
-        }
-        
-        // Check if ATM code is tied to a voucher
-        if (isset($source['atm_type']) && strtoupper($source['atm_type']) === 'VOUCHER') {
-            return true;
-        }
-        
-        // Check if ATM has a wallet reference (flexible)
-        if (isset($source['wallet_id']) || isset($source['wallet_reference'])) {
-            return false; // Wallet-backed, flexible
-        }
-        
-        // Default: ATM is flexible (wallet-backed)
-        return false;
-    }
-    
-    /**
      * Calculate contributions for flexible sources only
      */
     private function calculateFlexibleContributions(
         float $targetAmount,
         array $flexibleSources,
         string $strategy,
-        ?array $userSpecified = null
+        ?array $userSpecified = null,
+        ?array $priorityOrder = null
     ): array {
         // If no flexible sources, throw error
         if (empty($flexibleSources)) {
@@ -250,7 +190,7 @@ class ContributionCalculator
             );
         }
         
-        // Check total available balance of flexible sources
+        // Check total available balance
         $totalFlexibleBalance = array_sum(array_column($flexibleSources, 'available_balance'));
         
         if ($totalFlexibleBalance < $targetAmount - 0.01) {
@@ -262,20 +202,193 @@ class ContributionCalculator
         
         // Apply strategy
         return match($strategy) {
-            'user_specified' => $this->calculateUserSpecifiedFlexible($targetAmount, $flexibleSources, $userSpecified),
-            'drain_smallest' => $this->calculateDrainSmallestFlexible($targetAmount, $flexibleSources),
-            default => $this->calculateRatioBasedFlexible($targetAmount, $flexibleSources)
+            'EQUAL' => $this->calculateEqualFlexible($targetAmount, $flexibleSources),
+            'RATIO' => $this->calculateRatioBasedFlexible($targetAmount, $flexibleSources),
+            'SMART' => $this->calculateSmartFlexible($targetAmount, $flexibleSources),
+            'PRIORITY' => $this->calculatePriorityFlexible($targetAmount, $flexibleSources, $priorityOrder),
+            'USER_SPECIFIED' => $this->calculateUserSpecifiedFlexible($targetAmount, $flexibleSources, $userSpecified),
+            default => $this->calculateSmartFlexible($targetAmount, $flexibleSources) // Default to SMART
         };
     }
     
     /**
-     * User specified amounts for flexible sources
+     * EQUAL strategy - Split equally among all sources
+     * This is more balanced than RATIO
+     */
+    private function calculateEqualFlexible(
+        float $targetAmount,
+        array $flexibleSources
+    ): array {
+        $sourceCount = count($flexibleSources);
+        $equalShare = $targetAmount / $sourceCount;
+        
+        $contributions = [];
+        $remaining = $targetAmount;
+        
+        // First pass: try to allocate equal shares
+        foreach ($flexibleSources as $index => $source) {
+            $available = $source['available_balance'];
+            $allocated = min($equalShare, $available, $remaining);
+            
+            $contributions[] = [
+                'source' => $source['source'],
+                'asset_type' => $source['asset_type'],
+                'requested_amount' => $allocated,
+                'actual_amount' => $allocated,
+                'contribution_type' => 'EQUAL',
+                'order' => $index + 1
+            ];
+            
+            $remaining -= $allocated;
+        }
+        
+        // If there's remaining amount, distribute it to sources that can handle more
+        if ($remaining > 0.01) {
+            $this->distributeRemaining($contributions, $flexibleSources, $remaining);
+        }
+        
+        return $contributions;
+    }
+    
+    /**
+     * SMART strategy - Balances user preference with source limits
+     * 
+     * This strategy:
+     * 1. Tries to keep contributions proportional to user preference (default: 50/50)
+     * 2. Respects source limits
+     * 3. Fills remaining from available sources
+     * 4. Prevents one source from being drained completely
+     */
+    private function calculateSmartFlexible(
+        float $targetAmount,
+        array $flexibleSources
+    ): array {
+        $sourceCount = count($flexibleSources);
+        $contributions = [];
+        $remaining = $targetAmount;
+        
+        // Step 1: Calculate ideal distribution (balanced, not skewed)
+        // Use 50/50 split if 2 sources, 33/33/34 if 3 sources, etc.
+        $idealShares = [];
+        $totalBalance = array_sum(array_column($flexibleSources, 'available_balance'));
+        
+        // If all balances are healthy, use equal split
+        $allHealthy = true;
+        $minBalance = PHP_FLOAT_MAX;
+        foreach ($flexibleSources as $source) {
+            $minBalance = min($minBalance, $source['available_balance']);
+            if ($source['available_balance'] < $targetAmount / $sourceCount) {
+                $allHealthy = false;
+            }
+        }
+        
+        // If all sources can cover equal share, use equal distribution
+        if ($allHealthy || $minBalance > $targetAmount / $sourceCount) {
+            $idealShare = $targetAmount / $sourceCount;
+            foreach ($flexibleSources as $index => $source) {
+                $allocated = min($idealShare, $source['available_balance']);
+                $contributions[] = [
+                    'source' => $source['source'],
+                    'asset_type' => $source['asset_type'],
+                    'requested_amount' => $allocated,
+                    'actual_amount' => $allocated,
+                    'contribution_type' => 'SMART',
+                    'order' => $index + 1
+                ];
+                $remaining -= $allocated;
+            }
+        } else {
+            // Use a hybrid approach: proportional but with a floor
+            $floorAmount = min($targetAmount * 0.1, $targetAmount / $sourceCount); // Minimum 10% each
+            
+            foreach ($flexibleSources as $index => $source) {
+                $available = $source['available_balance'];
+                $allocated = min($floorAmount, $available);
+                
+                $contributions[] = [
+                    'source' => $source['source'],
+                    'asset_type' => $source['asset_type'],
+                    'requested_amount' => $allocated,
+                    'actual_amount' => $allocated,
+                    'contribution_type' => 'SMART_FLOOR',
+                    'order' => $index + 1
+                ];
+                $remaining -= $allocated;
+            }
+        }
+        
+        // Step 2: Distribute remaining amount
+        if ($remaining > 0.01) {
+            $this->distributeRemaining($contributions, $flexibleSources, $remaining);
+        }
+        
+        return $contributions;
+    }
+    
+    /**
+     * PRIORITY strategy - Use sources in priority order
+     */
+    private function calculatePriorityFlexible(
+        float $targetAmount,
+        array $flexibleSources,
+        ?array $priorityOrder
+    ): array {
+        if (!$priorityOrder) {
+            // Default priority: use smallest balances first
+            return $this->calculateDrainSmallestFlexible($targetAmount, $flexibleSources);
+        }
+        
+        // Sort sources by priority order
+        usort($flexibleSources, function($a, $b) use ($priorityOrder) {
+            $aPriority = array_search($a['source']['institution'] ?? '', $priorityOrder);
+            $bPriority = array_search($b['source']['institution'] ?? '', $priorityOrder);
+            if ($aPriority === false) $aPriority = PHP_INT_MAX;
+            if ($bPriority === false) $bPriority = PHP_INT_MAX;
+            return $aPriority <=> $bPriority;
+        });
+        
+        $contributions = [];
+        $remaining = $targetAmount;
+        
+        foreach ($flexibleSources as $index => $source) {
+            if ($remaining <= 0.01) break;
+            
+            $takeFromSource = min($source['available_balance'], $remaining);
+            
+            if ($takeFromSource > 0) {
+                $contributions[] = [
+                    'source' => $source['source'],
+                    'asset_type' => $source['asset_type'],
+                    'requested_amount' => $takeFromSource,
+                    'actual_amount' => $takeFromSource,
+                    'contribution_type' => 'PRIORITY',
+                    'order' => $index + 1
+                ];
+                $remaining -= $takeFromSource;
+            }
+        }
+        
+        if ($remaining > 0.01) {
+            throw new \RuntimeException(
+                sprintf("Cannot reach target (%.2f) even after using priority sources", $targetAmount)
+            );
+        }
+        
+        return $contributions;
+    }
+    
+    /**
+     * USER_SPECIFIED strategy - User specified exact amounts
      */
     private function calculateUserSpecifiedFlexible(
         float $targetAmount,
         array $flexibleSources,
         ?array $userSpecified
     ): array {
+        if (!$userSpecified) {
+            throw new \RuntimeException("User specified amounts required for USER_SPECIFIED strategy");
+        }
+        
         $contributions = [];
         $totalSpecified = 0;
         
@@ -283,7 +396,6 @@ class ContributionCalculator
             $institution = $source['source']['institution'] ?? '';
             $specifiedAmount = $userSpecified[$institution] ?? 0;
             
-            // Validate not exceeding available balance
             $actualAmount = min($specifiedAmount, $source['available_balance']);
             $contributions[] = [
                 'source' => $source['source'],
@@ -296,7 +408,6 @@ class ContributionCalculator
             $totalSpecified += $actualAmount;
         }
         
-        // Validate total matches target
         if (abs($totalSpecified - $targetAmount) > 0.01) {
             throw new \RuntimeException(
                 sprintf("User specified total (%.2f) doesn't match target (%.2f)", 
@@ -308,7 +419,7 @@ class ContributionCalculator
     }
     
     /**
-     * Ratio-based distribution for flexible sources
+     * RATIO strategy - Proportional to available balance (original behavior)
      */
     private function calculateRatioBasedFlexible(
         float $targetAmount,
@@ -329,8 +440,6 @@ class ContributionCalculator
         foreach ($flexibleSources as $index => $source) {
             $ratio = $source['available_balance'] / $totalFlexibleBalance;
             $calculatedAmount = $targetAmount * $ratio;
-            
-            // Round to 2 decimal places
             $roundedAmount = round($calculatedAmount, 2);
             
             $contributions[] = [
@@ -344,7 +453,6 @@ class ContributionCalculator
             $runningTotal += $roundedAmount;
         }
         
-        // Adjust for rounding errors
         $roundingError = $targetAmount - $runningTotal;
         if (abs($roundingError) > 0.01) {
             $largestIndex = $this->findLargestContributionIndex($contributions);
@@ -356,13 +464,12 @@ class ContributionCalculator
     }
     
     /**
-     * Drain smallest balances first for flexible sources
+     * DRAIN_SMALLEST strategy - Use smallest balances first
      */
     private function calculateDrainSmallestFlexible(
         float $targetAmount,
         array $flexibleSources
     ): array {
-        // Sort by available balance (ascending)
         usort($flexibleSources, fn($a, $b) => $a['available_balance'] <=> $b['available_balance']);
         
         $contributions = [];
@@ -393,6 +500,91 @@ class ContributionCalculator
         }
         
         return $contributions;
+    }
+    
+    /**
+     * Distribute remaining amount across sources
+     */
+    private function distributeRemaining(array &$contributions, array $flexibleSources, float $remaining): void
+    {
+        // Find sources that can take more
+        $candidates = [];
+        foreach ($flexibleSources as $index => $source) {
+            $alreadyAllocated = $contributions[$index]['actual_amount'] ?? 0;
+            $available = $source['available_balance'];
+            if ($available > $alreadyAllocated) {
+                $candidates[] = [
+                    'index' => $index,
+                    'available' => $available - $alreadyAllocated
+                ];
+            }
+        }
+        
+        if (empty($candidates)) {
+            throw new \RuntimeException("Cannot distribute remaining amount - no capacity left");
+        }
+        
+        // Distribute remaining equally among candidates
+        $remainingPerCandidate = $remaining / count($candidates);
+        $remainingLeft = $remaining;
+        
+        foreach ($candidates as $candidate) {
+            $takeFromThis = min($remainingPerCandidate, $candidate['available']);
+            $contributions[$candidate['index']]['actual_amount'] += $takeFromThis;
+            $contributions[$candidate['index']]['requested_amount'] += $takeFromThis;
+            $remainingLeft -= $takeFromThis;
+        }
+        
+        // If still remaining, distribute to largest capacity
+        if ($remainingLeft > 0.01) {
+            // Sort by available capacity descending
+            usort($candidates, fn($a, $b) => $b['available'] <=> $a['available']);
+            foreach ($candidates as $candidate) {
+                if ($remainingLeft <= 0.01) break;
+                $takeFromThis = min($remainingLeft, $candidate['available']);
+                $contributions[$candidate['index']]['actual_amount'] += $takeFromThis;
+                $contributions[$candidate['index']]['requested_amount'] += $takeFromThis;
+                $remainingLeft -= $takeFromThis;
+            }
+        }
+    }
+    
+    /**
+     * Check if an asset type is a voucher (fixed)
+     */
+    private function isFixedAsset(string $assetType): bool
+    {
+        $assetType = strtoupper($assetType);
+        return in_array($assetType, $this->fixedAssetTypes);
+    }
+    
+    /**
+     * Check if an asset type is a voucher
+     */
+    private function isVoucher(string $assetType): bool
+    {
+        $assetType = strtoupper($assetType);
+        return in_array($assetType, ['VOUCHER', 'CASHOUT-VOUCHER']);
+    }
+    
+    /**
+     * Check if ATM code is a voucher (fixed) or wallet-backed (flexible)
+     */
+    private function isVoucherATM(array $source): bool
+    {
+        if (isset($source['is_voucher']) && $source['is_voucher'] === true) {
+            return true;
+        }
+        
+        if (isset($source['atm_type']) && strtoupper($source['atm_type']) === 'VOUCHER') {
+            return true;
+        }
+        
+        if (isset($source['wallet_id']) || isset($source['wallet_reference'])) {
+            return false;
+        }
+        
+        return false;
     }
     
     /**
