@@ -34,6 +34,13 @@ use Infrastructure\Crypto\AggregateSigner;
  * DEPOSIT FLOW (1 step at destination):
  * 1. process_deposit - Direct deposit to account/wallet, THEN debit source
  * 
+ * IDENTITY SWAP FLOW (PAUSE AT HOLD):
+ * 1. verify_asset - Verify source funds
+ * 2. place_hold - Place hold on source funds
+ * 3. store_identity - PAUSE - Link hold to identity (National ID, Phone, Email)
+ * 4. confirm_identity - User/Agent confirms identity (24hr expiry)
+ * 5. complete_as_cashout OR complete_as_deposit - Reuses existing flows
+ * 
  * MULTI-SOURCE FLOW:
  * 1. Create Virtual Funding Pool
  * 2. Calculate contributions from multiple sources
@@ -814,7 +821,7 @@ class SwapService
         if (empty($sourceInst) && !$isMultiSource) {
             throw new RuntimeException("Missing source institution (from_institution or source_institution)");
         }
-        if ($swapType !== 'IDENTITY' && empty($destInst)) {
+        if (empty($destInst)) {
             throw new RuntimeException("Missing destination institution (to_institution or destination_institution)");
         }
         
@@ -856,6 +863,8 @@ class SwapService
                 'MULTI_SOURCE' => $this->executeMultiSourceSwap($payload),
                 'CASHOUT' => $this->executeSignedCashout($payload),
                 'DEPOSIT' => $this->executeSignedDeposit($payload),
+                'IDENTITY' => $this->initiateSwapToIdentity($payload),
+                'CONFIRM_IDENTITY' => $this->confirmAndFinalizeIdentitySwap($payload),
                 'CARD_ISSUE' => $this->executeCardIssuance($payload),
                 'VERIFY_CASHOUT' => $this->verifyCashout($payload),
                 'CONFIRM_CASHOUT' => $this->confirmCashout($payload),
@@ -1488,6 +1497,754 @@ class SwapService
     }
 
     // ============================================================
+    // IDENTITY SWAP - "PAUSE AT HOLD" FLOW
+    // ============================================================
+
+    /**
+     * Initiate a swap to an identity (National ID, Phone, or Email)
+     * 
+     * Flow: Verify Asset → Place Hold → Store Identity Mapping (PAUSE)
+     * 
+     * Required Payload:
+     * - from_institution: string - Source institution
+     * - source_identifier: string - Source account/identifier
+     * - amount: float - Amount to swap
+     * - identity_type: 'national_id' | 'phone' | 'email'
+     * - identity_value: string - The actual identity value
+     * - [wallet_pin]: string - PIN if required by source
+     * - [currency]: string - Default 'BWP'
+     * - [asset_type]: string - Default 'ACCOUNT'
+     * - [user_id]: int - User initiating the swap
+     * 
+     * @return array
+     *   - status: 'pending_identity_confirmation'
+     *   - swap_reference: string
+     *   - hold_reference: string
+     *   - hold_id: int
+     *   - amount: float
+     *   - currency: string
+     *   - identity_type: string
+     *   - identity_value: string
+     *   - expires_at: string (24 hours from now)
+     *   - access_methods: array
+     */
+    public function initiateSwapToIdentity(array $payload): array
+    {
+        error_log("[SwapService] ===== initiateSwapToIdentity (PAUSE AT HOLD) =====");
+        
+        $required = ['amount', 'from_institution', 'source_identifier', 'identity_type', 'identity_value'];
+        foreach ($required as $field) {
+            if (empty($payload[$field])) {
+                throw new RuntimeException("Missing required field: {$field}");
+            }
+        }
+        
+        $identityType = strtolower($payload['identity_type']);
+        if (!in_array($identityType, ['national_id', 'phone', 'email'])) {
+            throw new RuntimeException("Invalid identity_type. Must be: national_id, phone, or email");
+        }
+        
+        $swapRef = $payload['reference'] ?? $this->generateReference();
+        $this->beginAtomicSwap($swapRef);
+        
+        try {
+            // STEP 1: VERIFY ASSET (same as existing)
+            error_log("[SwapService] STEP 1: Verify asset at source: {$payload['from_institution']}");
+            $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload) {
+                return $this->verifyAssetSigned($payload, $payload['from_institution']);
+            });
+            
+            if (!($verificationResult['verified'] ?? false)) {
+                throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown'));
+            }
+            
+            $this->signedPayloads['verification'] = [
+                'payload' => $verificationResult['original_payload'],
+                'signature' => $verificationResult['signature'],
+                'source' => $payload['from_institution'],
+                'timestamp' => $verificationResult['timestamp']
+            ];
+            
+            // STEP 2: PLACE HOLD (same as existing)
+            error_log("[SwapService] STEP 2: Place hold on source");
+            $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $verificationResult) {
+                return $this->placeHoldSigned($payload, $payload['from_institution'], $verificationResult);
+            });
+            
+            if (!($holdResult['hold_placed'] ?? false)) {
+                throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown'));
+            }
+            
+            $this->signedPayloads['hold'] = [
+                'payload' => $holdResult['original_payload'],
+                'signature' => $holdResult['signature'],
+                'source' => $payload['from_institution'],
+                'timestamp' => $holdResult['timestamp']
+            ];
+            
+            $this->currentHoldReference = $holdResult['hold_reference'];
+            $this->currentHoldId = $holdResult['local_hold_id'];
+            
+            // STEP 3: STORE IDENTITY MAPPING (NEW - the "PAUSE" state)
+            error_log("[SwapService] STEP 3: Store identity mapping (PAUSED)");
+            $identityHoldId = $this->storeIdentityHold(
+                $payload,
+                $swapRef,
+                $holdResult,
+                $this->currentHoldId
+            );
+            
+            // Update hold status to indicate it's waiting for identity confirmation
+            $this->updateHoldStatus($this->currentHoldId, 'PENDING_IDENTITY');
+            
+            $this->commitAtomicSwap();
+            
+            $expiresAt = date('Y-m-d H:i:s', strtotime('+24 hours'));
+            
+            return [
+                'status' => 'pending_identity_confirmation',
+                'swap_reference' => $swapRef,
+                'hold_reference' => $this->currentHoldReference,
+                'hold_id' => $identityHoldId,
+                'amount' => (float)$payload['amount'],
+                'currency' => $payload['currency'] ?? 'BWP',
+                'identity_type' => $identityType,
+                'identity_value' => $payload['identity_value'],
+                'expires_at' => $expiresAt,
+                'message' => 'Swap paused. Recipient must confirm identity and choose destination within 24 hours.',
+                'access_methods' => $this->getIdentityAccessMethods($identityType, $payload['identity_value'])
+            ];
+            
+        } catch (Exception $e) {
+            error_log("[SwapService] initiateSwapToIdentity FAILED: " . $e->getMessage());
+            $this->rollbackAtomicSwap($e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * Store identity hold mapping
+     */
+    private function storeIdentityHold(array $payload, string $swapRef, array $holdResult, int $holdId): int
+    {
+        $sql = "
+            INSERT INTO identity_swap_holds (
+                swap_reference,
+                source_institution,
+                source_identifier,
+                source_asset_type,
+                amount,
+                currency,
+                identity_type,
+                identity_value,
+                hold_reference,
+                hold_id,
+                hold_expires_at,
+                status,
+                source_payload,
+                metadata,
+                created_by
+            ) VALUES (
+                :swap_ref,
+                :source_institution,
+                :source_identifier,
+                :asset_type,
+                :amount,
+                :currency,
+                :identity_type,
+                :identity_value,
+                :hold_reference,
+                :hold_id,
+                :expires_at,
+                'pending',
+                :source_payload::jsonb,
+                :metadata::jsonb,
+                :created_by
+            ) RETURNING hold_id
+        ";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute([
+                ':swap_ref' => $swapRef,
+                ':source_institution' => $payload['from_institution'],
+                ':source_identifier' => $payload['source_identifier'],
+                ':asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
+                ':amount' => $payload['amount'],
+                ':currency' => $payload['currency'] ?? 'BWP',
+                ':identity_type' => $payload['identity_type'],
+                ':identity_value' => $payload['identity_value'],
+                ':hold_reference' => $holdResult['hold_reference'],
+                ':hold_id' => $holdId,
+                ':expires_at' => date('Y-m-d H:i:s', strtotime('+24 hours')),
+                ':source_payload' => json_encode($payload),
+                ':metadata' => json_encode([
+                    'signed_payloads' => $this->signedPayloads,
+                    'hold_result' => $holdResult
+                ]),
+                ':created_by' => $payload['user_id'] ?? null
+            ]);
+            
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $row ? (int)$row['hold_id'] : 0;
+            
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to store identity hold: " . $e->getMessage());
+            throw new RuntimeException("Failed to store identity hold: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Confirm identity and complete swap (User or Agent)
+     * 
+     * Required Payload:
+     * - swap_reference: string - From initiate response
+     * - confirmed_by_type: 'user' | 'agent'
+     * - confirmed_by_id: int - user_id or agent_id
+     * - destination_type: 'CASHOUT' | 'DEPOSIT'
+     * - [confirmation_method]: string - 'dashboard' | 'agent_portal'
+     * - [national_id_verified]: bool - Required for agents
+     * 
+     * For CASHOUT destination:
+     * - destination_institution: string - ATM provider
+     * - delivery_method: string - 'ATM' or 'AGENT'
+     * - beneficiary_phone: string - For SMS notification
+     * 
+     * For DEPOSIT destination:
+     * - destination_institution: string - Bank name
+     * - destination_identifier: string - Account number
+     * - destination_identifier_type: string - 'account'
+     * - account_name: string - Account holder name
+     * - bank_code: string - Bank code
+     */
+    public function confirmAndFinalizeIdentitySwap(array $payload): array
+    {
+        error_log("[SwapService] ===== confirmAndFinalizeIdentitySwap =====");
+        
+        $swapRef = $payload['swap_reference'] ?? null;
+        if (!$swapRef) {
+            throw new RuntimeException("swap_reference required");
+        }
+        
+        // Get the paused identity swap
+        $identitySwap = $this->getIdentitySwapByReference($swapRef);
+        if (!$identitySwap) {
+            throw new RuntimeException("Identity swap not found: {$swapRef}");
+        }
+        
+        if ($identitySwap['status'] !== 'pending') {
+            throw new RuntimeException("Swap is not pending. Current status: " . $identitySwap['status']);
+        }
+        
+        if (strtotime($identitySwap['hold_expires_at']) < time()) {
+            throw new RuntimeException("Swap has expired (24hrs). Please initiate a new swap.");
+        }
+        
+        // Authorization check
+        $confirmedByType = $payload['confirmed_by_type'] ?? null;
+        $confirmedById = $payload['confirmed_by_id'] ?? null;
+        $identityType = $identitySwap['identity_type'];
+        $identityValue = $identitySwap['identity_value'];
+        
+        if ($confirmedByType === 'user') {
+            $this->verifyUserOwnsIdentity($confirmedById, $identityType, $identityValue);
+        } elseif ($confirmedByType === 'agent') {
+            if ($identityType !== 'national_id') {
+                throw new RuntimeException("Agents can only confirm National ID swaps");
+            }
+            if (empty($payload['national_id_verified']) || $payload['national_id_verified'] !== true) {
+                throw new RuntimeException("Agent must verify physical National ID first");
+            }
+        } else {
+            throw new RuntimeException("confirmed_by_type must be 'user' or 'agent'");
+        }
+        
+        // Determine destination type - CASHOUT or DEPOSIT
+        $destinationType = strtoupper($payload['destination_type'] ?? 'CASHOUT');
+        if (!in_array($destinationType, ['CASHOUT', 'DEPOSIT'])) {
+            throw new RuntimeException("destination_type must be 'CASHOUT' or 'DEPOSIT'");
+        }
+        
+        // Update identity hold status to 'confirmed'
+        $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'confirmed', [
+            'confirmed_by_type' => $confirmedByType,
+            'confirmed_by_id' => $confirmedById,
+            'confirmation_method' => $payload['confirmation_method'] ?? ($confirmedByType === 'user' ? 'dashboard' : 'agent_portal'),
+            'destination_type' => $destinationType
+        ]);
+        
+        // Get original source payload
+        $sourcePayload = json_decode($identitySwap['source_payload'], true);
+        
+        // BEGIN ATOMIC TRANSACTION FOR FINALIZATION
+        $this->beginAtomicSwap($swapRef);
+        
+        try {
+            // Re-verify asset still available
+            error_log("[SwapService] Re-verifying asset availability");
+            $verificationResult = $this->verifyAssetSigned($sourcePayload, $identitySwap['source_institution']);
+            if (!($verificationResult['verified'] ?? false)) {
+                $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'cancelled', [
+                    'cancellation_reason' => 'Funds no longer available'
+                ]);
+                throw new RuntimeException("Source funds no longer available. Swap cancelled.");
+            }
+            
+            // Reuse the hold that was placed
+            $this->currentHoldReference = $identitySwap['hold_reference'];
+            $this->currentHoldId = $identitySwap['hold_id'];
+            
+            // Execute based on destination type - REUSING EXISTING FLOWS
+            if ($destinationType === 'CASHOUT') {
+                error_log("[SwapService] Completing as CASHOUT - reusing existing cashout flow");
+                $result = $this->completeIdentitySwapAsCashout($sourcePayload, $identitySwap, $payload);
+            } else {
+                error_log("[SwapService] Completing as DEPOSIT - reusing existing deposit flow");
+                $result = $this->completeIdentitySwapAsDeposit($sourcePayload, $identitySwap, $payload);
+            }
+            
+            // Update identity hold to completed
+            $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'completed', [
+                'final_destination_type' => $destinationType,
+                'final_destination_payload' => $payload['destination_details'] ?? [],
+                'final_transaction_reference' => $result['transaction_reference'] ?? null
+            ]);
+            
+            // Update hold_transactions status
+            $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
+            
+            $this->commitAtomicSwap();
+            
+            return [
+                'status' => 'completed',
+                'swap_reference' => $swapRef,
+                'hold_id' => $identitySwap['hold_id'],
+                'destination_type' => $destinationType,
+                'amount' => (float)$identitySwap['amount'],
+                'currency' => $identitySwap['currency'] ?? 'BWP',
+                'transaction_reference' => $result['transaction_reference'] ?? null,
+                'message' => "Identity swap completed via {$destinationType}",
+                'result' => $result
+            ];
+            
+        } catch (Exception $e) {
+            error_log("[SwapService] confirmAndFinalizeIdentitySwap FAILED: " . $e->getMessage());
+            $this->rollbackAtomicSwap($e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * Complete identity swap as CASHOUT - reuses existing cashout flow
+     */
+    private function completeIdentitySwapAsCashout(array $sourcePayload, array $identitySwap, array $confirmationPayload): array
+    {
+        // Build cashout payload - EXACT same structure as existing cashout
+        $cashoutPayload = $sourcePayload;
+        $cashoutPayload['amount'] = (float)$identitySwap['amount'];
+        $cashoutPayload['currency'] = $identitySwap['currency'] ?? 'BWP';
+        $cashoutPayload['swap_type'] = 'CASHOUT';
+        $cashoutPayload['reference'] = $identitySwap['swap_reference'];
+        $cashoutPayload['to_institution'] = $confirmationPayload['destination_institution'] ?? 'ATM';
+        $cashoutPayload['delivery_method'] = $confirmationPayload['delivery_method'] ?? 'ATM';
+        $cashoutPayload['beneficiary_phone'] = $confirmationPayload['beneficiary_phone'] ?? null;
+        $cashoutPayload['beneficiary_identifier'] = $confirmationPayload['beneficiary_identifier'] ?? null;
+        $cashoutPayload['client_phone'] = $confirmationPayload['client_phone'] ?? null;
+        
+        // Forward identity confirmation
+        $cashoutPayload['_identity_confirmed'] = true;
+        $cashoutPayload['_identity_type'] = $identitySwap['identity_type'];
+        $cashoutPayload['_identity_value'] = $identitySwap['identity_value'];
+        $cashoutPayload['_confirmed_by_type'] = $confirmationPayload['confirmed_by_type'] ?? 'user';
+        $cashoutPayload['_confirmed_by_id'] = $confirmationPayload['confirmed_by_id'] ?? 0;
+        
+        // Forward hooked source details if present
+        if (isset($sourcePayload['_is_hooked']) && $sourcePayload['_is_hooked']) {
+            $cashoutPayload['_is_hooked'] = true;
+            if (isset($sourcePayload['access_token'])) {
+                $cashoutPayload['access_token'] = $sourcePayload['access_token'];
+            }
+            if (isset($sourcePayload['source_reference'])) {
+                $cashoutPayload['source_reference'] = $sourcePayload['source_reference'];
+            }
+        }
+        
+        error_log("[SwapService] Executing cashout with identity confirmation");
+        
+        // REUSE existing executeSignedCashout method
+        return $this->executeSignedCashout($cashoutPayload);
+    }
+
+    /**
+     * Complete identity swap as DEPOSIT - reuses existing deposit flow
+     */
+    private function completeIdentitySwapAsDeposit(array $sourcePayload, array $identitySwap, array $confirmationPayload): array
+    {
+        // Build deposit payload - EXACT same structure as existing deposit
+        $depositPayload = $sourcePayload;
+        $depositPayload['amount'] = (float)$identitySwap['amount'];
+        $depositPayload['currency'] = $identitySwap['currency'] ?? 'BWP';
+        $depositPayload['swap_type'] = 'DEPOSIT';
+        $depositPayload['reference'] = $identitySwap['swap_reference'];
+        $depositPayload['to_institution'] = $confirmationPayload['destination_institution'] ?? 'BANK';
+        $depositPayload['destination_identifier'] = $confirmationPayload['destination_identifier'] ?? null;
+        $depositPayload['destination_identifier_type'] = $confirmationPayload['destination_identifier_type'] ?? 'account';
+        $depositPayload['destination_account'] = $confirmationPayload['destination_account'] ?? null;
+        $depositPayload['account_name'] = $confirmationPayload['account_name'] ?? null;
+        $depositPayload['bank_code'] = $confirmationPayload['bank_code'] ?? null;
+        
+        // Forward identity confirmation
+        $depositPayload['_identity_confirmed'] = true;
+        $depositPayload['_identity_type'] = $identitySwap['identity_type'];
+        $depositPayload['_identity_value'] = $identitySwap['identity_value'];
+        $depositPayload['_confirmed_by_type'] = $confirmationPayload['confirmed_by_type'] ?? 'user';
+        $depositPayload['_confirmed_by_id'] = $confirmationPayload['confirmed_by_id'] ?? 0;
+        
+        // Forward hooked source details if present
+        if (isset($sourcePayload['_is_hooked']) && $sourcePayload['_is_hooked']) {
+            $depositPayload['_is_hooked'] = true;
+            if (isset($sourcePayload['access_token'])) {
+                $depositPayload['access_token'] = $sourcePayload['access_token'];
+            }
+            if (isset($sourcePayload['source_reference'])) {
+                $depositPayload['source_reference'] = $sourcePayload['source_reference'];
+            }
+        }
+        
+        error_log("[SwapService] Executing deposit with identity confirmation");
+        
+        // REUSE existing executeSignedDeposit method
+        return $this->executeSignedDeposit($depositPayload);
+    }
+
+    /**
+     * Get identity swap by reference
+     */
+    public function getIdentitySwapByReference(string $swapReference): ?array
+    {
+        $sql = "
+            SELECT 
+                h.*,
+                CASE 
+                    WHEN h.hold_expires_at < NOW() THEN 'expired'
+                    ELSE h.status
+                END as current_status
+            FROM identity_swap_holds h
+            WHERE h.swap_reference = :swap_ref
+        ";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute([':swap_ref' => $swapReference]);
+            return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to get identity swap: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Get pending identity swaps for user dashboard
+     */
+    public function getPendingIdentitySwaps(string $identityType, string $identityValue, string $status = 'pending'): array
+    {
+        $sql = "
+            SELECT 
+                h.hold_id,
+                h.swap_reference,
+                h.amount,
+                h.currency,
+                h.identity_type,
+                h.identity_value,
+                h.hold_expires_at,
+                h.status,
+                h.created_at,
+                h.source_institution,
+                h.source_identifier,
+                h.metadata,
+                ht.status as hold_status,
+                CASE 
+                    WHEN h.hold_expires_at < NOW() THEN 'expired'
+                    ELSE h.status
+                END as current_status
+            FROM identity_swap_holds h
+            LEFT JOIN hold_transactions ht ON h.hold_id = ht.hold_id
+            WHERE h.identity_type = :identity_type
+                AND h.identity_value = :identity_value
+        ";
+        
+        if ($status !== 'all') {
+            $sql .= " AND h.status = :status AND h.hold_expires_at > NOW()";
+        }
+        
+        $sql .= " ORDER BY h.created_at DESC";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $params = [
+                ':identity_type' => $identityType,
+                ':identity_value' => $identityValue
+            ];
+            if ($status !== 'all') {
+                $params[':status'] = $status;
+            }
+            $stmt->execute($params);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to get pending identity swaps: " . $e->getMessage());
+            throw new RuntimeException("Failed to get pending identity swaps: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Get pending identity swaps for agent portal (only National ID)
+     */
+    public function getAgentPendingSwaps(int $agentId, array $filters = []): array
+    {
+        $sql = "
+            SELECT 
+                h.hold_id,
+                h.swap_reference,
+                h.amount,
+                h.currency,
+                h.identity_type,
+                h.identity_value,
+                h.hold_expires_at,
+                h.status,
+                h.created_at,
+                h.source_institution,
+                h.source_identifier,
+                h.metadata,
+                ht.status as hold_status,
+                CASE 
+                    WHEN h.hold_expires_at < NOW() THEN 'expired'
+                    ELSE h.status
+                END as current_status
+            FROM identity_swap_holds h
+            LEFT JOIN hold_transactions ht ON h.hold_id = ht.hold_id
+            WHERE h.identity_type = 'national_id'
+            AND h.status = 'pending'
+            AND h.hold_expires_at > NOW()
+        ";
+        
+        if (!empty($filters['search'])) {
+            $sql .= " AND (h.identity_value LIKE :search OR h.swap_reference LIKE :search)";
+        }
+        
+        $sql .= " ORDER BY h.created_at DESC LIMIT 100";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $params = [];
+            if (!empty($filters['search'])) {
+                $params[':search'] = '%' . $filters['search'] . '%';
+            }
+            $stmt->execute($params);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to get agent pending swaps: " . $e->getMessage());
+            throw new RuntimeException("Failed to get agent pending swaps: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Cancel expired identity swaps (cron job)
+     */
+    public function cancelExpiredIdentitySwaps(): array
+    {
+        error_log("[SwapService] ===== cancelExpiredIdentitySwaps =====");
+        
+        $results = ['total_expired' => 0, 'cancelled' => 0, 'errors' => 0, 'details' => []];
+        
+        $sql = "
+            SELECT * FROM identity_swap_holds 
+            WHERE status = 'pending' 
+            AND hold_expires_at < NOW()
+        ";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute();
+            $expiredSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $results['total_expired'] = count($expiredSwaps);
+            
+            foreach ($expiredSwaps as $swap) {
+                try {
+                    // Release hold using existing bank client
+                    $participant = $this->getParticipant($swap['source_institution']);
+                    $bankClient = new GenericBankClient($participant);
+                    
+                    $releaseResult = $bankClient->releaseHold([
+                        'hold_reference' => $swap['hold_reference'],
+                        'action' => 'RELEASE_HOLD',
+                        'reason' => 'Identity swap expired after 24 hours'
+                    ]);
+                    
+                    $this->updateIdentityHoldStatus($swap['hold_id'], 'expired', [
+                        'release_result' => $releaseResult,
+                        'expired_at' => date('Y-m-d H:i:s')
+                    ]);
+                    
+                    $this->updateHoldStatus($swap['hold_id'], 'RELEASED');
+                    
+                    $results['cancelled']++;
+                    $results['details'][] = [
+                        'swap_reference' => $swap['swap_reference'],
+                        'hold_id' => $swap['hold_id'],
+                        'status' => 'expired'
+                    ];
+                    
+                } catch (Exception $e) {
+                    error_log("[SwapService] Failed to cancel swap {$swap['swap_reference']}: " . $e->getMessage());
+                    $results['errors']++;
+                    $results['details'][] = [
+                        'swap_reference' => $swap['swap_reference'],
+                        'status' => 'error',
+                        'error' => $e->getMessage()
+                    ];
+                }
+            }
+            
+            return $results;
+            
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to get expired swaps: " . $e->getMessage());
+            throw new RuntimeException("Failed to cancel expired swaps: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Update identity hold status
+     */
+    private function updateIdentityHoldStatus(int $holdId, string $status, array $additionalData = []): void
+    {
+        $validStatuses = ['pending', 'confirmed', 'completed', 'expired', 'cancelled'];
+        if (!in_array($status, $validStatuses)) {
+            throw new RuntimeException("Invalid status: {$status}");
+        }
+        
+        $setClauses = [];
+        $params = [':hold_id' => $holdId, ':status' => $status];
+        
+        $timestampMap = [
+            'confirmed' => 'confirmed_at',
+            'completed' => 'completed_at',
+            'expired' => 'expired_at'
+        ];
+        
+        if (isset($timestampMap[$status])) {
+            $setClauses[] = "{$timestampMap[$status]} = NOW()";
+        }
+        
+        if (!empty($additionalData)) {
+            $setClauses[] = "metadata = metadata || :additional_data::jsonb";
+            $params[':additional_data'] = json_encode($additionalData);
+        }
+        
+        if (isset($additionalData['final_destination_type'])) {
+            $setClauses[] = "final_destination_type = :dest_type";
+            $params[':dest_type'] = $additionalData['final_destination_type'];
+        }
+        
+        if (isset($additionalData['final_destination_payload'])) {
+            $setClauses[] = "final_destination_payload = :dest_payload::jsonb";
+            $params[':dest_payload'] = json_encode($additionalData['final_destination_payload']);
+        }
+        
+        if (isset($additionalData['final_transaction_reference'])) {
+            $setClauses[] = "final_transaction_reference = :tx_ref";
+            $params[':tx_ref'] = $additionalData['final_transaction_reference'];
+        }
+        
+        if (isset($additionalData['confirmed_by_type'])) {
+            $setClauses[] = "confirmed_by_type = :confirmed_type";
+            $params[':confirmed_type'] = $additionalData['confirmed_by_type'];
+        }
+        
+        if (isset($additionalData['confirmed_by_id'])) {
+            $setClauses[] = "confirmed_by_id = :confirmed_id";
+            $params[':confirmed_id'] = $additionalData['confirmed_by_id'];
+        }
+        
+        if (isset($additionalData['confirmation_method'])) {
+            $setClauses[] = "confirmation_method = :conf_method";
+            $params[':conf_method'] = $additionalData['confirmation_method'];
+        }
+        
+        $setClauses[] = "status = :status";
+        
+        $sql = "UPDATE identity_swap_holds SET " . implode(', ', $setClauses) . " WHERE hold_id = :hold_id";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute($params);
+            error_log("[SwapService] Identity hold {$holdId} updated to: {$status}");
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to update identity hold: " . $e->getMessage());
+            throw new RuntimeException("Failed to update identity hold: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Verify user owns identity
+     */
+    private function verifyUserOwnsIdentity(int $userId, string $identityType, string $identityValue): void
+    {
+        $sql = "
+            SELECT COUNT(*) as count 
+            FROM user_identities 
+            WHERE user_id = :user_id 
+            AND identity_type = :identity_type 
+            AND identity_value = :identity_value
+        ";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute([
+                ':user_id' => $userId,
+                ':identity_type' => $identityType,
+                ':identity_value' => $identityValue
+            ]);
+            
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (($result['count'] ?? 0) == 0) {
+                throw new RuntimeException("User does not own this identity");
+            }
+            
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to verify user identity: " . $e->getMessage());
+            throw new RuntimeException("Failed to verify identity ownership: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Get identity access methods
+     */
+    private function getIdentityAccessMethods(string $identityType, string $identityValue): array
+    {
+        $methods = [];
+        
+        $methods[] = [
+            'type' => 'user_dashboard',
+            'requires' => 'User must be registered and logged in',
+            'verification' => 'User must own the identity'
+        ];
+        
+        if ($identityType === 'national_id') {
+            $methods[] = [
+                'type' => 'agent_portal',
+                'requires' => 'Agent must have access to VouchMorph Agent Portal',
+                'verification' => 'Agent must verify physical National ID'
+            ];
+        }
+        
+        return $methods;
+    }
+
+    // ============================================================
     // HELPER METHODS
     // ============================================================
 
@@ -1965,7 +2722,7 @@ class SwapService
     {
         if ($holdId === null) return;
         
-        $validStatuses = ['ACTIVE', 'HELD', 'PENDING_CASHOUT', 'DEBITED', 'RELEASED', 'CANCELLED', 'FAILED'];
+        $validStatuses = ['ACTIVE', 'HELD', 'PENDING_CASHOUT', 'DEBITED', 'RELEASED', 'CANCELLED', 'FAILED', 'PENDING_IDENTITY'];
         if (!in_array($status, $validStatuses)) return;
         
         $sql = "
