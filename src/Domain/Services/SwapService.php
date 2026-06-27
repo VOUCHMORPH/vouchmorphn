@@ -818,12 +818,12 @@ class SwapService
             }
         }
         
-        if (empty($sourceInst) && !$isMultiSource) {
-            throw new RuntimeException("Missing source institution (from_institution or source_institution)");
-        }
-        if ($swapType !== 'IDENTITY' && empty($destInst)) {
-            throw new RuntimeException("Missing destination institution (to_institution or destination_institution)");
-        }
+        if (empty($sourceInst) && !$isMultiSource && $swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY') {
+    throw new RuntimeException("Missing source institution (from_institution or source_institution)");
+}
+if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destInst)) {
+    throw new RuntimeException("Missing destination institution (to_institution or destination_institution)");
+}
         
         error_log("[SwapService] Source: " . ($sourceInst ?? 'MULTI_SOURCE') . ", Dest: {$destInst}, Type: {$swapType}");
         
