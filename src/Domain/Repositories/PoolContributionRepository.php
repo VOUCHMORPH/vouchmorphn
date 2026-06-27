@@ -5,6 +5,7 @@ namespace Domain\Repositories;
 
 use PDO;
 use Domain\Models\PoolContribution;
+use Domain\ValueObjects\ContributionStatus;
 
 class PoolContributionRepository
 {
@@ -26,31 +27,31 @@ class PoolContributionRepository
             return null;
         }
         
-        return new PoolContribution($data);
+        return $this->hydrate($data);
     }
 
     public function findByPoolId(string $poolId): array
     {
-        $sql = "SELECT * FROM pool_contributions WHERE pool_id = :pool_id ORDER BY created_at ASC";
+        $sql = "SELECT * FROM pool_contributions WHERE pool_id = :pool_id ORDER BY source_order ASC";
         $stmt = $this->db->prepare($sql);
         $stmt->execute([':pool_id' => $poolId]);
         $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
         $contributions = [];
         foreach ($results as $data) {
-            $contributions[] = new PoolContribution($data);
+            $contributions[] = $this->hydrate($data);
         }
         
         return $contributions;
     }
 
-    public function findByPoolAndSource(string $poolId, string $sourceInstitution, string $sourceIdentifier): ?PoolContribution
+    public function findByPoolAndSource(string $poolId, string $institution, string $sourceIdentifier): ?PoolContribution
     {
-        $sql = "SELECT * FROM pool_contributions WHERE pool_id = :pool_id AND source_institution = :source_institution AND source_identifier = :source_identifier";
+        $sql = "SELECT * FROM pool_contributions WHERE pool_id = :pool_id AND institution = :institution AND source_identifier = :source_identifier";
         $stmt = $this->db->prepare($sql);
         $stmt->execute([
             ':pool_id' => $poolId,
-            ':source_institution' => $sourceInstitution,
+            ':institution' => $institution,
             ':source_identifier' => $sourceIdentifier
         ]);
         $data = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -59,58 +60,142 @@ class PoolContributionRepository
             return null;
         }
         
-        return new PoolContribution($data);
+        return $this->hydrate($data);
     }
 
-    public function create(array $data): PoolContribution
+    public function save(PoolContribution $contribution): PoolContribution
     {
+        $data = $contribution->toArray();
+        
+        if ($contribution->getId()) {
+            return $this->update($contribution);
+        }
+        
+        return $this->insert($contribution);
+    }
+
+    private function insert(PoolContribution $contribution): PoolContribution
+    {
+        $data = $contribution->toArray();
+        
         $sql = "
             INSERT INTO pool_contributions (
-                pool_id, source_institution, source_identifier, source_asset_type,
-                amount, currency, status, hold_reference, created_at, updated_at
+                pool_id, sub_reference, source_order, institution, asset_type,
+                source_identifier, requested_amount, contribution_amount, currency,
+                hold_reference, debit_reference, source_signature, source_certificate,
+                status, metadata, created_at, verified_at, held_at, debited_at
             ) VALUES (
-                :pool_id, :source_institution, :source_identifier, :source_asset_type,
-                :amount, :currency, :status, :hold_reference, NOW(), NOW()
+                :pool_id, :sub_reference, :source_order, :institution, :asset_type,
+                :source_identifier, :requested_amount, :contribution_amount, :currency,
+                :hold_reference, :debit_reference, :source_signature, :source_certificate,
+                :status, :metadata::jsonb, :created_at, :verified_at, :held_at, :debited_at
             ) RETURNING id
         ";
         
         $stmt = $this->db->prepare($sql);
         $stmt->execute([
             ':pool_id' => $data['pool_id'],
-            ':source_institution' => $data['source_institution'],
+            ':sub_reference' => $data['sub_reference'],
+            ':source_order' => $data['source_order'],
+            ':institution' => $data['institution'],
+            ':asset_type' => $data['asset_type'],
             ':source_identifier' => $data['source_identifier'],
-            ':source_asset_type' => $data['source_asset_type'] ?? 'ACCOUNT',
-            ':amount' => $data['amount'],
-            ':currency' => $data['currency'] ?? 'BWP',
-            ':status' => $data['status'] ?? 'pending',
-            ':hold_reference' => $data['hold_reference'] ?? null
+            ':requested_amount' => $data['requested_amount'],
+            ':contribution_amount' => $data['contribution_amount'],
+            ':currency' => $data['currency'],
+            ':hold_reference' => $data['hold_reference'],
+            ':debit_reference' => $data['debit_reference'],
+            ':source_signature' => $data['source_signature'],
+            ':source_certificate' => $data['source_certificate'],
+            ':status' => $data['status'],
+            ':metadata' => $data['metadata'],
+            ':created_at' => $data['created_at'],
+            ':verified_at' => $data['verified_at'],
+            ':held_at' => $data['held_at'],
+            ':debited_at' => $data['debited_at']
         ]);
         
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        $id = $row ? (int)$row['id'] : 0;
+        if ($row) {
+            $contribution->setId((int)$row['id']);
+        }
         
-        return $this->findById($id);
+        return $contribution;
     }
 
-    public function updateStatus(int $id, string $status): bool
+    private function update(PoolContribution $contribution): PoolContribution
+    {
+        $data = $contribution->toArray();
+        
+        $sql = "
+            UPDATE pool_contributions SET
+                pool_id = :pool_id,
+                sub_reference = :sub_reference,
+                source_order = :source_order,
+                institution = :institution,
+                asset_type = :asset_type,
+                source_identifier = :source_identifier,
+                requested_amount = :requested_amount,
+                contribution_amount = :contribution_amount,
+                currency = :currency,
+                hold_reference = :hold_reference,
+                debit_reference = :debit_reference,
+                source_signature = :source_signature,
+                source_certificate = :source_certificate,
+                status = :status,
+                metadata = :metadata::jsonb,
+                verified_at = :verified_at,
+                held_at = :held_at,
+                debited_at = :debited_at,
+                updated_at = NOW()
+            WHERE id = :id
+        ";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([
+            ':id' => $data['id'],
+            ':pool_id' => $data['pool_id'],
+            ':sub_reference' => $data['sub_reference'],
+            ':source_order' => $data['source_order'],
+            ':institution' => $data['institution'],
+            ':asset_type' => $data['asset_type'],
+            ':source_identifier' => $data['source_identifier'],
+            ':requested_amount' => $data['requested_amount'],
+            ':contribution_amount' => $data['contribution_amount'],
+            ':currency' => $data['currency'],
+            ':hold_reference' => $data['hold_reference'],
+            ':debit_reference' => $data['debit_reference'],
+            ':source_signature' => $data['source_signature'],
+            ':source_certificate' => $data['source_certificate'],
+            ':status' => $data['status'],
+            ':metadata' => $data['metadata'],
+            ':verified_at' => $data['verified_at'],
+            ':held_at' => $data['held_at'],
+            ':debited_at' => $data['debited_at']
+        ]);
+        
+        return $contribution;
+    }
+
+    public function updateStatus(int $id, ContributionStatus $status): bool
     {
         $sql = "UPDATE pool_contributions SET status = :status, updated_at = NOW() WHERE id = :id";
         $stmt = $this->db->prepare($sql);
-        return $stmt->execute([':status' => $status, ':id' => $id]);
+        return $stmt->execute([':status' => $status->value, ':id' => $id]);
     }
 
     public function updateHoldReference(int $id, string $holdReference): bool
     {
-        $sql = "UPDATE pool_contributions SET hold_reference = :hold_reference, updated_at = NOW() WHERE id = :id";
+        $sql = "UPDATE pool_contributions SET hold_reference = :hold_reference, held_at = NOW(), updated_at = NOW() WHERE id = :id";
         $stmt = $this->db->prepare($sql);
         return $stmt->execute([':hold_reference' => $holdReference, ':id' => $id]);
     }
 
-    public function updateAmount(int $id, float $amount): bool
+    public function updateDebitReference(int $id, string $debitReference): bool
     {
-        $sql = "UPDATE pool_contributions SET amount = :amount, updated_at = NOW() WHERE id = :id";
+        $sql = "UPDATE pool_contributions SET debit_reference = :debit_reference, debited_at = NOW(), updated_at = NOW() WHERE id = :id";
         $stmt = $this->db->prepare($sql);
-        return $stmt->execute([':amount' => $amount, ':id' => $id]);
+        return $stmt->execute([':debit_reference' => $debitReference, ':id' => $id]);
     }
 
     public function deleteByPoolId(string $poolId): bool
@@ -127,18 +212,94 @@ class PoolContributionRepository
         return $stmt->execute([':id' => $id]);
     }
 
-    public function getAllByStatus(string $status): array
+    public function getAllByStatus(ContributionStatus $status): array
     {
         $sql = "SELECT * FROM pool_contributions WHERE status = :status ORDER BY created_at ASC";
         $stmt = $this->db->prepare($sql);
-        $stmt->execute([':status' => $status]);
+        $stmt->execute([':status' => $status->value]);
         $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
         $contributions = [];
         foreach ($results as $data) {
-            $contributions[] = new PoolContribution($data);
+            $contributions[] = $this->hydrate($data);
         }
         
         return $contributions;
+    }
+
+    public function getAllByPoolIdAndStatus(string $poolId, ContributionStatus $status): array
+    {
+        $sql = "SELECT * FROM pool_contributions WHERE pool_id = :pool_id AND status = :status ORDER BY source_order ASC";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':pool_id' => $poolId, ':status' => $status->value]);
+        $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $contributions = [];
+        foreach ($results as $data) {
+            $contributions[] = $this->hydrate($data);
+        }
+        
+        return $contributions;
+    }
+
+    private function hydrate(array $data): PoolContribution
+    {
+        $contribution = new PoolContribution(
+            $data['pool_id'],
+            $data['sub_reference'],
+            (int)$data['source_order'],
+            $data['institution'],
+            $data['asset_type'] ?? 'ACCOUNT',
+            $data['source_identifier'],
+            (float)$data['requested_amount'],
+            (float)$data['contribution_amount'],
+            $data['currency'] ?? 'BWP'
+        );
+
+        if (isset($data['id'])) {
+            $contribution->setId((int)$data['id']);
+        }
+
+        if (isset($data['hold_reference'])) {
+            $contribution->setHoldReference($data['hold_reference']);
+        }
+
+        if (isset($data['debit_reference'])) {
+            $contribution->setDebitReference($data['debit_reference']);
+        }
+
+        if (isset($data['source_signature'])) {
+            $contribution->setSourceSignature($data['source_signature']);
+        }
+
+        if (isset($data['source_certificate'])) {
+            $contribution->setSourceCertificate($data['source_certificate']);
+        }
+
+        if (isset($data['status'])) {
+            $contribution->setStatus(ContributionStatus::from($data['status']));
+        }
+
+        if (isset($data['metadata'])) {
+            $contribution->setMetadata(is_string($data['metadata']) ? json_decode($data['metadata'], true) : $data['metadata']);
+        }
+
+        if (isset($data['created_at'])) {
+            $contribution->setCreatedAt(new \DateTime($data['created_at']));
+        }
+
+        if (isset($data['verified_at'])) {
+            $contribution->setVerifiedAt($data['verified_at'] ? new \DateTime($data['verified_at']) : null);
+        }
+
+        if (isset($data['held_at'])) {
+            $contribution->setHeldAt($data['held_at'] ? new \DateTime($data['held_at']) : null);
+        }
+
+        if (isset($data['debited_at'])) {
+            $contribution->setDebitedAt($data['debited_at'] ? new \DateTime($data['debited_at']) : null);
+        }
+
+        return $contribution;
     }
 }
