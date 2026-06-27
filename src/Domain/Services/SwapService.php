@@ -821,7 +821,7 @@ class SwapService
         if (empty($sourceInst) && !$isMultiSource) {
             throw new RuntimeException("Missing source institution (from_institution or source_institution)");
         }
-        if (empty($destInst)) {
+        if ($swapType !== 'IDENTITY' && empty($destInst)) {
             throw new RuntimeException("Missing destination institution (to_institution or destination_institution)");
         }
         
