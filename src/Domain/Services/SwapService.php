@@ -1863,11 +1863,12 @@ class SwapService
      */
     private function completeIdentitySwapAsCashout(array $sourcePayload, array $identitySwap, array $confirmationPayload): array
     {
-        // Build cashout payload - EXACT same structure as existing cashout
+        // Build cashout payload with BOTH from_institution and source_institution
         $cashoutPayload = [
             'swap_type' => 'CASHOUT',
             'reference' => $identitySwap['swap_reference'],
             'from_institution' => $identitySwap['source_institution'],
+            'source_institution' => $identitySwap['source_institution'],
             'source_identifier' => $identitySwap['source_identifier'],
             'asset_type' => $identitySwap['source_asset_type'] ?? 'ACCOUNT',
             'amount' => (float)$identitySwap['amount'],
@@ -1880,20 +1881,11 @@ class SwapService
         ];
         
         // Forward any additional source payload fields
-        if (isset($sourcePayload['_is_hooked'])) {
-            $cashoutPayload['_is_hooked'] = $sourcePayload['_is_hooked'];
-        }
-        if (isset($sourcePayload['access_token'])) {
-            $cashoutPayload['access_token'] = $sourcePayload['access_token'];
-        }
-        if (isset($sourcePayload['source_reference'])) {
-            $cashoutPayload['source_reference'] = $sourcePayload['source_reference'];
-        }
-        if (isset($sourcePayload['wallet_pin'])) {
-            $cashoutPayload['wallet_pin'] = $sourcePayload['wallet_pin'];
-        }
-        if (isset($sourcePayload['pin'])) {
-            $cashoutPayload['pin'] = $sourcePayload['pin'];
+        $fieldsToCopy = ['_is_hooked', 'access_token', 'source_reference', 'wallet_pin', 'pin'];
+        foreach ($fieldsToCopy as $field) {
+            if (isset($sourcePayload[$field])) {
+                $cashoutPayload[$field] = $sourcePayload[$field];
+            }
         }
         
         // Forward identity confirmation
@@ -1904,6 +1896,8 @@ class SwapService
         $cashoutPayload['_confirmed_by_id'] = $confirmationPayload['confirmed_by_id'] ?? 0;
         
         error_log("[SwapService] Executing cashout with identity confirmation");
+        error_log("[SwapService] Cashout from_institution: " . ($cashoutPayload['from_institution'] ?? 'NULL'));
+        error_log("[SwapService] Cashout source_institution: " . ($cashoutPayload['source_institution'] ?? 'NULL'));
         
         // REUSE existing executeSignedCashout method
         return $this->executeSignedCashout($cashoutPayload);
@@ -1914,11 +1908,12 @@ class SwapService
      */
     private function completeIdentitySwapAsDeposit(array $sourcePayload, array $identitySwap, array $confirmationPayload): array
     {
-        // Build deposit payload - EXACT same structure as existing deposit
+        // Build deposit payload with BOTH from_institution and source_institution
         $depositPayload = [
             'swap_type' => 'DEPOSIT',
             'reference' => $identitySwap['swap_reference'],
             'from_institution' => $identitySwap['source_institution'],
+            'source_institution' => $identitySwap['source_institution'],
             'source_identifier' => $identitySwap['source_identifier'],
             'asset_type' => $identitySwap['source_asset_type'] ?? 'ACCOUNT',
             'amount' => (float)$identitySwap['amount'],
@@ -1932,20 +1927,11 @@ class SwapService
         ];
         
         // Forward any additional source payload fields
-        if (isset($sourcePayload['_is_hooked'])) {
-            $depositPayload['_is_hooked'] = $sourcePayload['_is_hooked'];
-        }
-        if (isset($sourcePayload['access_token'])) {
-            $depositPayload['access_token'] = $sourcePayload['access_token'];
-        }
-        if (isset($sourcePayload['source_reference'])) {
-            $depositPayload['source_reference'] = $sourcePayload['source_reference'];
-        }
-        if (isset($sourcePayload['wallet_pin'])) {
-            $depositPayload['wallet_pin'] = $sourcePayload['wallet_pin'];
-        }
-        if (isset($sourcePayload['pin'])) {
-            $depositPayload['pin'] = $sourcePayload['pin'];
+        $fieldsToCopy = ['_is_hooked', 'access_token', 'source_reference', 'wallet_pin', 'pin'];
+        foreach ($fieldsToCopy as $field) {
+            if (isset($sourcePayload[$field])) {
+                $depositPayload[$field] = $sourcePayload[$field];
+            }
         }
         
         // Forward identity confirmation
@@ -1956,6 +1942,8 @@ class SwapService
         $depositPayload['_confirmed_by_id'] = $confirmationPayload['confirmed_by_id'] ?? 0;
         
         error_log("[SwapService] Executing deposit with identity confirmation");
+        error_log("[SwapService] Deposit from_institution: " . ($depositPayload['from_institution'] ?? 'NULL'));
+        error_log("[SwapService] Deposit source_institution: " . ($depositPayload['source_institution'] ?? 'NULL'));
         
         // REUSE existing executeSignedDeposit method
         return $this->executeSignedDeposit($depositPayload);
