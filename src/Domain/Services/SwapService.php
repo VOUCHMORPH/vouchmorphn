@@ -1787,6 +1787,13 @@ class SwapService
         // Get original source payload
         $sourcePayload = json_decode($identitySwap['source_payload'], true);
         
+        // Ensure source payload has all required fields for verification
+        $sourcePayload['from_institution'] = $identitySwap['source_institution'];
+        $sourcePayload['source_identifier'] = $identitySwap['source_identifier'];
+        $sourcePayload['amount'] = (float)$identitySwap['amount'];
+        $sourcePayload['currency'] = $identitySwap['currency'] ?? 'BWP';
+        $sourcePayload['asset_type'] = $identitySwap['source_asset_type'] ?? 'ACCOUNT';
+        
         // If not already in atomic swap, begin one
         if (!$this->inAtomicSwap) {
             $this->beginAtomicSwap($swapRef);
@@ -1796,7 +1803,7 @@ class SwapService
         
         try {
             // Re-verify asset still available
-            error_log("[SwapService] Re-verifying asset availability");
+            error_log("[SwapService] Re-verifying asset availability for institution: {$identitySwap['source_institution']}");
             $verificationResult = $this->verifyAssetSigned($sourcePayload, $identitySwap['source_institution']);
             if (!($verificationResult['verified'] ?? false)) {
                 $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'cancelled', [
@@ -1857,16 +1864,37 @@ class SwapService
     private function completeIdentitySwapAsCashout(array $sourcePayload, array $identitySwap, array $confirmationPayload): array
     {
         // Build cashout payload - EXACT same structure as existing cashout
-        $cashoutPayload = $sourcePayload;
-        $cashoutPayload['amount'] = (float)$identitySwap['amount'];
-        $cashoutPayload['currency'] = $identitySwap['currency'] ?? 'BWP';
-        $cashoutPayload['swap_type'] = 'CASHOUT';
-        $cashoutPayload['reference'] = $identitySwap['swap_reference'];
-        $cashoutPayload['to_institution'] = $confirmationPayload['destination_institution'] ?? 'ATM';
-        $cashoutPayload['delivery_method'] = $confirmationPayload['delivery_method'] ?? 'ATM';
-        $cashoutPayload['beneficiary_phone'] = $confirmationPayload['beneficiary_phone'] ?? null;
-        $cashoutPayload['beneficiary_identifier'] = $confirmationPayload['beneficiary_identifier'] ?? null;
-        $cashoutPayload['client_phone'] = $confirmationPayload['client_phone'] ?? null;
+        $cashoutPayload = [
+            'swap_type' => 'CASHOUT',
+            'reference' => $identitySwap['swap_reference'],
+            'from_institution' => $identitySwap['source_institution'],
+            'source_identifier' => $identitySwap['source_identifier'],
+            'asset_type' => $identitySwap['source_asset_type'] ?? 'ACCOUNT',
+            'amount' => (float)$identitySwap['amount'],
+            'currency' => $identitySwap['currency'] ?? 'BWP',
+            'to_institution' => $confirmationPayload['destination_institution'] ?? 'ATM',
+            'delivery_method' => $confirmationPayload['delivery_method'] ?? 'ATM',
+            'beneficiary_phone' => $confirmationPayload['beneficiary_phone'] ?? null,
+            'beneficiary_identifier' => $confirmationPayload['beneficiary_identifier'] ?? null,
+            'client_phone' => $confirmationPayload['client_phone'] ?? null,
+        ];
+        
+        // Forward any additional source payload fields
+        if (isset($sourcePayload['_is_hooked'])) {
+            $cashoutPayload['_is_hooked'] = $sourcePayload['_is_hooked'];
+        }
+        if (isset($sourcePayload['access_token'])) {
+            $cashoutPayload['access_token'] = $sourcePayload['access_token'];
+        }
+        if (isset($sourcePayload['source_reference'])) {
+            $cashoutPayload['source_reference'] = $sourcePayload['source_reference'];
+        }
+        if (isset($sourcePayload['wallet_pin'])) {
+            $cashoutPayload['wallet_pin'] = $sourcePayload['wallet_pin'];
+        }
+        if (isset($sourcePayload['pin'])) {
+            $cashoutPayload['pin'] = $sourcePayload['pin'];
+        }
         
         // Forward identity confirmation
         $cashoutPayload['_identity_confirmed'] = true;
@@ -1874,17 +1902,6 @@ class SwapService
         $cashoutPayload['_identity_value'] = $identitySwap['identity_value'];
         $cashoutPayload['_confirmed_by_type'] = $confirmationPayload['confirmed_by_type'] ?? 'user';
         $cashoutPayload['_confirmed_by_id'] = $confirmationPayload['confirmed_by_id'] ?? 0;
-        
-        // Forward hooked source details if present
-        if (isset($sourcePayload['_is_hooked']) && $sourcePayload['_is_hooked']) {
-            $cashoutPayload['_is_hooked'] = true;
-            if (isset($sourcePayload['access_token'])) {
-                $cashoutPayload['access_token'] = $sourcePayload['access_token'];
-            }
-            if (isset($sourcePayload['source_reference'])) {
-                $cashoutPayload['source_reference'] = $sourcePayload['source_reference'];
-            }
-        }
         
         error_log("[SwapService] Executing cashout with identity confirmation");
         
@@ -1898,17 +1915,38 @@ class SwapService
     private function completeIdentitySwapAsDeposit(array $sourcePayload, array $identitySwap, array $confirmationPayload): array
     {
         // Build deposit payload - EXACT same structure as existing deposit
-        $depositPayload = $sourcePayload;
-        $depositPayload['amount'] = (float)$identitySwap['amount'];
-        $depositPayload['currency'] = $identitySwap['currency'] ?? 'BWP';
-        $depositPayload['swap_type'] = 'DEPOSIT';
-        $depositPayload['reference'] = $identitySwap['swap_reference'];
-        $depositPayload['to_institution'] = $confirmationPayload['destination_institution'] ?? 'BANK';
-        $depositPayload['destination_identifier'] = $confirmationPayload['destination_identifier'] ?? null;
-        $depositPayload['destination_identifier_type'] = $confirmationPayload['destination_identifier_type'] ?? 'account';
-        $depositPayload['destination_account'] = $confirmationPayload['destination_account'] ?? null;
-        $depositPayload['account_name'] = $confirmationPayload['account_name'] ?? null;
-        $depositPayload['bank_code'] = $confirmationPayload['bank_code'] ?? null;
+        $depositPayload = [
+            'swap_type' => 'DEPOSIT',
+            'reference' => $identitySwap['swap_reference'],
+            'from_institution' => $identitySwap['source_institution'],
+            'source_identifier' => $identitySwap['source_identifier'],
+            'asset_type' => $identitySwap['source_asset_type'] ?? 'ACCOUNT',
+            'amount' => (float)$identitySwap['amount'],
+            'currency' => $identitySwap['currency'] ?? 'BWP',
+            'to_institution' => $confirmationPayload['destination_institution'] ?? 'BANK',
+            'destination_identifier' => $confirmationPayload['destination_identifier'] ?? null,
+            'destination_identifier_type' => $confirmationPayload['destination_identifier_type'] ?? 'account',
+            'destination_account' => $confirmationPayload['destination_account'] ?? null,
+            'account_name' => $confirmationPayload['account_name'] ?? null,
+            'bank_code' => $confirmationPayload['bank_code'] ?? null,
+        ];
+        
+        // Forward any additional source payload fields
+        if (isset($sourcePayload['_is_hooked'])) {
+            $depositPayload['_is_hooked'] = $sourcePayload['_is_hooked'];
+        }
+        if (isset($sourcePayload['access_token'])) {
+            $depositPayload['access_token'] = $sourcePayload['access_token'];
+        }
+        if (isset($sourcePayload['source_reference'])) {
+            $depositPayload['source_reference'] = $sourcePayload['source_reference'];
+        }
+        if (isset($sourcePayload['wallet_pin'])) {
+            $depositPayload['wallet_pin'] = $sourcePayload['wallet_pin'];
+        }
+        if (isset($sourcePayload['pin'])) {
+            $depositPayload['pin'] = $sourcePayload['pin'];
+        }
         
         // Forward identity confirmation
         $depositPayload['_identity_confirmed'] = true;
@@ -1916,17 +1954,6 @@ class SwapService
         $depositPayload['_identity_value'] = $identitySwap['identity_value'];
         $depositPayload['_confirmed_by_type'] = $confirmationPayload['confirmed_by_type'] ?? 'user';
         $depositPayload['_confirmed_by_id'] = $confirmationPayload['confirmed_by_id'] ?? 0;
-        
-        // Forward hooked source details if present
-        if (isset($sourcePayload['_is_hooked']) && $sourcePayload['_is_hooked']) {
-            $depositPayload['_is_hooked'] = true;
-            if (isset($sourcePayload['access_token'])) {
-                $depositPayload['access_token'] = $sourcePayload['access_token'];
-            }
-            if (isset($sourcePayload['source_reference'])) {
-                $depositPayload['source_reference'] = $sourcePayload['source_reference'];
-            }
-        }
         
         error_log("[SwapService] Executing deposit with identity confirmation");
         
