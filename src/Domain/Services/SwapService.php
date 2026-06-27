@@ -39,7 +39,7 @@ use Infrastructure\Crypto\AggregateSigner;
  * 2. place_hold - Place hold on source funds
  * 3. store_identity - PAUSE - Link hold to identity (National ID, Phone, Email)
  * 4. confirm_identity - User/Agent confirms identity (24hr expiry)
- * 5. complete_as_cashout OR complete_as_deposit - Reuses existing flows
+ * 5. complete_as_cashout OR complete_as_deposit - Reuses existing flows but SKIPS hold placement
  * 
  * MULTI-SOURCE FLOW:
  * 1. Create Virtual Funding Pool
@@ -819,11 +819,11 @@ class SwapService
         }
         
         if (empty($sourceInst) && !$isMultiSource && $swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY') {
-    throw new RuntimeException("Missing source institution (from_institution or source_institution)");
-}
-if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destInst)) {
-    throw new RuntimeException("Missing destination institution (to_institution or destination_institution)");
-}
+            throw new RuntimeException("Missing source institution (from_institution or source_institution)");
+        }
+        if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destInst)) {
+            throw new RuntimeException("Missing destination institution (to_institution or destination_institution)");
+        }
         
         error_log("[SwapService] Source: " . ($sourceInst ?? 'MULTI_SOURCE') . ", Dest: {$destInst}, Type: {$swapType}");
         
@@ -925,6 +925,12 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             error_log("[SwapService] Using HOOKED source: " . ($payload['source_reference'] ?? 'unknown'));
         }
         
+        // Check if we should skip hold placement (identity swap completion)
+        $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
+        if ($skipHold) {
+            error_log("[SwapService] SKIP_HOLD flag detected - using existing hold from identity swap");
+        }
+        
         if (isset($payload['_cashout_validation'])) {
             $this->feeCalculationDetails['cashout_validation'] = $payload['_cashout_validation'];
         }
@@ -954,29 +960,35 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             'is_hooked' => $isHooked
         ];
         
-        // STEP 2: PLACE HOLD
-        error_log("[SwapService] STEP 2: Placing hold on asset at source: {$sourceInstitution}");
-        $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
-            return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
-        });
-        
-        if (!($holdResult['hold_placed'] ?? false)) {
-            $errorMessage = $holdResult['message'] ?? 'Failed to place hold';
-            error_log("[SwapService] HOLD FAILED: {$errorMessage}");
-            throw new RuntimeException("Hold failed: {$errorMessage}");
+        // STEP 2: PLACE HOLD (ONLY if not skipping)
+        if (!$skipHold) {
+            error_log("[SwapService] STEP 2: Placing hold on asset at source: {$sourceInstitution}");
+            $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
+                return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
+            });
+            
+            if (!($holdResult['hold_placed'] ?? false)) {
+                $errorMessage = $holdResult['message'] ?? 'Failed to place hold';
+                error_log("[SwapService] HOLD FAILED: {$errorMessage}");
+                throw new RuntimeException("Hold failed: {$errorMessage}");
+            }
+            
+            error_log("[SwapService] Hold placed successfully");
+            
+            $this->signedPayloads['hold'] = [
+                'payload' => $holdResult['original_payload'],
+                'signature' => $holdResult['signature'],
+                'source' => $sourceInstitution,
+                'timestamp' => $holdResult['timestamp'],
+                'is_hooked' => $isHooked
+            ];
+            
+            $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
+        } else {
+            error_log("[SwapService] SKIPPING hold placement - using existing hold from identity swap");
+            // Use the hold_reference from the identity swap (set by caller)
+            // We need to ensure currentHoldReference is set before calling generateCashoutToken
         }
-        
-        error_log("[SwapService] Hold placed successfully");
-        
-        $this->signedPayloads['hold'] = [
-            'payload' => $holdResult['original_payload'],
-            'signature' => $holdResult['signature'],
-            'source' => $sourceInstitution,
-            'timestamp' => $holdResult['timestamp'],
-            'is_hooked' => $isHooked
-        ];
-        
-        $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
         
         // STEP 3: CALCULATE FEES
         error_log("[SwapService] STEP 3: Calculating fees with mathematical model");
@@ -1385,6 +1397,12 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             error_log("[SwapService] Using HOOKED source for deposit");
         }
         
+        // Check if we should skip hold placement (identity swap completion)
+        $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
+        if ($skipHold) {
+            error_log("[SwapService] SKIP_HOLD flag detected for deposit - using existing hold from identity swap");
+        }
+        
         error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
         $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
             return $this->verifyAssetSigned($payload, $sourceInstitution);
@@ -1420,24 +1438,29 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
         $feeBreakdown = $this->calculateFeesWithDetails('DEPOSIT', $amount, $payload);
         $netAmount = $feeBreakdown['net_amount'] ?? $amount;
         
-        error_log("[SwapService] STEP 4: Placing hold on source: {$sourceInstitution}");
-        $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
-            return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
-        });
-        
-        if (!($holdResult['hold_placed'] ?? false)) {
-            throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown error'));
+        // STEP 4: PLACE HOLD (ONLY if not skipping)
+        if (!$skipHold) {
+            error_log("[SwapService] STEP 4: Placing hold on source: {$sourceInstitution}");
+            $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
+                return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
+            });
+            
+            if (!($holdResult['hold_placed'] ?? false)) {
+                throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown error'));
+            }
+            
+            $this->signedPayloads['hold'] = [
+                'payload' => $holdResult['original_payload'],
+                'signature' => $holdResult['signature'],
+                'source' => $sourceInstitution,
+                'timestamp' => $holdResult['timestamp'],
+                'is_hooked' => $isHooked
+            ];
+            
+            $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
+        } else {
+            error_log("[SwapService] SKIPPING hold placement for deposit - using existing hold from identity swap");
         }
-        
-        $this->signedPayloads['hold'] = [
-            'payload' => $holdResult['original_payload'],
-            'signature' => $holdResult['signature'],
-            'source' => $sourceInstitution,
-            'timestamp' => $holdResult['timestamp'],
-            'is_hooked' => $isHooked
-        ];
-        
-        $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
         
         error_log("[SwapService] STEP 5: Processing deposit at DESTINATION: {$destinationInstitution} for amount: {$netAmount}");
         
@@ -1504,29 +1527,6 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
      * Initiate a swap to an identity (National ID, Phone, or Email)
      * 
      * Flow: Verify Asset → Place Hold → Store Identity Mapping (PAUSE)
-     * 
-     * Required Payload:
-     * - from_institution: string - Source institution
-     * - source_identifier: string - Source account/identifier
-     * - amount: float - Amount to swap
-     * - identity_type: 'national_id' | 'phone' | 'email'
-     * - identity_value: string - The actual identity value
-     * - [wallet_pin]: string - PIN if required by source
-     * - [currency]: string - Default 'BWP'
-     * - [asset_type]: string - Default 'ACCOUNT'
-     * - [user_id]: int - User initiating the swap
-     * 
-     * @return array
-     *   - status: 'pending_identity_confirmation'
-     *   - swap_reference: string
-     *   - hold_reference: string
-     *   - hold_id: int
-     *   - amount: float
-     *   - currency: string
-     *   - identity_type: string
-     *   - identity_value: string
-     *   - expires_at: string (24 hours from now)
-     *   - access_methods: array
      */
     public function initiateSwapToIdentity(array $payload): array
     {
@@ -1544,10 +1544,8 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             throw new RuntimeException("Invalid identity_type. Must be: national_id, phone, or email");
         }
         
-        // Use existing reference from atomic swap if available
         $swapRef = $this->currentSwapRef ?? $payload['reference'] ?? $this->generateReference();
         
-        // If not already in atomic swap, begin one
         if (!$this->inAtomicSwap) {
             $this->beginAtomicSwap($swapRef);
         } else {
@@ -1555,7 +1553,7 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
         }
         
         try {
-            // STEP 1: VERIFY ASSET (same as existing)
+            // STEP 1: VERIFY ASSET
             error_log("[SwapService] STEP 1: Verify asset at source: {$payload['from_institution']}");
             $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload) {
                 return $this->verifyAssetSigned($payload, $payload['from_institution']);
@@ -1572,7 +1570,7 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
                 'timestamp' => $verificationResult['timestamp']
             ];
             
-            // STEP 2: PLACE HOLD (same as existing)
+            // STEP 2: PLACE HOLD
             error_log("[SwapService] STEP 2: Place hold on source");
             $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $verificationResult) {
                 return $this->placeHoldSigned($payload, $payload['from_institution'], $verificationResult);
@@ -1592,7 +1590,7 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             $this->currentHoldReference = $holdResult['hold_reference'];
             $this->currentHoldId = $holdResult['local_hold_id'];
             
-            // STEP 3: STORE IDENTITY MAPPING (NEW - the "PAUSE" state)
+            // STEP 3: STORE IDENTITY MAPPING
             error_log("[SwapService] STEP 3: Store identity mapping (PAUSED)");
             $identityHoldId = $this->storeIdentityHold(
                 $payload,
@@ -1601,11 +1599,7 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
                 $this->currentHoldId
             );
             
-            // Update hold status to indicate it's waiting for identity confirmation
             $this->updateHoldStatus($this->currentHoldId, 'PENDING_IDENTITY');
-            
-            // Don't commit here - let executeAtomicSwap handle commit
-            // The atomic commit will happen in executeAtomicSwap's commitAtomicSwap()
             
             $expiresAt = date('Y-m-d H:i:s', strtotime('+24 hours'));
             
@@ -1625,7 +1619,6 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             
         } catch (Exception $e) {
             error_log("[SwapService] initiateSwapToIdentity FAILED: " . $e->getMessage());
-            // Rollback will be handled by executeAtomicSwap if this was called from within one
             if (!$this->inAtomicSwap) {
                 $this->rollbackAtomicSwap($e->getMessage());
             }
@@ -1707,26 +1700,6 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
 
     /**
      * Confirm identity and complete swap (User or Agent)
-     * 
-     * Required Payload:
-     * - swap_reference: string - From initiate response
-     * - confirmed_by_type: 'user' | 'agent'
-     * - confirmed_by_id: int - user_id or agent_id
-     * - destination_type: 'CASHOUT' | 'DEPOSIT'
-     * - [confirmation_method]: string - 'dashboard' | 'agent_portal'
-     * - [national_id_verified]: bool - Required for agents
-     * 
-     * For CASHOUT destination:
-     * - destination_institution: string - ATM provider
-     * - delivery_method: string - 'ATM' or 'AGENT'
-     * - beneficiary_phone: string - For SMS notification
-     * 
-     * For DEPOSIT destination:
-     * - destination_institution: string - Bank name
-     * - destination_identifier: string - Account number
-     * - destination_identifier_type: string - 'account'
-     * - account_name: string - Account holder name
-     * - bank_code: string - Bank code
      */
     public function confirmAndFinalizeIdentitySwap(array $payload): array
     {
@@ -1737,7 +1710,6 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             throw new RuntimeException("swap_reference required");
         }
         
-        // Get the paused identity swap
         $identitySwap = $this->getIdentitySwapByReference($swapRef);
         if (!$identitySwap) {
             throw new RuntimeException("Identity swap not found: {$swapRef}");
@@ -1751,7 +1723,6 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             throw new RuntimeException("Swap has expired (24hrs). Please initiate a new swap.");
         }
         
-        // Authorization check
         $confirmedByType = $payload['confirmed_by_type'] ?? null;
         $confirmedById = $payload['confirmed_by_id'] ?? null;
         $identityType = $identitySwap['identity_type'];
@@ -1770,13 +1741,11 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             throw new RuntimeException("confirmed_by_type must be 'user' or 'agent'");
         }
         
-        // Determine destination type - CASHOUT or DEPOSIT
         $destinationType = strtoupper($payload['destination_type'] ?? 'CASHOUT');
         if (!in_array($destinationType, ['CASHOUT', 'DEPOSIT'])) {
             throw new RuntimeException("destination_type must be 'CASHOUT' or 'DEPOSIT'");
         }
         
-        // Update identity hold status to 'confirmed'
         $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'confirmed', [
             'confirmed_by_type' => $confirmedByType,
             'confirmed_by_id' => $confirmedById,
@@ -1784,17 +1753,14 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             'destination_type' => $destinationType
         ]);
         
-        // Get original source payload
         $sourcePayload = json_decode($identitySwap['source_payload'], true);
         
-        // Ensure source payload has all required fields for verification
         $sourcePayload['from_institution'] = $identitySwap['source_institution'];
         $sourcePayload['source_identifier'] = $identitySwap['source_identifier'];
         $sourcePayload['amount'] = (float)$identitySwap['amount'];
         $sourcePayload['currency'] = $identitySwap['currency'] ?? 'BWP';
         $sourcePayload['asset_type'] = $identitySwap['source_asset_type'] ?? 'ACCOUNT';
         
-        // If not already in atomic swap, begin one
         if (!$this->inAtomicSwap) {
             $this->beginAtomicSwap($swapRef);
         } else {
@@ -1816,26 +1782,22 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             $this->currentHoldReference = $identitySwap['hold_reference'];
             $this->currentHoldId = $identitySwap['hold_id'];
             
-            // Execute based on destination type - REUSING EXISTING FLOWS
+            // Execute based on destination type - REUSING EXISTING FLOWS WITH SKIP_HOLD
             if ($destinationType === 'CASHOUT') {
-                error_log("[SwapService] Completing as CASHOUT - reusing existing cashout flow");
+                error_log("[SwapService] Completing as CASHOUT - reusing existing cashout flow with SKIP_HOLD");
                 $result = $this->completeIdentitySwapAsCashout($sourcePayload, $identitySwap, $payload);
             } else {
-                error_log("[SwapService] Completing as DEPOSIT - reusing existing deposit flow");
+                error_log("[SwapService] Completing as DEPOSIT - reusing existing deposit flow with SKIP_HOLD");
                 $result = $this->completeIdentitySwapAsDeposit($sourcePayload, $identitySwap, $payload);
             }
             
-            // Update identity hold to completed
             $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'completed', [
                 'final_destination_type' => $destinationType,
                 'final_destination_payload' => $payload['destination_details'] ?? [],
                 'final_transaction_reference' => $result['transaction_reference'] ?? null
             ]);
             
-            // Update hold_transactions status
             $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
-            
-            // Don't commit here - let executeAtomicSwap handle commit
             
             return [
                 'status' => 'completed',
@@ -1859,11 +1821,10 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
     }
 
     /**
-     * Complete identity swap as CASHOUT - reuses existing cashout flow
+     * Complete identity swap as CASHOUT - reuses existing cashout flow but SKIPS hold placement
      */
     private function completeIdentitySwapAsCashout(array $sourcePayload, array $identitySwap, array $confirmationPayload): array
     {
-        // Build cashout payload with BOTH from_institution and source_institution
         $cashoutPayload = [
             'swap_type' => 'CASHOUT',
             'reference' => $identitySwap['swap_reference'],
@@ -1878,9 +1839,9 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             'beneficiary_phone' => $confirmationPayload['beneficiary_phone'] ?? null,
             'beneficiary_identifier' => $confirmationPayload['beneficiary_identifier'] ?? null,
             'client_phone' => $confirmationPayload['client_phone'] ?? null,
+            '_skip_hold' => true,  // Skip hold placement
         ];
         
-        // Forward any additional source payload fields
         $fieldsToCopy = ['_is_hooked', 'access_token', 'source_reference', 'wallet_pin', 'pin'];
         foreach ($fieldsToCopy as $field) {
             if (isset($sourcePayload[$field])) {
@@ -1888,27 +1849,22 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             }
         }
         
-        // Forward identity confirmation
         $cashoutPayload['_identity_confirmed'] = true;
         $cashoutPayload['_identity_type'] = $identitySwap['identity_type'];
         $cashoutPayload['_identity_value'] = $identitySwap['identity_value'];
         $cashoutPayload['_confirmed_by_type'] = $confirmationPayload['confirmed_by_type'] ?? 'user';
         $cashoutPayload['_confirmed_by_id'] = $confirmationPayload['confirmed_by_id'] ?? 0;
         
-        error_log("[SwapService] Executing cashout with identity confirmation");
-        error_log("[SwapService] Cashout from_institution: " . ($cashoutPayload['from_institution'] ?? 'NULL'));
-        error_log("[SwapService] Cashout source_institution: " . ($cashoutPayload['source_institution'] ?? 'NULL'));
+        error_log("[SwapService] Executing cashout with identity confirmation - SKIPPING HOLD");
         
-        // REUSE existing executeSignedCashout method
         return $this->executeSignedCashout($cashoutPayload);
     }
 
     /**
-     * Complete identity swap as DEPOSIT - reuses existing deposit flow
+     * Complete identity swap as DEPOSIT - reuses existing deposit flow but SKIPS hold placement
      */
     private function completeIdentitySwapAsDeposit(array $sourcePayload, array $identitySwap, array $confirmationPayload): array
     {
-        // Build deposit payload with BOTH from_institution and source_institution
         $depositPayload = [
             'swap_type' => 'DEPOSIT',
             'reference' => $identitySwap['swap_reference'],
@@ -1924,9 +1880,9 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             'destination_account' => $confirmationPayload['destination_account'] ?? null,
             'account_name' => $confirmationPayload['account_name'] ?? null,
             'bank_code' => $confirmationPayload['bank_code'] ?? null,
+            '_skip_hold' => true,  // Skip hold placement
         ];
         
-        // Forward any additional source payload fields
         $fieldsToCopy = ['_is_hooked', 'access_token', 'source_reference', 'wallet_pin', 'pin'];
         foreach ($fieldsToCopy as $field) {
             if (isset($sourcePayload[$field])) {
@@ -1934,19 +1890,131 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             }
         }
         
-        // Forward identity confirmation
         $depositPayload['_identity_confirmed'] = true;
         $depositPayload['_identity_type'] = $identitySwap['identity_type'];
         $depositPayload['_identity_value'] = $identitySwap['identity_value'];
         $depositPayload['_confirmed_by_type'] = $confirmationPayload['confirmed_by_type'] ?? 'user';
         $depositPayload['_confirmed_by_id'] = $confirmationPayload['confirmed_by_id'] ?? 0;
         
-        error_log("[SwapService] Executing deposit with identity confirmation");
-        error_log("[SwapService] Deposit from_institution: " . ($depositPayload['from_institution'] ?? 'NULL'));
-        error_log("[SwapService] Deposit source_institution: " . ($depositPayload['source_institution'] ?? 'NULL'));
+        error_log("[SwapService] Executing deposit with identity confirmation - SKIPPING HOLD");
         
-        // REUSE existing executeSignedDeposit method
         return $this->executeSignedDeposit($depositPayload);
+    }
+
+    // ============================================================
+    // REMAINING METHODS (unchanged from original)
+    // ============================================================
+
+    private function generateCashoutToken(array $payload, string $institution, float $amount): array
+    {
+        $participant = $this->getParticipant($institution);
+        $bankClient = new GenericBankClient($participant, $payload);
+        
+        $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
+        
+        $tokenPayload = [
+            'reference' => $this->currentSwapRef,
+            'amount' => $amount,
+            'currency' => $payload['currency'] ?? 'BWP',
+            'hold_reference' => $this->currentHoldReference,
+            'action' => 'GENERATE_TOKEN',
+            'source_verification' => $this->signedPayloads['verification'] ?? null,
+            'source_hold' => $this->signedPayloads['hold'] ?? null,
+            'beneficiary_phone' => $beneficiaryPhone
+        ];
+        
+        if (isset($payload['note_breakdown'])) {
+            $tokenPayload['note_breakdown'] = $payload['note_breakdown'];
+        }
+        
+        $result = $bankClient->generateToken($tokenPayload);
+        
+        if (!$result['success']) {
+            return ['success' => false, 'message' => $result['curl_error'] ?? 'Token generation failed'];
+        }
+        
+        $data = $result['data'] ?? [];
+        
+        if (empty($data['atm_pin']) && empty($data['voucher_number'])) {
+            return ['success' => false, 'message' => 'No code generated'];
+        }
+        
+        return [
+            'success' => true,
+            'swap_code' => $data['swap_code'] ?? $data['voucher_number'],
+            'atm_pin' => $data['atm_pin'] ?? null,
+            'voucher_number' => $data['voucher_number'] ?? null,
+            'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'))
+        ];
+    }
+
+    /**
+     * Verify user owns identity (dashboard access) - NON-BLOCKING
+     */
+    private function verifyUserOwnsIdentity(int $userId, string $identityType, string $identityValue): void
+    {
+        try {
+            $stmt = $this->swapDB->prepare("SELECT to_regclass('user_identities')");
+            $stmt->execute();
+            $tableExists = $stmt->fetchColumn();
+            
+            if (!$tableExists) {
+                error_log("[SwapService] user_identities table not found - skipping identity check");
+                return;
+            }
+        } catch (Exception $e) {
+            error_log("[SwapService] user_identities table check failed - skipping");
+            return;
+        }
+        
+        $sql = "
+            SELECT COUNT(*) as count 
+            FROM user_identities 
+            WHERE user_id = :user_id 
+            AND identity_type = :identity_type 
+            AND identity_value = :identity_value
+        ";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute([
+                ':user_id' => $userId,
+                ':identity_type' => $identityType,
+                ':identity_value' => $identityValue
+            ]);
+            
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (($result['count'] ?? 0) > 0) {
+                error_log("[SwapService] User {$userId} verified owns identity {$identityType}:{$identityValue}");
+            } else {
+                error_log("[SwapService] User {$userId} does NOT own identity {$identityType}:{$identityValue} - can use AGENT route");
+            }
+            
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to verify user identity: " . $e->getMessage());
+        }
+    }
+
+    private function getIdentityAccessMethods(string $identityType, string $identityValue): array
+    {
+        $methods = [];
+        
+        $methods[] = [
+            'type' => 'user_dashboard',
+            'requires' => 'User must be registered and logged in',
+            'verification' => 'User must own the identity'
+        ];
+        
+        if ($identityType === 'national_id') {
+            $methods[] = [
+                'type' => 'agent_portal',
+                'requires' => 'Agent must have access to VouchMorph Agent Portal',
+                'verification' => 'Agent must verify physical National ID'
+            ];
+        }
+        
+        return $methods;
     }
 
     /**
@@ -2104,7 +2172,6 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
             
             foreach ($expiredSwaps as $swap) {
                 try {
-                    // Release hold using existing bank client
                     $participant = $this->getParticipant($swap['source_institution']);
                     $bankClient = new GenericBankClient($participant);
                     
@@ -2219,204 +2286,35 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
         }
     }
 
-   /**
- * Verify user owns identity (dashboard access)
- * This is an informational check - blocking is NOT done here
- * - If user owns identity → dashboard access granted
- * - If user doesn't own identity → they can still use agent route
- * - Agents always bypass this check (they verify physical ID)
- */
-private function verifyUserOwnsIdentity(int $userId, string $identityType, string $identityValue): void
-{
-    // This check is purely informational for dashboard access
-    // It should NEVER block the swap completion
-    
-    try {
-        // Check if table exists
-        $stmt = $this->swapDB->prepare("SELECT to_regclass('user_identities')");
-        $stmt->execute();
-        $tableExists = $stmt->fetchColumn();
-        
-        if (!$tableExists) {
-            error_log("[SwapService] user_identities table not found - skipping identity check");
-            return;
-        }
-    } catch (Exception $e) {
-        error_log("[SwapService] user_identities table check failed - skipping");
-        return;
-    }
-    
-    $sql = "
-        SELECT COUNT(*) as count 
-        FROM user_identities 
-        WHERE user_id = :user_id 
-        AND identity_type = :identity_type 
-        AND identity_value = :identity_value
-    ";
-    
-    try {
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([
-            ':user_id' => $userId,
-            ':identity_type' => $identityType,
-            ':identity_value' => $identityValue
-        ]);
-        
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (($result['count'] ?? 0) > 0) {
-            error_log("[SwapService] User {$userId} verified owns identity {$identityType}:{$identityValue} - dashboard access granted");
-        } else {
-            error_log("[SwapService] User {$userId} does NOT own identity {$identityType}:{$identityValue} - can still use AGENT route");
-        }
-        
-        // NEVER BLOCK - agent route exists for everyone
-        return;
-        
-    } catch (PDOException $e) {
-        error_log("[SwapService] Failed to verify user identity: " . $e->getMessage());
-        // Don't block - just continue
-        return;
-    }
-}
-
-    /**
-     * Get identity access methods
-     */
-    private function getIdentityAccessMethods(string $identityType, string $identityValue): array
-    {
-        $methods = [];
-        
-        $methods[] = [
-            'type' => 'user_dashboard',
-            'requires' => 'User must be registered and logged in',
-            'verification' => 'User must own the identity'
-        ];
-        
-        if ($identityType === 'national_id') {
-            $methods[] = [
-                'type' => 'agent_portal',
-                'requires' => 'Agent must have access to VouchMorph Agent Portal',
-                'verification' => 'Agent must verify physical National ID'
-            ];
-        }
-        
-        return $methods;
-    }
-
     // ============================================================
-    // HELPER METHODS
-    // ============================================================
-
-    private function verifyAccount(array $payload, string $institution, array $destinationIdentifier): array
-    {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
-        
-        $verifyPayload = [
-            'action' => 'VERIFY_ACCOUNT',
-            'reference' => $this->currentSwapRef,
-            'account_identifier' => $destinationIdentifier['identifier'],
-            'identifier_type' => $destinationIdentifier['type'],
-            'requester' => 'VOUCHMORPH',
-            'timestamp' => time()
-        ];
-        
-        $result = $bankClient->verifyAccount($verifyPayload);
-        
-        if (!$result['success']) {
-            return ['verified' => false, 'message' => $result['curl_error'] ?? 'Account verification failed'];
-        }
-        
-        $data = $result['data'] ?? [];
-        
-        return [
-            'verified' => $data['verified'] ?? false,
-            'message' => $data['message'] ?? null,
-            'account_name' => $data['account_name'] ?? null
-        ];
-    }
-
-    private function generateCashoutToken(array $payload, string $institution, float $amount): array
-    {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
-        
-        $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
-        
-        $tokenPayload = [
-            'reference' => $this->currentSwapRef,
-            'amount' => $amount,
-            'currency' => $payload['currency'] ?? 'BWP',
-            'hold_reference' => $this->currentHoldReference,
-            'action' => 'GENERATE_TOKEN',
-            'source_verification' => $this->signedPayloads['verification'] ?? null,
-            'source_hold' => $this->signedPayloads['hold'] ?? null,
-            'beneficiary_phone' => $beneficiaryPhone
-        ];
-        
-        if (isset($payload['note_breakdown'])) {
-            $tokenPayload['note_breakdown'] = $payload['note_breakdown'];
-        }
-        
-        $result = $bankClient->generateToken($tokenPayload);
-        
-        if (!$result['success']) {
-            return ['success' => false, 'message' => $result['curl_error'] ?? 'Token generation failed'];
-        }
-        
-        $data = $result['data'] ?? [];
-        
-        if (empty($data['atm_pin']) && empty($data['voucher_number'])) {
-            return ['success' => false, 'message' => 'No code generated'];
-        }
-        
-        return [
-            'success' => true,
-            'swap_code' => $data['swap_code'] ?? $data['voucher_number'],
-            'atm_pin' => $data['atm_pin'] ?? null,
-            'voucher_number' => $data['voucher_number'] ?? null,
-            'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'))
-        ];
-    }
-
-    // ============================================================
-    // SIGNED INSTITUTION COMMUNICATION METHODS
+    // REMAINING METHODS (unchanged from original)
     // ============================================================
 
     private function forwardPin(array $originalPayload, array &$targetPayload): void
     {
-        // If using hooked source, we might not need PIN
         $isHooked = isset($originalPayload['_is_hooked']) && $originalPayload['_is_hooked'] === true;
         
         if ($isHooked) {
             error_log("[SwapService] Using hooked source - skipping PIN check");
-            // Hooked sources use access_token, not PIN
             if (!empty($originalPayload['access_token'])) {
                 $targetPayload['access_token'] = $originalPayload['access_token'];
-                error_log("[SwapService] Forwarded access_token from hooked source");
             }
             if (!empty($originalPayload['source_reference'])) {
                 $targetPayload['source_reference'] = $originalPayload['source_reference'];
-                error_log("[SwapService] Forwarded source_reference from hooked source");
             }
             return;
         }
         
-        // Regular PIN-based flow
         if (!empty($originalPayload['wallet_pin'])) {
             $targetPayload['wallet_pin'] = $originalPayload['wallet_pin'];
             $targetPayload['pin'] = $originalPayload['wallet_pin'];
-            error_log("[SwapService] Forwarded wallet_pin to payload");
         } elseif (!empty($originalPayload['pin'])) {
             $targetPayload['pin'] = $originalPayload['pin'];
             $targetPayload['wallet_pin'] = $originalPayload['pin'];
-            error_log("[SwapService] Forwarded pin to payload");
         }
         
         if (!empty($originalPayload['asset_fields']) && is_array($originalPayload['asset_fields'])) {
             $targetPayload['asset_fields'] = $originalPayload['asset_fields'];
-            error_log("[SwapService] Forwarded asset_fields to payload");
         }
     }
 
@@ -2447,9 +2345,6 @@ private function verifyUserOwnsIdentity(int $userId, string $identityType, strin
             $verifyPayload['source_identifier'] = $sourceId['identifier'];
             $verifyPayload['source_identifier_type'] = $sourceId['type'];
         }
-        
-        error_log("[SwapService] verifyAssetSigned payload has PIN: " . 
-            (isset($verifyPayload['wallet_pin']) || isset($verifyPayload['pin']) ? 'YES' : 'NO'));
         
         $result = $bankClient->verifyAssetSigned($verifyPayload);
         
@@ -2506,9 +2401,6 @@ private function verifyUserOwnsIdentity(int $userId, string $identityType, strin
         if (isset($verificationResult['asset_id'])) {
             $holdPayload['asset_id'] = $verificationResult['asset_id'];
         }
-        
-        error_log("[SwapService] placeHoldSigned payload has PIN: " . 
-            (isset($holdPayload['wallet_pin']) || isset($holdPayload['pin']) ? 'YES' : 'NO'));
         
         $result = $bankClient->placeHoldSigned($holdPayload);
         
@@ -2595,6 +2487,35 @@ private function verifyUserOwnsIdentity(int $userId, string $identityType, strin
             'debited' => true,
             'transaction_reference' => $result['data']['transaction_reference'] ?? null,
             'message' => $result['data']['message'] ?? 'Debit successful'
+        ];
+    }
+
+    private function verifyAccount(array $payload, string $institution, array $destinationIdentifier): array
+    {
+        $participant = $this->getParticipant($institution);
+        $bankClient = new GenericBankClient($participant, $payload);
+        
+        $verifyPayload = [
+            'action' => 'VERIFY_ACCOUNT',
+            'reference' => $this->currentSwapRef,
+            'account_identifier' => $destinationIdentifier['identifier'],
+            'identifier_type' => $destinationIdentifier['type'],
+            'requester' => 'VOUCHMORPH',
+            'timestamp' => time()
+        ];
+        
+        $result = $bankClient->verifyAccount($verifyPayload);
+        
+        if (!$result['success']) {
+            return ['verified' => false, 'message' => $result['curl_error'] ?? 'Account verification failed'];
+        }
+        
+        $data = $result['data'] ?? [];
+        
+        return [
+            'verified' => $data['verified'] ?? false,
+            'message' => $data['message'] ?? null,
+            'account_name' => $data['account_name'] ?? null
         ];
     }
 
