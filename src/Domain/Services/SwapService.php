@@ -1544,8 +1544,15 @@ class SwapService
             throw new RuntimeException("Invalid identity_type. Must be: national_id, phone, or email");
         }
         
-        $swapRef = $payload['reference'] ?? $this->generateReference();
-        $this->beginAtomicSwap($swapRef);
+        // Use existing reference from atomic swap if available
+        $swapRef = $this->currentSwapRef ?? $payload['reference'] ?? $this->generateReference();
+        
+        // If not already in atomic swap, begin one
+        if (!$this->inAtomicSwap) {
+            $this->beginAtomicSwap($swapRef);
+        } else {
+            $this->currentSwapRef = $swapRef;
+        }
         
         try {
             // STEP 1: VERIFY ASSET (same as existing)
@@ -1597,7 +1604,8 @@ class SwapService
             // Update hold status to indicate it's waiting for identity confirmation
             $this->updateHoldStatus($this->currentHoldId, 'PENDING_IDENTITY');
             
-            $this->commitAtomicSwap();
+            // Don't commit here - let executeAtomicSwap handle commit
+            // The atomic commit will happen in executeAtomicSwap's commitAtomicSwap()
             
             $expiresAt = date('Y-m-d H:i:s', strtotime('+24 hours'));
             
@@ -1617,7 +1625,10 @@ class SwapService
             
         } catch (Exception $e) {
             error_log("[SwapService] initiateSwapToIdentity FAILED: " . $e->getMessage());
-            $this->rollbackAtomicSwap($e->getMessage());
+            // Rollback will be handled by executeAtomicSwap if this was called from within one
+            if (!$this->inAtomicSwap) {
+                $this->rollbackAtomicSwap($e->getMessage());
+            }
             throw $e;
         }
     }
@@ -1776,8 +1787,12 @@ class SwapService
         // Get original source payload
         $sourcePayload = json_decode($identitySwap['source_payload'], true);
         
-        // BEGIN ATOMIC TRANSACTION FOR FINALIZATION
-        $this->beginAtomicSwap($swapRef);
+        // If not already in atomic swap, begin one
+        if (!$this->inAtomicSwap) {
+            $this->beginAtomicSwap($swapRef);
+        } else {
+            $this->currentSwapRef = $swapRef;
+        }
         
         try {
             // Re-verify asset still available
@@ -1813,7 +1828,7 @@ class SwapService
             // Update hold_transactions status
             $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
             
-            $this->commitAtomicSwap();
+            // Don't commit here - let executeAtomicSwap handle commit
             
             return [
                 'status' => 'completed',
@@ -1829,7 +1844,9 @@ class SwapService
             
         } catch (Exception $e) {
             error_log("[SwapService] confirmAndFinalizeIdentitySwap FAILED: " . $e->getMessage());
-            $this->rollbackAtomicSwap($e->getMessage());
+            if (!$this->inAtomicSwap) {
+                $this->rollbackAtomicSwap($e->getMessage());
+            }
             throw $e;
         }
     }
