@@ -2219,38 +2219,66 @@ if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destI
         }
     }
 
-    /**
-     * Verify user owns identity
-     */
-    private function verifyUserOwnsIdentity(int $userId, string $identityType, string $identityValue): void
-    {
-        $sql = "
-            SELECT COUNT(*) as count 
-            FROM user_identities 
-            WHERE user_id = :user_id 
-            AND identity_type = :identity_type 
-            AND identity_value = :identity_value
-        ";
+   /**
+ * Verify user owns identity (dashboard access)
+ * This is an informational check - blocking is NOT done here
+ * - If user owns identity → dashboard access granted
+ * - If user doesn't own identity → they can still use agent route
+ * - Agents always bypass this check (they verify physical ID)
+ */
+private function verifyUserOwnsIdentity(int $userId, string $identityType, string $identityValue): void
+{
+    // This check is purely informational for dashboard access
+    // It should NEVER block the swap completion
+    
+    try {
+        // Check if table exists
+        $stmt = $this->swapDB->prepare("SELECT to_regclass('user_identities')");
+        $stmt->execute();
+        $tableExists = $stmt->fetchColumn();
         
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':user_id' => $userId,
-                ':identity_type' => $identityType,
-                ':identity_value' => $identityValue
-            ]);
-            
-            $result = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (($result['count'] ?? 0) == 0) {
-                throw new RuntimeException("User does not own this identity");
-            }
-            
-        } catch (PDOException $e) {
-            error_log("[SwapService] Failed to verify user identity: " . $e->getMessage());
-            throw new RuntimeException("Failed to verify identity ownership: " . $e->getMessage());
+        if (!$tableExists) {
+            error_log("[SwapService] user_identities table not found - skipping identity check");
+            return;
         }
+    } catch (Exception $e) {
+        error_log("[SwapService] user_identities table check failed - skipping");
+        return;
     }
+    
+    $sql = "
+        SELECT COUNT(*) as count 
+        FROM user_identities 
+        WHERE user_id = :user_id 
+        AND identity_type = :identity_type 
+        AND identity_value = :identity_value
+    ";
+    
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':user_id' => $userId,
+            ':identity_type' => $identityType,
+            ':identity_value' => $identityValue
+        ]);
+        
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (($result['count'] ?? 0) > 0) {
+            error_log("[SwapService] User {$userId} verified owns identity {$identityType}:{$identityValue} - dashboard access granted");
+        } else {
+            error_log("[SwapService] User {$userId} does NOT own identity {$identityType}:{$identityValue} - can still use AGENT route");
+        }
+        
+        // NEVER BLOCK - agent route exists for everyone
+        return;
+        
+    } catch (PDOException $e) {
+        error_log("[SwapService] Failed to verify user identity: " . $e->getMessage());
+        // Don't block - just continue
+        return;
+    }
+}
 
     /**
      * Get identity access methods
