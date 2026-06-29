@@ -64,7 +64,7 @@ ZURUBANK:
     
     destination_deposit:
       process_deposit: "/api/v1/deposit/direct.php"      
-      verify_account: "/api/v1/verify_asset.php"        
+      verify_account: "/api/v1/verify_account.php"        
     
     common:
       transfer: "/api/v1/transfer.php"                 
@@ -148,7 +148,7 @@ SACCUSSALIS:
     
     destination_deposit:
       process_deposit: "/api/v1/transaction/credit_funds.php"
-      verify_account: "/api/v1/verify_asset.php"
+      verify_account: "/api/v1/verify_account.php"
     
     common:
       transfer: "/api/v1/transfer.php"
