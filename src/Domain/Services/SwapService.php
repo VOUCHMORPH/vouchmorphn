@@ -595,284 +595,609 @@ class SwapService
     }
 
     // ============================================================================
-    // MULTI-DESTINATION SWAP (NEW)
-    // ============================================================================
+// MULTI-DESTINATION SWAP (UPDATED WITH INDEPENDENT HOLDS)
+// ============================================================================
 
-    /**
-     * Execute a swap from one source to multiple destinations simultaneously
-     * 
-     * Flow:
-     * 1. Verify source asset once
-     * 2. Place hold on source for TOTAL amount
-     * 3. Process each destination independently
-     * 4. Debit source for TOTAL amount
-     * 5. Settlement for each destination
-     */
-    public function executeMultiDestinationSwap(array $payload): array
-    {
-        error_log("[SwapService] ===== executeMultiDestinationSwap START =====");
-        
-        $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
-        if (empty($sourceInstitution)) {
-            throw new RuntimeException("Source institution required");
+/**
+ * Execute a swap from one source to multiple destinations independently
+ * 
+ * Flow:
+ * 1. Verify source asset once
+ * 2. For each destination:
+ *    a. Calculate fees for that destination
+ *    b. Place INDIVIDUAL hold for that destination's amount
+ *    c. Process destination (cashout/deposit/voucher)
+ *    d. Track success/failure independently
+ * 3. For successful destinations: Debit each hold individually
+ * 4. For failed destinations: Release hold (can be retried later)
+ * 5. Settlement for each successful destination
+ * 
+ * This treats each destination as an independent swap with its own hold,
+ * allowing partial success and retry of failed destinations.
+ */
+public function executeMultiDestinationSwap(array $payload): array
+{
+    error_log("[SwapService] ===== executeMultiDestinationSwap START =====");
+    
+    $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
+    if (empty($sourceInstitution)) {
+        throw new RuntimeException("Source institution required");
+    }
+    
+    $destinations = $payload['destinations'] ?? [];
+    if (empty($destinations) || count($destinations) < 2) {
+        throw new RuntimeException("At least 2 destinations required for multi-destination swap");
+    }
+    
+    $currency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
+    $sourceIdentifier = $this->extractSourceIdentifier($payload);
+    $multiDestRef = $payload['reference'] ?? $this->generateReference();
+    
+    // Validate each destination
+    foreach ($destinations as $idx => $dest) {
+        $amount = (float)($dest['amount'] ?? 0);
+        if ($amount <= 0) {
+            throw new RuntimeException("Amount must be greater than 0 for destination " . ($idx + 1));
         }
         
-        $destinations = $payload['destinations'] ?? [];
-        if (empty($destinations) || count($destinations) < 2) {
-            throw new RuntimeException("At least 2 destinations required for multi-destination swap");
+        $institution = $dest['to_institution'] ?? $dest['destination_institution'] ?? $dest['institution'];
+        if (empty($institution)) {
+            throw new RuntimeException("Destination institution required for destination " . ($idx + 1));
         }
         
-        $totalAmount = 0;
-        $currency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
-        $sourceIdentifier = $this->extractSourceIdentifier($payload);
+        $identifier = $this->extractDestinationIdentifier($dest);
+        if (!$identifier['has_value']) {
+            throw new RuntimeException("Destination identifier required for destination " . ($idx + 1));
+        }
         
-        // Validate each destination
-        foreach ($destinations as $idx => $dest) {
-            $amount = (float)($dest['amount'] ?? 0);
-            if ($amount <= 0) {
-                throw new RuntimeException("Amount must be greater than 0 for destination " . ($idx + 1));
+        $deliveryMethod = strtoupper($dest['delivery_method'] ?? 'DEPOSIT');
+        if (!in_array($deliveryMethod, ['DEPOSIT', 'CASHOUT', 'VOUCHER', 'AGENT', 'WALLET', 'CARD', 'ATM'])) {
+            throw new RuntimeException("Invalid delivery_method for destination " . ($idx + 1) . ": {$deliveryMethod}");
+        }
+        
+        $dest['currency'] = $dest['currency'] ?? $currency;
+        $dest['delivery_method'] = $deliveryMethod;
+        $dest['_destination_index'] = $idx;
+        $dest['_sub_reference'] = $multiDestRef . '_DEST_' . $idx;
+        $destinations[$idx] = $dest;
+    }
+    
+    error_log("[SwapService] Multi-destination: " . count($destinations) . " destinations with independent holds");
+    
+    // STEP 1: VERIFY SOURCE ASSET ONCE (shared verification)
+    error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
+    $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
+        return $this->verifyAssetSigned($payload, $sourceInstitution);
+    });
+    
+    if (!($verificationResult['verified'] ?? false)) {
+        throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
+    }
+    
+    $this->signedPayloads['verification'] = [
+        'payload' => $verificationResult['original_payload'],
+        'signature' => $verificationResult['signature'],
+        'source' => $sourceInstitution,
+        'timestamp' => $verificationResult['timestamp']
+    ];
+    
+    // STEP 2: PROCESS EACH DESTINATION INDEPENDENTLY WITH ITS OWN HOLD
+    error_log("[SwapService] STEP 2: Processing " . count($destinations) . " destinations with independent holds");
+    
+    $destinationResults = [];
+    $successfulDestinations = [];
+    $failedDestinations = [];
+    $totalFees = 0;
+    $totalDelivered = 0;
+    $totalHeld = 0;
+    
+    // Store the original swap reference for the parent
+    $parentSwapRef = $this->currentSwapRef;
+    
+    foreach ($destinations as $idx => $dest) {
+        $destAmount = (float)$dest['amount'];
+        $destInstitution = $dest['to_institution'] ?? $dest['destination_institution'] ?? $dest['institution'];
+        $deliveryMethod = $dest['delivery_method'];
+        $destIdentifier = $this->extractDestinationIdentifier($dest);
+        $subRef = $dest['_sub_reference'];
+        
+        error_log("[SwapService] Processing destination " . ($idx + 1) . ": {$destInstitution} - {$destAmount} via {$deliveryMethod} (hold: {$subRef})");
+        
+        try {
+            // Calculate fees for this destination
+            $feeBreakdown = $this->calculateFeesWithDetails('MULTI_DESTINATION', $destAmount, array_merge($payload, $dest));
+            $netAmount = $feeBreakdown['net_amount'] ?? $destAmount;
+            $feeAmount = $feeBreakdown['total_fee'] ?? 0;
+            
+            // Adjust amount for delivery method
+            $adjustment = $this->adjustAmountForDelivery($netAmount, $deliveryMethod, $dest['currency'] ?? $currency);
+            $deliverableAmount = $adjustment['deliverable_amount'];
+            $remainderAtSource = $adjustment['remainder_at_source'] ?? 0;
+            
+            if ($deliverableAmount <= 0) {
+                throw new RuntimeException("Deliverable amount is zero for destination " . ($idx + 1));
             }
             
-            $institution = $dest['to_institution'] ?? $dest['destination_institution'] ?? $dest['institution'];
-            if (empty($institution)) {
-                throw new RuntimeException("Destination institution required for destination " . ($idx + 1));
+            // STEP 2a: PLACE INDIVIDUAL HOLD FOR THIS DESTINATION
+            error_log("[SwapService] Placing hold for destination " . ($idx + 1) . ": {$deliverableAmount}");
+            
+            $holdPayload = $payload;
+            $holdPayload['amount'] = $destAmount + $feeAmount; // Hold full amount + fees
+            $holdPayload['hold_reason'] = 'MULTI_DESTINATION_DEST_' . $idx;
+            $holdPayload['reference'] = $subRef;
+            $holdPayload['destination_institution'] = $destInstitution;
+            $holdPayload['destination_identifier'] = $destIdentifier['identifier'];
+            $holdPayload['destination_identifier_type'] = $destIdentifier['type'];
+            
+            // Temporarily set current swap ref to sub-ref for this hold
+            $originalSwapRef = $this->currentSwapRef;
+            $this->currentSwapRef = $subRef;
+            
+            $holdResult = $this->executeStep('PLACE_HOLD_SIGNED_DEST_' . $idx, function() use ($holdPayload, $sourceInstitution, $verificationResult) {
+                return $this->placeHoldSigned($holdPayload, $sourceInstitution, $verificationResult);
+            });
+            
+            // Restore parent swap ref
+            $this->currentSwapRef = $originalSwapRef;
+            
+            if (!($holdResult['hold_placed'] ?? false)) {
+                throw new RuntimeException("Hold failed for destination " . ($idx + 1) . ": " . ($holdResult['message'] ?? 'Unknown error'));
             }
             
-            $identifier = $this->extractDestinationIdentifier($dest);
-            if (!$identifier['has_value']) {
-                throw new RuntimeException("Destination identifier required for destination " . ($idx + 1));
+            $destHoldRef = $holdResult['hold_reference'];
+            $destHoldId = $holdResult['local_hold_id'];
+            $totalHeld += ($destAmount + $feeAmount);
+            
+            error_log("[SwapService] Hold placed for destination " . ($idx + 1) . ": {$destHoldRef}");
+            
+            // STEP 2b: PROCESS DESTINATION
+            error_log("[SwapService] Processing destination " . ($idx + 1) . " with hold: {$destHoldRef}");
+            
+            // Set current hold reference for this destination
+            $originalHoldRef = $this->currentHoldReference;
+            $originalHoldId = $this->currentHoldId;
+            $this->currentHoldReference = $destHoldRef;
+            $this->currentHoldId = $destHoldId;
+            
+            // Process based on delivery method
+            $destResult = match($deliveryMethod) {
+                'CASHOUT', 'AGENT', 'ATM' => $this->processMultiDestinationCashout(
+                    $payload, 
+                    $dest, 
+                    $destInstitution, 
+                    $deliverableAmount,
+                    $destIdentifier
+                ),
+                'DEPOSIT', 'WALLET', 'CARD' => $this->processMultiDestinationDeposit(
+                    $payload,
+                    $dest,
+                    $destInstitution,
+                    $deliverableAmount,
+                    $destIdentifier
+                ),
+                'VOUCHER' => $this->processMultiDestinationVoucher(
+                    $payload,
+                    $dest,
+                    $destInstitution,
+                    $deliverableAmount,
+                    $destIdentifier
+                ),
+                default => throw new RuntimeException("Unsupported delivery method: {$deliveryMethod}")
+            };
+            
+            // Restore original hold references
+            $this->currentHoldReference = $originalHoldRef;
+            $this->currentHoldId = $originalHoldId;
+            
+            if (!($destResult['success'] ?? false)) {
+                throw new RuntimeException("Destination processing failed: " . ($destResult['message'] ?? 'Unknown error'));
             }
             
-            $deliveryMethod = strtoupper($dest['delivery_method'] ?? 'DEPOSIT');
-            if (!in_array($deliveryMethod, ['DEPOSIT', 'CASHOUT', 'VOUCHER', 'AGENT', 'WALLET', 'CARD', 'ATM'])) {
-                throw new RuntimeException("Invalid delivery_method for destination " . ($idx + 1) . ": {$deliveryMethod}");
+            // STEP 2c: DEBIT THIS DESTINATION'S HOLD
+            error_log("[SwapService] Debiting hold for destination " . ($idx + 1) . ": {$destHoldRef}");
+            
+            $this->currentHoldReference = $destHoldRef;
+            $this->currentHoldId = $destHoldId;
+            
+            $debitPayload = [
+                'reference' => $subRef,
+                'hold_reference' => $destHoldRef,
+                'amount' => $destAmount + $feeAmount,
+                'reason' => 'Multi-destination swap - destination ' . ($idx + 1)
+            ];
+            
+            $debitResult = $this->executeStep('DEBIT_SOURCE_DEST_' . $idx, function() use ($debitPayload, $sourceInstitution) {
+                return $this->debitSource($debitPayload, $sourceInstitution);
+            });
+            
+            // Restore original hold references
+            $this->currentHoldReference = $originalHoldRef;
+            $this->currentHoldId = $originalHoldId;
+            
+            if (!($debitResult['debited'] ?? false)) {
+                throw new RuntimeException("Debit failed for destination " . ($idx + 1) . ": " . ($debitResult['message'] ?? 'Unknown error'));
             }
             
-            $totalAmount += $amount;
+            // Update hold status
+            $this->updateHoldStatus($destHoldId, 'DEBITED');
             
-            $dest['currency'] = $dest['currency'] ?? $currency;
-            $dest['delivery_method'] = $deliveryMethod;
-            $dest['_destination_index'] = $idx;
-            $destinations[$idx] = $dest;
-        }
-        
-        error_log("[SwapService] Multi-destination: {$totalAmount} total across " . count($destinations) . " destinations");
-        
-        // STEP 1: VERIFY ASSET ONCE
-        error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
-        $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
-            return $this->verifyAssetSigned($payload, $sourceInstitution);
-        });
-        
-        if (!($verificationResult['verified'] ?? false)) {
-            throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
-        }
-        
-        $this->signedPayloads['verification'] = [
-            'payload' => $verificationResult['original_payload'],
-            'signature' => $verificationResult['signature'],
-            'source' => $sourceInstitution,
-            'timestamp' => $verificationResult['timestamp']
-        ];
-        
-        // STEP 2: PLACE HOLD FOR TOTAL AMOUNT
-        error_log("[SwapService] STEP 2: Placing hold for total amount: {$totalAmount}");
-        
-        $holdPayload = $payload;
-        $holdPayload['amount'] = $totalAmount;
-        $holdPayload['hold_reason'] = 'MULTI_DESTINATION_SWAP';
-        
-        $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($holdPayload, $sourceInstitution, $verificationResult) {
-            return $this->placeHoldSigned($holdPayload, $sourceInstitution, $verificationResult);
-        });
-        
-        if (!($holdResult['hold_placed'] ?? false)) {
-            throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown error'));
-        }
-        
-        $this->signedPayloads['hold'] = [
-            'payload' => $holdResult['original_payload'],
-            'signature' => $holdResult['signature'],
-            'source' => $sourceInstitution,
-            'timestamp' => $holdResult['timestamp']
-        ];
-        
-        $this->currentHoldReference = $holdResult['hold_reference'];
-        $this->currentHoldId = $holdResult['local_hold_id'];
-        
-        // STEP 3: PROCESS EACH DESTINATION
-        error_log("[SwapService] STEP 3: Processing " . count($destinations) . " destinations");
-        
-        $destinationResults = [];
-        $totalFees = 0;
-        $totalDelivered = 0;
-        $destinationErrors = [];
-        
-        foreach ($destinations as $idx => $dest) {
-            $destAmount = (float)$dest['amount'];
-            $destInstitution = $dest['to_institution'] ?? $dest['destination_institution'] ?? $dest['institution'];
-            $deliveryMethod = $dest['delivery_method'];
-            $destIdentifier = $this->extractDestinationIdentifier($dest);
+            // Store successful result
+            $successResult = [
+                'index' => $idx,
+                'sub_reference' => $subRef,
+                'destination_institution' => $destInstitution,
+                'destination_identifier' => $destIdentifier['identifier'],
+                'destination_identifier_type' => $destIdentifier['type'],
+                'delivery_method' => $deliveryMethod,
+                'requested_amount' => $destAmount,
+                'fee' => $feeAmount,
+                'net_amount' => $netAmount,
+                'deliverable_amount' => $deliverableAmount,
+                'remainder_at_source' => $remainderAtSource,
+                'hold_reference' => $destHoldRef,
+                'hold_id' => $destHoldId,
+                'fee_breakdown' => $feeBreakdown,
+                'adjustment' => $adjustment,
+                'transaction_reference' => $destResult['transaction_reference'] ?? null,
+                'voucher_code' => $destResult['voucher_code'] ?? null,
+                'status' => 'success',
+                'result' => $destResult
+            ];
             
-            error_log("[SwapService] Processing destination " . ($idx + 1) . ": {$destInstitution} - {$destAmount} via {$deliveryMethod}");
+            $destinationResults[] = $successResult;
+            $successfulDestinations[] = $successResult;
+            $totalFees += $feeAmount;
+            $totalDelivered += $deliverableAmount;
             
-            try {
-                // Calculate fees for this destination
-                $feeBreakdown = $this->calculateFeesWithDetails('MULTI_DESTINATION', $destAmount, array_merge($payload, $dest));
-                $netAmount = $feeBreakdown['net_amount'] ?? $destAmount;
-                $feeAmount = $feeBreakdown['total_fee'] ?? 0;
-                
-                // Adjust amount for delivery method
-                $adjustment = $this->adjustAmountForDelivery($netAmount, $deliveryMethod, $dest['currency'] ?? $currency);
-                $deliverableAmount = $adjustment['deliverable_amount'];
-                $remainderAtSource = $adjustment['remainder_at_source'] ?? 0;
-                
-                if ($deliverableAmount <= 0) {
-                    throw new RuntimeException("Deliverable amount is zero for destination " . ($idx + 1));
+            error_log("[SwapService] Destination " . ($idx + 1) . " completed successfully: delivered {$deliverableAmount}, fee {$feeAmount}, hold {$destHoldRef}");
+            
+        } catch (Exception $e) {
+            error_log("[SwapService] Destination " . ($idx + 1) . " FAILED: " . $e->getMessage());
+            
+            // If hold was placed but destination failed, release the hold
+            if (isset($destHoldRef) && isset($destHoldId)) {
+                try {
+                    error_log("[SwapService] Releasing hold for failed destination " . ($idx + 1) . ": {$destHoldRef}");
+                    
+                    // Release hold at source
+                    $participant = $this->getParticipant($sourceInstitution);
+                    $bankClient = new GenericBankClient($participant);
+                    $bankClient->releaseHold([
+                        'hold_reference' => $destHoldRef,
+                        'action' => 'RELEASE_HOLD',
+                        'reason' => 'Destination failed - ' . $e->getMessage()
+                    ]);
+                    
+                    $this->updateHoldStatus($destHoldId, 'RELEASED');
+                    
+                } catch (Exception $releaseError) {
+                    error_log("[SwapService] Failed to release hold for destination " . ($idx + 1) . ": " . $releaseError->getMessage());
                 }
-                
-                // Process based on delivery method
-                $destResult = match($deliveryMethod) {
-                    'CASHOUT', 'AGENT', 'ATM' => $this->processMultiDestinationCashout(
-                        $payload, 
-                        $dest, 
-                        $destInstitution, 
-                        $deliverableAmount,
-                        $destIdentifier
-                    ),
-                    'DEPOSIT', 'WALLET', 'CARD' => $this->processMultiDestinationDeposit(
-                        $payload,
-                        $dest,
-                        $destInstitution,
-                        $deliverableAmount,
-                        $destIdentifier
-                    ),
-                    'VOUCHER' => $this->processMultiDestinationVoucher(
-                        $payload,
-                        $dest,
-                        $destInstitution,
-                        $deliverableAmount,
-                        $destIdentifier
-                    ),
-                    default => throw new RuntimeException("Unsupported delivery method: {$deliveryMethod}")
-                };
-                
-                if (!($destResult['success'] ?? false)) {
-                    throw new RuntimeException("Destination processing failed: " . ($destResult['message'] ?? 'Unknown error'));
-                }
-                
-                // Store successful result
-                $destinationResults[] = [
-                    'index' => $idx,
-                    'destination_institution' => $destInstitution,
-                    'destination_identifier' => $destIdentifier['identifier'],
-                    'destination_identifier_type' => $destIdentifier['type'],
-                    'delivery_method' => $deliveryMethod,
-                    'requested_amount' => $destAmount,
-                    'fee' => $feeAmount,
-                    'net_amount' => $netAmount,
-                    'deliverable_amount' => $deliverableAmount,
-                    'remainder_at_source' => $remainderAtSource,
-                    'fee_breakdown' => $feeBreakdown,
-                    'adjustment' => $adjustment,
-                    'transaction_reference' => $destResult['transaction_reference'] ?? null,
-                    'voucher_code' => $destResult['voucher_code'] ?? null,
-                    'status' => 'success',
-                    'result' => $destResult
-                ];
-                
-                $totalFees += $feeAmount;
-                $totalDelivered += $deliverableAmount;
-                
-                error_log("[SwapService] Destination " . ($idx + 1) . " completed: delivered {$deliverableAmount}, fee {$feeAmount}");
-                
-            } catch (Exception $e) {
-                error_log("[SwapService] Destination " . ($idx + 1) . " FAILED: " . $e->getMessage());
-                $destinationErrors[] = "Destination " . ($idx + 1) . ": " . $e->getMessage();
-                
-                $destinationResults[] = [
-                    'index' => $idx,
-                    'destination_institution' => $destInstitution ?? 'unknown',
-                    'destination_identifier' => $destIdentifier['identifier'] ?? null,
-                    'delivery_method' => $deliveryMethod ?? 'unknown',
-                    'requested_amount' => $destAmount ?? 0,
-                    'status' => 'failed',
-                    'error' => $e->getMessage()
-                ];
-                
-                // Rollback if any destination fails
-                throw new RuntimeException("Destination " . ($idx + 1) . " failed: " . $e->getMessage());
             }
-        }
-        
-        // STEP 4: DEBIT SOURCE FOR TOTAL AMOUNT
-        $totalDebitAmount = $totalAmount + $totalFees;
-        error_log("[SwapService] STEP 4: Debiting source for total: {$totalDebitAmount}");
-        
-        $debitResult = $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution, $totalDebitAmount) {
-            $debitPayload = $payload;
-            $debitPayload['amount'] = $totalDebitAmount;
-            $debitPayload['reason'] = 'Multi-destination swap completed';
-            return $this->debitSource($debitPayload, $sourceInstitution);
-        });
-        
-        if (!($debitResult['debited'] ?? false)) {
-            throw new RuntimeException("Debit failed: " . ($debitResult['message'] ?? 'Unknown error'));
-        }
-        
-        $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
-        
-        // STEP 5: SETTLEMENT FOR EACH DESTINATION
-        error_log("[SwapService] STEP 5: Settlement for " . count($destinationResults) . " destinations");
-        
-        $settlementResults = [];
-        foreach ($destinationResults as $destResult) {
-            if ($destResult['status'] !== 'success') continue;
             
-            $settlement = $this->settlement->updateNetPosition(
-                $this->currentSwapRef,
+            $failedResult = [
+                'index' => $idx,
+                'sub_reference' => $subRef ?? null,
+                'destination_institution' => $destInstitution ?? 'unknown',
+                'destination_identifier' => $destIdentifier['identifier'] ?? null,
+                'delivery_method' => $deliveryMethod ?? 'unknown',
+                'requested_amount' => $destAmount ?? 0,
+                'hold_reference' => $destHoldRef ?? null,
+                'hold_id' => $destHoldId ?? null,
+                'status' => 'failed',
+                'error' => $e->getMessage(),
+                'can_retry' => true,
+                'retry_payload' => $dest
+            ];
+            
+            $destinationResults[] = $failedResult;
+            $failedDestinations[] = $failedResult;
+        }
+    }
+    
+    // STEP 3: CREATE MULTI-DESTINATION RECORD
+    error_log("[SwapService] STEP 3: Creating multi-destination record");
+    
+    $multiDestId = $this->storeMultiDestinationRecord(
+        $multiDestRef,
+        $sourceInstitution,
+        $destinations,
+        $destinationResults,
+        $totalFees,
+        $totalDelivered,
+        count($successfulDestinations),
+        count($failedDestinations)
+    );
+    
+    // STEP 4: SETTLEMENT FOR SUCCESSFUL DESTINATIONS
+    error_log("[SwapService] STEP 4: Settlement for " . count($successfulDestinations) . " successful destinations");
+    
+    $settlementResults = [];
+    foreach ($successfulDestinations as $destResult) {
+        $settlement = $this->settlement->updateNetPosition(
+            $multiDestRef,
+            $sourceInstitution,
+            $destResult['destination_institution'],
+            $destResult['deliverable_amount'],
+            'MULTI_DESTINATION_COMPLETED',
+            $currency
+        );
+        
+        if ($destResult['fee'] > 0) {
+            $this->settlement->invoiceFee(
+                $multiDestRef,
                 $sourceInstitution,
-                $destResult['destination_institution'],
-                $destResult['deliverable_amount'],
-                'MULTI_DESTINATION_COMPLETED',
+                $this->getParticipantId($sourceInstitution),
+                'MULTI_DESTINATION_FEE',
+                $destResult['fee'],
                 $currency
             );
-            
-            if ($destResult['fee'] > 0) {
-                $this->settlement->invoiceFee(
-                    $this->currentSwapRef,
-                    $sourceInstitution,
-                    $this->getParticipantId($sourceInstitution),
-                    'MULTI_DESTINATION_FEE',
-                    $destResult['fee'],
-                    $currency
-                );
-            }
-            
-            $settlementResults[] = [
-                'destination_institution' => $destResult['destination_institution'],
-                'amount' => $destResult['deliverable_amount'],
-                'fee' => $destResult['fee'],
-                'settlement' => $settlement
-            ];
+        }
+        
+        $settlementResults[] = [
+            'destination_institution' => $destResult['destination_institution'],
+            'amount' => $destResult['deliverable_amount'],
+            'fee' => $destResult['fee'],
+            'hold_reference' => $destResult['hold_reference'],
+            'settlement' => $settlement
+        ];
+    }
+    
+    // Build response
+    $response = [
+        'status' => count($failedDestinations) > 0 ? 'partial_success' : 'success',
+        'reference' => $multiDestRef,
+        'source_institution' => $sourceInstitution,
+        'total_destinations' => count($destinations),
+        'successful_destinations' => count($successfulDestinations),
+        'failed_destinations' => count($failedDestinations),
+        'total_amount' => array_sum(array_column($destinations, 'amount')),
+        'total_fees' => $totalFees,
+        'total_delivered' => $totalDelivered,
+        'total_held' => $totalHeld,
+        'multi_destination_id' => $multiDestId,
+        'destinations' => $destinationResults,
+        'settlement' => $settlementResults,
+        'fee_calculation_details' => $this->feeCalculationDetails,
+        'signature_chain' => $this->signedPayloads,
+        'can_retry' => count($failedDestinations) > 0,
+        'message' => count($failedDestinations) > 0 
+            ? count($failedDestinations) . ' destination(s) failed. You can retry them from the dashboard.'
+            : 'All destinations processed successfully.'
+    ];
+    
+    // Store idempotency
+    $idempotencyKey = $payload['idempotency_key'] ?? $payload['idempotencyKey'] ?? null;
+    if ($idempotencyKey) {
+        $this->storeIdempotencyResult($idempotencyKey, $response);
+    }
+    
+    error_log("[SwapService] ===== executeMultiDestinationSwap COMPLETE: " . count($successfulDestinations) . " succeeded, " . count($failedDestinations) . " failed =====");
+    
+    return $response;
+}
+
+/**
+ * Store multi-destination record for tracking and retry
+ */
+private function storeMultiDestinationRecord(
+    string $reference,
+    string $sourceInstitution,
+    array $destinations,
+    array $results,
+    float $totalFees,
+    float $totalDelivered,
+    int $successCount,
+    int $failedCount
+): int {
+    $sql = "
+        INSERT INTO multi_destination_swaps (
+            reference,
+            source_institution,
+            total_destinations,
+            successful_count,
+            failed_count,
+            total_amount,
+            total_fees,
+            total_delivered,
+            status,
+            destinations_payload,
+            results_payload,
+            created_at,
+            updated_at
+        ) VALUES (
+            :reference,
+            :source_institution,
+            :total_destinations,
+            :successful_count,
+            :failed_count,
+            :total_amount,
+            :total_fees,
+            :total_delivered,
+            :status,
+            :destinations_payload::jsonb,
+            :results_payload::jsonb,
+            NOW(),
+            NOW()
+        ) RETURNING id
+    ";
+    
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':reference' => $reference,
+            ':source_institution' => $sourceInstitution,
+            ':total_destinations' => count($destinations),
+            ':successful_count' => $successCount,
+            ':failed_count' => $failedCount,
+            ':total_amount' => array_sum(array_column($destinations, 'amount')),
+            ':total_fees' => $totalFees,
+            ':total_delivered' => $totalDelivered,
+            ':status' => $failedCount > 0 ? 'partial' : 'completed',
+            ':destinations_payload' => json_encode($destinations),
+            ':results_payload' => json_encode($results)
+        ]);
+        
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ? (int)$row['id'] : 0;
+        
+    } catch (PDOException $e) {
+        error_log("[SwapService] Failed to store multi-destination record: " . $e->getMessage());
+        // Don't throw - just log, as this is for tracking
+        return 0;
+    }
+}
+
+/**
+ * Retry a failed multi-destination destination
+ */
+public function retryMultiDestinationDestination(string $multiDestRef, int $destinationIndex): array
+{
+    error_log("[SwapService] ===== retryMultiDestinationDestination: {$multiDestRef}, index: {$destinationIndex} =====");
+    
+    // Get the multi-destination record
+    $sql = "SELECT * FROM multi_destination_swaps WHERE reference = :reference";
+    $stmt = $this->swapDB->prepare($sql);
+    $stmt->execute([':reference' => $multiDestRef]);
+    $record = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$record) {
+        throw new RuntimeException("Multi-destination record not found: {$multiDestRef}");
+    }
+    
+    $results = json_decode($record['results_payload'], true);
+    $destinations = json_decode($record['destinations_payload'], true);
+    
+    // Find the failed destination
+    $failedDest = null;
+    $failedResult = null;
+    foreach ($results as $result) {
+        if ($result['index'] == $destinationIndex && $result['status'] === 'failed') {
+            $failedResult = $result;
+            break;
+        }
+    }
+    
+    if (!$failedResult) {
+        throw new RuntimeException("No failed destination found at index {$destinationIndex}");
+    }
+    
+    // Get the original destination payload
+    foreach ($destinations as $dest) {
+        if (($dest['_destination_index'] ?? $dest['index'] ?? 0) == $destinationIndex) {
+            $failedDest = $dest;
+            break;
+        }
+    }
+    
+    if (!$failedDest) {
+        throw new RuntimeException("Destination payload not found for index {$destinationIndex}");
+    }
+    
+    // Execute the retry as a single swap
+    $retryPayload = $failedDest;
+    $retryPayload['reference'] = $multiDestRef . '_RETRY_' . $destinationIndex . '_' . time();
+    $retryPayload['from_institution'] = $record['source_institution'];
+    $retryPayload['currency'] = $record['destinations_payload']['currency'] ?? 'BWP';
+    $retryPayload['_is_retry'] = true;
+    $retryPayload['_original_multi_dest_ref'] = $multiDestRef;
+    $retryPayload['_original_destination_index'] = $destinationIndex;
+    
+    error_log("[SwapService] Executing retry for destination {$destinationIndex}");
+    
+    try {
+        // Execute as a standard swap (will have its own hold)
+        $result = $this->executeAtomicSwap($retryPayload);
+        
+        // Update the multi-destination record
+        $this->updateMultiDestinationRetryStatus($multiDestRef, $destinationIndex, 'retried', $result);
+        
+        return [
+            'success' => true,
+            'message' => 'Destination retry successful',
+            'result' => $result
+        ];
+        
+    } catch (Exception $e) {
+        error_log("[SwapService] Retry failed for destination {$destinationIndex}: " . $e->getMessage());
+        
+        $this->updateMultiDestinationRetryStatus($multiDestRef, $destinationIndex, 'retry_failed', ['error' => $e->getMessage()]);
+        
+        throw new RuntimeException("Retry failed: " . $e->getMessage());
+    }
+}
+
+/**
+ * Update multi-destination retry status
+ */
+private function updateMultiDestinationRetryStatus(string $reference, int $index, string $status, array $data): void
+{
+    $sql = "
+        UPDATE multi_destination_swaps 
+        SET 
+            retry_log = retry_log || :retry_entry::jsonb,
+            updated_at = NOW()
+        WHERE reference = :reference
+    ";
+    
+    $retryEntry = [
+        'destination_index' => $index,
+        'status' => $status,
+        'timestamp' => date('Y-m-d H:i:s'),
+        'data' => $data
+    ];
+    
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':retry_entry' => json_encode($retryEntry),
+            ':reference' => $reference
+        ]);
+    } catch (PDOException $e) {
+        error_log("[SwapService] Failed to update retry status: " . $e->getMessage());
+    }
+}
+
+/**
+ * Get multi-destination swap status
+ */
+public function getMultiDestinationStatus(string $reference): array
+{
+    $sql = "
+        SELECT 
+            *,
+            CASE 
+                WHEN failed_count > 0 AND successful_count > 0 THEN 'partial'
+                WHEN failed_count > 0 AND successful_count = 0 THEN 'failed'
+                WHEN failed_count = 0 AND successful_count > 0 THEN 'completed'
+                ELSE 'pending'
+            END as current_status
+        FROM multi_destination_swaps 
+        WHERE reference = :reference
+    ";
+    
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([':reference' => $reference]);
+        $record = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$record) {
+            return ['success' => false, 'message' => 'Multi-destination record not found'];
         }
         
         return [
-            'status' => 'success',
-            'reference' => $this->currentSwapRef,
-            'source_institution' => $sourceInstitution,
-            'total_destinations' => count($destinations),
-            'successful_destinations' => count(array_filter($destinationResults, fn($r) => $r['status'] === 'success')),
-            'total_amount' => $totalAmount,
-            'total_fees' => $totalFees,
-            'total_debited' => $totalDebitAmount,
-            'total_delivered' => $totalDelivered,
-            'destinations' => $destinationResults,
-            'settlement' => $settlementResults,
-            'fee_calculation_details' => $this->feeCalculationDetails,
-            'signature_chain' => $this->signedPayloads
+            'success' => true,
+            'data' => $record,
+            'can_retry' => $record['failed_count'] > 0
+        ];
+        
+    } catch (PDOException $e) {
+        return [
+            'success' => false,
+            'message' => 'Error fetching status: ' . $e->getMessage()
         ];
     }
+}
 
     /**
      * Process multi-destination cashout (ATM/Agent)
