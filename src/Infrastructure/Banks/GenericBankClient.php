@@ -346,6 +346,8 @@ class GenericBankClient implements BankAPIInterface
             'verify_asset' => ['source', 'verify_asset'],
             'verifyAsset' => ['source', 'verify_asset'],
             'verifyAssetSigned' => ['source', 'verify_asset'],
+            'verify_account' => ['destination_deposit', 'verify_account'],
+            'verifyAccount' => ['destination_deposit', 'verify_account'],
             'place_hold' => ['source', 'place_hold'],
             'placeHold' => ['source', 'place_hold'],
             'placeHoldSigned' => ['source', 'place_hold'],
@@ -365,8 +367,6 @@ class GenericBankClient implements BankAPIInterface
             'process_deposit' => ['destination_deposit', 'process_deposit'],
             'processDeposit' => ['destination_deposit', 'process_deposit'],
             'processDepositWithProof' => ['destination_deposit', 'process_deposit'],
-            'verify_account' => ['destination_deposit', 'verify_account'],
-            'verifyAccount' => ['destination_deposit', 'verify_account'],
             'transfer' => ['common', 'transfer'],
             'transferWithProof' => ['common', 'transfer'],
             'reverse' => ['common', 'reverse'],
@@ -388,6 +388,7 @@ class GenericBankClient implements BankAPIInterface
         
         $envMap = [
             'verify_asset' => 'VERIFY_ENDPOINT',
+            'verify_account' => 'VERIFY_ACCOUNT_ENDPOINT',
             'place_hold' => 'HOLD_ENDPOINT',
             'release_hold' => 'RELEASE_HOLD_ENDPOINT',
             'debit_funds' => 'DEBIT_ENDPOINT',
@@ -1072,6 +1073,96 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
+    // DESTINATION ROLE METHODS - ACCOUNT VERIFICATION
+    // ============================================================================
+
+    /**
+     * Verify a destination account exists and is valid
+     */
+    public function verifyAccount(array $payload): array
+    {
+        error_log("=== GENERIC BANK CLIENT: verifyAccount ===");
+        
+        // Extract destination identifier from various possible locations
+        $destinationIdentifier = $payload['account_identifier'] ?? 
+                                 $payload['destination_identifier'] ?? 
+                                 $payload['identifier'] ?? 
+                                 $payload['account_number'] ?? 
+                                 $payload['phone'] ?? 
+                                 $payload['email'] ?? 
+                                 $payload['national_id'] ?? null;
+        
+        $identifierType = $payload['identifier_type'] ?? 
+                          $payload['destination_identifier_type'] ?? 
+                          'account';
+        
+        if (!$destinationIdentifier) {
+            error_log("[GenericBankClient] No destination identifier found in payload");
+            return [
+                'verified' => false,
+                'success' => false,
+                'message' => 'No destination identifier provided. Required: account_identifier, destination_identifier, or identifier'
+            ];
+        }
+        
+        error_log("[GenericBankClient] Verifying account: {$destinationIdentifier} (type: {$identifierType})");
+        
+        // Build verification payload
+        $verifyPayload = [
+            'action' => 'VERIFY_ACCOUNT',
+            'account_identifier' => $destinationIdentifier,
+            'identifier_type' => $identifierType,
+            'requester' => $payload['requester'] ?? 'VOUCHMORPH',
+            'timestamp' => time(),
+            'reference' => $payload['reference'] ?? 'VERIFY_' . bin2hex(random_bytes(6))
+        ];
+        
+        // Add any additional fields
+        if (isset($payload['amount'])) {
+            $verifyPayload['amount'] = $payload['amount'];
+        }
+        if (isset($payload['currency'])) {
+            $verifyPayload['currency'] = $payload['currency'];
+        }
+        if (isset($payload['destination_institution'])) {
+            $verifyPayload['institution'] = $payload['destination_institution'];
+        }
+        
+        // Send the verification request
+        $result = $this->send('verify_account', $verifyPayload, $payload['access_token'] ?? null);
+        
+        error_log("[GenericBankClient] verifyAccount response HTTP: " . ($result['status_code'] ?? 'unknown'));
+        
+        if (!$result['success']) {
+            return [
+                'verified' => false,
+                'success' => false,
+                'message' => $result['data']['message'] ?? $result['curl_error'] ?? 'Account verification failed',
+                'http_code' => $result['status_code'] ?? 0,
+                'data' => $result['data'] ?? []
+            ];
+        }
+        
+        $data = $result['data'] ?? [];
+        
+        // Check if verified from response
+        $verified = $data['verified'] ?? $data['success'] ?? true;
+        
+        return [
+            'verified' => $verified,
+            'success' => true,
+            'message' => $data['message'] ?? 'Account verified successfully',
+            'account_name' => $data['account_name'] ?? $data['holder_name'] ?? $data['name'] ?? null,
+            'account_type' => $data['account_type'] ?? $data['type'] ?? null,
+            'currency' => $data['currency'] ?? null,
+            'status' => $data['status'] ?? 'active',
+            'account_identifier' => $destinationIdentifier,
+            'identifier_type' => $identifierType,
+            'data' => $data
+        ];
+    }
+
+    // ============================================================================
     // COMMON METHODS
     // ============================================================================
 
@@ -1108,6 +1199,8 @@ class GenericBankClient implements BankAPIInterface
                 return $this->authorize($payload);
             case 'DEBIT_HOLD':
                 return $this->debitHold($payload);
+            case 'VERIFY_ACCOUNT':
+                return $this->verifyAccount($payload);
             default:
                 return $this->processDeposit($payload);
         }
