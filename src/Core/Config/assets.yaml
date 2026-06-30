@@ -1,8 +1,8 @@
 # ============================================
-# ASSET TYPES
+# ASSET TYPES - GLOBAL CONFIGURATION
 # ============================================
 # This file defines every asset type in the system.
-# One asset type can be used by multiple participants.
+# Shared across ALL countries.
 # ============================================
 
 version: "3.1.0"
@@ -24,6 +24,7 @@ ACCOUNT:
     icon: "🏦"
     display_name: "Bank Account"
     color: "#4CAF50"
+    description: "Standard bank account with account number"
   
   fields:
     - name: account_number
@@ -33,6 +34,8 @@ ACCOUNT:
       pattern: "^[0-9]{8,16}$"
       min_length: 8
       max_length: 16
+      placeholder: "Enter account number"
+      help_text: "8-16 digit account number"
 
 # ------------------------------------------------------------
 # ATM - ATM cash withdrawal
@@ -50,6 +53,7 @@ ATM:
     icon: "🏧"
     display_name: "ATM Cashout"
     color: "#2196F3"
+    description: "ATM withdrawal with code and PIN"
   
   fields:
     - name: atm_code
@@ -57,20 +61,27 @@ ATM:
       type: text
       required: true
       pattern: "^[0-9]{6}$"
+      placeholder: "Enter ATM code"
+      help_text: "6-digit ATM code"
     
     - name: atm_pin
       label: "ATM PIN"
       type: password
       required: true
       vault_field: pin
+      min_length: 4
+      max_length: 6
+      placeholder: "Enter ATM PIN"
+      help_text: "4-6 digit ATM PIN"
 
 # ------------------------------------------------------------
-# CASHOUT-VOUCHER - Prepaid voucher
+# VOUCHER - Prepaid voucher
 # ------------------------------------------------------------
-CASHOUT-VOUCHER:
+VOUCHER:
   category: VOUCHER
   delivery_modes:
     - cashout
+    - deposit
   hold_required: true
   hold_expiry_seconds: 600
   reversal_window_seconds: 3600
@@ -78,8 +89,9 @@ CASHOUT-VOUCHER:
   
   ui:
     icon: "🎫"
-    display_name: "Cashout Voucher"
+    display_name: "Voucher"
     color: "#FF9800"
+    description: "Prepaid voucher with number and PIN"
   
   fields:
     - name: voucher_number
@@ -87,15 +99,37 @@ CASHOUT-VOUCHER:
       type: text
       required: true
       pattern: "^[A-Z0-9]{8,16}$"
+      placeholder: "Enter voucher number"
+      help_text: "8-16 character voucher number"
     
     - name: voucher_pin
       label: "Voucher PIN"
       type: password
       required: true
       vault_field: pin
+      min_length: 4
+      max_length: 6
+      placeholder: "Enter voucher PIN"
+      help_text: "4-6 digit voucher PIN"
+    
+    - name: amount
+      label: "Voucher Amount"
+      type: number
+      required: true
+      min: 1
+      placeholder: "0.00"
+      help_text: "Amount on the voucher"
+    
+    - name: phone
+      label: "Phone Number"
+      type: tel
+      required: false
+      pattern: "^\\+?[0-9]{10,15}$"
+      placeholder: "+267XXXXXXXX"
+      help_text: "Phone number associated with the voucher"
 
 # ------------------------------------------------------------
-# MNO-WALLET - Mobile money wallet
+# MNO-WALLET - Mobile money wallet (country-specific patterns)
 # ------------------------------------------------------------
 MNO-WALLET:
   category: MOBILE_MONEY
@@ -111,15 +145,16 @@ MNO-WALLET:
     icon: "📱"
     display_name: "Mobile Wallet"
     color: "#E91E63"
+    description: "Mobile money wallet"
   
   fields:
     - name: phone_number
       label: "Phone Number"
       type: tel
       required: true
-      pattern: "^\\+?267[0-9]{8}$"
-      readonly: true
-      source: session.phone
+      pattern: "^\\+?[0-9]{10,15}$"  # Global pattern, country-specific validated in code
+      placeholder: "+267XXXXXXXX"
+      help_text: "Phone number (country code optional)"
     
     - name: wallet_pin
       label: "Wallet PIN"
@@ -128,6 +163,8 @@ MNO-WALLET:
       vault_field: pin
       min_length: 4
       max_length: 6
+      placeholder: "Enter wallet PIN"
+      help_text: "4-6 digit wallet PIN"
 
 # ------------------------------------------------------------
 # BANK-WALLET - Bank's digital wallet
@@ -146,13 +183,25 @@ BANK-WALLET:
     icon: "👛"
     display_name: "Bank Wallet"
     color: "#9C27B0"
+    description: "Bank's digital wallet"
   
   fields:
+    - name: wallet_account
+      label: "Wallet Account"
+      type: text
+      required: true
+      placeholder: "Enter wallet account"
+      help_text: "Wallet account identifier"
+    
     - name: wallet_pin
       label: "Wallet PIN"
       type: password
       required: true
       vault_field: pin
+      min_length: 4
+      max_length: 6
+      placeholder: "Enter wallet PIN"
+      help_text: "4-6 digit wallet PIN"
 
 # ------------------------------------------------------------
 # CARD - Payment card
@@ -171,6 +220,7 @@ CARD:
     icon: "💳"
     display_name: "Payment Card"
     color: "#673AB7"
+    description: "Payment card with CVV"
   
   fields:
     - name: card_number
@@ -179,6 +229,8 @@ CARD:
       required: true
       pattern: "^[0-9]{16}$"
       vault_field: pan
+      placeholder: "1234-5678-9012-3456"
+      help_text: "16-digit card number"
     
     - name: card_pin
       label: "Card PIN"
@@ -187,6 +239,8 @@ CARD:
       vault_field: pin
       min_length: 4
       max_length: 6
+      placeholder: "Enter card PIN"
+      help_text: "4-6 digit card PIN"
     
     - name: cvv
       label: "CVV"
@@ -195,6 +249,8 @@ CARD:
       vault_field: cvv
       min_length: 3
       max_length: 4
+      placeholder: "123"
+      help_text: "3-4 digit CVV"
     
     - name: expiry_month
       label: "Expiry Month"
@@ -202,6 +258,8 @@ CARD:
       required: true
       min: 1
       max: 12
+      placeholder: "MM"
+      help_text: "Expiry month (1-12)"
     
     - name: expiry_year
       label: "Expiry Year"
@@ -209,3 +267,134 @@ CARD:
       required: true
       min: 2024
       max: 2034
+      placeholder: "YYYY"
+      help_text: "Expiry year"
+
+# ------------------------------------------------------------
+# POSTAL-ORDER - Postal money order
+# ------------------------------------------------------------
+POSTAL-ORDER:
+  category: POSTAL
+  delivery_modes:
+    - cashout
+  hold_required: true
+  hold_expiry_seconds: 604800
+  reversal_window_seconds: 2592000
+  partial_debit_allowed: false
+  
+  ui:
+    icon: "✉️"
+    display_name: "Postal Order"
+    color: "#795548"
+    description: "Postal money order"
+  
+  fields:
+    - name: order_number
+      label: "Order Number"
+      type: text
+      required: true
+      pattern: "^[A-Z0-9]{10,20}$"
+      placeholder: "Enter order number"
+      help_text: "10-20 character order number"
+    
+    - name: order_pin
+      label: "Order PIN"
+      type: password
+      required: true
+      vault_field: pin
+      min_length: 4
+      max_length: 8
+      placeholder: "Enter order PIN"
+      help_text: "4-8 digit order PIN"
+    
+    - name: postal_code
+      label: "Postal Code"
+      type: text
+      required: false
+      placeholder: "Enter postal code"
+      help_text: "Postal code for the order"
+
+# ------------------------------------------------------------
+# CHEQUE - Bank cheque
+# ------------------------------------------------------------
+CHEQUE:
+  category: CHEQUE
+  delivery_modes:
+    - deposit
+    - cashout
+  hold_required: true
+  hold_expiry_seconds: 86400
+  reversal_window_seconds: 2592000
+  partial_debit_allowed: false
+  
+  ui:
+    icon: "📝"
+    display_name: "Cheque"
+    color: "#607D8B"
+    description: "Bank cheque"
+  
+  fields:
+    - name: cheque_number
+      label: "Cheque Number"
+      type: text
+      required: true
+      pattern: "^[0-9]{6,10}$"
+      placeholder: "Enter cheque number"
+      help_text: "6-10 digit cheque number"
+    
+    - name: bank_code
+      label: "Bank Code"
+      type: text
+      required: true
+      pattern: "^[A-Z0-9]{4,8}$"
+      placeholder: "Enter bank code"
+      help_text: "4-8 character bank code"
+    
+    - name: branch_code
+      label: "Branch Code"
+      type: text
+      required: false
+      pattern: "^[A-Z0-9]{4,6}$"
+      placeholder: "Enter branch code"
+      help_text: "Branch code (optional)"
+
+# ------------------------------------------------------------
+# CRYPTO - Cryptocurrency wallet
+# ------------------------------------------------------------
+CRYPTO:
+  category: CRYPTO
+  delivery_modes:
+    - deposit
+    - cashout
+  hold_required: true
+  hold_expiry_seconds: 3600
+  reversal_window_seconds: 604800
+  partial_debit_allowed: false
+  
+  ui:
+    icon: "₿"
+    display_name: "Cryptocurrency"
+    color: "#F7931A"
+    description: "Cryptocurrency wallet"
+  
+  fields:
+    - name: wallet_address
+      label: "Wallet Address"
+      type: text
+      required: true
+      pattern: "^[a-zA-Z0-9]{26,42}$"
+      placeholder: "Enter wallet address"
+      help_text: "26-42 character wallet address"
+    
+    - name: network
+      label: "Network"
+      type: select
+      required: true
+      options:
+        - "Bitcoin"
+        - "Ethereum"
+        - "Solana"
+        - "USDC"
+        - "USDT"
+      placeholder: "Select network"
+      help_text: "Cryptocurrency network"
