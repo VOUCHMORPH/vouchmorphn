@@ -1426,11 +1426,154 @@ class GenericBankClient implements BankAPIInterface
         return $this->send('generate_token', $signedPayload);
     }
 
+    // ============================================================================
+    // processDepositWithProof - UPDATED with required fields
+    // ============================================================================
+
     public function processDepositWithProof(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: processDepositWithProof ===");
-        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+        
+        // Build the deposit payload with required fields
+        $depositPayload = [
+            'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
+            'amount' => $payload['amount'] ?? 0,
+            'currency' => $payload['currency'] ?? 'BWP',
+            'reference' => $payload['reference'] ?? $this->generateReference(),
+        ];
+        
+        // ============================================================
+        // ADD SOURCE INSTITUTION (REQUIRED BY SACCUSSALIS)
+        // ============================================================
+        if (isset($payload['from_institution'])) {
+            $depositPayload['from_bank'] = $payload['from_institution'];
+            $depositPayload['source_institution'] = $payload['from_institution'];
+        } elseif (isset($payload['source_institution'])) {
+            $depositPayload['from_bank'] = $payload['source_institution'];
+            $depositPayload['source_institution'] = $payload['source_institution'];
+        } else {
+            error_log("[GenericBankClient] WARNING: No source institution found in payload");
+        }
+        
+        // ============================================================
+        // ADD DESTINATION IDENTIFIER
+        // ============================================================
+        $destIdentifier = $payload['destination_identifier'] ?? null;
+        $destType = $payload['destination_identifier_type'] ?? 'account';
+        
+        if ($destIdentifier) {
+            if ($destType === 'account' || $destType === 'account_number') {
+                $depositPayload['account_number'] = $destIdentifier;
+            } elseif ($destType === 'phone') {
+                $depositPayload['phone'] = $destIdentifier;
+            } elseif ($destType === 'email') {
+                $depositPayload['email'] = $destIdentifier;
+            } elseif ($destType === 'national_id') {
+                $depositPayload['national_id'] = $destIdentifier;
+            }
+            // Also set destination_identifier for compatibility
+            $depositPayload['destination_identifier'] = $destIdentifier;
+            $depositPayload['destination_identifier_type'] = $destType;
+        } else {
+            // Try other locations for destination identifier
+            if (isset($payload['account_number'])) {
+                $depositPayload['account_number'] = $payload['account_number'];
+            }
+            if (isset($payload['phone'])) {
+                $depositPayload['phone'] = $payload['phone'];
+            }
+        }
+        
+        // ============================================================
+        // ADD SOURCE IDENTIFIER (if available)
+        // ============================================================
+        if (isset($payload['source_identifier'])) {
+            $depositPayload['source_identifier'] = $payload['source_identifier'];
+            $depositPayload['source_account'] = $payload['source_identifier'];
+        }
+        
+        // ============================================================
+        // ADD HOLD REFERENCE (if available)
+        // ============================================================
+        if (isset($payload['hold_reference'])) {
+            $depositPayload['hold_reference'] = $payload['hold_reference'];
+        }
+        
+        // ============================================================
+        // ADD VERIFICATION DATA (if available)
+        // ============================================================
+        if (isset($payload['source_verification'])) {
+            $depositPayload['source_verification'] = $payload['source_verification'];
+        }
+        if (isset($payload['source_hold'])) {
+            $depositPayload['source_hold'] = $payload['source_hold'];
+        }
+        if (isset($payload['account_verification'])) {
+            $depositPayload['account_verification'] = $payload['account_verification'];
+        }
+        
+        // ============================================================
+        // FORWARD PIN (if unhooked source)
+        // ============================================================
+        $this->forwardPin($payload, $depositPayload);
+        
+        // Create signed payload
+        $signedPayload = $this->createSignedPayload($depositPayload, 'VOUCHMORPH');
+        
+        error_log("[GenericBankClient] processDepositWithProof final payload keys: " . implode(', ', array_keys($signedPayload)));
+        error_log("[GenericBankClient] processDepositWithProof: from_bank=" . ($signedPayload['from_bank'] ?? 'MISSING') . ", account_number=" . ($signedPayload['account_number'] ?? 'MISSING') . ", amount=" . ($signedPayload['amount'] ?? 'MISSING'));
+        
         return $this->send('process_deposit', $signedPayload);
+    }
+
+    /**
+     * Generate a reference if not provided
+     */
+    private function generateReference(): string
+    {
+        return 'DEP_' . time() . '_' . bin2hex(random_bytes(6));
+    }
+
+    /**
+     * Helper to forward PIN from source payload (only for unhooked sources)
+     */
+    private function forwardPin(array $sourcePayload, array &$targetPayload): void
+    {
+        // If source is hooked, skip PIN forwarding
+        if (isset($sourcePayload['_is_hooked']) && $sourcePayload['_is_hooked'] === true) {
+            error_log("[GenericBankClient] Source is hooked - skipping PIN forwarding");
+            return;
+        }
+        
+        // If access_token is present, skip PIN forwarding
+        if (isset($sourcePayload['access_token']) && !empty($sourcePayload['access_token'])) {
+            error_log("[GenericBankClient] Access token present - skipping PIN forwarding");
+            return;
+        }
+        
+        // Only forward PIN for unhooked sources
+        $pinFields = ['pin', 'wallet_pin', 'voucher_pin', 'atm_pin', 'card_pin'];
+        
+        foreach ($pinFields as $field) {
+            if (isset($sourcePayload[$field]) && !empty($sourcePayload[$field])) {
+                $targetPayload['pin'] = $sourcePayload[$field];
+                error_log("[GenericBankClient] Forwarded PIN from {$field} (unhooked source)");
+                return;
+            }
+        }
+        
+        // Check nested asset_fields
+        if (isset($sourcePayload['asset_fields']) && is_array($sourcePayload['asset_fields'])) {
+            foreach ($pinFields as $field) {
+                if (isset($sourcePayload['asset_fields'][$field]) && !empty($sourcePayload['asset_fields'][$field])) {
+                    $targetPayload['pin'] = $sourcePayload['asset_fields'][$field];
+                    error_log("[GenericBankClient] Forwarded PIN from asset_fields.{$field} (unhooked source)");
+                    return;
+                }
+            }
+        }
+        
+        error_log("[GenericBankClient] No PIN found for unhooked source");
     }
     
     protected function buildHeaders(array $payload, ?string $accessToken = null): array
