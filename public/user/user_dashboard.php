@@ -1,7 +1,6 @@
 <?php
-// public/user/dashboard.php - CLEAN & SIMPLE DASHBOARD
-// Supports: 1) One source one destination, 2) Swap to identifier, 3) Multi-source one destination
-// Designed for the dullest individual - clear icons, simple language, minimal clutter
+// public/user/dashboard.php - WORKING DASHBOARD
+// Based on original working code with fixes for each swap type
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
@@ -71,16 +70,21 @@ foreach ($userIdentifiers as $type => $value) {
         $validIdentifiers[] = [
             'type' => $type,
             'value' => $value,
-            'display' => $type . ': ' . $value
+            'display' => $type . ': ' . $value,
+            'icon' => [
+                'phone' => '📱',
+                'phone2' => '📱',
+                'phone3' => '📱',
+                'email' => '✉️',
+                'national_id' => '🆔',
+                'drivers_license' => '🚗',
+                'passport' => '📖'
+            ][$type] ?? '🔑'
         ];
     }
 }
 
-// Get phone for beneficiary
 $loggedPhone = htmlspecialchars($user['phone'] ?? $displayIdentifier);
-$userPhone = htmlspecialchars($user['phone'] ?? '');
-$userNationalId = htmlspecialchars($user['national_id'] ?? '');
-$userEmail = htmlspecialchars($user['email'] ?? '');
 
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
@@ -235,7 +239,6 @@ $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
 
 $denominationsList = implode(', ', $atmDenominations);
 
-// Build participant options for JavaScript
 $participantOptions = [];
 foreach ($participants as $code => $p) {
     $participantOptions[$code] = [
@@ -279,7 +282,6 @@ $identifiersJson = json_encode($validIdentifiers);
         .badge { padding: 4px 12px; background: rgba(0,240,255,0.1); border: 1px solid #00f0ff; border-radius: 20px; font-size: 11px; }
         .user-info { text-align: right; }
         .user-phone { color: #00f0ff; font-weight: bold; }
-        .user-phone small { color: #888; font-weight: normal; font-size: 11px; }
         
         .card {
             background: #12162e;
@@ -289,7 +291,6 @@ $identifiersJson = json_encode($validIdentifiers);
             border: 1px solid rgba(255,255,255,0.06);
         }
         .card h3 { font-size: 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
-        .card h4 { font-size: 13px; margin: 12px 0 8px 0; color: #00f0ff; }
         
         .swap-type-selector {
             display: grid;
@@ -306,7 +307,7 @@ $identifiersJson = json_encode($validIdentifiers);
             cursor: pointer;
             transition: all 0.2s;
         }
-        .swap-type-option:hover { border-color: #00f0ff; background: #1a1f3a; }
+        .swap-type-option:hover { border-color: #00f0ff; }
         .swap-type-option.active { border-color: #00f0ff; background: rgba(0,240,255,0.05); }
         .swap-type-option .icon { font-size: 28px; display: block; margin-bottom: 4px; }
         .swap-type-option .label { font-size: 13px; font-weight: 600; }
@@ -342,8 +343,6 @@ $identifiersJson = json_encode($validIdentifiers);
         select optgroup { background: #0a0e27; color: #00f0ff; font-weight: bold; font-size: 12px; }
         
         .help-text { font-size: 11px; color: #888; margin-top: 4px; }
-        .help-text a { color: #00f0ff; text-decoration: none; }
-        
         .quick-amounts {
             display: flex;
             gap: 6px;
@@ -359,7 +358,7 @@ $identifiersJson = json_encode($validIdentifiers);
             border: 1px solid #2a2f4a;
             color: #a0a0b0;
         }
-        .quick-amount:hover { background: #00f0ff; color: #0a0e27; border-color: #00f0ff; }
+        .quick-amount:hover { background: #00f0ff; color: #0a0e27; }
         
         .info-box {
             background: rgba(0, 240, 255, 0.04);
@@ -399,13 +398,8 @@ $identifiersJson = json_encode($validIdentifiers);
             padding: 14px;
         }
         .btn-primary:hover { transform: translateY(-1px); filter: brightness(1.05); }
-        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-        
-        .btn-secondary { background: #1a1f3a; color: #fff; border: 1px solid #2a2f4a; padding: 8px 16px; }
-        .btn-secondary:hover { background: #2a2f4a; }
-        .btn-success { background: #4caf50; color: #fff; padding: 8px 16px; }
-        .btn-success:hover { background: #388e3c; }
-        .btn-danger { background: #ff6b6b; color: #fff; padding: 4px 12px; font-size: 12px; }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-danger { background: #ff6b6b; color: #fff; padding: 4px 12px; font-size: 12px; border: none; border-radius: 4px; cursor: pointer; }
         .btn-danger:hover { background: #ff4444; }
         .btn-add {
             background: transparent;
@@ -461,7 +455,6 @@ $identifiersJson = json_encode($validIdentifiers);
             cursor: pointer;
             flex-shrink: 0;
         }
-        .multi-toggle .label { font-size: 14px; font-weight: 600; }
         .multi-toggle .count { color: #00f0ff; font-weight: bold; font-size: 14px; margin-left: auto; }
         .multi-toggle .hint { color: #888; font-size: 12px; }
         
@@ -501,10 +494,6 @@ $identifiersJson = json_encode($validIdentifiers);
         .swap-status.completed { color: #4caf50; }
         .swap-status.failed { color: #f44336; }
         .swap-status.pending { color: #ffc107; }
-        .swap-status.processing { color: #00f0ff; }
-        
-        .fee-display { color: #ffc107; font-size: 10px; }
-        .swap-ref { color: #888; font-size: 10px; }
         
         .modal-overlay {
             display: none;
@@ -567,9 +556,13 @@ $identifiersJson = json_encode($validIdentifiers);
         @keyframes spin { to { transform: rotate(360deg); } }
         
         .hidden { display: none !important; }
-        .field-group { margin-top: 8px; }
-        .field-group label { font-size: 11px; color: #888; text-transform: uppercase; }
-        .field-group input { margin-top: 4px; }
+        
+        .asset-fields-container {
+            background: #0a0e27;
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 8px;
+        }
         
         .destination-type-selector {
             display: flex;
@@ -590,13 +583,6 @@ $identifiersJson = json_encode($validIdentifiers);
         .dest-option:hover { border-color: #00f0ff; }
         .dest-option.active { border-color: #00f0ff; background: rgba(0,240,255,0.05); }
         
-        .asset-fields-container {
-            background: #0a0e27;
-            border-radius: 8px;
-            padding: 12px;
-            margin-top: 8px;
-        }
-        
         @media (max-width: 768px) {
             .form-row { grid-template-columns: 1fr; gap: 8px; }
             .swap-type-selector { grid-template-columns: 1fr 1fr; }
@@ -605,7 +591,6 @@ $identifiersJson = json_encode($validIdentifiers);
             .modal-actions { flex-direction: column; }
             .header { flex-direction: column; text-align: center; }
             .user-info { text-align: center; }
-            .destination-type-selector { flex-direction: column; }
         }
         @media (max-width: 480px) {
             .swap-type-selector { grid-template-columns: 1fr; }
@@ -652,7 +637,7 @@ $identifiersJson = json_encode($validIdentifiers);
         
         <div id="swapTypeHelp" class="info-box" style="margin-top:8px;">
             💡 <strong>Standard Swap:</strong> Send money from one account to another.
-            <span id="identityHelp" style="display:none;">🔐 <strong>Swap to Identity:</strong> Send money to someone's National ID, Phone, or Email. They claim it later.</span>
+            <span id="identityHelp" style="display:none;">🔐 <strong>Swap to Identity:</strong> Send money to someone's National ID, Phone, or Email. They claim it later by confirming their identity.</span>
             <span id="multiHelp" style="display:none;">📦 <strong>Multi-Source:</strong> Combine money from multiple accounts to send a larger amount.</span>
         </div>
     </div>
@@ -661,12 +646,15 @@ $identifiersJson = json_encode($validIdentifiers);
     <div class="card" id="mainForm">
         <h3>📝 Fill in the details</h3>
         
-        <!-- SOURCE SECTION -->
-        <div id="sourceSection">
+        <!-- ============================================================
+             STANDARD SWAP - One Source to One Destination
+             ============================================================ -->
+        <div id="standardSwapSection">
+            <!-- SOURCE -->
             <div class="form-row">
                 <div class="form-group">
                     <label>📤 Source Institution</label>
-                    <select id="fromInstitution" onchange="updateAssetTypes()">
+                    <select id="stdFromInstitution" onchange="updateStdAssetTypes()">
                         <option value="">-- Select --</option>
                         <?php foreach ($participants as $code => $p): ?>
                             <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
@@ -675,41 +663,123 @@ $identifiersJson = json_encode($validIdentifiers);
                 </div>
                 <div class="form-group">
                     <label>🏷️ Asset Type</label>
-                    <select id="assetType" onchange="updateAssetFields()">
+                    <select id="stdAssetType" onchange="updateStdAssetFields()">
                         <option value="">-- Select --</option>
                     </select>
                 </div>
             </div>
             
-            <!-- Asset Fields Container -->
-            <div id="assetFieldsContainer" class="asset-fields-container"></div>
+            <div id="stdAssetFieldsContainer" class="asset-fields-container"></div>
             
             <div class="form-group">
                 <label>🔑 Your Identifier</label>
-                <select id="sourceIdentifierSelect" style="width:100%; padding:10px 12px; background:#1a1f3a; border:1px solid #2a2f4a; border-radius:8px; color:#fff; font-size:14px;">
+                <select id="stdSourceIdentifier" style="width:100%; padding:10px 12px; background:#1a1f3a; border:1px solid #2a2f4a; border-radius:8px; color:#fff; font-size:14px;">
                     <option value="">-- Select your identifier --</option>
                     <?php foreach ($validIdentifiers as $id): ?>
                         <option value="<?= htmlspecialchars($id['value']) ?>" data-type="<?= htmlspecialchars($id['type']) ?>">
-                            <?php 
-                                $icons = ['phone'=>'📱', 'email'=>'✉️', 'national_id'=>'🆔', 'drivers_license'=>'🚗', 'passport'=>'📖'];
-                                echo ($icons[$id['type']] ?? '🔑') . ' ' . htmlspecialchars($id['value']);
-                            ?>
+                            <?= $id['icon'] ?> <?= htmlspecialchars($id['value']) ?>
                         </option>
                     <?php endforeach; ?>
                 </select>
                 <div class="help-text">Only identifiers you've added are shown.</div>
             </div>
+            
+            <!-- DESTINATION -->
+            <div class="form-row">
+                <div class="form-group">
+                    <label>📥 Destination Institution</label>
+                    <select id="stdToInstitution" onchange="validateStdCorridor()">
+                        <option value="">-- Select --</option>
+                        <?php foreach ($participants as $code => $p): ?>
+                            <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>📦 Delivery Method</label>
+                    <select id="stdSwapType" onchange="updateStdDestination()">
+                        <option value="DEPOSIT" selected>💳 Deposit</option>
+                        <option value="CASHOUT">🏧 Cashout (ATM Code)</option>
+                    </select>
+                </div>
+            </div>
+            
+            <!-- Destination Type Selector (Deposit only) -->
+            <div id="stdDestTypeContainer" style="display:none;">
+                <label style="font-size:11px;color:#888;text-transform:uppercase;">📥 Destination Type</label>
+                <div class="destination-type-selector">
+                    <div class="dest-option active" data-value="ACCOUNT" onclick="selectStdDestType('ACCOUNT')">🏦 Account</div>
+                    <div class="dest-option" data-value="WALLET" onclick="selectStdDestType('WALLET')">📱 Wallet</div>
+                </div>
+            </div>
+            
+            <div id="stdDestinationFields">
+                <!-- Dynamic based on delivery method -->
+            </div>
+            
+            <!-- Amount -->
+            <div class="form-group">
+                <label>💰 Amount (<?= $currencySymbol ?>)</label>
+                <input type="number" id="stdAmount" step="0.01" placeholder="0.00">
+                <div class="quick-amounts">
+                    <?php foreach ($atmDenominations as $denom): ?>
+                        <span class="quick-amount" data-amount="<?= $denom ?>" onclick="document.getElementById('stdAmount').value=this.dataset.amount;updateSummary();"><?= $denom ?></span>
+                    <?php endforeach; ?>
+                    <span class="quick-amount" data-amount="500" onclick="document.getElementById('stdAmount').value=this.dataset.amount;updateSummary();">500</span>
+                    <span class="quick-amount" data-amount="1000" onclick="document.getElementById('stdAmount').value=this.dataset.amount;updateSummary();">1000</span>
+                </div>
+            </div>
+            
+            <div id="stdCorridorWarning" class="warning-box">⚠️ Source and destination must be different.</div>
         </div>
         
-        <!-- IDENTITY SWAP: Identity Section (Destination is the identity) -->
-        <div id="identitySection" style="display:none;">
-            <div class="info-box" style="margin-bottom:12px;">
-                🔐 The money will be held for the identity below. They will claim it later.
+        <!-- ============================================================
+             IDENTITY SWAP - Send to an Identity
+             ============================================================ -->
+        <div id="identitySwapSection" style="display:none;">
+            <!-- SOURCE -->
+            <div class="form-row">
+                <div class="form-group">
+                    <label>📤 Source Institution</label>
+                    <select id="idFromInstitution" onchange="updateIdAssetTypes()">
+                        <option value="">-- Select --</option>
+                        <?php foreach ($participants as $code => $p): ?>
+                            <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>🏷️ Asset Type</label>
+                    <select id="idAssetType" onchange="updateIdAssetFields()">
+                        <option value="">-- Select --</option>
+                    </select>
+                </div>
             </div>
+            
+            <div id="idAssetFieldsContainer" class="asset-fields-container"></div>
+            
+            <div class="form-group">
+                <label>🔑 Your Identifier</label>
+                <select id="idSourceIdentifier" style="width:100%; padding:10px 12px; background:#1a1f3a; border:1px solid #2a2f4a; border-radius:8px; color:#fff; font-size:14px;">
+                    <option value="">-- Select your identifier --</option>
+                    <?php foreach ($validIdentifiers as $id): ?>
+                        <option value="<?= htmlspecialchars($id['value']) ?>" data-type="<?= htmlspecialchars($id['type']) ?>">
+                            <?= $id['icon'] ?> <?= htmlspecialchars($id['value']) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+                <div class="help-text">Only identifiers you've added are shown.</div>
+            </div>
+            
+            <!-- IDENTITY (The Destination) -->
+            <div class="info-box" style="margin-bottom:12px;">
+                🔐 The money will be held for this identity. The recipient will claim it later.
+            </div>
+            
             <div class="form-row">
                 <div class="form-group">
                     <label>🆔 Identity Type</label>
-                    <select id="identityType">
+                    <select id="idIdentityType">
                         <option value="national_id">🆔 National ID</option>
                         <option value="phone">📱 Phone Number</option>
                         <option value="email">✉️ Email</option>
@@ -717,47 +787,38 @@ $identifiersJson = json_encode($validIdentifiers);
                 </div>
                 <div class="form-group">
                     <label>🔑 Identity Value</label>
-                    <input type="text" id="identityValue" placeholder="e.g., 123456789 or +26770000000">
+                    <input type="text" id="idIdentityValue" placeholder="e.g., 123456789 or +26770000000">
                 </div>
             </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>📥 Destination Institution (Where they'll receive)</label>
-                    <select id="identityToInstitution">
-                        <option value="">-- Select --</option>
-                        <?php foreach ($participants as $code => $p): ?>
-                            <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>📦 Delivery Method</label>
-                    <select id="identitySwapType">
-                        <option value="CASHOUT">🏧 Cashout (ATM Code)</option>
-                        <option value="DEPOSIT" selected>💳 Deposit</option>
-                    </select>
-                </div>
-            </div>
-            <div id="identityDestinationFields"></div>
-            <div class="form-group" style="margin-top:12px;">
+            
+            <!-- Amount -->
+            <div class="form-group">
                 <label>💰 Amount (<?= $currencySymbol ?>)</label>
-                <input type="number" id="identityAmount" step="0.01" placeholder="0.00">
+                <input type="number" id="idAmount" step="0.01" placeholder="0.00">
                 <div class="quick-amounts">
                     <?php foreach ($atmDenominations as $denom): ?>
-                        <span class="quick-amount" data-amount="<?= $denom ?>" onclick="document.getElementById('identityAmount').value=this.dataset.amount;updateSummary();"><?= $denom ?></span>
+                        <span class="quick-amount" data-amount="<?= $denom ?>" onclick="document.getElementById('idAmount').value=this.dataset.amount;updateSummary();"><?= $denom ?></span>
                     <?php endforeach; ?>
-                    <span class="quick-amount" data-amount="500" onclick="document.getElementById('identityAmount').value=this.dataset.amount;updateSummary();">500</span>
-                    <span class="quick-amount" data-amount="1000" onclick="document.getElementById('identityAmount').value=this.dataset.amount;updateSummary();">1000</span>
+                    <span class="quick-amount" data-amount="500" onclick="document.getElementById('idAmount').value=this.dataset.amount;updateSummary();">500</span>
+                    <span class="quick-amount" data-amount="1000" onclick="document.getElementById('idAmount').value=this.dataset.amount;updateSummary();">1000</span>
                 </div>
+            </div>
+            
+            <!-- CONFIRM IDENTITY will be handled by the recipient -->
+            <div class="info-box">
+                📋 After this swap, the recipient will get a reference. They can claim it by confirming their identity.
             </div>
         </div>
         
-        <!-- DESTINATION SECTION (Standard & Multi-Source) -->
-        <div id="destinationSection">
+        <!-- ============================================================
+             MULTI-SOURCE SWAP
+             ============================================================ -->
+        <div id="multiSourceSection" style="display:none;">
+            <!-- DESTINATION -->
             <div class="form-row">
                 <div class="form-group">
                     <label>📥 Destination Institution</label>
-                    <select id="toInstitution" onchange="validateCorridor(); updateDestinationType()">
+                    <select id="msToInstitution" onchange="updateMsDestination()">
                         <option value="">-- Select --</option>
                         <?php foreach ($participants as $code => $p): ?>
                             <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
@@ -766,72 +827,53 @@ $identifiersJson = json_encode($validIdentifiers);
                 </div>
                 <div class="form-group">
                     <label>📦 Delivery Method</label>
-                    <select id="swapType" onchange="updateDestinationType()">
-                        <option value="CASHOUT">🏧 Cashout (ATM Code)</option>
+                    <select id="msSwapType" onchange="updateMsDestination()">
                         <option value="DEPOSIT" selected>💳 Deposit</option>
+                        <option value="CASHOUT">🏧 Cashout (ATM Code)</option>
                     </select>
                 </div>
             </div>
             
-            <!-- Destination Type Selector (ACCOUNT or WALLET) -->
-            <div id="destinationTypeContainer" style="display:none;">
-                <label style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.3px;">📥 Destination Type</label>
+            <!-- Destination Type Selector (Deposit only) -->
+            <div id="msDestTypeContainer" style="display:none;">
+                <label style="font-size:11px;color:#888;text-transform:uppercase;">📥 Destination Type</label>
                 <div class="destination-type-selector">
-                    <div class="dest-option active" data-value="ACCOUNT" onclick="selectDestinationType('ACCOUNT')">
-                        🏦 Account
-                    </div>
-                    <div class="dest-option" data-value="WALLET" onclick="selectDestinationType('WALLET')">
-                        📱 Wallet
-                    </div>
+                    <div class="dest-option active" data-value="ACCOUNT" onclick="selectMsDestType('ACCOUNT')">🏦 Account</div>
+                    <div class="dest-option" data-value="WALLET" onclick="selectMsDestType('WALLET')">📱 Wallet</div>
                 </div>
             </div>
             
-            <div id="destinationFields">
-                <!-- Dynamic based on delivery method and destination type -->
+            <div id="msDestinationFields">
+                <!-- Dynamic based on delivery method -->
+            </div>
+            
+            <!-- Multi-Source Toggle -->
+            <div class="multi-toggle" onclick="toggleMultiSource(event)">
+                <input type="checkbox" id="multiSourceCheckbox" onchange="toggleMultiSource(event)">
+                <span class="label">📦 Combine Multiple Sources</span>
+                <span class="count" id="sourceCount">0 sources</span>
+                <span class="hint">Add funds from multiple accounts</span>
+            </div>
+            
+            <div id="sourcesContainer" style="display:none;">
+                <div id="sourceEntries"></div>
+                <button class="btn-add" onclick="addSource()">➕ Add Source</button>
+                <div id="sourceSummary" class="source-summary" style="display:none;">
+                    <div>💰 Total: <span class="total" id="totalSourceAmount"><?= $currencySymbol ?> 0.00</span></div>
+                    <div class="list" id="sourceList">No sources configured</div>
+                </div>
             </div>
         </div>
         
-        <!-- AMOUNT (Standard) -->
-        <div id="standardAmount" class="form-group">
-            <label>💰 Amount (<?= $currencySymbol ?>)</label>
-            <input type="number" id="amount" step="0.01" placeholder="0.00">
-            <div class="quick-amounts">
-                <?php foreach ($atmDenominations as $denom): ?>
-                    <span class="quick-amount" data-amount="<?= $denom ?>" onclick="document.getElementById('amount').value=this.dataset.amount;updateSummary();"><?= $denom ?></span>
-                <?php endforeach; ?>
-                <span class="quick-amount" data-amount="500" onclick="document.getElementById('amount').value=this.dataset.amount;updateSummary();">500</span>
-                <span class="quick-amount" data-amount="1000" onclick="document.getElementById('amount').value=this.dataset.amount;updateSummary();">1000</span>
-            </div>
-        </div>
-        
-        <!-- MULTI-SOURCE TOGGLE & SOURCES -->
-        <div id="multiSourceToggle" class="multi-toggle" onclick="toggleMultiSource(event)">
-            <input type="checkbox" id="multiSourceCheckbox" onchange="toggleMultiSource(event)">
-            <span class="label">📦 Combine Multiple Sources</span>
-            <span class="count" id="sourceCount">0 sources</span>
-            <span class="hint">Add funds from multiple accounts</span>
-        </div>
-        
-        <div id="sourcesContainer" style="display:none;">
-            <div id="sourceEntries"></div>
-            <button class="btn-add" onclick="addSource()">➕ Add Source</button>
-            <div id="sourceSummary" class="source-summary" style="display:none;">
-                <div>💰 Total: <span class="total" id="totalSourceAmount"><?= $currencySymbol ?> 0.00</span></div>
-                <div class="list" id="sourceList">No sources configured</div>
-            </div>
-        </div>
-        
-        <!-- PIN -->
+        <!-- PIN (Common) -->
         <div class="form-group" id="pinGroup">
             <label>🔑 Your PIN</label>
             <input type="password" id="userPin" placeholder="Enter your PIN" autocomplete="new-password">
         </div>
         
-        <div id="corridorWarning" class="warning-box">⚠️ Source and destination must be different.</div>
-        
         <!-- Summary -->
         <div class="info-box" id="summary" style="margin-top:12px;">
-            📋 Fill in all fields above
+            📋 Select a swap type and fill in the fields above
         </div>
         
         <button class="btn btn-primary" id="executeBtn">🚀 Execute Swap</button>
@@ -857,7 +899,7 @@ $identifiersJson = json_encode($validIdentifiers);
                             <span style="font-size:10px; color:#888; margin-left:6px;"><?= htmlspecialchars($swap['swap_type']) ?></span>
                         <?php endif; ?>
                         <?php if (!empty($swap['fee_amount']) && $swap['fee_amount'] > 0): ?>
-                            <div class="fee-display">Fee: <?= number_format($swap['fee_amount'], 2) ?> <?= $currencySymbol ?></div>
+                            <div class="fee-display" style="color:#ffc107;font-size:10px;">Fee: <?= number_format($swap['fee_amount'], 2) ?> <?= $currencySymbol ?></div>
                         <?php endif; ?>
                     </div>
                     <div style="text-align:right;">
@@ -906,7 +948,8 @@ const apiKey = '<?= $apiKey ?>';
 // STATE
 // ============================================================
 let currentSwapType = 'STANDARD';
-let destinationType = 'ACCOUNT';
+let stdDestType = 'ACCOUNT';
+let msDestType = 'ACCOUNT';
 let sources = [];
 let sourceCounter = 0;
 let pendingPayload = null;
@@ -920,14 +963,12 @@ const assetFieldDefinitions = {
         fields: [
             { name: 'voucher_number', label: '🎫 Voucher Number', type: 'text', placeholder: 'Enter voucher number' },
             { name: 'voucher_pin', label: '🔑 Voucher PIN', type: 'password', placeholder: 'Enter voucher PIN' },
-            { name: 'amount', label: '💰 Amount', type: 'number', placeholder: '0.00' },
             { name: 'phone', label: '📱 Phone Number', type: 'text', placeholder: '+267XXXXXXXX' }
         ]
     },
     'ACCOUNT': {
         fields: [
-            { name: 'account_number', label: '🏦 Account Number', type: 'text', placeholder: 'Enter account number' },
-            { name: 'account_pin', label: '🔑 Account PIN', type: 'password', placeholder: 'Enter account PIN' }
+            { name: 'account_number', label: '🏦 Account Number', type: 'text', placeholder: 'Enter account number' }
         ]
     },
     'MNO-WALLET': {
@@ -965,38 +1006,52 @@ function selectSwapType(type) {
     const isIdentity = type === 'IDENTITY';
     const isMulti = type === 'MULTI_SOURCE';
     
-    document.getElementById('sourceSection').style.display = (isStandard || isMulti) ? 'block' : 'none';
-    document.getElementById('identitySection').style.display = isIdentity ? 'block' : 'none';
-    document.getElementById('destinationSection').style.display = (isStandard || isMulti) ? 'block' : 'none';
-    document.getElementById('standardAmount').style.display = (isStandard) ? 'block' : 'none';
-    document.getElementById('multiSourceToggle').style.display = isMulti ? 'flex' : 'none';
+    document.getElementById('standardSwapSection').style.display = isStandard ? 'block' : 'none';
+    document.getElementById('identitySwapSection').style.display = isIdentity ? 'block' : 'none';
+    document.getElementById('multiSourceSection').style.display = isMulti ? 'block' : 'none';
     
     document.getElementById('identityHelp').style.display = isIdentity ? 'inline' : 'none';
     document.getElementById('multiHelp').style.display = isMulti ? 'inline' : 'none';
     
-    if (isIdentity) {
-        updateIdentityDestinationFields();
+    if (isStandard) {
+        updateStdDestination();
     }
-    
+    if (isIdentity) {
+        updateIdAssetTypes();
+    }
     if (isMulti) {
-        document.getElementById('sourcesContainer').style.display = 'block';
+        updateMsDestination();
         if (sources.length === 0) addSource();
-    } else {
-        document.getElementById('sourcesContainer').style.display = 'none';
     }
     
     updateSummary();
 }
 
 // ============================================================
-// ASSET FIELDS (Source)
+// STANDARD SWAP FUNCTIONS
 // ============================================================
 
-function updateAssetFields() {
-    const assetType = document.getElementById('assetType').value;
-    const container = document.getElementById('assetFieldsContainer');
+function updateStdAssetTypes() {
+    const inst = document.getElementById('stdFromInstitution').value;
+    const assetSelect = document.getElementById('stdAssetType');
+    assetSelect.innerHTML = '<option value="">-- Select --</option>';
+    if (inst && participants[inst]) {
+        (participants[inst].asset_types || ['ACCOUNT']).forEach(type => {
+            const ui = assetUI[type] || {};
+            const opt = document.createElement('option');
+            opt.value = type;
+            opt.textContent = (ui.icon || '') + ' ' + (ui.display_name || type);
+            assetSelect.appendChild(opt);
+        });
+    }
+    updateStdAssetFields();
+    updateSummary();
+}
+
+function updateStdAssetFields() {
+    const assetType = document.getElementById('stdAssetType').value;
+    const container = document.getElementById('stdAssetFieldsContainer');
     container.innerHTML = '';
-    
     if (!assetType) return;
     
     const def = assetFieldDefinitions[assetType] || { fields: [] };
@@ -1009,11 +1064,127 @@ function updateAssetFields() {
     
     let html = '<div class="form-row">';
     fields.forEach(f => {
+        const isPin = f.type === 'password' || f.name.includes('pin');
         html += `
             <div class="form-group">
                 <label>${f.label}</label>
-                <input type="${f.type || 'text'}" id="src_${f.name}" 
-                       placeholder="${f.placeholder || ''}" 
+                <input type="${isPin ? 'password' : (f.type || 'text')}" 
+                       id="std_${f.name}" 
+                       placeholder="${f.placeholder || ''}"
+                       class="asset-field">
+            </div>
+        `;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function selectStdDestType(type) {
+    stdDestType = type;
+    document.querySelectorAll('#stdDestTypeContainer .dest-option').forEach(el => {
+        el.classList.toggle('active', el.dataset.value === type);
+    });
+    updateStdDestination();
+}
+
+function updateStdDestination() {
+    const swapType = document.getElementById('stdSwapType').value;
+    const container = document.getElementById('stdDestinationFields');
+    const typeContainer = document.getElementById('stdDestTypeContainer');
+    
+    if (swapType === 'CASHOUT') {
+        typeContainer.style.display = 'none';
+        container.innerHTML = `
+            <div class="form-group">
+                <label>📱 Beneficiary Phone</label>
+                <input type="tel" id="stdBeneficiaryPhone" placeholder="+267XXXXXXXX" value="<?= $loggedPhone ?>">
+            </div>
+            <div class="info-box">🏧 They will receive an ATM code via SMS.</div>
+        `;
+        return;
+    }
+    
+    // DEPOSIT
+    typeContainer.style.display = 'block';
+    if (stdDestType === 'ACCOUNT') {
+        container.innerHTML = `
+            <div class="form-group">
+                <label>🏦 Account Number</label>
+                <input type="text" id="stdDestAccount" placeholder="Enter account number">
+            </div>
+            <div class="form-group">
+                <label>🏦 Account Name (Optional)</label>
+                <input type="text" id="stdDestAccountName" placeholder="Enter account name">
+            </div>
+            <div class="info-box">💳 Depositing to a bank account.</div>
+        `;
+    } else {
+        container.innerHTML = `
+            <div class="form-group">
+                <label>📱 Phone Number (Wallet)</label>
+                <input type="tel" id="stdDestPhone" placeholder="+267XXXXXXXX" value="<?= $loggedPhone ?>">
+            </div>
+            <div class="info-box">📱 Depositing to a mobile wallet.</div>
+        `;
+    }
+}
+
+function validateStdCorridor() {
+    const from = document.getElementById('stdFromInstitution').value;
+    const to = document.getElementById('stdToInstitution').value;
+    const warn = document.getElementById('stdCorridorWarning');
+    if (from && to && from === to) {
+        warn.classList.add('show');
+        return false;
+    }
+    warn.classList.remove('show');
+    return true;
+}
+
+// ============================================================
+// IDENTITY SWAP FUNCTIONS
+// ============================================================
+
+function updateIdAssetTypes() {
+    const inst = document.getElementById('idFromInstitution').value;
+    const assetSelect = document.getElementById('idAssetType');
+    assetSelect.innerHTML = '<option value="">-- Select --</option>';
+    if (inst && participants[inst]) {
+        (participants[inst].asset_types || ['ACCOUNT']).forEach(type => {
+            const ui = assetUI[type] || {};
+            const opt = document.createElement('option');
+            opt.value = type;
+            opt.textContent = (ui.icon || '') + ' ' + (ui.display_name || type);
+            assetSelect.appendChild(opt);
+        });
+    }
+    updateIdAssetFields();
+    updateSummary();
+}
+
+function updateIdAssetFields() {
+    const assetType = document.getElementById('idAssetType').value;
+    const container = document.getElementById('idAssetFieldsContainer');
+    container.innerHTML = '';
+    if (!assetType) return;
+    
+    const def = assetFieldDefinitions[assetType] || { fields: [] };
+    const fields = def.fields || [];
+    
+    if (fields.length === 0) {
+        container.innerHTML = '<div class="info-box">✅ No additional fields required</div>';
+        return;
+    }
+    
+    let html = '<div class="form-row">';
+    fields.forEach(f => {
+        const isPin = f.type === 'password' || f.name.includes('pin');
+        html += `
+            <div class="form-group">
+                <label>${f.label}</label>
+                <input type="${isPin ? 'password' : (f.type || 'text')}" 
+                       id="id_${f.name}" 
+                       placeholder="${f.placeholder || ''}"
                        class="asset-field">
             </div>
         `;
@@ -1023,94 +1194,65 @@ function updateAssetFields() {
 }
 
 // ============================================================
-// DESTINATION TYPE
+// MULTI-SOURCE FUNCTIONS
 // ============================================================
 
-function selectDestinationType(type) {
-    destinationType = type;
-    document.querySelectorAll('.dest-option').forEach(el => {
+function selectMsDestType(type) {
+    msDestType = type;
+    document.querySelectorAll('#msDestTypeContainer .dest-option').forEach(el => {
         el.classList.toggle('active', el.dataset.value === type);
     });
-    updateDestinationFields();
+    updateMsDestination();
 }
 
-function updateDestinationType() {
-    const swapType = document.getElementById('swapType').value;
-    const container = document.getElementById('destinationTypeContainer');
-    container.style.display = (swapType === 'DEPOSIT') ? 'block' : 'none';
-    if (swapType === 'DEPOSIT') {
-        selectDestinationType(destinationType);
-    } else {
-        updateDestinationFields();
-    }
-}
-
-// ============================================================
-// DESTINATION FIELDS
-// ============================================================
-
-function updateDestinationFields() {
-    const swapType = document.getElementById('swapType').value;
-    const container = document.getElementById('destinationFields');
+function updateMsDestination() {
+    const swapType = document.getElementById('msSwapType').value;
+    const container = document.getElementById('msDestinationFields');
+    const typeContainer = document.getElementById('msDestTypeContainer');
     
     if (swapType === 'CASHOUT') {
+        typeContainer.style.display = 'none';
         container.innerHTML = `
             <div class="form-group">
                 <label>📱 Beneficiary Phone</label>
-                <input type="tel" id="beneficiaryPhone" placeholder="+26770000000" value="<?= $loggedPhone ?>">
+                <input type="tel" id="msBeneficiaryPhone" placeholder="+267XXXXXXXX" value="<?= $loggedPhone ?>">
             </div>
             <div class="info-box">🏧 They will receive an ATM code via SMS.</div>
         `;
         return;
     }
     
-    // DEPOSIT - show ACCOUNT or WALLET fields
-    if (destinationType === 'ACCOUNT') {
+    // DEPOSIT
+    typeContainer.style.display = 'block';
+    if (msDestType === 'ACCOUNT') {
         container.innerHTML = `
             <div class="form-group">
                 <label>🏦 Account Number</label>
-                <input type="text" id="destinationAccount" placeholder="Enter account number">
+                <input type="text" id="msDestAccount" placeholder="Enter account number">
             </div>
             <div class="form-group">
                 <label>🏦 Account Name (Optional)</label>
-                <input type="text" id="destinationAccountName" placeholder="Enter account name">
+                <input type="text" id="msDestAccountName" placeholder="Enter account name">
             </div>
             <div class="info-box">💳 Depositing to a bank account.</div>
         `;
     } else {
-        // WALLET
         container.innerHTML = `
             <div class="form-group">
                 <label>📱 Phone Number (Wallet)</label>
-                <input type="tel" id="destinationPhone" placeholder="+26770000000" value="<?= $loggedPhone ?>">
+                <input type="tel" id="msDestPhone" placeholder="+267XXXXXXXX" value="<?= $loggedPhone ?>">
             </div>
             <div class="info-box">📱 Depositing to a mobile wallet.</div>
         `;
     }
 }
 
-function updateIdentityDestinationFields() {
-    const swapType = document.getElementById('identitySwapType').value;
-    const container = document.getElementById('identityDestinationFields');
-    
-    if (swapType === 'CASHOUT') {
-        container.innerHTML = `
-            <div class="form-group">
-                <label>📱 Beneficiary Phone</label>
-                <input type="tel" id="identityBeneficiaryPhone" placeholder="+26770000000" value="<?= $loggedPhone ?>">
-            </div>
-            <div class="info-box">🏧 They will receive an ATM code via SMS.</div>
-        `;
-    } else {
-        container.innerHTML = `
-            <div class="info-box">💳 The identity holder will receive the funds to their account/wallet when they claim it.</div>
-        `;
-    }
+function toggleMultiSource(event) {
+    const checked = document.getElementById('multiSourceCheckbox').checked;
+    document.getElementById('sourcesContainer').style.display = checked ? 'block' : 'none';
+    if (checked && sources.length === 0) addSource();
+    updateSummary();
 }
-
-// ============================================================
-// SOURCE FUNCTIONS (Multi-Source)
-// ============================================================
 
 function addSource() {
     sourceCounter++;
@@ -1151,7 +1293,7 @@ function addSource() {
             <select id="${sourceId}_identifierSelect" style="width:100%; padding:8px 10px; background:#1a1f3a; border:1px solid #2a2f4a; border-radius:8px; color:#fff; font-size:13px;">
                 <option value="">-- Select --</option>
                 ${userIdentifiers.map(id => 
-                    `<option value="${id.value}" data-type="${id.type}">${id.display}</option>`
+                    `<option value="${id.value}" data-type="${id.type}">${id.icon} ${id.value}</option>`
                 ).join('')}
             </select>
         </div>
@@ -1198,7 +1340,6 @@ function updateSourceFields(sourceId) {
     const assetType = document.getElementById(sourceId + '_assetType').value;
     const container = document.getElementById(sourceId + '_fields');
     container.innerHTML = '';
-    
     if (!assetType) return;
     
     const def = assetFieldDefinitions[assetType] || { fields: [] };
@@ -1227,39 +1368,38 @@ function updateSourceFields(sourceId) {
 }
 
 // ============================================================
-// TOGGLE MULTI-SOURCE
-// ============================================================
-
-function toggleMultiSource(event) {
-    const checked = document.getElementById('multiSourceCheckbox').checked;
-    document.getElementById('sourcesContainer').style.display = checked ? 'block' : 'none';
-    if (checked && sources.length === 0) addSource();
-    updateSummary();
-}
-
-// ============================================================
-// VALIDATION
-// ============================================================
-
-function validateCorridor() {
-    const from = document.getElementById('fromInstitution').value;
-    const to = document.getElementById('toInstitution').value;
-    const warn = document.getElementById('corridorWarning');
-    if (from && to && from === to) {
-        warn.classList.add('show');
-        return false;
-    }
-    warn.classList.remove('show');
-    return true;
-}
-
-// ============================================================
 // SUMMARY
 // ============================================================
 
 function updateSummary() {
-    const isMulti = currentSwapType === 'MULTI_SOURCE';
+    const isStandard = currentSwapType === 'STANDARD';
     const isIdentity = currentSwapType === 'IDENTITY';
+    const isMulti = currentSwapType === 'MULTI_SOURCE';
+    
+    if (isStandard) {
+        const from = document.getElementById('stdFromInstitution')?.value || '?';
+        const to = document.getElementById('stdToInstitution')?.value || '?';
+        const amount = parseFloat(document.getElementById('stdAmount')?.value) || 0;
+        const type = document.getElementById('stdSwapType')?.value || 'DEPOSIT';
+        const sourceId = document.getElementById('stdSourceIdentifier')?.value || '?';
+        const destType = stdDestType || 'ACCOUNT';
+        
+        let summary = `⬆️➡️ ${from} → ${to}`;
+        if (amount > 0) summary += ` · ${currencySymbol} ${amount.toFixed(2)}`;
+        summary += ` · ${type}`;
+        if (type === 'DEPOSIT') summary += ` · ${destType}`;
+        document.getElementById('summary').innerHTML = '📋 ' + summary;
+        return;
+    }
+    
+    if (isIdentity) {
+        const from = document.getElementById('idFromInstitution')?.value || '?';
+        const amount = parseFloat(document.getElementById('idAmount')?.value) || 0;
+        const idType = document.getElementById('idIdentityType')?.value || '?';
+        const idValue = document.getElementById('idIdentityValue')?.value || '?';
+        document.getElementById('summary').innerHTML = `🔐 ${from} → ${idType}: ${idValue} · ${currencySymbol} ${amount.toFixed(2)}`;
+        return;
+    }
     
     if (isMulti) {
         let total = 0;
@@ -1273,33 +1413,11 @@ function updateSummary() {
         document.getElementById('totalSourceAmount').textContent = currencySymbol + ' ' + total.toFixed(2);
         document.getElementById('sourceList').textContent = details.length > 0 ? details.join('; ') : 'No sources configured';
         document.getElementById('sourceSummary').style.display = total > 0 ? 'block' : 'none';
-        document.getElementById('summary').innerHTML = `📦 Multi-Source · Total: ${currencySymbol} ${total.toFixed(2)} · ${sources.length} source(s)`;
+        const to = document.getElementById('msToInstitution')?.value || '?';
+        const type = document.getElementById('msSwapType')?.value || 'DEPOSIT';
+        document.getElementById('summary').innerHTML = `📦 ${to} · ${type} · ${currencySymbol} ${total.toFixed(2)} · ${sources.length} source(s)`;
         return;
     }
-    
-    if (isIdentity) {
-        const to = document.getElementById('identityToInstitution')?.value || '?';
-        const amount = parseFloat(document.getElementById('identityAmount')?.value) || 0;
-        const idType = document.getElementById('identityType')?.value || '?';
-        const idValue = document.getElementById('identityValue')?.value || '?';
-        document.getElementById('summary').innerHTML = `🔐 Identity Swap · ${idType}: ${idValue} → ${to} · ${currencySymbol} ${amount.toFixed(2)}`;
-        return;
-    }
-    
-    // Standard
-    const from = document.getElementById('fromInstitution')?.value || '?';
-    const to = document.getElementById('toInstitution')?.value || '?';
-    const amount = parseFloat(document.getElementById('amount')?.value) || 0;
-    const type = document.getElementById('swapType')?.value || 'DEPOSIT';
-    const destType = destinationType || 'ACCOUNT';
-    const sourceId = document.getElementById('sourceIdentifierSelect')?.value || '?';
-    
-    let summary = `⬆️➡️ ${from} → ${to}`;
-    if (amount > 0) summary += ` · ${currencySymbol} ${amount.toFixed(2)}`;
-    summary += ` · ${type}`;
-    if (type === 'DEPOSIT') summary += ` · ${destType}`;
-    if (sourceId !== '?') summary += ` · Source: ${sourceId}`;
-    document.getElementById('summary').innerHTML = '📋 ' + summary;
 }
 
 // ============================================================
@@ -1307,34 +1425,65 @@ function updateSummary() {
 // ============================================================
 
 function buildPayload() {
-    const isMulti = currentSwapType === 'MULTI_SOURCE';
+    const isStandard = currentSwapType === 'STANDARD';
     const isIdentity = currentSwapType === 'IDENTITY';
+    const isMulti = currentSwapType === 'MULTI_SOURCE';
+    
     const payload = {
         reference: 'SWAP_' + Date.now(),
         idempotency_key: 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8),
         currency: '<?= $currency ?>'
     };
     
-    if (isIdentity) {
-        payload.swap_type = 'IDENTITY';
-        payload.from_institution = document.getElementById('fromInstitution').value || '';
-        payload.source_identifier = document.getElementById('sourceIdentifierSelect').value || '';
-        payload.asset_type = document.getElementById('assetType').value || 'ACCOUNT';
-        payload.identity_type = document.getElementById('identityType').value || 'national_id';
-        payload.identity_value = document.getElementById('identityValue').value || '';
-        payload.amount = parseFloat(document.getElementById('identityAmount').value) || 0;
-        payload.to_institution = document.getElementById('identityToInstitution').value || '';
-        payload.delivery_method = document.getElementById('identitySwapType').value || 'DEPOSIT';
+    if (isStandard) {
+        payload.swap_type = document.getElementById('stdSwapType').value || 'DEPOSIT';
+        payload.from_institution = document.getElementById('stdFromInstitution').value || '';
+        payload.to_institution = document.getElementById('stdToInstitution').value || '';
+        payload.asset_type = document.getElementById('stdAssetType').value || 'ACCOUNT';
+        payload.source_identifier = document.getElementById('stdSourceIdentifier').value || '';
+        payload.amount = parseFloat(document.getElementById('stdAmount').value) || 0;
+        payload.destination_asset_type = stdDestType || 'ACCOUNT';
         
-        if (payload.delivery_method === 'CASHOUT') {
-            payload.beneficiary_phone = document.getElementById('identityBeneficiaryPhone')?.value || '';
-        }
-        
-        // Asset fields for source
+        // Asset fields
         const assetType = payload.asset_type;
         const def = assetFieldDefinitions[assetType] || { fields: [] };
         def.fields.forEach(f => {
-            const el = document.getElementById('src_' + f.name);
+            const el = document.getElementById('std_' + f.name);
+            if (el && el.value) payload[f.name] = el.value;
+        });
+        
+        // Destination
+        if (payload.swap_type === 'CASHOUT') {
+            payload.beneficiary_phone = document.getElementById('stdBeneficiaryPhone')?.value || '';
+            payload.destination_identifier = payload.beneficiary_phone;
+            payload.destination_identifier_type = 'phone';
+        } else {
+            if (stdDestType === 'ACCOUNT') {
+                payload.destination_account = document.getElementById('stdDestAccount')?.value || '';
+                payload.account_name = document.getElementById('stdDestAccountName')?.value || '';
+                payload.destination_identifier = payload.destination_account;
+                payload.destination_identifier_type = 'account';
+            } else {
+                payload.destination_phone = document.getElementById('stdDestPhone')?.value || '';
+                payload.destination_identifier = payload.destination_phone;
+                payload.destination_identifier_type = 'phone';
+            }
+        }
+        
+    } else if (isIdentity) {
+        payload.swap_type = 'IDENTITY';
+        payload.from_institution = document.getElementById('idFromInstitution').value || '';
+        payload.asset_type = document.getElementById('idAssetType').value || 'ACCOUNT';
+        payload.source_identifier = document.getElementById('idSourceIdentifier').value || '';
+        payload.amount = parseFloat(document.getElementById('idAmount').value) || 0;
+        payload.identity_type = document.getElementById('idIdentityType').value || 'national_id';
+        payload.identity_value = document.getElementById('idIdentityValue').value || '';
+        
+        // Asset fields
+        const assetType = payload.asset_type;
+        const def = assetFieldDefinitions[assetType] || { fields: [] };
+        def.fields.forEach(f => {
+            const el = document.getElementById('id_' + f.name);
             if (el && el.value) payload[f.name] = el.value;
         });
         
@@ -1351,7 +1500,6 @@ function buildPayload() {
             
             if (inst && amount > 0) {
                 const source = { institution: inst, asset_type: asset, amount: amount, identifier: ident };
-                // Asset fields
                 const def = assetFieldDefinitions[asset] || { fields: [] };
                 def.fields.forEach(f => {
                     const el = document.getElementById(s.id + '_' + f.name);
@@ -1363,63 +1511,25 @@ function buildPayload() {
         });
         
         payload.amount = total;
-        payload.to_institution = document.getElementById('toInstitution').value || '';
-        payload.delivery_method = document.getElementById('swapType').value || 'DEPOSIT';
+        payload.to_institution = document.getElementById('msToInstitution').value || '';
+        payload.delivery_method = document.getElementById('msSwapType').value || 'DEPOSIT';
+        payload.destination_asset_type = msDestType || 'ACCOUNT';
         payload.contribution_strategy = 'SMART';
-        payload.destination_type = destinationType || 'ACCOUNT';
         
         if (payload.delivery_method === 'CASHOUT') {
-            payload.beneficiary_phone = document.getElementById('beneficiaryPhone')?.value || '';
-        } else if (payload.delivery_method === 'DEPOSIT') {
-            if (destinationType === 'ACCOUNT') {
-                payload.destination_account = document.getElementById('destinationAccount')?.value || '';
-                payload.account_name = document.getElementById('destinationAccountName')?.value || '';
-                payload.destination_identifier = payload.destination_account;
-                payload.destination_identifier_type = 'account';
-                payload.destination_asset_type = 'ACCOUNT';
-            } else {
-                payload.destination_phone = document.getElementById('destinationPhone')?.value || '';
-                payload.destination_identifier = payload.destination_phone;
-                payload.destination_identifier_type = 'phone';
-                payload.destination_asset_type = 'WALLET';
-            }
-        }
-        
-    } else {
-        // STANDARD
-        payload.swap_type = document.getElementById('swapType').value || 'DEPOSIT';
-        payload.from_institution = document.getElementById('fromInstitution').value || '';
-        payload.to_institution = document.getElementById('toInstitution').value || '';
-        payload.asset_type = document.getElementById('assetType').value || 'ACCOUNT';
-        payload.source_identifier = document.getElementById('sourceIdentifierSelect').value || '';
-        payload.amount = parseFloat(document.getElementById('amount').value) || 0;
-        payload.destination_type = destinationType || 'ACCOUNT';
-        
-        // Asset fields for source
-        const assetType = payload.asset_type;
-        const def = assetFieldDefinitions[assetType] || { fields: [] };
-        def.fields.forEach(f => {
-            const el = document.getElementById('src_' + f.name);
-            if (el && el.value) payload[f.name] = el.value;
-        });
-        
-        // Destination fields
-        if (payload.swap_type === 'CASHOUT') {
-            payload.beneficiary_phone = document.getElementById('beneficiaryPhone')?.value || '';
+            payload.beneficiary_phone = document.getElementById('msBeneficiaryPhone')?.value || '';
             payload.destination_identifier = payload.beneficiary_phone;
             payload.destination_identifier_type = 'phone';
         } else {
-            if (destinationType === 'ACCOUNT') {
-                payload.destination_account = document.getElementById('destinationAccount')?.value || '';
-                payload.account_name = document.getElementById('destinationAccountName')?.value || '';
+            if (msDestType === 'ACCOUNT') {
+                payload.destination_account = document.getElementById('msDestAccount')?.value || '';
+                payload.account_name = document.getElementById('msDestAccountName')?.value || '';
                 payload.destination_identifier = payload.destination_account;
                 payload.destination_identifier_type = 'account';
-                payload.destination_asset_type = 'ACCOUNT';
             } else {
-                payload.destination_phone = document.getElementById('destinationPhone')?.value || '';
+                payload.destination_phone = document.getElementById('msDestPhone')?.value || '';
                 payload.destination_identifier = payload.destination_phone;
                 payload.destination_identifier_type = 'phone';
-                payload.destination_asset_type = 'WALLET';
             }
         }
     }
@@ -1440,20 +1550,44 @@ function buildPayload() {
 // ============================================================
 
 document.getElementById('executeBtn').addEventListener('click', async function() {
-    const isMulti = currentSwapType === 'MULTI_SOURCE';
-    const isIdentity = currentSwapType === 'IDENTITY';
-    
-    // Validate
     const pin = document.getElementById('userPin').value;
     if (!pin) { alert('🔑 Enter your PIN'); return; }
     
-    if (isIdentity) {
-        const idValue = document.getElementById('identityValue').value.trim();
-        if (!idValue) { alert('Enter the identity value'); return; }
-        const amount = parseFloat(document.getElementById('identityAmount').value);
+    const isStandard = currentSwapType === 'STANDARD';
+    const isIdentity = currentSwapType === 'IDENTITY';
+    const isMulti = currentSwapType === 'MULTI_SOURCE';
+    
+    if (isStandard) {
+        const from = document.getElementById('stdFromInstitution').value;
+        const to = document.getElementById('stdToInstitution').value;
+        const amount = parseFloat(document.getElementById('stdAmount').value);
+        const sourceId = document.getElementById('stdSourceIdentifier').value;
+        
+        if (!from) { alert('Select source institution'); return; }
+        if (!to) { alert('Select destination institution'); return; }
+        if (!sourceId) { alert('Select your source identifier'); return; }
         if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
-        const fromInst = document.getElementById('fromInstitution').value;
-        if (!fromInst) { alert('Select source institution'); return; }
+        if (from === to) { alert('Source and destination must be different'); return; }
+        
+        if (document.getElementById('stdSwapType').value === 'CASHOUT') {
+            if (!document.getElementById('stdBeneficiaryPhone').value) { alert('Enter beneficiary phone'); return; }
+        } else if (stdDestType === 'ACCOUNT') {
+            if (!document.getElementById('stdDestAccount').value) { alert('Enter destination account number'); return; }
+        } else {
+            if (!document.getElementById('stdDestPhone').value) { alert('Enter destination phone number'); return; }
+        }
+        
+    } else if (isIdentity) {
+        const from = document.getElementById('idFromInstitution').value;
+        const amount = parseFloat(document.getElementById('idAmount').value);
+        const idValue = document.getElementById('idIdentityValue').value.trim();
+        const sourceId = document.getElementById('idSourceIdentifier').value;
+        
+        if (!from) { alert('Select source institution'); return; }
+        if (!sourceId) { alert('Select your source identifier'); return; }
+        if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
+        if (!idValue) { alert('Enter the identity value'); return; }
+        
     } else if (isMulti) {
         let hasError = false;
         let total = 0;
@@ -1469,33 +1603,14 @@ document.getElementById('executeBtn').addEventListener('click', async function()
         if (hasError) return;
         if (sources.length < 2) { alert('Add at least 2 sources'); return; }
         if (total <= 0) { alert('Total amount must be > 0'); return; }
-        const toInst = document.getElementById('toInstitution').value;
-        if (!toInst) { alert('Select destination institution'); return; }
-    } else {
-        // Standard
-        const amount = parseFloat(document.getElementById('amount').value);
-        if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
-        const fromInst = document.getElementById('fromInstitution').value;
-        const toInst = document.getElementById('toInstitution').value;
-        if (!fromInst) { alert('Select source institution'); return; }
-        if (!toInst) { alert('Select destination institution'); return; }
-        if (fromInst === toInst) { alert('Source and destination must be different'); return; }
-        const sourceId = document.getElementById('sourceIdentifierSelect').value;
-        if (!sourceId) { alert('Select your source identifier'); return; }
-    }
-    
-    if (document.getElementById('swapType').value === 'CASHOUT') {
-        const phone = document.getElementById('beneficiaryPhone')?.value;
-        if (!phone) { alert('Enter beneficiary phone number'); return; }
-    }
-    
-    if (document.getElementById('swapType').value === 'DEPOSIT') {
-        if (destinationType === 'ACCOUNT') {
-            const account = document.getElementById('destinationAccount')?.value;
-            if (!account) { alert('Enter destination account number'); return; }
+        if (!document.getElementById('msToInstitution').value) { alert('Select destination institution'); return; }
+        
+        if (document.getElementById('msSwapType').value === 'CASHOUT') {
+            if (!document.getElementById('msBeneficiaryPhone').value) { alert('Enter beneficiary phone'); return; }
+        } else if (msDestType === 'ACCOUNT') {
+            if (!document.getElementById('msDestAccount').value) { alert('Enter destination account number'); return; }
         } else {
-            const phone = document.getElementById('destinationPhone')?.value;
-            if (!phone) { alert('Enter destination phone number'); return; }
+            if (!document.getElementById('msDestPhone').value) { alert('Enter destination phone number'); return; }
         }
     }
     
@@ -1550,13 +1665,9 @@ async function showConfirmation(payload) {
             feeHTML += '</div>';
         }
         
-        let destType = '';
-        if (p.destination_type) destType = ` · ${p.destination_type}`;
-        if (p.destination_asset_type) destType = ` · ${p.destination_asset_type}`;
-        
         details.innerHTML = `
             <div style="margin-bottom:12px;">
-                <div style="font-size:12px;color:#888;">${p.swap_type || 'Swap'}${destType}</div>
+                <div style="font-size:12px;color:#888;">${p.swap_type || 'Swap'}</div>
                 <div style="color:#00f0ff;">${p.source_institution || '?'} → ${p.destination_institution || '?'}</div>
             </div>
             <div class="row"><span class="label">💰 Amount</span><span class="value">${(p.amount_requested || p.amount || 0).toFixed(2)} ${p.source_currency || 'BWP'}</span></div>
@@ -1638,46 +1749,22 @@ document.getElementById('confirmBtn').addEventListener('click', async function()
 });
 
 // ============================================================
-// EVENT LISTENERS
+// EVENT LISTENERS & INITIALIZATION
 // ============================================================
 
 document.addEventListener('DOMContentLoaded', function() {
-    // Form changes
-    ['fromInstitution', 'toInstitution', 'assetType', 'swapType', 'sourceIdentifierSelect'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.addEventListener('change', updateSummary);
-    });
-    
-    ['identityToInstitution', 'identitySwapType', 'identityType'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.addEventListener('change', function() {
-            if (id === 'identitySwapType') updateIdentityDestinationFields();
-            updateSummary();
-        });
-    });
-    
-    // Identity amount
-    const identityAmount = document.getElementById('identityAmount');
-    if (identityAmount) identityAmount.addEventListener('input', updateSummary);
-    
-    // Destination fields on swap type change
-    document.getElementById('swapType').addEventListener('change', function() {
-        updateDestinationType();
-        updateSummary();
-    });
-    
     // Initialize
-    updateDestinationType();
-    updateAssetTypes();
+    updateStdDestination();
+    updateMsDestination();
     updateSummary();
     selectSwapType('STANDARD');
     
-    // Auto-detect identifier type
-    document.getElementById('sourceIdentifierSelect')?.addEventListener('change', function() {
+    // Auto-detect identifier type for identity
+    document.getElementById('idSourceIdentifier')?.addEventListener('change', function() {
         const opt = this.options[this.selectedIndex];
         if (opt && opt.dataset.type) {
             const typeMap = { 'phone': 'phone', 'email': 'email', 'national_id': 'national_id' };
-            const idType = document.getElementById('identityType');
+            const idType = document.getElementById('idIdentityType');
             if (idType && typeMap[opt.dataset.type]) {
                 idType.value = typeMap[opt.dataset.type];
             }
@@ -1688,7 +1775,6 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log('✅ VouchMorph Dashboard loaded');
     console.log('👤 User:', userIdentifiers);
     console.log('🏦 Participants:', Object.keys(participants));
-    console.log('📦 Asset Field Definitions:', Object.keys(assetFieldDefinitions));
 });
 </script>
 </body>
