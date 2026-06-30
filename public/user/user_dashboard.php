@@ -1,6 +1,6 @@
 <?php
-// public/user/dashboard.php - WORKING DASHBOARD
-// Based on original working code with fixes for each swap type
+// public/user/dashboard.php - DYNAMIC DASHBOARD
+// Loads asset types from AssetTypeRegistry (assets.yaml)
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
@@ -65,21 +65,23 @@ if (!empty($user['phone'])) {
 
 // Build valid identifiers list
 $validIdentifiers = [];
+$typeIcons = [
+    'phone' => '📱',
+    'phone2' => '📱',
+    'phone3' => '📱',
+    'email' => '✉️',
+    'national_id' => '🆔',
+    'drivers_license' => '🚗',
+    'passport' => '📖'
+];
+
 foreach ($userIdentifiers as $type => $value) {
     if (!empty($value)) {
         $validIdentifiers[] = [
             'type' => $type,
             'value' => $value,
             'display' => $type . ': ' . $value,
-            'icon' => [
-                'phone' => '📱',
-                'phone2' => '📱',
-                'phone3' => '📱',
-                'email' => '✉️',
-                'national_id' => '🆔',
-                'drivers_license' => '🚗',
-                'passport' => '📖'
-            ][$type] ?? '🔑'
+            'icon' => $typeIcons[$type] ?? '🔑'
         ];
     }
 }
@@ -197,13 +199,17 @@ function parseParticipantsYaml($path) {
 
 $participants = parseParticipantsYaml($participantsYamlPath);
 
-// Load asset types
+// ============================================================
+// LOAD ASSET TYPES FROM AssetTypeRegistry (assets.yaml)
+// ============================================================
 AssetTypeRegistry::initialize();
 $allAssetTypes = AssetTypeRegistry::all();
 
 $assetFieldsMap = [];
 $assetUIMap = [];
 $assetRulesMap = [];
+$assetTypeNames = [];
+
 foreach ($allAssetTypes as $code => $config) {
     $assetFieldsMap[$code] = $config['fields'] ?? [];
     $assetUIMap[$code] = $config['ui'] ?? [];
@@ -214,6 +220,7 @@ foreach ($allAssetTypes as $code => $config) {
         'partial_debit_allowed' => $config['partial_debit_allowed'] ?? false,
         'delivery_modes' => $config['delivery_modes'] ?? ['deposit', 'cashout']
     ];
+    $assetTypeNames[] = $code;
 }
 
 // Get recent swaps
@@ -665,6 +672,11 @@ $identifiersJson = json_encode($validIdentifiers);
                     <label>🏷️ Asset Type</label>
                     <select id="stdAssetType" onchange="updateStdAssetFields()">
                         <option value="">-- Select --</option>
+                        <?php foreach ($allAssetTypes as $code => $config): ?>
+                            <option value="<?= htmlspecialchars($code) ?>">
+                                <?= ($config['ui']['icon'] ?? '📦') . ' ' . ($config['ui']['display_name'] ?? $code) ?>
+                            </option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
             </div>
@@ -752,6 +764,11 @@ $identifiersJson = json_encode($validIdentifiers);
                     <label>🏷️ Asset Type</label>
                     <select id="idAssetType" onchange="updateIdAssetFields()">
                         <option value="">-- Select --</option>
+                        <?php foreach ($allAssetTypes as $code => $config): ?>
+                            <option value="<?= htmlspecialchars($code) ?>">
+                                <?= ($config['ui']['icon'] ?? '📦') . ' ' . ($config['ui']['display_name'] ?? $code) ?>
+                            </option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
             </div>
@@ -933,7 +950,7 @@ $identifiersJson = json_encode($validIdentifiers);
 
 <script>
 // ============================================================
-// CONFIGURATION
+// CONFIGURATION - DYNAMIC FROM PHP
 // ============================================================
 const participants = <?= json_encode($participantOptions) ?>;
 const assetFields = <?= json_encode($assetFieldsMap) ?>;
@@ -956,40 +973,76 @@ let pendingPayload = null;
 let previewData = null;
 
 // ============================================================
-// ASSET FIELD DEFINITIONS
+// DYNAMIC ASSET FIELD FUNCTIONS - FROM assets.yaml
 // ============================================================
-const assetFieldDefinitions = {
-    'VOUCHER': {
-        fields: [
-            { name: 'voucher_number', label: '🎫 Voucher Number', type: 'text', placeholder: 'Enter voucher number' },
-            { name: 'voucher_pin', label: '🔑 Voucher PIN', type: 'password', placeholder: 'Enter voucher PIN' },
-            { name: 'phone', label: '📱 Phone Number', type: 'text', placeholder: '+267XXXXXXXX' }
-        ]
-    },
-    'ACCOUNT': {
-        fields: [
-            { name: 'account_number', label: '🏦 Account Number', type: 'text', placeholder: 'Enter account number' }
-        ]
-    },
-    'MNO-WALLET': {
-        fields: [
-            { name: 'wallet_phone', label: '📱 Wallet Phone', type: 'text', placeholder: '+267XXXXXXXX' },
-            { name: 'wallet_pin', label: '🔑 Wallet PIN', type: 'password', placeholder: 'Enter wallet PIN' }
-        ]
-    },
-    'CARD': {
-        fields: [
-            { name: 'card_number', label: '💳 Card Number', type: 'text', placeholder: 'XXXX-XXXX-XXXX-XXXX' },
-            { name: 'card_pin', label: '🔑 Card PIN', type: 'password', placeholder: 'Enter card PIN' }
-        ]
-    },
-    'BANK-WALLET': {
-        fields: [
-            { name: 'wallet_account', label: '🏦 Wallet Account', type: 'text', placeholder: 'Enter wallet account' },
-            { name: 'wallet_pin', label: '🔑 Wallet PIN', type: 'password', placeholder: 'Enter wallet PIN' }
-        ]
+
+function renderAssetFields(prefix, assetType, containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    
+    console.log('[renderAssetFields] Asset type:', assetType, 'Prefix:', prefix);
+    container.innerHTML = '';
+    
+    if (!assetType) {
+        container.innerHTML = '<div class="info-box">Please select an asset type</div>';
+        return;
     }
-};
+    
+    const fields = assetFields[assetType] || [];
+    console.log('[renderAssetFields] Fields for', assetType, ':', fields);
+    
+    if (fields.length === 0) {
+        container.innerHTML = '<div class="info-box">✅ No additional fields required for ' + assetType + '</div>';
+        return;
+    }
+    
+    let html = '<div class="form-row">';
+    fields.forEach(f => {
+        const isPin = f.type === 'password' || f.name.includes('pin') || f.vault_field === 'pin';
+        const fieldId = prefix + '_' + f.name;
+        const required = f.required ? ' required' : '';
+        const pattern = f.pattern ? ` pattern="${f.pattern}"` : '';
+        const minAttr = f.min !== undefined ? ` min="${f.min}"` : '';
+        const maxAttr = f.max !== undefined ? ` max="${f.max}"` : '';
+        const minLen = f.min_length ? ` minlength="${f.min_length}"` : '';
+        const maxLen = f.max_length ? ` maxlength="${f.max_length}"` : '';
+        const placeholder = f.placeholder || '';
+        const helpText = f.help_text || '';
+        
+        html += `
+            <div class="form-group">
+                <label>${f.label || f.name}</label>
+                <input type="${isPin ? 'password' : (f.type || 'text')}" 
+                       id="${fieldId}" 
+                       placeholder="${placeholder}"
+                       ${required}${pattern}${minAttr}${maxAttr}${minLen}${maxLen}
+                       class="asset-field"
+                       autocomplete="${isPin ? 'new-password' : 'on'}">
+                ${helpText ? `<div style="font-size:10px;color:#888;margin-top:4px;">💡 ${helpText}</div>` : ''}
+                ${isPin ? '<div style="font-size:10px;color:#b000ff;margin-top:4px;">🔑 PIN field</div>' : ''}
+            </div>
+        `;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function collectAssetFields(prefix, assetType) {
+    const fields = {};
+    const def = assetFields[assetType] || [];
+    
+    def.forEach(f => {
+        const el = document.getElementById(prefix + '_' + f.name);
+        if (el) {
+            const value = el.value.trim();
+            if (value) {
+                fields[f.name] = value;
+            }
+        }
+    });
+    
+    return fields;
+}
 
 // ============================================================
 // SWAP TYPE SELECTOR
@@ -1028,7 +1081,7 @@ function selectSwapType(type) {
 }
 
 // ============================================================
-// STANDARD SWAP FUNCTIONS
+// STANDARD SWAP FUNCTIONS - DYNAMIC
 // ============================================================
 
 function updateStdAssetTypes() {
@@ -1044,39 +1097,17 @@ function updateStdAssetTypes() {
             assetSelect.appendChild(opt);
         });
     }
-    updateStdAssetFields();
+    // Show fields for first asset type if only one option
+    if (assetSelect.options.length === 2 && assetSelect.options[1].value) {
+        assetSelect.value = assetSelect.options[1].value;
+        updateStdAssetFields();
+    }
     updateSummary();
 }
 
 function updateStdAssetFields() {
     const assetType = document.getElementById('stdAssetType').value;
-    const container = document.getElementById('stdAssetFieldsContainer');
-    container.innerHTML = '';
-    if (!assetType) return;
-    
-    const def = assetFieldDefinitions[assetType] || { fields: [] };
-    const fields = def.fields || [];
-    
-    if (fields.length === 0) {
-        container.innerHTML = '<div class="info-box">✅ No additional fields required</div>';
-        return;
-    }
-    
-    let html = '<div class="form-row">';
-    fields.forEach(f => {
-        const isPin = f.type === 'password' || f.name.includes('pin');
-        html += `
-            <div class="form-group">
-                <label>${f.label}</label>
-                <input type="${isPin ? 'password' : (f.type || 'text')}" 
-                       id="std_${f.name}" 
-                       placeholder="${f.placeholder || ''}"
-                       class="asset-field">
-            </div>
-        `;
-    });
-    html += '</div>';
-    container.innerHTML = html;
+    renderAssetFields('std', assetType, 'stdAssetFieldsContainer');
 }
 
 function selectStdDestType(type) {
@@ -1142,7 +1173,7 @@ function validateStdCorridor() {
 }
 
 // ============================================================
-// IDENTITY SWAP FUNCTIONS
+// IDENTITY SWAP FUNCTIONS - DYNAMIC
 // ============================================================
 
 function updateIdAssetTypes() {
@@ -1158,43 +1189,20 @@ function updateIdAssetTypes() {
             assetSelect.appendChild(opt);
         });
     }
-    updateIdAssetFields();
+    if (assetSelect.options.length === 2 && assetSelect.options[1].value) {
+        assetSelect.value = assetSelect.options[1].value;
+        updateIdAssetFields();
+    }
     updateSummary();
 }
 
 function updateIdAssetFields() {
     const assetType = document.getElementById('idAssetType').value;
-    const container = document.getElementById('idAssetFieldsContainer');
-    container.innerHTML = '';
-    if (!assetType) return;
-    
-    const def = assetFieldDefinitions[assetType] || { fields: [] };
-    const fields = def.fields || [];
-    
-    if (fields.length === 0) {
-        container.innerHTML = '<div class="info-box">✅ No additional fields required</div>';
-        return;
-    }
-    
-    let html = '<div class="form-row">';
-    fields.forEach(f => {
-        const isPin = f.type === 'password' || f.name.includes('pin');
-        html += `
-            <div class="form-group">
-                <label>${f.label}</label>
-                <input type="${isPin ? 'password' : (f.type || 'text')}" 
-                       id="id_${f.name}" 
-                       placeholder="${f.placeholder || ''}"
-                       class="asset-field">
-            </div>
-        `;
-    });
-    html += '</div>';
-    container.innerHTML = html;
+    renderAssetFields('id', assetType, 'idAssetFieldsContainer');
 }
 
 // ============================================================
-// MULTI-SOURCE FUNCTIONS
+// MULTI-SOURCE FUNCTIONS - DYNAMIC
 // ============================================================
 
 function selectMsDestType(type) {
@@ -1258,6 +1266,14 @@ function addSource() {
     sourceCounter++;
     const sourceId = 'source_' + sourceCounter;
     
+    // Build asset type options dynamically
+    let assetOptions = '';
+    for (const [code, config] of Object.entries(assetUI)) {
+        const icon = config.icon || '📦';
+        const name = config.display_name || code;
+        assetOptions += `<option value="${code}">${icon} ${name}</option>`;
+    }
+    
     const entry = document.createElement('div');
     entry.className = 'source-entry';
     entry.id = sourceId;
@@ -1280,6 +1296,7 @@ function addSource() {
                 <label>Asset Type</label>
                 <select id="${sourceId}_assetType" onchange="updateSourceFields('${sourceId}')">
                     <option value="">-- Select --</option>
+                    ${assetOptions}
                 </select>
             </div>
             <div class="form-group">
@@ -1333,18 +1350,24 @@ function updateSourceAssetTypes(sourceId) {
             assetSelect.appendChild(opt);
         });
     }
-    updateSourceFields(sourceId);
+    // Show fields if only one option
+    if (assetSelect.options.length === 2 && assetSelect.options[1].value) {
+        assetSelect.value = assetSelect.options[1].value;
+        updateSourceFields(sourceId);
+    }
 }
 
 function updateSourceFields(sourceId) {
     const assetType = document.getElementById(sourceId + '_assetType').value;
     const container = document.getElementById(sourceId + '_fields');
     container.innerHTML = '';
-    if (!assetType) return;
     
-    const def = assetFieldDefinitions[assetType] || { fields: [] };
-    const fields = def.fields || [];
+    if (!assetType) {
+        container.innerHTML = '<div class="info-box">Please select an asset type</div>';
+        return;
+    }
     
+    const fields = assetFields[assetType] || [];
     if (fields.length === 0) {
         container.innerHTML = '<div class="info-box">✅ No additional fields</div>';
         return;
@@ -1352,14 +1375,16 @@ function updateSourceFields(sourceId) {
     
     let html = '<div class="form-row" style="margin-bottom:0;">';
     fields.forEach(f => {
-        const isPin = f.type === 'password' || f.name.includes('pin');
+        const isPin = f.type === 'password' || f.name.includes('pin') || f.vault_field === 'pin';
+        const fieldId = sourceId + '_' + f.name;
         html += `
             <div class="form-group">
-                <label>${f.label}</label>
+                <label>${f.label || f.name}</label>
                 <input type="${isPin ? 'password' : (f.type || 'text')}" 
-                       id="${sourceId}_${f.name}" 
+                       id="${fieldId}" 
                        placeholder="${f.placeholder || ''}"
                        class="source-asset-field">
+                ${isPin ? '<div style="font-size:10px;color:#b000ff;margin-top:4px;">🔑 PIN field</div>' : ''}
             </div>
         `;
     });
@@ -1421,7 +1446,7 @@ function updateSummary() {
 }
 
 // ============================================================
-// BUILD PAYLOAD
+// BUILD PAYLOAD - DYNAMIC
 // ============================================================
 
 function buildPayload() {
@@ -1444,13 +1469,9 @@ function buildPayload() {
         payload.amount = parseFloat(document.getElementById('stdAmount').value) || 0;
         payload.destination_asset_type = stdDestType || 'ACCOUNT';
         
-        // Asset fields
-        const assetType = payload.asset_type;
-        const def = assetFieldDefinitions[assetType] || { fields: [] };
-        def.fields.forEach(f => {
-            const el = document.getElementById('std_' + f.name);
-            if (el && el.value) payload[f.name] = el.value;
-        });
+        // Collect asset fields dynamically
+        const assetFieldsData = collectAssetFields('std', payload.asset_type);
+        Object.assign(payload, assetFieldsData);
         
         // Destination
         if (payload.swap_type === 'CASHOUT') {
@@ -1479,13 +1500,9 @@ function buildPayload() {
         payload.identity_type = document.getElementById('idIdentityType').value || 'national_id';
         payload.identity_value = document.getElementById('idIdentityValue').value || '';
         
-        // Asset fields
-        const assetType = payload.asset_type;
-        const def = assetFieldDefinitions[assetType] || { fields: [] };
-        def.fields.forEach(f => {
-            const el = document.getElementById('id_' + f.name);
-            if (el && el.value) payload[f.name] = el.value;
-        });
+        // Collect asset fields dynamically
+        const assetFieldsData = collectAssetFields('id', payload.asset_type);
+        Object.assign(payload, assetFieldsData);
         
     } else if (isMulti) {
         payload.swap_type = 'MULTI_SOURCE';
@@ -1500,10 +1517,13 @@ function buildPayload() {
             
             if (inst && amount > 0) {
                 const source = { institution: inst, asset_type: asset, amount: amount, identifier: ident };
-                const def = assetFieldDefinitions[asset] || { fields: [] };
-                def.fields.forEach(f => {
+                // Collect asset fields for this source
+                const fields = assetFields[asset] || [];
+                fields.forEach(f => {
                     const el = document.getElementById(s.id + '_' + f.name);
-                    if (el && el.value) source[f.name] = el.value;
+                    if (el && el.value.trim()) {
+                        source[f.name] = el.value.trim();
+                    }
                 });
                 payload.sources.push(source);
                 total += amount;
@@ -1619,7 +1639,7 @@ document.getElementById('executeBtn').addEventListener('click', async function()
 });
 
 // ============================================================
-// CONFIRMATION MODAL
+// CONFIRMATION MODAL (unchanged)
 // ============================================================
 
 async function showConfirmation(payload) {
@@ -1772,9 +1792,12 @@ document.addEventListener('DOMContentLoaded', function() {
         updateSummary();
     });
     
+    // Debug output
     console.log('✅ VouchMorph Dashboard loaded');
     console.log('👤 User:', userIdentifiers);
     console.log('🏦 Participants:', Object.keys(participants));
+    console.log('📦 Asset Types:', Object.keys(assetFields));
+    console.log('📋 Asset Fields:', assetFields);
 });
 </script>
 </body>
