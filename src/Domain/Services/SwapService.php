@@ -25,44 +25,8 @@ use Infrastructure\Crypto\AggregateSigner;
 /**
  * SIGNED ATOMIC SWAP ORCHESTRATOR
  * 
- * CASHOUT FLOW (3 steps at destination):
- * 1. generate_token - Creates ATM/Agent cashout code
- * 2. verify_token - Validates code when user cashes out
- * 3. confirm_cashout - Confirms cashout completed, THEN debit source
- * 
- * DEPOSIT FLOW (1 step at destination):
- * 1. process_deposit - Direct deposit to account/wallet, THEN debit source
- * 
- * IDENTITY SWAP FLOW (PAUSE AT HOLD):
- * 1. verify_asset - Verify source funds
- * 2. place_hold - Place hold on source funds
- * 3. store_identity - PAUSE - Link hold to identity (National ID, Phone, Email)
- * 4. confirm_identity - User/Agent confirms identity (24hr expiry)
- * 5. complete_as_cashout OR complete_as_deposit - Reuses existing flows but SKIPS hold placement
- * 
- * MULTI-SOURCE FLOW:
- * 1. Create Virtual Funding Pool
- * 2. Calculate contributions from multiple sources
- * 3. Verify all sources
- * 4. Place holds on all sources
- * 5. Execute destination action ONCE
- * 6. Debit all sources
- * 7. Settlement & invoicing
- * 
- * MULTI-DESTINATION FLOW:
- * 1. Verify source asset once
- * 2. Place hold on source for TOTAL amount
- * 3. For each destination (independent processing)
- * 4. Debit source for TOTAL amount
- * 5. Settlement for each destination
- * 
- * MATHEMATICAL MODEL:
- * - Amount_1 = Requested amount
- * - F1 = Total customer upfront fee
- * - Amount_2 = Amount_1 - F1 (net after fees)
- * - M = Banknote multiplier (from ATM notes)
- * - Amount_4 = M × floor(Amount_2 / M) (dispensable amount)
- * - Remainder_1 = Amount_2 - Amount_4 (stays at source)
+ * Institution-agnostic - all institutions derived from payload
+ * No hardcoded institution names anywhere
  */
 class SwapService
 {
@@ -153,9 +117,7 @@ class SwapService
             }
         }
         
-        // ============================================================
-        // LOAD COUNTRY CONFIGURATION
-        // ============================================================
+        // Load country configuration
         $countryConfig = \Core\Config\LoadCountry::getConfig();
         
         $this->participants = $countryConfig['participants'] ?? [];
@@ -189,9 +151,7 @@ class SwapService
             $this->cardService = new CardService($this->swapDB, $this->countryCode, $vouchmorphConfig);
         }
         
-        // ============================================================
-        // MULTI-SOURCE ENABLED
-        // ============================================================
+        // Multi-Source components
         error_log("[SwapService] Initializing Multi-Source components...");
         
         try {
@@ -223,6 +183,194 @@ class SwapService
         }
         
         $this->logger->info("Signed SwapService initialized (multi-source " . ($this->multiSourceOrchestrator ? 'ENABLED' : 'DISABLED') . ")", ['country' => $country]);
+    }
+
+    // ============================================================================
+    // INSTITUTION EXTRACTION - NO HARDCODING
+    // ============================================================================
+
+    /**
+     * Extract source institution from payload - NEVER hardcoded
+     * 
+     * @throws RuntimeException if source institution cannot be found
+     */
+    private function extractSourceInstitution(array $payload): string
+    {
+        // Check all possible locations for source institution
+        $source = $payload['from_institution'] ?? 
+                  $payload['source_institution'] ?? 
+                  $payload['source']['institution'] ?? 
+                  $payload['source_details']['institution'] ?? 
+                  $payload['participant']['source'] ?? 
+                  $payload['bank'] ?? 
+                  null;
+        
+        if (empty($source)) {
+            $availableKeys = implode(', ', array_keys($payload));
+            error_log("[SwapService] No source institution found. Available keys: {$availableKeys}");
+            throw new RuntimeException(
+                "No source institution found in payload. Please provide 'from_institution' or 'source_institution'. " .
+                "Available keys: {$availableKeys}"
+            );
+        }
+        
+        error_log("[SwapService] Extracted source institution: {$source}");
+        return $source;
+    }
+
+    /**
+     * Extract destination institution from payload - NEVER hardcoded
+     * 
+     * @throws RuntimeException if destination institution cannot be found
+     */
+    private function extractDestinationInstitution(array $payload): string
+    {
+        // Check all possible locations for destination institution
+        $dest = $payload['to_institution'] ?? 
+                $payload['destination_institution'] ?? 
+                $payload['destination']['institution'] ?? 
+                $payload['destination_details']['institution'] ?? 
+                $payload['participant']['destination'] ?? 
+                null;
+        
+        if (empty($dest)) {
+            $availableKeys = implode(', ', array_keys($payload));
+            error_log("[SwapService] No destination institution found. Available keys: {$availableKeys}");
+            throw new RuntimeException(
+                "No destination institution found in payload. Please provide 'to_institution' or 'destination_institution'. " .
+                "Available keys: {$availableKeys}"
+            );
+        }
+        
+        error_log("[SwapService] Extracted destination institution: {$dest}");
+        return $dest;
+    }
+
+    /**
+     * Extract source identifier from payload
+     */
+    private function extractSourceIdentifier(array $payload): array
+    {
+        $sourceIdentifier = null;
+        $sourceIdentifierType = null;
+        
+        // Check hooked source first
+        if (!empty($payload['_is_hooked']) && !empty($payload['source_reference'])) {
+            $sourceIdentifier = $payload['source_identifier'] ?? null;
+            $sourceIdentifierType = $payload['source_identifier_type'] ?? 'auto';
+            if ($sourceIdentifier) {
+                return [
+                    'identifier' => $sourceIdentifier,
+                    'type' => $sourceIdentifierType,
+                    'has_value' => true,
+                    'is_hooked' => true
+                ];
+            }
+        }
+        
+        // Check all possible locations
+        $sourceIdentifier = $payload['source_identifier'] ?? 
+                           $payload['source_account'] ?? 
+                           $payload['source_phone'] ?? 
+                           $payload['source_wallet_phone'] ?? 
+                           $payload['wallet_phone'] ?? 
+                           $payload['phone'] ?? 
+                           $payload['source_national_id'] ?? 
+                           $payload['national_id'] ?? 
+                           $payload['source_email'] ?? 
+                           $payload['email'] ?? 
+                           $payload['source']['identifier'] ?? 
+                           $payload['source']['account'] ?? 
+                           null;
+        
+        $sourceIdentifierType = $payload['source_identifier_type'] ?? 
+                               $payload['identifier_type'] ?? 
+                               'auto';
+        
+        if (!empty($sourceIdentifier)) {
+            return [
+                'identifier' => $sourceIdentifier,
+                'type' => $sourceIdentifierType,
+                'has_value' => true,
+                'is_hooked' => !empty($payload['_is_hooked'])
+            ];
+        }
+        
+        return [
+            'identifier' => null,
+            'type' => null,
+            'has_value' => false,
+            'is_hooked' => false
+        ];
+    }
+
+    /**
+     * Extract destination identifier from payload
+     */
+    private function extractDestinationIdentifier(array $payload): array
+    {
+        $destinationIdentifier = null;
+        $destinationIdentifierType = null;
+        
+        // Check all possible locations
+        $destinationIdentifier = $payload['destination_identifier'] ?? 
+                                 $payload['destination_account'] ?? 
+                                 $payload['destination_phone'] ?? 
+                                 $payload['destination_national_id'] ?? 
+                                 $payload['destination_email'] ?? 
+                                 $payload['beneficiary_account'] ?? 
+                                 $payload['beneficiary_phone'] ?? 
+                                 $payload['beneficiary_identifier'] ?? 
+                                 $payload['client_phone'] ?? 
+                                 $payload['account_number'] ?? 
+                                 $payload['phone'] ?? 
+                                 $payload['email'] ?? 
+                                 $payload['national_id'] ?? 
+                                 $payload['destination']['identifier'] ?? 
+                                 null;
+        
+        $destinationIdentifierType = $payload['destination_identifier_type'] ?? 
+                                     $payload['identifier_type'] ?? 
+                                     'account';
+        
+        if (!empty($destinationIdentifier)) {
+            return [
+                'identifier' => $destinationIdentifier,
+                'type' => $destinationIdentifierType,
+                'has_value' => true
+            ];
+        }
+        
+        return [
+            'identifier' => null,
+            'type' => null,
+            'has_value' => false
+        ];
+    }
+
+    /**
+     * Extract beneficiary phone from payload
+     */
+    private function extractBeneficiaryPhone(array $payload): ?string
+    {
+        return $payload['beneficiary_phone'] ?? 
+               $payload['beneficiary_identifier'] ?? 
+               $payload['client_phone'] ?? 
+               null;
+    }
+
+    /**
+     * Validate that required institutions are present
+     */
+    private function validateInstitutions(array $payload, bool $requireDestination = true): void
+    {
+        $source = $this->extractSourceInstitution($payload);
+        error_log("[SwapService] Source institution validated: {$source}");
+        
+        if ($requireDestination) {
+            $dest = $this->extractDestinationInstitution($payload);
+            error_log("[SwapService] Destination institution validated: {$dest}");
+        }
     }
 
     // ============================================================================
@@ -477,7 +625,6 @@ class SwapService
     {
         error_log("[SwapService] executeAtomicSwap called");
         error_log("[SwapService] Payload keys: " . implode(', ', array_keys($payload)));
-        error_log("[SwapService] swap_type: " . ($payload['swap_type'] ?? 'NOT SET'));
         
         if (isset($payload['original_payload'])) {
             error_log("[SwapService] Signed envelope detected, extracting original_payload");
@@ -488,10 +635,9 @@ class SwapService
             $payload = $payload['original_payload'];
         }
         
-        $sourceInst = $payload['from_institution'] ?? $payload['source_institution'] ?? null;
-        $destInst = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
         $swapType = $payload['swap_type'] ?? 'STANDARD';
         
+        // Check if multi-source
         $isMultiSource = isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 1;
         $isMultiDestination = isset($payload['destinations']) && is_array($payload['destinations']) && count($payload['destinations']) > 1;
         
@@ -505,31 +651,38 @@ class SwapService
             error_log("[SwapService] MULTI-DESTINATION DETECTED: " . count($payload['destinations']) . " destinations");
         }
         
-        if (empty($sourceInst) && !$isMultiSource && $swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY') {
-            throw new RuntimeException("Missing source institution (from_institution or source_institution)");
-        }
-        
-        if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY' && empty($destInst) && !$isMultiDestination) {
-            throw new RuntimeException("Missing destination institution (to_institution or destination_institution)");
-        }
-        
-        error_log("[SwapService] Source: " . ($sourceInst ?? 'MULTI_SOURCE') . ", Type: {$swapType}");
-        
-        if ($swapType === 'CASHOUT') {
-            $amount = (float)($payload['amount'] ?? 0);
-            $currency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
-            $validation = $this->validateCashoutAmount($amount, $currency);
-            
-            if (!$validation['is_exact']) {
-                $this->logger->warning("Cashout amount cannot be dispensed exactly", $validation);
-                $payload['_cashout_validation'] = $validation;
+        // Validate institutions for non-identity flows (never hardcoded)
+        if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY') {
+            // For multi-source/destination, validate each source/destination
+            if ($isMultiSource) {
+                foreach ($payload['sources'] as $idx => $source) {
+                    if (empty($source['institution'])) {
+                        throw new RuntimeException("Source institution required for source at index {$idx}");
+                    }
+                    error_log("[SwapService] Multi-source source {$idx}: {$source['institution']}");
+                }
             }
             
-            if ($validation['dispensable_amount'] != $amount) {
-                $payload['original_requested_amount'] = $amount;
-                $payload['amount'] = $validation['dispensable_amount'];
-                $payload['remainder_balance'] = $validation['remainder_balance'];
-                $payload['note_breakdown'] = $validation['note_breakdown'];
+            if ($isMultiDestination) {
+                foreach ($payload['destinations'] as $idx => $dest) {
+                    if (empty($dest['to_institution']) && empty($dest['destination_institution'])) {
+                        throw new RuntimeException("Destination institution required for destination at index {$idx}");
+                    }
+                    error_log("[SwapService] Multi-destination dest {$idx}: " . ($dest['to_institution'] ?? $dest['destination_institution']));
+                }
+            }
+            
+            // For standard swaps, validate source and destination
+            if (!$isMultiSource && !$isMultiDestination) {
+                $this->validateInstitutions($payload, $swapType !== 'DEPOSIT');
+                
+                $sourceInst = $this->extractSourceInstitution($payload);
+                error_log("[SwapService] Source: {$sourceInst}, Type: {$swapType}");
+                
+                if ($swapType !== 'DEPOSIT') {
+                    $destInst = $this->extractDestinationInstitution($payload);
+                    error_log("[SwapService] Destination: {$destInst}");
+                }
             }
         }
         
@@ -595,613 +748,411 @@ class SwapService
     }
 
     // ============================================================================
-// MULTI-DESTINATION SWAP (UPDATED WITH INDEPENDENT HOLDS)
-// ============================================================================
+    // MULTI-DESTINATION SWAP
+    // ============================================================================
 
-/**
- * Execute a swap from one source to multiple destinations independently
- * 
- * Flow:
- * 1. Verify source asset once
- * 2. For each destination:
- *    a. Calculate fees for that destination
- *    b. Place INDIVIDUAL hold for that destination's amount
- *    c. Process destination (cashout/deposit/voucher)
- *    d. Track success/failure independently
- * 3. For successful destinations: Debit each hold individually
- * 4. For failed destinations: Release hold (can be retried later)
- * 5. Settlement for each successful destination
- * 
- * This treats each destination as an independent swap with its own hold,
- * allowing partial success and retry of failed destinations.
- */
-public function executeMultiDestinationSwap(array $payload): array
-{
-    error_log("[SwapService] ===== executeMultiDestinationSwap START =====");
-    
-    $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
-    if (empty($sourceInstitution)) {
-        throw new RuntimeException("Source institution required");
-    }
-    
-    $destinations = $payload['destinations'] ?? [];
-    if (empty($destinations) || count($destinations) < 2) {
-        throw new RuntimeException("At least 2 destinations required for multi-destination swap");
-    }
-    
-    $currency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
-    $sourceIdentifier = $this->extractSourceIdentifier($payload);
-    $multiDestRef = $payload['reference'] ?? $this->generateReference();
-    
-    // Validate each destination
-    foreach ($destinations as $idx => $dest) {
-        $amount = (float)($dest['amount'] ?? 0);
-        if ($amount <= 0) {
-            throw new RuntimeException("Amount must be greater than 0 for destination " . ($idx + 1));
+    public function executeMultiDestinationSwap(array $payload): array
+    {
+        error_log("[SwapService] ===== executeMultiDestinationSwap START =====");
+        
+        // Extract source institution - NEVER hardcoded
+        $sourceInstitution = $this->extractSourceInstitution($payload);
+        
+        $destinations = $payload['destinations'] ?? [];
+        if (empty($destinations) || count($destinations) < 2) {
+            throw new RuntimeException("At least 2 destinations required for multi-destination swap");
         }
         
-        $institution = $dest['to_institution'] ?? $dest['destination_institution'] ?? $dest['institution'];
-        if (empty($institution)) {
-            throw new RuntimeException("Destination institution required for destination " . ($idx + 1));
+        $currency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
+        $sourceIdentifier = $this->extractSourceIdentifier($payload);
+        $multiDestRef = $payload['reference'] ?? $this->generateReference();
+        
+        // Validate each destination
+        foreach ($destinations as $idx => $dest) {
+            $amount = (float)($dest['amount'] ?? 0);
+            if ($amount <= 0) {
+                throw new RuntimeException("Amount must be greater than 0 for destination " . ($idx + 1));
+            }
+            
+            $institution = $dest['to_institution'] ?? $dest['destination_institution'] ?? $dest['institution'];
+            if (empty($institution)) {
+                throw new RuntimeException("Destination institution required for destination " . ($idx + 1));
+            }
+            
+            $identifier = $this->extractDestinationIdentifier($dest);
+            if (!$identifier['has_value']) {
+                throw new RuntimeException("Destination identifier required for destination " . ($idx + 1));
+            }
+            
+            $deliveryMethod = strtoupper($dest['delivery_method'] ?? 'DEPOSIT');
+            if (!in_array($deliveryMethod, ['DEPOSIT', 'CASHOUT', 'VOUCHER', 'AGENT', 'WALLET', 'CARD', 'ATM'])) {
+                throw new RuntimeException("Invalid delivery_method for destination " . ($idx + 1) . ": {$deliveryMethod}");
+            }
+            
+            $dest['currency'] = $dest['currency'] ?? $currency;
+            $dest['delivery_method'] = $deliveryMethod;
+            $dest['_destination_index'] = $idx;
+            $dest['_sub_reference'] = $multiDestRef . '_DEST_' . $idx;
+            $destinations[$idx] = $dest;
         }
         
-        $identifier = $this->extractDestinationIdentifier($dest);
-        if (!$identifier['has_value']) {
-            throw new RuntimeException("Destination identifier required for destination " . ($idx + 1));
+        error_log("[SwapService] Multi-destination: " . count($destinations) . " destinations with independent holds");
+        error_log("[SwapService] Source institution: {$sourceInstitution}");
+        
+        // STEP 1: VERIFY SOURCE ASSET ONCE
+        error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
+        $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
+            return $this->verifyAssetSigned($payload, $sourceInstitution);
+        });
+        
+        if (!($verificationResult['verified'] ?? false)) {
+            throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
         }
         
-        $deliveryMethod = strtoupper($dest['delivery_method'] ?? 'DEPOSIT');
-        if (!in_array($deliveryMethod, ['DEPOSIT', 'CASHOUT', 'VOUCHER', 'AGENT', 'WALLET', 'CARD', 'ATM'])) {
-            throw new RuntimeException("Invalid delivery_method for destination " . ($idx + 1) . ": {$deliveryMethod}");
-        }
+        $this->signedPayloads['verification'] = [
+            'payload' => $verificationResult['original_payload'],
+            'signature' => $verificationResult['signature'],
+            'source' => $sourceInstitution,
+            'timestamp' => $verificationResult['timestamp']
+        ];
         
-        $dest['currency'] = $dest['currency'] ?? $currency;
-        $dest['delivery_method'] = $deliveryMethod;
-        $dest['_destination_index'] = $idx;
-        $dest['_sub_reference'] = $multiDestRef . '_DEST_' . $idx;
-        $destinations[$idx] = $dest;
-    }
-    
-    error_log("[SwapService] Multi-destination: " . count($destinations) . " destinations with independent holds");
-    
-    // STEP 1: VERIFY SOURCE ASSET ONCE (shared verification)
-    error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
-    $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
-        return $this->verifyAssetSigned($payload, $sourceInstitution);
-    });
-    
-    if (!($verificationResult['verified'] ?? false)) {
-        throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
-    }
-    
-    $this->signedPayloads['verification'] = [
-        'payload' => $verificationResult['original_payload'],
-        'signature' => $verificationResult['signature'],
-        'source' => $sourceInstitution,
-        'timestamp' => $verificationResult['timestamp']
-    ];
-    
-    // STEP 2: PROCESS EACH DESTINATION INDEPENDENTLY WITH ITS OWN HOLD
-    error_log("[SwapService] STEP 2: Processing " . count($destinations) . " destinations with independent holds");
-    
-    $destinationResults = [];
-    $successfulDestinations = [];
-    $failedDestinations = [];
-    $totalFees = 0;
-    $totalDelivered = 0;
-    $totalHeld = 0;
-    
-    // Store the original swap reference for the parent
-    $parentSwapRef = $this->currentSwapRef;
-    
-    foreach ($destinations as $idx => $dest) {
-        $destAmount = (float)$dest['amount'];
-        $destInstitution = $dest['to_institution'] ?? $dest['destination_institution'] ?? $dest['institution'];
-        $deliveryMethod = $dest['delivery_method'];
-        $destIdentifier = $this->extractDestinationIdentifier($dest);
-        $subRef = $dest['_sub_reference'];
+        // STEP 2: PROCESS EACH DESTINATION
+        $destinationResults = [];
+        $successfulDestinations = [];
+        $failedDestinations = [];
+        $totalFees = 0;
+        $totalDelivered = 0;
+        $totalHeld = 0;
         
-        error_log("[SwapService] Processing destination " . ($idx + 1) . ": {$destInstitution} - {$destAmount} via {$deliveryMethod} (hold: {$subRef})");
-        
-        try {
-            // Calculate fees for this destination
-            $feeBreakdown = $this->calculateFeesWithDetails('MULTI_DESTINATION', $destAmount, array_merge($payload, $dest));
-            $netAmount = $feeBreakdown['net_amount'] ?? $destAmount;
-            $feeAmount = $feeBreakdown['total_fee'] ?? 0;
+        foreach ($destinations as $idx => $dest) {
+            $destAmount = (float)$dest['amount'];
+            $destInstitution = $dest['to_institution'] ?? $dest['destination_institution'] ?? $dest['institution'];
+            $deliveryMethod = $dest['delivery_method'];
+            $destIdentifier = $this->extractDestinationIdentifier($dest);
+            $subRef = $dest['_sub_reference'];
             
-            // Adjust amount for delivery method
-            $adjustment = $this->adjustAmountForDelivery($netAmount, $deliveryMethod, $dest['currency'] ?? $currency);
-            $deliverableAmount = $adjustment['deliverable_amount'];
-            $remainderAtSource = $adjustment['remainder_at_source'] ?? 0;
+            error_log("[SwapService] Processing destination " . ($idx + 1) . ": {$destInstitution} - {$destAmount} via {$deliveryMethod}");
             
-            if ($deliverableAmount <= 0) {
-                throw new RuntimeException("Deliverable amount is zero for destination " . ($idx + 1));
-            }
+            $destHoldRef = null;
+            $destHoldId = null;
             
-            // STEP 2a: PLACE INDIVIDUAL HOLD FOR THIS DESTINATION
-            error_log("[SwapService] Placing hold for destination " . ($idx + 1) . ": {$deliverableAmount}");
-            
-            $holdPayload = $payload;
-            $holdPayload['amount'] = $destAmount + $feeAmount; // Hold full amount + fees
-            $holdPayload['hold_reason'] = 'MULTI_DESTINATION_DEST_' . $idx;
-            $holdPayload['reference'] = $subRef;
-            $holdPayload['destination_institution'] = $destInstitution;
-            $holdPayload['destination_identifier'] = $destIdentifier['identifier'];
-            $holdPayload['destination_identifier_type'] = $destIdentifier['type'];
-            
-            // Temporarily set current swap ref to sub-ref for this hold
-            $originalSwapRef = $this->currentSwapRef;
-            $this->currentSwapRef = $subRef;
-            
-            $holdResult = $this->executeStep('PLACE_HOLD_SIGNED_DEST_' . $idx, function() use ($holdPayload, $sourceInstitution, $verificationResult) {
-                return $this->placeHoldSigned($holdPayload, $sourceInstitution, $verificationResult);
-            });
-            
-            // Restore parent swap ref
-            $this->currentSwapRef = $originalSwapRef;
-            
-            if (!($holdResult['hold_placed'] ?? false)) {
-                throw new RuntimeException("Hold failed for destination " . ($idx + 1) . ": " . ($holdResult['message'] ?? 'Unknown error'));
-            }
-            
-            $destHoldRef = $holdResult['hold_reference'];
-            $destHoldId = $holdResult['local_hold_id'];
-            $totalHeld += ($destAmount + $feeAmount);
-            
-            error_log("[SwapService] Hold placed for destination " . ($idx + 1) . ": {$destHoldRef}");
-            
-            // STEP 2b: PROCESS DESTINATION
-            error_log("[SwapService] Processing destination " . ($idx + 1) . " with hold: {$destHoldRef}");
-            
-            // Set current hold reference for this destination
-            $originalHoldRef = $this->currentHoldReference;
-            $originalHoldId = $this->currentHoldId;
-            $this->currentHoldReference = $destHoldRef;
-            $this->currentHoldId = $destHoldId;
-            
-            // Process based on delivery method
-            $destResult = match($deliveryMethod) {
-                'CASHOUT', 'AGENT', 'ATM' => $this->processMultiDestinationCashout(
-                    $payload, 
-                    $dest, 
-                    $destInstitution, 
-                    $deliverableAmount,
-                    $destIdentifier
-                ),
-                'DEPOSIT', 'WALLET', 'CARD' => $this->processMultiDestinationDeposit(
-                    $payload,
-                    $dest,
-                    $destInstitution,
-                    $deliverableAmount,
-                    $destIdentifier
-                ),
-                'VOUCHER' => $this->processMultiDestinationVoucher(
-                    $payload,
-                    $dest,
-                    $destInstitution,
-                    $deliverableAmount,
-                    $destIdentifier
-                ),
-                default => throw new RuntimeException("Unsupported delivery method: {$deliveryMethod}")
-            };
-            
-            // Restore original hold references
-            $this->currentHoldReference = $originalHoldRef;
-            $this->currentHoldId = $originalHoldId;
-            
-            if (!($destResult['success'] ?? false)) {
-                throw new RuntimeException("Destination processing failed: " . ($destResult['message'] ?? 'Unknown error'));
-            }
-            
-            // STEP 2c: DEBIT THIS DESTINATION'S HOLD
-            error_log("[SwapService] Debiting hold for destination " . ($idx + 1) . ": {$destHoldRef}");
-            
-            $this->currentHoldReference = $destHoldRef;
-            $this->currentHoldId = $destHoldId;
-            
-            $debitPayload = [
-                'reference' => $subRef,
-                'hold_reference' => $destHoldRef,
-                'amount' => $destAmount + $feeAmount,
-                'reason' => 'Multi-destination swap - destination ' . ($idx + 1)
-            ];
-            
-            $debitResult = $this->executeStep('DEBIT_SOURCE_DEST_' . $idx, function() use ($debitPayload, $sourceInstitution) {
-                return $this->debitSource($debitPayload, $sourceInstitution);
-            });
-            
-            // Restore original hold references
-            $this->currentHoldReference = $originalHoldRef;
-            $this->currentHoldId = $originalHoldId;
-            
-            if (!($debitResult['debited'] ?? false)) {
-                throw new RuntimeException("Debit failed for destination " . ($idx + 1) . ": " . ($debitResult['message'] ?? 'Unknown error'));
-            }
-            
-            // Update hold status
-            $this->updateHoldStatus($destHoldId, 'DEBITED');
-            
-            // Store successful result
-            $successResult = [
-                'index' => $idx,
-                'sub_reference' => $subRef,
-                'destination_institution' => $destInstitution,
-                'destination_identifier' => $destIdentifier['identifier'],
-                'destination_identifier_type' => $destIdentifier['type'],
-                'delivery_method' => $deliveryMethod,
-                'requested_amount' => $destAmount,
-                'fee' => $feeAmount,
-                'net_amount' => $netAmount,
-                'deliverable_amount' => $deliverableAmount,
-                'remainder_at_source' => $remainderAtSource,
-                'hold_reference' => $destHoldRef,
-                'hold_id' => $destHoldId,
-                'fee_breakdown' => $feeBreakdown,
-                'adjustment' => $adjustment,
-                'transaction_reference' => $destResult['transaction_reference'] ?? null,
-                'voucher_code' => $destResult['voucher_code'] ?? null,
-                'status' => 'success',
-                'result' => $destResult
-            ];
-            
-            $destinationResults[] = $successResult;
-            $successfulDestinations[] = $successResult;
-            $totalFees += $feeAmount;
-            $totalDelivered += $deliverableAmount;
-            
-            error_log("[SwapService] Destination " . ($idx + 1) . " completed successfully: delivered {$deliverableAmount}, fee {$feeAmount}, hold {$destHoldRef}");
-            
-        } catch (Exception $e) {
-            error_log("[SwapService] Destination " . ($idx + 1) . " FAILED: " . $e->getMessage());
-            
-            // If hold was placed but destination failed, release the hold
-            if (isset($destHoldRef) && isset($destHoldId)) {
-                try {
-                    error_log("[SwapService] Releasing hold for failed destination " . ($idx + 1) . ": {$destHoldRef}");
-                    
-                    // Release hold at source
-                    $participant = $this->getParticipant($sourceInstitution);
-                    $bankClient = new GenericBankClient($participant);
-                    $bankClient->releaseHold([
-                        'hold_reference' => $destHoldRef,
-                        'action' => 'RELEASE_HOLD',
-                        'reason' => 'Destination failed - ' . $e->getMessage()
-                    ]);
-                    
-                    $this->updateHoldStatus($destHoldId, 'RELEASED');
-                    
-                } catch (Exception $releaseError) {
-                    error_log("[SwapService] Failed to release hold for destination " . ($idx + 1) . ": " . $releaseError->getMessage());
+            try {
+                // Calculate fees
+                $feeBreakdown = $this->calculateFeesWithDetails('MULTI_DESTINATION', $destAmount, array_merge($payload, $dest));
+                $netAmount = $feeBreakdown['net_amount'] ?? $destAmount;
+                $feeAmount = $feeBreakdown['total_fee'] ?? 0;
+                
+                // Adjust amount for delivery method
+                $adjustment = $this->adjustAmountForDelivery($netAmount, $deliveryMethod, $dest['currency'] ?? $currency);
+                $deliverableAmount = $adjustment['deliverable_amount'];
+                $remainderAtSource = $adjustment['remainder_at_source'] ?? 0;
+                
+                if ($deliverableAmount <= 0) {
+                    throw new RuntimeException("Deliverable amount is zero for destination " . ($idx + 1));
                 }
+                
+                // PLACE INDIVIDUAL HOLD
+                $holdPayload = $payload;
+                $holdPayload['amount'] = $destAmount + $feeAmount;
+                $holdPayload['hold_reason'] = 'MULTI_DESTINATION_DEST_' . $idx;
+                $holdPayload['reference'] = $subRef;
+                $holdPayload['to_institution'] = $destInstitution;
+                $holdPayload['destination_institution'] = $destInstitution;
+                $holdPayload['destination_identifier'] = $destIdentifier['identifier'];
+                $holdPayload['destination_identifier_type'] = $destIdentifier['type'];
+                $holdPayload['from_institution'] = $sourceInstitution;
+                $holdPayload['source_institution'] = $sourceInstitution;
+                
+                $originalSwapRef = $this->currentSwapRef;
+                $this->currentSwapRef = $subRef;
+                
+                $holdResult = $this->executeStep('PLACE_HOLD_SIGNED_DEST_' . $idx, function() use ($holdPayload, $sourceInstitution, $verificationResult) {
+                    return $this->placeHoldSigned($holdPayload, $sourceInstitution, $verificationResult);
+                });
+                
+                $this->currentSwapRef = $originalSwapRef;
+                
+                if (!($holdResult['hold_placed'] ?? false)) {
+                    throw new RuntimeException("Hold failed for destination " . ($idx + 1) . ": " . ($holdResult['message'] ?? 'Unknown error'));
+                }
+                
+                $destHoldRef = $holdResult['hold_reference'];
+                $destHoldId = $holdResult['local_hold_id'];
+                $totalHeld += ($destAmount + $feeAmount);
+                
+                error_log("[SwapService] Hold placed for destination " . ($idx + 1) . ": {$destHoldRef}");
+                
+                // PROCESS DESTINATION
+                $originalHoldRef = $this->currentHoldReference;
+                $originalHoldId = $this->currentHoldId;
+                $this->currentHoldReference = $destHoldRef;
+                $this->currentHoldId = $destHoldId;
+                
+                $destResult = match($deliveryMethod) {
+                    'CASHOUT', 'AGENT', 'ATM' => $this->processMultiDestinationCashout(
+                        $payload, 
+                        $dest, 
+                        $destInstitution, 
+                        $deliverableAmount,
+                        $destIdentifier
+                    ),
+                    'DEPOSIT', 'WALLET', 'CARD' => $this->processMultiDestinationDeposit(
+                        $payload,
+                        $dest,
+                        $destInstitution,
+                        $deliverableAmount,
+                        $destIdentifier
+                    ),
+                    'VOUCHER' => $this->processMultiDestinationVoucher(
+                        $payload,
+                        $dest,
+                        $destInstitution,
+                        $deliverableAmount,
+                        $destIdentifier
+                    ),
+                    default => throw new RuntimeException("Unsupported delivery method: {$deliveryMethod}")
+                };
+                
+                $this->currentHoldReference = $originalHoldRef;
+                $this->currentHoldId = $originalHoldId;
+                
+                if (!($destResult['success'] ?? false)) {
+                    throw new RuntimeException("Destination processing failed: " . ($destResult['message'] ?? 'Unknown error'));
+                }
+                
+                // DEBIT THIS DESTINATION'S HOLD
+                error_log("[SwapService] Debiting hold for destination " . ($idx + 1) . ": {$destHoldRef}");
+                
+                $this->currentHoldReference = $destHoldRef;
+                $this->currentHoldId = $destHoldId;
+                
+                $debitPayload = [
+                    'reference' => $subRef,
+                    'hold_reference' => $destHoldRef,
+                    'amount' => $destAmount + $feeAmount,
+                    'reason' => 'Multi-destination swap - destination ' . ($idx + 1),
+                    'from_institution' => $sourceInstitution,
+                    'source_institution' => $sourceInstitution
+                ];
+                
+                $debitResult = $this->executeStep('DEBIT_SOURCE_DEST_' . $idx, function() use ($debitPayload, $sourceInstitution) {
+                    return $this->debitSource($debitPayload, $sourceInstitution);
+                });
+                
+                $this->currentHoldReference = $originalHoldRef;
+                $this->currentHoldId = $originalHoldId;
+                
+                if (!($debitResult['debited'] ?? false)) {
+                    throw new RuntimeException("Debit failed for destination " . ($idx + 1) . ": " . ($debitResult['message'] ?? 'Unknown error'));
+                }
+                
+                $this->updateHoldStatus($destHoldId, 'DEBITED');
+                
+                $successResult = [
+                    'index' => $idx,
+                    'sub_reference' => $subRef,
+                    'destination_institution' => $destInstitution,
+                    'destination_identifier' => $destIdentifier['identifier'],
+                    'destination_identifier_type' => $destIdentifier['type'],
+                    'delivery_method' => $deliveryMethod,
+                    'requested_amount' => $destAmount,
+                    'fee' => $feeAmount,
+                    'net_amount' => $netAmount,
+                    'deliverable_amount' => $deliverableAmount,
+                    'remainder_at_source' => $remainderAtSource,
+                    'hold_reference' => $destHoldRef,
+                    'hold_id' => $destHoldId,
+                    'fee_breakdown' => $feeBreakdown,
+                    'adjustment' => $adjustment,
+                    'transaction_reference' => $destResult['transaction_reference'] ?? null,
+                    'voucher_code' => $destResult['voucher_code'] ?? null,
+                    'status' => 'success',
+                    'result' => $destResult
+                ];
+                
+                $destinationResults[] = $successResult;
+                $successfulDestinations[] = $successResult;
+                $totalFees += $feeAmount;
+                $totalDelivered += $deliverableAmount;
+                
+                error_log("[SwapService] Destination " . ($idx + 1) . " completed successfully");
+                
+            } catch (Exception $e) {
+                error_log("[SwapService] Destination " . ($idx + 1) . " FAILED: " . $e->getMessage());
+                
+                if (isset($destHoldRef) && isset($destHoldId)) {
+                    try {
+                        error_log("[SwapService] Releasing hold for failed destination: {$destHoldRef}");
+                        
+                        $participant = $this->getParticipant($sourceInstitution);
+                        $bankClient = new GenericBankClient($participant);
+                        $bankClient->releaseHold([
+                            'hold_reference' => $destHoldRef,
+                            'action' => 'RELEASE_HOLD',
+                            'reason' => 'Destination failed - ' . $e->getMessage()
+                        ]);
+                        
+                        $this->updateHoldStatus($destHoldId, 'RELEASED');
+                        
+                    } catch (Exception $releaseError) {
+                        error_log("[SwapService] Failed to release hold: " . $releaseError->getMessage());
+                    }
+                }
+                
+                $failedResult = [
+                    'index' => $idx,
+                    'sub_reference' => $subRef ?? null,
+                    'destination_institution' => $destInstitution ?? 'unknown',
+                    'destination_identifier' => $destIdentifier['identifier'] ?? null,
+                    'delivery_method' => $deliveryMethod ?? 'unknown',
+                    'requested_amount' => $destAmount ?? 0,
+                    'hold_reference' => $destHoldRef ?? null,
+                    'hold_id' => $destHoldId ?? null,
+                    'status' => 'failed',
+                    'error' => $e->getMessage(),
+                    'can_retry' => true
+                ];
+                
+                $destinationResults[] = $failedResult;
+                $failedDestinations[] = $failedResult;
             }
-            
-            $failedResult = [
-                'index' => $idx,
-                'sub_reference' => $subRef ?? null,
-                'destination_institution' => $destInstitution ?? 'unknown',
-                'destination_identifier' => $destIdentifier['identifier'] ?? null,
-                'delivery_method' => $deliveryMethod ?? 'unknown',
-                'requested_amount' => $destAmount ?? 0,
-                'hold_reference' => $destHoldRef ?? null,
-                'hold_id' => $destHoldId ?? null,
-                'status' => 'failed',
-                'error' => $e->getMessage(),
-                'can_retry' => true,
-                'retry_payload' => $dest
-            ];
-            
-            $destinationResults[] = $failedResult;
-            $failedDestinations[] = $failedResult;
         }
-    }
-    
-    // STEP 3: CREATE MULTI-DESTINATION RECORD
-    error_log("[SwapService] STEP 3: Creating multi-destination record");
-    
-    $multiDestId = $this->storeMultiDestinationRecord(
-        $multiDestRef,
-        $sourceInstitution,
-        $destinations,
-        $destinationResults,
-        $totalFees,
-        $totalDelivered,
-        count($successfulDestinations),
-        count($failedDestinations)
-    );
-    
-    // STEP 4: SETTLEMENT FOR SUCCESSFUL DESTINATIONS
-    error_log("[SwapService] STEP 4: Settlement for " . count($successfulDestinations) . " successful destinations");
-    
-    $settlementResults = [];
-    foreach ($successfulDestinations as $destResult) {
-        $settlement = $this->settlement->updateNetPosition(
+        
+        // STEP 3: CREATE MULTI-DESTINATION RECORD
+        $multiDestId = $this->storeMultiDestinationRecord(
             $multiDestRef,
             $sourceInstitution,
-            $destResult['destination_institution'],
-            $destResult['deliverable_amount'],
-            'MULTI_DESTINATION_COMPLETED',
-            $currency
+            $destinations,
+            $destinationResults,
+            $totalFees,
+            $totalDelivered,
+            count($successfulDestinations),
+            count($failedDestinations)
         );
         
-        if ($destResult['fee'] > 0) {
-            $this->settlement->invoiceFee(
+        // STEP 4: SETTLEMENT
+        $settlementResults = [];
+        foreach ($successfulDestinations as $destResult) {
+            $settlement = $this->settlement->updateNetPosition(
                 $multiDestRef,
                 $sourceInstitution,
-                $this->getParticipantId($sourceInstitution),
-                'MULTI_DESTINATION_FEE',
-                $destResult['fee'],
+                $destResult['destination_institution'],
+                $destResult['deliverable_amount'],
+                'MULTI_DESTINATION_COMPLETED',
                 $currency
             );
-        }
-        
-        $settlementResults[] = [
-            'destination_institution' => $destResult['destination_institution'],
-            'amount' => $destResult['deliverable_amount'],
-            'fee' => $destResult['fee'],
-            'hold_reference' => $destResult['hold_reference'],
-            'settlement' => $settlement
-        ];
-    }
-    
-    // Build response
-    $response = [
-        'status' => count($failedDestinations) > 0 ? 'partial_success' : 'success',
-        'reference' => $multiDestRef,
-        'source_institution' => $sourceInstitution,
-        'total_destinations' => count($destinations),
-        'successful_destinations' => count($successfulDestinations),
-        'failed_destinations' => count($failedDestinations),
-        'total_amount' => array_sum(array_column($destinations, 'amount')),
-        'total_fees' => $totalFees,
-        'total_delivered' => $totalDelivered,
-        'total_held' => $totalHeld,
-        'multi_destination_id' => $multiDestId,
-        'destinations' => $destinationResults,
-        'settlement' => $settlementResults,
-        'fee_calculation_details' => $this->feeCalculationDetails,
-        'signature_chain' => $this->signedPayloads,
-        'can_retry' => count($failedDestinations) > 0,
-        'message' => count($failedDestinations) > 0 
-            ? count($failedDestinations) . ' destination(s) failed. You can retry them from the dashboard.'
-            : 'All destinations processed successfully.'
-    ];
-    
-    // Store idempotency
-    $idempotencyKey = $payload['idempotency_key'] ?? $payload['idempotencyKey'] ?? null;
-    if ($idempotencyKey) {
-        $this->storeIdempotencyResult($idempotencyKey, $response);
-    }
-    
-    error_log("[SwapService] ===== executeMultiDestinationSwap COMPLETE: " . count($successfulDestinations) . " succeeded, " . count($failedDestinations) . " failed =====");
-    
-    return $response;
-}
-
-/**
- * Store multi-destination record for tracking and retry
- */
-private function storeMultiDestinationRecord(
-    string $reference,
-    string $sourceInstitution,
-    array $destinations,
-    array $results,
-    float $totalFees,
-    float $totalDelivered,
-    int $successCount,
-    int $failedCount
-): int {
-    $sql = "
-        INSERT INTO multi_destination_swaps (
-            reference,
-            source_institution,
-            total_destinations,
-            successful_count,
-            failed_count,
-            total_amount,
-            total_fees,
-            total_delivered,
-            status,
-            destinations_payload,
-            results_payload,
-            created_at,
-            updated_at
-        ) VALUES (
-            :reference,
-            :source_institution,
-            :total_destinations,
-            :successful_count,
-            :failed_count,
-            :total_amount,
-            :total_fees,
-            :total_delivered,
-            :status,
-            :destinations_payload::jsonb,
-            :results_payload::jsonb,
-            NOW(),
-            NOW()
-        ) RETURNING id
-    ";
-    
-    try {
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([
-            ':reference' => $reference,
-            ':source_institution' => $sourceInstitution,
-            ':total_destinations' => count($destinations),
-            ':successful_count' => $successCount,
-            ':failed_count' => $failedCount,
-            ':total_amount' => array_sum(array_column($destinations, 'amount')),
-            ':total_fees' => $totalFees,
-            ':total_delivered' => $totalDelivered,
-            ':status' => $failedCount > 0 ? 'partial' : 'completed',
-            ':destinations_payload' => json_encode($destinations),
-            ':results_payload' => json_encode($results)
-        ]);
-        
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        return $row ? (int)$row['id'] : 0;
-        
-    } catch (PDOException $e) {
-        error_log("[SwapService] Failed to store multi-destination record: " . $e->getMessage());
-        // Don't throw - just log, as this is for tracking
-        return 0;
-    }
-}
-
-/**
- * Retry a failed multi-destination destination
- */
-public function retryMultiDestinationDestination(string $multiDestRef, int $destinationIndex): array
-{
-    error_log("[SwapService] ===== retryMultiDestinationDestination: {$multiDestRef}, index: {$destinationIndex} =====");
-    
-    // Get the multi-destination record
-    $sql = "SELECT * FROM multi_destination_swaps WHERE reference = :reference";
-    $stmt = $this->swapDB->prepare($sql);
-    $stmt->execute([':reference' => $multiDestRef]);
-    $record = $stmt->fetch(PDO::FETCH_ASSOC);
-    
-    if (!$record) {
-        throw new RuntimeException("Multi-destination record not found: {$multiDestRef}");
-    }
-    
-    $results = json_decode($record['results_payload'], true);
-    $destinations = json_decode($record['destinations_payload'], true);
-    
-    // Find the failed destination
-    $failedDest = null;
-    $failedResult = null;
-    foreach ($results as $result) {
-        if ($result['index'] == $destinationIndex && $result['status'] === 'failed') {
-            $failedResult = $result;
-            break;
-        }
-    }
-    
-    if (!$failedResult) {
-        throw new RuntimeException("No failed destination found at index {$destinationIndex}");
-    }
-    
-    // Get the original destination payload
-    foreach ($destinations as $dest) {
-        if (($dest['_destination_index'] ?? $dest['index'] ?? 0) == $destinationIndex) {
-            $failedDest = $dest;
-            break;
-        }
-    }
-    
-    if (!$failedDest) {
-        throw new RuntimeException("Destination payload not found for index {$destinationIndex}");
-    }
-    
-    // Execute the retry as a single swap
-    $retryPayload = $failedDest;
-    $retryPayload['reference'] = $multiDestRef . '_RETRY_' . $destinationIndex . '_' . time();
-    $retryPayload['from_institution'] = $record['source_institution'];
-    $retryPayload['currency'] = $record['destinations_payload']['currency'] ?? 'BWP';
-    $retryPayload['_is_retry'] = true;
-    $retryPayload['_original_multi_dest_ref'] = $multiDestRef;
-    $retryPayload['_original_destination_index'] = $destinationIndex;
-    
-    error_log("[SwapService] Executing retry for destination {$destinationIndex}");
-    
-    try {
-        // Execute as a standard swap (will have its own hold)
-        $result = $this->executeAtomicSwap($retryPayload);
-        
-        // Update the multi-destination record
-        $this->updateMultiDestinationRetryStatus($multiDestRef, $destinationIndex, 'retried', $result);
-        
-        return [
-            'success' => true,
-            'message' => 'Destination retry successful',
-            'result' => $result
-        ];
-        
-    } catch (Exception $e) {
-        error_log("[SwapService] Retry failed for destination {$destinationIndex}: " . $e->getMessage());
-        
-        $this->updateMultiDestinationRetryStatus($multiDestRef, $destinationIndex, 'retry_failed', ['error' => $e->getMessage()]);
-        
-        throw new RuntimeException("Retry failed: " . $e->getMessage());
-    }
-}
-
-/**
- * Update multi-destination retry status
- */
-private function updateMultiDestinationRetryStatus(string $reference, int $index, string $status, array $data): void
-{
-    $sql = "
-        UPDATE multi_destination_swaps 
-        SET 
-            retry_log = retry_log || :retry_entry::jsonb,
-            updated_at = NOW()
-        WHERE reference = :reference
-    ";
-    
-    $retryEntry = [
-        'destination_index' => $index,
-        'status' => $status,
-        'timestamp' => date('Y-m-d H:i:s'),
-        'data' => $data
-    ];
-    
-    try {
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([
-            ':retry_entry' => json_encode($retryEntry),
-            ':reference' => $reference
-        ]);
-    } catch (PDOException $e) {
-        error_log("[SwapService] Failed to update retry status: " . $e->getMessage());
-    }
-}
-
-/**
- * Get multi-destination swap status
- */
-public function getMultiDestinationStatus(string $reference): array
-{
-    $sql = "
-        SELECT 
-            *,
-            CASE 
-                WHEN failed_count > 0 AND successful_count > 0 THEN 'partial'
-                WHEN failed_count > 0 AND successful_count = 0 THEN 'failed'
-                WHEN failed_count = 0 AND successful_count > 0 THEN 'completed'
-                ELSE 'pending'
-            END as current_status
-        FROM multi_destination_swaps 
-        WHERE reference = :reference
-    ";
-    
-    try {
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([':reference' => $reference]);
-        $record = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$record) {
-            return ['success' => false, 'message' => 'Multi-destination record not found'];
+            
+            if ($destResult['fee'] > 0) {
+                $this->settlement->invoiceFee(
+                    $multiDestRef,
+                    $sourceInstitution,
+                    $this->getParticipantId($sourceInstitution),
+                    'MULTI_DESTINATION_FEE',
+                    $destResult['fee'],
+                    $currency
+                );
+            }
+            
+            $settlementResults[] = [
+                'destination_institution' => $destResult['destination_institution'],
+                'amount' => $destResult['deliverable_amount'],
+                'fee' => $destResult['fee'],
+                'hold_reference' => $destResult['hold_reference'],
+                'settlement' => $settlement
+            ];
         }
         
         return [
-            'success' => true,
-            'data' => $record,
-            'can_retry' => $record['failed_count'] > 0
-        ];
-        
-    } catch (PDOException $e) {
-        return [
-            'success' => false,
-            'message' => 'Error fetching status: ' . $e->getMessage()
+            'status' => count($failedDestinations) > 0 ? 'partial_success' : 'success',
+            'reference' => $multiDestRef,
+            'source_institution' => $sourceInstitution,
+            'total_destinations' => count($destinations),
+            'successful_destinations' => count($successfulDestinations),
+            'failed_destinations' => count($failedDestinations),
+            'total_amount' => array_sum(array_column($destinations, 'amount')),
+            'total_fees' => $totalFees,
+            'total_delivered' => $totalDelivered,
+            'total_held' => $totalHeld,
+            'multi_destination_id' => $multiDestId,
+            'destinations' => $destinationResults,
+            'settlement' => $settlementResults,
+            'fee_calculation_details' => $this->feeCalculationDetails,
+            'signature_chain' => $this->signedPayloads,
+            'can_retry' => count($failedDestinations) > 0
         ];
     }
-}
 
-    /**
-     * Process multi-destination cashout (ATM/Agent)
-     */
+    // ============================================================================
+    // MULTI-DESTINATION HELPER METHODS
+    // ============================================================================
+
+    private function storeMultiDestinationRecord(
+        string $reference,
+        string $sourceInstitution,
+        array $destinations,
+        array $results,
+        float $totalFees,
+        float $totalDelivered,
+        int $successCount,
+        int $failedCount
+    ): int {
+        $sql = "
+            INSERT INTO multi_destination_swaps (
+                reference,
+                source_institution,
+                total_destinations,
+                successful_count,
+                failed_count,
+                total_amount,
+                total_fees,
+                total_delivered,
+                status,
+                destinations_payload,
+                results_payload,
+                created_at,
+                updated_at
+            ) VALUES (
+                :reference,
+                :source_institution,
+                :total_destinations,
+                :successful_count,
+                :failed_count,
+                :total_amount,
+                :total_fees,
+                :total_delivered,
+                :status,
+                :destinations_payload::jsonb,
+                :results_payload::jsonb,
+                NOW(),
+                NOW()
+            ) RETURNING id
+        ";
+        
+        try {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute([
+                ':reference' => $reference,
+                ':source_institution' => $sourceInstitution,
+                ':total_destinations' => count($destinations),
+                ':successful_count' => $successCount,
+                ':failed_count' => $failedCount,
+                ':total_amount' => array_sum(array_column($destinations, 'amount')),
+                ':total_fees' => $totalFees,
+                ':total_delivered' => $totalDelivered,
+                ':status' => $failedCount > 0 ? 'partial' : 'completed',
+                ':destinations_payload' => json_encode($destinations),
+                ':results_payload' => json_encode($results)
+            ]);
+            
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $row ? (int)$row['id'] : 0;
+            
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to store multi-destination record: " . $e->getMessage());
+            return 0;
+        }
+    }
+
     private function processMultiDestinationCashout(
         array $basePayload,
         array $dest,
@@ -1210,6 +1161,9 @@ public function getMultiDestinationStatus(string $reference): array
         array $identifier
     ): array {
         $beneficiaryPhone = $dest['beneficiary_phone'] ?? $dest['client_phone'] ?? null;
+        
+        // Get source institution from base payload - NEVER hardcoded
+        $sourceInstitution = $this->extractSourceInstitution($basePayload);
         
         $cashoutPayload = [
             'reference' => $this->currentSwapRef . '_DEST_' . ($dest['_destination_index'] ?? 0),
@@ -1222,6 +1176,10 @@ public function getMultiDestinationStatus(string $reference): array
             'hold_reference' => $this->currentHoldReference,
             'source_verification' => $this->signedPayloads['verification'] ?? null,
             'source_hold' => $this->signedPayloads['hold'] ?? null,
+            'from_institution' => $sourceInstitution,
+            'source_institution' => $sourceInstitution,
+            'to_institution' => $institution,
+            'destination_institution' => $institution,
             'action' => 'GENERATE_TOKEN'
         ];
         
@@ -1267,9 +1225,6 @@ public function getMultiDestinationStatus(string $reference): array
         ];
     }
 
-    /**
-     * Process multi-destination deposit (Bank/Wallet/Card)
-     */
     private function processMultiDestinationDeposit(
         array $basePayload,
         array $dest,
@@ -1277,6 +1232,9 @@ public function getMultiDestinationStatus(string $reference): array
         float $amount,
         array $identifier
     ): array {
+        // Get source institution from base payload - NEVER hardcoded
+        $sourceInstitution = $this->extractSourceInstitution($basePayload);
+        
         $depositPayload = [
             'reference' => $this->currentSwapRef . '_DEST_' . ($dest['_destination_index'] ?? 0),
             'amount' => $amount,
@@ -1286,6 +1244,10 @@ public function getMultiDestinationStatus(string $reference): array
             'hold_reference' => $this->currentHoldReference,
             'source_verification' => $this->signedPayloads['verification'] ?? null,
             'source_hold' => $this->signedPayloads['hold'] ?? null,
+            'from_institution' => $sourceInstitution,
+            'source_institution' => $sourceInstitution,
+            'to_institution' => $institution,
+            'destination_institution' => $institution,
             'action' => 'PROCESS_DEPOSIT_WITH_PROOF'
         ];
         
@@ -1316,9 +1278,6 @@ public function getMultiDestinationStatus(string $reference): array
         ];
     }
 
-    /**
-     * Process multi-destination voucher
-     */
     private function processMultiDestinationVoucher(
         array $basePayload,
         array $dest,
@@ -1326,6 +1285,9 @@ public function getMultiDestinationStatus(string $reference): array
         float $amount,
         array $identifier
     ): array {
+        // Get source institution from base payload - NEVER hardcoded
+        $sourceInstitution = $this->extractSourceInstitution($basePayload);
+        
         $voucherPayload = [
             'reference' => $this->currentSwapRef . '_DEST_' . ($dest['_destination_index'] ?? 0),
             'amount' => $amount,
@@ -1335,6 +1297,10 @@ public function getMultiDestinationStatus(string $reference): array
             'hold_reference' => $this->currentHoldReference,
             'source_verification' => $this->signedPayloads['verification'] ?? null,
             'source_hold' => $this->signedPayloads['hold'] ?? null,
+            'from_institution' => $sourceInstitution,
+            'source_institution' => $sourceInstitution,
+            'to_institution' => $institution,
+            'destination_institution' => $institution,
             'action' => 'GENERATE_VOUCHER',
             'voucher_type' => $dest['voucher_type'] ?? 'GENERIC',
             'voucher_details' => $dest['voucher_details'] ?? []
@@ -1383,28 +1349,24 @@ public function getMultiDestinationStatus(string $reference): array
     }
 
     // ============================================================================
-    // EXECUTE SIGNED CASHOUT
+    // EXECUTE SIGNED CASHOUT - NO HARDCODING
     // ============================================================================
 
     private function executeSignedCashout(array $payload): array
     {
-        error_log("[SwapService] ===== executeSignedCashout START (CODE GENERATION ONLY) =====");
+        error_log("[SwapService] ===== executeSignedCashout START =====");
         
+        // ✅ DYNAMIC: Extract from payload
         $amount = (float)($payload['amount'] ?? 0);
-        $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
-        $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
+        $sourceInstitution = $this->extractSourceInstitution($payload);
+        $destinationInstitution = $this->extractDestinationInstitution($payload);
         $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
         $deliveryMethod = strtoupper($payload['delivery_method'] ?? 'ATM');
         
         $isHooked = isset($payload['_is_hooked']) && $payload['_is_hooked'] === true;
-        if ($isHooked) {
-            error_log("[SwapService] Using HOOKED source: " . ($payload['source_reference'] ?? 'unknown'));
-        }
-        
         $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
-        if ($skipHold) {
-            error_log("[SwapService] SKIP_HOLD flag detected - using existing hold from identity swap");
-        }
+        
+        error_log("[SwapService] Source: {$sourceInstitution}, Dest: {$destinationInstitution}, Amount: {$amount}");
         
         if (isset($payload['_cashout_validation'])) {
             $this->feeCalculationDetails['cashout_validation'] = $payload['_cashout_validation'];
@@ -1434,7 +1396,6 @@ public function getMultiDestinationStatus(string $reference): array
         ];
         
         if (!$skipHold) {
-            error_log("[SwapService] STEP 2: Placing hold on asset at source: {$sourceInstitution}");
             $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
                 return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
             });
@@ -1444,8 +1405,6 @@ public function getMultiDestinationStatus(string $reference): array
                 error_log("[SwapService] HOLD FAILED: {$errorMessage}");
                 throw new RuntimeException("Hold failed: {$errorMessage}");
             }
-            
-            error_log("[SwapService] Hold placed successfully");
             
             $this->signedPayloads['hold'] = [
                 'payload' => $holdResult['original_payload'],
@@ -1457,20 +1416,13 @@ public function getMultiDestinationStatus(string $reference): array
             
             $this->currentHoldReference = $holdResult['hold_reference'] ?? $holdResult['data']['hold_reference'] ?? null;
         } else {
-            error_log("[SwapService] SKIPPING hold placement - using existing hold from identity swap");
+            error_log("[SwapService] SKIPPING hold placement - using existing hold");
         }
         
         $feeBreakdown = $this->calculateFeesWithDetails('CASHOUT', $amount, $payload);
         $amountToSend = $feeBreakdown['dispensable_amount'];
         $remainderAtSource = $feeBreakdown['remainder_balance'];
         $netAmount = $feeBreakdown['net_amount'];
-        
-        error_log("[SwapService] Mathematical breakdown:");
-        error_log("  Amount_1 (requested): {$amount}");
-        error_log("  F1 (total fee): {$feeBreakdown['total_fee']}");
-        error_log("  Amount_2 (net after fees): {$netAmount}");
-        error_log("  Amount_4 (dispensable): {$amountToSend}");
-        error_log("  Remainder_1 (stays at source): {$remainderAtSource}");
         
         $currency = $payload['currency'] ?? 'BWP';
         $notes = $this->atmNotes[$currency] ?? [];
@@ -1492,8 +1444,6 @@ public function getMultiDestinationStatus(string $reference): array
             throw new RuntimeException("Amount after fees ({$netAmount} {$currency}) is too small to deliver.");
         }
         
-        error_log("[SwapService] STEP 4: Generating cashout code at DESTINATION: {$destinationInstitution} for amount: {$amountToSend}");
-        
         $generateResult = $this->generateCashoutToken($payload, $destinationInstitution, $amountToSend);
         
         if (!($generateResult['success'] ?? false)) {
@@ -1503,8 +1453,6 @@ public function getMultiDestinationStatus(string $reference): array
         if (empty($generateResult['atm_pin']) && empty($generateResult['voucher_number'])) {
             throw new RuntimeException("Destination failed: No code generated");
         }
-        
-        error_log("[SwapService] Cashout code generated successfully");
         
         $authId = $this->storeCashoutAuthorization(
             $this->currentSwapRef,
@@ -1549,34 +1497,32 @@ public function getMultiDestinationStatus(string $reference): array
             'message' => 'Cashout code generated. User must cash out at ATM/Agent to complete the swap.',
             'fee_calculation_details' => $this->feeCalculationDetails,
             'signature_chain' => $this->signedPayloads,
-            'is_hooked' => $isHooked
+            'is_hooked' => $isHooked,
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $destinationInstitution
         ];
     }
 
     // ============================================================================
-    // EXECUTE SIGNED DEPOSIT
+    // EXECUTE SIGNED DEPOSIT - NO HARDCODING
     // ============================================================================
 
     private function executeSignedDeposit(array $payload): array
     {
         error_log("[SwapService] ===== executeSignedDeposit START =====");
         
+        // ✅ DYNAMIC: Extract from payload - NEVER HARDCODE
         $amount = (float)($payload['amount'] ?? 0);
-        $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
-        $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
+        $sourceInstitution = $this->extractSourceInstitution($payload);
+        $destinationInstitution = $this->extractDestinationInstitution($payload);
         $destinationIdentifier = $this->extractDestinationIdentifier($payload);
         
         $isHooked = isset($payload['_is_hooked']) && $payload['_is_hooked'] === true;
-        if ($isHooked) {
-            error_log("[SwapService] Using HOOKED source for deposit");
-        }
-        
         $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
-        if ($skipHold) {
-            error_log("[SwapService] SKIP_HOLD flag detected for deposit - using existing hold from identity swap");
-        }
         
-        error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
+        error_log("[SwapService] Source: {$sourceInstitution}, Dest: {$destinationInstitution}, Amount: {$amount}");
+        
+        // STEP 1: Verify asset at source
         $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
             return $this->verifyAssetSigned($payload, $sourceInstitution);
         });
@@ -1593,8 +1539,7 @@ public function getMultiDestinationStatus(string $reference): array
             'is_hooked' => $isHooked
         ];
         
-        error_log("[SwapService] STEP 2: Verifying destination account at: {$destinationInstitution}");
-        
+        // STEP 2: Verify destination account
         if (empty($destinationIdentifier['identifier'])) {
             throw new RuntimeException("Destination identifier is required for deposit");
         }
@@ -1607,12 +1552,12 @@ public function getMultiDestinationStatus(string $reference): array
             throw new RuntimeException("Destination account verification failed: " . ($accountVerification['message'] ?? 'Account not found'));
         }
         
-        error_log("[SwapService] STEP 3: Calculating fees");
+        // STEP 3: Calculate fees
         $feeBreakdown = $this->calculateFeesWithDetails('DEPOSIT', $amount, $payload);
         $netAmount = $feeBreakdown['net_amount'] ?? $amount;
         
+        // STEP 4: Place hold if needed
         if (!$skipHold) {
-            error_log("[SwapService] STEP 4: Placing hold on source: {$sourceInstitution}");
             $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
                 return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
             });
@@ -1631,15 +1576,20 @@ public function getMultiDestinationStatus(string $reference): array
             
             $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
         } else {
-            error_log("[SwapService] SKIPPING hold placement for deposit - using existing hold from identity swap");
+            error_log("[SwapService] SKIPPING hold placement - using existing hold");
         }
         
-        error_log("[SwapService] STEP 5: Processing deposit at DESTINATION: {$destinationInstitution} for amount: {$netAmount}");
-        
+        // STEP 5: Process deposit - ✅ NO HARDCODING
         $depositResult = $this->executeStep('PROCESS_DEPOSIT_WITH_PROOF', function() use ($payload, $destinationInstitution, $netAmount, $accountVerification) {
             $depositPayload = $payload;
             $depositPayload['amount'] = $netAmount;
             $depositPayload['account_verification'] = $accountVerification;
+            $depositPayload['to_institution'] = $destinationInstitution;
+            $depositPayload['destination_institution'] = $destinationInstitution;
+            $depositPayload['from_institution'] = $this->extractSourceInstitution($payload);
+            $depositPayload['source_institution'] = $this->extractSourceInstitution($payload);
+            $depositPayload['_skip_hold'] = true;
+            
             return $this->processDepositWithProof($depositPayload, $destinationInstitution, $netAmount);
         });
         
@@ -1647,7 +1597,7 @@ public function getMultiDestinationStatus(string $reference): array
             throw new RuntimeException("Deposit failed: " . ($depositResult['message'] ?? 'Unknown error'));
         }
         
-        error_log("[SwapService] STEP 6: Debiting source {$sourceInstitution} for amount: {$amount}");
+        // STEP 6: Debit source
         $debitResult = $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution) {
             return $this->debitSource($payload, $sourceInstitution);
         });
@@ -1685,6 +1635,8 @@ public function getMultiDestinationStatus(string $reference): array
             'fee_calculation_details' => $this->feeCalculationDetails,
             'deposit_reference' => $depositResult['transaction_reference'] ?? null,
             'destination_account' => $destinationIdentifier['identifier'],
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $destinationInstitution,
             'settlement' => $settlementResult,
             'signature_chain' => $this->signedPayloads,
             'is_hooked' => $isHooked
@@ -1698,6 +1650,9 @@ public function getMultiDestinationStatus(string $reference): array
     public function initiateSwapToIdentity(array $payload): array
     {
         error_log("[SwapService] ===== initiateSwapToIdentity (PAUSE AT HOLD) =====");
+        
+        // ✅ Extract source institution - NEVER hardcoded
+        $sourceInstitution = $this->extractSourceInstitution($payload);
         
         $required = ['amount', 'from_institution', 'source_identifier', 'identity_type', 'identity_value'];
         foreach ($required as $field) {
@@ -1720,9 +1675,9 @@ public function getMultiDestinationStatus(string $reference): array
         }
         
         try {
-            error_log("[SwapService] STEP 1: Verify asset at source: {$payload['from_institution']}");
-            $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload) {
-                return $this->verifyAssetSigned($payload, $payload['from_institution']);
+            error_log("[SwapService] STEP 1: Verify asset at source: {$sourceInstitution}");
+            $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
+                return $this->verifyAssetSigned($payload, $sourceInstitution);
             });
             
             if (!($verificationResult['verified'] ?? false)) {
@@ -1732,13 +1687,13 @@ public function getMultiDestinationStatus(string $reference): array
             $this->signedPayloads['verification'] = [
                 'payload' => $verificationResult['original_payload'],
                 'signature' => $verificationResult['signature'],
-                'source' => $payload['from_institution'],
+                'source' => $sourceInstitution,
                 'timestamp' => $verificationResult['timestamp']
             ];
             
             error_log("[SwapService] STEP 2: Place hold on source");
-            $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $verificationResult) {
-                return $this->placeHoldSigned($payload, $payload['from_institution'], $verificationResult);
+            $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
+                return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
             });
             
             if (!($holdResult['hold_placed'] ?? false)) {
@@ -1748,7 +1703,7 @@ public function getMultiDestinationStatus(string $reference): array
             $this->signedPayloads['hold'] = [
                 'payload' => $holdResult['original_payload'],
                 'signature' => $holdResult['signature'],
-                'source' => $payload['from_institution'],
+                'source' => $sourceInstitution,
                 'timestamp' => $holdResult['timestamp']
             ];
             
@@ -1776,6 +1731,7 @@ public function getMultiDestinationStatus(string $reference): array
                 'currency' => $payload['currency'] ?? 'BWP',
                 'identity_type' => $identityType,
                 'identity_value' => $payload['identity_value'],
+                'source_institution' => $sourceInstitution,
                 'expires_at' => $expiresAt,
                 'message' => 'Swap paused. Recipient must confirm identity and choose destination within 24 hours.',
                 'access_methods' => $this->getIdentityAccessMethods($identityType, $payload['identity_value'])
@@ -1843,9 +1799,10 @@ public function getMultiDestinationStatus(string $reference): array
         ]);
         
         $sourcePayload = json_decode($identitySwap['source_payload'], true);
+        $sourceInstitution = $identitySwap['source_institution'];
         
-        $sourcePayload['from_institution'] = $identitySwap['source_institution'];
-        $sourcePayload['source_identifier'] = $identitySwap['source_identifier'];
+        $sourcePayload['from_institution'] = $sourceInstitution;
+        $sourcePayload['source_institution'] = $sourceInstitution;
         $sourcePayload['amount'] = (float)$identitySwap['amount'];
         $sourcePayload['currency'] = $identitySwap['currency'] ?? 'BWP';
         $sourcePayload['asset_type'] = $identitySwap['source_asset_type'] ?? 'ACCOUNT';
@@ -1857,8 +1814,8 @@ public function getMultiDestinationStatus(string $reference): array
         }
         
         try {
-            error_log("[SwapService] Re-verifying asset availability for institution: {$identitySwap['source_institution']}");
-            $verificationResult = $this->verifyAssetSigned($sourcePayload, $identitySwap['source_institution']);
+            error_log("[SwapService] Re-verifying asset availability for institution: {$sourceInstitution}");
+            $verificationResult = $this->verifyAssetSigned($sourcePayload, $sourceInstitution);
             if (!($verificationResult['verified'] ?? false)) {
                 $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'cancelled', [
                     'cancellation_reason' => 'Funds no longer available'
@@ -1870,10 +1827,8 @@ public function getMultiDestinationStatus(string $reference): array
             $this->currentHoldId = $identitySwap['hold_id'];
             
             if ($destinationType === 'CASHOUT') {
-                error_log("[SwapService] Completing as CASHOUT - reusing existing cashout flow with SKIP_HOLD");
                 $result = $this->completeIdentitySwapAsCashout($sourcePayload, $identitySwap, $payload);
             } else {
-                error_log("[SwapService] Completing as DEPOSIT - reusing existing deposit flow with SKIP_HOLD");
                 $result = $this->completeIdentitySwapAsDeposit($sourcePayload, $identitySwap, $payload);
             }
             
@@ -1908,16 +1863,20 @@ public function getMultiDestinationStatus(string $reference): array
 
     private function completeIdentitySwapAsCashout(array $sourcePayload, array $identitySwap, array $confirmationPayload): array
     {
+        $sourceInstitution = $identitySwap['source_institution'];
+        $destinationInstitution = $confirmationPayload['destination_institution'] ?? 'ATM';
+        
         $cashoutPayload = [
             'swap_type' => 'CASHOUT',
             'reference' => $identitySwap['swap_reference'],
-            'from_institution' => $identitySwap['source_institution'],
-            'source_institution' => $identitySwap['source_institution'],
+            'from_institution' => $sourceInstitution,
+            'source_institution' => $sourceInstitution,
             'source_identifier' => $identitySwap['source_identifier'],
             'asset_type' => $identitySwap['source_asset_type'] ?? 'ACCOUNT',
             'amount' => (float)$identitySwap['amount'],
             'currency' => $identitySwap['currency'] ?? 'BWP',
-            'to_institution' => $confirmationPayload['destination_institution'] ?? 'ATM',
+            'to_institution' => $destinationInstitution,
+            'destination_institution' => $destinationInstitution,
             'delivery_method' => $confirmationPayload['delivery_method'] ?? 'ATM',
             'beneficiary_phone' => $confirmationPayload['beneficiary_phone'] ?? null,
             'beneficiary_identifier' => $confirmationPayload['beneficiary_identifier'] ?? null,
@@ -1938,23 +1897,25 @@ public function getMultiDestinationStatus(string $reference): array
         $cashoutPayload['_confirmed_by_type'] = $confirmationPayload['confirmed_by_type'] ?? 'user';
         $cashoutPayload['_confirmed_by_id'] = $confirmationPayload['confirmed_by_id'] ?? 0;
         
-        error_log("[SwapService] Executing cashout with identity confirmation - SKIPPING HOLD");
-        
         return $this->executeSignedCashout($cashoutPayload);
     }
 
     private function completeIdentitySwapAsDeposit(array $sourcePayload, array $identitySwap, array $confirmationPayload): array
     {
+        $sourceInstitution = $identitySwap['source_institution'];
+        $destinationInstitution = $confirmationPayload['destination_institution'] ?? 'BANK';
+        
         $depositPayload = [
             'swap_type' => 'DEPOSIT',
             'reference' => $identitySwap['swap_reference'],
-            'from_institution' => $identitySwap['source_institution'],
-            'source_institution' => $identitySwap['source_institution'],
+            'from_institution' => $sourceInstitution,
+            'source_institution' => $sourceInstitution,
             'source_identifier' => $identitySwap['source_identifier'],
             'asset_type' => $identitySwap['source_asset_type'] ?? 'ACCOUNT',
             'amount' => (float)$identitySwap['amount'],
             'currency' => $identitySwap['currency'] ?? 'BWP',
-            'to_institution' => $confirmationPayload['destination_institution'] ?? 'BANK',
+            'to_institution' => $destinationInstitution,
+            'destination_institution' => $destinationInstitution,
             'destination_identifier' => $confirmationPayload['destination_identifier'] ?? null,
             'destination_identifier_type' => $confirmationPayload['destination_identifier_type'] ?? 'account',
             'destination_account' => $confirmationPayload['destination_account'] ?? null,
@@ -1975,8 +1936,6 @@ public function getMultiDestinationStatus(string $reference): array
         $depositPayload['_identity_value'] = $identitySwap['identity_value'];
         $depositPayload['_confirmed_by_type'] = $confirmationPayload['confirmed_by_type'] ?? 'user';
         $depositPayload['_confirmed_by_id'] = $confirmationPayload['confirmed_by_id'] ?? 0;
-        
-        error_log("[SwapService] Executing deposit with identity confirmation - SKIPPING HOLD");
         
         return $this->executeSignedDeposit($depositPayload);
     }
@@ -2208,6 +2167,10 @@ public function getMultiDestinationStatus(string $reference): array
             ];
         }
         
+        if (!$destinationInstitution) {
+            throw new RuntimeException("Destination institution required for verification");
+        }
+        
         $participant = $this->getParticipant($destinationInstitution);
         $bankClient = new GenericBankClient($participant, $payload);
         
@@ -2215,7 +2178,9 @@ public function getMultiDestinationStatus(string $reference): array
             'reference' => $payload['reference'] ?? $this->generateReference(),
             'code' => $code,
             'swap_code' => $swapCode,
-            'action' => 'VERIFY_TOKEN'
+            'action' => 'VERIFY_TOKEN',
+            'to_institution' => $destinationInstitution,
+            'destination_institution' => $destinationInstitution
         ];
         
         $result = $bankClient->verifyToken($verifyPayload);
@@ -2248,6 +2213,10 @@ public function getMultiDestinationStatus(string $reference): array
             throw new RuntimeException("Swap reference or auth_id required");
         }
         
+        if (!$destinationInstitution) {
+            throw new RuntimeException("Destination institution required for confirmation");
+        }
+        
         $authorization = $this->getCashoutAuthorization($swapReference, $authId);
         
         if (!$authorization) {
@@ -2267,7 +2236,11 @@ public function getMultiDestinationStatus(string $reference): array
             'code' => $code,
             'swap_code' => $authorization['swap_code'],
             'amount' => $amountToSend,
-            'action' => 'CONFIRM_CASHOUT'
+            'action' => 'CONFIRM_CASHOUT',
+            'to_institution' => $destinationInstitution,
+            'destination_institution' => $destinationInstitution,
+            'from_institution' => $sourceInstitution,
+            'source_institution' => $sourceInstitution
         ];
         
         $confirmResult = $bankClient->confirmCashout($confirmPayload);
@@ -2282,13 +2255,15 @@ public function getMultiDestinationStatus(string $reference): array
             throw new RuntimeException("Cashout not confirmed by destination institution");
         }
         
-        error_log("[SwapService] Cashout confirmed, debiting source: {$sourceInstitution} for {$amountToSend}");
+        error_log("[SwapService] Cashout confirmed, debiting source: {$sourceInstitution}");
         
         $debitPayload = [
             'reference' => $swapReference,
             'hold_reference' => $authorization['swap_reference'],
             'amount' => $amountToSend + $feeAmount,
-            'reason' => 'Cashout completed successfully'
+            'reason' => 'Cashout completed successfully',
+            'from_institution' => $sourceInstitution,
+            'source_institution' => $sourceInstitution
         ];
         
         $debitResult = $this->debitSource($debitPayload, $sourceInstitution);
@@ -2381,9 +2356,10 @@ public function getMultiDestinationStatus(string $reference): array
 
     private function executeSignedStandardSwap(array $payload): array
     {
+        // ✅ Extract institutions from payload - NEVER hardcoded
         $amount = (float)($payload['amount'] ?? 0);
-        $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'];
-        $destInstitution = $payload['to_institution'] ?? $payload['destination_institution'];
+        $sourceInstitution = $this->extractSourceInstitution($payload);
+        $destInstitution = $this->extractDestinationInstitution($payload);
         
         $verificationResult = $this->verifyAssetSigned($payload, $sourceInstitution);
         if (!($verificationResult['verified'] ?? false)) {
@@ -2414,7 +2390,9 @@ public function getMultiDestinationStatus(string $reference): array
             'status' => 'success',
             'reference' => $this->currentSwapRef,
             'amount' => $netAmount,
-            'fee' => $feeBreakdown['total_fee'] ?? 0
+            'fee' => $feeBreakdown['total_fee'] ?? 0,
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $destInstitution
         ];
     }
 
@@ -2528,17 +2506,17 @@ public function getMultiDestinationStatus(string $reference): array
             ]
         ];
         
-        error_log("[SwapService] Mathematical calculation with forex:");
+        error_log("[SwapService] Mathematical calculation:");
         error_log("  Amount_1: {$amount} {$sourceCurrency}");
         error_log("  F1 (fee): {$totalFee} {$sourceCurrency}");
         error_log("  Amount_2: {$netAmountSourceCurrency} {$sourceCurrency}");
         if ($forexApplied) {
-            error_log("  Exchange Rate: {$exchangeRate} ({$sourceCurrency} → {$destinationCurrency})");
+            error_log("  Exchange Rate: {$exchangeRate}");
             error_log("  Amount_3: {$netAmountDestCurrency} {$destinationCurrency}");
         }
-        error_log("  M (multiplier): {$multiplier} {$destinationCurrency}");
-        error_log("  Amount_4 (dispensable): {$dispensableAmount} {$destinationCurrency}");
-        error_log("  Remainder_1: {$remainderBalance} {$destinationCurrency}");
+        error_log("  M (multiplier): {$multiplier}");
+        error_log("  Amount_4 (dispensable): {$dispensableAmount}");
+        error_log("  Remainder_1: {$remainderBalance}");
         
         return [
             'total_fee' => $totalFee,
@@ -2600,104 +2578,6 @@ public function getMultiDestinationStatus(string $reference): array
         ];
     }
 
-    private function extractSourceIdentifier(array $payload): array
-    {
-        $sourceIdentifier = null;
-        $sourceIdentifierType = null;
-        
-        if (!empty($payload['_is_hooked']) && !empty($payload['source_reference'])) {
-            $sourceIdentifier = $payload['source_identifier'] ?? null;
-            $sourceIdentifierType = $payload['source_identifier_type'] ?? 'auto';
-            if ($sourceIdentifier) {
-                return [
-                    'identifier' => $sourceIdentifier,
-                    'type' => $sourceIdentifierType,
-                    'has_value' => true,
-                    'is_hooked' => true
-                ];
-            }
-        }
-        
-        if (!empty($payload['source_identifier'])) {
-            $sourceIdentifier = $payload['source_identifier'];
-            $sourceIdentifierType = $payload['source_identifier_type'] ?? 'auto';
-        } elseif (!empty($payload['source_phone'])) {
-            $sourceIdentifier = $payload['source_phone'];
-            $sourceIdentifierType = 'phone';
-        } elseif (!empty($payload['source_wallet_phone'])) {
-            $sourceIdentifier = $payload['source_wallet_phone'];
-            $sourceIdentifierType = 'phone';
-        } elseif (!empty($payload['wallet_phone'])) {
-            $sourceIdentifier = $payload['wallet_phone'];
-            $sourceIdentifierType = 'phone';
-        } elseif (!empty($payload['phone'])) {
-            $sourceIdentifier = $payload['phone'];
-            $sourceIdentifierType = 'phone';
-        } elseif (!empty($payload['source_national_id'])) {
-            $sourceIdentifier = $payload['source_national_id'];
-            $sourceIdentifierType = 'national_id';
-        } elseif (!empty($payload['national_id'])) {
-            $sourceIdentifier = $payload['national_id'];
-            $sourceIdentifierType = 'national_id';
-        } elseif (!empty($payload['source_email'])) {
-            $sourceIdentifier = $payload['source_email'];
-            $sourceIdentifierType = 'email';
-        } elseif (!empty($payload['email'])) {
-            $sourceIdentifier = $payload['email'];
-            $sourceIdentifierType = 'email';
-        }
-        
-        return [
-            'identifier' => $sourceIdentifier,
-            'type' => $sourceIdentifierType,
-            'has_value' => !empty($sourceIdentifier),
-            'is_hooked' => !empty($payload['_is_hooked'])
-        ];
-    }
-
-    private function extractDestinationIdentifier(array $payload): array
-    {
-        $destinationIdentifier = null;
-        $destinationIdentifierType = null;
-        
-        if (!empty($payload['destination_identifier'])) {
-            $destinationIdentifier = $payload['destination_identifier'];
-            $destinationIdentifierType = $payload['destination_identifier_type'] ?? 'auto';
-        } elseif (!empty($payload['destination_account'])) {
-            $destinationIdentifier = $payload['destination_account'];
-            $destinationIdentifierType = 'account';
-        } elseif (!empty($payload['destination_phone'])) {
-            $destinationIdentifier = $payload['destination_phone'];
-            $destinationIdentifierType = 'phone';
-        } elseif (!empty($payload['destination_national_id'])) {
-            $destinationIdentifier = $payload['destination_national_id'];
-            $destinationIdentifierType = 'national_id';
-        } elseif (!empty($payload['destination_email'])) {
-            $destinationIdentifier = $payload['destination_email'];
-            $destinationIdentifierType = 'email';
-        } elseif (!empty($payload['beneficiary_account'])) {
-            $destinationIdentifier = $payload['beneficiary_account'];
-            $destinationIdentifierType = 'account';
-        } elseif (!empty($payload['beneficiary_phone'])) {
-            $destinationIdentifier = $payload['beneficiary_phone'];
-            $destinationIdentifierType = 'phone';
-        }
-        
-        return [
-            'identifier' => $destinationIdentifier,
-            'type' => $destinationIdentifierType,
-            'has_value' => !empty($destinationIdentifier)
-        ];
-    }
-
-    private function extractBeneficiaryPhone(array $payload): ?string
-    {
-        return $payload['beneficiary_phone'] ?? 
-               $payload['beneficiary_identifier'] ?? 
-               $payload['client_phone'] ?? 
-               null;
-    }
-
     private function forwardPin(array $originalPayload, array &$targetPayload): void
     {
         $isHooked = isset($originalPayload['_is_hooked']) && $originalPayload['_is_hooked'] === true;
@@ -2732,6 +2612,7 @@ public function getMultiDestinationStatus(string $reference): array
         $bankClient = new GenericBankClient($participant, $payload);
         
         $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
+        $sourceInstitution = $this->extractSourceInstitution($payload);
         
         $tokenPayload = [
             'reference' => $this->currentSwapRef,
@@ -2741,7 +2622,11 @@ public function getMultiDestinationStatus(string $reference): array
             'action' => 'GENERATE_TOKEN',
             'source_verification' => $this->signedPayloads['verification'] ?? null,
             'source_hold' => $this->signedPayloads['hold'] ?? null,
-            'beneficiary_phone' => $beneficiaryPhone
+            'beneficiary_phone' => $beneficiaryPhone,
+            'from_institution' => $sourceInstitution,
+            'source_institution' => $sourceInstitution,
+            'to_institution' => $institution,
+            'destination_institution' => $institution
         ];
         
         if (isset($payload['note_breakdown'])) {
@@ -2787,7 +2672,9 @@ public function getMultiDestinationStatus(string $reference): array
             'institution' => $institution,
             'timestamp' => $timestamp,
             'swap_type' => $payload['swap_type'] ?? 'STANDARD',
-            'requester' => 'VOUCHMORPH'
+            'requester' => 'VOUCHMORPH',
+            'from_institution' => $institution,
+            'source_institution' => $institution
         ];
         
         $this->forwardPin($payload, $verifyPayload);
@@ -2829,6 +2716,7 @@ public function getMultiDestinationStatus(string $reference): array
         $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
         $timestamp = time();
         $sourceId = $this->extractSourceIdentifier($payload);
+        $destInstitution = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
         
         $holdPayload = [
             'action' => 'PLACE_HOLD',
@@ -2837,9 +2725,11 @@ public function getMultiDestinationStatus(string $reference): array
             'amount' => $payload['amount'] ?? 0,
             'currency' => $payload['currency'] ?? $this->config['currency'] ?? 'BWP',
             'hold_reason' => $payload['hold_reason'] ?? 'PENDING_SWAP',
-            'destination_institution' => $payload['to_institution'] ?? $payload['destination_institution'] ?? null,
+            'destination_institution' => $destInstitution,
             'expiry' => date('Y-m-d H:i:s', strtotime('+24 hours')),
-            'timestamp' => $timestamp
+            'timestamp' => $timestamp,
+            'from_institution' => $institution,
+            'source_institution' => $institution
         ];
         
         $this->forwardPin($payload, $holdPayload);
@@ -2882,6 +2772,7 @@ public function getMultiDestinationStatus(string $reference): array
         $bankClient = new GenericBankClient($participant, $payload);
         
         $destId = $this->extractDestinationIdentifier($payload);
+        $sourceInstitution = $this->extractSourceInstitution($payload);
         
         $transferPayload = [
             'reference' => $this->currentSwapRef,
@@ -2890,7 +2781,11 @@ public function getMultiDestinationStatus(string $reference): array
             'destination_type' => $payload['destination_type'] ?? 'ACCOUNT',
             'action' => 'PROCESS_TRANSFER_WITH_PROOF',
             'source_verification' => $this->signedPayloads['verification'] ?? null,
-            'source_hold' => $this->signedPayloads['hold'] ?? null
+            'source_hold' => $this->signedPayloads['hold'] ?? null,
+            'from_institution' => $sourceInstitution,
+            'source_institution' => $sourceInstitution,
+            'to_institution' => $institution,
+            'destination_institution' => $institution
         ];
         
         $this->forwardPin($payload, $transferPayload);
@@ -2911,30 +2806,75 @@ public function getMultiDestinationStatus(string $reference): array
 
     private function processDepositWithProof(array $payload, string $institution, float $amount): array
     {
+        error_log("[SwapService] processDepositWithProof called for institution: {$institution}");
+        
         $participant = $this->getParticipant($institution);
         $bankClient = new GenericBankClient($participant, $payload);
         
+        // ✅ DYNAMIC: Extract from payload - NEVER HARDCODE
+        $sourceInstitution = $this->extractSourceInstitution($payload);
+        $destinationInstitution = $this->extractDestinationInstitution($payload);
         $destId = $this->extractDestinationIdentifier($payload);
+        $sourceId = $this->extractSourceIdentifier($payload);
         
+        error_log("[SwapService] processDepositWithProof: source={$sourceInstitution}, dest={$destinationInstitution}, amount={$amount}");
+        
+        // Build deposit payload with dynamic institutions
         $depositPayload = [
             'reference' => $this->currentSwapRef,
             'amount' => $amount,
             'currency' => $payload['currency'] ?? 'BWP',
-            'source_details' => $payload['source_details'] ?? [],
             'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
-            'source_verification' => $this->signedPayloads['verification'] ?? null
+            'source_verification' => $this->signedPayloads['verification'] ?? null,
+            'source_hold' => $this->signedPayloads['hold'] ?? null,
+            'source_details' => $payload['source_details'] ?? [],
+            
+            // ✅ DYNAMIC - from payload, never hardcoded
+            'from_institution' => $sourceInstitution,
+            'source_institution' => $sourceInstitution,
+            'to_institution' => $destinationInstitution,
+            'destination_institution' => $destinationInstitution,
+            'bank' => $sourceInstitution,
         ];
         
-        $this->forwardPin($payload, $depositPayload);
+        // Add source identifier
+        if ($sourceId['has_value']) {
+            $depositPayload['source_identifier'] = $sourceId['identifier'];
+            $depositPayload['source_identifier_type'] = $sourceId['type'];
+            $depositPayload['source_account'] = $sourceId['identifier'];
+            error_log("[SwapService] Added source_identifier: {$sourceId['identifier']}");
+        }
         
+        // Add destination identifier
         if ($destId['has_value']) {
             $depositPayload['destination_identifier'] = $destId['identifier'];
             $depositPayload['destination_identifier_type'] = $destId['type'];
+            $depositPayload['account_number'] = $destId['identifier'];
+            $depositPayload['phone'] = $destId['identifier'];
+            error_log("[SwapService] Added destination_identifier: {$destId['identifier']}");
+        } else {
+            error_log("[SwapService] WARNING: No destination identifier found!");
         }
+        
+        // Add hold reference if available
+        if ($this->currentHoldReference) {
+            $depositPayload['hold_reference'] = $this->currentHoldReference;
+            $depositPayload['_skip_hold'] = true;
+        }
+        
+        // Forward PIN if available
+        $this->forwardPin($payload, $depositPayload);
+        
+        // Log without sensitive data
+        $logPayload = $depositPayload;
+        if (isset($logPayload['pin'])) $logPayload['pin'] = '******';
+        if (isset($logPayload['certificate'])) $logPayload['certificate'] = '***CERT***';
+        error_log("[SwapService] processDepositWithProof final payload: " . json_encode($logPayload));
         
         $result = $bankClient->processDepositWithProof($depositPayload);
         
         if (!$result['success']) {
+            error_log("[SwapService] processDepositWithProof FAILED: " . ($result['curl_error'] ?? 'Unknown error'));
             return ['success' => false, 'message' => $result['curl_error'] ?? 'Deposit failed'];
         }
         
@@ -2956,7 +2896,9 @@ public function getMultiDestinationStatus(string $reference): array
             'reference' => $payload['reference'] ?? $this->currentSwapRef,
             'hold_reference' => $payload['hold_reference'] ?? $this->currentHoldReference,
             'amount' => $payload['amount'] ?? 0,
-            'reason' => $payload['reason'] ?? 'Swap completed successfully'
+            'reason' => $payload['reason'] ?? 'Swap completed successfully',
+            'from_institution' => $institution,
+            'source_institution' => $institution
         ];
         
         $this->forwardPin($payload, $debitPayload);
@@ -2979,13 +2921,19 @@ public function getMultiDestinationStatus(string $reference): array
         $participant = $this->getParticipant($institution);
         $bankClient = new GenericBankClient($participant, $payload);
         
+        $sourceInstitution = $this->extractSourceInstitution($payload);
+        
         $verifyPayload = [
             'action' => 'VERIFY_ACCOUNT',
             'reference' => $this->currentSwapRef,
             'account_identifier' => $destinationIdentifier['identifier'],
             'identifier_type' => $destinationIdentifier['type'],
             'requester' => 'VOUCHMORPH',
-            'timestamp' => time()
+            'timestamp' => time(),
+            'from_institution' => $sourceInstitution,
+            'source_institution' => $sourceInstitution,
+            'to_institution' => $institution,
+            'destination_institution' => $institution
         ];
         
         $result = $bankClient->verifyAccount($verifyPayload);
@@ -3017,6 +2965,8 @@ public function getMultiDestinationStatus(string $reference): array
 
     private function storeIdentityHold(array $payload, string $swapRef, array $holdResult, int $holdId): int
     {
+        $sourceInstitution = $this->extractSourceInstitution($payload);
+        
         $sql = "
             INSERT INTO identity_swap_holds (
                 swap_reference,
@@ -3057,7 +3007,7 @@ public function getMultiDestinationStatus(string $reference): array
             $stmt = $this->swapDB->prepare($sql);
             $stmt->execute([
                 ':swap_ref' => $swapRef,
-                ':source_institution' => $payload['from_institution'],
+                ':source_institution' => $sourceInstitution,
                 ':source_identifier' => $payload['source_identifier'],
                 ':asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
                 ':amount' => $payload['amount'],
@@ -3290,7 +3240,7 @@ public function getMultiDestinationStatus(string $reference): array
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
             $authId = $row ? (int)$row['auth_id'] : 0;
             
-            error_log("[SwapService] Cashout authorization stored: auth_id={$authId}, swap_ref={$swapReference}");
+            error_log("[SwapService] Cashout authorization stored: auth_id={$authId}");
             
             return $authId;
             
