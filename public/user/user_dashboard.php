@@ -262,7 +262,6 @@ $identifiersJson = json_encode($validIdentifiers);
         }
         .container { max-width: 1000px; margin: 0 auto; }
         
-        /* Header */
         .header {
             background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
             padding: 16px 20px;
@@ -277,18 +276,11 @@ $identifiersJson = json_encode($validIdentifiers);
         }
         .logo h1 { font-size: 22px; background: linear-gradient(135deg, #fff, #00f0ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         .logo p { font-size: 11px; color: #888; margin-top: 2px; }
-        .badge { 
-            padding: 4px 12px; 
-            background: rgba(0,240,255,0.1); 
-            border: 1px solid #00f0ff; 
-            border-radius: 20px;
-            font-size: 11px;
-        }
+        .badge { padding: 4px 12px; background: rgba(0,240,255,0.1); border: 1px solid #00f0ff; border-radius: 20px; font-size: 11px; }
         .user-info { text-align: right; }
         .user-phone { color: #00f0ff; font-weight: bold; }
         .user-phone small { color: #888; font-weight: normal; font-size: 11px; }
         
-        /* Cards */
         .card {
             background: #12162e;
             border-radius: 12px;
@@ -296,16 +288,9 @@ $identifiersJson = json_encode($validIdentifiers);
             margin-bottom: 16px;
             border: 1px solid rgba(255,255,255,0.06);
         }
-        .card h3 { 
-            font-size: 16px; 
-            margin-bottom: 16px; 
-            display: flex; 
-            align-items: center; 
-            gap: 8px; 
-        }
+        .card h3 { font-size: 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
         .card h4 { font-size: 13px; margin: 12px 0 8px 0; color: #00f0ff; }
         
-        /* Swap Type Selector - BIG & CLEAR */
         .swap-type-selector {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -327,7 +312,6 @@ $identifiersJson = json_encode($validIdentifiers);
         .swap-type-option .label { font-size: 13px; font-weight: 600; }
         .swap-type-option .desc { font-size: 10px; color: #888; margin-top: 4px; }
         
-        /* Form */
         .form-row {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -360,7 +344,6 @@ $identifiersJson = json_encode($validIdentifiers);
         .help-text { font-size: 11px; color: #888; margin-top: 4px; }
         .help-text a { color: #00f0ff; text-decoration: none; }
         
-        /* Quick Amounts */
         .quick-amounts {
             display: flex;
             gap: 6px;
@@ -378,7 +361,6 @@ $identifiersJson = json_encode($validIdentifiers);
         }
         .quick-amount:hover { background: #00f0ff; color: #0a0e27; border-color: #00f0ff; }
         
-        /* Info Boxes */
         .info-box {
             background: rgba(0, 240, 255, 0.04);
             border-left: 3px solid #00f0ff;
@@ -401,7 +383,6 @@ $identifiersJson = json_encode($validIdentifiers);
         }
         .warning-box.show { display: block; }
         
-        /* Buttons */
         .btn {
             padding: 12px 20px;
             border: none;
@@ -420,29 +401,12 @@ $identifiersJson = json_encode($validIdentifiers);
         .btn-primary:hover { transform: translateY(-1px); filter: brightness(1.05); }
         .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
         
-        .btn-secondary {
-            background: #1a1f3a;
-            color: #fff;
-            border: 1px solid #2a2f4a;
-            padding: 8px 16px;
-        }
+        .btn-secondary { background: #1a1f3a; color: #fff; border: 1px solid #2a2f4a; padding: 8px 16px; }
         .btn-secondary:hover { background: #2a2f4a; }
-        
-        .btn-success {
-            background: #4caf50;
-            color: #fff;
-            padding: 8px 16px;
-        }
+        .btn-success { background: #4caf50; color: #fff; padding: 8px 16px; }
         .btn-success:hover { background: #388e3c; }
-        
-        .btn-danger {
-            background: #ff6b6b;
-            color: #fff;
-            padding: 4px 12px;
-            font-size: 12px;
-        }
+        .btn-danger { background: #ff6b6b; color: #fff; padding: 4px 12px; font-size: 12px; }
         .btn-danger:hover { background: #ff4444; }
-        
         .btn-add {
             background: transparent;
             border: 2px dashed #2a2f4a;
@@ -456,7 +420,6 @@ $identifiersJson = json_encode($validIdentifiers);
         }
         .btn-add:hover { border-color: #00f0ff; color: #00f0ff; background: rgba(0,240,255,0.05); }
         
-        /* Multi-Source */
         .source-entry {
             background: #0a0e27;
             border-radius: 8px;
@@ -513,7 +476,6 @@ $identifiersJson = json_encode($validIdentifiers);
         .source-summary .total { color: #00f0ff; font-weight: bold; font-size: 18px; }
         .source-summary .list { color: #a0a0b0; font-size: 12px; margin-top: 4px; }
         
-        /* Result */
         .result {
             padding: 16px;
             border-radius: 8px;
@@ -524,7 +486,6 @@ $identifiersJson = json_encode($validIdentifiers);
         .result.error { background: rgba(244, 67, 54, 0.15); border: 1px solid #f44336; display: block; color: #f44336; }
         .result .code { font-size: 28px; font-family: monospace; letter-spacing: 3px; color: #00f0ff; }
         
-        /* Recent Swaps */
         .swap-item {
             display: flex;
             justify-content: space-between;
@@ -545,7 +506,6 @@ $identifiersJson = json_encode($validIdentifiers);
         .fee-display { color: #ffc107; font-size: 10px; }
         .swap-ref { color: #888; font-size: 10px; }
         
-        /* Modal */
         .modal-overlay {
             display: none;
             position: fixed;
@@ -607,8 +567,36 @@ $identifiersJson = json_encode($validIdentifiers);
         @keyframes spin { to { transform: rotate(360deg); } }
         
         .hidden { display: none !important; }
+        .field-group { margin-top: 8px; }
+        .field-group label { font-size: 11px; color: #888; text-transform: uppercase; }
+        .field-group input { margin-top: 4px; }
         
-        /* Responsive */
+        .destination-type-selector {
+            display: flex;
+            gap: 10px;
+            margin: 8px 0 12px 0;
+        }
+        .dest-option {
+            padding: 8px 16px;
+            background: #1a1f3a;
+            border: 2px solid #2a2f4a;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            flex: 1;
+            text-align: center;
+            transition: all 0.2s;
+        }
+        .dest-option:hover { border-color: #00f0ff; }
+        .dest-option.active { border-color: #00f0ff; background: rgba(0,240,255,0.05); }
+        
+        .asset-fields-container {
+            background: #0a0e27;
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 8px;
+        }
+        
         @media (max-width: 768px) {
             .form-row { grid-template-columns: 1fr; gap: 8px; }
             .swap-type-selector { grid-template-columns: 1fr 1fr; }
@@ -617,6 +605,7 @@ $identifiersJson = json_encode($validIdentifiers);
             .modal-actions { flex-direction: column; }
             .header { flex-direction: column; text-align: center; }
             .user-info { text-align: center; }
+            .destination-type-selector { flex-direction: column; }
         }
         @media (max-width: 480px) {
             .swap-type-selector { grid-template-columns: 1fr; }
@@ -672,7 +661,7 @@ $identifiersJson = json_encode($validIdentifiers);
     <div class="card" id="mainForm">
         <h3>📝 Fill in the details</h3>
         
-        <!-- STANDARD & MULTI-SOURCE: Source Section -->
+        <!-- SOURCE SECTION -->
         <div id="sourceSection">
             <div class="form-row">
                 <div class="form-group">
@@ -692,6 +681,9 @@ $identifiersJson = json_encode($validIdentifiers);
                 </div>
             </div>
             
+            <!-- Asset Fields Container -->
+            <div id="assetFieldsContainer" class="asset-fields-container"></div>
+            
             <div class="form-group">
                 <label>🔑 Your Identifier</label>
                 <select id="sourceIdentifierSelect" style="width:100%; padding:10px 12px; background:#1a1f3a; border:1px solid #2a2f4a; border-radius:8px; color:#fff; font-size:14px;">
@@ -709,8 +701,11 @@ $identifiersJson = json_encode($validIdentifiers);
             </div>
         </div>
         
-        <!-- IDENTITY SWAP: Identity Section -->
+        <!-- IDENTITY SWAP: Identity Section (Destination is the identity) -->
         <div id="identitySection" style="display:none;">
+            <div class="info-box" style="margin-bottom:12px;">
+                🔐 The money will be held for the identity below. They will claim it later.
+            </div>
             <div class="form-row">
                 <div class="form-group">
                     <label>🆔 Identity Type</label>
@@ -725,17 +720,10 @@ $identifiersJson = json_encode($validIdentifiers);
                     <input type="text" id="identityValue" placeholder="e.g., 123456789 or +26770000000">
                 </div>
             </div>
-            <div class="info-box">
-                💡 The recipient will need to confirm their identity to receive the money.
-            </div>
-        </div>
-        
-        <!-- DESTINATION SECTION -->
-        <div id="destinationSection">
             <div class="form-row">
                 <div class="form-group">
-                    <label>📥 Destination Institution</label>
-                    <select id="toInstitution" onchange="validateCorridor()">
+                    <label>📥 Destination Institution (Where they'll receive)</label>
+                    <select id="identityToInstitution">
                         <option value="">-- Select --</option>
                         <?php foreach ($participants as $code => $p): ?>
                             <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
@@ -744,15 +732,62 @@ $identifiersJson = json_encode($validIdentifiers);
                 </div>
                 <div class="form-group">
                     <label>📦 Delivery Method</label>
-                    <select id="swapType">
+                    <select id="identitySwapType">
                         <option value="CASHOUT">🏧 Cashout (ATM Code)</option>
-                        <option value="DEPOSIT" selected>💳 Deposit (Wallet/Account)</option>
+                        <option value="DEPOSIT" selected>💳 Deposit</option>
+                    </select>
+                </div>
+            </div>
+            <div id="identityDestinationFields"></div>
+            <div class="form-group" style="margin-top:12px;">
+                <label>💰 Amount (<?= $currencySymbol ?>)</label>
+                <input type="number" id="identityAmount" step="0.01" placeholder="0.00">
+                <div class="quick-amounts">
+                    <?php foreach ($atmDenominations as $denom): ?>
+                        <span class="quick-amount" data-amount="<?= $denom ?>" onclick="document.getElementById('identityAmount').value=this.dataset.amount;updateSummary();"><?= $denom ?></span>
+                    <?php endforeach; ?>
+                    <span class="quick-amount" data-amount="500" onclick="document.getElementById('identityAmount').value=this.dataset.amount;updateSummary();">500</span>
+                    <span class="quick-amount" data-amount="1000" onclick="document.getElementById('identityAmount').value=this.dataset.amount;updateSummary();">1000</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- DESTINATION SECTION (Standard & Multi-Source) -->
+        <div id="destinationSection">
+            <div class="form-row">
+                <div class="form-group">
+                    <label>📥 Destination Institution</label>
+                    <select id="toInstitution" onchange="validateCorridor(); updateDestinationType()">
+                        <option value="">-- Select --</option>
+                        <?php foreach ($participants as $code => $p): ?>
+                            <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>📦 Delivery Method</label>
+                    <select id="swapType" onchange="updateDestinationType()">
+                        <option value="CASHOUT">🏧 Cashout (ATM Code)</option>
+                        <option value="DEPOSIT" selected>💳 Deposit</option>
                     </select>
                 </div>
             </div>
             
+            <!-- Destination Type Selector (ACCOUNT or WALLET) -->
+            <div id="destinationTypeContainer" style="display:none;">
+                <label style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.3px;">📥 Destination Type</label>
+                <div class="destination-type-selector">
+                    <div class="dest-option active" data-value="ACCOUNT" onclick="selectDestinationType('ACCOUNT')">
+                        🏦 Account
+                    </div>
+                    <div class="dest-option" data-value="WALLET" onclick="selectDestinationType('WALLET')">
+                        📱 Wallet
+                    </div>
+                </div>
+            </div>
+            
             <div id="destinationFields">
-                <!-- Dynamic based on swap type -->
+                <!-- Dynamic based on delivery method and destination type -->
             </div>
         </div>
         
@@ -762,10 +797,10 @@ $identifiersJson = json_encode($validIdentifiers);
             <input type="number" id="amount" step="0.01" placeholder="0.00">
             <div class="quick-amounts">
                 <?php foreach ($atmDenominations as $denom): ?>
-                    <span class="quick-amount" data-amount="<?= $denom ?>"><?= $denom ?></span>
+                    <span class="quick-amount" data-amount="<?= $denom ?>" onclick="document.getElementById('amount').value=this.dataset.amount;updateSummary();"><?= $denom ?></span>
                 <?php endforeach; ?>
-                <span class="quick-amount" data-amount="500">500</span>
-                <span class="quick-amount" data-amount="1000">1000</span>
+                <span class="quick-amount" data-amount="500" onclick="document.getElementById('amount').value=this.dataset.amount;updateSummary();">500</span>
+                <span class="quick-amount" data-amount="1000" onclick="document.getElementById('amount').value=this.dataset.amount;updateSummary();">1000</span>
             </div>
         </div>
         
@@ -871,10 +906,49 @@ const apiKey = '<?= $apiKey ?>';
 // STATE
 // ============================================================
 let currentSwapType = 'STANDARD';
+let destinationType = 'ACCOUNT';
 let sources = [];
 let sourceCounter = 0;
 let pendingPayload = null;
 let previewData = null;
+
+// ============================================================
+// ASSET FIELD DEFINITIONS
+// ============================================================
+const assetFieldDefinitions = {
+    'VOUCHER': {
+        fields: [
+            { name: 'voucher_number', label: '🎫 Voucher Number', type: 'text', placeholder: 'Enter voucher number' },
+            { name: 'voucher_pin', label: '🔑 Voucher PIN', type: 'password', placeholder: 'Enter voucher PIN' },
+            { name: 'amount', label: '💰 Amount', type: 'number', placeholder: '0.00' },
+            { name: 'phone', label: '📱 Phone Number', type: 'text', placeholder: '+267XXXXXXXX' }
+        ]
+    },
+    'ACCOUNT': {
+        fields: [
+            { name: 'account_number', label: '🏦 Account Number', type: 'text', placeholder: 'Enter account number' },
+            { name: 'account_pin', label: '🔑 Account PIN', type: 'password', placeholder: 'Enter account PIN' }
+        ]
+    },
+    'MNO-WALLET': {
+        fields: [
+            { name: 'wallet_phone', label: '📱 Wallet Phone', type: 'text', placeholder: '+267XXXXXXXX' },
+            { name: 'wallet_pin', label: '🔑 Wallet PIN', type: 'password', placeholder: 'Enter wallet PIN' }
+        ]
+    },
+    'CARD': {
+        fields: [
+            { name: 'card_number', label: '💳 Card Number', type: 'text', placeholder: 'XXXX-XXXX-XXXX-XXXX' },
+            { name: 'card_pin', label: '🔑 Card PIN', type: 'password', placeholder: 'Enter card PIN' }
+        ]
+    },
+    'BANK-WALLET': {
+        fields: [
+            { name: 'wallet_account', label: '🏦 Wallet Account', type: 'text', placeholder: 'Enter wallet account' },
+            { name: 'wallet_pin', label: '🔑 Wallet PIN', type: 'password', placeholder: 'Enter wallet PIN' }
+        ]
+    }
+};
 
 // ============================================================
 // SWAP TYPE SELECTOR
@@ -883,26 +957,27 @@ let previewData = null;
 function selectSwapType(type) {
     currentSwapType = type;
     
-    // Update UI
     document.querySelectorAll('.swap-type-option').forEach(el => {
         el.classList.toggle('active', el.dataset.value === type);
     });
     
-    // Show/hide sections
     const isStandard = type === 'STANDARD';
     const isIdentity = type === 'IDENTITY';
     const isMulti = type === 'MULTI_SOURCE';
     
     document.getElementById('sourceSection').style.display = (isStandard || isMulti) ? 'block' : 'none';
     document.getElementById('identitySection').style.display = isIdentity ? 'block' : 'none';
-    document.getElementById('standardAmount').style.display = (isStandard || isIdentity) ? 'block' : 'none';
+    document.getElementById('destinationSection').style.display = (isStandard || isMulti) ? 'block' : 'none';
+    document.getElementById('standardAmount').style.display = (isStandard) ? 'block' : 'none';
     document.getElementById('multiSourceToggle').style.display = isMulti ? 'flex' : 'none';
     
-    // Update help text
     document.getElementById('identityHelp').style.display = isIdentity ? 'inline' : 'none';
     document.getElementById('multiHelp').style.display = isMulti ? 'inline' : 'none';
     
-    // If multi-source, show sources
+    if (isIdentity) {
+        updateIdentityDestinationFields();
+    }
+    
     if (isMulti) {
         document.getElementById('sourcesContainer').style.display = 'block';
         if (sources.length === 0) addSource();
@@ -914,7 +989,127 @@ function selectSwapType(type) {
 }
 
 // ============================================================
-// SOURCE FUNCTIONS
+// ASSET FIELDS (Source)
+// ============================================================
+
+function updateAssetFields() {
+    const assetType = document.getElementById('assetType').value;
+    const container = document.getElementById('assetFieldsContainer');
+    container.innerHTML = '';
+    
+    if (!assetType) return;
+    
+    const def = assetFieldDefinitions[assetType] || { fields: [] };
+    const fields = def.fields || [];
+    
+    if (fields.length === 0) {
+        container.innerHTML = '<div class="info-box">✅ No additional fields required</div>';
+        return;
+    }
+    
+    let html = '<div class="form-row">';
+    fields.forEach(f => {
+        html += `
+            <div class="form-group">
+                <label>${f.label}</label>
+                <input type="${f.type || 'text'}" id="src_${f.name}" 
+                       placeholder="${f.placeholder || ''}" 
+                       class="asset-field">
+            </div>
+        `;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+// ============================================================
+// DESTINATION TYPE
+// ============================================================
+
+function selectDestinationType(type) {
+    destinationType = type;
+    document.querySelectorAll('.dest-option').forEach(el => {
+        el.classList.toggle('active', el.dataset.value === type);
+    });
+    updateDestinationFields();
+}
+
+function updateDestinationType() {
+    const swapType = document.getElementById('swapType').value;
+    const container = document.getElementById('destinationTypeContainer');
+    container.style.display = (swapType === 'DEPOSIT') ? 'block' : 'none';
+    if (swapType === 'DEPOSIT') {
+        selectDestinationType(destinationType);
+    } else {
+        updateDestinationFields();
+    }
+}
+
+// ============================================================
+// DESTINATION FIELDS
+// ============================================================
+
+function updateDestinationFields() {
+    const swapType = document.getElementById('swapType').value;
+    const container = document.getElementById('destinationFields');
+    
+    if (swapType === 'CASHOUT') {
+        container.innerHTML = `
+            <div class="form-group">
+                <label>📱 Beneficiary Phone</label>
+                <input type="tel" id="beneficiaryPhone" placeholder="+26770000000" value="<?= $loggedPhone ?>">
+            </div>
+            <div class="info-box">🏧 They will receive an ATM code via SMS.</div>
+        `;
+        return;
+    }
+    
+    // DEPOSIT - show ACCOUNT or WALLET fields
+    if (destinationType === 'ACCOUNT') {
+        container.innerHTML = `
+            <div class="form-group">
+                <label>🏦 Account Number</label>
+                <input type="text" id="destinationAccount" placeholder="Enter account number">
+            </div>
+            <div class="form-group">
+                <label>🏦 Account Name (Optional)</label>
+                <input type="text" id="destinationAccountName" placeholder="Enter account name">
+            </div>
+            <div class="info-box">💳 Depositing to a bank account.</div>
+        `;
+    } else {
+        // WALLET
+        container.innerHTML = `
+            <div class="form-group">
+                <label>📱 Phone Number (Wallet)</label>
+                <input type="tel" id="destinationPhone" placeholder="+26770000000" value="<?= $loggedPhone ?>">
+            </div>
+            <div class="info-box">📱 Depositing to a mobile wallet.</div>
+        `;
+    }
+}
+
+function updateIdentityDestinationFields() {
+    const swapType = document.getElementById('identitySwapType').value;
+    const container = document.getElementById('identityDestinationFields');
+    
+    if (swapType === 'CASHOUT') {
+        container.innerHTML = `
+            <div class="form-group">
+                <label>📱 Beneficiary Phone</label>
+                <input type="tel" id="identityBeneficiaryPhone" placeholder="+26770000000" value="<?= $loggedPhone ?>">
+            </div>
+            <div class="info-box">🏧 They will receive an ATM code via SMS.</div>
+        `;
+    } else {
+        container.innerHTML = `
+            <div class="info-box">💳 The identity holder will receive the funds to their account/wallet when they claim it.</div>
+        `;
+    }
+}
+
+// ============================================================
+// SOURCE FUNCTIONS (Multi-Source)
 // ============================================================
 
 function addSource() {
@@ -950,6 +1145,7 @@ function addSource() {
                 <input type="number" id="${sourceId}_amount" step="0.01" placeholder="0.00" oninput="updateSummary()">
             </div>
         </div>
+        <div id="${sourceId}_fields" class="asset-fields-container" style="margin-top:8px;"></div>
         <div class="form-group" style="margin-top:8px;">
             <label>Identifier</label>
             <select id="${sourceId}_identifierSelect" style="width:100%; padding:8px 10px; background:#1a1f3a; border:1px solid #2a2f4a; border-radius:8px; color:#fff; font-size:13px;">
@@ -995,111 +1191,39 @@ function updateSourceAssetTypes(sourceId) {
             assetSelect.appendChild(opt);
         });
     }
+    updateSourceFields(sourceId);
 }
 
 function updateSourceFields(sourceId) {
     const assetType = document.getElementById(sourceId + '_assetType').value;
     const container = document.getElementById(sourceId + '_fields');
-    if (!container) return;
-    
     container.innerHTML = '';
+    
     if (!assetType) return;
     
-    const fields = assetFields[assetType] || [];
+    const def = assetFieldDefinitions[assetType] || { fields: [] };
+    const fields = def.fields || [];
+    
     if (fields.length === 0) {
-        container.innerHTML = '<div class="info-box">✅ No extra fields</div>';
+        container.innerHTML = '<div class="info-box">✅ No additional fields</div>';
         return;
     }
     
-    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;padding-top:8px;border-top:1px solid #2a2f4a;">';
+    let html = '<div class="form-row" style="margin-bottom:0;">';
     fields.forEach(f => {
-        const isPin = f.name.includes('pin') || f.type === 'password';
+        const isPin = f.type === 'password' || f.name.includes('pin');
         html += `
             <div class="form-group">
-                <label>${f.label || f.name}</label>
+                <label>${f.label}</label>
                 <input type="${isPin ? 'password' : (f.type || 'text')}" 
                        id="${sourceId}_${f.name}" 
-                       placeholder="${f.placeholder || 'Enter value'}"
-                       ${f.required ? 'required' : ''}>
+                       placeholder="${f.placeholder || ''}"
+                       class="source-asset-field">
             </div>
         `;
     });
     html += '</div>';
     container.innerHTML = html;
-}
-
-// ============================================================
-// ASSET TYPE FUNCTIONS
-// ============================================================
-
-function updateAssetTypes() {
-    const inst = document.getElementById('fromInstitution').value;
-    const assetSelect = document.getElementById('assetType');
-    assetSelect.innerHTML = '<option value="">-- Select --</option>';
-    if (inst && participants[inst]) {
-        (participants[inst].asset_types || ['ACCOUNT']).forEach(type => {
-            const ui = assetUI[type] || {};
-            const opt = document.createElement('option');
-            opt.value = type;
-            opt.textContent = (ui.icon || '') + ' ' + (ui.display_name || type);
-            assetSelect.appendChild(opt);
-        });
-    }
-}
-
-function updateAssetFields() {
-    const assetType = document.getElementById('assetType').value;
-    const container = document.getElementById('assetFieldsContainer');
-    if (!container) return;
-    container.innerHTML = '';
-    if (!assetType) return;
-    const fields = assetFields[assetType] || [];
-    if (fields.length === 0) {
-        container.innerHTML = '<div class="info-box">✅ No extra fields required</div>';
-        return;
-    }
-    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;">';
-    fields.forEach(f => {
-        const isPin = f.name.includes('pin') || f.type === 'password';
-        html += `
-            <div class="form-group">
-                <label>${f.label || f.name}</label>
-                <input type="${isPin ? 'password' : (f.type || 'text')}" 
-                       id="${f.name}" class="asset-field"
-                       placeholder="${f.placeholder || 'Enter value'}"
-                       ${f.required ? 'required' : ''}>
-            </div>
-        `;
-    });
-    html += '</div>';
-    container.innerHTML = html;
-}
-
-// ============================================================
-// DESTINATION FIELDS
-// ============================================================
-
-function updateDestinationFields() {
-    const swapType = document.getElementById('swapType').value;
-    const container = document.getElementById('destinationFields');
-    
-    if (swapType === 'CASHOUT') {
-        container.innerHTML = `
-            <div class="form-group">
-                <label>📱 Beneficiary Phone</label>
-                <input type="tel" id="beneficiaryPhone" placeholder="+26770000000" value="<?= $loggedPhone ?>">
-            </div>
-            <div class="info-box">🏧 They will receive an ATM code via SMS.</div>
-        `;
-    } else {
-        container.innerHTML = `
-            <div class="form-group">
-                <label>🏦 Destination Identifier</label>
-                <input type="text" id="destinationIdentifier" placeholder="Phone, National ID, or Account">
-            </div>
-            <div class="info-box">💳 The recipient's identifier.</div>
-        `;
-    }
 }
 
 // ============================================================
@@ -1153,16 +1277,27 @@ function updateSummary() {
         return;
     }
     
+    if (isIdentity) {
+        const to = document.getElementById('identityToInstitution')?.value || '?';
+        const amount = parseFloat(document.getElementById('identityAmount')?.value) || 0;
+        const idType = document.getElementById('identityType')?.value || '?';
+        const idValue = document.getElementById('identityValue')?.value || '?';
+        document.getElementById('summary').innerHTML = `🔐 Identity Swap · ${idType}: ${idValue} → ${to} · ${currencySymbol} ${amount.toFixed(2)}`;
+        return;
+    }
+    
+    // Standard
     const from = document.getElementById('fromInstitution')?.value || '?';
     const to = document.getElementById('toInstitution')?.value || '?';
     const amount = parseFloat(document.getElementById('amount')?.value) || 0;
     const type = document.getElementById('swapType')?.value || 'DEPOSIT';
+    const destType = destinationType || 'ACCOUNT';
     const sourceId = document.getElementById('sourceIdentifierSelect')?.value || '?';
     
-    let summary = isIdentity ? '🔐 Identity Swap' : '⬆️➡️ Swap';
-    summary += ` · ${from} → ${to}`;
+    let summary = `⬆️➡️ ${from} → ${to}`;
     if (amount > 0) summary += ` · ${currencySymbol} ${amount.toFixed(2)}`;
     summary += ` · ${type}`;
+    if (type === 'DEPOSIT') summary += ` · ${destType}`;
     if (sourceId !== '?') summary += ` · Source: ${sourceId}`;
     document.getElementById('summary').innerHTML = '📋 ' + summary;
 }
@@ -1187,11 +1322,21 @@ function buildPayload() {
         payload.asset_type = document.getElementById('assetType').value || 'ACCOUNT';
         payload.identity_type = document.getElementById('identityType').value || 'national_id';
         payload.identity_value = document.getElementById('identityValue').value || '';
-        payload.amount = parseFloat(document.getElementById('amount').value) || 0;
+        payload.amount = parseFloat(document.getElementById('identityAmount').value) || 0;
+        payload.to_institution = document.getElementById('identityToInstitution').value || '';
+        payload.delivery_method = document.getElementById('identitySwapType').value || 'DEPOSIT';
         
-        // Destination will be added in CONFIRM_IDENTITY step
-        payload.to_institution = document.getElementById('toInstitution').value || '';
-        payload.delivery_method = document.getElementById('swapType').value || 'DEPOSIT';
+        if (payload.delivery_method === 'CASHOUT') {
+            payload.beneficiary_phone = document.getElementById('identityBeneficiaryPhone')?.value || '';
+        }
+        
+        // Asset fields for source
+        const assetType = payload.asset_type;
+        const def = assetFieldDefinitions[assetType] || { fields: [] };
+        def.fields.forEach(f => {
+            const el = document.getElementById('src_' + f.name);
+            if (el && el.value) payload[f.name] = el.value;
+        });
         
     } else if (isMulti) {
         payload.swap_type = 'MULTI_SOURCE';
@@ -1206,9 +1351,9 @@ function buildPayload() {
             
             if (inst && amount > 0) {
                 const source = { institution: inst, asset_type: asset, amount: amount, identifier: ident };
-                // Add asset fields
-                const fields = assetFields[asset] || [];
-                fields.forEach(f => {
+                // Asset fields
+                const def = assetFieldDefinitions[asset] || { fields: [] };
+                def.fields.forEach(f => {
                     const el = document.getElementById(s.id + '_' + f.name);
                     if (el && el.value) source[f.name] = el.value;
                 });
@@ -1221,6 +1366,24 @@ function buildPayload() {
         payload.to_institution = document.getElementById('toInstitution').value || '';
         payload.delivery_method = document.getElementById('swapType').value || 'DEPOSIT';
         payload.contribution_strategy = 'SMART';
+        payload.destination_type = destinationType || 'ACCOUNT';
+        
+        if (payload.delivery_method === 'CASHOUT') {
+            payload.beneficiary_phone = document.getElementById('beneficiaryPhone')?.value || '';
+        } else if (payload.delivery_method === 'DEPOSIT') {
+            if (destinationType === 'ACCOUNT') {
+                payload.destination_account = document.getElementById('destinationAccount')?.value || '';
+                payload.account_name = document.getElementById('destinationAccountName')?.value || '';
+                payload.destination_identifier = payload.destination_account;
+                payload.destination_identifier_type = 'account';
+                payload.destination_asset_type = 'ACCOUNT';
+            } else {
+                payload.destination_phone = document.getElementById('destinationPhone')?.value || '';
+                payload.destination_identifier = payload.destination_phone;
+                payload.destination_identifier_type = 'phone';
+                payload.destination_asset_type = 'WALLET';
+            }
+        }
         
     } else {
         // STANDARD
@@ -1230,6 +1393,15 @@ function buildPayload() {
         payload.asset_type = document.getElementById('assetType').value || 'ACCOUNT';
         payload.source_identifier = document.getElementById('sourceIdentifierSelect').value || '';
         payload.amount = parseFloat(document.getElementById('amount').value) || 0;
+        payload.destination_type = destinationType || 'ACCOUNT';
+        
+        // Asset fields for source
+        const assetType = payload.asset_type;
+        const def = assetFieldDefinitions[assetType] || { fields: [] };
+        def.fields.forEach(f => {
+            const el = document.getElementById('src_' + f.name);
+            if (el && el.value) payload[f.name] = el.value;
+        });
         
         // Destination fields
         if (payload.swap_type === 'CASHOUT') {
@@ -1237,21 +1409,19 @@ function buildPayload() {
             payload.destination_identifier = payload.beneficiary_phone;
             payload.destination_identifier_type = 'phone';
         } else {
-            payload.destination_identifier = document.getElementById('destinationIdentifier')?.value || '';
-            payload.destination_identifier_type = 'auto';
-            if (payload.destination_identifier.match(/^[\+]?[0-9]{10,15}$/)) {
+            if (destinationType === 'ACCOUNT') {
+                payload.destination_account = document.getElementById('destinationAccount')?.value || '';
+                payload.account_name = document.getElementById('destinationAccountName')?.value || '';
+                payload.destination_identifier = payload.destination_account;
+                payload.destination_identifier_type = 'account';
+                payload.destination_asset_type = 'ACCOUNT';
+            } else {
+                payload.destination_phone = document.getElementById('destinationPhone')?.value || '';
+                payload.destination_identifier = payload.destination_phone;
                 payload.destination_identifier_type = 'phone';
-            } else if (payload.destination_identifier.match(/^[A-Z0-9]{6,20}$/i)) {
-                payload.destination_identifier_type = 'national_id';
+                payload.destination_asset_type = 'WALLET';
             }
         }
-        
-        // Asset fields
-        const fields = assetFields[payload.asset_type] || [];
-        fields.forEach(f => {
-            const el = document.getElementById(f.name);
-            if (el && el.value) payload[f.name] = el.value;
-        });
     }
     
     // PIN
@@ -1261,8 +1431,7 @@ function buildPayload() {
         payload.wallet_pin = pin;
     }
     
-    // Log for debugging
-    console.log('Payload:', payload);
+    console.log('Final Payload:', payload);
     return payload;
 }
 
@@ -1275,18 +1444,17 @@ document.getElementById('executeBtn').addEventListener('click', async function()
     const isIdentity = currentSwapType === 'IDENTITY';
     
     // Validate
-    const toInst = document.getElementById('toInstitution').value;
-    if (!toInst) { alert('Select destination institution'); return; }
-    
-    const sourceId = document.getElementById('sourceIdentifierSelect').value;
-    if (!isIdentity && !sourceId) { alert('Select your source identifier'); return; }
+    const pin = document.getElementById('userPin').value;
+    if (!pin) { alert('🔑 Enter your PIN'); return; }
     
     if (isIdentity) {
         const idValue = document.getElementById('identityValue').value.trim();
         if (!idValue) { alert('Enter the identity value'); return; }
-    }
-    
-    if (isMulti) {
+        const amount = parseFloat(document.getElementById('identityAmount').value);
+        if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
+        const fromInst = document.getElementById('fromInstitution').value;
+        if (!fromInst) { alert('Select source institution'); return; }
+    } else if (isMulti) {
         let hasError = false;
         let total = 0;
         sources.forEach(s => {
@@ -1301,20 +1469,34 @@ document.getElementById('executeBtn').addEventListener('click', async function()
         if (hasError) return;
         if (sources.length < 2) { alert('Add at least 2 sources'); return; }
         if (total <= 0) { alert('Total amount must be > 0'); return; }
-    } else if (!isIdentity) {
+        const toInst = document.getElementById('toInstitution').value;
+        if (!toInst) { alert('Select destination institution'); return; }
+    } else {
+        // Standard
         const amount = parseFloat(document.getElementById('amount').value);
         if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
         const fromInst = document.getElementById('fromInstitution').value;
+        const toInst = document.getElementById('toInstitution').value;
         if (!fromInst) { alert('Select source institution'); return; }
+        if (!toInst) { alert('Select destination institution'); return; }
         if (fromInst === toInst) { alert('Source and destination must be different'); return; }
+        const sourceId = document.getElementById('sourceIdentifierSelect').value;
+        if (!sourceId) { alert('Select your source identifier'); return; }
     }
-    
-    const pin = document.getElementById('userPin').value;
-    if (!pin) { alert('🔑 Enter your PIN'); return; }
     
     if (document.getElementById('swapType').value === 'CASHOUT') {
         const phone = document.getElementById('beneficiaryPhone')?.value;
         if (!phone) { alert('Enter beneficiary phone number'); return; }
+    }
+    
+    if (document.getElementById('swapType').value === 'DEPOSIT') {
+        if (destinationType === 'ACCOUNT') {
+            const account = document.getElementById('destinationAccount')?.value;
+            if (!account) { alert('Enter destination account number'); return; }
+        } else {
+            const phone = document.getElementById('destinationPhone')?.value;
+            if (!phone) { alert('Enter destination phone number'); return; }
+        }
     }
     
     const payload = buildPayload();
@@ -1368,9 +1550,13 @@ async function showConfirmation(payload) {
             feeHTML += '</div>';
         }
         
+        let destType = '';
+        if (p.destination_type) destType = ` · ${p.destination_type}`;
+        if (p.destination_asset_type) destType = ` · ${p.destination_asset_type}`;
+        
         details.innerHTML = `
             <div style="margin-bottom:12px;">
-                <div style="font-size:12px;color:#888;">${p.swap_type || 'Swap'}</div>
+                <div style="font-size:12px;color:#888;">${p.swap_type || 'Swap'}${destType}</div>
                 <div style="color:#00f0ff;">${p.source_institution || '?'} → ${p.destination_institution || '?'}</div>
             </div>
             <div class="row"><span class="label">💰 Amount</span><span class="value">${(p.amount_requested || p.amount || 0).toFixed(2)} ${p.source_currency || 'BWP'}</span></div>
@@ -1378,6 +1564,7 @@ async function showConfirmation(payload) {
             ${feeHTML}
             <div class="row total"><span class="label">📥 You Receive</span><span class="value highlight">${netAmount.toFixed(2)} ${p.destination_currency || p.source_currency || 'BWP'}</span></div>
             ${p.is_multi_source ? `<div class="info-box" style="margin-top:10px;">📦 Multi-Source · ${p.source_count || 0} source(s)</div>` : ''}
+            ${p.identity_type ? `<div class="info-box" style="margin-top:10px;">🔐 Identity: ${p.identity_type} → ${p.identity_value}</div>` : ''}
         `;
         
         confirmBtn.disabled = false;
@@ -1428,6 +1615,9 @@ document.getElementById('confirmBtn').addEventListener('click', async function()
             html += `💰 Amount: ${currencySymbol} ${(pendingPayload.amount || 0).toFixed(2)}<br>`;
             if (result.fee) html += `📊 Fee: ${currencySymbol} ${parseFloat(result.fee).toFixed(2)}<br>`;
             if (atmCode) html += `<br>🏧 <span class="code">${atmCode}</span><br><span style="font-size:12px;color:#888;">ATM Cashout Code</span>`;
+            if (pendingPayload.identity_type) {
+                html += `<br>🔐 Identity: ${pendingPayload.identity_type} → ${pendingPayload.identity_value}`;
+            }
             html += `<br><br><a href="history.php?id=${ref}" style="color:#00f0ff;">View Details →</a>`;
             resultDiv.innerHTML = html;
             resultDiv.scrollIntoView({ behavior: 'smooth' });
@@ -1452,28 +1642,32 @@ document.getElementById('confirmBtn').addEventListener('click', async function()
 // ============================================================
 
 document.addEventListener('DOMContentLoaded', function() {
-    // Quick amounts
-    document.querySelectorAll('.quick-amount').forEach(el => {
-        el.addEventListener('click', () => {
-            const input = document.getElementById('amount');
-            if (input) input.value = el.dataset.amount;
-            updateSummary();
-        });
-    });
-    
     // Form changes
     ['fromInstitution', 'toInstitution', 'assetType', 'swapType', 'sourceIdentifierSelect'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('change', updateSummary);
     });
-    const amount = document.getElementById('amount');
-    if (amount) amount.addEventListener('input', updateSummary);
+    
+    ['identityToInstitution', 'identitySwapType', 'identityType'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', function() {
+            if (id === 'identitySwapType') updateIdentityDestinationFields();
+            updateSummary();
+        });
+    });
+    
+    // Identity amount
+    const identityAmount = document.getElementById('identityAmount');
+    if (identityAmount) identityAmount.addEventListener('input', updateSummary);
     
     // Destination fields on swap type change
-    document.getElementById('swapType').addEventListener('change', updateDestinationFields);
+    document.getElementById('swapType').addEventListener('change', function() {
+        updateDestinationType();
+        updateSummary();
+    });
     
     // Initialize
-    updateDestinationFields();
+    updateDestinationType();
     updateAssetTypes();
     updateSummary();
     selectSwapType('STANDARD');
@@ -1488,11 +1682,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 idType.value = typeMap[opt.dataset.type];
             }
         }
+        updateSummary();
     });
     
     console.log('✅ VouchMorph Dashboard loaded');
     console.log('👤 User:', userIdentifiers);
     console.log('🏦 Participants:', Object.keys(participants));
+    console.log('📦 Asset Field Definitions:', Object.keys(assetFieldDefinitions));
 });
 </script>
 </body>
