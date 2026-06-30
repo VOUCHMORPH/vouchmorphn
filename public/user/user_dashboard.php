@@ -1,6 +1,5 @@
 <?php
-// public/user/dashboard.php - DYNAMIC DASHBOARD
-// Loads asset types from AssetTypeRegistry (assets.yaml)
+// public/user/dashboard.php - FIXED VOUCHER FIELDS
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
@@ -681,7 +680,9 @@ $identifiersJson = json_encode($validIdentifiers);
                 </div>
             </div>
             
-            <div id="stdAssetFieldsContainer" class="asset-fields-container"></div>
+            <div id="stdAssetFieldsContainer" class="asset-fields-container">
+                <div class="info-box">Select an asset type above to see fields</div>
+            </div>
             
             <div class="form-group">
                 <label>🔑 Your Identifier</label>
@@ -773,7 +774,9 @@ $identifiersJson = json_encode($validIdentifiers);
                 </div>
             </div>
             
-            <div id="idAssetFieldsContainer" class="asset-fields-container"></div>
+            <div id="idAssetFieldsContainer" class="asset-fields-container">
+                <div class="info-box">Select an asset type above to see fields</div>
+            </div>
             
             <div class="form-group">
                 <label>🔑 Your Identifier</label>
@@ -978,9 +981,13 @@ let previewData = null;
 
 function renderAssetFields(prefix, assetType, containerId) {
     const container = document.getElementById(containerId);
-    if (!container) return;
+    if (!container) {
+        console.error('[renderAssetFields] Container not found:', containerId);
+        return;
+    }
     
     console.log('[renderAssetFields] Asset type:', assetType, 'Prefix:', prefix);
+    console.log('[renderAssetFields] Available asset fields:', Object.keys(assetFields));
     container.innerHTML = '';
     
     if (!assetType) {
@@ -991,7 +998,7 @@ function renderAssetFields(prefix, assetType, containerId) {
     const fields = assetFields[assetType] || [];
     console.log('[renderAssetFields] Fields for', assetType, ':', fields);
     
-    if (fields.length === 0) {
+    if (!fields || fields.length === 0) {
         container.innerHTML = '<div class="info-box">✅ No additional fields required for ' + assetType + '</div>';
         return;
     }
@@ -1008,10 +1015,11 @@ function renderAssetFields(prefix, assetType, containerId) {
         const maxLen = f.max_length ? ` maxlength="${f.max_length}"` : '';
         const placeholder = f.placeholder || '';
         const helpText = f.help_text || '';
+        const label = f.label || f.name;
         
         html += `
             <div class="form-group">
-                <label>${f.label || f.name}</label>
+                <label>${label}</label>
                 <input type="${isPin ? 'password' : (f.type || 'text')}" 
                        id="${fieldId}" 
                        placeholder="${placeholder}"
@@ -1025,6 +1033,7 @@ function renderAssetFields(prefix, assetType, containerId) {
     });
     html += '</div>';
     container.innerHTML = html;
+    console.log('[renderAssetFields] Rendered', fields.length, 'fields for', assetType);
 }
 
 function collectAssetFields(prefix, assetType) {
@@ -1798,6 +1807,7 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log('🏦 Participants:', Object.keys(participants));
     console.log('📦 Asset Types:', Object.keys(assetFields));
     console.log('📋 Asset Fields:', assetFields);
+    console.log('📋 VOUCHER Fields:', assetFields['VOUCHER']);
 });
 </script>
 </body>
