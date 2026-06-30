@@ -977,14 +977,19 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // ✅ FIXED: DEBIT FUNDS WITH CERTIFICATE
+    // ✅ UPDATED: DEBIT FUNDS WITH CERTIFICATE AND HOLD_REFERENCE
     // ============================================================================
 
     public function debitFunds(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: debitFunds ===");
+        error_log("[GenericBankClient] debitFunds received payload keys: " . implode(', ', array_keys($payload)));
         
-        // ✅ FIX: Create signed payload with certificate
+        // ✅ Extract hold_reference from payload
+        $holdRef = $payload['hold_reference'] ?? $payload['reference'] ?? null;
+        error_log("[GenericBankClient] debitFunds: hold_reference extracted: " . ($holdRef ?? 'NULL'));
+        
+        // Create signed payload with certificate
         $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
         
         // Ensure required fields are present
@@ -995,12 +1000,27 @@ class GenericBankClient implements BankAPIInterface
             $signedPayload['source_institution'] = $payload['source_institution'];
         }
         
+        // ✅ CRITICAL: Ensure hold_reference is in the signed payload
+        if ($holdRef) {
+            $signedPayload['hold_reference'] = $holdRef;
+            $signedPayload['reference'] = $holdRef;
+            error_log("[GenericBankClient] debitFunds: Set hold_reference={$holdRef} in signed payload");
+        } else {
+            error_log("[GenericBankClient] debitFunds: WARNING - No hold_reference found!");
+        }
+        
         // Add action if not present
         if (!isset($signedPayload['action'])) {
             $signedPayload['action'] = 'DEBIT_FUNDS';
         }
         
-        error_log("[GenericBankClient] debitFunds: from_institution={$signedPayload['from_institution']}, amount={$signedPayload['amount']}");
+        // Ensure amount is present
+        if (!isset($signedPayload['amount']) && isset($payload['amount'])) {
+            $signedPayload['amount'] = $payload['amount'];
+        }
+        
+        error_log("[GenericBankClient] debitFunds final: from_institution={$signedPayload['from_institution']}, amount={$signedPayload['amount']}, hold_reference={$signedPayload['hold_reference']}");
+        error_log("[GenericBankClient] debitFunds signed payload keys: " . implode(', ', array_keys($signedPayload)));
         
         return $this->send('debit_funds', $signedPayload, $signedPayload['access_token'] ?? null);
     }
@@ -1009,6 +1029,7 @@ class GenericBankClient implements BankAPIInterface
     {
         error_log("=== GENERIC BANK CLIENT: debitHold (maps to debitFunds) ===");
         if (!isset($payload['hold_reference'])) {
+            error_log("[GenericBankClient] debitHold ERROR: hold_reference is required");
             return ['success' => false, 'message' => 'hold_reference is required', 'data' => []];
         }
         
@@ -1022,7 +1043,9 @@ class GenericBankClient implements BankAPIInterface
             'source_institution' => $payload['source_institution'] ?? $this->bankPrefix,
         ];
         
-        // ✅ Use signed payload with certificate
+        error_log("[GenericBankClient] debitHold: hold_reference={$debitPayload['hold_reference']}, amount={$debitPayload['amount']}");
+        
+        // ✅ Pass to debitFunds which handles certificate and hold_reference
         return $this->debitFunds($debitPayload);
     }
 
