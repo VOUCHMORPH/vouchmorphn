@@ -27,6 +27,7 @@ use Infrastructure\Crypto\AggregateSigner;
  * 
  * Institution-agnostic - all institutions derived from payload
  * No hardcoded institution names anywhere
+ * Supports ACCOUNT and WALLET asset types for deposits
  */
 class SwapService
 {
@@ -191,12 +192,9 @@ class SwapService
 
     /**
      * Extract source institution from payload - NEVER hardcoded
-     * 
-     * @throws RuntimeException if source institution cannot be found
      */
     private function extractSourceInstitution(array $payload): string
     {
-        // Check all possible locations for source institution
         $source = $payload['from_institution'] ?? 
                   $payload['source_institution'] ?? 
                   $payload['source']['institution'] ?? 
@@ -220,12 +218,9 @@ class SwapService
 
     /**
      * Extract destination institution from payload - NEVER hardcoded
-     * 
-     * @throws RuntimeException if destination institution cannot be found
      */
     private function extractDestinationInstitution(array $payload): string
     {
-        // Check all possible locations for destination institution
         $dest = $payload['to_institution'] ?? 
                 $payload['destination_institution'] ?? 
                 $payload['destination']['institution'] ?? 
@@ -247,6 +242,25 @@ class SwapService
     }
 
     /**
+     * Extract destination asset type - ACCOUNT or WALLET
+     */
+    private function extractDestinationAssetType(array $payload): string
+    {
+        $assetType = strtoupper($payload['destination_asset_type'] ?? 
+                                  $payload['asset_type'] ?? 
+                                  $payload['destination_type'] ?? 
+                                  'WALLET');
+        
+        // Validate asset type
+        if (!in_array($assetType, ['ACCOUNT', 'WALLET'])) {
+            error_log("[SwapService] WARNING: Invalid destination_asset_type '{$assetType}', defaulting to WALLET");
+            $assetType = 'WALLET';
+        }
+        
+        return $assetType;
+    }
+
+    /**
      * Extract source identifier from payload
      */
     private function extractSourceIdentifier(array $payload): array
@@ -254,7 +268,6 @@ class SwapService
         $sourceIdentifier = null;
         $sourceIdentifierType = null;
         
-        // Check hooked source first
         if (!empty($payload['_is_hooked']) && !empty($payload['source_reference'])) {
             $sourceIdentifier = $payload['source_identifier'] ?? null;
             $sourceIdentifierType = $payload['source_identifier_type'] ?? 'auto';
@@ -268,7 +281,6 @@ class SwapService
             }
         }
         
-        // Check all possible locations
         $sourceIdentifier = $payload['source_identifier'] ?? 
                            $payload['source_account'] ?? 
                            $payload['source_phone'] ?? 
@@ -312,7 +324,6 @@ class SwapService
         $destinationIdentifier = null;
         $destinationIdentifierType = null;
         
-        // Check all possible locations
         $destinationIdentifier = $payload['destination_identifier'] ?? 
                                  $payload['destination_account'] ?? 
                                  $payload['destination_phone'] ?? 
@@ -651,9 +662,8 @@ class SwapService
             error_log("[SwapService] MULTI-DESTINATION DETECTED: " . count($payload['destinations']) . " destinations");
         }
         
-        // Validate institutions for non-identity flows (never hardcoded)
+        // Validate institutions for non-identity flows
         if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY') {
-            // For multi-source/destination, validate each source/destination
             if ($isMultiSource) {
                 foreach ($payload['sources'] as $idx => $source) {
                     if (empty($source['institution'])) {
@@ -672,7 +682,6 @@ class SwapService
                 }
             }
             
-            // For standard swaps, validate source and destination
             if (!$isMultiSource && !$isMultiDestination) {
                 $this->validateInstitutions($payload, $swapType !== 'DEPOSIT');
                 
@@ -755,7 +764,6 @@ class SwapService
     {
         error_log("[SwapService] ===== executeMultiDestinationSwap START =====");
         
-        // Extract source institution - NEVER hardcoded
         $sourceInstitution = $this->extractSourceInstitution($payload);
         
         $destinations = $payload['destinations'] ?? [];
@@ -767,7 +775,6 @@ class SwapService
         $sourceIdentifier = $this->extractSourceIdentifier($payload);
         $multiDestRef = $payload['reference'] ?? $this->generateReference();
         
-        // Validate each destination
         foreach ($destinations as $idx => $dest) {
             $amount = (float)($dest['amount'] ?? 0);
             if ($amount <= 0) {
@@ -796,11 +803,9 @@ class SwapService
             $destinations[$idx] = $dest;
         }
         
-        error_log("[SwapService] Multi-destination: " . count($destinations) . " destinations with independent holds");
+        error_log("[SwapService] Multi-destination: " . count($destinations) . " destinations");
         error_log("[SwapService] Source institution: {$sourceInstitution}");
         
-        // STEP 1: VERIFY SOURCE ASSET ONCE
-        error_log("[SwapService] STEP 1: Verifying asset with source institution: {$sourceInstitution}");
         $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
             return $this->verifyAssetSigned($payload, $sourceInstitution);
         });
@@ -816,7 +821,6 @@ class SwapService
             'timestamp' => $verificationResult['timestamp']
         ];
         
-        // STEP 2: PROCESS EACH DESTINATION
         $destinationResults = [];
         $successfulDestinations = [];
         $failedDestinations = [];
@@ -837,12 +841,10 @@ class SwapService
             $destHoldId = null;
             
             try {
-                // Calculate fees
                 $feeBreakdown = $this->calculateFeesWithDetails('MULTI_DESTINATION', $destAmount, array_merge($payload, $dest));
                 $netAmount = $feeBreakdown['net_amount'] ?? $destAmount;
                 $feeAmount = $feeBreakdown['total_fee'] ?? 0;
                 
-                // Adjust amount for delivery method
                 $adjustment = $this->adjustAmountForDelivery($netAmount, $deliveryMethod, $dest['currency'] ?? $currency);
                 $deliverableAmount = $adjustment['deliverable_amount'];
                 $remainderAtSource = $adjustment['remainder_at_source'] ?? 0;
@@ -851,7 +853,6 @@ class SwapService
                     throw new RuntimeException("Deliverable amount is zero for destination " . ($idx + 1));
                 }
                 
-                // PLACE INDIVIDUAL HOLD
                 $holdPayload = $payload;
                 $holdPayload['amount'] = $destAmount + $feeAmount;
                 $holdPayload['hold_reason'] = 'MULTI_DESTINATION_DEST_' . $idx;
@@ -882,7 +883,6 @@ class SwapService
                 
                 error_log("[SwapService] Hold placed for destination " . ($idx + 1) . ": {$destHoldRef}");
                 
-                // PROCESS DESTINATION
                 $originalHoldRef = $this->currentHoldReference;
                 $originalHoldId = $this->currentHoldId;
                 $this->currentHoldReference = $destHoldRef;
@@ -920,7 +920,6 @@ class SwapService
                     throw new RuntimeException("Destination processing failed: " . ($destResult['message'] ?? 'Unknown error'));
                 }
                 
-                // DEBIT THIS DESTINATION'S HOLD
                 error_log("[SwapService] Debiting hold for destination " . ($idx + 1) . ": {$destHoldRef}");
                 
                 $this->currentHoldReference = $destHoldRef;
@@ -975,8 +974,6 @@ class SwapService
                 $totalFees += $feeAmount;
                 $totalDelivered += $deliverableAmount;
                 
-                error_log("[SwapService] Destination " . ($idx + 1) . " completed successfully");
-                
             } catch (Exception $e) {
                 error_log("[SwapService] Destination " . ($idx + 1) . " FAILED: " . $e->getMessage());
                 
@@ -1018,7 +1015,6 @@ class SwapService
             }
         }
         
-        // STEP 3: CREATE MULTI-DESTINATION RECORD
         $multiDestId = $this->storeMultiDestinationRecord(
             $multiDestRef,
             $sourceInstitution,
@@ -1030,7 +1026,6 @@ class SwapService
             count($failedDestinations)
         );
         
-        // STEP 4: SETTLEMENT
         $settlementResults = [];
         foreach ($successfulDestinations as $destResult) {
             $settlement = $this->settlement->updateNetPosition(
@@ -1161,8 +1156,6 @@ class SwapService
         array $identifier
     ): array {
         $beneficiaryPhone = $dest['beneficiary_phone'] ?? $dest['client_phone'] ?? null;
-        
-        // Get source institution from base payload - NEVER hardcoded
         $sourceInstitution = $this->extractSourceInstitution($basePayload);
         
         $cashoutPayload = [
@@ -1232,8 +1225,8 @@ class SwapService
         float $amount,
         array $identifier
     ): array {
-        // Get source institution from base payload - NEVER hardcoded
         $sourceInstitution = $this->extractSourceInstitution($basePayload);
+        $destinationAssetType = $this->extractDestinationAssetType($dest);
         
         $depositPayload = [
             'reference' => $this->currentSwapRef . '_DEST_' . ($dest['_destination_index'] ?? 0),
@@ -1241,6 +1234,7 @@ class SwapService
             'currency' => $dest['currency'] ?? 'BWP',
             'destination_identifier' => $identifier['identifier'],
             'destination_identifier_type' => $identifier['type'],
+            'destination_asset_type' => $destinationAssetType,
             'hold_reference' => $this->currentHoldReference,
             'source_verification' => $this->signedPayloads['verification'] ?? null,
             'source_hold' => $this->signedPayloads['hold'] ?? null,
@@ -1250,6 +1244,15 @@ class SwapService
             'destination_institution' => $institution,
             'action' => 'PROCESS_DEPOSIT_WITH_PROOF'
         ];
+        
+        // Set the correct field based on asset type
+        if ($destinationAssetType === 'ACCOUNT') {
+            $depositPayload['account_number'] = $identifier['identifier'];
+            $depositPayload['destination_account'] = $identifier['identifier'];
+        } else {
+            $depositPayload['phone'] = $identifier['identifier'];
+            $depositPayload['wallet_phone'] = $identifier['identifier'];
+        }
         
         $fieldsToCopy = ['wallet_pin', 'pin', 'access_token', 'source_reference', '_is_hooked', 'account_name', 'bank_code', 'branch_code'];
         foreach ($fieldsToCopy as $field) {
@@ -1285,7 +1288,6 @@ class SwapService
         float $amount,
         array $identifier
     ): array {
-        // Get source institution from base payload - NEVER hardcoded
         $sourceInstitution = $this->extractSourceInstitution($basePayload);
         
         $voucherPayload = [
@@ -1356,7 +1358,6 @@ class SwapService
     {
         error_log("[SwapService] ===== executeSignedCashout START =====");
         
-        // ✅ DYNAMIC: Extract from payload
         $amount = (float)($payload['amount'] ?? 0);
         $sourceInstitution = $this->extractSourceInstitution($payload);
         $destinationInstitution = $this->extractDestinationInstitution($payload);
@@ -1504,23 +1505,23 @@ class SwapService
     }
 
     // ============================================================================
-    // EXECUTE SIGNED DEPOSIT - NO HARDCODING
+    // EXECUTE SIGNED DEPOSIT - SUPPORTS ACCOUNT AND WALLET
     // ============================================================================
 
     private function executeSignedDeposit(array $payload): array
     {
         error_log("[SwapService] ===== executeSignedDeposit START =====");
         
-        // ✅ DYNAMIC: Extract from payload - NEVER HARDCODE
         $amount = (float)($payload['amount'] ?? 0);
         $sourceInstitution = $this->extractSourceInstitution($payload);
         $destinationInstitution = $this->extractDestinationInstitution($payload);
         $destinationIdentifier = $this->extractDestinationIdentifier($payload);
+        $destinationAssetType = $this->extractDestinationAssetType($payload);
         
         $isHooked = isset($payload['_is_hooked']) && $payload['_is_hooked'] === true;
         $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
         
-        error_log("[SwapService] Source: {$sourceInstitution}, Dest: {$destinationInstitution}, Amount: {$amount}");
+        error_log("[SwapService] Source: {$sourceInstitution}, Dest: {$destinationInstitution}, Amount: {$amount}, AssetType: {$destinationAssetType}");
         
         // STEP 1: Verify asset at source
         $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
@@ -1539,17 +1540,19 @@ class SwapService
             'is_hooked' => $isHooked
         ];
         
-        // STEP 2: Verify destination account
+        // STEP 2: Verify destination
         if (empty($destinationIdentifier['identifier'])) {
             throw new RuntimeException("Destination identifier is required for deposit");
         }
         
-        $accountVerification = $this->executeStep('VERIFY_ACCOUNT', function() use ($payload, $destinationInstitution, $destinationIdentifier) {
-            return $this->verifyAccount($payload, $destinationInstitution, $destinationIdentifier);
+        $accountVerification = $this->executeStep('VERIFY_ACCOUNT', function() use ($payload, $destinationInstitution, $destinationIdentifier, $destinationAssetType) {
+            $verifyPayload = $payload;
+            $verifyPayload['destination_asset_type'] = $destinationAssetType;
+            return $this->verifyAccount($verifyPayload, $destinationInstitution, $destinationIdentifier);
         });
         
         if (!($accountVerification['verified'] ?? false)) {
-            throw new RuntimeException("Destination account verification failed: " . ($accountVerification['message'] ?? 'Account not found'));
+            throw new RuntimeException("Destination verification failed: " . ($accountVerification['message'] ?? 'Not found'));
         }
         
         // STEP 3: Calculate fees
@@ -1579,8 +1582,8 @@ class SwapService
             error_log("[SwapService] SKIPPING hold placement - using existing hold");
         }
         
-        // STEP 5: Process deposit - ✅ NO HARDCODING
-        $depositResult = $this->executeStep('PROCESS_DEPOSIT_WITH_PROOF', function() use ($payload, $destinationInstitution, $netAmount, $accountVerification) {
+        // STEP 5: Process deposit
+        $depositResult = $this->executeStep('PROCESS_DEPOSIT_WITH_PROOF', function() use ($payload, $destinationInstitution, $netAmount, $accountVerification, $destinationAssetType) {
             $depositPayload = $payload;
             $depositPayload['amount'] = $netAmount;
             $depositPayload['account_verification'] = $accountVerification;
@@ -1588,6 +1591,8 @@ class SwapService
             $depositPayload['destination_institution'] = $destinationInstitution;
             $depositPayload['from_institution'] = $this->extractSourceInstitution($payload);
             $depositPayload['source_institution'] = $this->extractSourceInstitution($payload);
+            $depositPayload['destination_asset_type'] = $destinationAssetType;
+            $depositPayload['asset_type'] = $destinationAssetType;
             $depositPayload['_skip_hold'] = true;
             
             return $this->processDepositWithProof($depositPayload, $destinationInstitution, $netAmount);
@@ -1634,7 +1639,8 @@ class SwapService
             'fee' => $feeBreakdown['total_fee'] ?? 0,
             'fee_calculation_details' => $this->feeCalculationDetails,
             'deposit_reference' => $depositResult['transaction_reference'] ?? null,
-            'destination_account' => $destinationIdentifier['identifier'],
+            'destination_identifier' => $destinationIdentifier['identifier'],
+            'destination_asset_type' => $destinationAssetType,
             'source_institution' => $sourceInstitution,
             'destination_institution' => $destinationInstitution,
             'settlement' => $settlementResult,
@@ -1651,7 +1657,6 @@ class SwapService
     {
         error_log("[SwapService] ===== initiateSwapToIdentity (PAUSE AT HOLD) =====");
         
-        // ✅ Extract source institution - NEVER hardcoded
         $sourceInstitution = $this->extractSourceInstitution($payload);
         
         $required = ['amount', 'from_institution', 'source_identifier', 'identity_type', 'identity_value'];
@@ -1904,6 +1909,11 @@ class SwapService
     {
         $sourceInstitution = $identitySwap['source_institution'];
         $destinationInstitution = $confirmationPayload['destination_institution'] ?? 'BANK';
+        $destinationAssetType = $this->extractDestinationAssetType($confirmationPayload);
+        $destIdentifier = $confirmationPayload['destination_identifier'] ?? null;
+        $destIdentifierType = $confirmationPayload['destination_identifier_type'] ?? 'account';
+        
+        error_log("[SwapService] completeIdentitySwapAsDeposit: dest={$destinationInstitution}, identifier={$destIdentifier}, asset_type={$destinationAssetType}");
         
         $depositPayload = [
             'swap_type' => 'DEPOSIT',
@@ -1916,18 +1926,33 @@ class SwapService
             'currency' => $identitySwap['currency'] ?? 'BWP',
             'to_institution' => $destinationInstitution,
             'destination_institution' => $destinationInstitution,
-            'destination_identifier' => $confirmationPayload['destination_identifier'] ?? null,
-            'destination_identifier_type' => $confirmationPayload['destination_identifier_type'] ?? 'account',
-            'destination_account' => $confirmationPayload['destination_account'] ?? null,
-            'account_name' => $confirmationPayload['account_name'] ?? null,
-            'bank_code' => $confirmationPayload['bank_code'] ?? null,
+            'destination_identifier' => $destIdentifier,
+            'destination_identifier_type' => $destIdentifierType,
+            'destination_asset_type' => $destinationAssetType,
+            'asset_type' => $destinationAssetType,
             '_skip_hold' => true,
         ];
         
-        $fieldsToCopy = ['_is_hooked', 'access_token', 'source_reference', 'wallet_pin', 'pin'];
+        // Set the correct field based on destination asset type
+        if ($destinationAssetType === 'ACCOUNT') {
+            $depositPayload['destination_account'] = $destIdentifier;
+            $depositPayload['account_number'] = $destIdentifier;
+            error_log("[SwapService] Identity deposit to ACCOUNT: {$destIdentifier}");
+        } else {
+            // WALLET
+            $depositPayload['beneficiary_phone'] = $destIdentifier;
+            $depositPayload['phone'] = $destIdentifier;
+            $depositPayload['wallet_phone'] = $destIdentifier;
+            error_log("[SwapService] Identity deposit to WALLET: {$destIdentifier}");
+        }
+        
+        $fieldsToCopy = ['_is_hooked', 'access_token', 'source_reference', 'wallet_pin', 'pin', 'account_name', 'bank_code', 'branch_code'];
         foreach ($fieldsToCopy as $field) {
             if (isset($sourcePayload[$field])) {
                 $depositPayload[$field] = $sourcePayload[$field];
+            }
+            if (isset($confirmationPayload[$field])) {
+                $depositPayload[$field] = $confirmationPayload[$field];
             }
         }
         
@@ -2356,7 +2381,6 @@ class SwapService
 
     private function executeSignedStandardSwap(array $payload): array
     {
-        // ✅ Extract institutions from payload - NEVER hardcoded
         $amount = (float)($payload['amount'] ?? 0);
         $sourceInstitution = $this->extractSourceInstitution($payload);
         $destInstitution = $this->extractDestinationInstitution($payload);
@@ -2804,6 +2828,10 @@ class SwapService
         return ['success' => true];
     }
 
+    // ============================================================================
+    // PROCESS DEPOSIT WITH PROOF - SUPPORTS ACCOUNT AND WALLET
+    // ============================================================================
+
     private function processDepositWithProof(array $payload, string $institution, float $amount): array
     {
         error_log("[SwapService] processDepositWithProof called for institution: {$institution}");
@@ -2811,15 +2839,14 @@ class SwapService
         $participant = $this->getParticipant($institution);
         $bankClient = new GenericBankClient($participant, $payload);
         
-        // ✅ DYNAMIC: Extract from payload - NEVER HARDCODE
         $sourceInstitution = $this->extractSourceInstitution($payload);
         $destinationInstitution = $this->extractDestinationInstitution($payload);
         $destId = $this->extractDestinationIdentifier($payload);
         $sourceId = $this->extractSourceIdentifier($payload);
+        $destinationAssetType = $this->extractDestinationAssetType($payload);
         
-        error_log("[SwapService] processDepositWithProof: source={$sourceInstitution}, dest={$destinationInstitution}, amount={$amount}");
+        error_log("[SwapService] processDepositWithProof: source={$sourceInstitution}, dest={$destinationInstitution}, amount={$amount}, asset_type={$destinationAssetType}");
         
-        // Build deposit payload with dynamic institutions
         $depositPayload = [
             'reference' => $this->currentSwapRef,
             'amount' => $amount,
@@ -2828,13 +2855,13 @@ class SwapService
             'source_verification' => $this->signedPayloads['verification'] ?? null,
             'source_hold' => $this->signedPayloads['hold'] ?? null,
             'source_details' => $payload['source_details'] ?? [],
-            
-            // ✅ DYNAMIC - from payload, never hardcoded
             'from_institution' => $sourceInstitution,
             'source_institution' => $sourceInstitution,
             'to_institution' => $destinationInstitution,
             'destination_institution' => $destinationInstitution,
             'bank' => $sourceInstitution,
+            'destination_asset_type' => $destinationAssetType,
+            'asset_type' => $destinationAssetType,
         ];
         
         // Add source identifier
@@ -2845,13 +2872,22 @@ class SwapService
             error_log("[SwapService] Added source_identifier: {$sourceId['identifier']}");
         }
         
-        // Add destination identifier
+        // Add destination identifier based on asset type
         if ($destId['has_value']) {
             $depositPayload['destination_identifier'] = $destId['identifier'];
             $depositPayload['destination_identifier_type'] = $destId['type'];
-            $depositPayload['account_number'] = $destId['identifier'];
-            $depositPayload['phone'] = $destId['identifier'];
-            error_log("[SwapService] Added destination_identifier: {$destId['identifier']}");
+            
+            if ($destinationAssetType === 'ACCOUNT') {
+                $depositPayload['account_number'] = $destId['identifier'];
+                $depositPayload['destination_account'] = $destId['identifier'];
+                error_log("[SwapService] Destination is ACCOUNT: {$destId['identifier']}");
+            } else {
+                // WALLET
+                $depositPayload['phone'] = $destId['identifier'];
+                $depositPayload['wallet_phone'] = $destId['identifier'];
+                $depositPayload['beneficiary_phone'] = $destId['identifier'];
+                error_log("[SwapService] Destination is WALLET: {$destId['identifier']}");
+            }
         } else {
             error_log("[SwapService] WARNING: No destination identifier found!");
         }
@@ -2862,10 +2898,8 @@ class SwapService
             $depositPayload['_skip_hold'] = true;
         }
         
-        // Forward PIN if available
         $this->forwardPin($payload, $depositPayload);
         
-        // Log without sensitive data
         $logPayload = $depositPayload;
         if (isset($logPayload['pin'])) $logPayload['pin'] = '******';
         if (isset($logPayload['certificate'])) $logPayload['certificate'] = '***CERT***';
@@ -2922,6 +2956,7 @@ class SwapService
         $bankClient = new GenericBankClient($participant, $payload);
         
         $sourceInstitution = $this->extractSourceInstitution($payload);
+        $destinationAssetType = $this->extractDestinationAssetType($payload);
         
         $verifyPayload = [
             'action' => 'VERIFY_ACCOUNT',
@@ -2933,7 +2968,8 @@ class SwapService
             'from_institution' => $sourceInstitution,
             'source_institution' => $sourceInstitution,
             'to_institution' => $institution,
-            'destination_institution' => $institution
+            'destination_institution' => $institution,
+            'destination_asset_type' => $destinationAssetType,
         ];
         
         $result = $bankClient->verifyAccount($verifyPayload);
@@ -3396,8 +3432,7 @@ class SwapService
         $metadata = [
             'swap_reference' => $this->currentSwapRef,
             'external_hold_reference' => $externalHoldRef,
-            'signature_chain' => $this->signedPayloads
-        ];
+            'signature_chain' => $this->signedPayloads        ];
         
         $sql = "
             INSERT INTO hold_transactions (
