@@ -1,5 +1,5 @@
 <?php
-// public/user/dashboard.php - FIXED VOUCHER FIELDS
+// public/user/dashboard.php - FIXED VOUCHER FIELDS + CLOUD BALANCE CHECK
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
@@ -239,8 +239,39 @@ try {
     error_log("Error fetching recent swaps: " . $e->getMessage());
 }
 
+// Get cloud balances (money sent to identifiers)
+$cloudBalances = [];
+$cloudTotal = 0;
+try {
+    // Get all pending identity swaps for this user
+    $stmt = $swapDB->prepare("
+        SELECT 
+            identity_type,
+            identity_value,
+            SUM(amount) as total_amount,
+            COUNT(*) as count,
+            MIN(created_at) as oldest,
+            MAX(created_at) as newest
+        FROM identity_swap_holds 
+        WHERE user_id = ? 
+        AND status = 'pending'
+        GROUP BY identity_type, identity_value
+        ORDER BY created_at DESC
+    ");
+    $stmt->execute([$userId]);
+    $cloudBalances = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    foreach ($cloudBalances as &$cb) {
+        $cloudTotal += (float)$cb['total_amount'];
+        $cb['expires_at'] = date('Y-m-d H:i:s', strtotime($cb['newest']) + 86400); // 24 hours from newest
+    }
+} catch (Exception $e) {
+    error_log("Error fetching cloud balances: " . $e->getMessage());
+}
+
 $apiUrl = '/api/v1/swap/execute.php';
 $previewUrl = '/api/v1/swap/preview.php';
+$cloudBalanceUrl = '/api/v1/swap/cloud_balance.php';
 $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
 
 $denominationsList = implode(', ', $atmDenominations);
@@ -297,6 +328,7 @@ $identifiersJson = json_encode($validIdentifiers);
             border: 1px solid rgba(255,255,255,0.06);
         }
         .card h3 { font-size: 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+        .card h4 { font-size: 13px; color: #00f0ff; margin: 10px 0 6px 0; }
         
         .swap-type-selector {
             display: grid;
@@ -419,6 +451,68 @@ $identifiersJson = json_encode($validIdentifiers);
             margin-top: 8px;
         }
         .btn-add:hover { border-color: #00f0ff; color: #00f0ff; background: rgba(0,240,255,0.05); }
+        .btn-cloud {
+            background: linear-gradient(135deg, #ff6b6b, #ff3366);
+            color: #fff;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn-cloud:hover { transform: translateY(-1px); filter: brightness(1.05); }
+        .btn-cloud:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-cloud-small {
+            background: rgba(255,107,107,0.15);
+            color: #ff6b6b;
+            padding: 6px 14px;
+            border: 1px solid #ff6b6b;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.2s;
+        }
+        .btn-cloud-small:hover { background: rgba(255,107,107,0.25); }
+        
+        .cloud-balance-card {
+            background: linear-gradient(135deg, #1a1f3a, #0a0e27);
+            border: 1px solid rgba(255,107,107,0.3);
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .cloud-balance-card .amount {
+            font-size: 28px;
+            font-weight: bold;
+            color: #ff6b6b;
+        }
+        .cloud-balance-card .detail {
+            font-size: 12px;
+            color: #888;
+            margin-top: 4px;
+        }
+        .cloud-balance-card .actions {
+            margin-top: 10px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .cloud-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 12px;
+            border-bottom: 1px solid #1a1f3a;
+            font-size: 12px;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .cloud-item:last-child { border-bottom: none; }
+        .cloud-item .ident { color: #00f0ff; }
+        .cloud-item .amount { color: #ff6b6b; font-weight: bold; }
         
         .source-entry {
             background: #0a0e27;
@@ -500,6 +594,7 @@ $identifiersJson = json_encode($validIdentifiers);
         .swap-status.completed { color: #4caf50; }
         .swap-status.failed { color: #f44336; }
         .swap-status.pending { color: #ffc107; }
+        .swap-status.processing { color: #00f0ff; }
         
         .modal-overlay {
             display: none;
@@ -589,6 +684,22 @@ $identifiersJson = json_encode($validIdentifiers);
         .dest-option:hover { border-color: #00f0ff; }
         .dest-option.active { border-color: #00f0ff; background: rgba(0,240,255,0.05); }
         
+        .cloud-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        .cloud-header .title {
+            font-size: 14px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
         @media (max-width: 768px) {
             .form-row { grid-template-columns: 1fr; gap: 8px; }
             .swap-type-selector { grid-template-columns: 1fr 1fr; }
@@ -597,6 +708,7 @@ $identifiersJson = json_encode($validIdentifiers);
             .modal-actions { flex-direction: column; }
             .header { flex-direction: column; text-align: center; }
             .user-info { text-align: center; }
+            .cloud-header { flex-direction: column; align-items: stretch; }
         }
         @media (max-width: 480px) {
             .swap-type-selector { grid-template-columns: 1fr; }
@@ -645,6 +757,55 @@ $identifiersJson = json_encode($validIdentifiers);
             💡 <strong>Standard Swap:</strong> Send money from one account to another.
             <span id="identityHelp" style="display:none;">🔐 <strong>Swap to Identity:</strong> Send money to someone's National ID, Phone, or Email. They claim it later by confirming their identity.</span>
             <span id="multiHelp" style="display:none;">📦 <strong>Multi-Source:</strong> Combine money from multiple accounts to send a larger amount.</span>
+        </div>
+    </div>
+
+    <!-- CLOUD BALANCE CARD -->
+    <div class="card" id="cloudBalanceCard">
+        <div class="cloud-header">
+            <div class="title">☁️ Money on Cloud</div>
+            <button class="btn-cloud" id="checkCloudBtn" onclick="checkCloudBalance()">
+                🔄 Check Cloud
+            </button>
+        </div>
+        <div id="cloudBalanceContent">
+            <?php if (empty($cloudBalances)): ?>
+                <div class="info-box" style="margin:0;">
+                    💡 No money waiting on the cloud. Send to an identity to see it here.
+                </div>
+            <?php else: ?>
+                <div class="cloud-balance-card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                        <div>
+                            <div style="font-size:12px; color:#888;">Total Cloud Balance</div>
+                            <div class="amount"><?= $currencySymbol ?> <?= number_format($cloudTotal, 2) ?></div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div style="font-size:11px; color:#888;"><?= count($cloudBalances) ?> pending item(s)</div>
+                            <button class="btn-cloud-small" onclick="viewCloudDetails()">View Details</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="cloudDetails" style="display:none; margin-top:8px;">
+                    <?php foreach ($cloudBalances as $cb): ?>
+                        <div class="cloud-item">
+                            <div>
+                                <span class="ident"><?= htmlspecialchars($cb['identity_type']) ?>:</span>
+                                <strong><?= htmlspecialchars($cb['identity_value']) ?></strong>
+                                <span style="color:#888;font-size:10px;">(<?= $cb['count'] ?> items)</span>
+                            </div>
+                            <div>
+                                <span class="amount"><?= $currencySymbol ?> <?= number_format($cb['total_amount'], 2) ?></span>
+                                <span style="color:#888;font-size:10px;margin-left:8px;">Expires: <?= date('M d, H:i', strtotime($cb['expires_at'])) ?></span>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                    <div style="margin-top:8px; text-align:center;">
+                        <button class="btn-cloud-small" onclick="toggleCloudDetails()">Hide Details</button>
+                    </div>
+                </div>
+                <button id="toggleCloudBtn" class="btn-cloud-small" style="margin-top:8px;" onclick="toggleCloudDetails()">📋 Show Details</button>
+            <?php endif; ?>
         </div>
     </div>
 
@@ -824,7 +985,6 @@ $identifiersJson = json_encode($validIdentifiers);
                 </div>
             </div>
             
-            <!-- CONFIRM IDENTITY will be handled by the recipient -->
             <div class="info-box">
                 📋 After this swap, the recipient will get a reference. They can claim it by confirming their identity.
             </div>
@@ -962,7 +1122,31 @@ const currencySymbol = '<?= $currencySymbol ?>';
 const userIdentifiers = <?= $identifiersJson ?>;
 const apiUrl = '<?= $apiUrl ?>';
 const previewUrl = '<?= $previewUrl ?>';
+const cloudBalanceUrl = '<?= $cloudBalanceUrl ?>';
 const apiKey = '<?= $apiKey ?>';
+const userId = '<?= $userId ?>';
+
+// ============================================================
+// FALLBACK: Ensure VOUCHER fields exist
+// ============================================================
+if (assetFields['VOUCHER'] && assetFields['VOUCHER'].length === 0) {
+    assetFields['VOUCHER'] = [
+        { name: 'voucher_number', label: '🎫 Voucher Number', type: 'text', required: true, placeholder: 'Enter voucher number' },
+        { name: 'voucher_pin', label: '🔑 Voucher PIN', type: 'password', required: true, vault_field: 'pin', placeholder: 'Enter voucher PIN' },
+        { name: 'amount', label: '💰 Amount', type: 'number', required: true, placeholder: '0.00' },
+        { name: 'phone', label: '📱 Phone Number', type: 'tel', required: false, placeholder: '+267XXXXXXXX' }
+    ];
+    console.log('✅ VOUCHER fallback fields applied');
+}
+
+// Also ensure ATM fields exist
+if (assetFields['ATM'] && assetFields['ATM'].length === 0) {
+    assetFields['ATM'] = [
+        { name: 'atm_code', label: '🏧 ATM Code', type: 'text', required: true, placeholder: 'Enter ATM code' },
+        { name: 'atm_pin', label: '🔑 ATM PIN', type: 'password', required: true, vault_field: 'pin', placeholder: 'Enter ATM PIN' }
+    ];
+    console.log('✅ ATM fallback fields applied');
+}
 
 // ============================================================
 // STATE
@@ -974,9 +1158,106 @@ let sources = [];
 let sourceCounter = 0;
 let pendingPayload = null;
 let previewData = null;
+let cloudDetailsVisible = false;
 
 // ============================================================
-// DYNAMIC ASSET FIELD FUNCTIONS - FROM assets.yaml
+// CLOUD BALANCE FUNCTIONS
+// ============================================================
+
+function checkCloudBalance() {
+    const btn = document.getElementById('checkCloudBtn');
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Checking...';
+    
+    fetch(cloudBalanceUrl + '?user_id=' + userId, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const container = document.getElementById('cloudBalanceContent');
+            const total = data.total || 0;
+            const items = data.items || [];
+            
+            if (items.length === 0) {
+                container.innerHTML = `<div class="info-box" style="margin:0;">💡 No money waiting on the cloud. Send to an identity to see it here.</div>`;
+                return;
+            }
+            
+            let html = `
+                <div class="cloud-balance-card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                        <div>
+                            <div style="font-size:12px; color:#888;">Total Cloud Balance</div>
+                            <div class="amount">${currencySymbol} ${total.toFixed(2)}</div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div style="font-size:11px; color:#888;">${items.length} pending item(s)</div>
+                            <button class="btn-cloud-small" onclick="viewCloudDetails()">View Details</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="cloudDetails" style="display:none; margin-top:8px;">
+                    ${items.map(item => `
+                        <div class="cloud-item">
+                            <div>
+                                <span class="ident">${item.identity_type}:</span>
+                                <strong>${item.identity_value}</strong>
+                                <span style="color:#888;font-size:10px;">(${item.count} items)</span>
+                            </div>
+                            <div>
+                                <span class="amount">${currencySymbol} ${parseFloat(item.total_amount).toFixed(2)}</span>
+                                <span style="color:#888;font-size:10px;margin-left:8px;">Expires: ${new Date(item.expires_at).toLocaleDateString()} ${new Date(item.expires_at).toLocaleTimeString()}</span>
+                            </div>
+                        </div>
+                    `).join('')}
+                    <div style="margin-top:8px; text-align:center;">
+                        <button class="btn-cloud-small" onclick="toggleCloudDetails()">Hide Details</button>
+                    </div>
+                </div>
+                <button id="toggleCloudBtn" class="btn-cloud-small" style="margin-top:8px;" onclick="toggleCloudDetails()">📋 Show Details</button>
+            `;
+            container.innerHTML = html;
+            cloudDetailsVisible = false;
+        } else {
+            alert('❌ Failed to check cloud balance: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        alert('❌ Network error: ' + error.message);
+    })
+    .finally(() => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    });
+}
+
+function toggleCloudDetails() {
+    cloudDetailsVisible = !cloudDetailsVisible;
+    const details = document.getElementById('cloudDetails');
+    const toggleBtn = document.getElementById('toggleCloudBtn');
+    if (details) {
+        details.style.display = cloudDetailsVisible ? 'block' : 'none';
+    }
+    if (toggleBtn) {
+        toggleBtn.textContent = cloudDetailsVisible ? '📋 Hide Details' : '📋 Show Details';
+    }
+}
+
+function viewCloudDetails() {
+    const details = document.getElementById('cloudDetails');
+    const toggleBtn = document.getElementById('toggleCloudBtn');
+    if (details) {
+        cloudDetailsVisible = true;
+        details.style.display = 'block';
+        if (toggleBtn) toggleBtn.textContent = '📋 Hide Details';
+    }
+}
+
+// ============================================================
+// DYNAMIC ASSET FIELD FUNCTIONS - FROM assets.yaml + FALLBACK
 // ============================================================
 
 function renderAssetFields(prefix, assetType, containerId) {
@@ -995,7 +1276,7 @@ function renderAssetFields(prefix, assetType, containerId) {
         return;
     }
     
-    const fields = assetFields[assetType] || [];
+    let fields = assetFields[assetType] || [];
     console.log('[renderAssetFields] Fields for', assetType, ':', fields);
     
     if (!fields || fields.length === 0) {
@@ -1808,6 +2089,7 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log('📦 Asset Types:', Object.keys(assetFields));
     console.log('📋 Asset Fields:', assetFields);
     console.log('📋 VOUCHER Fields:', assetFields['VOUCHER']);
+    console.log('☁️ Cloud balance endpoint:', cloudBalanceUrl);
 });
 </script>
 </body>
