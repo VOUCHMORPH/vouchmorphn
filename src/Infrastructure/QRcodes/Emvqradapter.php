@@ -1,10 +1,10 @@
 <?php
 declare(strict_types=1);
 
-namespace Infrastructure\Channels\Qr;
+namespace Infrastructure\QRcodes;
 
-use Infrastructure\Channels\Contracts\QrAdapterInterface;
-use Infrastructure\Channels\Contracts\QrPayload;
+use Infrastructure\QRcodes\Contracts\QrAdapterInterface;
+use Infrastructure\QRcodes\Contracts\QrPayload;
 use RuntimeException;
 
 /**
