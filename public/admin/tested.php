@@ -14,16 +14,7 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
 // Set up autoloading
-require_once __DIR__ . '/../../vendor/autoload.php';
-
-// Load environment
-$dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/../');
-$dotenv->load();
-
-use Core\Config\LoadCountry;
-use Domain\Services\SwapService;
-use Infrastructure\Adapters\InstitutionAdapterFactory;
-use Infrastructure\Banks\GenericBankClient;
+require_once __DIR__ . '/../vendor/autoload.php';
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -50,6 +41,15 @@ function getCurrentTimestamp() {
     return date('Y-m-d H:i:s') . ' (Timestamp: ' . time() . ')';
 }
 
+// Get environment variables (Railway sets these)
+function getEnvVar($name, $default = null) {
+    $value = getenv($name);
+    if ($value === false || $value === null || $value === '') {
+        return $default;
+    }
+    return $value;
+}
+
 // ============================================================================
 // STEP 1: LOAD CONFIGURATION
 // ============================================================================
@@ -57,12 +57,18 @@ function getCurrentTimestamp() {
 printHeader('STEP 1: LOADING CONFIGURATION');
 
 echo "\n  Timestamp: " . getCurrentTimestamp() . "\n";
+echo "  Environment variables (from Railway):\n";
+echo "    DB_HOST: " . (getEnvVar('DB_HOST') ? '✅ SET' : '❌ NOT SET') . "\n";
+echo "    DB_NAME: " . (getEnvVar('DB_NAME') ? '✅ SET' : '❌ NOT SET') . "\n";
+echo "    DB_USER: " . (getEnvVar('DB_USER') ? '✅ SET' : '❌ NOT SET') . "\n";
+echo "    DB_PASSWORD: " . (getEnvVar('DB_PASSWORD') ? '✅ SET' : '❌ NOT SET') . "\n";
 
 try {
-    $countryConfig = LoadCountry::getConfig();
+    $countryConfig = \Core\Config\LoadCountry::getConfig();
     echo "  ✅ Country config loaded\n";
     echo "  Country: " . ($countryConfig['country'] ?? 'Unknown') . "\n";
     echo "  Currency: " . ($countryConfig['currency'] ?? 'Unknown') . "\n";
+    echo "  Participants: " . implode(', ', array_keys($countryConfig['participants'] ?? [])) . "\n";
 } catch (Exception $e) {
     echo "  ❌ Failed to load country config: " . $e->getMessage() . "\n";
     exit(1);
@@ -101,15 +107,19 @@ printJson($testPayload, '  Test Payload');
 printHeader('STEP 3: SWAPSERVICE FIELD EXTRACTION');
 
 try {
-    // Create SwapService instance
-    $db = new PDO(
-        'pgsql:host=' . getenv('DB_HOST') . ';dbname=' . getenv('DB_NAME'),
-        getenv('DB_USER'),
-        getenv('DB_PASSWORD')
-    );
+    // Get database connection
+    $dbHost = getEnvVar('DB_HOST', 'postgres.railway.internal');
+    $dbName = getEnvVar('DB_NAME', 'railway');
+    $dbUser = getEnvVar('DB_USER', 'postgres');
+    $dbPassword = getEnvVar('DB_PASSWORD', '');
+    
+    $dsn = "pgsql:host={$dbHost};dbname={$dbName}";
+    $db = new PDO($dsn, $dbUser, $dbPassword);
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
-    $swapService = new SwapService($db, [], 'Botswana');
+    echo "  ✅ Database connected: {$dbHost}/{$dbName}\n";
+    
+    $swapService = new \Domain\Services\SwapService($db, [], 'Botswana');
     
     echo "  ✅ SwapService initialized\n";
     
@@ -166,20 +176,23 @@ try {
         echo "  ❌ ZURUBANK configuration not found\n";
     } else {
         echo "  ✅ ZURUBANK config loaded\n";
+        echo "  ZURUBANK provider_code: " . ($zurubankConfig['provider_code'] ?? 'Not set') . "\n";
         echo "  ZURUBANK base_url: " . ($zurubankConfig['base_url'] ?? 'Not set') . "\n";
         
         // Initialize GenericBankClient for ZURUBANK
-        $bankClient = new GenericBankClient($zurubankConfig);
+        $bankClient = new \Infrastructure\Banks\GenericBankClient($zurubankConfig);
         echo "  ✅ GenericBankClient initialized for ZURUBANK\n";
         
         // Use reflection to get YAML endpoints
         $reflection = new ReflectionClass($bankClient);
+        
+        // Get yamlEndpoints property
         $yamlEndpointsProp = $reflection->getProperty('yamlEndpoints');
         $yamlEndpointsProp->setAccessible(true);
+        $yamlEndpoints = $yamlEndpointsProp->getValue($bankClient);
+        
         $yamlBaseUrlProp = $reflection->getProperty('yamlBaseUrl');
         $yamlBaseUrlProp->setAccessible(true);
-        
-        $yamlEndpoints = $yamlEndpointsProp->getValue($bankClient);
         $yamlBaseUrl = $yamlBaseUrlProp->getValue($bankClient);
         
         echo "  YAML Base URL: " . ($yamlBaseUrl ?? 'Not set') . "\n";
@@ -244,6 +257,17 @@ try {
             if (!isset($signedPayload['voucher_number'])) {
                 echo "\n  ⚠️ WARNING: voucher_number is MISSING from signed payload!\n";
                 echo "  This is why ZURUBANK is saying 'Voucher number required'\n";
+                echo "\n  🔍 Let's trace where it's being dropped:\n";
+                
+                // Check if it was in the original payload
+                if (isset($verifyPayload['voucher_number'])) {
+                    echo "    ✅ voucher_number WAS in verifyPayload\n";
+                } else {
+                    echo "    ❌ voucher_number was NOT in verifyPayload\n";
+                }
+                
+                // Check if createSignedPayload is dropping it
+                echo "    🔍 createSignedPayload is dropping the field\n";
             }
             
             // Check what fields are in the signed payload
@@ -372,6 +396,8 @@ if (file_exists($bankClientPath)) {
         if (!in_array('voucher_pin', $fields)) {
             echo "    ⚠️ voucher_pin is NOT in the fields list!\n";
         }
+    } else {
+        echo "    ❌ createSignedPayload method not found\n";
     }
     
     echo "\n  🔍 Checking processDepositWithProof method:\n";
@@ -383,6 +409,8 @@ if (file_exists($bankClientPath)) {
         foreach ($fields as $field) {
             echo "      " . $field . "\n";
         }
+    } else {
+        echo "    ❌ processDepositWithProof method not found\n";
     }
 } else {
     echo "  ❌ GenericBankClient.php not found at: " . $bankClientPath . "\n";
@@ -405,6 +433,18 @@ if ($hasVoucherInPayload && !$hasVoucherInSigned) {
     echo "\n  ⚠️ CRITICAL ISSUE: voucher_number is being DROPPED in createSignedPayload()!\n";
     echo "     This method likely reconstructs the payload and doesn't include voucher_number.\n";
     echo "\n  FIX: Modify createSignedPayload() in GenericBankClient.php to preserve voucher_number.\n";
+    echo "\n  Add this at the beginning of createSignedPayload():\n";
+    echo "  ```php\n";
+    echo "  // Preserve voucher fields if present\n";
+    echo "  if (isset(\$payload['voucher_number'])) {\n";
+    echo "      \$payload['voucherNumber'] = \$payload['voucher_number'];\n";
+    echo "      \$payload['voucher_no'] = \$payload['voucher_number'];\n";
+    echo "  }\n";
+    echo "  if (isset(\$payload['voucher_pin'])) {\n";
+    echo "      \$payload['voucherPin'] = \$payload['voucher_pin'];\n";
+    echo "      \$payload['voucher_pin'] = \$payload['voucher_pin'];\n";
+    echo "  }\n";
+    echo "  ```\n";
 } elseif (!$hasVoucherInPayload) {
     echo "\n  ⚠️ CRITICAL ISSUE: voucher_number is NOT in the payload being sent to SwapService!\n";
     echo "     Check the request payload structure.\n";
@@ -416,15 +456,18 @@ echo "\n  📋 RECOMMENDED FIX:\n";
 echo "  =================\n";
 echo "  1. Open src/Infrastructure/Banks/GenericBankClient.php\n";
 echo "  2. Find the createSignedPayload() method\n";
-echo "  3. Add this line near the top:\n";
+echo "  3. Add this code at the START of the method:\n";
+echo "     ```php\n";
+echo "     // Preserve voucher fields\n";
 echo "     if (isset(\$payload['voucher_number'])) {\n";
 echo "         \$payload['voucherNumber'] = \$payload['voucher_number'];\n";
 echo "         \$payload['voucher_no'] = \$payload['voucher_number'];\n";
 echo "     }\n";
-echo "  4. If it still doesn't work, also add to processDepositWithProof():\n";
-echo "     if (isset(\$payload['voucher_number']) && !isset(\$signedPayload['voucher_number'])) {\n";
-echo "         \$signedPayload['voucher_number'] = \$payload['voucher_number'];\n";
+echo "     if (isset(\$payload['voucher_pin'])) {\n";
+echo "         \$payload['voucherPin'] = \$payload['voucher_pin'];\n";
 echo "     }\n";
+echo "     ```\n";
+echo "  4. If using CertificateManager, check if it's dropping fields\n";
 
 echo "\n";
 echo "╔══════════════════════════════════════════════════════════════════════════════╗\n";
