@@ -31,6 +31,11 @@ use Infrastructure\Crypto\AggregateSigner;
  * 
  * NOW WITH ADAPTER PATTERN - each institution has its own adapter
  * No GenericBankClient used directly - all institution communication via adapters
+ * 
+ * PIN POLICY:
+ * - PIN is ONLY required for SOURCE operations (verify, hold, debit)
+ * - DESTINATION operations (deposit, credit, transfer) do NOT require PIN
+ * - This is because you're sending to someone else - you don't need their PIN
  */
 class SwapService
 {
@@ -1259,7 +1264,9 @@ class SwapService
             $depositPayload['wallet_phone'] = $identifier['identifier'];
         }
 
-        $fieldsToCopy = ['wallet_pin', 'pin', 'access_token', 'source_reference', '_is_hooked', 'account_name', 'bank_code', 'branch_code'];
+        // FIXED: Do NOT forward PIN to destination - destination doesn't need PIN
+        // PIN is only for SOURCE authentication
+        $fieldsToCopy = ['access_token', 'source_reference', '_is_hooked', 'account_name', 'bank_code', 'branch_code'];
         foreach ($fieldsToCopy as $field) {
             if (isset($dest[$field])) {
                 $depositPayload[$field] = $dest[$field];
@@ -1315,7 +1322,8 @@ class SwapService
             'voucher_details' => $dest['voucher_details'] ?? []
         ];
         
-        $fieldsToCopy = ['wallet_pin', 'pin', 'access_token', 'source_reference', '_is_hooked'];
+        // FIXED: Do NOT forward PIN to destination - destination doesn't need PIN
+        $fieldsToCopy = ['access_token', 'source_reference', '_is_hooked'];
         foreach ($fieldsToCopy as $field) {
             if (isset($dest[$field])) {
                 $voucherPayload[$field] = $dest[$field];
@@ -2599,6 +2607,13 @@ class SwapService
         ];
     }
 
+    /**
+     * Forward PIN from original payload to target payload.
+     * 
+     * IMPORTANT: PIN is ONLY for SOURCE operations (verify, hold, debit).
+     * Destination operations (deposit, credit, transfer) do NOT need PIN.
+     * This method should ONLY be called for SOURCE operations.
+     */
     private function forwardPin(array $originalPayload, array &$targetPayload): void
     {
         $isHooked = isset($originalPayload['_is_hooked']) && $originalPayload['_is_hooked'] === true;
@@ -2614,6 +2629,7 @@ class SwapService
             return;
         }
         
+        // PIN is only for source authentication
         if (!empty($originalPayload['wallet_pin'])) {
             $targetPayload['wallet_pin'] = $originalPayload['wallet_pin'];
             $targetPayload['pin'] = $originalPayload['wallet_pin'];
@@ -2633,6 +2649,7 @@ class SwapService
 
     /**
      * Verify asset at institution using adapter pattern
+     * SOURCE OPERATION - Requires PIN
      */
     private function verifyAssetSigned(array $payload, string $institution): array
     {
@@ -2654,6 +2671,7 @@ class SwapService
             'source_institution' => $institution
         ];
 
+        // SOURCE operation - forwards PIN
         $this->forwardPin($payload, $verifyPayload);
 
         if ($sourceId['has_value']) {
@@ -2673,6 +2691,7 @@ class SwapService
 
     /**
      * Place hold at institution using adapter pattern
+     * SOURCE OPERATION - Requires PIN
      */
     private function placeHoldSigned(array $payload, string $institution, array $verificationResult): array
     {
@@ -2695,6 +2714,7 @@ class SwapService
             'source_institution' => $institution
         ];
 
+        // SOURCE operation - forwards PIN
         $this->forwardPin($payload, $holdPayload);
 
         if ($sourceId['has_value']) {
@@ -2729,6 +2749,7 @@ class SwapService
 
     /**
      * Debit source institution using adapter pattern
+     * SOURCE OPERATION - Requires PIN
      */
     private function debitSource(array $payload, string $institution): array
     {
@@ -2741,6 +2762,7 @@ class SwapService
             'source_institution' => $institution
         ];
 
+        // SOURCE operation - forwards PIN
         $this->forwardPin($payload, $debitPayload);
 
         $adapter = $this->adapterFactory->getAdapter($institution);
@@ -2754,6 +2776,8 @@ class SwapService
 
     /**
      * Generate cashout token using adapter pattern
+     * DESTINATION OPERATION - Does NOT require PIN
+     * (PIN is forwarded from source for verification, but destination doesn't need it)
      */
     private function generateCashoutToken(array $payload, string $institution, float $amount): array
     {
@@ -2779,6 +2803,9 @@ class SwapService
             $tokenPayload['note_breakdown'] = $payload['note_breakdown'];
         }
 
+        // DESTINATION operation - NO PIN forwarding
+        // (PIN is only for source authentication)
+
         $adapter = $this->adapterFactory->getAdapter($institution);
         return $adapter->generateCashoutToken($tokenPayload, [
             'swap_reference' => $this->currentSwapRef,
@@ -2792,6 +2819,7 @@ class SwapService
 
     /**
      * Verify account using adapter pattern
+     * DESTINATION OPERATION - Does NOT require PIN
      */
     private function verifyAccount(array $payload, string $institution, array $destinationIdentifier): array
     {
@@ -2812,6 +2840,8 @@ class SwapService
             'destination_asset_type' => $destinationAssetType,
         ];
 
+        // DESTINATION operation - NO PIN forwarding
+
         $adapter = $this->adapterFactory->getAdapter($institution);
         return $adapter->verifyAccount($verifyPayload, [
             'swap_reference' => $this->currentSwapRef,
@@ -2825,6 +2855,7 @@ class SwapService
 
     /**
      * Process deposit with proof using adapter pattern
+     * DESTINATION OPERATION - Does NOT require PIN
      */
     private function processDepositWithProof(array $payload, string $institution, float $amount): array
     {
@@ -2885,7 +2916,9 @@ class SwapService
             $depositPayload['_skip_hold'] = true;
         }
         
-        $this->forwardPin($payload, $depositPayload);
+        // DESTINATION operation - NO PIN forwarding!
+        // Do NOT call $this->forwardPin($payload, $depositPayload);
+        // PIN is ONLY for source verification, not destination deposit!
         
         $logPayload = $depositPayload;
         if (isset($logPayload['pin'])) $logPayload['pin'] = '******';
@@ -2906,6 +2939,7 @@ class SwapService
 
     /**
      * Process destination with proof using adapter pattern
+     * DESTINATION OPERATION - Does NOT require PIN
      */
     private function processDestinationWithProof(array $payload, string $institution, float $amount): array
     {
@@ -2926,7 +2960,9 @@ class SwapService
             'destination_institution' => $institution
         ];
         
-        $this->forwardPin($payload, $transferPayload);
+        // DESTINATION operation - NO PIN forwarding!
+        // Do NOT call $this->forwardPin($payload, $transferPayload);
+        // PIN is ONLY for source verification, not destination!
         
         if ($destId['has_value']) {
             $transferPayload['destination_identifier'] = $destId['identifier'];
