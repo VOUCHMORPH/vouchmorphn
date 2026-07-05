@@ -926,6 +926,7 @@ class SwapService
                 $this->currentHoldReference = $originalHoldRef;
                 $this->currentHoldId = $originalHoldId;
                 
+                // ✅ FIX: Check 'success' for multi-destination result
                 if (!($destResult['success'] ?? false)) {
                     throw new RuntimeException("Destination processing failed: " . ($destResult['message'] ?? 'Unknown error'));
                 }
@@ -1284,7 +1285,8 @@ class SwapService
             'signed_payloads' => $this->signedPayloads
         ]);
 
-        if (!($result['success'] ?? false)) {
+        // ✅ FIX: Check 'credited' instead of 'success'
+        if (!($result['credited'] ?? false)) {
             return ['success' => false, 'message' => $result['message'] ?? 'Deposit failed'];
         }
 
@@ -1611,7 +1613,8 @@ class SwapService
             return $this->processDepositWithProof($depositPayload, $destinationInstitution, $netAmount);
         });
         
-        if (!($depositResult['success'] ?? false)) {
+        // ✅ FIX: Check 'credited' instead of 'success'
+        if (!($depositResult['credited'] ?? false)) {
             throw new RuntimeException("Deposit failed: " . ($depositResult['message'] ?? 'Unknown error'));
         }
         
@@ -2406,7 +2409,8 @@ class SwapService
         $netAmount = $feeBreakdown['net_amount'] ?? $amount;
         
         $destinationResult = $this->processDestinationWithProof($payload, $destInstitution, $netAmount);
-        if (!($destinationResult['success'] ?? false)) {
+        // ✅ FIX: Check 'credited' instead of 'success'
+        if (!($destinationResult['credited'] ?? false)) {
             throw new RuntimeException("Destination processing failed");
         }
         
@@ -2938,7 +2942,7 @@ class SwapService
         error_log("[SwapService] processDepositWithProof final payload: " . json_encode($logPayload));
         
         $adapter = $this->adapterFactory->getAdapter($destinationInstitution);
-        return $adapter->credit($depositPayload, [
+        $result = $adapter->credit($depositPayload, [
             'swap_reference' => $this->currentSwapRef,
             'source_institution' => $sourceInstitution,
             'destination_institution' => $destinationInstitution,
@@ -2947,6 +2951,19 @@ class SwapService
             'hold_reference' => $this->currentHoldReference,
             'signed_payloads' => $this->signedPayloads
         ]);
+        
+        // ✅ FIX: Check 'credited' instead of 'success'
+        if (!($result['credited'] ?? false)) {
+            return ['success' => false, 'message' => $result['message'] ?? 'Deposit failed'];
+        }
+        
+        return [
+            'success' => true,
+            'transaction_reference' => $result['transaction_reference'] ?? null,
+            'message' => $result['message'] ?? 'Deposit successful',
+            // ✅ Pass through the credited flag so caller can check it
+            'credited' => true
+        ];
     }
 
     /**
@@ -2982,13 +2999,25 @@ class SwapService
         }
         
         $adapter = $this->adapterFactory->getAdapter($institution);
-        return $adapter->transferWithProof($transferPayload, [
+        $result = $adapter->transferWithProof($transferPayload, [
             'swap_reference' => $this->currentSwapRef,
             'source_institution' => $sourceInstitution,
             'destination_institution' => $institution,
             'destination_identifier' => $destId['identifier'] ?? null,
             'signed_payloads' => $this->signedPayloads
         ]);
+        
+        // ✅ FIX: Check 'credited' instead of 'success'
+        if (!($result['credited'] ?? false)) {
+            return ['success' => false, 'message' => $result['message'] ?? 'Destination processing failed'];
+        }
+        
+        return [
+            'success' => true,
+            'credited' => true,
+            'transaction_reference' => $result['transaction_reference'] ?? null,
+            'message' => $result['message'] ?? 'Destination processed successfully'
+        ];
     }
 
     private function executeCardIssuance(array $payload): array
