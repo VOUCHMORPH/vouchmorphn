@@ -1,14 +1,13 @@
 <?php
 // public/health.php - Simple health check
+require_once __DIR__ . '/../src/Core/Database/DBConnection.php';
+
 try {
     // Check database connection with minimal query
-    require_once __DIR__ . '/../src/Core/Database/DBConnection.php';
-    use Core\Database\DBConnection;
-    
-    $db = DBConnection::getConnection();
+    $db = \Core\Database\DBConnection::getConnection();
     $stmt = $db->query("SELECT 1");
     $stmt->fetch();
-    
+
     http_response_code(200);
     header('Content-Type: application/json');
     echo json_encode([
