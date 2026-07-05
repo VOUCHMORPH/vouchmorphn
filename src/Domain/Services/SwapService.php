@@ -2613,6 +2613,8 @@ class SwapService
      * IMPORTANT: PIN is ONLY for SOURCE operations (verify, hold, debit).
      * Destination operations (deposit, credit, transfer) do NOT need PIN.
      * This method should ONLY be called for SOURCE operations.
+     * 
+     * FIXED: Now detects voucher_pin as a valid PIN field.
      */
     private function forwardPin(array $originalPayload, array &$targetPayload): void
     {
@@ -2629,13 +2631,23 @@ class SwapService
             return;
         }
         
+        // ============================================================
+        // FIX: Detect voucher_pin as a PIN field
+        // ============================================================
         // PIN is only for source authentication
         if (!empty($originalPayload['wallet_pin'])) {
             $targetPayload['wallet_pin'] = $originalPayload['wallet_pin'];
             $targetPayload['pin'] = $originalPayload['wallet_pin'];
+            error_log("[SwapService] Forwarded wallet_pin: " . substr($originalPayload['wallet_pin'], 0, 2) . '****');
+        } elseif (!empty($originalPayload['voucher_pin'])) {
+            // ✅ FIX: Detect voucher_pin
+            $targetPayload['voucher_pin'] = $originalPayload['voucher_pin'];
+            $targetPayload['pin'] = $originalPayload['voucher_pin'];
+            error_log("[SwapService] Forwarded voucher_pin: " . substr($originalPayload['voucher_pin'], 0, 2) . '****');
         } elseif (!empty($originalPayload['pin'])) {
             $targetPayload['pin'] = $originalPayload['pin'];
             $targetPayload['wallet_pin'] = $originalPayload['pin'];
+            error_log("[SwapService] Forwarded pin: " . substr($originalPayload['pin'], 0, 2) . '****');
         }
         
         if (!empty($originalPayload['asset_fields']) && is_array($originalPayload['asset_fields'])) {
