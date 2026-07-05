@@ -1,249 +1,327 @@
 <?php
-// public/test_dashboard_debug.php
-// This script tests the dashboard's PIN detection and payload building
+declare(strict_types=1);
 
-require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
-use Application\Utils\SessionManager;
+/**
+ * public/admin/tested.php
+ *
+ * Mechanical introspection tool. Every fact shown here is extracted from
+ * the actual deployed source files on this server - by regex-parsing real
+ * method bodies and by Reflection into actually-instantiated real objects.
+ * Nothing here is typed from memory or assumption. If this page is wrong,
+ * it's because the source files themselves say something different than
+ * expected - which is itself the useful signal.
+ *
+ * Gate: same X-API-Key check as execute.php. Tighten to real admin session
+ * auth (AdminAuth.php) before leaving this deployed long-term - this is a
+ * diagnostic tool, not meant to sit open indefinitely.
+ */
 
-SessionManager::start();
+header('Content-Type: application/json; charset=UTF-8');
 
-// If not logged in, redirect
-if (!SessionManager::isLoggedIn()) {
-    header("Location: login.php");
-    exit;
+define('ROOT_PATH', dirname(__DIR__, 2));
+require_once ROOT_PATH . '/vendor/autoload.php';
+
+// ---- Auth gate (same pattern as execute.php) ----
+function getApiKeyFromRequest(): ?string
+{
+    $headers = getallheaders() ?: [];
+    $headersLower = array_change_key_case($headers, CASE_LOWER);
+    if (!empty($headersLower['x-api-key'])) return $headersLower['x-api-key'];
+    if (!empty($headersLower['authorization'])) {
+        $auth = $headersLower['authorization'];
+        return str_starts_with($auth, 'Bearer ') ? substr($auth, 7) : $auth;
+    }
+    return null;
+}
+function getAllApiKeysFromEnvironment(): array
+{
+    $keys = [];
+    foreach (array_merge($_ENV, $_SERVER, getenv()) as $name => $value) {
+        if (is_string($value) && !empty($value) && (preg_match('/KEY|API|TOKEN|SECRET/i', $name) || strlen($value) >= 32)) {
+            $keys[] = $value;
+        }
+    }
+    return array_unique(array_filter($keys));
+}
+$providedKey = getApiKeyFromRequest();
+$validKeys = getAllApiKeysFromEnvironment();
+if (!empty($validKeys) && !in_array($providedKey, $validKeys, true)) {
+    http_response_code(401);
+    echo json_encode(['error' => 'Invalid API key']);
+    exit();
 }
 
-$user = SessionManager::getUser();
-$loggedPhone = htmlspecialchars($user['phone'] ?? '');
-$userId = $user['user_id'] ?? null;
+$report = [
+    'generated_at' => date('c'),
+    'source' => 'mechanically extracted from live files - see "how" field per section',
+];
 
-// Get the dashboard HTML but inject debugging
-ob_start();
-include __DIR__ . '/user/dashboard.php';
-$dashboardHtml = ob_get_clean();
+// ============================================================
+// SECTION 1: FIELD ALIAS VOCABULARY - extracted from SwapService.php source text
+// ============================================================
 
-// Inject debug overlay
-$debugJs = <<<'JS'
-<script>
-// Override the buildPayload function to log everything
-(function() {
-    console.log('🔍 [DEBUG] Dashboard debug mode active');
-    
-    // Store reference to original functions
-    let originalBuildPayload = window.buildPayload;
-    let originalGetPin = window.getPinFromForm;
-    
-    // Override getPinFromForm with logging
-    window.getPinFromForm = function() {
-        console.log('🔍 [DEBUG] getPinFromForm called');
-        
-        // Log all form fields
-        console.log('🔍 [DEBUG] All password fields:');
-        document.querySelectorAll('input[type="password"]').forEach(el => {
-            console.log('  - ID:', el.id, 'Name:', el.name, 'Value:', el.value ? '****' : '(empty)');
-        });
-        
-        console.log('🔍 [DEBUG] All .asset-field elements:');
-        document.querySelectorAll('.asset-field').forEach(el => {
-            console.log('  - ID:', el.id, 'Type:', el.type, 'Value:', el.value ? '****' : '(empty)');
-        });
-        
-        // Check specific PIN fields
-        const pinIds = ['wallet_pin', 'pin', 'walletPin', 'atm_pin', 'card_pin'];
-        console.log('🔍 [DEBUG] Specific PIN field checks:');
-        pinIds.forEach(id => {
-            const el = document.getElementById(id);
-            console.log('  - #' + id + ':', el ? (el.value ? 'FOUND (****)' : 'EMPTY') : 'NOT FOUND');
-        });
-        
-        // Call original if it exists
-        let result = null;
-        if (typeof originalGetPin === 'function') {
-            result = originalGetPin();
-            console.log('🔍 [DEBUG] original getPinFromForm returned:', result ? 'PIN (****)' : 'null');
+function readSource(string $relativePath): ?string
+{
+    $path = ROOT_PATH . '/' . ltrim($relativePath, '/');
+    return file_exists($path) ? file_get_contents($path) : null;
+}
+
+/**
+ * Extract a method's body by brace-counting from its declaration.
+ * Returns null if the method isn't found - itself useful information
+ * (means the method was renamed/removed since this tool was written).
+ */
+function extractMethodBody(string $source, string $methodName): ?string
+{
+    if (!preg_match('/(?:private|protected|public)\s+function\s+' . preg_quote($methodName, '/') . '\s*\([^)]*\)[^{]*\{/', $source, $m, PREG_OFFSET_CAPTURE)) {
+        return null;
+    }
+    $start = $m[0][1] + strlen($m[0][0]);
+    $depth = 1;
+    $i = $start;
+    $len = strlen($source);
+    while ($i < $len && $depth > 0) {
+        if ($source[$i] === '{') $depth++;
+        elseif ($source[$i] === '}') $depth--;
+        $i++;
+    }
+    return substr($source, $start, $i - $start - 1);
+}
+
+/**
+ * Pull every $var['key'] / $var['key']['nested'] access path out of a
+ * method body - this IS the actual alias vocabulary the code accepts,
+ * mechanically, not from memory.
+ */
+function extractPayloadKeyChains(string $body): array
+{
+    preg_match_all('/\$\w+((?:\[[\'"][\w]+[\'"]\])+)/', $body, $matches);
+    $chains = [];
+    foreach ($matches[1] as $chainRaw) {
+        preg_match_all('/\[[\'"]([\w]+)[\'"]\]/', $chainRaw, $parts);
+        $chains[] = implode('.', $parts[1]);
+    }
+    return array_values(array_unique($chains));
+}
+
+$swapServiceSrc = readSource('src/Domain/Services/SwapService.php');
+$report['section_1_field_vocabulary'] = ['how' => 'regex-extracted from the actual method bodies in SwapService.php on this deployment right now'];
+
+if ($swapServiceSrc === null) {
+    $report['section_1_field_vocabulary']['error'] = 'SwapService.php not found at expected path';
+} else {
+    $methodsToInspect = [
+        'extractSourceInstitution',
+        'extractDestinationInstitution',
+        'extractDestinationAssetType',
+        'extractSourceIdentifier',
+        'extractDestinationIdentifier',
+        'extractBeneficiaryPhone',
+        'forwardPin',
+        'validateInstitutions',
+    ];
+    foreach ($methodsToInspect as $method) {
+        $body = extractMethodBody($swapServiceSrc, $method);
+        if ($body === null) {
+            $report['section_1_field_vocabulary'][$method] = 'METHOD NOT FOUND - renamed or removed since expected';
+            continue;
+        }
+        $report['section_1_field_vocabulary'][$method] = extractPayloadKeyChains($body);
+    }
+
+    // Also extract which swap_type values the dispatch match() actually handles -
+    // catches things like "VOUCHER" silently falling into default().
+    $dispatchBody = extractMethodBody($swapServiceSrc, 'executeAtomicSwap');
+    if ($dispatchBody !== null) {
+        preg_match("/match\\(\\\$swapType\\)\\s*\\{(.*?)\\};/s", $dispatchBody, $dm);
+        if (isset($dm[1])) {
+            preg_match_all("/'([A-Z_]+)'\\s*=>/", $dm[1], $cases);
+            $report['section_1_field_vocabulary']['_valid_swap_type_values'] = array_values(array_unique($cases[1]));
+            $report['section_1_field_vocabulary']['_swap_type_note'] =
+                'Any swap_type NOT in this list silently falls through to the default() branch (executeSignedStandardSwap) - it will NOT error, it will just run a different code path than you intended.';
+        }
+    }
+}
+
+// ============================================================
+// SECTION 2: ACTION -> ENDPOINT MAP - extracted from GenericBankClient.php + real instantiated objects
+// ============================================================
+
+$bankClientSrc = readSource('src/Infrastructure/Banks/GenericBankClient.php');
+$report['section_2_action_endpoint_map'] = ['how' => 'regex-extracted yamlPathMap from GenericBankClient.php, cross-checked against a REAL instantiated GenericBankClient object per institution via Reflection into its actual loaded YAML properties'];
+
+if ($bankClientSrc === null) {
+    $report['section_2_action_endpoint_map']['error'] = 'GenericBankClient.php not found';
+} else {
+    $getEndpointBody = extractMethodBody($bankClientSrc, 'getEndpoint');
+    if ($getEndpointBody !== null && preg_match('/\$yamlPathMap\s*=\s*\[(.*?)\];/s', $getEndpointBody, $ym)) {
+        preg_match_all("/'([\\w]+)'\\s*=>\\s*\\['([\\w]+)',\\s*'([\\w]+)'\\]/", $ym[1], $rows, PREG_SET_ORDER);
+        $actionMap = [];
+        foreach ($rows as $row) {
+            $actionMap[$row[1]] = ['section' => $row[2], 'key' => $row[3]];
+        }
+        $report['section_2_action_endpoint_map']['method_name_to_yaml_path'] = $actionMap;
+    }
+
+    // Extract every "$this->send('action', ...)" call across all public methods,
+    // so we know which action string each PUBLIC method actually sends -
+    // this catches cases like debitHold() calling debitFunds() internally.
+    preg_match_all('/public function (\w+)\(/', $bankClientSrc, $publicMethods);
+    $methodActions = [];
+    foreach ($publicMethods[1] as $method) {
+        $body = extractMethodBody($bankClientSrc, $method);
+        if ($body === null) continue;
+        $entry = [];
+        if (preg_match("/\\\$this->send\\('([a-z_]+)'/", $body, $sm)) {
+            $entry['sends_action'] = $sm[1];
+        }
+        if (preg_match('/\$this->(\w+)\(\$\w+\)/', $body, $delegate) && !isset($entry['sends_action'])) {
+            $entry['delegates_to'] = $delegate[1];
+        }
+        // Detect payload reconstruction: does this method build a NEW array
+        // literal before calling send/another method, vs pass the incoming
+        // $payload straight through? This is exactly the bug class we hit
+        // twice already (debitHold, MessageAwareBankClient).
+        $entry['builds_new_array_literal'] = (bool)preg_match('/\$\w+Payload\s*=\s*\[/', $body);
+        if ($entry) $methodActions[$method] = $entry;
+    }
+    $report['section_2_action_endpoint_map']['public_method_behavior'] = $methodActions;
+    $report['section_2_action_endpoint_map']['_note'] =
+        'builds_new_array_literal=true means this method constructs a fresh array instead of passing the caller\'s payload through - check whether the fields it constructs match what the caller actually sent, or fields get silently dropped (as debitHold did).';
+}
+
+// Real YAML resolution per institution - via Reflection into an actually-constructed object
+try {
+    $fullCountryConfig = \Core\Config\LoadCountry::getConfig();
+    $participants = $fullCountryConfig['participants'] ?? [];
+    $yamlResolution = [];
+
+    foreach ($participants as $code => $participantConfig) {
+        try {
+            $client = new \Infrastructure\Banks\GenericBankClient($participantConfig);
+            $ref = new ReflectionClass($client);
+
+            $baseUrlProp = $ref->getProperty('yamlBaseUrl');
+            $baseUrlProp->setAccessible(true);
+            $endpointsProp = $ref->getProperty('yamlEndpoints');
+            $endpointsProp->setAccessible(true);
+
+            $yamlResolution[$code] = [
+                'resolved_base_url' => $baseUrlProp->getValue($client),
+                'resolved_endpoints' => $endpointsProp->getValue($client),
+            ];
+        } catch (\Throwable $e) {
+            $yamlResolution[$code] = ['error' => $e->getMessage()];
+        }
+    }
+    $report['section_2_action_endpoint_map']['real_resolved_per_institution'] = $yamlResolution;
+} catch (\Throwable $e) {
+    $report['section_2_action_endpoint_map']['institution_resolution_error'] = $e->getMessage();
+}
+
+// ============================================================
+// SECTION 3: CLASS/METHOD WIRING - Reflection-based, catches type mismatches
+// before a real request does
+// ============================================================
+
+$report['section_3_wiring_check'] = ['how' => 'ReflectionClass/ReflectionMethod against the actually-loaded classes via autoload'];
+
+$classesToCheck = [
+    'Domain\Services\SwapService',
+    'Infrastructure\Adapters\InstitutionAdapterFactory',
+    'Infrastructure\Adapters\InstitutionAdapterInterface',
+    'Infrastructure\Adapters\GenericInstitutionAdapter',
+    'Infrastructure\Banks\GenericBankClient',
+    'Infrastructure\Banks\Contracts\BankAPIInterface',
+];
+
+foreach ($classesToCheck as $className) {
+    $report['section_3_wiring_check'][$className] = class_exists($className) || interface_exists($className)
+        ? 'FOUND'
+        : 'MISSING - autoload cannot resolve this class. Anything depending on it will fatal at runtime.';
+}
+
+// Specifically re-check the exact bug we already hit once: does
+// GenericInstitutionAdapter's constructor accept whatever logger
+// SwapService actually constructs by default?
+if (class_exists('Infrastructure\Adapters\GenericInstitutionAdapter')) {
+    $ctor = new ReflectionMethod('Infrastructure\Adapters\GenericInstitutionAdapter', '__construct');
+    $params = [];
+    foreach ($ctor->getParameters() as $p) {
+        $type = $p->getType();
+        $params[$p->getName()] = $type ? ($type->allowsNull() ? '?' : '') . $type->getName() : 'untyped';
+    }
+    $report['section_3_wiring_check']['GenericInstitutionAdapter::__construct_params'] = $params;
+    $loggerType = $params['logger'] ?? null;
+    $report['section_3_wiring_check']['logger_param_check'] =
+        ($loggerType === 'untyped')
+            ? 'OK - untyped, will accept any object SwapService passes (including its anonymous default logger)'
+            : "WARNING - typed as {$loggerType}. If SwapService's default logger doesn't implement this, every call will fatal exactly like the previous psr/log bug.";
+}
+
+// Interface vs implementation signature compatibility
+if (interface_exists('Infrastructure\Adapters\InstitutionAdapterInterface') && class_exists('Infrastructure\Adapters\GenericInstitutionAdapter')) {
+    $interface = new ReflectionClass('Infrastructure\Adapters\InstitutionAdapterInterface');
+    $impl = new ReflectionClass('Infrastructure\Adapters\GenericInstitutionAdapter');
+    $missing = [];
+    foreach ($interface->getMethods() as $ifaceMethod) {
+        if (!$impl->hasMethod($ifaceMethod->getName())) {
+            $missing[] = $ifaceMethod->getName();
+        }
+    }
+    $report['section_3_wiring_check']['interface_methods_not_implemented'] = $missing ?: 'none - all interface methods implemented';
+}
+
+// ============================================================
+// SECTION 4: LITERAL PAYLOAD SHAPES - extracted directly from each station's
+// own array-building code in SwapService.php, so you see exactly what gets sent
+// ============================================================
+
+$report['section_4_actual_payload_literals'] = ['how' => 'regex-extracted array literals from the actual private station methods in SwapService.php'];
+
+if ($swapServiceSrc !== null) {
+    $stationMethods = [
+        'verifyAssetSigned', 'placeHoldSigned', 'debitSource', 'generateCashoutToken',
+        'processDepositWithProof', 'verifyAccount',
+    ];
+    foreach ($stationMethods as $method) {
+        $body = extractMethodBody($swapServiceSrc, $method);
+        if ($body === null) {
+            $report['section_4_actual_payload_literals'][$method] = 'METHOD NOT FOUND';
+            continue;
+        }
+        // Grab the first array literal assigned to a *Payload variable
+        if (preg_match('/\$\w*[Pp]ayload\s*=\s*\[(.*?)\n(?:\s*)\];/s', $body, $am)) {
+            preg_match_all("/'([\\w]+)'\\s*=>/", $am[1], $keys);
+            $report['section_4_actual_payload_literals'][$method] = array_values(array_unique($keys[1]));
         } else {
-            // Fallback implementation
-            let pin = null;
-            document.querySelectorAll('input[type="password"]').forEach(el => {
-                if (!pin && el.value && el.value.trim()) {
-                    pin = el.value.trim();
-                }
-            });
-            if (!pin) {
-                document.querySelectorAll('.asset-field').forEach(el => {
-                    if (!pin && el.value && el.value.trim() && (el.type === 'password' || el.id.includes('pin'))) {
-                        pin = el.value.trim();
-                    }
-                });
-            }
-            result = pin;
-            console.log('🔍 [DEBUG] fallback getPinFromForm returned:', result ? 'PIN (****)' : 'null');
+            $report['section_4_actual_payload_literals'][$method] = 'No array literal pattern matched - method may build payload differently than expected';
         }
-        
-        return result;
-    };
-    
-    // Override buildPayload with logging
-    window.buildPayload = function() {
-        console.log('🔍 [DEBUG] ===== buildPayload called =====');
-        
-        // Log current form state
-        console.log('🔍 [DEBUG] Current form values:');
-        console.log('  - fromInstitution:', document.getElementById('fromInstitution')?.value || 'NOT SET');
-        console.log('  - toInstitution:', document.getElementById('toInstitution')?.value || 'NOT SET');
-        console.log('  - assetType:', document.getElementById('assetType')?.value || 'NOT SET');
-        console.log('  - swapType:', document.getElementById('swapType')?.value || 'NOT SET');
-        console.log('  - amount:', document.getElementById('amount')?.value || '0');
-        console.log('  - sourceIdentifier:', document.getElementById('sourceIdentifier')?.value || 'NOT SET');
-        
-        // Get PIN using our overridden function
-        const pin = window.getPinFromForm();
-        console.log('🔍 [DEBUG] PIN from getPinFromForm():', pin ? '****' : 'null');
-        
-        // Call original if it exists
-        let payload = null;
-        if (typeof originalBuildPayload === 'function') {
-            payload = originalBuildPayload();
-            console.log('🔍 [DEBUG] original buildPayload returned:', payload);
-        } else {
-            // Build payload manually for debugging
-            const fromInst = document.getElementById('fromInstitution')?.value || '';
-            const toInst = document.getElementById('toInstitution')?.value || '';
-            const assetType = document.getElementById('assetType')?.value || '';
-            const swapType = document.getElementById('swapType')?.value || 'CASHOUT';
-            const amount = parseFloat(document.getElementById('amount')?.value || 0);
-            const sourceIdentifier = document.getElementById('sourceIdentifier')?.value || '';
-            
-            payload = {
-                reference: 'DEBUG_' + Date.now(),
-                from_institution: fromInst,
-                to_institution: toInst,
-                asset_type: assetType,
-                swap_type: swapType,
-                amount: amount,
-                source_identifier: sourceIdentifier
-            };
-            
-            // Add PIN if found
-            if (pin) {
-                payload.wallet_pin = pin;
-                payload.pin = pin;
-                payload.asset_fields = { wallet_pin: pin, pin: pin };
-            }
-            
-            // Collect asset fields
-            const assetFieldsData = {};
-            document.querySelectorAll('.asset-field').forEach(field => {
-                const value = field.value.trim();
-                if (value) {
-                    assetFieldsData[field.id] = value;
-                    payload[field.id] = value;
-                }
-            });
-            if (Object.keys(assetFieldsData).length > 0) {
-                payload.asset_fields = { ...payload.asset_fields, ...assetFieldsData };
-            }
-        }
-        
-        console.log('🔍 [DEBUG] Final payload:');
-        console.log('  - wallet_pin:', payload.wallet_pin ? '****' : 'MISSING');
-        console.log('  - pin:', payload.pin ? '****' : 'MISSING');
-        console.log('  - asset_fields:', payload.asset_fields);
-        console.log('  - Full payload:', JSON.stringify(payload, null, 2));
-        
-        // Display payload on screen for debugging
-        const debugOutput = document.getElementById('debugPayloadOutput');
-        if (debugOutput) {
-            const displayPayload = { ...payload };
-            if (displayPayload.wallet_pin) displayPayload.wallet_pin = '****';
-            if (displayPayload.pin) displayPayload.pin = '****';
-            if (displayPayload.asset_fields) {
-                if (displayPayload.asset_fields.wallet_pin) displayPayload.asset_fields.wallet_pin = '****';
-                if (displayPayload.asset_fields.pin) displayPayload.asset_fields.pin = '****';
-            }
-            debugOutput.textContent = JSON.stringify(displayPayload, null, 2);
-            debugOutput.style.display = 'block';
-        }
-        
-        // Show PIN status
-        const pinStatus = document.getElementById('debugPinStatus');
-        if (pinStatus) {
-            pinStatus.innerHTML = payload.wallet_pin ? 
-                '✅ PIN FOUND (length: ' + payload.wallet_pin.length + ')' : 
-                '❌ PIN MISSING';
-            pinStatus.style.color = payload.wallet_pin ? '#4caf50' : '#ff6b6b';
-        }
-        
-        return payload;
-    };
-    
-    // Intercept the execute button click
-    document.addEventListener('DOMContentLoaded', function() {
-        const executeBtn = document.getElementById('executeBtn');
-        if (executeBtn) {
-            const originalClick = executeBtn.click;
-            executeBtn.addEventListener('click', function(e) {
-                console.log('🔍 [DEBUG] Execute button clicked');
-                // Call our buildPayload to show debug info
-                window.buildPayload();
-            });
-        }
-        
-        // Add debug panel to the page
-        const debugPanel = document.createElement('div');
-        debugPanel.style.cssText = `
-            position: fixed;
-            bottom: 10px;
-            right: 10px;
-            background: #12162e;
-            border: 2px solid #00f0ff;
-            border-radius: 12px;
-            padding: 16px;
-            max-width: 500px;
-            max-height: 400px;
-            overflow-y: auto;
-            z-index: 9999;
-            font-family: monospace;
-            font-size: 12px;
-            color: #fff;
-            box-shadow: 0 0 30px rgba(0,240,255,0.2);
-        `;
-        debugPanel.innerHTML = `
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <strong style="color:#00f0ff;">🔍 Dashboard Debug</strong>
-                <button onclick="this.parentElement.parentElement.style.display='none'" 
-                        style="background:#ff6b6b; border:none; color:#fff; padding:2px 8px; border-radius:4px; cursor:pointer;">×</button>
-            </div>
-            <div style="margin-bottom:8px;">
-                <span style="color:#888;">PIN Status:</span> 
-                <span id="debugPinStatus" style="color:#ff6b6b;">❌ Not checked</span>
-            </div>
-            <div style="margin-bottom:8px;">
-                <button onclick="window.buildPayload()" 
-                        style="background:#00f0ff; color:#0a0e27; border:none; padding:4px 12px; border-radius:4px; cursor:pointer; font-weight:bold;">
-                    🔍 Test buildPayload
-                </button>
-                <button onclick="document.getElementById('wallet_pin')?.value='77777'" 
-                        style="background:#1a1f3a; color:#fff; border:1px solid #2a2f4a; padding:4px 12px; border-radius:4px; cursor:pointer; margin-left:4px;">
-                    Set PIN 77777
-                </button>
-            </div>
-            <div style="background:#0a0e27; padding:8px; border-radius:4px; max-height:200px; overflow-y:auto;">
-                <pre id="debugPayloadOutput" style="margin:0; font-size:11px; white-space:pre-wrap; word-break:break-all; display:none;"></pre>
-            </div>
-        `;
-        document.body.appendChild(debugPanel);
-        
-        console.log('🔍 [DEBUG] Debug panel added to page');
-    });
-    
-    console.log('🔍 [DEBUG] Dashboard debugging active!');
-})();
-</script>
-JS;
+    }
+}
 
-// Inject the debug JS before the closing body tag
-$dashboardHtml = str_replace('</body>', $debugJs . '</body>', $dashboardHtml);
+// ============================================================
+// SECTION 5: EXPECTED HEADERS - extracted from GenericBankClient::buildHeaders + execute.php's own auth gate
+// ============================================================
 
-echo $dashboardHtml;
-?>
+$report['section_5_headers'] = ['how' => 'regex-extracted from GenericBankClient::buildHeaders() and execute.php auth logic'];
+
+if ($bankClientSrc !== null) {
+    $headersBody = extractMethodBody($bankClientSrc, 'buildHeaders');
+    if ($headersBody !== null) {
+        preg_match_all("/'([\\w-]+):\\s*'/", $headersBody, $hm);
+        $report['section_5_headers']['outbound_to_institutions'] = array_values(array_unique($hm[1]));
+    }
+}
+
+$executeSrc = readSource('public/api/v1/swap/execute.php');
+if ($executeSrc !== null) {
+    $inboundHeaders = [];
+    if (str_contains($executeSrc, 'x-api-key')) $inboundHeaders[] = 'X-API-Key';
+    if (str_contains($executeSrc, 'x-country-code')) $inboundHeaders[] = 'X-Country-Code';
+    if (str_contains($executeSrc, 'x-country')) $inboundHeaders[] = 'X-Country';
+    if (str_contains($executeSrc, 'HTTP_AUTHORIZATION') || str_contains($executeSrc, 'authorization')) $inboundHeaders[] = 'Authorization: Bearer <key>';
+    $report['section_5_headers']['inbound_required_by_execute_php'] = $inboundHeaders;
+}
+
+echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
