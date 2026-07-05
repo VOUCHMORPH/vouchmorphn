@@ -9,7 +9,7 @@ use Infrastructure\Banks\Contracts\BankAPIInterface;
 class GenericInstitutionAdapter implements InstitutionAdapterInterface
 {
     protected BankAPIInterface $bankClient;
-    protected $logger;  // FIXED: No type-hint to avoid psr/log dependency
+    protected $logger;  // No type-hint to avoid psr/log dependency
     protected string $institution;
     protected array $config;
     protected array $context = [];
@@ -21,7 +21,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
     
     public function __construct(
         BankAPIInterface $bankClient,
-        $logger,  // FIXED: No type-hint
+        $logger,  // No type-hint
         string $institution,
         array $config
     ) {
@@ -127,8 +127,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            // FIXED: Pass through the original payload directly instead of reconstructing
-            // This ensures fields like 'source_identifier', 'source_identifier_type', etc. are preserved
+            // Pass through the original payload directly
             $verifyPayload = $payload;
             
             // Only add access_token if not already present
@@ -184,7 +183,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            // FIXED: Pass through the original payload directly
+            // Pass through the original payload directly
             $holdPayload = $payload;
             
             // Only add access_token if not already present
@@ -238,7 +237,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            // FIXED: Pass through the original payload directly
+            // Pass through the original payload directly
             $debitPayload = $payload;
             
             // Only add access_token if not already present
@@ -251,7 +250,10 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
                 $debitPayload['reference'] = uniqid('debit_');
             }
             
-            $result = $this->bankClient->debitHold($debitPayload);
+            // FIXED: Call debitFunds() directly, NOT debitHold()
+            // debitHold() reconstructs the payload and drops important fields
+            // like wallet_pin, pin, asset_fields that forwardPin() added.
+            $result = $this->bankClient->debitFunds($debitPayload);
             
             if (!$result['success']) {
                 return [
@@ -284,7 +286,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            // FIXED: Pass through the original payload directly
+            // Pass through the original payload directly
             $creditPayload = $payload;
             
             // Only add access_token if not already present
@@ -331,7 +333,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            // FIXED: Pass through the original payload directly
+            // Pass through the original payload directly
             $tokenPayload = $payload;
             
             // Only add access_token if not already present
@@ -387,7 +389,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         $this->context = array_merge($context, $payload);
         
         try {
-            // FIXED: Pass through the original payload directly
+            // Pass through the original payload directly
             $verifyPayload = $payload;
             
             // Ensure required fields for backward compatibility
@@ -426,7 +428,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         $this->context = array_merge($context, $payload);
         
         try {
-            // FIXED: Pass through the original payload directly
+            // Pass through the original payload directly
             $confirmPayload = $payload;
             
             // Ensure required fields for backward compatibility
@@ -467,7 +469,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            // FIXED: Pass through the original payload directly
+            // Pass through the original payload directly
             $verifyPayload = $payload;
             
             // Only add access_token if not already present
@@ -509,7 +511,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            // FIXED: Pass through the original payload directly
+            // Pass through the original payload directly
             $transferPayload = $payload;
             
             // Only add access_token if not already present
@@ -554,7 +556,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            // FIXED: Pass through the original payload directly
+            // Pass through the original payload directly
             $releasePayload = $payload;
             
             // Only add access_token if not already present
