@@ -472,7 +472,7 @@ class GenericBankClient implements BankAPIInterface
         
         $oauthConfig = $this->config['oauth'] ?? null;
         if ($oauthConfig) {
-            $clientId = $oauthConfig['client_id'] ?? getenv('ZURUBANK_CLIENT_ID') ?? 'VOUCHMORPH_APP_ID';
+            $clientId = $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? 'VOUCHMORPH_APP_ID';
             $redirectUri = $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn.com/api/v1/source/auth/callback';
             $state = $params['state'] ?? bin2hex(random_bytes(16));
             $scopes = $params['scope'] ?? $oauthConfig['scopes'] ?? ['balance', 'transactions', 'payments'];
@@ -544,8 +544,8 @@ class GenericBankClient implements BankAPIInterface
                 'grant_type' => 'authorization_code',
                 'code' => $params['code'],
                 'redirect_uri' => $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn.com/api/v1/source/auth/callback',
-                'client_id' => $oauthConfig['client_id'] ?? getenv('ZURUBANK_CLIENT_ID') ?? 'VOUCHMORPH_APP_ID',
-                'client_secret' => $oauthConfig['client_secret'] ?? getenv('ZURUBANK_CLIENT_SECRET') ?? 'YOUR_BANK_SECRET'
+                'client_id' => $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? 'VOUCHMORPH_APP_ID',
+                'client_secret' => $oauthConfig['client_secret'] ?? getenv('CLIENT_SECRET') ?? 'YOUR_BANK_SECRET'
             ];
             
             $result = $this->sendSourceLinkingRequest('verify', $payload, 'application/x-www-form-urlencoded');
@@ -609,8 +609,8 @@ class GenericBankClient implements BankAPIInterface
         
         if ($oauthConfig) {
             $payload['grant_type'] = 'refresh_token';
-            $payload['client_id'] = $oauthConfig['client_id'] ?? getenv('ZURUBANK_CLIENT_ID') ?? 'VOUCHMORPH_APP_ID';
-            $payload['client_secret'] = $oauthConfig['client_secret'] ?? getenv('ZURUBANK_CLIENT_SECRET') ?? 'YOUR_BANK_SECRET';
+            $payload['client_id'] = $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? 'VOUCHMORPH_APP_ID';
+            $payload['client_secret'] = $oauthConfig['client_secret'] ?? getenv('CLIENT_SECRET') ?? 'YOUR_BANK_SECRET';
         }
         
         $result = $this->sendSourceLinkingRequest('refresh', $payload, 'application/x-www-form-urlencoded');
@@ -647,8 +647,8 @@ class GenericBankClient implements BankAPIInterface
         ];
         
         if ($oauthConfig) {
-            $payload['client_id'] = $oauthConfig['client_id'] ?? getenv('ZURUBANK_CLIENT_ID') ?? 'VOUCHMORPH_APP_ID';
-            $payload['client_secret'] = $oauthConfig['client_secret'] ?? getenv('ZURUBANK_CLIENT_SECRET') ?? 'YOUR_BANK_SECRET';
+            $payload['client_id'] = $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? 'VOUCHMORPH_APP_ID';
+            $payload['client_secret'] = $oauthConfig['client_secret'] ?? getenv('CLIENT_SECRET') ?? 'YOUR_BANK_SECRET';
         }
         
         $result = $this->sendSourceLinkingRequest('revoke', $payload, 'application/x-www-form-urlencoded');
@@ -767,7 +767,7 @@ class GenericBankClient implements BankAPIInterface
         
         $params = [
             'response_type' => 'code',
-            'client_id' => $oauthConfig['client_id'] ?? getenv('ZURUBANK_CLIENT_ID') ?? '',
+            'client_id' => $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? '',
             'redirect_uri' => $redirectUri,
             'state' => $state,
             'scope' => implode(' ', $scope ?: $oauthConfig['scopes'] ?? ['read_balance']),
@@ -797,8 +797,8 @@ class GenericBankClient implements BankAPIInterface
             'grant_type' => 'authorization_code',
             'code' => $code,
             'redirect_uri' => $redirectUri,
-            'client_id' => $oauthConfig['client_id'] ?? getenv('ZURUBANK_CLIENT_ID') ?? '',
-            'client_secret' => $oauthConfig['client_secret'] ?? getenv('ZURUBANK_CLIENT_SECRET') ?? ''
+            'client_id' => $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? '',
+            'client_secret' => $oauthConfig['client_secret'] ?? getenv('CLIENT_SECRET') ?? ''
         ];
         
         $result = $this->sendSourceLinkingRequest('verify', $payload, 'application/x-www-form-urlencoded');
@@ -1373,8 +1373,10 @@ class GenericBankClient implements BankAPIInterface
             error_log("Failed to decode JSON response. Raw response: " . substr($response, 0, 1000));
         }
         
+        // ✅ FIX: Require valid JSON decode, not just HTTP 200
+        // This prevents treating malformed/broken responses as success
         return [
-            'success' => $httpCode >= 200 && $httpCode < 300,
+            'success' => $httpCode >= 200 && $httpCode < 300 && $decodedResponse !== null,
             'status_code' => $httpCode,
             'data' => $decodedResponse ?? [],
             'raw_response' => $response,
@@ -1388,6 +1390,7 @@ class GenericBankClient implements BankAPIInterface
      * Create a signed payload with proper certificate and signature.
      * FIXED: Preserves ALL fields, especially voucher_number and voucher_pin.
      * FIXED: Removed asset_type clobber - keeps original asset_type.
+     * FIXED: No hardcoded bank names - uses configuration.
      */
     protected function createSignedPayload(array $payload, string $requester = 'VOUCHMORPH'): array
     {
@@ -1398,7 +1401,8 @@ class GenericBankClient implements BankAPIInterface
         $voucherPin = $payload['voucher_pin'] ?? null;
         $sourceIdentifier = $payload['source_identifier'] ?? null;
         
-        // Add aliases that ZURUBANK might expect (BEFORE any processing)
+        // Add aliases that institutions might expect (BEFORE any processing)
+        // These are common field name variants across different banks
         if ($voucherNumber) {
             $payload['voucherNumber'] = $voucherNumber;
             $payload['voucher_no'] = $voucherNumber;
