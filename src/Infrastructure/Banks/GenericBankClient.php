@@ -122,7 +122,6 @@ class GenericBankClient implements BankAPIInterface
                 $this->yamlEndpoints = $parsed[$bankCode]['endpoints'];
                 error_log("Loaded YAML endpoints for {$bankCode}");
             }
-            // Also load source_linking if present
             if (isset($parsed[$bankCode]['source_linking'])) {
                 $this->yamlEndpoints['source_linking'] = $parsed[$bankCode]['source_linking'];
                 error_log("Loaded source_linking endpoints for {$bankCode}");
@@ -977,7 +976,7 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // ✅ UPDATED: DEBIT FUNDS WITH CERTIFICATE AND HOLD_REFERENCE
+    // DEBIT FUNDS WITH CERTIFICATE AND HOLD_REFERENCE
     // ============================================================================
 
     public function debitFunds(array $payload): array
@@ -985,7 +984,7 @@ class GenericBankClient implements BankAPIInterface
         error_log("=== GENERIC BANK CLIENT: debitFunds ===");
         error_log("[GenericBankClient] debitFunds received payload keys: " . implode(', ', array_keys($payload)));
         
-        // ✅ Extract hold_reference from payload
+        // Extract hold_reference from payload
         $holdRef = $payload['hold_reference'] ?? $payload['reference'] ?? null;
         error_log("[GenericBankClient] debitFunds: hold_reference extracted: " . ($holdRef ?? 'NULL'));
         
@@ -1000,7 +999,7 @@ class GenericBankClient implements BankAPIInterface
             $signedPayload['source_institution'] = $payload['source_institution'];
         }
         
-        // ✅ CRITICAL: Ensure hold_reference is in the signed payload
+        // CRITICAL: Ensure hold_reference is in the signed payload
         if ($holdRef) {
             $signedPayload['hold_reference'] = $holdRef;
             $signedPayload['reference'] = $holdRef;
@@ -1025,9 +1024,14 @@ class GenericBankClient implements BankAPIInterface
         return $this->send('debit_funds', $signedPayload, $signedPayload['access_token'] ?? null);
     }
 
+    /**
+     * @deprecated Use debitFunds() directly instead. debitHold() reconstructs
+     * the payload and drops fields like wallet_pin, pin, asset_fields.
+     * Keeping this for backward compatibility only.
+     */
     public function debitHold(array $payload): array
     {
-        error_log("=== GENERIC BANK CLIENT: debitHold (maps to debitFunds) ===");
+        error_log("=== GENERIC BANK CLIENT: debitHold (DEPRECATED - use debitFunds) ===");
         if (!isset($payload['hold_reference'])) {
             error_log("[GenericBankClient] debitHold ERROR: hold_reference is required");
             return ['success' => false, 'message' => 'hold_reference is required', 'data' => []];
@@ -1044,8 +1048,9 @@ class GenericBankClient implements BankAPIInterface
         ];
         
         error_log("[GenericBankClient] debitHold: hold_reference={$debitPayload['hold_reference']}, amount={$debitPayload['amount']}");
+        error_log("[GenericBankClient] debitHold WARNING: This reconstructs the payload and drops fields like wallet_pin, pin, asset_fields");
         
-        // ✅ Pass to debitFunds which handles certificate and hold_reference
+        // Pass to debitFunds which handles certificate and hold_reference
         return $this->debitFunds($debitPayload);
     }
 
@@ -1127,10 +1132,12 @@ class GenericBankClient implements BankAPIInterface
 
     /**
      * Verify a destination account exists and is valid
+     * FIXED: Now passes through original payload instead of reconstructing
      */
     public function verifyAccount(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: verifyAccount ===");
+        error_log("[GenericBankClient] verifyAccount received payload keys: " . implode(', ', array_keys($payload)));
         
         // Extract destination identifier from various possible locations
         $destinationIdentifier = $payload['account_identifier'] ?? 
@@ -1156,25 +1163,35 @@ class GenericBankClient implements BankAPIInterface
         
         error_log("[GenericBankClient] Verifying account: {$destinationIdentifier} (type: {$identifierType})");
         
-        // Build verification payload
-        $verifyPayload = [
-            'action' => 'VERIFY_ACCOUNT',
-            'account_identifier' => $destinationIdentifier,
-            'identifier_type' => $identifierType,
-            'requester' => $payload['requester'] ?? 'VOUCHMORPH',
-            'timestamp' => time(),
-            'reference' => $payload['reference'] ?? 'VERIFY_' . bin2hex(random_bytes(6))
-        ];
+        // FIXED: Pass through the original payload and only add what's necessary
+        $verifyPayload = $payload;
         
-        // Add any additional fields
-        if (isset($payload['amount'])) {
-            $verifyPayload['amount'] = $payload['amount'];
+        // Ensure required fields are present
+        if (!isset($verifyPayload['action'])) {
+            $verifyPayload['action'] = 'VERIFY_ACCOUNT';
         }
-        if (isset($payload['currency'])) {
-            $verifyPayload['currency'] = $payload['currency'];
+        if (!isset($verifyPayload['account_identifier'])) {
+            $verifyPayload['account_identifier'] = $destinationIdentifier;
         }
-        if (isset($payload['destination_institution'])) {
-            $verifyPayload['institution'] = $payload['destination_institution'];
+        if (!isset($verifyPayload['identifier_type'])) {
+            $verifyPayload['identifier_type'] = $identifierType;
+        }
+        if (!isset($verifyPayload['timestamp'])) {
+            $verifyPayload['timestamp'] = time();
+        }
+        if (!isset($verifyPayload['reference'])) {
+            $verifyPayload['reference'] = 'VERIFY_' . bin2hex(random_bytes(6));
+        }
+        if (!isset($verifyPayload['requester'])) {
+            $verifyPayload['requester'] = 'VOUCHMORPH';
+        }
+        
+        // CRITICAL: Preserve destination_asset_type if provided
+        if (isset($payload['destination_asset_type']) && !isset($verifyPayload['destination_asset_type'])) {
+            $verifyPayload['destination_asset_type'] = $payload['destination_asset_type'];
+        }
+        if (isset($payload['asset_type']) && !isset($verifyPayload['asset_type'])) {
+            $verifyPayload['asset_type'] = $payload['asset_type'];
         }
         
         // Send the verification request
@@ -1476,7 +1493,7 @@ class GenericBankClient implements BankAPIInterface
     }
 
     // ============================================================================
-    // processDepositWithProof - UPDATED with required fields
+    // FIXED: processDepositWithProof - Now passes through original payload
     // ============================================================================
 
     public function processDepositWithProof(array $payload): array
@@ -1484,113 +1501,62 @@ class GenericBankClient implements BankAPIInterface
         error_log("=== GENERIC BANK CLIENT: processDepositWithProof ===");
         error_log("[GenericBankClient] processDepositWithProof received payload keys: " . implode(', ', array_keys($payload)));
         
-        // Build the deposit payload with required fields
-        $depositPayload = [
-            'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
-            'amount' => $payload['amount'] ?? 0,
-            'currency' => $payload['currency'] ?? 'BWP',
-            'reference' => $payload['reference'] ?? $this->generateReference(),
-        ];
+        // FIXED: Pass through the original payload instead of reconstructing
+        // Use createSignedPayload which preserves all fields
+        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
         
-        // ============================================================
-        // ADD SOURCE INSTITUTION - Check ALL possible locations
-        // ============================================================
-        $sourceInst = $payload['from_institution'] ?? 
-                      $payload['source_institution'] ?? 
-                      $payload['from_bank'] ?? 
-                      $payload['source_bank'] ?? 
-                      null;
-        
-        if ($sourceInst) {
-            $depositPayload['from_bank'] = $sourceInst;
-            $depositPayload['source_institution'] = $sourceInst;
-            error_log("[GenericBankClient] Source institution set to: {$sourceInst}");
-        } else {
-            error_log("[GenericBankClient] WARNING: No source institution found in payload. Keys: " . implode(', ', array_keys($payload)));
+        // Ensure required fields are present
+        if (!isset($signedPayload['action'])) {
+            $signedPayload['action'] = 'PROCESS_DEPOSIT_WITH_PROOF';
         }
         
-        // ============================================================
-        // ADD DESTINATION INSTITUTION (for audit)
-        // ============================================================
-        if (isset($payload['to_institution'])) {
-            $depositPayload['to_bank'] = $payload['to_institution'];
-            $depositPayload['destination_institution'] = $payload['to_institution'];
+        // Ensure reference is present
+        if (!isset($signedPayload['reference'])) {
+            $signedPayload['reference'] = $payload['reference'] ?? $this->generateReference();
         }
         
-        // ============================================================
-        // ADD DESTINATION IDENTIFIER
-        // ============================================================
-        $destIdentifier = $payload['destination_identifier'] ?? 
-                          $payload['account_number'] ?? 
-                          $payload['phone'] ?? 
-                          $payload['email'] ?? 
-                          $payload['national_id'] ?? 
-                          null;
-        
-        $destType = $payload['destination_identifier_type'] ?? 'account';
-        
-        if ($destIdentifier) {
-            if ($destType === 'account' || $destType === 'account_number') {
-                $depositPayload['account_number'] = $destIdentifier;
-            } elseif ($destType === 'phone') {
-                $depositPayload['phone'] = $destIdentifier;
-            } elseif ($destType === 'email') {
-                $depositPayload['email'] = $destIdentifier;
-            } elseif ($destType === 'national_id') {
-                $depositPayload['national_id'] = $destIdentifier;
-            }
-            $depositPayload['destination_identifier'] = $destIdentifier;
-            $depositPayload['destination_identifier_type'] = $destType;
-            error_log("[GenericBankClient] Destination identifier: {$destIdentifier} (type: {$destType})");
-        } else {
-            error_log("[GenericBankClient] WARNING: No destination identifier found in payload");
+        // CRITICAL: Preserve destination_asset_type and asset_type
+        if (isset($payload['destination_asset_type']) && !isset($signedPayload['destination_asset_type'])) {
+            $signedPayload['destination_asset_type'] = $payload['destination_asset_type'];
+        }
+        if (isset($payload['asset_type']) && !isset($signedPayload['asset_type'])) {
+            $signedPayload['asset_type'] = $payload['asset_type'];
         }
         
-        // ============================================================
-        // ADD SOURCE IDENTIFIER (if available)
-        // ============================================================
-        if (isset($payload['source_identifier'])) {
-            $depositPayload['source_identifier'] = $payload['source_identifier'];
-            $depositPayload['source_account'] = $payload['source_identifier'];
-            error_log("[GenericBankClient] Source identifier: {$payload['source_identifier']}");
+        // CRITICAL: Ensure source/destination institutions are preserved
+        if (isset($payload['from_institution']) && !isset($signedPayload['from_institution'])) {
+            $signedPayload['from_institution'] = $payload['from_institution'];
+        }
+        if (isset($payload['source_institution']) && !isset($signedPayload['source_institution'])) {
+            $signedPayload['source_institution'] = $payload['source_institution'];
+        }
+        if (isset($payload['to_institution']) && !isset($signedPayload['to_institution'])) {
+            $signedPayload['to_institution'] = $payload['to_institution'];
+        }
+        if (isset($payload['destination_institution']) && !isset($signedPayload['destination_institution'])) {
+            $signedPayload['destination_institution'] = $payload['destination_institution'];
         }
         
-        // ============================================================
-        // ADD HOLD REFERENCE (if available)
-        // ============================================================
-        if (isset($payload['hold_reference'])) {
-            $depositPayload['hold_reference'] = $payload['hold_reference'];
+        // CRITICAL: Preserve verification data
+        if (isset($payload['source_verification']) && !isset($signedPayload['source_verification'])) {
+            $signedPayload['source_verification'] = $payload['source_verification'];
         }
-        if (isset($payload['_skip_hold'])) {
-            $depositPayload['_skip_hold'] = $payload['_skip_hold'];
+        if (isset($payload['source_hold']) && !isset($signedPayload['source_hold'])) {
+            $signedPayload['source_hold'] = $payload['source_hold'];
         }
-        
-        // ============================================================
-        // ADD VERIFICATION DATA (if available)
-        // ============================================================
-        if (isset($payload['source_verification'])) {
-            $depositPayload['source_verification'] = $payload['source_verification'];
-        }
-        if (isset($payload['source_hold'])) {
-            $depositPayload['source_hold'] = $payload['source_hold'];
-        }
-        if (isset($payload['account_verification'])) {
-            $depositPayload['account_verification'] = $payload['account_verification'];
-        }
-        if (isset($payload['source_verification']['payload'])) {
-            $depositPayload['source_verification_payload'] = $payload['source_verification']['payload'];
+        if (isset($payload['account_verification']) && !isset($signedPayload['account_verification'])) {
+            $signedPayload['account_verification'] = $payload['account_verification'];
         }
         
-        // ============================================================
-        // FORWARD PIN (if unhooked source)
-        // ============================================================
-        $this->forwardPin($payload, $depositPayload);
-        
-        // Create signed payload
-        $signedPayload = $this->createSignedPayload($depositPayload, 'VOUCHMORPH');
+        // CRITICAL: Preserve hold_reference
+        if (isset($payload['hold_reference']) && !isset($signedPayload['hold_reference'])) {
+            $signedPayload['hold_reference'] = $payload['hold_reference'];
+        }
+        if (isset($payload['_skip_hold']) && !isset($signedPayload['_skip_hold'])) {
+            $signedPayload['_skip_hold'] = $payload['_skip_hold'];
+        }
         
         error_log("[GenericBankClient] processDepositWithProof final payload keys: " . implode(', ', array_keys($signedPayload)));
-        error_log("[GenericBankClient] processDepositWithProof: from_bank=" . ($signedPayload['from_bank'] ?? 'MISSING') . ", account_number=" . ($signedPayload['account_number'] ?? 'MISSING') . ", amount=" . ($signedPayload['amount'] ?? 'MISSING'));
         
         return $this->send('process_deposit', $signedPayload);
     }
@@ -1601,48 +1567,6 @@ class GenericBankClient implements BankAPIInterface
     private function generateReference(): string
     {
         return 'DEP_' . time() . '_' . bin2hex(random_bytes(6));
-    }
-
-    /**
-     * Helper to forward PIN from source payload (only for unhooked sources)
-     */
-    private function forwardPin(array $sourcePayload, array &$targetPayload): void
-    {
-        // If source is hooked, skip PIN forwarding
-        if (isset($sourcePayload['_is_hooked']) && $sourcePayload['_is_hooked'] === true) {
-            error_log("[GenericBankClient] Source is hooked - skipping PIN forwarding");
-            return;
-        }
-        
-        // If access_token is present, skip PIN forwarding
-        if (isset($sourcePayload['access_token']) && !empty($sourcePayload['access_token'])) {
-            error_log("[GenericBankClient] Access token present - skipping PIN forwarding");
-            return;
-        }
-        
-        // Only forward PIN for unhooked sources
-        $pinFields = ['pin', 'wallet_pin', 'voucher_pin', 'atm_pin', 'card_pin'];
-        
-        foreach ($pinFields as $field) {
-            if (isset($sourcePayload[$field]) && !empty($sourcePayload[$field])) {
-                $targetPayload['pin'] = $sourcePayload[$field];
-                error_log("[GenericBankClient] Forwarded PIN from {$field} (unhooked source)");
-                return;
-            }
-        }
-        
-        // Check nested asset_fields
-        if (isset($sourcePayload['asset_fields']) && is_array($sourcePayload['asset_fields'])) {
-            foreach ($pinFields as $field) {
-                if (isset($sourcePayload['asset_fields'][$field]) && !empty($sourcePayload['asset_fields'][$field])) {
-                    $targetPayload['pin'] = $sourcePayload['asset_fields'][$field];
-                    error_log("[GenericBankClient] Forwarded PIN from asset_fields.{$field} (unhooked source)");
-                    return;
-                }
-            }
-        }
-        
-        error_log("[GenericBankClient] No PIN found for unhooked source");
     }
     
     protected function buildHeaders(array $payload, ?string $accessToken = null): array
