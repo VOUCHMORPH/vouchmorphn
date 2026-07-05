@@ -14,7 +14,7 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
 // Set up autoloading
-require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/../../vendor/autoload.php';
 
 // Load environment
 $dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/../');
