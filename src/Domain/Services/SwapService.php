@@ -14,7 +14,7 @@ use Domain\Services\CardService;
 use Domain\Services\ContributionCalculator;
 use Domain\Services\MultiSourceFeeCalculator;
 use Domain\Services\MultiSource\MultiSourceSwapOrchestrator;
-use Infrastructure\Banks\GenericBankClient;
+use Infrastructure\Adapters\InstitutionAdapterFactory;
 use Infrastructure\SMS\SmsNotificationService;
 use Infrastructure\Mojaloop\IdempotencyService;
 use Infrastructure\Crypto\SignatureVerifier;
@@ -28,6 +28,9 @@ use Infrastructure\Crypto\AggregateSigner;
  * Institution-agnostic - all institutions derived from payload
  * No hardcoded institution names anywhere
  * Supports ACCOUNT and WALLET asset types for deposits
+ * 
+ * NOW WITH ADAPTER PATTERN - each institution has its own adapter
+ * No GenericBankClient used directly - all institution communication via adapters
  */
 class SwapService
 {
@@ -53,6 +56,9 @@ class SwapService
     private MessageSigner $messageSigner;
     private SignatureVerifier $signatureVerifier;
     private ?CertificateManager $certificateManager = null;
+    
+    // NEW: Adapter Factory
+    private InstitutionAdapterFactory $adapterFactory;
     
     private bool $inAtomicSwap = false;
     private ?string $currentSwapRef = null;
@@ -127,6 +133,13 @@ class SwapService
         
         error_log("[SwapService] Loaded fees config from LoadCountry");
         error_log("[SwapService] Config keys: " . implode(', ', array_keys($this->feesConfig)));
+        
+        // NEW: Initialize Adapter Factory with participants
+        $this->adapterFactory = new InstitutionAdapterFactory(
+            $this->participants,
+            $this->logger
+        );
+        $this->logger->info("InstitutionAdapterFactory initialized");
         
         $this->settlement = new HybridSettlementStrategy($this->swapDB);
         $this->forexService = new ForexService(
@@ -397,10 +410,9 @@ class SwapService
             return ['success' => false, 'message' => 'Institution required'];
         }
         
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant);
-        
-        return $bankClient->initiateSourceLink($params);
+        // Use adapter instead of GenericBankClient
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        return $adapter->initiateSourceLink($params);
     }
 
     public function verifySourceLink(array $params): array
@@ -412,10 +424,9 @@ class SwapService
             return ['success' => false, 'message' => 'Institution required'];
         }
         
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant);
-        
-        return $bankClient->verifySourceLink($params);
+        // Use adapter instead of GenericBankClient
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        return $adapter->verifySourceLink($params);
     }
 
     public function getHookedSources(int $userId): array
@@ -456,10 +467,9 @@ class SwapService
             throw new RuntimeException("Source not found");
         }
         
-        $participant = $this->getParticipant($source['institution']);
-        $bankClient = new GenericBankClient($participant);
-        
-        $result = $bankClient->refreshSourceToken(['refresh_token' => $source['refresh_token']]);
+        // Use adapter instead of GenericBankClient
+        $adapter = $this->adapterFactory->getAdapter($source['institution']);
+        $result = $adapter->refreshSourceToken(['refresh_token' => $source['refresh_token']]);
         
         if (!$result['success']) {
             throw new RuntimeException("Failed to refresh token: " . ($result['message'] ?? 'Unknown error'));
@@ -493,10 +503,9 @@ class SwapService
             throw new RuntimeException("Source not found");
         }
         
-        $participant = $this->getParticipant($source['institution']);
-        $bankClient = new GenericBankClient($participant);
-        
-        $bankClient->revokeSourceToken(['token' => $source['access_token']]);
+        // Use adapter instead of GenericBankClient
+        $adapter = $this->adapterFactory->getAdapter($source['institution']);
+        $adapter->revokeSourceToken(['token' => $source['access_token']]);
         
         $sql = "UPDATE user_authorized_sources SET status = 'revoked' WHERE source_reference = :source_ref";
         $stmt = $this->swapDB->prepare($sql);
@@ -981,9 +990,9 @@ class SwapService
                     try {
                         error_log("[SwapService] Releasing hold for failed destination: {$destHoldRef}");
                         
-                        $participant = $this->getParticipant($sourceInstitution);
-                        $bankClient = new GenericBankClient($participant);
-                        $bankClient->releaseHold([
+                        // Use adapter instead of GenericBankClient
+                        $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
+                        $adapter->releaseHold([
                             'hold_reference' => $destHoldRef,
                             'action' => 'RELEASE_HOLD',
                             'reason' => 'Destination failed - ' . $e->getMessage()
@@ -1158,6 +1167,8 @@ class SwapService
         $beneficiaryPhone = $dest['beneficiary_phone'] ?? $dest['client_phone'] ?? null;
         $sourceInstitution = $this->extractSourceInstitution($basePayload);
         
+        // Use the adapter-based generateCashoutToken (will be called via the method below)
+        // But we need to build the payload first
         $cashoutPayload = [
             'reference' => $this->currentSwapRef . '_DEST_' . ($dest['_destination_index'] ?? 0),
             'amount' => $amount,
@@ -1185,13 +1196,11 @@ class SwapService
             }
         }
         
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $cashoutPayload);
-        
-        $result = $bankClient->generateToken($cashoutPayload);
+        // Use the adapter-based method
+        $result = $this->generateCashoutToken($cashoutPayload, $institution, $amount);
         
         if (!$result['success']) {
-            return ['success' => false, 'message' => $result['curl_error'] ?? 'Cashout generation failed'];
+            return ['success' => false, 'message' => $result['message'] ?? 'Cashout generation failed'];
         }
         
         $data = $result['data'] ?? [];
@@ -1263,13 +1272,11 @@ class SwapService
             }
         }
         
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $depositPayload);
-        
-        $result = $bankClient->processDepositWithProof($depositPayload);
+        // Use adapter-based processDepositWithProof
+        $result = $this->processDepositWithProof($depositPayload, $institution, $amount);
         
         if (!$result['success']) {
-            return ['success' => false, 'message' => $result['curl_error'] ?? 'Deposit failed'];
+            return ['success' => false, 'message' => $result['message'] ?? 'Deposit failed'];
         }
         
         $data = $result['data'] ?? [];
@@ -1317,13 +1324,12 @@ class SwapService
             }
         }
         
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $voucherPayload);
-        
-        $result = $bankClient->generateVoucher($voucherPayload);
+        // Use adapter directly for voucher generation
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        $result = $adapter->generateVoucher($voucherPayload);
         
         if (!$result['success']) {
-            return ['success' => false, 'message' => $result['curl_error'] ?? 'Voucher generation failed'];
+            return ['success' => false, 'message' => $result['message'] ?? 'Voucher generation failed'];
         }
         
         $data = $result['data'] ?? [];
@@ -2112,10 +2118,10 @@ class SwapService
             
             foreach ($expiredSwaps as $swap) {
                 try {
-                    $participant = $this->getParticipant($swap['source_institution']);
-                    $bankClient = new GenericBankClient($participant);
+                    // Use adapter instead of GenericBankClient
+                    $adapter = $this->adapterFactory->getAdapter($swap['source_institution']);
                     
-                    $releaseResult = $bankClient->releaseHold([
+                    $releaseResult = $adapter->releaseHold([
                         'hold_reference' => $swap['hold_reference'],
                         'action' => 'RELEASE_HOLD',
                         'reason' => 'Identity swap expired after 24 hours'
@@ -2196,8 +2202,8 @@ class SwapService
             throw new RuntimeException("Destination institution required for verification");
         }
         
-        $participant = $this->getParticipant($destinationInstitution);
-        $bankClient = new GenericBankClient($participant, $payload);
+        // Use adapter instead of GenericBankClient
+        $adapter = $this->adapterFactory->getAdapter($destinationInstitution);
         
         $verifyPayload = [
             'reference' => $payload['reference'] ?? $this->generateReference(),
@@ -2208,10 +2214,10 @@ class SwapService
             'destination_institution' => $destinationInstitution
         ];
         
-        $result = $bankClient->verifyToken($verifyPayload);
+        $result = $adapter->verifyToken($verifyPayload);
         
         if (!$result['success']) {
-            throw new RuntimeException("Token verification failed: " . ($result['curl_error'] ?? 'Unknown error'));
+            throw new RuntimeException("Token verification failed: " . ($result['message'] ?? 'Unknown error'));
         }
         
         $data = $result['data'] ?? [];
@@ -2252,8 +2258,8 @@ class SwapService
         $amountToSend = (float)$authorization['amount'];
         $feeAmount = (float)$authorization['fee_amount'];
         
-        $participant = $this->getParticipant($destinationInstitution);
-        $bankClient = new GenericBankClient($participant, $payload);
+        // Use adapter instead of GenericBankClient
+        $adapter = $this->adapterFactory->getAdapter($destinationInstitution);
         
         $confirmPayload = [
             'reference' => $swapReference,
@@ -2268,10 +2274,10 @@ class SwapService
             'source_institution' => $sourceInstitution
         ];
         
-        $confirmResult = $bankClient->confirmCashout($confirmPayload);
+        $confirmResult = $adapter->confirmCashout($confirmPayload);
         
         if (!$confirmResult['success']) {
-            throw new RuntimeException("Cashout confirmation failed: " . ($confirmResult['curl_error'] ?? 'Unknown error'));
+            throw new RuntimeException("Cashout confirmation failed: " . ($confirmResult['message'] ?? 'Unknown error'));
         }
         
         $data = $confirmResult['data'] ?? [];
@@ -2630,14 +2636,125 @@ class SwapService
         }
     }
 
+    // ============================================================================
+    // ADAPTER-BASED PRIVATE METHODS (UPDATED FROM DIFF NOTES)
+    // ============================================================================
+
+    /**
+     * Verify asset at institution using adapter pattern
+     */
+    private function verifyAssetSigned(array $payload, string $institution): array
+    {
+        $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
+        $timestamp = time();
+        $sourceId = $this->extractSourceIdentifier($payload);
+
+        $verifyPayload = [
+            'action' => 'VERIFY_ASSET',
+            'reference' => $this->currentSwapRef,
+            'asset_type' => $assetType,
+            'amount' => $payload['amount'] ?? 0,
+            'currency' => $payload['currency'] ?? $this->config['currency'] ?? 'BWP',
+            'institution' => $institution,
+            'timestamp' => $timestamp,
+            'swap_type' => $payload['swap_type'] ?? 'STANDARD',
+            'requester' => 'VOUCHMORPH',
+            'from_institution' => $institution,
+            'source_institution' => $institution
+        ];
+
+        $this->forwardPin($payload, $verifyPayload);
+
+        if ($sourceId['has_value']) {
+            $verifyPayload['source_identifier'] = $sourceId['identifier'];
+            $verifyPayload['source_identifier_type'] = $sourceId['type'];
+        }
+
+        // Use adapter instead of GenericBankClient
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        return $adapter->verifyAsset($verifyPayload);
+    }
+
+    /**
+     * Place hold at institution using adapter pattern
+     */
+    private function placeHoldSigned(array $payload, string $institution, array $verificationResult): array
+    {
+        $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
+        $timestamp = time();
+        $sourceId = $this->extractSourceIdentifier($payload);
+        $destInstitution = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
+
+        $holdPayload = [
+            'action' => 'PLACE_HOLD',
+            'reference' => $this->currentSwapRef,
+            'asset_type' => $assetType,
+            'amount' => $payload['amount'] ?? 0,
+            'currency' => $payload['currency'] ?? $this->config['currency'] ?? 'BWP',
+            'hold_reason' => $payload['hold_reason'] ?? 'PENDING_SWAP',
+            'destination_institution' => $destInstitution,
+            'expiry' => date('Y-m-d H:i:s', strtotime('+24 hours')),
+            'timestamp' => $timestamp,
+            'from_institution' => $institution,
+            'source_institution' => $institution
+        ];
+
+        $this->forwardPin($payload, $holdPayload);
+
+        if ($sourceId['has_value']) {
+            $holdPayload['source_identifier'] = $sourceId['identifier'];
+            $holdPayload['source_identifier_type'] = $sourceId['type'];
+        }
+
+        if (isset($verificationResult['asset_id'])) {
+            $holdPayload['asset_id'] = $verificationResult['asset_id'];
+        }
+
+        // Use adapter instead of GenericBankClient
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        $result = $adapter->placeHold($holdPayload);
+
+        if (!($result['hold_placed'] ?? false)) {
+            return $result;
+        }
+
+        // Local hold bookkeeping stays in SwapService - VouchMorph's own ledger
+        $holdId = $this->createLocalHold($payload, $institution, $result['hold_reference'] ?? null);
+        $this->currentHoldId = $holdId;
+        $result['local_hold_id'] = $holdId;
+
+        return $result;
+    }
+
+    /**
+     * Debit source institution using adapter pattern
+     */
+    private function debitSource(array $payload, string $institution): array
+    {
+        $debitPayload = [
+            'reference' => $payload['reference'] ?? $this->currentSwapRef,
+            'hold_reference' => $payload['hold_reference'] ?? $this->currentHoldReference,
+            'amount' => $payload['amount'] ?? 0,
+            'reason' => $payload['reason'] ?? 'Swap completed successfully',
+            'from_institution' => $institution,
+            'source_institution' => $institution
+        ];
+
+        $this->forwardPin($payload, $debitPayload);
+
+        // Use adapter instead of GenericBankClient
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        return $adapter->debit($debitPayload);
+    }
+
+    /**
+     * Generate cashout token using adapter pattern
+     */
     private function generateCashoutToken(array $payload, string $institution, float $amount): array
     {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
-        
         $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
         $sourceInstitution = $this->extractSourceInstitution($payload);
-        
+
         $tokenPayload = [
             'reference' => $this->currentSwapRef,
             'amount' => $amount,
@@ -2652,180 +2769,14 @@ class SwapService
             'to_institution' => $institution,
             'destination_institution' => $institution
         ];
-        
+
         if (isset($payload['note_breakdown'])) {
             $tokenPayload['note_breakdown'] = $payload['note_breakdown'];
         }
-        
-        $result = $bankClient->generateToken($tokenPayload);
-        
-        if (!$result['success']) {
-            return ['success' => false, 'message' => $result['curl_error'] ?? 'Token generation failed'];
-        }
-        
-        $data = $result['data'] ?? [];
-        
-        if (empty($data['atm_pin']) && empty($data['voucher_number'])) {
-            return ['success' => false, 'message' => 'No code generated'];
-        }
-        
-        return [
-            'success' => true,
-            'swap_code' => $data['swap_code'] ?? $data['voucher_number'],
-            'atm_pin' => $data['atm_pin'] ?? null,
-            'voucher_number' => $data['voucher_number'] ?? null,
-            'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'))
-        ];
-    }
 
-    private function verifyAssetSigned(array $payload, string $institution): array
-    {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
-        
-        $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
-        $timestamp = time();
-        $sourceId = $this->extractSourceIdentifier($payload);
-        
-        $verifyPayload = [
-            'action' => 'VERIFY_ASSET',
-            'reference' => $this->currentSwapRef,
-            'asset_type' => $assetType,
-            'amount' => $payload['amount'] ?? 0,
-            'currency' => $payload['currency'] ?? $this->config['currency'] ?? 'BWP',
-            'institution' => $institution,
-            'timestamp' => $timestamp,
-            'swap_type' => $payload['swap_type'] ?? 'STANDARD',
-            'requester' => 'VOUCHMORPH',
-            'from_institution' => $institution,
-            'source_institution' => $institution
-        ];
-        
-        $this->forwardPin($payload, $verifyPayload);
-        
-        if ($sourceId['has_value']) {
-            $verifyPayload['source_identifier'] = $sourceId['identifier'];
-            $verifyPayload['source_identifier_type'] = $sourceId['type'];
-        }
-        
-        $result = $bankClient->verifyAssetSigned($verifyPayload);
-        
-        if (!$result['success']) {
-            return ['verified' => false, 'message' => 'Unable to reach source institution'];
-        }
-        
-        $data = $result['data'] ?? [];
-        $verified = $data['verified'] ?? false;
-        
-        if ($verified !== true) {
-            return ['verified' => false, 'message' => $data['message'] ?? 'Asset not available'];
-        }
-        
-        return [
-            'verified' => true,
-            'message' => $data['message'] ?? 'Asset verified',
-            'asset_id' => $data['asset_id'] ?? null,
-            'original_payload' => $data['payload'] ?? null,
-            'signature' => $data['signature'] ?? null,
-            'certificate' => $data['certificate'] ?? null,
-            'timestamp' => $data['timestamp'] ?? $timestamp
-        ];
-    }
-
-    private function placeHoldSigned(array $payload, string $institution, array $verificationResult): array
-    {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
-        
-        $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
-        $timestamp = time();
-        $sourceId = $this->extractSourceIdentifier($payload);
-        $destInstitution = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
-        
-        $holdPayload = [
-            'action' => 'PLACE_HOLD',
-            'reference' => $this->currentSwapRef,
-            'asset_type' => $assetType,
-            'amount' => $payload['amount'] ?? 0,
-            'currency' => $payload['currency'] ?? $this->config['currency'] ?? 'BWP',
-            'hold_reason' => $payload['hold_reason'] ?? 'PENDING_SWAP',
-            'destination_institution' => $destInstitution,
-            'expiry' => date('Y-m-d H:i:s', strtotime('+24 hours')),
-            'timestamp' => $timestamp,
-            'from_institution' => $institution,
-            'source_institution' => $institution
-        ];
-        
-        $this->forwardPin($payload, $holdPayload);
-        
-        if ($sourceId['has_value']) {
-            $holdPayload['source_identifier'] = $sourceId['identifier'];
-            $holdPayload['source_identifier_type'] = $sourceId['type'];
-        }
-        
-        if (isset($verificationResult['asset_id'])) {
-            $holdPayload['asset_id'] = $verificationResult['asset_id'];
-        }
-        
-        $result = $bankClient->placeHoldSigned($holdPayload);
-        
-        if (!$result['success']) {
-            return ['hold_placed' => false, 'message' => $result['curl_error'] ?? 'Hold request failed'];
-        }
-        
-        $data = $result['data'] ?? [];
-        
-        $holdId = $this->createLocalHold($payload, $institution, $data['hold_reference'] ?? null);
-        $this->currentHoldId = $holdId;
-        
-        return [
-            'hold_placed' => true,
-            'hold_reference' => $data['hold_reference'] ?? null,
-            'local_hold_id' => $holdId,
-            'message' => $data['message'] ?? 'Hold placed successfully',
-            'original_payload' => $data['payload'] ?? null,
-            'signature' => $data['signature'] ?? null,
-            'certificate' => $data['certificate'] ?? null,
-            'timestamp' => $data['timestamp'] ?? $timestamp
-        ];
-    }
-
-    private function processDestinationWithProof(array $payload, string $institution, float $amount): array
-    {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
-        
-        $destId = $this->extractDestinationIdentifier($payload);
-        $sourceInstitution = $this->extractSourceInstitution($payload);
-        
-        $transferPayload = [
-            'reference' => $this->currentSwapRef,
-            'amount' => $amount,
-            'currency' => $payload['currency'] ?? 'BWP',
-            'destination_type' => $payload['destination_type'] ?? 'ACCOUNT',
-            'action' => 'PROCESS_TRANSFER_WITH_PROOF',
-            'source_verification' => $this->signedPayloads['verification'] ?? null,
-            'source_hold' => $this->signedPayloads['hold'] ?? null,
-            'from_institution' => $sourceInstitution,
-            'source_institution' => $sourceInstitution,
-            'to_institution' => $institution,
-            'destination_institution' => $institution
-        ];
-        
-        $this->forwardPin($payload, $transferPayload);
-        
-        if ($destId['has_value']) {
-            $transferPayload['destination_identifier'] = $destId['identifier'];
-            $transferPayload['destination_identifier_type'] = $destId['type'];
-        }
-        
-        $result = $bankClient->transferWithProof($transferPayload);
-        
-        if (!$result['success']) {
-            return ['success' => false, 'message' => $result['curl_error'] ?? 'Processing failed'];
-        }
-        
-        return ['success' => true];
+        // Use adapter instead of GenericBankClient
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        return $adapter->generateCashoutToken($tokenPayload);
     }
 
     // ============================================================================
@@ -2835,9 +2786,6 @@ class SwapService
     private function processDepositWithProof(array $payload, string $institution, float $amount): array
     {
         error_log("[SwapService] processDepositWithProof called for institution: {$institution}");
-        
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
         
         $sourceInstitution = $this->extractSourceInstitution($payload);
         $destinationInstitution = $this->extractDestinationInstitution($payload);
@@ -2905,11 +2853,13 @@ class SwapService
         if (isset($logPayload['certificate'])) $logPayload['certificate'] = '***CERT***';
         error_log("[SwapService] processDepositWithProof final payload: " . json_encode($logPayload));
         
-        $result = $bankClient->processDepositWithProof($depositPayload);
+        // Use adapter instead of GenericBankClient
+        $adapter = $this->adapterFactory->getAdapter($destinationInstitution);
+        $result = $adapter->processDepositWithProof($depositPayload);
         
         if (!$result['success']) {
-            error_log("[SwapService] processDepositWithProof FAILED: " . ($result['curl_error'] ?? 'Unknown error'));
-            return ['success' => false, 'message' => $result['curl_error'] ?? 'Deposit failed'];
+            error_log("[SwapService] processDepositWithProof FAILED: " . ($result['message'] ?? 'Unknown error'));
+            return ['success' => false, 'message' => $result['message'] ?? 'Deposit failed'];
         }
         
         $data = $result['data'] ?? [];
@@ -2921,40 +2871,45 @@ class SwapService
         ];
     }
 
-    private function debitSource(array $payload, string $institution): array
+    private function processDestinationWithProof(array $payload, string $institution, float $amount): array
     {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
+        $destId = $this->extractDestinationIdentifier($payload);
+        $sourceInstitution = $this->extractSourceInstitution($payload);
         
-        $debitPayload = [
-            'reference' => $payload['reference'] ?? $this->currentSwapRef,
-            'hold_reference' => $payload['hold_reference'] ?? $this->currentHoldReference,
-            'amount' => $payload['amount'] ?? 0,
-            'reason' => $payload['reason'] ?? 'Swap completed successfully',
-            'from_institution' => $institution,
-            'source_institution' => $institution
+        $transferPayload = [
+            'reference' => $this->currentSwapRef,
+            'amount' => $amount,
+            'currency' => $payload['currency'] ?? 'BWP',
+            'destination_type' => $payload['destination_type'] ?? 'ACCOUNT',
+            'action' => 'PROCESS_TRANSFER_WITH_PROOF',
+            'source_verification' => $this->signedPayloads['verification'] ?? null,
+            'source_hold' => $this->signedPayloads['hold'] ?? null,
+            'from_institution' => $sourceInstitution,
+            'source_institution' => $sourceInstitution,
+            'to_institution' => $institution,
+            'destination_institution' => $institution
         ];
         
-        $this->forwardPin($payload, $debitPayload);
+        $this->forwardPin($payload, $transferPayload);
         
-        $result = $bankClient->debitFunds($debitPayload);
-        
-        if (!$result['success']) {
-            return ['debited' => false, 'message' => $result['curl_error'] ?? 'Debit failed'];
+        if ($destId['has_value']) {
+            $transferPayload['destination_identifier'] = $destId['identifier'];
+            $transferPayload['destination_identifier_type'] = $destId['type'];
         }
         
-        return [
-            'debited' => true,
-            'transaction_reference' => $result['data']['transaction_reference'] ?? null,
-            'message' => $result['data']['message'] ?? 'Debit successful'
-        ];
+        // Use adapter instead of GenericBankClient
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        $result = $adapter->transferWithProof($transferPayload);
+        
+        if (!$result['success']) {
+            return ['success' => false, 'message' => $result['message'] ?? 'Processing failed'];
+        }
+        
+        return ['success' => true];
     }
 
     private function verifyAccount(array $payload, string $institution, array $destinationIdentifier): array
     {
-        $participant = $this->getParticipant($institution);
-        $bankClient = new GenericBankClient($participant, $payload);
-        
         $sourceInstitution = $this->extractSourceInstitution($payload);
         $destinationAssetType = $this->extractDestinationAssetType($payload);
         
@@ -2972,10 +2927,12 @@ class SwapService
             'destination_asset_type' => $destinationAssetType,
         ];
         
-        $result = $bankClient->verifyAccount($verifyPayload);
+        // Use adapter instead of GenericBankClient
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        $result = $adapter->verifyAccount($verifyPayload);
         
         if (!$result['success']) {
-            return ['verified' => false, 'message' => $result['curl_error'] ?? 'Account verification failed'];
+            return ['verified' => false, 'message' => $result['message'] ?? 'Account verification failed'];
         }
         
         $data = $result['data'] ?? [];
@@ -3432,7 +3389,8 @@ class SwapService
         $metadata = [
             'swap_reference' => $this->currentSwapRef,
             'external_hold_reference' => $externalHoldRef,
-            'signature_chain' => $this->signedPayloads        ];
+            'signature_chain' => $this->signedPayloads
+        ];
         
         $sql = "
             INSERT INTO hold_transactions (
@@ -3609,8 +3567,8 @@ class SwapService
     public function getSourceAvailableBalance(array $source): float
     {
         try {
-            $participant = $this->getParticipant($source['institution']);
-            $bankClient = new GenericBankClient($participant);
+            // Use adapter instead of GenericBankClient
+            $adapter = $this->adapterFactory->getAdapter($source['institution']);
             
             $payload = [
                 'action' => 'GET_BALANCE',
@@ -3618,7 +3576,7 @@ class SwapService
                 'source_identifier' => $source['identifier']
             ];
             
-            $result = $bankClient->getBalance($payload);
+            $result = $adapter->getBalance($payload);
             return (float)($result['data']['balance'] ?? 0);
         } catch (Exception $e) {
             $this->logger->warning("Failed to get balance for source", [
