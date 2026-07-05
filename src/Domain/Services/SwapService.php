@@ -991,7 +991,7 @@ class SwapService
                             'hold_reference' => $destHoldRef,
                             'action' => 'RELEASE_HOLD',
                             'reason' => 'Destination failed - ' . $e->getMessage()
-                        ]);
+                        ], []);
                         
                         $this->updateHoldStatus($destHoldId, 'RELEASED');
                         
@@ -1190,7 +1190,13 @@ class SwapService
         }
 
         $adapter = $this->adapterFactory->getAdapter($institution);
-        $result = $adapter->generateCashoutToken($cashoutPayload);
+        $result = $adapter->generateCashoutToken($cashoutPayload, [
+            'swap_reference' => $this->currentSwapRef,
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $institution,
+            'hold_reference' => $this->currentHoldReference,
+            'signed_payloads' => $this->signedPayloads
+        ]);
 
         if (!($result['success'] ?? false)) {
             return ['success' => false, 'message' => $result['message'] ?? 'Cashout generation failed'];
@@ -1263,7 +1269,13 @@ class SwapService
         }
 
         $adapter = $this->adapterFactory->getAdapter($institution);
-        $result = $adapter->credit($depositPayload);
+        $result = $adapter->credit($depositPayload, [
+            'swap_reference' => $this->currentSwapRef,
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $institution,
+            'hold_reference' => $this->currentHoldReference,
+            'signed_payloads' => $this->signedPayloads
+        ]);
 
         if (!($result['success'] ?? false)) {
             return ['success' => false, 'message' => $result['message'] ?? 'Deposit failed'];
@@ -2109,7 +2121,7 @@ class SwapService
                         'hold_reference' => $swap['hold_reference'],
                         'action' => 'RELEASE_HOLD',
                         'reason' => 'Identity swap expired after 24 hours'
-                    ]);
+                    ], []);
                     
                     $this->updateIdentityHoldStatus($swap['hold_id'], 'expired', [
                         'release_result' => $releaseResult,
@@ -2196,7 +2208,11 @@ class SwapService
         ];
         
         $adapter = $this->adapterFactory->getAdapter($destinationInstitution);
-        $result = $adapter->verifyCashoutToken($verifyPayload);
+        $result = $adapter->verifyCashoutToken($verifyPayload, [
+            'swap_reference' => $swapCode ?? $authId ?? null,
+            'destination_institution' => $destinationInstitution,
+            'cashout_point' => $cashoutPoint
+        ]);
         
         return [
             'status' => 'verified',
@@ -2248,7 +2264,14 @@ class SwapService
         ];
         
         $destAdapter = $this->adapterFactory->getAdapter($destinationInstitution);
-        $confirmResult = $destAdapter->confirmCashout($confirmPayload);
+        $confirmResult = $destAdapter->confirmCashout($confirmPayload, [
+            'swap_reference' => $swapReference,
+            'auth_id' => $authId,
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $destinationInstitution,
+            'amount' => $amountToSend,
+            'cashout_point' => $cashoutPoint
+        ]);
         
         if (!($confirmResult['confirmed'] ?? false)) {
             throw new RuntimeException("Cashout not confirmed by destination institution");
@@ -2639,7 +2662,13 @@ class SwapService
         }
 
         $adapter = $this->adapterFactory->getAdapter($institution);
-        return $adapter->verifyAsset($verifyPayload);
+        return $adapter->verifyAsset($verifyPayload, [
+            'swap_reference' => $this->currentSwapRef,
+            'institution' => $institution,
+            'source_identifier' => $sourceId['identifier'] ?? null,
+            'signed_payloads' => $this->signedPayloads,
+            'timestamp' => $timestamp
+        ]);
     }
 
     /**
@@ -2678,7 +2707,14 @@ class SwapService
         }
 
         $adapter = $this->adapterFactory->getAdapter($institution);
-        $result = $adapter->placeHold($holdPayload);
+        $result = $adapter->placeHold($holdPayload, [
+            'swap_reference' => $this->currentSwapRef,
+            'institution' => $institution,
+            'verification_result' => $verificationResult,
+            'source_identifier' => $sourceId['identifier'] ?? null,
+            'signed_payloads' => $this->signedPayloads,
+            'timestamp' => $timestamp
+        ]);
 
         if (!($result['hold_placed'] ?? false)) {
             return $result;
@@ -2708,7 +2744,12 @@ class SwapService
         $this->forwardPin($payload, $debitPayload);
 
         $adapter = $this->adapterFactory->getAdapter($institution);
-        return $adapter->debit($debitPayload);
+        return $adapter->debit($debitPayload, [
+            'swap_reference' => $this->currentSwapRef,
+            'institution' => $institution,
+            'hold_reference' => $this->currentHoldReference,
+            'signed_payloads' => $this->signedPayloads
+        ]);
     }
 
     /**
@@ -2739,7 +2780,14 @@ class SwapService
         }
 
         $adapter = $this->adapterFactory->getAdapter($institution);
-        return $adapter->generateCashoutToken($tokenPayload);
+        return $adapter->generateCashoutToken($tokenPayload, [
+            'swap_reference' => $this->currentSwapRef,
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $institution,
+            'hold_reference' => $this->currentHoldReference,
+            'beneficiary_phone' => $beneficiaryPhone,
+            'signed_payloads' => $this->signedPayloads
+        ]);
     }
 
     /**
@@ -2765,7 +2813,14 @@ class SwapService
         ];
 
         $adapter = $this->adapterFactory->getAdapter($institution);
-        return $adapter->verifyAccount($verifyPayload);
+        return $adapter->verifyAccount($verifyPayload, [
+            'swap_reference' => $this->currentSwapRef,
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $institution,
+            'destination_identifier' => $destinationIdentifier,
+            'destination_asset_type' => $destinationAssetType,
+            'signed_payloads' => $this->signedPayloads
+        ]);
     }
 
     /**
@@ -2838,7 +2893,15 @@ class SwapService
         error_log("[SwapService] processDepositWithProof final payload: " . json_encode($logPayload));
         
         $adapter = $this->adapterFactory->getAdapter($destinationInstitution);
-        return $adapter->credit($depositPayload);
+        return $adapter->credit($depositPayload, [
+            'swap_reference' => $this->currentSwapRef,
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $destinationInstitution,
+            'destination_identifier' => $destId['identifier'] ?? null,
+            'destination_asset_type' => $destinationAssetType,
+            'hold_reference' => $this->currentHoldReference,
+            'signed_payloads' => $this->signedPayloads
+        ]);
     }
 
     /**
@@ -2871,7 +2934,13 @@ class SwapService
         }
         
         $adapter = $this->adapterFactory->getAdapter($institution);
-        return $adapter->transferWithProof($transferPayload);
+        return $adapter->transferWithProof($transferPayload, [
+            'swap_reference' => $this->currentSwapRef,
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $institution,
+            'destination_identifier' => $destId['identifier'] ?? null,
+            'signed_payloads' => $this->signedPayloads
+        ]);
     }
 
     private function executeCardIssuance(array $payload): array
@@ -3505,7 +3574,10 @@ class SwapService
                 'source_identifier' => $source['identifier']
             ];
             
-            $result = $adapter->getBalance($payload);
+            $result = $adapter->getBalance($payload, [
+                'source' => $source,
+                'institution' => $source['institution']
+            ]);
             return (float)($result['data']['balance'] ?? 0);
         } catch (Exception $e) {
             $this->logger->warning("Failed to get balance for source", [
