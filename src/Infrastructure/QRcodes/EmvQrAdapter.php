@@ -95,35 +95,36 @@ class EmvQrAdapter implements QrAdapterInterface
     }
 
     public function encode(QrPayload $payload): string
-    {
-        $tags = [];
-        $tags[self::TAG_PAYLOAD_FORMAT] = '01';
-        $tags[self::TAG_POI_METHOD] = $payload->qrType === 'DYNAMIC' ? '12' : '11';
+{
+    $tags = [];
+    $tags[self::TAG_PAYLOAD_FORMAT] = '01';
+    $tags[self::TAG_POI_METHOD] = $payload->qrType === 'DYNAMIC' ? '12' : '11';
 
-        $merchantTag = $this->findTagForInstitution($payload->institution);
-        $tags[$merchantTag] = $this->buildMerchantAccountSubTlv($payload->merchantOrPayeeId);
+    // ✅ FIX: Cast to string to prevent integer conversion
+    $merchantTag = (string)$this->findTagForInstitution($payload->institution);
+    $tags[$merchantTag] = $this->buildMerchantAccountSubTlv($payload->merchantOrPayeeId);
 
-        $tags[self::TAG_CURRENCY] = self::CURRENCY_NUMERIC_MAP[$payload->currency] ?? '072';
+    $tags[self::TAG_CURRENCY] = self::CURRENCY_NUMERIC_MAP[$payload->currency] ?? '072';
 
-        if ($payload->amount !== null) {
-            $tags[self::TAG_AMOUNT] = number_format($payload->amount, 2, '.', '');
-        }
-
-        if ($payload->reference) {
-            $tags[self::TAG_ADDITIONAL_DATA] = $this->buildTlv('01', $payload->reference);
-        }
-
-        $body = '';
-        foreach ($tags as $tag => $value) {
-            $body .= $this->buildTlv($tag, $value);
-        }
-
-        // CRC is calculated over everything including the CRC tag+length, value placeholder
-        $withCrcTag = $body . self::TAG_CRC . '04';
-        $crc = $this->crc16($withCrcTag);
-
-        return $withCrcTag . $crc;
+    if ($payload->amount !== null) {
+        $tags[self::TAG_AMOUNT] = number_format($payload->amount, 2, '.', '');
     }
+
+    if ($payload->reference) {
+        $tags[self::TAG_ADDITIONAL_DATA] = $this->buildTlv('01', $payload->reference);
+    }
+
+    $body = '';
+    foreach ($tags as $tag => $value) {
+        $body .= $this->buildTlv($tag, $value);
+    }
+
+    // CRC is calculated over everything including the CRC tag+length, value placeholder
+    $withCrcTag = $body . self::TAG_CRC . '04';
+    $crc = $this->crc16($withCrcTag);
+
+    return $withCrcTag . $crc;
+}
 
     public function getSpecName(): string
     {
