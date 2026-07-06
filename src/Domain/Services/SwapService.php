@@ -3007,8 +3007,7 @@ class SwapService
             'signed_payloads' => $this->signedPayloads
         ]);
         
-        // ✅ FIX: Check 'credited' instead of 'success'
-        if (!($result['credited'] ?? false)) {
+        if (!($result['success'] ?? false)) {
             return ['success' => false, 'message' => $result['message'] ?? 'Destination processing failed'];
         }
         
