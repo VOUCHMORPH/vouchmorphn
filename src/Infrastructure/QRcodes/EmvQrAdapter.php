@@ -189,7 +189,7 @@ class EmvQrAdapter implements QrAdapterInterface
         if ($tag === false) {
             throw new RuntimeException("No EMVCo merchant tag configured for institution: {$institution}");
         }
-        return $tag;
+        return (string)$tag;
     }
 
     private function extractAdditionalDataField(?string $additionalDataTlv, string $subTag): ?string
