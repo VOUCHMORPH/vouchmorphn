@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-namespace Infrastructure\Channels\Contracts;
+namespace Infrastructure\USSD\Contracts;
 
 /**
  * Normalized outbound USSD response - the menu state machine builds this,
