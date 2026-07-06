@@ -30,6 +30,7 @@ class PoolCoordinator
     private $logger;
     private array $config;
     private string $countryCode;
+    private ?array $forexRateSnapshot = null;
 
     public function __construct(
         PDO $db,
@@ -87,6 +88,7 @@ class PoolCoordinator
 
         $this->db->beginTransaction();
         $pool = null;
+        $heldSources = [];
         
         try {
             // 1. Create pool
@@ -100,15 +102,15 @@ class PoolCoordinator
             // 3. Transition to VERIFYING
             $this->stateMachine->transition($pool, PoolStatus::VERIFYING);
             
-            // 4. Verify sources
+            // 4. Verify sources (Bug 1 fixed: checks 'verified' instead of 'success')
             $verifications = $this->verifySources($contributions, $payload);
             $this->logger->info('Sources verified', ['verified' => count($verifications)]);
             
             // 5. Transition to HOLDING
             $this->stateMachine->transition($pool, PoolStatus::HOLDING);
             
-            // 6. Place holds
-            $holds = $this->placeHolds($pool, $contributions, $verifications);
+            // 6. Place holds (Bug 2 fixed: captures held sources for rollback)
+            $holds = $this->placeHolds($pool, $contributions, $verifications, $heldSources);
             $this->logger->info('Holds placed', ['holds' => count($holds)]);
             
             // 7. Transition to FUNDED
@@ -150,6 +152,10 @@ class PoolCoordinator
         } catch (Exception $e) {
             $this->db->rollBack();
             $this->logger->error('Multi-source swap failed', ['error' => $e->getMessage()]);
+            
+            // Bug 2 fixed: Now releases holds properly with real institution calls
+            $this->rollbackHolds($heldSources);
+            
             $this->rollback($pool ?? null);
             throw new RuntimeException("Multi-source swap failed: " . $e->getMessage());
         }
@@ -159,15 +165,23 @@ class PoolCoordinator
     {
         $poolId = $payload['pool_id'] ?? 'POOL_' . uniqid();
         
+        // Bug 3: Take forex snapshot once at pool creation
+        $this->forexRateSnapshot = $this->swapService->getForexRate(
+            $payload['currency'] ?? 'BWP',
+            $payload['destination_currency'] ?? 'BWP'
+        );
+        
         $pool = [
             'id' => $poolId,
             'sources' => $payload['sources'] ?? [],
             'amount' => $payload['amount'] ?? 0,
             'currency' => $payload['currency'] ?? 'BWP',
+            'destination_currency' => $payload['destination_currency'] ?? 'BWP',
             'status' => PoolStatus::CREATED,
             'source_institution' => $payload['from_institution'] ?? $payload['source_institution'] ?? null,
             'destination_institution' => $payload['to_institution'] ?? $payload['destination_institution'] ?? null,
             'reference' => $payload['reference'] ?? uniqid(),
+            'forex_rate' => $this->forexRateSnapshot,
             'created_at' => date('Y-m-d H:i:s'),
             'updated_at' => date('Y-m-d H:i:s')
         ];
@@ -204,7 +218,8 @@ class PoolCoordinator
             // Call SwapService to verify asset
             $result = $this->swapService->verifyAssetSigned($verifyPayload, $institution);
             
-            if (!$result['verified']) {
+            // Bug 1 FIX: Check 'verified' instead of 'success'
+            if (!($result['verified'] ?? false)) {
                 throw new RuntimeException("Verification failed for source: {$institution} - " . ($result['message'] ?? 'Unknown error'));
             }
             
@@ -220,9 +235,10 @@ class PoolCoordinator
         return $verifications;
     }
 
-    private function placeHolds(array $pool, array $contributions, array $verifications): array
+    private function placeHolds(array $pool, array $contributions, array $verifications, ?array &$heldSources = null): array
     {
         $holds = [];
+        $heldSources = []; // Track successfully held sources for rollback
         
         foreach ($contributions as $index => $contribution) {
             $institution = $contribution['institution'];
@@ -243,19 +259,88 @@ class PoolCoordinator
             $result = $this->swapService->placeHoldSigned($holdPayload, $institution, $verificationResult);
             
             if (!$result['hold_placed']) {
+                // Bug 2 FIX: Rollback all previously held sources with real institution calls
+                $this->rollbackHolds($heldSources);
                 throw new RuntimeException("Hold failed for source: {$institution} - " . ($result['message'] ?? 'Unknown error'));
             }
             
-            $holds[] = [
+            $holdData = [
                 'index' => $index,
                 'institution' => $institution,
                 'hold_id' => $result['hold_id'] ?? null,
                 'hold_reference' => $result['hold_reference'] ?? null,
-                'amount' => $amount
+                'amount' => $amount,
+                'source_payload' => $contribution // Store for rollback
             ];
+            
+            $holds[] = $holdData;
+            $heldSources[] = $holdData; // Track for rollback
         }
         
         return $holds;
+    }
+
+    /**
+     * Bug 2 FIX: Rollback holds with real institution calls
+     */
+    private function rollbackHolds(array $heldSources): void
+    {
+        if (empty($heldSources)) {
+            return;
+        }
+        
+        $this->logger->warning('Rolling back holds', ['count' => count($heldSources)]);
+        
+        foreach ($heldSources as $held) {
+            try {
+                // Release the REAL hold at the institution
+                $releaseResult = $this->swapService->releaseHold(
+                    $held['source_payload'] ?? [],
+                    $held['institution'],
+                    $held['hold_id'] ?? null,
+                    $held['hold_reference'] ?? null
+                );
+                
+                $this->logger->info('Released real hold', [
+                    'institution' => $held['institution'],
+                    'hold_id' => $held['hold_id'] ?? 'unknown',
+                    'success' => $releaseResult['success'] ?? false
+                ]);
+                
+                // Then clean up local bookkeeping
+                $this->releaseLocalHold($held['hold_id'] ?? null);
+                
+            } catch (Exception $e) {
+                $this->logger->error('Failed to release hold', [
+                    'institution' => $held['institution'],
+                    'hold_id' => $held['hold_id'] ?? 'unknown',
+                    'error' => $e->getMessage()
+                ]);
+                // Continue trying to release other holds even if one fails
+            }
+        }
+    }
+
+    private function releaseLocalHold(?string $holdId): void
+    {
+        if ($holdId) {
+            try {
+                // Clean up local hold_transactions bookkeeping
+                $stmt = $this->db->prepare("
+                    UPDATE hold_transactions 
+                    SET status = 'RELEASED', 
+                        released_at = NOW(),
+                        updated_at = NOW()
+                    WHERE hold_id = ? AND status = 'HELD'
+                ");
+                $stmt->execute([$holdId]);
+            } catch (Exception $e) {
+                $this->logger->error('Failed to release local hold', [
+                    'hold_id' => $holdId,
+                    'error' => $e->getMessage()
+                ]);
+            }
+        }
     }
 
     private function executeDestination(array $pool, array $contributions, string $masterSignature): array
@@ -332,11 +417,12 @@ class PoolCoordinator
 
     private function invoice(array $pool, array $contributions): array
     {
-        // Calculate fees
+        // Bug 3 FIX: Pass the forex rate snapshot to fee calculator
         $feeResult = $this->feeCalculator->calculate(
             $pool['amount'] ?? 0,
             $contributions,
-            $pool
+            $pool,
+            $this->forexRateSnapshot // Pass snapshot instead of fetching fresh rates
         );
         
         $invoiceResults = [];
@@ -391,6 +477,7 @@ class PoolCoordinator
             'status' => PoolStatus::COMPLETED,
             'total_amount' => $pool['amount'],
             'currency' => $pool['currency'] ?? 'BWP',
+            'forex_rate_used' => $this->forexRateSnapshot,
             'source_count' => count($contributions),
             'destination_result' => $destinationResult,
             'settlement' => $settlementResult,
