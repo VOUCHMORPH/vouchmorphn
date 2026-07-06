@@ -7,6 +7,17 @@ use PDO;
 use Exception;
 use RuntimeException;
 
+/**
+ * ForexService - real rates from partner banks, cached to respect rate limits
+ * and to avoid a live swap ever blocking on a slow external call.
+ * 
+ * Supports:
+ * - Partner bank aggregation (get best rate from multiple banks)
+ * - External API fallback (FXRatesAPI, OpenExchangeRates, Fixer.io)
+ * - Database caching with TTL
+ * - Client markup by tier
+ * - FX profit tracking for financial reporting
+ */
 class ForexService
 {
     private PDO $db;
@@ -16,12 +27,23 @@ class ForexService
     private ?FeeService $feeService = null;
     private array $rateCache = [];
     
-    public function __construct(PDO $db, array $config, array $participants, ?FeeService $feeService = null)
-    {
+    private const CACHE_TTL_SECONDS = 900; // 15 min - forex doesn't move fast enough to need per-request freshness
+    private string $cacheFile;
+    
+    public function __construct(
+        PDO $db, 
+        array $config, 
+        array $participants, 
+        ?FeeService $feeService = null,
+        ?string $cacheDir = null
+    ) {
         $this->db = $db;
         $this->config = $config;
         $this->participants = $participants;
         $this->feeService = $feeService;
+        
+        // Cache file for API fallback
+        $this->cacheFile = ($cacheDir ?? sys_get_temp_dir()) . '/vouchmorph_forex_cache.json';
         
         // Initialize partner banks from participants
         $this->initializePartnerBanks();
@@ -62,50 +84,53 @@ class ForexService
         error_log("[ForexService] Initialized with " . count($this->partnerBanks) . " partner banks");
     }
     
-   private function initializeCacheTable(): void
-{
-    try {
-        // Create fx_cached_rates with proper PostgreSQL syntax
-        $this->db->exec("
-            CREATE TABLE IF NOT EXISTS fx_cached_rates (
-                id SERIAL PRIMARY KEY,
-                currency_pair VARCHAR(7) NOT NULL,
-                rate DECIMAL(20,6) NOT NULL,
-                rate_type VARCHAR(20) DEFAULT 'wholesale',
-                source VARCHAR(50),
-                fetched_at TIMESTAMP DEFAULT NOW(),
-                expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '1 hour'
-            )
-        ");
-        
-        // Create indexes separately (PostgreSQL syntax)
-        $this->db->exec("CREATE INDEX IF NOT EXISTS idx_fx_pair_type ON fx_cached_rates (currency_pair, rate_type)");
-        $this->db->exec("CREATE INDEX IF NOT EXISTS idx_fx_expires ON fx_cached_rates (expires_at)");
-        
-        // Create fx_profit_records
-        $this->db->exec("
-            CREATE TABLE IF NOT EXISTS fx_profit_records (
-                id SERIAL PRIMARY KEY,
-                swap_reference VARCHAR(100),
-                currency_pair VARCHAR(7) NOT NULL,
-                wholesale_rate DECIMAL(20,6) NOT NULL,
-                client_rate DECIMAL(20,6) NOT NULL,
-                profit_per_unit DECIMAL(20,6) NOT NULL,
-                amount DECIMAL(20,2),
-                client_tier VARCHAR(20),
-                recorded_at TIMESTAMP DEFAULT NOW()
-            )
-        ");
-        
-        $this->db->exec("CREATE INDEX IF NOT EXISTS idx_fx_profit_pair ON fx_profit_records (currency_pair)");
-        $this->db->exec("CREATE INDEX IF NOT EXISTS idx_fx_profit_recorded ON fx_profit_records (recorded_at)");
-        
-        error_log("[ForexService] Cache tables created successfully");
-        
-    } catch (Exception $e) {
-        error_log("[ForexService] Failed to create cache table: " . $e->getMessage());
+    /**
+     * Initialize cache tables with PostgreSQL syntax
+     */
+    private function initializeCacheTable(): void
+    {
+        try {
+            // Create fx_cached_rates with proper PostgreSQL syntax
+            $this->db->exec("
+                CREATE TABLE IF NOT EXISTS fx_cached_rates (
+                    id SERIAL PRIMARY KEY,
+                    currency_pair VARCHAR(7) NOT NULL,
+                    rate DECIMAL(20,6) NOT NULL,
+                    rate_type VARCHAR(20) DEFAULT 'wholesale',
+                    source VARCHAR(50),
+                    fetched_at TIMESTAMP DEFAULT NOW(),
+                    expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '1 hour'
+                )
+            ");
+            
+            // Create indexes separately (PostgreSQL syntax)
+            $this->db->exec("CREATE INDEX IF NOT EXISTS idx_fx_pair_type ON fx_cached_rates (currency_pair, rate_type)");
+            $this->db->exec("CREATE INDEX IF NOT EXISTS idx_fx_expires ON fx_cached_rates (expires_at)");
+            
+            // Create fx_profit_records
+            $this->db->exec("
+                CREATE TABLE IF NOT EXISTS fx_profit_records (
+                    id SERIAL PRIMARY KEY,
+                    swap_reference VARCHAR(100),
+                    currency_pair VARCHAR(7) NOT NULL,
+                    wholesale_rate DECIMAL(20,6) NOT NULL,
+                    client_rate DECIMAL(20,6) NOT NULL,
+                    profit_per_unit DECIMAL(20,6) NOT NULL,
+                    amount DECIMAL(20,2),
+                    client_tier VARCHAR(20),
+                    recorded_at TIMESTAMP DEFAULT NOW()
+                )
+            ");
+            
+            $this->db->exec("CREATE INDEX IF NOT EXISTS idx_fx_profit_pair ON fx_profit_records (currency_pair)");
+            $this->db->exec("CREATE INDEX IF NOT EXISTS idx_fx_profit_recorded ON fx_profit_records (recorded_at)");
+            
+            error_log("[ForexService] Cache tables created successfully");
+            
+        } catch (Exception $e) {
+            error_log("[ForexService] Failed to create cache table: " . $e->getMessage());
+        }
     }
-}
     
     /**
      * Get client rate with VouchMorph markup
@@ -113,6 +138,8 @@ class ForexService
      */
     public function getClientRate(string $from, string $to, string $clientTier = 'retail'): float
     {
+        if ($from === $to) return 1.0;
+        
         // Step 1: Get wholesale rate from partner
         $wholesaleRate = $this->getWholesaleRate($from, $to);
         
@@ -134,6 +161,8 @@ class ForexService
      */
     public function getWholesaleRate(string $from, string $to): float
     {
+        if ($from === $to) return 1.0;
+        
         // Check cache first
         $cachedRate = $this->getCachedRate($from, $to, 'wholesale');
         if ($cachedRate !== null) {
@@ -270,14 +299,44 @@ class ForexService
     }
     
     /**
-     * Get market rate from external provider (OpenExchangeRates, Fixer.io, etc.)
+     * Get market rate from external provider (FXRatesAPI, OpenExchangeRates, Fixer.io)
      */
     private function getMarketRate(string $from, string $to): float
     {
-        // Check cache first
+        if ($from === $to) return 1.0;
+        
+        // Try from cache file first (faster)
+        $rates = $this->getRatesFromCacheFile();
+        if (isset($rates[$from]) && isset($rates[$to])) {
+            return $rates[$to] / $rates[$from];
+        }
+        
+        // Check database cache
         $cachedRate = $this->getCachedRate($from, $to, 'market');
         if ($cachedRate !== null) {
             return $cachedRate;
+        }
+        
+        // Try FXRatesAPI first (free tier, simple)
+        $apiKey = getenv('FXRATES_API_KEY');
+        if ($apiKey) {
+            $ch = curl_init("https://api.fxratesapi.com/latest?api_key={$apiKey}&base={$from}&symbols={$to}");
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 8,
+            ]);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            
+            $decoded = json_decode($response, true);
+            if ($httpCode === 200 && $decoded && isset($decoded['rates'][$to])) {
+                $rate = (float)$decoded['rates'][$to];
+                $this->cacheRate($from, $to, $rate, 'market', 'fxratesapi');
+                $this->saveRatesToCacheFile($decoded['rates']);
+                error_log("[ForexService] Market rate from FXRatesAPI: {$from}→{$to} = {$rate}");
+                return $rate;
+            }
         }
         
         // Try OpenExchangeRates
@@ -333,6 +392,31 @@ class ForexService
         
         // Fallback to hardcoded rates
         return $this->getFallbackRate($from, $to);
+    }
+    
+    /**
+     * Get rates from cache file (faster than DB for frequent lookups)
+     */
+    private function getRatesFromCacheFile(): array
+    {
+        if (file_exists($this->cacheFile)) {
+            $cached = json_decode(file_get_contents($this->cacheFile), true);
+            if ($cached && (time() - $cached['fetched_at']) < self::CACHE_TTL_SECONDS) {
+                return $cached['rates'];
+            }
+        }
+        return [];
+    }
+    
+    /**
+     * Save rates to cache file
+     */
+    private function saveRatesToCacheFile(array $rates): void
+    {
+        file_put_contents($this->cacheFile, json_encode([
+            'fetched_at' => time(),
+            'rates' => $rates,
+        ]));
     }
     
     /**
@@ -460,25 +544,6 @@ class ForexService
     }
     
     /**
-     * Calculate and log VouchMorph's FX profit
-     */
-    private function logFxProfit(string $from, string $to, float $wholesaleRate, float $clientRate, string $clientTier): void
-    {
-        $profitPerUnit = $wholesaleRate - $clientRate;
-        $profitPercent = ($profitPerUnit / $wholesaleRate) * 100;
-        
-        $this->logFxEvent('PROFIT_CALCULATION', [
-            'currency_pair' => "{$from}/{$to}",
-            'wholesale_rate' => $wholesaleRate,
-            'client_rate' => $clientRate,
-            'profit_per_unit' => $profitPerUnit,
-            'profit_percent' => $profitPercent,
-            'client_tier' => $clientTier,
-            'estimated_profit_per_1000' => $profitPerUnit * 1000
-        ]);
-    }
-    
-    /**
      * Log FX event
      */
     private function logFxEvent(string $event, array $data): void
@@ -489,8 +554,16 @@ class ForexService
     /**
      * Record FX profit in database for financial reporting
      */
-    public function recordFxProfit(string $from, string $to, float $wholesaleRate, float $clientRate, float $profitPerUnit, string $clientTier, ?string $swapReference = null, ?float $amount = null): void
-    {
+    public function recordFxProfit(
+        string $from, 
+        string $to, 
+        float $wholesaleRate, 
+        float $clientRate, 
+        float $profitPerUnit, 
+        string $clientTier, 
+        ?string $swapReference = null, 
+        ?float $amount = null
+    ): void {
         try {
             $stmt = $this->db->prepare("
                 INSERT INTO fx_profit_records 
