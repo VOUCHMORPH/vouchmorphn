@@ -34,6 +34,17 @@ interface InstitutionAdapterInterface
     public function credit(array $payload, array $context): array;
     
     /**
+     * Release a hold on an asset
+     * CRITICAL: Required for multi-source rollback and error recovery
+     * INTERNAL: Handles consent if needed
+     * 
+     * @param array $payload Release payload (hold_reference, reason, etc.)
+     * @param array $context Context (swap_reference, institution, etc.)
+     * @return array Result with 'released' key and status
+     */
+    public function releaseHold(array $payload, array $context): array;
+    
+    /**
      * Generate cashout token
      * INTERNAL: Handles consent if needed
      */
