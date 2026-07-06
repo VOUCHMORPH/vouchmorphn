@@ -926,7 +926,6 @@ class SwapService
                 $this->currentHoldReference = $originalHoldRef;
                 $this->currentHoldId = $originalHoldId;
                 
-                // ✅ FIX: Check 'success' for multi-destination result
                 if (!($destResult['success'] ?? false)) {
                     throw new RuntimeException("Destination processing failed: " . ($destResult['message'] ?? 'Unknown error'));
                 }
@@ -1265,8 +1264,6 @@ class SwapService
             $depositPayload['wallet_phone'] = $identifier['identifier'];
         }
 
-        // FIXED: Do NOT forward PIN to destination - destination doesn't need PIN
-        // PIN is only for SOURCE authentication
         $fieldsToCopy = ['access_token', 'source_reference', '_is_hooked', 'account_name', 'bank_code', 'branch_code'];
         foreach ($fieldsToCopy as $field) {
             if (isset($dest[$field])) {
@@ -1285,7 +1282,6 @@ class SwapService
             'signed_payloads' => $this->signedPayloads
         ]);
 
-        // ✅ FIX: Check 'credited' instead of 'success'
         if (!($result['credited'] ?? false)) {
             return ['success' => false, 'message' => $result['message'] ?? 'Deposit failed'];
         }
@@ -1324,7 +1320,6 @@ class SwapService
             'voucher_details' => $dest['voucher_details'] ?? []
         ];
         
-        // FIXED: Do NOT forward PIN to destination - destination doesn't need PIN
         $fieldsToCopy = ['access_token', 'source_reference', '_is_hooked'];
         foreach ($fieldsToCopy as $field) {
             if (isset($dest[$field])) {
@@ -1613,7 +1608,6 @@ class SwapService
             return $this->processDepositWithProof($depositPayload, $destinationInstitution, $netAmount);
         });
         
-        // ✅ FIX: Check 'credited' instead of 'success'
         if (!($depositResult['credited'] ?? false)) {
             throw new RuntimeException("Deposit failed: " . ($depositResult['message'] ?? 'Unknown error'));
         }
@@ -2409,7 +2403,6 @@ class SwapService
         $netAmount = $feeBreakdown['net_amount'] ?? $amount;
         
         $destinationResult = $this->processDestinationWithProof($payload, $destInstitution, $netAmount);
-        // ✅ FIX: Check 'credited' instead of 'success'
         if (!($destinationResult['credited'] ?? false)) {
             throw new RuntimeException("Destination processing failed");
         }
@@ -2791,6 +2784,106 @@ class SwapService
     }
 
     /**
+     * RELEASE HOLD - NEW PUBLIC METHOD FOR MULTI-SOURCE ROLLBACK
+     * 
+     * Releases a hold at the real institution, not just local bookkeeping.
+     * This is critical for multi-source swaps where partial holds must be
+     * released when one source fails.
+     * 
+     * @param array $sourcePayload The original source payload with credentials
+     * @param string $institution The institution name
+     * @param string|null $holdId The local hold ID
+     * @param string|null $holdReference The external hold reference
+     * @return array Result with success status
+     */
+    public function releaseHold(
+        array $sourcePayload,
+        string $institution,
+        ?string $holdId = null,
+        ?string $holdReference = null
+    ): array {
+        $this->logger->info("releaseHold called", [
+            'institution' => $institution,
+            'hold_id' => $holdId,
+            'hold_reference' => $holdReference
+        ]);
+
+        $holdRef = $holdReference ?? $sourcePayload['hold_reference'] ?? $this->currentHoldReference ?? null;
+        
+        if (empty($holdRef)) {
+            $this->logger->warning("No hold reference available for release", [
+                'institution' => $institution,
+                'hold_id' => $holdId
+            ]);
+            return [
+                'success' => false,
+                'message' => 'No hold reference available for release'
+            ];
+        }
+
+        $releasePayload = [
+            'action' => 'RELEASE_HOLD',
+            'hold_reference' => $holdRef,
+            'reason' => 'Multi-source swap rolled back',
+            'from_institution' => $institution,
+            'source_institution' => $institution
+        ];
+
+        // Forward any credentials if needed for the release
+        $this->forwardPin($sourcePayload, $releasePayload);
+        
+        if (!empty($sourcePayload['access_token'])) {
+            $releasePayload['access_token'] = $sourcePayload['access_token'];
+        }
+
+        try {
+            $adapter = $this->adapterFactory->getAdapter($institution);
+            $result = $adapter->releaseHold($releasePayload, [
+                'swap_reference' => $this->currentSwapRef ?? 'MULTI_SOURCE_ROLLBACK',
+                'institution' => $institution,
+                'hold_reference' => $holdRef,
+                'signed_payloads' => $this->signedPayloads
+            ]);
+
+            // Update local hold status if we have a hold ID
+            if ($holdId) {
+                $this->updateHoldStatus((int)$holdId, 'RELEASED');
+            }
+
+            $this->logger->info("Hold released successfully", [
+                'institution' => $institution,
+                'hold_reference' => $holdRef,
+                'success' => $result['success'] ?? false
+            ]);
+
+            return [
+                'success' => $result['success'] ?? false,
+                'message' => $result['message'] ?? 'Hold released',
+                'hold_reference' => $holdRef
+            ];
+
+        } catch (Exception $e) {
+            $this->logger->error("Failed to release hold", [
+                'institution' => $institution,
+                'hold_reference' => $holdRef,
+                'error' => $e->getMessage()
+            ]);
+
+            // Still update local status to RELEASED even if institution call fails
+            if ($holdId) {
+                $this->updateHoldStatus((int)$holdId, 'RELEASED');
+            }
+
+            return [
+                'success' => false,
+                'message' => 'Failed to release hold: ' . $e->getMessage(),
+                'hold_reference' => $holdRef,
+                'error' => $e->getMessage()
+            ];
+        }
+    }
+
+    /**
      * Generate cashout token using adapter pattern
      * DESTINATION OPERATION - Does NOT require PIN
      * (PIN is forwarded from source for verification, but destination doesn't need it)
@@ -2952,7 +3045,6 @@ class SwapService
             'signed_payloads' => $this->signedPayloads
         ]);
         
-        // ✅ FIX: Check 'credited' instead of 'success'
         if (!($result['credited'] ?? false)) {
             return ['success' => false, 'message' => $result['message'] ?? 'Deposit failed'];
         }
@@ -2961,7 +3053,6 @@ class SwapService
             'success' => true,
             'transaction_reference' => $result['transaction_reference'] ?? null,
             'message' => $result['message'] ?? 'Deposit successful',
-            // ✅ Pass through the credited flag so caller can check it
             'credited' => true
         ];
     }
