@@ -43,6 +43,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             'HOLD',
             'DEBIT',
             'CREDIT',
+            'RELEASE_HOLD',
             'CASHOUT',
             'VERIFY_ACCOUNT',
             'BALANCE',
@@ -326,6 +327,117 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         }
     }
     
+    /**
+     * Release a hold at the institution
+     * CRITICAL: Used for multi-source rollback and error recovery
+     */
+    public function releaseHold(array $payload, array $context): array
+    {
+        $this->context = array_merge($context, $payload);
+        
+        try {
+            $this->ensureConsent();
+            
+            $holdReference = $payload['hold_reference'] ?? null;
+            $reason = $payload['reason'] ?? 'Released by VouchMorph';
+            
+            if (!$holdReference) {
+                if ($this->logger) {
+                    $this->logger->warning("releaseHold called without hold_reference", [
+                        'institution' => $this->institution,
+                        'payload' => $payload
+                    ]);
+                }
+                return [
+                    'released' => false,
+                    'message' => 'hold_reference is required for release',
+                    'hold_reference' => null
+                ];
+            }
+            
+            // Pass through the original payload directly
+            $releasePayload = $payload;
+            
+            // Only add access_token if not already present
+            if (!isset($releasePayload['access_token']) && $this->accessToken) {
+                $releasePayload['access_token'] = $this->accessToken;
+            }
+            
+            // Ensure required fields
+            if (!isset($releasePayload['reference'])) {
+                $releasePayload['reference'] = uniqid('release_');
+            }
+            if (!isset($releasePayload['action'])) {
+                $releasePayload['action'] = 'RELEASE_HOLD';
+            }
+            
+            if ($this->logger) {
+                $this->logger->info("GenericInstitutionAdapter::releaseHold", [
+                    'hold_reference' => $holdReference,
+                    'institution' => $this->institution,
+                    'reason' => $reason
+                ]);
+            }
+            
+            // Check if the bank client supports releaseHold
+            if (method_exists($this->bankClient, 'releaseHold')) {
+                $result = $this->bankClient->releaseHold($releasePayload);
+                
+                if (!$result['success']) {
+                    return [
+                        'released' => false,
+                        'message' => $result['curl_error'] ?? 'Release failed',
+                        'hold_reference' => $holdReference
+                    ];
+                }
+                
+                $data = $result['data'] ?? [];
+                
+                return [
+                    'released' => true,
+                    'status' => $data['status'] ?? 'RELEASED',
+                    'hold_reference' => $holdReference,
+                    'message' => $data['message'] ?? 'Hold released successfully',
+                    'released_at' => $data['released_at'] ?? date('Y-m-d H:i:s')
+                ];
+            }
+            
+            // Fallback: If bank client doesn't have releaseHold, log and return success
+            // This allows the local hold status to be updated even if the institution
+            // doesn't support explicit hold release (some systems auto-release on expiry)
+            if ($this->logger) {
+                $this->logger->warning("Bank client does not support releaseHold, marking as released locally", [
+                    'institution' => $this->institution,
+                    'hold_reference' => $holdReference
+                ]);
+            }
+            
+            return [
+                'released' => true,
+                'status' => 'RELEASED_LOCALLY',
+                'hold_reference' => $holdReference,
+                'message' => 'Hold marked as released locally (institution may auto-release)',
+                'released_at' => date('Y-m-d H:i:s'),
+                'note' => 'Bank client does not support explicit hold release'
+            ];
+            
+        } catch (\Exception $e) {
+            if ($this->logger) {
+                $this->logger->error("releaseHold failed", [
+                    'institution' => $this->institution,
+                    'error' => $e->getMessage(),
+                    'payload' => $payload
+                ]);
+            }
+            
+            return [
+                'released' => false,
+                'message' => $e->getMessage(),
+                'hold_reference' => $payload['hold_reference'] ?? null
+            ];
+        }
+    }
+    
     public function generateCashoutToken(array $payload, array $context): array
     {
         $this->context = array_merge($context, $payload);
@@ -544,46 +656,6 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         } catch (\Exception $e) {
             return [
                 'success' => false,
-                'message' => $e->getMessage()
-            ];
-        }
-    }
-    
-    public function releaseHold(array $payload, array $context): array
-    {
-        $this->context = array_merge($context, $payload);
-        
-        try {
-            $this->ensureConsent();
-            
-            // Pass through the original payload directly
-            $releasePayload = $payload;
-            
-            // Only add access_token if not already present
-            if (!isset($releasePayload['access_token']) && $this->accessToken) {
-                $releasePayload['access_token'] = $this->accessToken;
-            }
-            
-            $result = $this->bankClient->releaseHold($releasePayload);
-            
-            if (!$result['success']) {
-                return [
-                    'released' => false,
-                    'message' => $result['curl_error'] ?? 'Release failed'
-                ];
-            }
-            
-            $data = $result['data'] ?? [];
-            
-            return [
-                'released' => true,
-                'status' => $data['status'] ?? 'RELEASED',
-                'message' => $data['message'] ?? 'Hold released'
-            ];
-            
-        } catch (\Exception $e) {
-            return [
-                'released' => false,
                 'message' => $e->getMessage()
             ];
         }
