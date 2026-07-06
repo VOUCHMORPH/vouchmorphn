@@ -93,8 +93,57 @@ function extractPayloadKeyChains(string $body): array
 
 function extractResultKeyChecks(string $body): array
 {
+    // IMPROVED: Multiple patterns for different success-check styles
+    $allKeys = [];
+    
+    // Pattern 1: $result['key'] ?? false
     preg_match_all("/\\\$(?:result|res|verifyResult|releaseResult)\\['([\\w]+)'\\]\\s*\\?\\?\\s*false/", $body, $m);
-    return array_values(array_unique($m[1]));
+    $allKeys = array_merge($allKeys, $m[1]);
+    
+    // Pattern 2: if (!$result['key'])
+    preg_match_all("/if\\s*\\(\\s*!\\s*\\\$(?:result|res|verifyResult|releaseResult)\\['([\\w]+)'\\]\\s*\\)/", $body, $m);
+    $allKeys = array_merge($allKeys, $m[1]);
+    
+    // Pattern 3: if ($result['key'] === true)
+    preg_match_all("/if\\s*\\(\\s*\\\$(?:result|res|verifyResult|releaseResult)\\['([\\w]+)'\\]\\s*===\\s*true\\s*\\)/", $body, $m);
+    $allKeys = array_merge($allKeys, $m[1]);
+    
+    // Pattern 4: isset($result['key']) && $result['key']
+    preg_match_all("/isset\\s*\\(\\s*\\\$(?:result|res|verifyResult|releaseResult)\\['([\\w]+)'\\]\\s*\\)\\s*&&\\s*\\\$(?:result|res|verifyResult|releaseResult)\\['([\\w]+)'\\]/", $body, $m);
+    for ($i = 0; $i < count($m[1]); $i++) {
+        if ($m[1][$i] === $m[2][$i]) {
+            $allKeys[] = $m[1][$i];
+        } else {
+            $allKeys[] = $m[1][$i];
+            $allKeys[] = $m[2][$i];
+        }
+    }
+    
+    // Pattern 5: empty($result['key'])
+    preg_match_all("/empty\\s*\\(\\s*\\\$(?:result|res|verifyResult|releaseResult)\\['([\\w]+)'\\]\\s*\\)/", $body, $m);
+    $allKeys = array_merge($allKeys, $m[1]);
+    
+    // Pattern 6: $result['key'] == true
+    preg_match_all("/\\\$(?:result|res|verifyResult|releaseResult)\\['([\\w]+)'\\]\\s*==\\s*true/", $body, $m);
+    $allKeys = array_merge($allKeys, $m[1]);
+    
+    // Pattern 7: $result['key'] ?: 
+    preg_match_all("/\\\$(?:result|res|verifyResult|releaseResult)\\['([\\w]+)'\\]\\s*\\?\\s*:/", $body, $m);
+    $allKeys = array_merge($allKeys, $m[1]);
+    
+    // Pattern 8: Nested keys - $result['data']['key'] ?? false
+    preg_match_all("/\\\$(?:result|res|verifyResult|releaseResult)\\['([\\w]+)'\\]\\['([\\w]+)'\\]\\s*\\?\\?\\s*false/", $body, $m);
+    for ($i = 0; $i < count($m[1]); $i++) {
+        $allKeys[] = $m[1][$i] . '.' . $m[2][$i];
+    }
+    
+    // Pattern 9: if (!$result['data']['key'])
+    preg_match_all("/if\\s*\\(\\s*!\\s*\\\$(?:result|res|verifyResult|releaseResult)\\['([\\w]+)'\\]\\['([\\w]+)'\\]\\s*\\)/", $body, $m);
+    for ($i = 0; $i < count($m[1]); $i++) {
+        $allKeys[] = $m[1][$i] . '.' . $m[2][$i];
+    }
+    
+    return array_values(array_unique($allKeys));
 }
 
 function extractReturnedKeys(string $body): array
@@ -402,11 +451,10 @@ $report['section_7_multisource_contract_matching'] = ['how' => 'same mechanism a
 if ($poolCoordinatorSrc === null || $adapterSrc === null) {
     $report['section_7_multisource_contract_matching']['error'] = 'Could not read PoolCoordinator.php or GenericInstitutionAdapter.php';
 } else {
-    // FIXED: Correct method names that actually exist in PoolCoordinator
     $poolCallSites = [
-        'verifySources'              => 'verifyAsset',    // Was 'verifySource' (singular)
-        'placeHolds'                 => 'placeHold',      // Was 'placeHoldsOnSources'
-        'executeDestination'         => 'credit',         // Was 'processDestinationDeposit'
+        'verifySources'              => 'verifyAsset',
+        'placeHolds'                 => 'placeHold',
+        'executeDestination'         => 'credit',
         'debitSources'               => 'debit',
     ];
     foreach ($poolCallSites as $poolMethod => $adapterMethod) {
@@ -419,10 +467,8 @@ if ($poolCoordinatorSrc === null || $adapterSrc === null) {
         $report['section_7_multisource_contract_matching'][$poolMethod] = $entry;
     }
 
-    // FIXED: Check the actual rollback method that exists
     $rollbackBody = extractMethodBody($poolCoordinatorSrc, 'rollbackHolds');
     if ($rollbackBody !== null) {
-        // Check if rollbackHolds calls swapService->releaseHold
         $hasRealRelease = str_contains($rollbackBody, '->releaseHold(') || str_contains($rollbackBody, 'swapService->releaseHold');
         $report['section_7_multisource_contract_matching']['_rollback_check'] = $hasRealRelease
             ? 'OK - rollback calls the real institution release via SwapService::releaseHold()'
@@ -431,7 +477,6 @@ if ($poolCoordinatorSrc === null || $adapterSrc === null) {
         $report['section_7_multisource_contract_matching']['_rollback_check'] = 'rollbackHolds method not found';
     }
 
-    // Also check placeHolds captures heldSources for rollback
     $placeHoldsBody = extractMethodBody($poolCoordinatorSrc, 'placeHolds');
     if ($placeHoldsBody !== null) {
         $capturesHeldSources = str_contains($placeHoldsBody, '&$heldSources') || str_contains($placeHoldsBody, 'heldSources[]');
@@ -442,10 +487,11 @@ if ($poolCoordinatorSrc === null || $adapterSrc === null) {
 }
 
 // ============================================================
-// SECTION 8: OAUTH / SOURCE-LINKING CONTRACT MATCHING
+// SECTION 8: OAUTH / SOURCE-LINKING CONTRACT MATCHING (IMPROVED)
 // ============================================================
 
-$report['section_8_oauth_source_linking'] = ['how' => 'first-ever check of this path - never verified live or mechanically before'];
+$report['section_8_oauth_source_linking'] = ['how' => 'extracts ALL success-check patterns from SwapService and matching return keys from GenericBankClient'];
+
 if ($swapServiceSrc !== null && $bankClientSrc !== null) {
     $oauthCallSites = [
         'initiateSourceLink'  => 'initiateSourceLink',
@@ -453,14 +499,54 @@ if ($swapServiceSrc !== null && $bankClientSrc !== null) {
         'refreshHookedSource' => 'refreshSourceToken',
         'revokeHookedSource'  => 'revokeSourceToken',
     ];
+    
+    // Pass-through methods that might legitimately not check result keys
+    $passThroughMethods = ['refreshHookedSource', 'revokeHookedSource'];
+    
     foreach ($oauthCallSites as $swapMethod => $clientMethod) {
-        $entry = checkContractPair(
-            extractMethodBody($swapServiceSrc, $swapMethod),
-            extractMethodBody($bankClientSrc, $clientMethod),
-            $swapMethod, $clientMethod
-        );
-        $entry = array_merge(['swap_method' => $swapMethod, 'bank_client_method' => $clientMethod], $entry);
-        $report['section_8_oauth_source_linking'][$swapMethod] = $entry;
+        $swapBody = extractMethodBody($swapServiceSrc, $swapMethod);
+        $clientBody = extractMethodBody($bankClientSrc, $clientMethod);
+        
+        if ($swapBody === null || $clientBody === null) {
+            $report['section_8_oauth_source_linking'][$swapMethod] = [
+                'status' => 'METHOD_NOT_FOUND',
+                'swap_method' => $swapMethod,
+                'bank_client_method' => $clientMethod,
+            ];
+            continue;
+        }
+        
+        $checkedKeys = extractResultKeyChecks($swapBody);
+        $returnedKeys = extractReturnedKeys($clientBody);
+        $matched = array_intersect($checkedKeys, $returnedKeys);
+        
+        // Determine status with improved logic
+        if (empty($checkedKeys)) {
+            // No success checks found
+            if (in_array($swapMethod, $passThroughMethods, true)) {
+                $status = 'PASS_THROUGH_OK';
+                $recommendation = 'Pass-through method - no success check expected, but verify manually';
+            } else {
+                $status = 'REQUIRES_MANUAL_REVIEW';
+                $recommendation = 'No success-check pattern found in ' . $swapMethod . ' - review manually';
+            }
+        } elseif (empty($matched)) {
+            $status = 'CRITICAL_MISMATCH';
+            $recommendation = 'Checks keys that callee never returns - will always fail';
+        } else {
+            $status = 'OK';
+            $recommendation = 'Success checks match callee returns';
+        }
+        
+        $report['section_8_oauth_source_linking'][$swapMethod] = [
+            'status' => $status,
+            'swap_method' => $swapMethod,
+            'bank_client_method' => $clientMethod,
+            'checks_keys' => $checkedKeys,
+            'returns_keys' => $returnedKeys,
+            'matched' => array_values($matched),
+            'recommendation' => $recommendation,
+        ];
     }
 } else {
     $report['section_8_oauth_source_linking']['error'] = 'Missing source files';
@@ -495,22 +581,43 @@ if ($swapServiceSrc === null || $feeServiceSrc === null) {
 }
 
 // ============================================================
-// SUMMARY
+// SUMMARY (IMPROVED)
 // ============================================================
 
 $criticalIssues = [];
+
+// Check single-source contracts
 foreach ($report['section_2b_single_source_contract_matching'] as $k => $v) {
-    if (is_array($v) && isset($v['MISMATCH']) && str_starts_with($v['MISMATCH'], 'CRITICAL')) $criticalIssues[] = "single-source: {$k}";
+    if (is_array($v) && isset($v['MISMATCH']) && str_starts_with($v['MISMATCH'], 'CRITICAL')) {
+        $criticalIssues[] = "single-source: {$k}";
+    }
 }
+
+// Check multi-source contracts
 foreach ($report['section_7_multisource_contract_matching'] as $k => $v) {
-    if (is_array($v) && isset($v['MISMATCH']) && str_starts_with($v['MISMATCH'], 'CRITICAL')) $criticalIssues[] = "multi-source: {$k}";
+    if (is_array($v) && isset($v['MISMATCH']) && str_starts_with($v['MISMATCH'], 'CRITICAL')) {
+        $criticalIssues[] = "multi-source: {$k}";
+    }
 }
+
+// Check OAuth contracts - now catches REQUIRES_MANUAL_REVIEW as well
 foreach ($report['section_8_oauth_source_linking'] as $k => $v) {
-    if (is_array($v) && isset($v['MISMATCH']) && str_starts_with($v['MISMATCH'], 'CRITICAL')) $criticalIssues[] = "oauth: {$k}";
+    if (is_array($v)) {
+        if (isset($v['status']) && ($v['status'] === 'CRITICAL_MISMATCH' || $v['status'] === 'REQUIRES_MANUAL_REVIEW')) {
+            $criticalIssues[] = "oauth: {$k} -> {$v['status']}: {$v['recommendation']}";
+        }
+    }
 }
+
+// Check file/class resolution - FIXED: skip 'how' key
 foreach ($report['section_6_file_class_resolution'] as $k => $v) {
+    // Skip the 'how' description string
+    if ($k === 'how') continue;
+    
     $status = is_array($v) ? ($v['status'] ?? '') : $v;
-    if ($status !== 'OK' && $status !== 'RESOLVED') $criticalIssues[] = "resolution: {$k} -> {$status}";
+    if ($status !== 'OK' && $status !== 'RESOLVED') {
+        $criticalIssues[] = "resolution: {$k} -> {$status}";
+    }
 }
 
 $report['summary'] = [
