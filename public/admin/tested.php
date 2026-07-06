@@ -402,11 +402,12 @@ $report['section_7_multisource_contract_matching'] = ['how' => 'same mechanism a
 if ($poolCoordinatorSrc === null || $adapterSrc === null) {
     $report['section_7_multisource_contract_matching']['error'] = 'Could not read PoolCoordinator.php or GenericInstitutionAdapter.php';
 } else {
+    // FIXED: Correct method names that actually exist in PoolCoordinator
     $poolCallSites = [
-        'verifySource'              => 'verifyAsset',
-        'placeHoldsOnSources'       => 'placeHold',
-        'processDestinationDeposit' => 'credit',
-        'debitSources'              => 'debit',
+        'verifySources'              => 'verifyAsset',    // Was 'verifySource' (singular)
+        'placeHolds'                 => 'placeHold',      // Was 'placeHoldsOnSources'
+        'executeDestination'         => 'credit',         // Was 'processDestinationDeposit'
+        'debitSources'               => 'debit',
     ];
     foreach ($poolCallSites as $poolMethod => $adapterMethod) {
         $entry = checkContractPair(
@@ -418,12 +419,25 @@ if ($poolCoordinatorSrc === null || $adapterSrc === null) {
         $report['section_7_multisource_contract_matching'][$poolMethod] = $entry;
     }
 
-    $holdMethodBody = extractMethodBody($poolCoordinatorSrc, 'placeHoldsOnSources');
-    if ($holdMethodBody !== null) {
-        $report['section_7_multisource_contract_matching']['_rollback_check'] =
-            str_contains($holdMethodBody, 'releaseHoldAtInstitution')
-                ? 'OK - rollback calls the real institution release'
-                : 'MISSING - rollback still only touches local bookkeeping, real holds never released on partial pool failure';
+    // FIXED: Check the actual rollback method that exists
+    $rollbackBody = extractMethodBody($poolCoordinatorSrc, 'rollbackHolds');
+    if ($rollbackBody !== null) {
+        // Check if rollbackHolds calls swapService->releaseHold
+        $hasRealRelease = str_contains($rollbackBody, '->releaseHold(') || str_contains($rollbackBody, 'swapService->releaseHold');
+        $report['section_7_multisource_contract_matching']['_rollback_check'] = $hasRealRelease
+            ? 'OK - rollback calls the real institution release via SwapService::releaseHold()'
+            : 'MISSING - rollback still only touches local bookkeeping, real holds never released on partial pool failure';
+    } else {
+        $report['section_7_multisource_contract_matching']['_rollback_check'] = 'rollbackHolds method not found';
+    }
+
+    // Also check placeHolds captures heldSources for rollback
+    $placeHoldsBody = extractMethodBody($poolCoordinatorSrc, 'placeHolds');
+    if ($placeHoldsBody !== null) {
+        $capturesHeldSources = str_contains($placeHoldsBody, '&$heldSources') || str_contains($placeHoldsBody, 'heldSources[]');
+        $report['section_7_multisource_contract_matching']['_held_sources_tracking'] = $capturesHeldSources
+            ? 'OK - placeHolds tracks held sources for rollback'
+            : 'MISSING - placeHolds does not track held sources for rollback';
     }
 }
 
