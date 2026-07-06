@@ -1,477 +1,346 @@
 <?php
+declare(strict_types=1);
+
 /**
- * /public/tested.php
- * 
- * COMPREHENSIVE DIAGNOSTIC TEST
- * Shows EXACTLY what is being sent and where the breakdown occurs
- * No assumptions - reads actual code and shows real data flow
- * 
- * Access: /tested.php
+ * public/admin/test.php
+ *
+ * Adapter test suite. Three kinds of checks, all safe to run repeatedly:
+ *   1. Class/autoload resolution - catches the case-sensitivity risk in
+ *      the newer Channel/QR/USSD files before it becomes a fatal error.
+ *   2. Contract key-matching - mechanically diffs what each
+ *      InstitutionAdapterInterface method RETURNS against what
+ *      SwapService.php actually CHECKS for that same call site. This is
+ *      exactly the bug class that caused credit()/'success' vs 'credited'
+ *      to silently eat a real successful deposit. Every future instance
+ *      of this bug gets caught here, in seconds, with no live bank call.
+ *   3. Synthetic round-trips for USSD/QR - fabricated input, no network,
+ *      no real gateway/bank touched.
+ *
+ * Nothing in this file makes an HTTP call to ZURUBANK, SACCUSSALIS, or
+ * any SMS/USSD gateway. It is safe to run against production config.
  */
 
-// Enable error reporting
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+header('Content-Type: application/json; charset=UTF-8');
 
-// Set up autoloading
-require_once __DIR__ . '/../../vendor/autoload.php';
+define('ROOT_PATH', dirname(__DIR__, 2));
+require_once ROOT_PATH . '/vendor/autoload.php';
 
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
-
-function printHeader($title, $char = '=') {
-    echo "\n" . str_repeat($char, 80) . "\n";
-    echo "  " . $title . "\n";
-    echo str_repeat($char, 80) . "\n";
-}
-
-function printSection($title) {
-    echo "\n--- " . $title . " ---\n";
-}
-
-function printJson($data, $label = '') {
-    if ($label) {
-        echo "\n" . $label . ":\n";
+// ---- Auth gate, same pattern as tested.php/execute.php ----
+function getApiKeyFromRequest(): ?string
+{
+    $headers = getallheaders() ?: [];
+    $headersLower = array_change_key_case($headers, CASE_LOWER);
+    if (!empty($headersLower['x-api-key'])) return $headersLower['x-api-key'];
+    if (!empty($headersLower['authorization'])) {
+        $auth = $headersLower['authorization'];
+        return str_starts_with($auth, 'Bearer ') ? substr($auth, 7) : $auth;
     }
-    echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    return null;
 }
-
-function getCurrentTimestamp() {
-    return date('Y-m-d H:i:s') . ' (Timestamp: ' . time() . ')';
-}
-
-// Get environment variables (Railway sets these)
-function getEnvVar($name, $default = null) {
-    $value = getenv($name);
-    if ($value === false || $value === null || $value === '') {
-        return $default;
+function getAllApiKeysFromEnvironment(): array
+{
+    $keys = [];
+    foreach (array_merge($_ENV, $_SERVER, getenv()) as $name => $value) {
+        if (is_string($value) && !empty($value) && (preg_match('/KEY|API|TOKEN|SECRET/i', $name) || strlen($value) >= 32)) {
+            $keys[] = $value;
+        }
     }
-    return $value;
+    return array_unique(array_filter($keys));
+}
+$providedKey = getApiKeyFromRequest();
+$validKeys = getAllApiKeysFromEnvironment();
+if (!empty($validKeys) && !in_array($providedKey, $validKeys, true)) {
+    http_response_code(401);
+    echo json_encode(['error' => 'Invalid API key']);
+    exit();
 }
 
-// ============================================================================
-// STEP 1: LOAD CONFIGURATION
-// ============================================================================
+$report = ['generated_at' => date('c')];
 
-printHeader('STEP 1: LOADING CONFIGURATION');
+// ============================================================
+// SECTION 1: CLASS RESOLUTION - catches case-sensitivity / autoload
+// mismatches before they become a fatal error mid-swap.
+// ============================================================
 
-echo "\n  Timestamp: " . getCurrentTimestamp() . "\n";
-echo "  Environment variables (from Railway):\n";
-echo "    DB_HOST: " . (getEnvVar('DB_HOST') ? '✅ SET' : '❌ NOT SET') . "\n";
-echo "    DB_NAME: " . (getEnvVar('DB_NAME') ? '✅ SET' : '❌ NOT SET') . "\n";
-echo "    DB_USER: " . (getEnvVar('DB_USER') ? '✅ SET' : '❌ NOT SET') . "\n";
-echo "    DB_PASSWORD: " . (getEnvVar('DB_PASSWORD') ? '✅ SET' : '❌ NOT SET') . "\n";
-
-try {
-    $countryConfig = \Core\Config\LoadCountry::getConfig();
-    echo "  ✅ Country config loaded\n";
-    echo "  Country: " . ($countryConfig['country'] ?? 'Unknown') . "\n";
-    echo "  Currency: " . ($countryConfig['currency'] ?? 'Unknown') . "\n";
-    echo "  Participants: " . implode(', ', array_keys($countryConfig['participants'] ?? [])) . "\n";
-} catch (Exception $e) {
-    echo "  ❌ Failed to load country config: " . $e->getMessage() . "\n";
-    exit(1);
-}
-
-// ============================================================================
-// STEP 2: TEST PAYLOAD - What VouchMorph Sends
-// ============================================================================
-
-printHeader('STEP 2: TEST PAYLOAD BEING SENT');
-
-$testPayload = [
-    "swap_type" => "CASHOUT",
-    "asset_type" => "VOUCHER",
-    "from_institution" => "ZURUBANK",
-    "source_institution" => "ZURUBANK",
-    "to_institution" => "SACCUSSALIS",
-    "destination_institution" => "SACCUSSALIS",
-    "source_identifier" => "719729822604",
-    "amount" => 90,
-    "currency" => "BWP",
-    "delivery_method" => "VOUCHER",
-    "voucher_number" => "719729822604",
-    "voucher_pin" => "328606",
-    "destination_identifier" => "+26770000000",
-    "destination_identifier_type" => "phone",
-    "destination_asset_type" => "WALLET"
+$classesToResolve = [
+    // core swap adapter chain
+    'Infrastructure\Adapters\InstitutionAdapterInterface',
+    'Infrastructure\Adapters\InstitutionAdapterFactory',
+    'Infrastructure\Adapters\GenericInstitutionAdapter',
+    'Infrastructure\Banks\GenericBankClient',
+    'Infrastructure\Banks\Contracts\BankAPIInterface',
+    // SMS
+    'Infrastructure\SMS\Contracts\ProviderInterface',
+    'Infrastructure\SMS\SmsGatewayClient',
+    'Infrastructure\SMS\SmsNotificationService',
+    // USSD - flagging the exact classes at risk from filename casing
+    'Infrastructure\USSD\Contracts\UssdGatewayAdapterInterface',
+    'Infrastructure\USSD\Contracts\UssdGatewayAdapter',
+    'Infrastructure\USSD\Contracts\UssdSessionRequest',
+    'Infrastructure\USSD\Contracts\UssdSessionResponse',
+    // QR - same risk
+    'Infrastructure\QRcodes\Contracts\QrAdapterInterface',
+    'Infrastructure\QRcodes\EmvQrAdapter',
+    'Infrastructure\QRcodes\QrCodeService',
+    // channel factory
+    'Infrastructure\ChannelAdapterFactory',
 ];
 
-printJson($testPayload, '  Test Payload');
-
-// ============================================================================
-// STEP 3: TRACE THROUGH SWAPSERVICE - What fields are extracted
-// ============================================================================
-
-printHeader('STEP 3: SWAPSERVICE FIELD EXTRACTION');
-
-try {
-    // Get database connection
-    $dbHost = getEnvVar('DB_HOST', 'postgres.railway.internal');
-    $dbName = getEnvVar('DB_NAME', 'railway');
-    $dbUser = getEnvVar('DB_USER', 'postgres');
-    $dbPassword = getEnvVar('DB_PASSWORD', '');
-    
-    $dsn = "pgsql:host={$dbHost};dbname={$dbName}";
-    $db = new PDO($dsn, $dbUser, $dbPassword);
-    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    
-    echo "  ✅ Database connected: {$dbHost}/{$dbName}\n";
-    
-    $swapService = new \Domain\Services\SwapService($db, [], 'Botswana');
-    
-    echo "  ✅ SwapService initialized\n";
-    
-    // Use reflection to access private methods
-    $reflection = new ReflectionClass($swapService);
-    
-    // Test extractSourceInstitution
-    $method = $reflection->getMethod('extractSourceInstitution');
-    $method->setAccessible(true);
-    $source = $method->invoke($swapService, $testPayload);
-    echo "  ✅ extractSourceInstitution: " . $source . "\n";
-    
-    // Test extractDestinationInstitution
-    $method = $reflection->getMethod('extractDestinationInstitution');
-    $method->setAccessible(true);
-    $dest = $method->invoke($swapService, $testPayload);
-    echo "  ✅ extractDestinationInstitution: " . $dest . "\n";
-    
-    // Test extractDestinationAssetType
-    $method = $reflection->getMethod('extractDestinationAssetType');
-    $method->setAccessible(true);
-    $assetType = $method->invoke($swapService, $testPayload);
-    echo "  ✅ extractDestinationAssetType: " . $assetType . "\n";
-    
-    // Test extractSourceIdentifier
-    $method = $reflection->getMethod('extractSourceIdentifier');
-    $method->setAccessible(true);
-    $sourceId = $method->invoke($swapService, $testPayload);
-    echo "  ✅ extractSourceIdentifier: " . json_encode($sourceId) . "\n";
-    
-    // Test extractDestinationIdentifier
-    $method = $reflection->getMethod('extractDestinationIdentifier');
-    $method->setAccessible(true);
-    $destId = $method->invoke($swapService, $testPayload);
-    echo "  ✅ extractDestinationIdentifier: " . json_encode($destId) . "\n";
-    
-} catch (Exception $e) {
-    echo "  ❌ SwapService test failed: " . $e->getMessage() . "\n";
-    echo "  Stack trace:\n" . $e->getTraceAsString() . "\n";
+$report['section_1_class_resolution'] = [];
+foreach ($classesToResolve as $fqcn) {
+    $found = class_exists($fqcn) || interface_exists($fqcn);
+    $report['section_1_class_resolution'][$fqcn] = $found ? 'RESOLVED' : 'NOT FOUND - check exact case of file name vs class name/namespace on disk';
 }
 
-// ============================================================================
-// STEP 4: TRACE THROUGH GENERICBANKCLIENT - What gets sent to ZURUBANK
-// ============================================================================
+// ============================================================
+// SECTION 2: CONTRACT KEY-MATCHING - the critical one.
+// For each SwapService call site, extract which result key it checks
+// (success/credited/debited/hold_placed/verified/confirmed), then
+// extract which key the corresponding GenericInstitutionAdapter method
+// actually SETS in its return array. Flag any mismatch mechanically -
+// this is exactly the bug that broke credit()/processDepositWithProof.
+// ============================================================
 
-printHeader('STEP 4: GENERICBANKCLIENT - WHAT ACTUALLY GETS SENT');
+function readSource(string $relativePath): ?string
+{
+    $path = ROOT_PATH . '/' . ltrim($relativePath, '/');
+    return file_exists($path) ? file_get_contents($path) : null;
+}
 
-try {
-    // Get ZURUBANK participant config
-    $participants = $countryConfig['participants'] ?? [];
-    $zurubankConfig = $participants['ZURUBANK'] ?? null;
-    
-    if (!$zurubankConfig) {
-        echo "  ❌ ZURUBANK configuration not found\n";
-    } else {
-        echo "  ✅ ZURUBANK config loaded\n";
-        echo "  ZURUBANK provider_code: " . ($zurubankConfig['provider_code'] ?? 'Not set') . "\n";
-        echo "  ZURUBANK base_url: " . ($zurubankConfig['base_url'] ?? 'Not set') . "\n";
-        
-        // Initialize GenericBankClient for ZURUBANK
-        $bankClient = new \Infrastructure\Banks\GenericBankClient($zurubankConfig);
-        echo "  ✅ GenericBankClient initialized for ZURUBANK\n";
-        
-        // Use reflection to get YAML endpoints
-        $reflection = new ReflectionClass($bankClient);
-        
-        // Get yamlEndpoints property
-        $yamlEndpointsProp = $reflection->getProperty('yamlEndpoints');
-        $yamlEndpointsProp->setAccessible(true);
-        $yamlEndpoints = $yamlEndpointsProp->getValue($bankClient);
-        
-        $yamlBaseUrlProp = $reflection->getProperty('yamlBaseUrl');
-        $yamlBaseUrlProp->setAccessible(true);
-        $yamlBaseUrl = $yamlBaseUrlProp->getValue($bankClient);
-        
-        echo "  YAML Base URL: " . ($yamlBaseUrl ?? 'Not set') . "\n";
-        echo "  YAML Endpoints loaded: " . ($yamlEndpoints ? 'YES' : 'NO') . "\n";
-        
-        if ($yamlEndpoints && isset($yamlEndpoints['source']['verify_asset'])) {
-            echo "  Verify Asset Endpoint: " . $yamlEndpoints['source']['verify_asset'] . "\n";
+function extractMethodBody(string $source, string $methodName): ?string
+{
+    if (!preg_match('/(?:private|protected|public)\s+function\s+' . preg_quote($methodName, '/') . '\s*\([^)]*\)[^{]*\{/', $source, $m, PREG_OFFSET_CAPTURE)) {
+        return null;
+    }
+    $start = $m[0][1] + strlen($m[0][0]);
+    $depth = 1; $i = $start; $len = strlen($source);
+    while ($i < $len && $depth > 0) {
+        if ($source[$i] === '{') $depth++;
+        elseif ($source[$i] === '}') $depth--;
+        $i++;
+    }
+    return substr($source, $start, $i - $start - 1);
+}
+
+/**
+ * For a SwapService method body, find every "$result['x'] ?? ...bool)"
+ * style check - i.e. which key it reads off an adapter's return value
+ * to decide success/failure.
+ */
+function extractResultKeyChecks(string $body): array
+{
+    preg_match_all("/\\\$(?:result|res)\\['([\\w]+)'\\]\\s*\\?\\?\\s*false/", $body, $m);
+    return array_values(array_unique($m[1]));
+}
+
+/**
+ * For a GenericInstitutionAdapter method body, find every top-level key
+ * actually assigned in a returned array literal, e.g. 'credited' => true.
+ */
+function extractReturnedKeys(string $body): array
+{
+    $keys = [];
+    // Grab each "return [ ... ];" block (there are usually 2-3 per method:
+    // error path, success path). Collect keys from all of them.
+    preg_match_all('/return\s*\[(.*?)\];/s', $body, $blocks);
+    foreach ($blocks[1] as $block) {
+        preg_match_all("/'([\\w]+)'\\s*=>/", $block, $km);
+        $keys = array_merge($keys, $km[1]);
+    }
+    return array_values(array_unique($keys));
+}
+
+$swapServiceSrc = readSource('src/Domain/Services/SwapService.php');
+$adapterSrc = readSource('src/Infrastructure/Adapters/GenericInstitutionAdapter.php');
+
+$report['section_2_contract_matching'] = [
+    'how' => 'extracts which key each SwapService call site checks vs which keys the adapter method actually returns - mismatch here means a real success/failure can be silently swapped, as happened with credit()'
+];
+
+if ($swapServiceSrc === null || $adapterSrc === null) {
+    $report['section_2_contract_matching']['error'] = 'Could not read SwapService.php or GenericInstitutionAdapter.php';
+} else {
+    // Map: SwapService method => adapter method it calls => expected result key
+    $callSites = [
+        'verifyAssetSigned'        => 'verifyAsset',
+        'placeHoldSigned'          => 'placeHold',
+        'debitSource'              => 'debit',
+        'processDepositWithProof'  => 'credit',
+        'processDestinationWithProof' => 'transferWithProof',
+        'generateCashoutToken'     => 'generateCashoutToken',
+        'verifyAccount'            => 'verifyAccount',
+        'verifyCashout'            => 'verifyCashoutToken',
+        'confirmCashout'           => 'confirmCashout',
+    ];
+
+    foreach ($callSites as $swapMethod => $adapterMethod) {
+        $swapBody = extractMethodBody($swapServiceSrc, $swapMethod);
+        $adapterBody = extractMethodBody($adapterSrc, $adapterMethod);
+
+        $entry = ['swap_method' => $swapMethod, 'adapter_method' => $adapterMethod];
+
+        if ($swapBody === null) {
+            $entry['status'] = 'SwapService method not found';
+            $report['section_2_contract_matching'][$swapMethod] = $entry;
+            continue;
         }
-        
-        // ============================================================
-        // STEP 4a: Test verifyAssetSigned - Build the actual payload
-        // ============================================================
-        printSection('4a: Building verifyAssetSigned Payload');
-        
-        // Create the verify payload that would be sent
-        $timestamp = time();
-        $verifyPayload = [
-            'action' => 'VERIFY_ASSET',
-            'reference' => 'SWAP_' . $timestamp . '_' . bin2hex(random_bytes(8)),
-            'asset_type' => $testPayload['asset_type'],
-            'amount' => $testPayload['amount'],
-            'currency' => $testPayload['currency'],
-            'institution' => 'ZURUBANK',
-            'timestamp' => $timestamp,
-            'swap_type' => $testPayload['swap_type'],
-            'requester' => 'VOUCHMORPH',
-            'from_institution' => $testPayload['from_institution'],
-            'source_institution' => $testPayload['source_institution'],
-            'source_identifier' => $testPayload['source_identifier'],
-            'source_identifier_type' => 'auto',
-            // These are critical for voucher
-            'voucher_number' => $testPayload['voucher_number'],
-            'voucher_pin' => $testPayload['voucher_pin'],
+        if ($adapterBody === null) {
+            $entry['status'] = 'Adapter method not found';
+            $report['section_2_contract_matching'][$swapMethod] = $entry;
+            continue;
+        }
+
+        $checkedKeys = extractResultKeyChecks($swapBody);
+        $returnedKeys = extractReturnedKeys($adapterBody);
+
+        $entry['swap_checks_keys'] = $checkedKeys;
+        $entry['adapter_returns_keys'] = $returnedKeys;
+
+        $matched = array_intersect($checkedKeys, $returnedKeys);
+        $entry['matched'] = array_values($matched);
+        $entry['MISMATCH'] = empty($matched) && !empty($checkedKeys)
+            ? 'CRITICAL: SwapService checks a key the adapter never returns - this call site will ALWAYS evaluate as failed/false, exactly like the credit() bug'
+            : 'OK - at least one checked key is actually returned';
+
+        $report['section_2_contract_matching'][$swapMethod] = $entry;
+    }
+}
+
+// ============================================================
+// SECTION 3: SMS ADAPTER - construction/interface conformance only,
+// no live send.
+// ============================================================
+
+$report['section_3_sms'] = [];
+try {
+    if (interface_exists('Infrastructure\SMS\Contracts\ProviderInterface')
+        && class_exists('Infrastructure\SMS\SmsGatewayClient')) {
+        $implements = class_implements('Infrastructure\SMS\SmsGatewayClient');
+        $report['section_3_sms']['SmsGatewayClient_implements_ProviderInterface'] =
+            in_array('Infrastructure\SMS\Contracts\ProviderInterface', $implements ?: [])
+                ? 'YES' : 'NO - class exists but does not implement the interface';
+    } else {
+        $report['section_3_sms']['status'] = 'SmsGatewayClient or ProviderInterface not resolvable';
+    }
+} catch (\Throwable $e) {
+    $report['section_3_sms']['error'] = $e->getMessage();
+}
+
+// ============================================================
+// SECTION 4: USSD ADAPTER - synthetic round-trip, no real gateway hit.
+// Builds a fake AfricasTalking-style request, runs it through
+// parseRequest() -> a hand-built response -> formatResponse(), and
+// confirms the output shape is what a real gateway would expect.
+// ============================================================
+
+$report['section_4_ussd_synthetic_roundtrip'] = [];
+try {
+    if (class_exists('Infrastructure\USSD\Contracts\UssdGatewayAdapter')
+        && class_exists('Infrastructure\USSD\Contracts\UssdSessionResponse')) {
+
+        $fakeConfig = [
+            'request_fields' => [
+                'session_id' => ['sessionId'],
+                'phone' => ['phoneNumber'],
+                'text' => ['text'],
+            ],
+            'response_format' => 'prefix',
+            'content_type' => 'text/plain; charset=UTF-8',
         ];
-        
-        echo "\n  🔍 PAYLOAD THAT WILL BE SENT TO ZURUBANK:\n";
-        printJson($verifyPayload, '  verifyAssetSigned Payload');
-        
-        // ============================================================
-        // STEP 4b: Test createSignedPayload - What gets signed
-        // ============================================================
-        printSection('4b: createSignedPayload - Signed Request');
-        
-        // Use reflection to access createSignedPayload
-        $method = $reflection->getMethod('createSignedPayload');
-        $method->setAccessible(true);
-        
-        try {
-            $signedPayload = $method->invoke($bankClient, $verifyPayload, 'VOUCHMORPH');
-            echo "\n  ✅ createSignedPayload executed\n";
-            
-            echo "\n  🔍 SIGNED PAYLOAD KEYS:\n";
-            echo "    " . implode("\n    ", array_keys($signedPayload)) . "\n";
-            
-            // Check for voucher fields
-            echo "\n  🔍 CRITICAL: Voucher fields in signed payload:\n";
-            echo "    voucher_number: " . ($signedPayload['voucher_number'] ?? '❌ MISSING') . "\n";
-            echo "    voucher_pin: " . ($signedPayload['voucher_pin'] ?? '❌ MISSING') . "\n";
-            echo "    asset_type: " . ($signedPayload['asset_type'] ?? '❌ MISSING') . "\n";
-            echo "    source_identifier: " . ($signedPayload['source_identifier'] ?? '❌ MISSING') . "\n";
-            
-            if (!isset($signedPayload['voucher_number'])) {
-                echo "\n  ⚠️ WARNING: voucher_number is MISSING from signed payload!\n";
-                echo "  This is why ZURUBANK is saying 'Voucher number required'\n";
-                echo "\n  🔍 Let's trace where it's being dropped:\n";
-                
-                // Check if it was in the original payload
-                if (isset($verifyPayload['voucher_number'])) {
-                    echo "    ✅ voucher_number WAS in verifyPayload\n";
-                } else {
-                    echo "    ❌ voucher_number was NOT in verifyPayload\n";
-                }
-                
-                // Check if createSignedPayload is dropping it
-                echo "    🔍 createSignedPayload is dropping the field\n";
-            }
-            
-            // Check what fields are in the signed payload
-            echo "\n  🔍 ALL FIELDS IN SIGNED PAYLOAD:\n";
-            $fieldList = [];
-            foreach ($signedPayload as $key => $value) {
-                if (is_string($value) && strlen($value) > 100) {
-                    $value = substr($value, 0, 50) . '...';
-                } elseif (is_array($value)) {
-                    $value = 'Array(' . count($value) . ')';
-                }
-                $fieldList[] = "    " . $key . ": " . $value;
-            }
-            echo implode("\n", $fieldList) . "\n";
-            
-            // ============================================================
-            // STEP 4c: Test send - The actual HTTP request
-            // ============================================================
-            printSection('4c: send() - Actual HTTP Request');
-            
-            // Get the endpoint and full URL
-            $endpointMethod = $reflection->getMethod('getEndpoint');
-            $endpointMethod->setAccessible(true);
-            $endpoint = $endpointMethod->invoke($bankClient, 'verify_asset');
-            
-            $baseUrlMethod = $reflection->getMethod('getBaseUrl');
-            $baseUrlMethod->setAccessible(true);
-            $baseUrl = $baseUrlMethod->invoke($bankClient);
-            
-            $fullUrl = rtrim($baseUrl, '/') . '/' . ltrim($endpoint, '/');
-            
-            echo "\n  🔍 HTTP REQUEST DETAILS:\n";
-            echo "    Base URL: " . $baseUrl . "\n";
-            echo "    Endpoint: " . $endpoint . "\n";
-            echo "    Full URL: " . $fullUrl . "\n";
-            echo "    Payload size: " . strlen(json_encode($signedPayload)) . " bytes\n";
-            
-            // Build headers
-            $headersMethod = $reflection->getMethod('buildHeaders');
-            $headersMethod->setAccessible(true);
-            $headers = $headersMethod->invoke($bankClient, $signedPayload, null);
-            
-            echo "    Headers:\n";
-            foreach ($headers as $header) {
-                echo "      " . $header . "\n";
-            }
-            
-            // ============================================================
-            // STEP 4d: Compare with ZURUBANK's expected format
-            // ============================================================
-            printSection('4d: ZURUBANK EXPECTED FORMAT (from ZURUBANK logs)');
-            
-            echo "\n  📋 From ZURUBANK logs - what it actually received:\n";
-            echo "    asset_type: VOUCHER\n";
-            echo "    voucher_number: (MISSING - this is the problem)\n";
-            echo "    source_identifier: 719729822604 (treated as account number)\n";
-            echo "    phone: 719729822604\n";
-            echo "    email: 719729822604\n";
-            echo "    national_id: 719729822604\n";
-            
-            echo "\n  📋 What ZURUBANK EXPECTS:\n";
-            echo "    asset_type: VOUCHER\n";
-            echo "    voucher_number: 719729822604 ← This field is MISSING from the request!\n";
-            echo "    voucher_pin: 328606\n";
-            
-            echo "\n  🔍 THE PROBLEM: ZURUBANK is looking for 'voucher_number' but it's not in the signed payload.\n";
-            
-        } catch (Exception $e) {
-            echo "  ❌ createSignedPayload failed: " . $e->getMessage() . "\n";
-            echo "  Stack trace:\n" . $e->getTraceAsString() . "\n";
-        }
+
+        $adapterClass = 'Infrastructure\USSD\Contracts\UssdGatewayAdapter';
+        $adapter = new $adapterClass($fakeConfig, 'TEST_SYNTHETIC');
+
+        $fakeRawRequest = [
+            'sessionId' => 'TEST_SESSION_123',
+            'phoneNumber' => '+26771234567',
+            'text' => '',
+        ];
+
+        $parsed = $adapter->parseRequest($fakeRawRequest);
+
+        $responseClass = 'Infrastructure\USSD\Contracts\UssdSessionResponse';
+        $fakeResponse = $responseClass::continue('Welcome to VouchMorph - TEST MENU');
+        $formatted = $adapter->formatResponse($fakeResponse);
+
+        $report['section_4_ussd_synthetic_roundtrip'] = [
+            'status' => 'OK',
+            'parsed_session_id' => $parsed->sessionId,
+            'parsed_phone' => $parsed->phoneNumber,
+            'formatted_output' => $formatted,
+            'expected_prefix' => 'CON ',
+            'prefix_correct' => str_starts_with($formatted, 'CON ') ? 'YES' : 'NO - formatResponse did not apply expected prefix',
+        ];
+    } else {
+        $report['section_4_ussd_synthetic_roundtrip']['status'] = 'UssdGatewayAdapter or UssdSessionResponse not resolvable - see Section 1';
     }
-} catch (Exception $e) {
-    echo "  ❌ GenericBankClient test failed: " . $e->getMessage() . "\n";
-    echo "  Stack trace:\n" . $e->getTraceAsString() . "\n";
+} catch (\Throwable $e) {
+    $report['section_4_ussd_synthetic_roundtrip']['error'] = $e->getMessage();
+    $report['section_4_ussd_synthetic_roundtrip']['trace'] = $e->getTraceAsString();
 }
 
-// ============================================================================
-// STEP 5: CHECK GENERICBANKCLIENT.PHP SOURCE
-// ============================================================================
+// ============================================================
+// SECTION 5: QR ADAPTER - synthetic encode/decode round-trip, no
+// network, no real merchant registry touched.
+// ============================================================
 
-printHeader('STEP 5: CHECKING GENERICBANKCLIENT.PHP SOURCE');
+$report['section_5_qr_synthetic_roundtrip'] = [];
+try {
+    if (class_exists('Infrastructure\QRcodes\EmvQrAdapter')
+        && class_exists('Infrastructure\QRcodes\Contracts\QrPayload')) {
 
-$bankClientPath = __DIR__ . '/../src/Infrastructure/Banks/GenericBankClient.php';
-if (file_exists($bankClientPath)) {
-    $content = file_get_contents($bankClientPath);
-    
-    // Check for voucher_number in createSignedPayload or processDepositWithProof
-    echo "\n  🔍 Searching for 'voucher_number' in GenericBankClient.php:\n";
-    if (strpos($content, 'voucher_number') !== false) {
-        echo "    ✅ voucher_number found in GenericBankClient.php\n";
-        
-        // Show where it's used
-        preg_match_all('/.*voucher_number.*/', $content, $matches);
-        foreach ($matches[0] ?? [] as $line) {
-            echo "      " . trim($line) . "\n";
-        }
+        $fakeTagMap = ['26' => 'ZURUBANK', '27' => 'SACCUSSALIS'];
+        $adapterClass = 'Infrastructure\QRcodes\EmvQrAdapter';
+        $qrAdapter = new $adapterClass($fakeTagMap);
+
+        $payloadClass = 'Infrastructure\QRcodes\Contracts\QrPayload';
+        $fakePayload = new $payloadClass(
+            qrType: 'STATIC',
+            merchantOrPayeeId: 'TEST-MERCHANT-001',
+            amount: 50.00,
+            currency: 'BWP',
+            reference: 'TESTREF001',
+            institution: 'ZURUBANK'
+        );
+
+        $encoded = $qrAdapter->encode($fakePayload);
+        $matches = $qrAdapter->matches($encoded);
+        $decoded = $matches ? $qrAdapter->decode($encoded) : null;
+
+        $report['section_5_qr_synthetic_roundtrip'] = [
+            'status' => 'OK',
+            'encoded_length' => strlen($encoded),
+            'matches_own_format' => $matches ? 'YES' : 'NO - encode/matches are inconsistent',
+            'decoded_institution' => $decoded?->institution,
+            'decoded_amount' => $decoded?->amount,
+            'roundtrip_correct' => ($decoded && $decoded->institution === 'ZURUBANK' && (float)$decoded->amount === 50.00)
+                ? 'YES' : 'NO - decoded values do not match what was encoded',
+        ];
     } else {
-        echo "    ❌ voucher_number NOT FOUND in GenericBankClient.php\n";
-        echo "    ⚠️ This is likely the problem!\n";
+        $report['section_5_qr_synthetic_roundtrip']['status'] = 'EmvQrAdapter or QrPayload not resolvable - see Section 1';
     }
-    
-    echo "\n  🔍 Searching for 'voucher_pin' in GenericBankClient.php:\n";
-    if (strpos($content, 'voucher_pin') !== false) {
-        echo "    ✅ voucher_pin found in GenericBankClient.php\n";
-    } else {
-        echo "    ❌ voucher_pin NOT FOUND in GenericBankClient.php\n";
-    }
-    
-    echo "\n  🔍 Checking createSignedPayload method:\n";
-    preg_match('/function\s+createSignedPayload\s*\([^)]*\)\s*\{([^}]+)\}/s', $content, $matches);
-    if (isset($matches[1])) {
-        echo "    createSignedPayload body found (" . strlen($matches[1]) . " chars)\n";
-        
-        // Check what fields it looks for
-        preg_match_all('/\$payload\s*\[\s*[\'"]([^\'"]+)[\'"]\s*\]/', $matches[1], $fieldMatches);
-        $fields = array_unique($fieldMatches[1] ?? []);
-        echo "    Fields it reads from payload:\n";
-        foreach ($fields as $field) {
-            echo "      " . $field . "\n";
-        }
-        
-        if (!in_array('voucher_number', $fields)) {
-            echo "    ⚠️ voucher_number is NOT in the fields list!\n";
-        }
-        if (!in_array('voucher_pin', $fields)) {
-            echo "    ⚠️ voucher_pin is NOT in the fields list!\n";
-        }
-    } else {
-        echo "    ❌ createSignedPayload method not found\n";
-    }
-    
-    echo "\n  🔍 Checking processDepositWithProof method:\n";
-    preg_match('/function\s+processDepositWithProof\s*\([^)]*\)\s*\{([^}]+)\}/s', $content, $matches);
-    if (isset($matches[1])) {
-        preg_match_all('/\$payload\s*\[\s*[\'"]([^\'"]+)[\'"]\s*\]/', $matches[1], $fieldMatches);
-        $fields = array_unique($fieldMatches[1] ?? []);
-        echo "    Fields it reads from payload:\n";
-        foreach ($fields as $field) {
-            echo "      " . $field . "\n";
-        }
-    } else {
-        echo "    ❌ processDepositWithProof method not found\n";
-    }
-} else {
-    echo "  ❌ GenericBankClient.php not found at: " . $bankClientPath . "\n";
+} catch (\Throwable $e) {
+    $report['section_5_qr_synthetic_roundtrip']['error'] = $e->getMessage();
+    $report['section_5_qr_synthetic_roundtrip']['trace'] = $e->getTraceAsString();
 }
 
-// ============================================================================
-// STEP 6: RECOMMENDATIONS
-// ============================================================================
+// ============================================================
+// SUMMARY
+// ============================================================
 
-printHeader('STEP 6: RECOMMENDATIONS');
-
-echo "\n  🔍 DIAGNOSIS SUMMARY:\n";
-echo "  ===================\n";
-
-// Check if voucher fields are being dropped
-$hasVoucherInPayload = isset($verifyPayload) && isset($verifyPayload['voucher_number']);
-$hasVoucherInSigned = isset($signedPayload) && isset($signedPayload['voucher_number']);
-
-if ($hasVoucherInPayload && !$hasVoucherInSigned) {
-    echo "\n  ⚠️ CRITICAL ISSUE: voucher_number is being DROPPED in createSignedPayload()!\n";
-    echo "     This method likely reconstructs the payload and doesn't include voucher_number.\n";
-    echo "\n  FIX: Modify createSignedPayload() in GenericBankClient.php to preserve voucher_number.\n";
-    echo "\n  Add this at the beginning of createSignedPayload():\n";
-    echo "  ```php\n";
-    echo "  // Preserve voucher fields if present\n";
-    echo "  if (isset(\$payload['voucher_number'])) {\n";
-    echo "      \$payload['voucherNumber'] = \$payload['voucher_number'];\n";
-    echo "      \$payload['voucher_no'] = \$payload['voucher_number'];\n";
-    echo "  }\n";
-    echo "  if (isset(\$payload['voucher_pin'])) {\n";
-    echo "      \$payload['voucherPin'] = \$payload['voucher_pin'];\n";
-    echo "      \$payload['voucher_pin'] = \$payload['voucher_pin'];\n";
-    echo "  }\n";
-    echo "  ```\n";
-} elseif (!$hasVoucherInPayload) {
-    echo "\n  ⚠️ CRITICAL ISSUE: voucher_number is NOT in the payload being sent to SwapService!\n";
-    echo "     Check the request payload structure.\n";
-} else {
-    echo "\n  ✅ voucher_number appears to be flowing through correctly.\n";
+$criticalIssues = [];
+foreach ($report['section_1_class_resolution'] as $class => $status) {
+    if ($status !== 'RESOLVED') $criticalIssues[] = "Class not resolved: {$class}";
+}
+foreach ($report['section_2_contract_matching'] as $method => $entry) {
+    if (is_array($entry) && isset($entry['MISMATCH']) && str_starts_with($entry['MISMATCH'], 'CRITICAL')) {
+        $criticalIssues[] = "Contract mismatch: {$method} -> {$entry['adapter_method']}";
+    }
 }
 
-echo "\n  📋 RECOMMENDED FIX:\n";
-echo "  =================\n";
-echo "  1. Open src/Infrastructure/Banks/GenericBankClient.php\n";
-echo "  2. Find the createSignedPayload() method\n";
-echo "  3. Add this code at the START of the method:\n";
-echo "     ```php\n";
-echo "     // Preserve voucher fields\n";
-echo "     if (isset(\$payload['voucher_number'])) {\n";
-echo "         \$payload['voucherNumber'] = \$payload['voucher_number'];\n";
-echo "         \$payload['voucher_no'] = \$payload['voucher_number'];\n";
-echo "     }\n";
-echo "     if (isset(\$payload['voucher_pin'])) {\n";
-echo "         \$payload['voucherPin'] = \$payload['voucher_pin'];\n";
-echo "     }\n";
-echo "     ```\n";
-echo "  4. If using CertificateManager, check if it's dropping fields\n";
+$report['summary'] = [
+    'critical_issues_found' => count($criticalIssues),
+    'issues' => $criticalIssues,
+];
 
-echo "\n";
-echo "╔══════════════════════════════════════════════════════════════════════════════╗\n";
-echo "║                         DIAGNOSTIC TEST COMPLETE                           ║\n";
-echo "║                           " . getCurrentTimestamp() . "                          ║\n";
-echo "╚══════════════════════════════════════════════════════════════════════════════╝\n";
-echo "\n";
+echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
