@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-namespace Infrastructure\Channels\Contracts;
+namespace Infrastructure\USSD\Contracts;
 
 /**
  * Normalized inbound USSD request - identical shape regardless of gateway.
