@@ -100,9 +100,8 @@ class EmvQrAdapter implements QrAdapterInterface
     $tags[self::TAG_PAYLOAD_FORMAT] = '01';
     $tags[self::TAG_POI_METHOD] = $payload->qrType === 'DYNAMIC' ? '12' : '11';
 
-    // ✅ FIX: Cast to string to prevent integer conversion
-    $merchantTag = (string)$this->findTagForInstitution($payload->institution);
-    $tags[$merchantTag] = $this->buildMerchantAccountSubTlv($payload->merchantOrPayeeId);
+    $merchantTag = $this->findTagForInstitution($payload->institution);
+    $tags[(string)$merchantTag] = $this->buildMerchantAccountSubTlv($payload->merchantOrPayeeId);
 
     $tags[self::TAG_CURRENCY] = self::CURRENCY_NUMERIC_MAP[$payload->currency] ?? '072';
 
@@ -116,10 +115,10 @@ class EmvQrAdapter implements QrAdapterInterface
 
     $body = '';
     foreach ($tags as $tag => $value) {
+        // ✅ FIX: Cast to string at the call site
         $body .= $this->buildTlv((string)$tag, $value);
     }
 
-    // CRC is calculated over everything including the CRC tag+length, value placeholder
     $withCrcTag = $body . self::TAG_CRC . '04';
     $crc = $this->crc16($withCrcTag);
 
