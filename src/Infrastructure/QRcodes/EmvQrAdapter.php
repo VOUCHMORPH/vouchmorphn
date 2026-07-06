@@ -116,7 +116,7 @@ class EmvQrAdapter implements QrAdapterInterface
 
     $body = '';
     foreach ($tags as $tag => $value) {
-        $body .= $this->buildTlv($tag, $value);
+        $body .= $this->buildTlv((string)$tag, $value);
     }
 
     // CRC is calculated over everything including the CRC tag+length, value placeholder
