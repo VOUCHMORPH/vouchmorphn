@@ -113,6 +113,125 @@ class FundingPoolRepository
         ]);
     }
 
+    // ============================================================
+    // ARRAY-FRIENDLY METHODS FOR POOLCOORDINATOR
+    // ============================================================
+
+    /**
+     * Array-based save, for callers (like PoolCoordinator) that work with
+     * plain pool arrays rather than hydrated FundingPool objects.
+     * Mirrors save() but skips the object requirement entirely.
+     */
+    public function saveFromArray(array $pool): void
+    {
+        $sql = "
+            INSERT INTO virtual_funding_pools (
+                pool_id, swap_reference, destination_institution,
+                destination_identifier, destination_type, requested_amount,
+                funded_amount, currency, contribution_strategy,
+                status, source_count, metadata, created_at
+            ) VALUES (
+                :pool_id, :swap_ref, :dest_institution,
+                :dest_identifier, :dest_type, :requested,
+                :funded, :currency, :strategy,
+                :status, :source_count, :metadata, NOW()
+            ) ON CONFLICT (pool_id) DO UPDATE SET
+                funded_amount = EXCLUDED.funded_amount,
+                status = EXCLUDED.status,
+                metadata = EXCLUDED.metadata,
+                updated_at = NOW()
+        ";
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([
+            ':pool_id' => $pool['id'],
+            ':swap_ref' => $pool['reference'] ?? null,
+            ':dest_institution' => $pool['destination_institution'] ?? null,
+            ':dest_identifier' => $pool['destination_identifier'] ?? null,
+            ':dest_type' => $pool['destination_asset_type'] ?? 'WALLET',
+            ':requested' => $pool['amount'] ?? 0,
+            ':funded' => $pool['funded_amount'] ?? 0,
+            ':currency' => $pool['currency'] ?? 'BWP',
+            ':strategy' => $pool['contribution_strategy'] ?? 'RATIO',
+            ':status' => is_object($pool['status'] ?? null) ? $pool['status']->value : ($pool['status'] ?? 'CREATED'),
+            ':source_count' => count($pool['sources'] ?? []),
+            ':metadata' => json_encode($pool['metadata'] ?? [])
+        ]);
+    }
+
+    /**
+     * Array-based lookup, for callers that want a raw row rather than
+     * a hydrated FundingPool object.
+     */
+    public function findByIdAsArray(string $poolId): ?array
+    {
+        $sql = "SELECT * FROM virtual_funding_pools WHERE pool_id = :pool_id";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':pool_id' => $poolId]);
+        $data = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $data ?: null;
+    }
+
+    /**
+     * Direct status update by pool ID — did not previously exist.
+     * PoolCoordinator::rollback() and ::cancel() call this.
+     */
+    public function updateStatus(string $poolId, $status, array $additionalMetadata = []): void
+    {
+        $statusValue = is_object($status) ? $status->value : $status;
+
+        $sql = "
+            UPDATE virtual_funding_pools 
+            SET status = :status,
+                metadata = COALESCE(metadata, '{}'::jsonb) || :metadata::jsonb,
+                updated_at = NOW(),
+                completed_at = CASE 
+                    WHEN :status = 'COMPLETED' THEN NOW() 
+                    WHEN :status = 'FAILED' THEN NOW()
+                    WHEN :status = 'CANCELLED' THEN NOW()
+                    ELSE completed_at 
+                END
+            WHERE pool_id = :pool_id
+        ";
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([
+            ':status' => $statusValue,
+            ':metadata' => json_encode($additionalMetadata),
+            ':pool_id' => $poolId
+        ]);
+    }
+
+    /**
+     * Get pools by status - useful for monitoring/cleanup
+     */
+    public function findByStatus($status): array
+    {
+        $statusValue = is_object($status) ? $status->value : $status;
+        $sql = "SELECT * FROM virtual_funding_pools WHERE status = :status ORDER BY created_at DESC";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':status' => $statusValue]);
+        $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $pools = [];
+        foreach ($results as $data) {
+            $pools[] = $this->hydrate($data);
+        }
+        return $pools;
+    }
+
+    /**
+     * Get pools by status as arrays (not objects)
+     */
+    public function findByStatusAsArray($status): array
+    {
+        $statusValue = is_object($status) ? $status->value : $status;
+        $sql = "SELECT * FROM virtual_funding_pools WHERE status = :status ORDER BY created_at DESC";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':status' => $statusValue]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
     private function hydrate(array $data): FundingPool
     {
         $pool = new FundingPool(
