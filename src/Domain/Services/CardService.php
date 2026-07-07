@@ -13,6 +13,9 @@ use RuntimeException;
 use Domain\Helpers\CardHelper;
 use Domain\Services\FeeService;
 use Domain\Services\ForexService;
+use Domain\Services\SwapService;
+use Domain\Services\Settlement\HybridSettlementStrategy;
+use Domain\Services\ContributionCalculator;
 use Infrastructure\Cards\CardNumberGenerator;
 
 /**
@@ -1108,312 +1111,349 @@ class CardService
             error_log("Failed to log auth request: " . $e->getMessage());
         }
     }
-}
-// ============================================================
-// POOLED CARD HOOK/SWIPE/FINALIZE - VouchMorph's own network
-// ============================================================
 
-/**
- * Hook multiple sources to a card as a single all-or-nothing event.
- * Every source gets a real hold placed. If ANY source hold fails,
- * every hold already placed in this attempt is released and the
- * hook itself fails - "hook successful" always means every source
- * is genuinely held, never a partial state.
- */
-public function hookSourcesToCard(
-    string $cardSuffix,
-    array $sources,           // [['institution'=>, 'asset_type'=>, 'identifier'=>, 'owner_user_id'=>, ...credentials], ...]
-    SwapService $swapService, // needed to call placeHoldSigned/releaseHold on each real source
-    int $cardOwnerUserId
-): array {
-    $this->db->beginTransaction();
-    $placedHolds = [];
+    // ============================================================
+    // POOLED CARD HOOK/SWIPE/FINALIZE - VouchMorph's own network
+    // ============================================================
 
-    try {
-        if (count($sources) < 1) {
-            throw new RuntimeException("At least one source is required to hook");
-        }
+    /**
+     * Hook multiple sources to a card as a single all-or-nothing event.
+     * Every source gets a real hold placed. If ANY source hold fails,
+     * every hold already placed in this attempt is released and the
+     * hook itself fails - "hook successful" always means every source
+     * is genuinely held, never a partial state.
+     * 
+     * CONSENT GATE: Any source owned by someone OTHER than the card owner
+     * must already exist as an active linked/consented source in the
+     * user_authorized_sources table. This endpoint never trusts
+     * owner_user_id + credentials from the request body alone as proof
+     * of consent. The consent check runs as its own pass BEFORE any
+     * holds are placed, so a consent failure costs nothing (no rollback needed).
+     */
+    public function hookSourcesToCard(
+        string $cardSuffix,
+        array $sources,           // [['institution'=>, 'asset_type'=>, 'identifier'=>, 'owner_user_id'=>, ...credentials], ...]
+        SwapService $swapService, // needed to call placeHoldSigned/releaseHold on each real source
+        int $cardOwnerUserId
+    ): array {
+        $this->db->beginTransaction();
+        $placedHolds = [];
 
-        $hookReference = 'HOOK_' . bin2hex(random_bytes(8));
-        $totalHeld = 0.0;
-        $minExpirySeconds = PHP_INT_MAX;
-        $currency = $sources[0]['currency'] ?? 'BWP';
-
-        foreach ($sources as $source) {
-            // Place a REAL hold on the FULL available balance of this source,
-            // per your one-time-event design - not a partial/estimated amount.
-            $balance = $swapService->getSourceAvailableBalance($source);
-            if ($balance <= 0) {
-                throw new RuntimeException("Source {$source['institution']} has no available balance to hook");
+        try {
+            if (count($sources) < 1) {
+                throw new RuntimeException("At least one source is required to hook");
             }
 
-            $holdPayload = array_merge($source, [
-                'amount' => $balance,
-                'currency' => $source['currency'] ?? $currency,
-                'hold_reason' => 'CARD_POOL_HOOK_' . $hookReference,
-            ]);
+            // ============================================================
+            // CONSENT GATE - runs BEFORE any holds are placed
+            // ============================================================
+            foreach ($sources as $source) {
+                $sourceOwnerId = (int)($source['owner_user_id'] ?? $cardOwnerUserId);
 
-            $verifyResult = $swapService->verifyAssetSigned($holdPayload, $source['institution']);
-            if (!($verifyResult['verified'] ?? false)) {
-                throw new RuntimeException("Verification failed for {$source['institution']}: " . ($verifyResult['message'] ?? 'unknown'));
+                if ($sourceOwnerId !== $cardOwnerUserId) {
+                    $consentStmt = $this->db->prepare("
+                        SELECT 1 FROM user_authorized_sources
+                        WHERE user_id = :owner_id
+                          AND institution = :institution
+                          AND status = 'active'
+                        LIMIT 1
+                    ");
+                    $consentStmt->execute([
+                        ':owner_id' => $sourceOwnerId,
+                        ':institution' => $source['institution'],
+                    ]);
+
+                    if (!$consentStmt->fetchColumn()) {
+                        throw new RuntimeException(
+                            "Source owned by user {$sourceOwnerId} at {$source['institution']} " .
+                            "has not consented to be linked - reject rather than hold blind. " .
+                            "The source owner must complete source-linking consent before this card can hook their funds."
+                        );
+                    }
+                }
             }
 
-            $holdResult = $swapService->placeHoldSigned($holdPayload, $source['institution'], $verifyResult);
-            if (!($holdResult['hold_placed'] ?? false)) {
-                throw new RuntimeException("Hold failed for {$source['institution']}: " . ($holdResult['message'] ?? 'unknown'));
-            }
+            $hookReference = 'HOOK_' . bin2hex(random_bytes(8));
+            $totalHeld = 0.0;
+            $minExpirySeconds = PHP_INT_MAX;
+            $currency = $sources[0]['currency'] ?? 'BWP';
 
-            $placedHolds[] = [
-                'source' => $source,
-                'hold_reference' => $holdResult['hold_reference'] ?? null,
-                'hold_id' => $holdResult['local_hold_id'] ?? null,
-                'amount' => $balance,
-            ];
-
-            $totalHeld += $balance;
-
-            // Track the weakest-link expiry across all hooked asset types
-            $expirySeconds = AssetTypeRegistry::getHoldExpiry($source['asset_type'] ?? 'ACCOUNT');
-            $minExpirySeconds = min($minExpirySeconds, $expirySeconds);
-        }
-
-        $expiresAt = date('Y-m-d H:i:s', time() + $minExpirySeconds);
-
-        $hookStmt = $this->db->prepare("
-            INSERT INTO card_pool_hooks (hook_reference, card_suffix, user_id, total_held_amount, currency, status, expires_at)
-            VALUES (?, ?, ?, ?, ?, 'HOOKED', ?)
-            RETURNING id
-        ");
-        $hookStmt->execute([$hookReference, $cardSuffix, $cardOwnerUserId, $totalHeld, $currency, $expiresAt]);
-        $hookId = $hookStmt->fetchColumn();
-
-        foreach ($placedHolds as $held) {
-            $sourceStmt = $this->db->prepare("
-                INSERT INTO card_pool_hook_sources
-                    (hook_id, owner_user_id, institution, asset_type, source_identifier, held_amount, hold_reference, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'HELD')
-            ");
-            $sourceStmt->execute([
-                $hookId,
-                $held['source']['owner_user_id'] ?? $cardOwnerUserId,
-                $held['source']['institution'],
-                $held['source']['asset_type'] ?? 'ACCOUNT',
-                $held['source']['identifier'] ?? '',
-                $held['amount'],
-                $held['hold_reference'],
-            ]);
-        }
-
-        $this->db->commit();
-
-        return [
-            'success' => true,
-            'hook_reference' => $hookReference,
-            'total_held' => $totalHeld,
-            'currency' => $currency,
-            'expires_at' => $expiresAt,
-            'source_count' => count($placedHolds),
-            'message' => 'Hook successful - all sources held',
-        ];
-
-    } catch (Exception $e) {
-        $this->db->rollBack();
-
-        // All-or-nothing: release anything already placed in THIS attempt
-        foreach ($placedHolds as $held) {
-            try {
-                $swapService->releaseHold($held['source'], $held['source']['institution'], $held['hold_id'] ?? null, $held['hold_reference'] ?? null);
-            } catch (Exception $releaseErr) {
-                error_log("[CardService] Failed to release hold during hook rollback: " . $releaseErr->getMessage());
-            }
-        }
-
-        error_log("[CardService] hookSourcesToCard failed: " . $e->getMessage());
-        return ['success' => false, 'error' => $e->getMessage(), 'message' => 'Hook failed - no sources were held'];
-    }
-}
-
-/**
- * FAST PATH ONLY. Called at swipe time. No bank calls - a local check
- * against currently-valid held totals. This is what has to happen in
- * milliseconds; the real debits happen afterward in finalizePooledSwipe().
- */
-public function authorizePooledSwipe(string $cardSuffix, float $amount, array $merchantContext): array
-{
-    $startTime = microtime(true);
-
-    $stmt = $this->db->prepare("
-        SELECT * FROM card_pool_hooks
-        WHERE card_suffix = ? AND status = 'HOOKED' AND expires_at > NOW()
-        ORDER BY created_at DESC LIMIT 1
-        FOR UPDATE
-    ");
-    $stmt->execute([$cardSuffix]);
-    $hook = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$hook) {
-        return [
-            'success' => false, 'authorized' => false,
-            'response_code' => '51', 'response_message' => 'No active hook - card unhooked, please re-hook',
-        ];
-    }
-
-    if ((float)$hook['total_held_amount'] < $amount) {
-        return [
-            'success' => false, 'authorized' => false,
-            'response_code' => '51', 'response_message' => 'Amount exceeds held total',
-            'held' => (float)$hook['total_held_amount'], 'requested' => $amount,
-        ];
-    }
-
-    $update = $this->db->prepare("
-        UPDATE card_pool_hooks
-        SET status = 'SWIPE_RECEIVED', swipe_amount = ?, merchant_reference = ?
-        WHERE id = ?
-    ");
-    $update->execute([$amount, $merchantContext['merchant_reference'] ?? null, $hook['id']]);
-
-    $authCode = CardHelper::generateAuthCode();
-    $responseTime = round((microtime(true) - $startTime) * 1000);
-
-    return [
-        'success' => true, 'authorized' => true,
-        'auth_code' => $authCode, 'response_code' => '00', 'response_message' => 'Approved',
-        'hook_reference' => $hook['hook_reference'],
-        'processing_time_ms' => $responseTime,
-    ];
-}
-
-/**
- * ASYNC, runs right after approval. Debits only what the merchant
- * actually charged, releases the unused remainder of every hold back
- * to its source, settles to the merchant, and bills any source whose
- * debit fails post-approval to that source's OWNER - never the card
- * owner, never the other sources.
- */
-public function finalizePooledSwipe(
-    string $hookReference,
-    SwapService $swapService,
-    HybridSettlementStrategy $settlement,
-    ContributionCalculator $contributionCalculator,
-    array $merchantContext
-): array {
-    $this->db->beginTransaction();
-
-    try {
-        $hookStmt = $this->db->prepare("SELECT * FROM card_pool_hooks WHERE hook_reference = ? FOR UPDATE");
-        $hookStmt->execute([$hookReference]);
-        $hook = $hookStmt->fetch(PDO::FETCH_ASSOC);
-        if (!$hook || $hook['status'] !== 'SWIPE_RECEIVED') {
-            throw new RuntimeException("Hook not found or not in SWIPE_RECEIVED state");
-        }
-
-        $sourcesStmt = $this->db->prepare("SELECT * FROM card_pool_hook_sources WHERE hook_id = ?");
-        $sourcesStmt->execute([$hook['id']]);
-        $sources = $sourcesStmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $swipeAmount = (float)$hook['swipe_amount'];
-
-        // Decide who pays how much of the ACTUAL swipe amount (not the full held total)
-        $contributions = $contributionCalculator->calculateContributions(
-            $swipeAmount,
-            array_map(fn($s) => [
-                'institution' => $s['institution'],
-                'asset_type' => $s['asset_type'],
-                'identifier' => $s['source_identifier'],
-                'available_balance' => (float)$s['held_amount'],
-            ], $sources),
-            'SMART'
-        );
-
-        $bills = [];
-        $totalDebited = 0.0;
-
-        foreach ($contributions as $i => $contribution) {
-            $sourceRow = $sources[$i];
-            $debitPayload = [
-                'amount' => $contribution['actual_amount'],
-                'hold_reference' => $sourceRow['hold_reference'],
-                'from_institution' => $sourceRow['institution'],
-                'source_institution' => $sourceRow['institution'],
-            ];
-
-            try {
-                $debitResult = $swapService->debitSource($debitPayload, $sourceRow['institution']);
-                if (!($debitResult['debited'] ?? false)) {
-                    throw new RuntimeException($debitResult['message'] ?? 'Debit failed');
+            foreach ($sources as $source) {
+                // Place a REAL hold on the FULL available balance of this source,
+                // per your one-time-event design - not a partial/estimated amount.
+                $balance = $swapService->getSourceAvailableBalance($source);
+                if ($balance <= 0) {
+                    throw new RuntimeException("Source {$source['institution']} has no available balance to hook");
                 }
 
-                $this->db->prepare("
-                    UPDATE card_pool_hook_sources
-                    SET status = 'DEBITED', debited_amount = ?, debit_reference = ?
-                    WHERE id = ?
-                ")->execute([$contribution['actual_amount'], $debitResult['transaction_reference'] ?? null, $sourceRow['id']]);
-
-                $totalDebited += $contribution['actual_amount'];
-
-                // Release the UNUSED remainder of this source's hold (Option B)
-                $unused = (float)$sourceRow['held_amount'] - $contribution['actual_amount'];
-                if ($unused > 0.01) {
-                    $swapService->releaseHold([], $sourceRow['institution'], null, $sourceRow['hold_reference']);
-                }
-
-            } catch (Exception $debitErr) {
-                // SHORTFALL: merchant already paid (approved at terminal) - this becomes a bill
-                // to the SOURCE OWNER, not the card owner and not the other sources.
-                $this->db->prepare("
-                    UPDATE card_pool_hook_sources SET status = 'SHORTFALL' WHERE id = ?
-                ")->execute([$sourceRow['id']]);
-
-                $billStmt = $this->db->prepare("
-                    INSERT INTO card_pool_shortfall_bills
-                        (hook_source_id, owner_user_id, amount, currency, reason, due_at)
-                    VALUES (?, ?, ?, ?, ?, NOW() + INTERVAL '7 days')
-                    RETURNING id
-                ");
-                $billStmt->execute([
-                    $sourceRow['id'],
-                    $sourceRow['owner_user_id'],
-                    $contribution['actual_amount'],
-                    $hook['currency'],
-                    'Debit failed post-authorization: ' . $debitErr->getMessage(),
+                $holdPayload = array_merge($source, [
+                    'amount' => $balance,
+                    'currency' => $source['currency'] ?? $currency,
+                    'hold_reason' => 'CARD_POOL_HOOK_' . $hookReference,
                 ]);
-                $bills[] = $billStmt->fetchColumn();
 
-                error_log("[CardService] SHORTFALL billed to user {$sourceRow['owner_user_id']} for {$contribution['actual_amount']} {$hook['currency']}");
+                $verifyResult = $swapService->verifyAssetSigned($holdPayload, $source['institution']);
+                if (!($verifyResult['verified'] ?? false)) {
+                    throw new RuntimeException("Verification failed for {$source['institution']}: " . ($verifyResult['message'] ?? 'unknown'));
+                }
+
+                $holdResult = $swapService->placeHoldSigned($holdPayload, $source['institution'], $verifyResult);
+                if (!($holdResult['hold_placed'] ?? false)) {
+                    throw new RuntimeException("Hold failed for {$source['institution']}: " . ($holdResult['message'] ?? 'unknown'));
+                }
+
+                $placedHolds[] = [
+                    'source' => $source,
+                    'hold_reference' => $holdResult['hold_reference'] ?? null,
+                    'hold_id' => $holdResult['local_hold_id'] ?? null,
+                    'amount' => $balance,
+                ];
+
+                $totalHeld += $balance;
+
+                // Track the weakest-link expiry across all hooked asset types
+                $expirySeconds = AssetTypeRegistry::getHoldExpiry($source['asset_type'] ?? 'ACCOUNT');
+                $minExpirySeconds = min($minExpirySeconds, $expirySeconds);
             }
+
+            $expiresAt = date('Y-m-d H:i:s', time() + $minExpirySeconds);
+
+            $hookStmt = $this->db->prepare("
+                INSERT INTO card_pool_hooks (hook_reference, card_suffix, user_id, total_held_amount, currency, status, expires_at)
+                VALUES (?, ?, ?, ?, ?, 'HOOKED', ?)
+                RETURNING id
+            ");
+            $hookStmt->execute([$hookReference, $cardSuffix, $cardOwnerUserId, $totalHeld, $currency, $expiresAt]);
+            $hookId = $hookStmt->fetchColumn();
+
+            foreach ($placedHolds as $held) {
+                $sourceStmt = $this->db->prepare("
+                    INSERT INTO card_pool_hook_sources
+                        (hook_id, owner_user_id, institution, asset_type, source_identifier, held_amount, hold_reference, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'HELD')
+                ");
+                $sourceStmt->execute([
+                    $hookId,
+                    $held['source']['owner_user_id'] ?? $cardOwnerUserId,
+                    $held['source']['institution'],
+                    $held['source']['asset_type'] ?? 'ACCOUNT',
+                    $held['source']['identifier'] ?? '',
+                    $held['amount'],
+                    $held['hold_reference'],
+                ]);
+            }
+
+            $this->db->commit();
+
+            return [
+                'success' => true,
+                'hook_reference' => $hookReference,
+                'total_held' => $totalHeld,
+                'currency' => $currency,
+                'expires_at' => $expiresAt,
+                'source_count' => count($placedHolds),
+                'message' => 'Hook successful - all sources held',
+            ];
+
+        } catch (Exception $e) {
+            $this->db->rollBack();
+
+            // All-or-nothing: release anything already placed in THIS attempt
+            foreach ($placedHolds as $held) {
+                try {
+                    $swapService->releaseHold($held['source'], $held['source']['institution'], $held['hold_id'] ?? null, $held['hold_reference'] ?? null);
+                } catch (Exception $releaseErr) {
+                    error_log("[CardService] Failed to release hold during hook rollback: " . $releaseErr->getMessage());
+                }
+            }
+
+            error_log("[CardService] hookSourcesToCard failed: " . $e->getMessage());
+            return ['success' => false, 'error' => $e->getMessage(), 'message' => 'Hook failed - no sources were held'];
+        }
+    }
+
+    /**
+     * FAST PATH ONLY. Called at swipe time. No bank calls - a local check
+     * against currently-valid held totals. This is what has to happen in
+     * milliseconds; the real debits happen afterward in finalizePooledSwipe().
+     */
+    public function authorizePooledSwipe(string $cardSuffix, float $amount, array $merchantContext): array
+    {
+        $startTime = microtime(true);
+
+        $stmt = $this->db->prepare("
+            SELECT * FROM card_pool_hooks
+            WHERE card_suffix = ? AND status = 'HOOKED' AND expires_at > NOW()
+            ORDER BY created_at DESC LIMIT 1
+            FOR UPDATE
+        ");
+        $stmt->execute([$cardSuffix]);
+        $hook = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$hook) {
+            return [
+                'success' => false, 'authorized' => false,
+                'response_code' => '51', 'response_message' => 'No active hook - card unhooked, please re-hook',
+            ];
         }
 
-        // Settle to merchant regardless of any individual shortfall - the merchant
-        // was already approved and must be paid; shortfalls are chased separately.
-        $settlementResult = $settlement->updateNetPosition(
-            $hookReference,
-            'VOUCHMORPH_CARD_POOL',
-            $merchantContext['acquirer'] ?? $merchantContext['merchant_id'] ?? 'MERCHANT',
-            $swipeAmount,
-            'CARD_POOL_SWIPE_SETTLED',
-            $hook['currency']
-        );
+        if ((float)$hook['total_held_amount'] < $amount) {
+            return [
+                'success' => false, 'authorized' => false,
+                'response_code' => '51', 'response_message' => 'Amount exceeds held total',
+                'held' => (float)$hook['total_held_amount'], 'requested' => $amount,
+            ];
+        }
 
-        $status = empty($bills) ? 'SETTLED' : 'SETTLED';  // still settled to merchant; shortfalls tracked separately
-        $this->db->prepare("
-            UPDATE card_pool_hooks SET status = ?, settlement_reference = ?, finalized_at = NOW() WHERE id = ?
-        ")->execute([$status, $settlementResult['message_uuid'] ?? null, $hook['id']]);
+        $update = $this->db->prepare("
+            UPDATE card_pool_hooks
+            SET status = 'SWIPE_RECEIVED', swipe_amount = ?, merchant_reference = ?
+            WHERE id = ?
+        ");
+        $update->execute([$amount, $merchantContext['merchant_reference'] ?? null, $hook['id']]);
 
-        $this->db->commit();
+        $authCode = CardHelper::generateAuthCode();
+        $responseTime = round((microtime(true) - $startTime) * 1000);
 
         return [
-            'success' => true,
-            'hook_reference' => $hookReference,
-            'swipe_amount' => $swipeAmount,
-            'total_debited' => $totalDebited,
-            'shortfall_bills' => $bills,
-            'settlement' => $settlementResult,
+            'success' => true, 'authorized' => true,
+            'auth_code' => $authCode, 'response_code' => '00', 'response_message' => 'Approved',
+            'hook_reference' => $hook['hook_reference'],
+            'processing_time_ms' => $responseTime,
         ];
+    }
 
-    } catch (Exception $e) {
-        $this->db->rollBack();
-        error_log("[CardService] finalizePooledSwipe failed: " . $e->getMessage());
-        throw $e;
+    /**
+     * ASYNC, runs right after approval. Debits only what the merchant
+     * actually charged, releases the unused remainder of every hold back
+     * to its source, settles to the merchant, and bills any source whose
+     * debit fails post-approval to that source's OWNER - never the card
+     * owner, never the other sources.
+     */
+    public function finalizePooledSwipe(
+        string $hookReference,
+        SwapService $swapService,
+        HybridSettlementStrategy $settlement,
+        ContributionCalculator $contributionCalculator,
+        array $merchantContext
+    ): array {
+        $this->db->beginTransaction();
+
+        try {
+            $hookStmt = $this->db->prepare("SELECT * FROM card_pool_hooks WHERE hook_reference = ? FOR UPDATE");
+            $hookStmt->execute([$hookReference]);
+            $hook = $hookStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$hook || $hook['status'] !== 'SWIPE_RECEIVED') {
+                throw new RuntimeException("Hook not found or not in SWIPE_RECEIVED state");
+            }
+
+            $sourcesStmt = $this->db->prepare("SELECT * FROM card_pool_hook_sources WHERE hook_id = ?");
+            $sourcesStmt->execute([$hook['id']]);
+            $sources = $sourcesStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $swipeAmount = (float)$hook['swipe_amount'];
+
+            // Decide who pays how much of the ACTUAL swipe amount (not the full held total)
+            $contributions = $contributionCalculator->calculateContributions(
+                $swipeAmount,
+                array_map(fn($s) => [
+                    'institution' => $s['institution'],
+                    'asset_type' => $s['asset_type'],
+                    'identifier' => $s['source_identifier'],
+                    'available_balance' => (float)$s['held_amount'],
+                ], $sources),
+                'SMART'
+            );
+
+            $bills = [];
+            $totalDebited = 0.0;
+
+            foreach ($contributions as $i => $contribution) {
+                $sourceRow = $sources[$i];
+                $debitPayload = [
+                    'amount' => $contribution['actual_amount'],
+                    'hold_reference' => $sourceRow['hold_reference'],
+                    'from_institution' => $sourceRow['institution'],
+                    'source_institution' => $sourceRow['institution'],
+                ];
+
+                try {
+                    $debitResult = $swapService->debitSource($debitPayload, $sourceRow['institution']);
+                    if (!($debitResult['debited'] ?? false)) {
+                        throw new RuntimeException($debitResult['message'] ?? 'Debit failed');
+                    }
+
+                    $this->db->prepare("
+                        UPDATE card_pool_hook_sources
+                        SET status = 'DEBITED', debited_amount = ?, debit_reference = ?
+                        WHERE id = ?
+                    ")->execute([$contribution['actual_amount'], $debitResult['transaction_reference'] ?? null, $sourceRow['id']]);
+
+                    $totalDebited += $contribution['actual_amount'];
+
+                    // Release the UNUSED remainder of this source's hold (Option B)
+                    $unused = (float)$sourceRow['held_amount'] - $contribution['actual_amount'];
+                    if ($unused > 0.01) {
+                        $swapService->releaseHold([], $sourceRow['institution'], null, $sourceRow['hold_reference']);
+                    }
+
+                } catch (Exception $debitErr) {
+                    // SHORTFALL: merchant already paid (approved at terminal) - this becomes a bill
+                    // to the SOURCE OWNER, not the card owner and not the other sources.
+                    $this->db->prepare("
+                        UPDATE card_pool_hook_sources SET status = 'SHORTFALL' WHERE id = ?
+                    ")->execute([$sourceRow['id']]);
+
+                    $billStmt = $this->db->prepare("
+                        INSERT INTO card_pool_shortfall_bills
+                            (hook_source_id, owner_user_id, amount, currency, reason, due_at)
+                        VALUES (?, ?, ?, ?, ?, NOW() + INTERVAL '7 days')
+                        RETURNING id
+                    ");
+                    $billStmt->execute([
+                        $sourceRow['id'],
+                        $sourceRow['owner_user_id'],
+                        $contribution['actual_amount'],
+                        $hook['currency'],
+                        'Debit failed post-authorization: ' . $debitErr->getMessage(),
+                    ]);
+                    $bills[] = $billStmt->fetchColumn();
+
+                    error_log("[CardService] SHORTFALL billed to user {$sourceRow['owner_user_id']} for {$contribution['actual_amount']} {$hook['currency']}");
+                }
+            }
+
+            // Settle to merchant regardless of any individual shortfall - the merchant
+            // was already approved and must be paid; shortfalls are chased separately.
+            $settlementResult = $settlement->updateNetPosition(
+                $hookReference,
+                'VOUCHMORPH_CARD_POOL',
+                $merchantContext['acquirer'] ?? $merchantContext['merchant_id'] ?? 'MERCHANT',
+                $swipeAmount,
+                'CARD_POOL_SWIPE_SETTLED',
+                $hook['currency']
+            );
+
+            $status = empty($bills) ? 'SETTLED' : 'SETTLED';  // still settled to merchant; shortfalls tracked separately
+            $this->db->prepare("
+                UPDATE card_pool_hooks SET status = ?, settlement_reference = ?, finalized_at = NOW() WHERE id = ?
+            ")->execute([$status, $settlementResult['message_uuid'] ?? null, $hook['id']]);
+
+            $this->db->commit();
+
+            return [
+                'success' => true,
+                'hook_reference' => $hookReference,
+                'swipe_amount' => $swipeAmount,
+                'total_debited' => $totalDebited,
+                'shortfall_bills' => $bills,
+                'settlement' => $settlementResult,
+            ];
+
+        } catch (Exception $e) {
+            $this->db->rollBack();
+            error_log("[CardService] finalizePooledSwipe failed: " . $e->getMessage());
+            throw $e;
+        }
     }
 }
