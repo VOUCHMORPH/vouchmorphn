@@ -4,10 +4,16 @@
     "builder": "DOCKERFILE"
   },
   "deploy": {
-    "startCommand": "/bin/sh -c \"php -S 0.0.0.0:$PORT -t public/\"",
+    "startCommand": "/bin/sh -c \"php scripts/daemons/card-pool-finalize-worker.php > /dev/null 2>&1 & php -S 0.0.0.0:$PORT -t public/\"",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10,
-    "preDeploy": "",
     "healthcheckPath": "/health.php"
-  }
+  },
+  "cron": [
+    {
+      "schedule": "*/3 * * * *",
+      "command": "php scripts/cron/card-pool-queue-watchdog.php",
+      "name": "card-pool-watchdog"
+    }
+  ]
 }
