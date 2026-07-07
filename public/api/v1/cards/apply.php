@@ -30,10 +30,10 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $container = require_once ROOT_PATH . '/src/bootstrap.php';
 
 // ============================================
-// 2. LOAD SYSTEM CONFIG & CORE
+// 2. LOAD SYSTEM CONFIG & CORE (FIXED PATHS)
 // ============================================
-require_once ROOT_PATH . '/src/CORE_CONFIG/system_country.php';
-require_once ROOT_PATH . '/src/CORE_CONFIG/load_country.php';
+require_once ROOT_PATH . '/src/Core/Config/SystemCountry.php';
+require_once ROOT_PATH . '/src/Core/Config/LoadCountry.php';
 
 $country = defined('SYSTEM_COUNTRY') ? SYSTEM_COUNTRY : 'BW';
 
@@ -51,7 +51,7 @@ use Domain\Services\CardService;
 // ============================================
 // 4. LOAD ENVIRONMENT
 // ============================================
-$envFile = ROOT_PATH . "/src/CORE_CONFIG/countries/{$country}/.env_{$country}";
+$envFile = ROOT_PATH . "/src/Core/Config/Countries/{$country}/.env_{$country}";
 if (file_exists($envFile)) {
     $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($lines as $line) {
@@ -114,7 +114,6 @@ foreach ($required as $field) {
     }
 }
 
-// Validate card type
 if (!in_array($input['card_type'], ['PHYSICAL', 'VIRTUAL'])) {
     http_response_code(400);
     echo json_encode(['success' => false, 'error' => 'card_type must be PHYSICAL or VIRTUAL']);
@@ -138,7 +137,7 @@ try {
 // ============================================
 try {
     $config = [];
-    $cardConfigPath = ROOT_PATH . "/src/CORE_CONFIG/countries/{$country}/card_config_{$country}.json";
+    $cardConfigPath = ROOT_PATH . "/src/Core/Config/Countries/{$country}/card_config_{$country}.json";
     if (file_exists($cardConfigPath)) {
         $config = json_decode(file_get_contents($cardConfigPath), true);
     }
