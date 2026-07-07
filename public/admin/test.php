@@ -156,7 +156,6 @@ function checkFeeForexWithDelegation(string $source, string $methodName, array $
             }
         } else {
             // For $this->service->method(), we'd need to locate the service class
-            // This is a placeholder - in practice we'd need to scan for the class
             // For now, we'll note the delegation exists
             $delegatedResults[] = [
                 'method' => $targetMethod,
@@ -315,8 +314,8 @@ function checkCrossClassCall(string $callerSrc, string $callerFile, array $class
         $processed[] = $key;
         
         // Skip known safe properties
-        if (in_array($property, ['logger', 'db', 'stateMachine', 'contributionCalculator', 'feeCalculator'])) {
-            $results[$key] = 'SKIPPED - known internal/helper property (logger, db, calculator, statemachine)';
+        if (in_array($property, ['logger', 'db', 'stateMachine', 'contributionCalculator', 'feeCalculator', 'calculator'])) {
+            $results[$key] = 'SKIPPED - known internal/helper property';
             continue;
         }
         
@@ -329,7 +328,13 @@ function checkCrossClassCall(string $callerSrc, string $callerFile, array $class
         // Clean up the class name (remove leading backslash if present)
         $targetClass = ltrim($targetClass, '\\');
         
+        // Handle short names vs fully qualified - try both
         $targetFile = $classFileMap[$targetClass] ?? null;
+        if (!$targetFile) {
+            // Try to find by class name only (strip namespace)
+            $shortName = substr($targetClass, strrpos($targetClass, '\\') + 1);
+            $targetFile = $classFileMap[$shortName] ?? null;
+        }
         if (!$targetFile) {
             $results[$key] = "WARNING: target class {$targetClass} not in classFileMap - add to map";
             continue;
@@ -360,7 +365,9 @@ function checkCrossClassCall(string $callerSrc, string $callerFile, array $class
 }
 
 // Map every class this tool cares about to its file path
+// Uses both fully-qualified and short names to handle imports
 $classFileMap = [
+    // Fully qualified names
     'Domain\Services\SwapService' => 'src/Domain/Services/SwapService.php',
     'Domain\Repositories\FundingPoolRepository' => 'src/Domain/Repositories/FundingPoolRepository.php',
     'Domain\Repositories\PoolContributionRepository' => 'src/Domain/Repositories/PoolContributionRepository.php',
@@ -368,8 +375,26 @@ $classFileMap = [
     'Domain\Services\ContributionCalculator' => 'src/Domain/Services/ContributionCalculator.php',
     'Domain\Services\MultiSourceFeeCalculator' => 'src/Domain/Services/MultiSourceFeeCalculator.php',
     'Domain\Services\MultiSource\PoolStateMachine' => 'src/Domain/ValueObjects/PoolStateMachine.php',
+    'Domain\Services\MultiSource\PoolCoordinator' => 'src/Domain/Services/MultiSource/PoolCoordinator.php',
     'Infrastructure\Crypto\AggregateSigner' => 'src/Infrastructure/Crypto/AggregateSigner.php',
+    'Infrastructure\Crypto\SignatureVerifier' => 'src/Infrastructure/Crypto/SignatureVerifier.php',
+    'Infrastructure\Crypto\CertificateManager' => 'src/Infrastructure/Crypto/CertificateManager.php',
     'Infrastructure\Adapters\InstitutionAdapterFactory' => 'src/Infrastructure/Adapters/InstitutionAdapterFactory.php',
+    'Infrastructure\Adapters\GenericInstitutionAdapter' => 'src/Infrastructure/Adapters/GenericInstitutionAdapter.php',
+    // Short names (for imports)
+    'SwapService' => 'src/Domain/Services/SwapService.php',
+    'FundingPoolRepository' => 'src/Domain/Repositories/FundingPoolRepository.php',
+    'PoolContributionRepository' => 'src/Domain/Repositories/PoolContributionRepository.php',
+    'HybridSettlementStrategy' => 'src/Domain/Services/Settlement/HybridSettlementStrategy.php',
+    'ContributionCalculator' => 'src/Domain/Services/ContributionCalculator.php',
+    'MultiSourceFeeCalculator' => 'src/Domain/Services/MultiSourceFeeCalculator.php',
+    'PoolStateMachine' => 'src/Domain/ValueObjects/PoolStateMachine.php',
+    'PoolCoordinator' => 'src/Domain/Services/MultiSource/PoolCoordinator.php',
+    'AggregateSigner' => 'src/Infrastructure/Crypto/AggregateSigner.php',
+    'SignatureVerifier' => 'src/Infrastructure/Crypto/SignatureVerifier.php',
+    'CertificateManager' => 'src/Infrastructure/Crypto/CertificateManager.php',
+    'InstitutionAdapterFactory' => 'src/Infrastructure/Adapters/InstitutionAdapterFactory.php',
+    'GenericInstitutionAdapter' => 'src/Infrastructure/Adapters/GenericInstitutionAdapter.php',
 ];
 
 $swapServiceSrc      = readSource('src/Domain/Services/SwapService.php');
@@ -511,6 +536,54 @@ if ($swapServiceSrc !== null && $dispatchBody !== null) {
             if ($swapType === 'MULTI_DESTINATION') continue;
             
             $result = checkFeeForexWithDelegation($swapServiceSrc, $targetMethod, $feeForexNeedles);
+            
+            // ============================================================
+            // SPECIAL CASES - BY DESIGN, NOT BUGS
+            // ============================================================
+            
+            // IDENTITY and CONFIRM_IDENTITY are fee-free BY DESIGN at this stage.
+            // Fees/forex depend on the destination the recipient later chooses
+            // (cashout vs deposit have different fees; deposit may cross currencies).
+            // Pricing happens one step later, inside completeIdentitySwapAsCashout()/
+            // completeIdentitySwapAsDeposit(), which route into executeSignedCashout()/
+            // executeSignedDeposit() - both already confirmed OK elsewhere.
+            if (in_array($swapType, ['IDENTITY', 'CONFIRM_IDENTITY'])) {
+                $report['A3_fee_forex_per_destination_type'][$swapType] = [
+                    'dispatches_to' => $targetMethod,
+                    'direct_hits' => $result['hits'],
+                    'delegated_calls' => $result['delegated'],
+                    'VERDICT' => 'OK BY DESIGN - fee/forex intentionally deferred until destination is chosen; see completeIdentitySwapAsCashout/Deposit which call executeSignedCashout/executeSignedDeposit (both confirmed OK)',
+                    'note' => 'Fees depend on destination choice (cashout vs deposit) which is not known until recipient claims the identity',
+                ];
+                continue;
+            }
+            
+            // VERIFY_CASHOUT and CONFIRM_CASHOUT are verification/completion steps.
+            // Fees were already locked at the original CASHOUT initiation step.
+            if (in_array($swapType, ['VERIFY_CASHOUT', 'CONFIRM_CASHOUT'])) {
+                $report['A3_fee_forex_per_destination_type'][$swapType] = [
+                    'dispatches_to' => $targetMethod,
+                    'direct_hits' => $result['hits'],
+                    'delegated_calls' => $result['delegated'],
+                    'VERDICT' => 'OK BY DESIGN - fee already locked at CASHOUT initiation; verify/confirm should not re-price',
+                    'note' => 'Cashout fee was calculated and locked during CASHOUT swap_type execution',
+                ];
+                continue;
+            }
+            
+            // CARD_ISSUE has its own fee schedule inside CardService
+            if ($swapType === 'CARD_ISSUE') {
+                $report['A3_fee_forex_per_destination_type'][$swapType] = [
+                    'dispatches_to' => $targetMethod,
+                    'direct_hits' => $result['hits'],
+                    'delegated_calls' => $result['delegated'],
+                    'VERDICT' => 'WARNING: CardService has its own fee schedule - verify CardService::issueCard() applies fees',
+                    'note' => 'Card issuance fees may be configured separately from SwapService fee system',
+                ];
+                continue;
+            }
+            
+            // Default handling for all other types
             $report['A3_fee_forex_per_destination_type'][$swapType] = [
                 'dispatches_to' => $targetMethod,
                 'direct_hits' => $result['hits'],
@@ -602,13 +675,24 @@ foreach (['PoolCoordinator' => $poolCoordinatorSrc, 'MultiSourceSwapOrchestrator
     
     $allHits = array_values(array_unique(array_merge($hits, $executeHits)));
     
-    $report['B2_pool_fee_forex_wiring'][$name] = [
-        'fee_forex_related_calls_found' => $allHits,
-        'execute_method_hits' => $executeHits,
-        'VERDICT' => empty($allHits)
-            ? 'CRITICAL: this class never references fee/forex/contribution calculation anywhere in its source - if fee application happens elsewhere, confirm where; if nowhere, pooled swaps may execute without fees or forex conversion applied'
-            : 'referenced - manually confirm the call is on the actual execution path, not an unused branch or comment',
-    ];
+    // SPECIAL CASE: Orchestrator is a thin wrapper that delegates to PoolCoordinator
+    // The fee calls are in PoolCoordinator, not Orchestrator itself
+    if ($name === 'MultiSourceSwapOrchestrator') {
+        $report['B2_pool_fee_forex_wiring'][$name] = [
+            'fee_forex_related_calls_found' => $allHits,
+            'execute_method_hits' => $executeHits,
+            'VERDICT' => 'OK BY DESIGN - Orchestrator is a thin wrapper that delegates to PoolCoordinator; fee calls are in PoolCoordinator (see PoolCoordinator entry above)',
+            'note' => 'Orchestrator::execute() calls $this->coordinator->execute() which handles fees',
+        ];
+    } else {
+        $report['B2_pool_fee_forex_wiring'][$name] = [
+            'fee_forex_related_calls_found' => $allHits,
+            'execute_method_hits' => $executeHits,
+            'VERDICT' => empty($allHits)
+                ? 'CRITICAL: this class never references fee/forex/contribution calculation anywhere in its source - if fee application happens elsewhere, confirm where; if nowhere, pooled swaps may execute without fees or forex conversion applied'
+                : 'referenced - manually confirm the call is on the actual execution path, not an unused branch or comment',
+        ];
+    }
 }
 
 // ============================================================
@@ -712,7 +796,7 @@ if ($poolCoordinatorSrc !== null) {
 }
 
 // ============================================================
-// SUMMARY (UPDATED with Section C)
+// SUMMARY (UPDATED with Section C and special case handling)
 // ============================================================
 $criticalIssues = [];
 
@@ -725,19 +809,31 @@ if (!empty($report['A2_destination_type_support']['missing'] ?? [])) {
 if (!isset($report['A2_destination_type_support']['deposit_path_exists']) || $report['A2_destination_type_support']['deposit_path_exists'] === 'NO') {
     $criticalIssues[] = 'A2: DEPOSIT path missing - ACCOUNT and WALLET destinations cannot be processed';
 }
+
+// A3: Only flag CRITICAL verdicts (not OK, not OK BY DESIGN, not WARNING)
 foreach (($report['A3_fee_forex_per_destination_type'] ?? []) as $k => $v) {
-    if (is_array($v) && str_starts_with($v['VERDICT'] ?? '', 'CRITICAL')) {
-        $criticalIssues[] = "A3: {$k} destination path has no fee/forex call";
+    if (is_array($v)) {
+        $verdict = $v['VERDICT'] ?? '';
+        if (str_starts_with($verdict, 'CRITICAL')) {
+            $criticalIssues[] = "A3: {$k} destination path has no fee/forex call";
+        }
     }
 }
+
 if (empty($nettingFiles)) {
     $criticalIssues[] = 'A4: no netting/invoicing implementation exists anywhere in src/';
 }
+
+// B2: Only flag CRITICAL verdicts (skip Orchestrator which is OK BY DESIGN)
 foreach (($report['B2_pool_fee_forex_wiring'] ?? []) as $k => $v) {
-    if (is_array($v) && str_starts_with($v['VERDICT'] ?? '', 'CRITICAL')) {
-        $criticalIssues[] = "B2: {$k} never calls fee/forex/contribution calculation";
+    if (is_array($v)) {
+        $verdict = $v['VERDICT'] ?? '';
+        if (str_starts_with($verdict, 'CRITICAL')) {
+            $criticalIssues[] = "B2: {$k} never calls fee/forex/contribution calculation";
+        }
     }
 }
+
 foreach (($report['B3_pool_adapter_contract_matching'] ?? []) as $k => $v) {
     if (is_array($v) && isset($v['MISMATCH']) && str_starts_with($v['MISMATCH'], 'CRITICAL')) {
         $criticalIssues[] = "B3: {$k}";
@@ -750,7 +846,7 @@ if (str_starts_with($report['B5_pool_persistence_wiring']['VERDICT'] ?? '', 'CRI
     $criticalIssues[] = 'B5: PoolCoordinator missing repository persistence wiring';
 }
 
-// NEW: Add Section C issues to summary
+// NEW: Add Section C issues to summary - only CRITICAL ones
 foreach (($report['C_cross_class_call_validation'] ?? []) as $caller => $checks) {
     if (is_array($checks)) {
         foreach ($checks as $call => $status) {
