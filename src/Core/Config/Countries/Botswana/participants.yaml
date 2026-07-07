@@ -24,7 +24,7 @@ participants:
     asset_types:
       - ACCOUNT
       - ATM
-      - CASHOUT-VOUCHER
+      - VOUCHER
     
     routing:
       priority: 10
@@ -100,7 +100,7 @@ participants:
     
     asset_types:
       - MNO-WALLET
-      - CASHOUT-VOUCHER
+      - VOUCHER
     
     routing:
       priority: 5
@@ -150,7 +150,7 @@ participants:
     
     asset_types:
       - CARD
-      - CASHOUT-VOUCHER
+      - VOUCHER
     
     routing:
       priority: 1
