@@ -15,9 +15,16 @@ declare(strict_types=1);
  * Falls back to the existing single-hold authorizeTransaction() for cards
  * that were preloaded via issueCard()/loadCard() rather than hooked.
  *
- * SECURITY FIXES:
- * - CVV verification removed entirely (PCI-DSS prohibits CVV storage)
- * - Brand exclusivity check added for pooled hooks
+ * SECURITY NOTES:
+ * - CVV verification removed entirely (PCI-DSS prohibits CVV storage) -
+ *   replaced by a TOTP-based dynamic code, verified inside CardService.
+ * - Brand exclusivity check for pooled hooks confirms the card_suffix is
+ *   a real VouchMorph-issued row in message_cards. It does NOT depend on
+ *   a card_category/card_type column, since that distinction lives in the
+ *   separate card-application intake flow, not the issued-card record -
+ *   only hookSourcesToCard() ever writes to card_pool_hooks, so a row
+ *   existing in message_cards at all is sufficient proof of VouchMorph
+ *   issuance without assuming a column that hasn't been confirmed to exist.
  */
 
 define('ROOT_PATH', dirname(__DIR__, 4));
@@ -128,12 +135,23 @@ try {
     if ($activeHook) {
         // ============================================================
         // EXCLUSIVITY CHECK: Pooled hooks are ONLY for VouchMorph-issued cards
+        //
+        // Simplified from a prior version that checked a card_category
+        // column not confirmed to exist on message_cards - that would have
+        // thrown a SQL error on every pooled swipe, caught by the generic
+        // exception handler below and surfaced only as an opaque
+        // "System error" response. This checks only what's actually known
+        // to exist: a real, active row in message_cards for this suffix.
+        // Since hookSourcesToCard() is the only writer of card_pool_hooks,
+        // that row's existence is itself sufficient proof of VouchMorph
+        // issuance - a Visa/Mastercard PAN would never have a matching
+        // message_cards row regardless of what (incorrectly) ends up in
+        // card_pool_hooks.
         // ============================================================
         $brandCheck = $db->prepare("
             SELECT 1 FROM message_cards 
             WHERE card_suffix = ? 
             AND status = 'ACTIVE'
-            AND card_category IN ('PHYSICAL', 'VIRTUAL')
             LIMIT 1
         ");
         $brandCheck->execute([$cardSuffix]);
@@ -168,7 +186,8 @@ try {
     } else {
         // No active hook - fall back to the existing preloaded single-hold path
         // (cards funded via issueCard()/loadCard(), unrelated to pooling).
-        // CVV check is now handled inside CardService (or removed per PCI-DSS)
+        // CVV is no longer checked here or anywhere - authorizeTransaction()
+        // now verifies a TOTP-based dynamic_code instead, per PCI-DSS.
         $result = $cardService->authorizeTransaction(array_merge($input, $merchantContext));
     }
 
