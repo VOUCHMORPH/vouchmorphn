@@ -1,23 +1,29 @@
 <?php
-// public/health.php - Enhanced health check with resilience for Railway
+// public/health.php - Enhanced health check using DATABASE_URL
 
-// Configuration
 $maxRetries = 5;
-$initialDelayMs = 100;  // Start with 100ms
-$maxDelayMs = 2000;     // Max 2 seconds between retries
+$initialDelayMs = 100;
+$maxDelayMs = 2000;
 $totalTimeoutSeconds = 10;
 $mode = isset($_GET['mode']) ? $_GET['mode'] : 'liveness';
 
-// Database configuration from environment
-$dbHost = getenv('DB_HOST') ?: 'postgres.railway.internal';
-$dbPort = getenv('DB_PORT') ?: '5432';
-$dbName = getenv('DB_DATABASE') ?: 'postgres';
-$dbUser = getenv('DB_USERNAME') ?: 'postgres';
-$dbPassword = getenv('DB_PASSWORD') ?: '';
+// Parse DATABASE_URL
+$databaseUrl = getenv('DATABASE_URL');
+$dbConfig = parseDatabaseUrl($databaseUrl);
+
+// If DATABASE_URL parsing fails, try individual env vars
+if (!$dbConfig) {
+    $dbConfig = [
+        'host' => getenv('DB_HOST') ?: 'postgres.railway.internal',
+        'port' => getenv('DB_PORT') ?: '5432',
+        'dbname' => getenv('DB_DATABASE') ?: 'postgres',
+        'user' => getenv('DB_USERNAME') ?: 'postgres',
+        'password' => getenv('DB_PASSWORD') ?: ''
+    ];
+}
 
 $startTime = microtime(true);
 
-// Initialize status response
 $status = [
     'status' => 'healthy',
     'timestamp' => date('c'),
@@ -34,15 +40,26 @@ $status = [
 
 // Check database with retry logic
 $dbStatus = checkDatabaseWithRetry(
-    $dbHost, $dbPort, $dbName, $dbUser, $dbPassword,
-    $maxRetries, $initialDelayMs, $maxDelayMs, $totalTimeoutSeconds
+    $dbConfig['host'],
+    $dbConfig['port'],
+    $dbConfig['dbname'],
+    $dbConfig['user'],
+    $dbConfig['password'],
+    $maxRetries,
+    $initialDelayMs,
+    $maxDelayMs,
+    $totalTimeoutSeconds
 );
 
 $status['checks']['database'] = $dbStatus;
+$status['checks']['database']['connection_config'] = [
+    'host' => $dbConfig['host'],
+    'dbname' => $dbConfig['dbname'],
+    'user' => $dbConfig['user']
+];
 
 // Determine overall status based on mode
 if ($mode === 'liveness') {
-    // Liveness: Keep container alive even if DB is temporarily down
     if ($dbStatus['status'] === 'pass') {
         $status['status'] = 'healthy';
         $status['message'] = 'All systems operational';
@@ -50,10 +67,9 @@ if ($mode === 'liveness') {
     } else {
         $status['status'] = 'degraded';
         $status['message'] = 'Application running, database retry in progress';
-        $httpStatus = 200; // Still return 200 to prevent container restart
+        $httpStatus = 200;
     }
 } elseif ($mode === 'readiness') {
-    // Readiness: Only ready when DB is up and accepting connections
     if ($dbStatus['status'] === 'pass') {
         $status['status'] = 'healthy';
         $status['message'] = 'Ready to accept traffic';
@@ -64,7 +80,6 @@ if ($mode === 'liveness') {
         $httpStatus = 503;
     }
 } else {
-    // Deep: Full health check (strict)
     if ($dbStatus['status'] === 'pass') {
         $status['status'] = 'healthy';
         $status['message'] = 'All systems operational';
@@ -76,11 +91,9 @@ if ($mode === 'liveness') {
     }
 }
 
-// Add performance metrics
 $status['response_time_ms'] = round((microtime(true) - $startTime) * 1000, 2);
 $status['server'] = gethostname();
 
-// Send response headers
 header('Cache-Control: no-cache, no-store, must-revalidate');
 header('Pragma: no-cache');
 header('Expires: 0');
@@ -91,8 +104,34 @@ echo json_encode($status, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 exit;
 
 /**
- * Check database connection with retry logic and exponential backoff
+ * Parse DATABASE_URL into components
  */
+function parseDatabaseUrl($url) {
+    if (empty($url)) {
+        return null;
+    }
+    
+    // Parse the URL
+    $parsed = parse_url($url);
+    if (!$parsed) {
+        return null;
+    }
+    
+    // Handle postgres:// or postgresql://
+    $scheme = $parsed['scheme'] ?? '';
+    if (!in_array($scheme, ['postgres', 'postgresql', 'pgsql'])) {
+        return null;
+    }
+    
+    return [
+        'host' => $parsed['host'] ?? 'localhost',
+        'port' => $parsed['port'] ?? '5432',
+        'dbname' => ltrim($parsed['path'] ?? '', '/'),
+        'user' => $parsed['user'] ?? '',
+        'password' => $parsed['pass'] ?? ''
+    ];
+}
+
 function checkDatabaseWithRetry($host, $port, $dbname, $user, $password, $maxRetries, $initialDelayMs, $maxDelayMs, $totalTimeoutSeconds) {
     $startTime = time();
     $attempt = 0;
@@ -104,7 +143,6 @@ function checkDatabaseWithRetry($host, $port, $dbname, $user, $password, $maxRet
         $attempt++;
         $attemptStart = microtime(true);
         
-        // Check if we've exceeded total timeout
         if ((time() - $startTime) > $totalTimeoutSeconds) {
             return [
                 'status' => 'fail',
@@ -115,7 +153,6 @@ function checkDatabaseWithRetry($host, $port, $dbname, $user, $password, $maxRet
             ];
         }
         
-        // Try to connect
         $result = checkDatabaseConnection($host, $port, $dbname, $user, $password);
         $attemptTime = round((microtime(true) - $attemptStart) * 1000, 2);
         
@@ -135,11 +172,8 @@ function checkDatabaseWithRetry($host, $port, $dbname, $user, $password, $maxRet
             'time_ms' => $attemptTime
         ];
         
-        // If this wasn't the last attempt, wait before retrying
         if ($attempt < $maxRetries) {
-            usleep($delayMs * 1000); // Convert to microseconds
-            
-            // Exponential backoff with jitter to prevent thundering herd
+            usleep($delayMs * 1000);
             $delayMs = min($delayMs * 2 + rand(0, 100), $maxDelayMs);
         }
     }
@@ -153,26 +187,20 @@ function checkDatabaseWithRetry($host, $port, $dbname, $user, $password, $maxRet
     ];
 }
 
-/**
- * Single database connection attempt
- */
 function checkDatabaseConnection($host, $port, $dbname, $user, $password) {
     $startTime = microtime(true);
     
     try {
-        // Validate required parameters
-        if (empty($host)) {
+        if (empty($host) || empty($user) || empty($dbname)) {
             return [
                 'status' => 'fail',
-                'message' => 'Database host not configured',
+                'message' => 'Database configuration incomplete',
                 'response_time_ms' => 0
             ];
         }
         
-        // Build DSN with proper connection timeout
         $dsn = "pgsql:host={$host};port={$port};dbname={$dbname};connect_timeout=2;options='--client_encoding=UTF8'";
         
-        // Set PDO attributes for connection
         $options = [
             PDO::ATTR_TIMEOUT => 2,
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
@@ -180,11 +208,9 @@ function checkDatabaseConnection($host, $port, $dbname, $user, $password) {
             PDO::ATTR_EMULATE_PREPARES => false
         ];
         
-        // Attempt connection
         $pdo = new PDO($dsn, $user, $password, $options);
         
-        // Simple query to verify the connection is working
-        $stmt = $pdo->query('SELECT 1 as check_result, NOW() as server_time, version() as pg_version');
+        $stmt = $pdo->query('SELECT 1 as check_result, current_database() as db_name, current_user as db_user');
         $result = $stmt->fetch();
         
         if ($result && $result['check_result'] == 1) {
@@ -192,37 +218,36 @@ function checkDatabaseConnection($host, $port, $dbname, $user, $password) {
                 'status' => 'pass',
                 'message' => 'Database connection successful',
                 'response_time_ms' => round((microtime(true) - $startTime) * 1000, 2),
-                'server_time' => $result['server_time'] ?? null,
-                'pg_version' => $result['pg_version'] ?? null
-            ];
-        } else {
-            return [
-                'status' => 'fail',
-                'message' => 'Database query returned unexpected result',
-                'response_time_ms' => round((microtime(true) - $startTime) * 1000, 2)
+                'database' => $result['db_name'] ?? $dbname,
+                'user' => $result['db_user'] ?? $user
             ];
         }
+        
+        return [
+            'status' => 'fail',
+            'message' => 'Query returned unexpected result',
+            'response_time_ms' => round((microtime(true) - $startTime) * 1000, 2)
+        ];
         
     } catch (PDOException $e) {
         $errorMessage = $e->getMessage();
         $errorType = 'unknown';
         
-        // Classify error for better reporting
         if (strpos($errorMessage, 'Connection refused') !== false) {
             $errorType = 'connection_refused';
-            $errorMessage = 'Connection refused - PostgreSQL may not be ready yet';
+            $errorMessage = 'Connection refused - PostgreSQL not ready';
         } elseif (strpos($errorMessage, 'timeout') !== false) {
             $errorType = 'timeout';
-            $errorMessage = 'Connection timeout - PostgreSQL not responding';
-        } elseif (strpos($errorMessage, 'database') !== false && strpos($errorMessage, 'does not exist') !== false) {
-            $errorType = 'database_not_found';
-            $errorMessage = 'Database does not exist - check DB_DATABASE env var';
+            $errorMessage = 'Connection timeout';
         } elseif (strpos($errorMessage, 'password') !== false || strpos($errorMessage, 'authentication') !== false) {
             $errorType = 'authentication';
-            $errorMessage = 'Authentication failed - check DB_USERNAME and DB_PASSWORD';
+            $errorMessage = 'Authentication failed - check database credentials';
+        } elseif (strpos($errorMessage, 'database') !== false && strpos($errorMessage, 'does not exist') !== false) {
+            $errorType = 'database_not_found';
+            $errorMessage = 'Database does not exist';
         } elseif (strpos($errorMessage, 'could not translate host name') !== false) {
             $errorType = 'host_resolution';
-            $errorMessage = 'Could not resolve host - check DB_HOST';
+            $errorMessage = 'Could not resolve host';
         }
         
         return [
