@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Application\Admin\Auth;
 
 use Application\Utils\SessionManager;
+use PragmaRX\Google2FA\Google2FA;
+
 
 class AdminAuth
 {
@@ -160,52 +162,59 @@ class AdminAuth
         }
     }
     
-    /**
-     * Verify MFA code
-     */
-    public function verifyMfa(string $code, string $country): array
-    {
-        try {
-            $adminId = SessionManager::get('admin_id');
-            
-            if (!$adminId) {
-                return ['success' => false, 'message' => 'Session expired. Please login again.'];
-            }
-            
-            $stmt = $this->db->prepare("
-                SELECT admin_id, username, mfa_secret, mfa_enabled
-                FROM admins 
-                WHERE admin_id = :id 
-                    AND deleted_at IS NULL
-                LIMIT 1
-            ");
-            $stmt->execute([':id' => $adminId]);
-            $admin = $stmt->fetch(\PDO::FETCH_ASSOC);
-            
-            if (!$admin) {
-                return ['success' => false, 'message' => 'Admin account not found.'];
-            }
-            
-            $mfaEnabled = ($admin['mfa_enabled'] === 't' || $admin['mfa_enabled'] === true || $admin['mfa_enabled'] === 1);
-            
-            if (!$mfaEnabled || empty($admin['mfa_secret'])) {
-                SessionManager::remove('admin_mfa_pending');
-                return ['success' => true, 'message' => 'MFA not required.'];
-            }
-            
-            if (strlen($code) !== 6 || !ctype_digit($code)) {
-                return ['success' => false, 'message' => 'Invalid authentication code.'];
-            }
-            
-            SessionManager::remove('admin_mfa_pending');
-            error_log("[ADMIN AUTH] MFA verified for {$admin['username']}");
-            return ['success' => true, 'message' => 'MFA verified successfully.'];
-            
-        } catch (\Throwable $e) {
-            error_log("[ADMIN AUTH] MFA error: " . $e->getMessage());
-            return ['success' => false, 'message' => 'MFA verification failed.'];
+
+public function verifyMfa(string $code, string $country): array
+{
+    try {
+        $adminId = SessionManager::get('admin_id');
+
+        if (!$adminId) {
+            return ['success' => false, 'message' => 'Session expired. Please login again.'];
         }
+
+        $stmt = $this->db->prepare("
+            SELECT admin_id, username, mfa_secret, mfa_enabled
+            FROM admins 
+            WHERE admin_id = :id 
+                AND deleted_at IS NULL
+            LIMIT 1
+        ");
+        $stmt->execute([':id' => $adminId]);
+        $admin = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+        if (!$admin) {
+            return ['success' => false, 'message' => 'Admin account not found.'];
+        }
+
+        $mfaEnabled = ($admin['mfa_enabled'] === 't' || $admin['mfa_enabled'] === true || $admin['mfa_enabled'] === 1);
+
+        if (!$mfaEnabled || empty($admin['mfa_secret'])) {
+            SessionManager::remove('admin_mfa_pending');
+            return ['success' => true, 'message' => 'MFA not required.'];
+        }
+
+        if (strlen($code) !== 6 || !ctype_digit($code)) {
+            return ['success' => false, 'message' => 'Invalid authentication code.'];
+        }
+
+        // ACTUAL TOTP VERIFICATION — this was missing before
+        $google2fa = new Google2FA();
+        $valid = $google2fa->verifyKey($admin['mfa_secret'], $code, 1); // 1 = allow 1 window of clock drift
+
+        if (!$valid) {
+            error_log("[ADMIN AUTH] MFA code rejected for {$admin['username']}");
+            return ['success' => false, 'message' => 'Invalid authentication code.'];
+        }
+
+        SessionManager::remove('admin_mfa_pending');
+        error_log("[ADMIN AUTH] MFA verified for {$admin['username']}");
+        return ['success' => true, 'message' => 'MFA verified successfully.'];
+
+    } catch (\Throwable $e) {
+        error_log("[ADMIN AUTH] MFA error: " . $e->getMessage());
+        return ['success' => false, 'message' => 'MFA verification failed.'];
     }
+}
     
     /**
      * Check if admin is logged in
