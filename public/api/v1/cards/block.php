@@ -9,7 +9,7 @@ declare(strict_types=1);
 // ============================================
 // 1. BOOTSTRAP & PATHS
 // ============================================
-define('ROOT_PATH', dirname(__DIR__, 4)); // Goes up 5 levels to project root
+define('ROOT_PATH', dirname(__DIR__, 4));
 
 // ============================================
 // 2. HEADERS & CORS
@@ -31,27 +31,31 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 // ============================================
-// 3. LOAD SYSTEM CONFIG & CORE
+// 3. BOOTSTRAP - Load container
 // ============================================
-require_once ROOT_PATH . '/src/CORE_CONFIG/system_country.php';
-require_once ROOT_PATH . '/src/CORE_CONFIG/load_country.php';
+$container = require_once ROOT_PATH . '/src/bootstrap.php';
+
+// ============================================
+// 4. LOAD SYSTEM CONFIG & CORE (FIXED PATHS)
+// ============================================
+require_once ROOT_PATH . '/src/Core/Config/SystemCountry.php';
+require_once ROOT_PATH . '/src/Core/Config/LoadCountry.php';
 
 $country = defined('SYSTEM_COUNTRY') ? SYSTEM_COUNTRY : 'BW';
 
 // ============================================
-// 4. LOAD REQUIRED CLASSES
+// 5. LOAD REQUIRED CLASSES (FIXED PATHS)
 // ============================================
-require_once ROOT_PATH . '/src/DATA_PERSISTENCE_LAYER/config/DBConnection.php';
-require_once ROOT_PATH . '/src/BUSINESS_LOGIC_LAYER/services/CardService.php';
-require_once ROOT_PATH . '/src/BUSINESS_LOGIC_LAYER/Helpers/CardHelper.php';
+require_once ROOT_PATH . '/src/Domain/Services/CardService.php';
+require_once ROOT_PATH . '/src/Domain/Helpers/CardHelper.php';
 
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
-use BUSINESS_LOGIC_LAYER\services\CardService;
+use Domain\Services\CardService;
+use Domain\Helpers\CardHelper;
 
 // ============================================
-// 5. LOAD COUNTRY-SPECIFIC ENVIRONMENT VARIABLES
+// 6. LOAD COUNTRY-SPECIFIC ENVIRONMENT VARIABLES
 // ============================================
-$envFile = ROOT_PATH . "/src/CORE_CONFIG/countries/{$country}/.env_{$country}";
+$envFile = ROOT_PATH . "/src/Core/Config/Countries/{$country}/.env_{$country}";
 if (file_exists($envFile)) {
     $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($lines as $line) {
@@ -79,7 +83,7 @@ if (!function_exists('get_env_val')) {
 }
 
 // ============================================
-// 6. AUTHENTICATION - SAME PATTERN AS OTHER ENDPOINTS
+// 7. AUTHENTICATION - No hardcoded fallback
 // ============================================
 $headers = function_exists('getallheaders') ? getallheaders() : [];
 $headersLower = array_change_key_case($headers, CASE_LOWER);
@@ -91,21 +95,18 @@ $validKeys = array_filter([
 ]);
 
 // Load country-specific participants to get bank keys
-$participantsFile = ROOT_PATH . "/src/CORE_CONFIG/countries/{$country}/participants_{$country}.json";
+$participantsFile = ROOT_PATH . "/src/Core/Config/Countries/{$country}/participants_{$country}.json";
 if (file_exists($participantsFile)) {
     $participantsData = json_decode(file_get_contents($participantsFile), true);
     
-    // For each participant, look for its API key in environment
     if (isset($participantsData['participants'])) {
         foreach ($participantsData['participants'] as $participantName => $participant) {
-            // Convert participant name to env key format (e.g., ZURUBANK -> API_KEY_ZURUBANK)
             $envKey = 'API_KEY_' . strtoupper($participantName);
             $keyValue = get_env_val($envKey);
             if ($keyValue) {
                 $validKeys[] = $keyValue;
             }
             
-            // Also check for provider_code based keys
             if (isset($participant['provider_code'])) {
                 $providerEnvKey = 'API_KEY_' . strtoupper($participant['provider_code']);
                 $providerKeyValue = get_env_val($providerEnvKey);
@@ -117,7 +118,6 @@ if (file_exists($participantsFile)) {
     }
 }
 
-// Remove any empty values
 $validKeys = array_filter($validKeys);
 
 if (!$providedKey || !in_array($providedKey, $validKeys, true)) {
@@ -131,7 +131,7 @@ if (!$providedKey || !in_array($providedKey, $validKeys, true)) {
 }
 
 // ============================================
-// 7. GET INPUT
+// 8. GET INPUT
 // ============================================
 $input = json_decode(file_get_contents('php://input'), true);
 
@@ -144,7 +144,6 @@ if (json_last_error() !== JSON_ERROR_NONE) {
     exit();
 }
 
-// Validate required fields
 if (empty($input['card_number'])) {
     http_response_code(400);
     echo json_encode([
@@ -154,7 +153,6 @@ if (empty($input['card_number'])) {
     exit();
 }
 
-// Basic card number sanitization (remove spaces, dashes)
 $cardNumber = preg_replace('/[^0-9]/', '', $input['card_number']);
 
 if (strlen($cardNumber) < 15 || strlen($cardNumber) > 19) {
@@ -167,13 +165,11 @@ if (strlen($cardNumber) < 15 || strlen($cardNumber) > 19) {
 }
 
 // ============================================
-// 8. DATABASE CONNECTION
+// 9. DATABASE CONNECTION - from container
 // ============================================
 try {
-    $pdo = DBConnection::getConnection();
-    if (!$pdo) {
-        throw new Exception('Database connection failed');
-    }
+    $pdo = $container->get(PDO::class);
+    if (!$pdo) throw new Exception('Database connection failed');
 } catch (Exception $e) {
     error_log("Database connection error in block API: " . $e->getMessage());
     http_response_code(500);
@@ -185,16 +181,16 @@ try {
 }
 
 // ============================================
-// 9. LOAD COUNTRY-SPECIFIC CARD CONFIG
+// 10. LOAD COUNTRY-SPECIFIC CARD CONFIG
 // ============================================
 $config = [];
-$cardConfigPath = ROOT_PATH . "/src/CORE_CONFIG/countries/{$country}/card_config_{$country}.json";
+$cardConfigPath = ROOT_PATH . "/src/Core/Config/Countries/{$country}/card_config_{$country}.json";
 if (file_exists($cardConfigPath)) {
     $config = json_decode(file_get_contents($cardConfigPath), true);
 }
 
 // ============================================
-// 10. EXECUTE CARD BLOCK
+// 11. EXECUTE CARD BLOCK
 // ============================================
 try {
     $cardService = new CardService($pdo, $country, $config);
