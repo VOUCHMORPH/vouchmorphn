@@ -1,5 +1,5 @@
 <?php
-// public/user/login.php - COMPLETE FIXED VERSION
+// public/user/login.php - COMPLETE FIXED VERSION WITH RATE LIMITING + ACCOUNT LOCKOUT
 // Supports: phone, phone2, phone3, email, national_id, drivers_license, passport
 
 ob_start();
@@ -11,10 +11,12 @@ ini_set('log_errors', 1);
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
+require_once __DIR__ . '/../../src/Security/Monitoring/ApiRateLimiter.php'; // ADDED
 
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
 use Core\Config\LoadCountry;
+use Security\Monitoring\ApiRateLimiter; // ADDED
 
 SessionManager::start();
 
@@ -125,146 +127,210 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     error_log("[USER LOGIN] Input: {$rawInput}, Formatted: {$formattedValue}, Type: {$identifierType}");
 
-    if ($loginMethod === 'pin') {
-        // PIN LOGIN
-        $pin = trim($_POST['pin'] ?? '');
+    // --- RATE LIMITING (ADDED) ---
+    $clientIp = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+    $rateLimited = false;
 
-        if ($rawInput === '' || $pin === '') {
-            $error = "Identifier and PIN are required.";
-            error_log("[USER LOGIN] Missing identifier or PIN");
-        } else {
-            try {
-                $tableCheck = $db->query("SELECT 1 FROM users LIMIT 1");
-                if (!$tableCheck) {
-                    error_log("[USER LOGIN] Users table may not exist");
-                    $error = "System configuration error. Please contact support.";
-                } else {
-                    // Search ALL identifier columns
-                    $stmt = $db->prepare("
-                        SELECT user_id, phone, phone2, phone3, email, 
-                               national_id, drivers_license, passport,
-                               username, full_name, password_hash, verified, 
-                               created_at, has_transaction_pin as pin_enabled
-                        FROM users
-                        WHERE phone = :identifier
-                           OR phone2 = :identifier
-                           OR phone3 = :identifier
-                           OR email = :identifier
-                           OR national_id = :identifier
-                           OR drivers_license = :identifier
-                           OR passport = :identifier
-                        LIMIT 1
-                    ");
-                    $stmt->execute([':identifier' => $formattedValue]);
-                    $user = $stmt->fetch(\PDO::FETCH_ASSOC);
-                    
-                    error_log("[USER LOGIN] User found: " . ($user ? 'YES' : 'NO'));
+    try {
+        // Per-IP: 15 attempts / 10 min (covers shared NAT / office wifi)
+        $ipLimiter = new ApiRateLimiter(15, 600);
+        // Per-identifier: 6 attempts / 10 min (tighter, since PINs are only 6 digits)
+        $identifierLimiter = new ApiRateLimiter(6, 600);
 
-                    if (!$user || (int)$user['verified'] !== 1) {
-                        $error = "Invalid login credentials.";
-                        error_log("[USER LOGIN] User not found or not verified");
-                    } elseif (!password_verify($pin, $user['password_hash'])) {
-                        $error = "Invalid PIN.";
-                        error_log("[USER LOGIN] PIN verification failed for {$formattedValue}");
-                    } else {
-                        session_regenerate_id(true);
+        $ipOk = $ipLimiter->check('user_login_ip:' . $clientIp);
+        $identifierOk = $rawInput !== ''
+            ? $identifierLimiter->check('user_login_id:' . strtolower($rawInput))
+            : true;
 
-                        SessionManager::setUser([
-                            'user_id'     => $user['user_id'],
-                            'username'    => $user['username'] ?? '',
-                            'full_name'   => $user['full_name'] ?? $user['username'],
-                            'phone'       => $user['phone'],
-                            'phone2'      => $user['phone2'] ?? null,
-                            'phone3'      => $user['phone3'] ?? null,
-                            'email'       => $user['email'] ?? null,
-                            'national_id' => $user['national_id'] ?? null,
-                            'drivers_license' => $user['drivers_license'] ?? null,
-                            'passport'    => $user['passport'] ?? null,
-                            'role'        => 'USER',
-                            'country'     => $systemCountry,
-                            'created_at'  => $user['created_at'] ?? null,
-                            'pin_enabled' => (int)($user['pin_enabled'] ?? 0) === 1
-                        ]);
-
-                        error_log("[USER LOGIN] PIN LOGIN SUCCESS: {$formattedValue}");
-                        header('Location: user_dashboard.php');
-                        exit();
-                    }
-                }
-            } catch (\Throwable $e) {
-                error_log("[USER LOGIN] PIN LOGIN QUERY ERROR: " . $e->getMessage());
-                error_log("[USER LOGIN] Stack trace: " . $e->getTraceAsString());
-                $error = "System error. Please try again.";
-            }
+        if (!$ipOk || !$identifierOk) {
+            $rateLimited = true;
+            error_log("[USER LOGIN] Rate limit exceeded - IP: {$clientIp}, Identifier: {$rawInput}");
         }
-    } else {
-        // PHONE/IDENTIFIER LOGIN
-        if ($rawInput === '') {
-            $error = "Identifier is required.";
-            error_log("[USER LOGIN] Missing identifier");
-        } else {
-            try {
-                $tableCheck = $db->query("SELECT 1 FROM users LIMIT 1");
-                if (!$tableCheck) {
-                    error_log("[USER LOGIN] Users table may not exist");
-                    $error = "System configuration error. Please contact support.";
-                } else {
-                    // Search ALL identifier columns
-                    $stmt = $db->prepare("
-                        SELECT user_id, phone, phone2, phone3, email, 
-                               national_id, drivers_license, passport,
-                               username, full_name, created_at, verified, 
-                               has_transaction_pin as pin_enabled
-                        FROM users
-                        WHERE phone = :identifier
-                           OR phone2 = :identifier
-                           OR phone3 = :identifier
-                           OR email = :identifier
-                           OR national_id = :identifier
-                           OR drivers_license = :identifier
-                           OR passport = :identifier
-                        LIMIT 1
-                    ");
-                    $stmt->execute([':identifier' => $formattedValue]);
-                    $user = $stmt->fetch(\PDO::FETCH_ASSOC);
-                    
-                    error_log("[USER LOGIN] User found: " . ($user ? 'YES' : 'NO'));
-
-                    if (!$user || (int)$user['verified'] !== 1) {
-                        $error = "Invalid login credentials.";
-                        error_log("[USER LOGIN] User not found or not verified");
-                    } else {
-                        session_regenerate_id(true);
-
-                        SessionManager::setUser([
-                            'user_id'     => $user['user_id'],
-                            'username'    => $user['username'] ?? '',
-                            'full_name'   => $user['full_name'] ?? $user['username'],
-                            'phone'       => $user['phone'],
-                            'phone2'      => $user['phone2'] ?? null,
-                            'phone3'      => $user['phone3'] ?? null,
-                            'email'       => $user['email'] ?? null,
-                            'national_id' => $user['national_id'] ?? null,
-                            'drivers_license' => $user['drivers_license'] ?? null,
-                            'passport'    => $user['passport'] ?? null,
-                            'role'        => 'USER',
-                            'country'     => $systemCountry,
-                            'created_at'  => $user['created_at'] ?? null,
-                            'pin_enabled' => (int)($user['pin_enabled'] ?? 0) === 1
-                        ]);
-
-                        error_log("[USER LOGIN] IDENTIFIER LOGIN SUCCESS: {$formattedValue}");
-                        header('Location: user_dashboard.php');
-                        exit();
-                    }
-                }
-            } catch (\Throwable $e) {
-                error_log("[USER LOGIN] IDENTIFIER LOGIN QUERY ERROR: " . $e->getMessage());
-                error_log("[USER LOGIN] Stack trace: " . $e->getTraceAsString());
-                $error = "System error. Please try again.";
-            }
-        }
+    } catch (\Throwable $e) {
+        error_log("[USER LOGIN] Rate limiter unavailable: " . $e->getMessage());
     }
+
+    if ($rateLimited) {
+        $error = 'Too many login attempts. Please try again later.';
+    } else {
+
+        if ($loginMethod === 'pin') {
+            // PIN LOGIN
+            $pin = trim($_POST['pin'] ?? '');
+
+            if ($rawInput === '' || $pin === '') {
+                $error = "Identifier and PIN are required.";
+                error_log("[USER LOGIN] Missing identifier or PIN");
+            } else {
+                try {
+                    $tableCheck = $db->query("SELECT 1 FROM users LIMIT 1");
+                    if (!$tableCheck) {
+                        error_log("[USER LOGIN] Users table may not exist");
+                        $error = "System configuration error. Please contact support.";
+                    } else {
+                        // Search ALL identifier columns - INCLUDING lockout fields
+                        $stmt = $db->prepare("
+                            SELECT user_id, phone, phone2, phone3, email, 
+                                   national_id, drivers_license, passport,
+                                   username, full_name, password_hash, verified, 
+                                   created_at, has_transaction_pin as pin_enabled,
+                                   failed_login_attempts, locked_until
+                            FROM users
+                            WHERE phone = :identifier
+                               OR phone2 = :identifier
+                               OR phone3 = :identifier
+                               OR email = :identifier
+                               OR national_id = :identifier
+                               OR drivers_license = :identifier
+                               OR passport = :identifier
+                            LIMIT 1
+                        ");
+                        $stmt->execute([':identifier' => $formattedValue]);
+                        $user = $stmt->fetch(\PDO::FETCH_ASSOC);
+                        
+                        error_log("[USER LOGIN] User found: " . ($user ? 'YES' : 'NO'));
+
+                        // --- ACCOUNT LOCKOUT CHECK (ADDED) ---
+                        if ($user && !empty($user['locked_until']) && strtotime($user['locked_until']) > time()) {
+                            $unlockAt = date('H:i:s', strtotime($user['locked_until']));
+                            error_log("[USER LOGIN] Account locked: {$formattedValue} until {$user['locked_until']}");
+                            $error = "Account temporarily locked due to repeated failed attempts. Try again after {$unlockAt}.";
+                        } elseif (!$user || (int)$user['verified'] !== 1) {
+                            $error = "Invalid login credentials.";
+                            error_log("[USER LOGIN] User not found or not verified");
+                        } elseif (!password_verify($pin, $user['password_hash'])) {
+                            $error = "Invalid PIN.";
+                            error_log("[USER LOGIN] PIN verification failed for {$formattedValue}");
+
+                            // --- INCREMENT FAILURE COUNTER (ADDED) ---
+                            $newCount = (int)($user['failed_login_attempts'] ?? 0) + 1;
+                            $maxAttempts = 5;
+                            $lockMinutes = 15;
+                            try {
+                                if ($newCount >= $maxAttempts) {
+                                    $lockStmt = $db->prepare("
+                                        UPDATE users SET failed_login_attempts = :c,
+                                            locked_until = NOW() + (:m || ' minutes')::interval
+                                        WHERE user_id = :id
+                                    ");
+                                    $lockStmt->execute([':c' => $newCount, ':m' => $lockMinutes, ':id' => $user['user_id']]);
+                                    error_log("[USER LOGIN] Account locked for {$formattedValue} for {$lockMinutes} minutes");
+                                } else {
+                                    $incStmt = $db->prepare("UPDATE users SET failed_login_attempts = :c WHERE user_id = :id");
+                                    $incStmt->execute([':c' => $newCount, ':id' => $user['user_id']]);
+                                }
+                            } catch (\Throwable $e) {
+                                error_log("[USER LOGIN] Failed to record PIN attempt: " . $e->getMessage());
+                            }
+                        } else {
+                            // --- RESET ON SUCCESS (ADDED) ---
+                            try {
+                                $resetStmt = $db->prepare("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE user_id = :id");
+                                $resetStmt->execute([':id' => $user['user_id']]);
+                                error_log("[USER LOGIN] Reset failed attempts for {$formattedValue}");
+                            } catch (\Throwable $e) {
+                                error_log("[USER LOGIN] Failed to reset PIN attempts: " . $e->getMessage());
+                            }
+
+                            session_regenerate_id(true);
+
+                            SessionManager::setUser([
+                                'user_id'     => $user['user_id'],
+                                'username'    => $user['username'] ?? '',
+                                'full_name'   => $user['full_name'] ?? $user['username'],
+                                'phone'       => $user['phone'],
+                                'phone2'      => $user['phone2'] ?? null,
+                                'phone3'      => $user['phone3'] ?? null,
+                                'email'       => $user['email'] ?? null,
+                                'national_id' => $user['national_id'] ?? null,
+                                'drivers_license' => $user['drivers_license'] ?? null,
+                                'passport'    => $user['passport'] ?? null,
+                                'role'        => 'USER',
+                                'country'     => $systemCountry,
+                                'created_at'  => $user['created_at'] ?? null,
+                                'pin_enabled' => (int)($user['pin_enabled'] ?? 0) === 1
+                            ]);
+
+                            error_log("[USER LOGIN] PIN LOGIN SUCCESS: {$formattedValue}");
+                            header('Location: user_dashboard.php');
+                            exit();
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    error_log("[USER LOGIN] PIN LOGIN QUERY ERROR: " . $e->getMessage());
+                    error_log("[USER LOGIN] Stack trace: " . $e->getTraceAsString());
+                    $error = "System error. Please try again.";
+                }
+            }
+        } else {
+            // PHONE/IDENTIFIER LOGIN (NO PASSWORD/PIN - just lookup)
+            if ($rawInput === '') {
+                $error = "Identifier is required.";
+                error_log("[USER LOGIN] Missing identifier");
+            } else {
+                try {
+                    $tableCheck = $db->query("SELECT 1 FROM users LIMIT 1");
+                    if (!$tableCheck) {
+                        error_log("[USER LOGIN] Users table may not exist");
+                        $error = "System configuration error. Please contact support.";
+                    } else {
+                        // Search ALL identifier columns - no lockout needed (no secret being guessed)
+                        $stmt = $db->prepare("
+                            SELECT user_id, phone, phone2, phone3, email, 
+                                   national_id, drivers_license, passport,
+                                   username, full_name, created_at, verified, 
+                                   has_transaction_pin as pin_enabled
+                            FROM users
+                            WHERE phone = :identifier
+                               OR phone2 = :identifier
+                               OR phone3 = :identifier
+                               OR email = :identifier
+                               OR national_id = :identifier
+                               OR drivers_license = :identifier
+                               OR passport = :identifier
+                            LIMIT 1
+                        ");
+                        $stmt->execute([':identifier' => $formattedValue]);
+                        $user = $stmt->fetch(\PDO::FETCH_ASSOC);
+                        
+                        error_log("[USER LOGIN] User found: " . ($user ? 'YES' : 'NO'));
+
+                        if (!$user || (int)$user['verified'] !== 1) {
+                            $error = "Invalid login credentials.";
+                            error_log("[USER LOGIN] User not found or not verified");
+                        } else {
+                            session_regenerate_id(true);
+
+                            SessionManager::setUser([
+                                'user_id'     => $user['user_id'],
+                                'username'    => $user['username'] ?? '',
+                                'full_name'   => $user['full_name'] ?? $user['username'],
+                                'phone'       => $user['phone'],
+                                'phone2'      => $user['phone2'] ?? null,
+                                'phone3'      => $user['phone3'] ?? null,
+                                'email'       => $user['email'] ?? null,
+                                'national_id' => $user['national_id'] ?? null,
+                                'drivers_license' => $user['drivers_license'] ?? null,
+                                'passport'    => $user['passport'] ?? null,
+                                'role'        => 'USER',
+                                'country'     => $systemCountry,
+                                'created_at'  => $user['created_at'] ?? null,
+                                'pin_enabled' => (int)($user['pin_enabled'] ?? 0) === 1
+                            ]);
+
+                            error_log("[USER LOGIN] IDENTIFIER LOGIN SUCCESS: {$formattedValue}");
+                            header('Location: user_dashboard.php');
+                            exit();
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    error_log("[USER LOGIN] IDENTIFIER LOGIN QUERY ERROR: " . $e->getMessage());
+                    error_log("[USER LOGIN] Stack trace: " . $e->getTraceAsString());
+                    $error = "System error. Please try again.";
+                }
+            }
+        }
+    } // close rate-limit else
 }
 ?>
 <!DOCTYPE html>
