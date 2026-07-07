@@ -1,10 +1,9 @@
 <?php
-// public/user/dashboard.php - REDESIGNED v2
+// public/user/dashboard.php - REDESIGNED v3
 // Philosophy: ask WHO and HOW MUCH. Resolve asset type/delivery mode
 // silently whenever there's only one real answer for that institution;
 // only surface a choice when the institution genuinely offers more than
-// one option. Fluid scaling from phone to large-screen/TV via clamp(),
-// not fixed breakpoints - type and spacing grow continuously.
+// one option. Fluid scaling from phone to large-screen/TV via clamp().
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
@@ -70,9 +69,7 @@ try {
 }
 
 // ============================================================
-// FIXED PARSER: indentation-depth aware, not a flag that never
-// resets. Prevents asset_types from silently absorbing bullets
-// from routing/limits/cross_border blocks.
+// FIXED PARSER: indentation-depth aware
 // ============================================================
 function parseParticipantsYaml($path) {
     $participants = [];
@@ -128,9 +125,12 @@ AssetTypeRegistry::initialize();
 $allAssetTypes = AssetTypeRegistry::all();
 $assetFieldsMap = [];
 $assetUIMap = [];
+$assetDeliveryModes = [];
+
 foreach ($allAssetTypes as $code => $cfg) {
     $assetFieldsMap[$code] = $cfg['fields'] ?? [];
     $assetUIMap[$code] = $cfg['ui'] ?? [];
+    $assetDeliveryModes[$code] = $cfg['delivery_modes'] ?? ['deposit', 'cashout'];
 }
 
 $cloudBalances = [];
@@ -179,17 +179,11 @@ $identifiersJson = json_encode($validIdentifiers);
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VouchMorph | <?= htmlspecialchars($countryName) ?></title>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-/* ============================================================
-   TOKENS
-   ============================================================ */
 :root {
     --ink: #121212; --paper: #F7F5F0; --panel: #FFFFFF;
     --cobalt: #2440FF; --amber: #FFB400; --forest: #14804A; --line: #D8D4CB;
-    /* Fluid scale: grows continuously from phone (~360px) to TV (~2000px+).
-       No fixed breakpoints for typography/spacing - only layout structure
-       (grid columns) changes at breakpoints; scale itself is continuous. */
     --fs-body: clamp(0.95rem, 0.85rem + 0.3vw, 1.25rem);
     --fs-label: clamp(0.7rem, 0.65rem + 0.15vw, 0.9rem);
     --fs-h1: clamp(1.3rem, 1rem + 1.2vw, 2.4rem);
@@ -208,14 +202,9 @@ body {
 }
 .font-display { font-family: 'Space Grotesk', sans-serif; }
 button, input, select { font-family: inherit; font-size: inherit; }
-button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible {
-    outline: 3px solid var(--cobalt); outline-offset: 2px;
-}
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--cobalt); outline-offset: 2px; }
 .clip { clip-path: polygon(0 0, calc(100% - var(--clip)) 0, 100% var(--clip), 100% 100%, 0 100%); }
 
-/* ============================================================
-   SHELL - fluid max-width, centered, scales up for large screens
-   ============================================================ */
 .shell { max-width: min(1400px, 92vw); margin: 0 auto; }
 .topbar {
     background: var(--ink); color: var(--paper);
@@ -238,10 +227,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 
 .home { padding: calc(var(--space-unit) * 1.5) 0 calc(var(--space-unit) * 3); }
 
-/* ============================================================
-   PRIMARY ACTION - the ONE thing that matters most: pay someone.
-   Big, unmistakable, keyboard/remote-navigable.
-   ============================================================ */
 .pay-hero {
     width: 100%; display: flex; align-items: center; justify-content: space-between;
     padding: calc(var(--space-unit) * 1.4) calc(var(--space-unit) * 1.6);
@@ -264,7 +249,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .cloud-strip .label { font-size: var(--fs-label); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.65; }
 .cloud-strip .amount { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: var(--fs-h1); }
 
-/* Secondary shortcuts - fluid grid: 2 cols on phone, up to 4 on wide screens */
 .shortcut-grid {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
     gap: calc(var(--space-unit) * 0.7); margin-bottom: calc(var(--space-unit) * 1.5);
@@ -281,8 +265,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 
 .section-title { font-size: var(--fs-label); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.5; margin: calc(var(--space-unit) * 1.2) 0 0.6em; }
 
-/* Recent activity: hidden inline on narrow screens (link only), shown
-   inline as a real list on wide screens - progressive disclosure. */
 .activity-inline { display: none; }
 .activity-link { display: flex; align-items: center; justify-content: space-between; padding: 0.9em 0; border-top: 2px solid var(--line); cursor: pointer; font-weight: 500; }
 @media (min-width: 900px) {
@@ -296,9 +278,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .history-item .status { font-size: var(--fs-label); }
 .history-item .status.completed { color: var(--forest); }
 
-/* ============================================================
-   PANELS - full screen overlay, fluid width cap
-   ============================================================ */
 .panel-overlay { display: none; position: fixed; inset: 0; background: var(--paper); z-index: 1000; overflow-y: auto; }
 .panel-overlay.active { display: block; }
 .panel-header {
@@ -312,16 +291,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .panel-header .title { font-family: 'Space Grotesk', sans-serif; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; font-size: var(--fs-h2); }
 .panel-body { max-width: min(900px, 92vw); margin: 0 auto; padding: calc(var(--space-unit) * 1.5) 0 calc(var(--space-unit) * 3); }
 
-/* Step progress - simple dots, since flow is now 2-3 steps max */
 .step-dots { display: flex; gap: 0.5em; margin-bottom: var(--space-unit); }
 .step-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
 .step-dot.active { background: var(--cobalt); width: 24px; border-radius: 4px; }
 .step-dot.done { background: var(--forest); }
 
-/* ============================================================
-   WHO PICKER - the first real screen. Big searchable list of
-   institutions, each showing what it actually supports.
-   ============================================================ */
 .who-search {
     width: 100%; padding: 1em 1.1em; background: var(--panel); border: 2px solid var(--line);
     font-size: var(--fs-h2); margin-bottom: var(--space-unit); outline: none;
@@ -341,9 +315,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .who-card .name { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: var(--fs-h2); }
 .who-card .assets { font-size: var(--fs-label); opacity: 0.45; margin-top: 0.2em; }
 
-/* ============================================================
-   AMOUNT STEP - big, dominant number entry (UPI/PayNow style)
-   ============================================================ */
 .amount-stage { text-align: center; padding: calc(var(--space-unit) * 1.5) 0; }
 .amount-currency { font-size: var(--fs-h2); opacity: 0.4; font-family: 'Space Grotesk', sans-serif; }
 .amount-input {
@@ -359,19 +330,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 }
 .quick-amount:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 
-/* Only shown when an institution genuinely has more than one asset type */
 .asset-choice { display: flex; gap: 0.6em; justify-content: center; flex-wrap: wrap; margin-top: var(--space-unit); }
 .asset-pill {
     padding: 0.6em 1.2em; background: var(--panel); border: 2px solid var(--line);
-    cursor: pointer; font-weight: 500; transition: all 0.15s;
+    cursor: pointer; font-weight: 600; transition: all 0.15s; font-size: var(--fs-label);
 }
+.asset-pill:hover { border-color: var(--ink); }
 .asset-pill.active { background: var(--cobalt); border-color: var(--cobalt); color: var(--paper); }
 
 .field { margin: 0 0 var(--space-unit); }
 .field-label { font-size: var(--fs-label); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.55; margin-bottom: 0.4em; }
 .text-input, select.text-input {
     width: 100%; padding: 0.9em 1em; background: var(--panel); border: 2px solid var(--line);
-    outline: none; transition: border-color 0.2s;
+    outline: none; transition: border-color 0.2s; font-size: var(--fs-body);
 }
 .text-input:focus { border-color: var(--cobalt); }
 .info-note { padding: 0.9em 1.1em; background: rgba(36,64,255,0.06); border-left: 3px solid var(--cobalt); font-size: var(--fs-label); line-height: 1.5; margin: 0.6em 0 var(--space-unit); }
@@ -389,9 +360,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
     font-weight: 600; cursor: pointer; min-height: var(--tap-min);
 }
 
-/* ============================================================
-   CONFIRM / DONE
-   ============================================================ */
 .confirm-box { padding: calc(var(--space-unit) * 1.2); background: var(--panel); border: 2px solid var(--ink); margin-bottom: var(--space-unit); }
 .confirm-row { display: flex; justify-content: space-between; padding: 0.6em 0; }
 .confirm-row .label { opacity: 0.5; font-size: var(--fs-label); }
@@ -411,17 +379,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .code-label { font-size: var(--fs-label); text-transform: uppercase; opacity: 0.5; }
 .code-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: var(--fs-code); letter-spacing: 0.1em; }
 
-/* Pool sources */
 .source-entry { background: var(--panel); border: 2px solid var(--line); padding: calc(var(--space-unit) * 0.9); margin-bottom: 0.7em; }
 .source-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.7em; }
 .source-header .num { font-size: var(--fs-label); font-weight: 700; opacity: 0.5; }
 .source-header button { background: none; border: none; opacity: 0.35; cursor: pointer; font-size: 1.1em; }
-.add-source-btn { width: 100%; padding: 0.9em; background: transparent; border: 2px dashed var(--line); cursor: pointer; }
+.add-source-btn { width: 100%; padding: 0.9em; background: transparent; border: 2px dashed var(--line); cursor: pointer; font-weight: 600; }
 .add-source-btn:hover { border-color: var(--ink); }
 .source-summary { padding: 0.8em 1em; background: rgba(36,64,255,0.05); border: 1px solid rgba(36,64,255,0.2); margin-top: 0.7em; }
 .source-summary .total { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: var(--fs-h2); color: var(--cobalt); }
 
-/* Identifier grid */
 .identifier-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.8em; }
 .identifier-card { background: var(--panel); border: 2px solid var(--line); padding: 1em; text-align: center; }
 .identifier-card .icon { font-size: clamp(1.3rem, 1vw + 1rem, 2rem); display: block; margin-bottom: 0.3em; }
@@ -444,9 +410,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinner { display: inline-block; width: 1.4em; height: 1.4em; border: 3px solid var(--line); border-top-color: var(--ink); border-radius: 50%; animation: spin 0.8s linear infinite; }
 
-/* Large-screen / TV refinement: once viewport is very wide, cap line
-   length further and give shortcuts more breathing room so it doesn't
-   just look like a stretched phone screen. */
 @media (min-width: 1400px) {
     .shortcut-grid { grid-template-columns: repeat(4, 1fr); }
 }
@@ -469,24 +432,23 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
         <span style="font-size:1.4em;">›</span>
     </div>
 
-    <!-- PRIMARY: the one action that matters -->
     <button class="pay-hero clip" onclick="openFlow('send')">
-        <div><div class="label">Pay someone</div><div class="sub">Type who, then how much</div></div>
+        <div><div class="label">PAY SOMEONE</div><div class="sub">Type who, then how much</div></div>
         <span class="arrow">→</span>
     </button>
 
     <div class="shortcut-grid">
         <div class="shortcut-tile clip" onclick="openFlow('cashout')" tabindex="0">
-            <span class="icon">💵</span><div class="label">Cashout</div><div class="desc">Get cash, no deposit needed</div>
+            <span class="icon">💵</span><div class="label">CASHOUT</div><div class="desc">Get cash, no deposit needed</div>
         </div>
         <div class="shortcut-tile clip" onclick="openFlow('identity')" tabindex="0">
-            <span class="icon">🔐</span><div class="label">To identity</div><div class="desc">They choose how to receive it</div>
+            <span class="icon">🔐</span><div class="label">TO IDENTITY</div><div class="desc">They choose how to receive it</div>
         </div>
         <div class="shortcut-tile clip" onclick="openFlow('pool')" tabindex="0">
-            <span class="icon">📦</span><div class="label">Combine sources</div><div class="desc">Use several accounts at once</div>
+            <span class="icon">📦</span><div class="label">COMBINE SOURCES</div><div class="desc">Use several accounts at once</div>
         </div>
         <div class="shortcut-tile clip" onclick="openPanel('identifiers')" tabindex="0">
-            <span class="icon">🔑</span><div class="label">Your identifiers</div><div class="desc">What people can send to</div>
+            <span class="icon">🔑</span><div class="label">YOUR IDENTIFIERS</div><div class="desc">What people can send to</div>
         </div>
     </div>
 
@@ -495,7 +457,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
     </div>
 
     <div class="activity-inline">
-        <div class="section-title">Recent activity</div>
+        <div class="section-title">RECENT ACTIVITY</div>
         <?php if (empty($recentSwaps)): ?>
             <div style="opacity:0.4; padding: 0.6em 0;">No activity yet.</div>
         <?php else: foreach ($recentSwaps as $swap): ?>
@@ -515,7 +477,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 <div id="flowPanel" class="panel-overlay">
     <div class="panel-header"><div class="panel-header-inner">
         <button onclick="flowBack()" aria-label="Back">‹</button>
-        <span class="title" id="flowTitle">Pay</span>
+        <span class="title" id="flowTitle">PAY</span>
         <button onclick="closeFlow()" aria-label="Close">✕</button>
     </div></div>
     <div class="panel-body" id="flowBody"></div>
@@ -524,7 +486,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 <!-- CLOUD / HISTORY / IDENTIFIERS PANELS -->
 <div id="cloudPanel" class="panel-overlay">
     <div class="panel-header"><div class="panel-header-inner">
-        <button onclick="closePanel('cloud')">‹</button><span class="title">Waiting for you</span><button onclick="closePanel('cloud')">✕</button>
+        <button onclick="closePanel('cloud')">‹</button><span class="title">WAITING FOR YOU</span><button onclick="closePanel('cloud')">✕</button>
     </div></div>
     <div class="panel-body">
         <?php if (empty($cloudBalances)): ?>
@@ -540,7 +502,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 
 <div id="historyPanel" class="panel-overlay">
     <div class="panel-header"><div class="panel-header-inner">
-        <button onclick="closePanel('history')">‹</button><span class="title">Recent activity</span><button onclick="closePanel('history')">✕</button>
+        <button onclick="closePanel('history')">‹</button><span class="title">RECENT ACTIVITY</span><button onclick="closePanel('history')">✕</button>
     </div></div>
     <div class="panel-body">
         <?php if (empty($recentSwaps)): ?>
@@ -556,7 +518,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 
 <div id="identifiersPanel" class="panel-overlay">
     <div class="panel-header"><div class="panel-header-inner">
-        <button onclick="closePanel('identifiers')">‹</button><span class="title">Your identifiers</span><button onclick="closePanel('identifiers')">✕</button>
+        <button onclick="closePanel('identifiers')">‹</button><span class="title">YOUR IDENTIFIERS</span><button onclick="closePanel('identifiers')">✕</button>
     </div></div>
     <div class="panel-body">
         <?php if (empty($validIdentifiers)): ?>
@@ -573,12 +535,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 
 <div id="confirmModal" class="modal-overlay">
     <div class="modal-box">
-        <h2>Confirm</h2>
+        <h2>CONFIRM</h2>
         <div id="modalDetails"><div style="text-align:center;padding:1.5em;"><span class="spinner"></span><br><br>Calculating fees...</div></div>
         <div id="modalError" class="modal-error"></div>
         <div class="modal-actions">
-            <button class="btn-cancel" onclick="closeConfirm()">Cancel</button>
-            <button id="confirmBtn" class="btn-confirm">Confirm</button>
+            <button class="btn-cancel" onclick="closeConfirm()">CANCEL</button>
+            <button id="confirmBtn" class="btn-confirm">CONFIRM</button>
         </div>
     </div>
 </div>
@@ -587,6 +549,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 const participants = <?= json_encode($participantOptions) ?>;
 const assetFields = <?= json_encode($assetFieldsMap) ?>;
 const assetUI = <?= json_encode($assetUIMap) ?>;
+const assetDeliveryModes = <?= json_encode($assetDeliveryModes) ?>;
 const currencySymbol = '<?= $currencySymbol ?>';
 const currency = '<?= $currency ?>';
 const userIdentifiers = <?= $identifiersJson ?>;
@@ -596,18 +559,33 @@ const apiKey = '<?= $apiKey ?>';
 const loggedPhone = '<?= htmlspecialchars($primaryIdentifier) ?>';
 
 const badgeMap = { BANK: '🏦', MNO: '📱', ORCHESTRATOR: '⚙️' };
-const assetLabel = { ACCOUNT: 'Account', WALLET: 'Wallet', 'MNO-WALLET': 'Mobile wallet', 'BANK-WALLET': 'Bank wallet', VOUCHER: 'Voucher', CARD: 'Card', ATM: 'ATM' };
+const assetLabel = { ACCOUNT: 'ACCOUNT', WALLET: 'WALLET', 'MNO-WALLET': 'MOBILE WALLET', 'BANK-WALLET': 'BANK WALLET', VOUCHER: 'VOUCHER', CARD: 'CARD', ATM: 'ATM' };
+
+// ============================================================
+// FILTERING FUNCTIONS - source vs destination aware
+// ============================================================
+function getDepositCapableAssets(instCode) {
+    const raw = participants[instCode]?.asset_types || ['ACCOUNT'];
+    return raw.filter(a => (assetDeliveryModes[a] || ['deposit']).includes('deposit'));
+}
+function getCashoutCapableAssets(instCode) {
+    const raw = participants[instCode]?.asset_types || ['ACCOUNT'];
+    return raw.filter(a => (assetDeliveryModes[a] || ['deposit']).includes('cashout'));
+}
+function getAllAssets(instCode) {
+    return participants[instCode]?.asset_types || ['ACCOUNT'];
+}
 
 // ============================================================
 // STATE
 // ============================================================
 let currentFlow = null;
-let step = 0; // 0 = who, 1 = amount/asset, 2 = confirm, 3 = done
-let selWho = null;        // institution code for send/cashout/pool destination
-let selAsset = null;      // resolved destination/source asset type
-let selFromInst = null;   // source institution (send/cashout/identity)
+let step = 0;
+let selWho = null;
+let selAsset = null;
+let selFromInst = null;
 let selFromAsset = null;
-let sources = [];         // pool: [{id, inst, asset, amount, ident}]
+let sources = [];
 let sourceCounter = 0;
 let identityType = 'phone';
 let pendingPayload = null, pendingResult = null, previewData = null;
@@ -625,7 +603,7 @@ function closeFlow() { document.getElementById('flowPanel').classList.remove('ac
 function flowBack() { if (step > 0) { step--; render(); } else closeFlow(); }
 
 function titleFor(flow) {
-    return { send: 'Pay someone', cashout: 'Cashout', identity: 'Send to identity', pool: 'Combine sources' }[flow] || 'Pay';
+    return { send: 'PAY SOMEONE', cashout: 'CASHOUT', identity: 'TO IDENTITY', pool: 'COMBINE SOURCES' }[flow] || 'PAY';
 }
 
 function render() {
@@ -633,7 +611,6 @@ function render() {
     const body = document.getElementById('flowBody');
     if (currentFlow === 'pool') { body.innerHTML = renderPool(); return; }
     if (currentFlow === 'identity') { body.innerHTML = renderIdentity(); return; }
-    // send / cashout share the same who -> amount -> confirm -> done shape
     if (step === 0) body.innerHTML = renderWho();
     else if (step === 1) body.innerHTML = renderAmount();
     else if (step === 2) body.innerHTML = renderConfirmStep();
@@ -647,20 +624,26 @@ function dots(total, current) {
 }
 
 // ============================================================
-// STEP 0: WHO - search + list, showing real per-institution assets
+// STEP 0: WHO - filtered by delivery capability based on flow
 // ============================================================
 function renderWho() {
+    const isCashout = currentFlow === 'cashout';
+    const isPool = currentFlow === 'pool';
     const rows = Object.entries(participants).map(([code, p]) => {
         const badge = badgeMap[p.type] || '🏦';
-        const assets = p.asset_types.map(a => assetLabel[a] || a).join(' · ');
+        const assets = isCashout ? getCashoutCapableAssets(code) : getDepositCapableAssets(code);
+        if (assets.length === 0) return ''; // hide if no compatible assets
+        const assetDisplay = assets.map(a => assetLabel[a] || a).join(' · ');
         return `<div class="who-card" data-code="${code}" data-name="${p.name.toLowerCase()}" onclick="pickWho('${code}')" tabindex="0">
-            <div class="main"><span class="badge">${badge}</span><div><div class="name">${p.name}</div><div class="assets">${assets}</div></div></div>
+            <div class="main"><span class="badge">${badge}</span><div><div class="name">${p.name}</div><div class="assets">${assetDisplay}</div></div></div>
             <span style="opacity:0.3;font-size:1.2em;">›</span>
         </div>`;
-    }).join('');
+    }).filter(Boolean).join('');
+    const label = isCashout ? 'CASHOUT FROM' : (isPool ? 'PAY TO' : 'PAY TO');
     return `
         ${dots(3, 0)}
-        <input class="who-search" placeholder="Search bank or wallet..." oninput="filterWho(this.value)" autofocus>
+        <div style="font-weight:700;font-size:var(--fs-h2);margin-bottom:0.5em;">${label}</div>
+        <input class="who-search" placeholder="Search..." oninput="filterWho(this.value)" autofocus>
         <div class="who-list" id="whoList">${rows}</div>
     `;
 }
@@ -672,29 +655,33 @@ function filterWho(q) {
 }
 function pickWho(code) {
     selWho = code;
-    const assets = participants[code].asset_types;
-    selAsset = assets.length === 1 ? assets[0] : null; // auto-resolve if only one option
+    const isCashout = currentFlow === 'cashout';
+    const assets = isCashout ? getCashoutCapableAssets(code) : getDepositCapableAssets(code);
+    selAsset = assets.length === 1 ? assets[0] : null;
     step = 1;
     render();
 }
 
 // ============================================================
-// STEP 1: AMOUNT - dominant, only show asset choice if genuinely ambiguous
+// STEP 1: AMOUNT
 // ============================================================
 function renderAmount() {
     const p = participants[selWho];
-    const needsAssetChoice = p.asset_types.length > 1;
+    const isCashout = currentFlow === 'cashout';
+    const assets = isCashout ? getCashoutCapableAssets(selWho) : getDepositCapableAssets(selWho);
+    const needsAssetChoice = assets.length > 1;
     const assetChoiceHtml = needsAssetChoice ? `
+        <div style="font-weight:700;font-size:var(--fs-label);text-transform:uppercase;margin-top:var(--space-unit);opacity:0.5;">SELECT TYPE</div>
         <div class="asset-choice">
-            ${p.asset_types.map(a => `<button class="asset-pill ${selAsset===a?'active':''}" onclick="chooseAsset('${a}')">${assetLabel[a]||a}</button>`).join('')}
+            ${assets.map(a => `<button class="asset-pill ${selAsset===a?'active':''}" onclick="chooseAsset('${a}')">${assetLabel[a]||a}</button>`).join('')}
         </div>` : '';
 
-    const destFieldsHtml = currentFlow === 'cashout' ? `
-        <div class="field"><div class="field-label">Beneficiary phone</div>
+    const destFieldsHtml = isCashout ? `
+        <div class="field"><div class="field-label">BENEFICIARY PHONE</div>
             <input class="text-input" id="beneficiaryPhone" placeholder="+267 7X XXX XXX" value="${loggedPhone}"></div>
-        <div class="info-note">💳 They receive a withdrawal code via SMS.</div>
+        <div class="info-note">💳 They receive a withdrawal code via SMS. No destination account needed.</div>
     ` : `
-        <div class="field"><div class="field-label">${selAsset === 'ACCOUNT' ? 'Account number' : 'Recipient phone / identifier'}</div>
+        <div class="field"><div class="field-label">${selAsset === 'ACCOUNT' ? 'ACCOUNT NUMBER' : 'RECIPIENT IDENTIFIER'}</div>
             <input class="text-input" id="destInput" placeholder="Enter identifier"></div>
     `;
 
@@ -709,22 +696,22 @@ function renderAmount() {
             ${assetChoiceHtml}
         </div>
         ${destFieldsHtml}
-        <div class="field"><div class="field-label">Send from</div>
+        <div class="field"><div class="field-label">SEND FROM</div>
             <select class="text-input" id="fromSelect" onchange="onFromChange()">
-                <option value="">Select institution</option>
+                <option value="">SELECT INSTITUTION</option>
                 ${Object.entries(participants).map(([c,pp])=>`<option value="${c}">${pp.name}</option>`).join('')}
             </select>
         </div>
         <div id="fromAssetField"></div>
-        <div class="field"><div class="field-label">Your identifier</div>
+        <div class="field"><div class="field-label">YOUR IDENTIFIER</div>
             <select class="text-input" id="sourceIdentifier">
-                <option value="">Select</option>
+                <option value="">SELECT</option>
                 ${userIdentifiers.map(id=>`<option value="${id.value}">${id.icon} ${id.value}</option>`).join('')}
             </select>
         </div>
-        <div class="field"><div class="field-label">Your PIN</div>
+        <div class="field"><div class="field-label">YOUR PIN</div>
             <input type="password" class="text-input" id="pinInput" placeholder="••••" autocomplete="new-password"></div>
-        <button class="btn-primary" onclick="goConfirm()">Review →</button>
+        <button class="btn-primary" onclick="goConfirm()">REVIEW →</button>
     `;
 }
 function chooseAsset(a) {
@@ -733,11 +720,11 @@ function chooseAsset(a) {
 }
 function onFromChange() {
     selFromInst = document.getElementById('fromSelect').value;
-    const assets = participants[selFromInst]?.asset_types || ['ACCOUNT'];
+    const assets = getAllAssets(selFromInst);
     selFromAsset = assets.length === 1 ? assets[0] : null;
     const container = document.getElementById('fromAssetField');
     if (assets.length > 1) {
-        container.innerHTML = `<div class="field"><div class="field-label">Your asset type</div>
+        container.innerHTML = `<div class="field"><div class="field-label">YOUR ASSET TYPE</div>
             <div class="asset-choice" style="justify-content:flex-start;">
                 ${assets.map(a=>`<button type="button" class="asset-pill" onclick="selFromAsset='${a}'; this.parentElement.querySelectorAll('.asset-pill').forEach(x=>x.classList.remove('active')); this.classList.add('active')">${assetLabel[a]||a}</button>`).join('')}
             </div></div>`;
@@ -745,24 +732,24 @@ function onFromChange() {
         container.innerHTML = '';
     }
 }
-function updateSummary() {} // reserved for live summary if needed later
+function updateSummary() {}
 
 // ============================================================
-// IDENTITY FLOW (kept simple - already minimal by design)
+// IDENTITY FLOW
 // ============================================================
 function renderIdentity() {
     if (step === 0) {
         return `
             ${dots(3,0)}
             <div class="info-note">🔐 Funds are held against this identity. The recipient chooses cashout or deposit later — fees are set at that point, not now.</div>
-            <div class="field"><div class="field-label">They identify by</div>
+            <div class="field"><div class="field-label">THEY IDENTIFY BY</div>
                 <div class="asset-choice" style="justify-content:flex-start;">
-                    <button class="asset-pill active" onclick="identityType='phone';this.parentElement.querySelectorAll('.asset-pill').forEach(x=>x.classList.remove('active'));this.classList.add('active')">Phone</button>
-                    <button class="asset-pill" onclick="identityType='national_id';this.parentElement.querySelectorAll('.asset-pill').forEach(x=>x.classList.remove('active'));this.classList.add('active')">National ID</button>
-                    <button class="asset-pill" onclick="identityType='email';this.parentElement.querySelectorAll('.asset-pill').forEach(x=>x.classList.remove('active'));this.classList.add('active')">Email</button>
+                    <button class="asset-pill active" onclick="identityType='phone';this.parentElement.querySelectorAll('.asset-pill').forEach(x=>x.classList.remove('active'));this.classList.add('active')">PHONE</button>
+                    <button class="asset-pill" onclick="identityType='national_id';this.parentElement.querySelectorAll('.asset-pill').forEach(x=>x.classList.remove('active'));this.classList.add('active')">NATIONAL ID</button>
+                    <button class="asset-pill" onclick="identityType='email';this.parentElement.querySelectorAll('.asset-pill').forEach(x=>x.classList.remove('active'));this.classList.add('active')">EMAIL</button>
                 </div></div>
-            <div class="field"><div class="field-label">Value</div><input class="text-input" id="identityValue" placeholder="Enter phone, ID or email"></div>
-            <button class="btn-primary" onclick="step=1;render()">Next →</button>
+            <div class="field"><div class="field-label">VALUE</div><input class="text-input" id="identityValue" placeholder="Enter phone, ID or email"></div>
+            <button class="btn-primary" onclick="step=1;render()">NEXT →</button>
         `;
     }
     if (step === 1) {
@@ -773,18 +760,18 @@ function renderIdentity() {
                 <input type="number" class="amount-input" id="amountInput" placeholder="0">
                 <div class="quick-amounts">${[50,100,200,500,1000].map(a=>`<span class="quick-amount" onclick="document.getElementById('amountInput').value=${a}">${a}</span>`).join('')}</div>
             </div>
-            <div class="field"><div class="field-label">Send from</div>
+            <div class="field"><div class="field-label">SEND FROM</div>
                 <select class="text-input" id="fromSelect" onchange="onFromChange()">
-                    <option value="">Select institution</option>
+                    <option value="">SELECT INSTITUTION</option>
                     ${Object.entries(participants).map(([c,pp])=>`<option value="${c}">${pp.name}</option>`).join('')}
                 </select></div>
             <div id="fromAssetField"></div>
-            <div class="field"><div class="field-label">Your identifier</div>
-                <select class="text-input" id="sourceIdentifier"><option value="">Select</option>
+            <div class="field"><div class="field-label">YOUR IDENTIFIER</div>
+                <select class="text-input" id="sourceIdentifier"><option value="">SELECT</option>
                     ${userIdentifiers.map(id=>`<option value="${id.value}">${id.icon} ${id.value}</option>`).join('')}</select></div>
-            <div class="field"><div class="field-label">Your PIN</div>
+            <div class="field"><div class="field-label">YOUR PIN</div>
                 <input type="password" class="text-input" id="pinInput" placeholder="••••" autocomplete="new-password"></div>
-            <button class="btn-primary" onclick="goConfirm()">Review →</button>
+            <button class="btn-primary" onclick="goConfirm()">REVIEW →</button>
         `;
     }
     if (step === 2) return renderConfirmStep();
@@ -792,28 +779,43 @@ function renderIdentity() {
 }
 
 // ============================================================
-// POOL FLOW - destination asset now genuinely filtered per institution
+// POOL FLOW
 // ============================================================
 function renderPool() {
-    if (step === 0) return renderWho(); // reuse who-picker for destination
+    if (step === 0) {
+        const rows = Object.entries(participants).map(([code, p]) => {
+            const assets = getDepositCapableAssets(code);
+            if (assets.length === 0) return '';
+            const assetDisplay = assets.map(a => assetLabel[a] || a).join(' · ');
+            return `<div class="who-card" data-code="${code}" data-name="${p.name.toLowerCase()}" onclick="pickWho('${code}')" tabindex="0">
+                <div class="main"><span class="badge">${badgeMap[p.type]||'🏦'}</span><div><div class="name">${p.name}</div><div class="assets">${assetDisplay}</div></div></div>
+                <span style="opacity:0.3;font-size:1.2em;">›</span>
+            </div>`;
+        }).filter(Boolean).join('');
+        return `
+            ${dots(3,0)}
+            <div style="font-weight:700;font-size:var(--fs-h2);margin-bottom:0.5em;">PAY TO</div>
+            <input class="who-search" placeholder="Search..." oninput="filterWho(this.value)" autofocus>
+            <div class="who-list" id="whoList">${rows}</div>
+        `;
+    }
     if (step === 1) {
-        const p = participants[selWho];
-        const needsAssetChoice = p.asset_types.length > 1;
+        const assets = getDepositCapableAssets(selWho);
         return `
             ${dots(3,1)}
-            <div class="field"><div class="field-label">Paying ${p.name} — destination type</div>
+            <div class="field"><div class="field-label">PAYING ${participants[selWho]?.name} — DESTINATION TYPE</div>
                 <div class="asset-choice" style="justify-content:flex-start;">
-                    ${p.asset_types.map(a=>`<button class="asset-pill ${selAsset===a?'active':''}" onclick="chooseAsset('${a}')">${assetLabel[a]||a}</button>`).join('')}
+                    ${assets.map(a=>`<button class="asset-pill ${selAsset===a?'active':''}" onclick="chooseAsset('${a}')">${assetLabel[a]||a}</button>`).join('')}
                 </div></div>
-            <div class="field"><div class="field-label">${selAsset==='ACCOUNT'?'Account number':'Identifier'}</div>
+            <div class="field"><div class="field-label">${selAsset==='ACCOUNT'?'ACCOUNT NUMBER':'IDENTIFIER'}</div>
                 <input class="text-input" id="destInput" placeholder="Enter identifier"></div>
-            <div class="section-title">Sources (2+ required)</div>
+            <div style="font-weight:700;font-size:var(--fs-label);text-transform:uppercase;margin:var(--space-unit) 0 0.6em;opacity:0.5;">SOURCES (2+ REQUIRED)</div>
             <div id="sourceEntries"></div>
-            <button class="add-source-btn" onclick="addSource()">+ Add source</button>
-            <div class="source-summary"><div>Total: <span class="total" id="totalSourceAmount">${currencySymbol} 0.00</span></div></div>
-            <div class="field" style="margin-top:1em;"><div class="field-label">Your PIN</div>
+            <button class="add-source-btn" onclick="addSource()">+ ADD SOURCE</button>
+            <div class="source-summary"><div>TOTAL: <span class="total" id="totalSourceAmount">${currencySymbol} 0.00</span></div></div>
+            <div class="field" style="margin-top:1em;"><div class="field-label">YOUR PIN</div>
                 <input type="password" class="text-input" id="pinInput" placeholder="••••" autocomplete="new-password"></div>
-            <button class="btn-primary" onclick="goConfirm()">Review →</button>
+            <button class="btn-primary" onclick="goConfirm()">REVIEW →</button>
         `;
     }
     if (step === 2) return renderConfirmStep();
@@ -825,14 +827,14 @@ function addSource() {
     const entry = document.createElement('div');
     entry.className = 'source-entry'; entry.id = id;
     entry.innerHTML = `
-        <div class="source-header"><span class="num">Source ${sourceCounter}</span><button onclick="removeSource('${id}')">✕</button></div>
+        <div class="source-header"><span class="num">SOURCE ${sourceCounter}</span><button onclick="removeSource('${id}')">✕</button></div>
         <select class="text-input" id="${id}_inst" onchange="onSourceInstChange('${id}')" style="margin-bottom:0.6em;">
-            <option value="">Select institution</option>
+            <option value="">SELECT INSTITUTION</option>
             ${Object.entries(participants).map(([c,p])=>`<option value="${c}">${p.name}</option>`).join('')}
         </select>
         <div id="${id}_assetField"></div>
-        <input type="number" class="text-input" id="${id}_amount" placeholder="Amount (${currencySymbol})" style="margin:0.6em 0;" oninput="updatePoolTotal()">
-        <select class="text-input" id="${id}_ident"><option value="">Your identifier</option>
+        <input type="number" class="text-input" id="${id}_amount" placeholder="AMOUNT (${currencySymbol})" style="margin:0.6em 0;" oninput="updatePoolTotal()">
+        <select class="text-input" id="${id}_ident"><option value="">YOUR IDENTIFIER</option>
             ${userIdentifiers.map(u=>`<option value="${u.value}">${u.icon} ${u.value}</option>`).join('')}</select>
     `;
     document.getElementById('sourceEntries').appendChild(entry);
@@ -846,7 +848,7 @@ function removeSource(id) {
 }
 function onSourceInstChange(id) {
     const inst = document.getElementById(id + '_inst').value;
-    const assets = participants[inst]?.asset_types || ['ACCOUNT'];
+    const assets = getAllAssets(inst);
     const field = document.getElementById(id + '_assetField');
     const s = sources.find(x => x.id === id);
     if (s) { s.inst = inst; s.asset = assets.length === 1 ? assets[0] : null; }
@@ -867,7 +869,7 @@ function updatePoolTotal() {
 }
 
 // ============================================================
-// CONFIRM / EXECUTE (shared across all flows)
+// CONFIRM / EXECUTE
 // ============================================================
 function buildPayload() {
     const payload = { reference: 'SWAP_' + Date.now(), idempotency_key: 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2,8), currency };
@@ -923,12 +925,12 @@ function buildPayload() {
 
 function goConfirm() {
     const pin = document.getElementById('pinInput')?.value;
-    if (!pin || pin.length < 4) { alert('Enter your PIN'); return; }
+    if (!pin || pin.length < 4) { alert('ENTER YOUR PIN'); return; }
     if (currentFlow === 'pool') {
-        if (sources.length < 2) { alert('Add at least 2 sources'); return; }
-        for (const s of sources) if (!s.inst || !s.asset) { alert('Complete every source'); return; }
+        if (sources.length < 2) { alert('ADD AT LEAST 2 SOURCES'); return; }
+        for (const s of sources) if (!s.inst || !s.asset) { alert('COMPLETE EVERY SOURCE'); return; }
     } else if (currentFlow !== 'identity') {
-        if (!selFromInst) { alert('Select source institution'); return; }
+        if (!selFromInst) { alert('SELECT SOURCE INSTITUTION'); return; }
     }
     pendingPayload = buildPayload();
     step = 2; render();
@@ -949,19 +951,19 @@ async function showConfirm(payload) {
         const netAmount = p.net_amount_destination_currency || p.amount || 0;
         document.getElementById('confirmInline').innerHTML = `
             <div class="confirm-box">
-                <div class="confirm-row"><span class="label">Route</span><span>${p.source_institution||'?'} → ${p.destination_institution||'?'}</span></div>
-                <div class="confirm-row"><span class="label">Amount</span><span>${(p.amount_requested||p.amount||0).toFixed(2)} ${p.source_currency||currency}</span></div>
-                <div class="confirm-row"><span class="label">Fee</span><span>${(p.total_fee||0).toFixed(2)} ${p.source_currency||currency}</span></div>
+                <div class="confirm-row"><span class="label">ROUTE</span><span>${p.source_institution||'?'} → ${p.destination_institution||'?'}</span></div>
+                <div class="confirm-row"><span class="label">AMOUNT</span><span>${(p.amount_requested||p.amount||0).toFixed(2)} ${p.source_currency||currency}</span></div>
+                <div class="confirm-row"><span class="label">FEE</span><span>${(p.total_fee||0).toFixed(2)} ${p.source_currency||currency}</span></div>
                 <div class="confirm-divider"></div>
-                <div class="confirm-row"><span class="label">Recipient gets</span><span class="value highlight">${netAmount.toFixed(2)} ${p.destination_currency||p.source_currency||currency}</span></div>
+                <div class="confirm-row"><span class="label">RECIPIENT GETS</span><span class="value highlight">${netAmount.toFixed(2)} ${p.destination_currency||p.source_currency||currency}</span></div>
             </div>
-            <button class="btn-primary" onclick="executeSwap()">Confirm & send</button>
+            <button class="btn-primary" onclick="executeSwap()">CONFIRM & SEND</button>
         `;
     } catch (err) {
-        document.getElementById('confirmInline').innerHTML = `<div class="info-note" style="border-color:#c62828;">❌ ${err.message}</div><button class="btn-secondary" onclick="flowBack()">Back</button>`;
+        document.getElementById('confirmInline').innerHTML = `<div class="info-note" style="border-color:#c62828;">❌ ${err.message}</div><button class="btn-secondary" onclick="flowBack()">BACK</button>`;
     }
 }
-function closeConfirm(){} // legacy modal no longer primary path, kept for safety
+function closeConfirm(){}
 
 async function executeSwap() {
     try {
@@ -983,10 +985,10 @@ function renderDone() {
     return `
         <div class="success-box">
             <div class="success-check">✓</div>
-            <div class="success-title">${currentFlow==='identity' ? 'Held for recipient' : 'Done'}</div>
-            <div class="success-ref">Ref ${r.ref}</div>
-            ${r.atmCode ? `<div class="code-box"><div class="code-label">Withdrawal code</div><div class="code-value">${r.atmCode}</div></div>` : ''}
-            <button class="btn-primary" style="max-width:280px;margin:1.2em auto 0;" onclick="closeFlow()">Back to home</button>
+            <div class="success-title">${currentFlow==='identity' ? 'HELD FOR RECIPIENT' : 'DONE'}</div>
+            <div class="success-ref">REF ${r.ref}</div>
+            ${r.atmCode ? `<div class="code-box"><div class="code-label">WITHDRAWAL CODE</div><div class="code-value">${r.atmCode}</div></div>` : ''}
+            <button class="btn-primary" style="max-width:280px;margin:1.2em auto 0;" onclick="closeFlow()">BACK TO HOME</button>
         </div>
     `;
 }
