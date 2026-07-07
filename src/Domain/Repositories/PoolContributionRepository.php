@@ -74,6 +74,54 @@ class PoolContributionRepository
         return $this->insert($contribution);
     }
 
+    /**
+     * Array-based save, for callers (like PoolCoordinator) that work with
+     * plain contribution arrays rather than hydrated PoolContribution objects.
+     * Mirrors save() but skips the object requirement entirely.
+     */
+    public function saveFromArray(array $contribution): array
+    {
+        $sql = "
+            INSERT INTO pool_contributions (
+                pool_id, sub_reference, source_order, institution, asset_type,
+                source_identifier, requested_amount, contribution_amount, currency,
+                hold_reference, debit_reference, source_signature, source_certificate,
+                status, metadata, created_at, verified_at, held_at, debited_at
+            ) VALUES (
+                :pool_id, :sub_reference, :source_order, :institution, :asset_type,
+                :source_identifier, :requested_amount, :contribution_amount, :currency,
+                :hold_reference, :debit_reference, :source_signature, :source_certificate,
+                :status, :metadata::jsonb, NOW(), NULL, NULL, NULL
+            ) RETURNING id
+        ";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([
+            ':pool_id' => $contribution['pool_id'] ?? '',
+            ':sub_reference' => $contribution['sub_reference'] ?? '',
+            ':source_order' => $contribution['source_order'] ?? 0,
+            ':institution' => $contribution['institution'] ?? '',
+            ':asset_type' => $contribution['asset_type'] ?? 'ACCOUNT',
+            ':source_identifier' => $contribution['source_identifier'] ?? $contribution['account_id'] ?? $contribution['identifier'] ?? '',
+            ':requested_amount' => $contribution['requested_amount'] ?? $contribution['amount'] ?? 0,
+            ':contribution_amount' => $contribution['contribution_amount'] ?? $contribution['amount'] ?? 0,
+            ':currency' => $contribution['currency'] ?? 'BWP',
+            ':hold_reference' => $contribution['hold_reference'] ?? null,
+            ':debit_reference' => $contribution['debit_reference'] ?? null,
+            ':source_signature' => $contribution['source_signature'] ?? null,
+            ':source_certificate' => $contribution['source_certificate'] ?? null,
+            ':status' => $contribution['status'] ?? ContributionStatus::PENDING->value,
+            ':metadata' => isset($contribution['metadata']) ? json_encode($contribution['metadata']) : '{}'
+        ]);
+        
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row) {
+            $contribution['id'] = (int)$row['id'];
+        }
+        
+        return $contribution;
+    }
+
     private function insert(PoolContribution $contribution): PoolContribution
     {
         $data = $contribution->toArray();
@@ -184,6 +232,30 @@ class PoolContributionRepository
         return $stmt->execute([':status' => $status->value, ':id' => $id]);
     }
 
+    /**
+     * Update status with optional metadata - called from PoolCoordinator
+     */
+    public function updateStatusWithMetadata(int $id, ContributionStatus $status, array $metadata = []): bool
+    {
+        if (empty($metadata)) {
+            return $this->updateStatus($id, $status);
+        }
+        
+        $sql = "
+            UPDATE pool_contributions 
+            SET status = :status, 
+                metadata = COALESCE(metadata, '{}'::jsonb) || :metadata::jsonb,
+                updated_at = NOW() 
+            WHERE id = :id
+        ";
+        $stmt = $this->db->prepare($sql);
+        return $stmt->execute([
+            ':status' => $status->value,
+            ':metadata' => json_encode($metadata),
+            ':id' => $id
+        ]);
+    }
+
     public function updateHoldReference(int $id, string $holdReference): bool
     {
         $sql = "UPDATE pool_contributions SET hold_reference = :hold_reference, held_at = NOW(), updated_at = NOW() WHERE id = :id";
@@ -191,11 +263,53 @@ class PoolContributionRepository
         return $stmt->execute([':hold_reference' => $holdReference, ':id' => $id]);
     }
 
+    /**
+     * Update hold reference with status update in one call
+     */
+    public function updateHoldAndStatus(int $id, string $holdReference, ContributionStatus $status): bool
+    {
+        $sql = "
+            UPDATE pool_contributions 
+            SET hold_reference = :hold_reference, 
+                status = :status,
+                held_at = NOW(), 
+                updated_at = NOW() 
+            WHERE id = :id
+        ";
+        $stmt = $this->db->prepare($sql);
+        return $stmt->execute([
+            ':hold_reference' => $holdReference,
+            ':status' => $status->value,
+            ':id' => $id
+        ]);
+    }
+
     public function updateDebitReference(int $id, string $debitReference): bool
     {
         $sql = "UPDATE pool_contributions SET debit_reference = :debit_reference, debited_at = NOW(), updated_at = NOW() WHERE id = :id";
         $stmt = $this->db->prepare($sql);
         return $stmt->execute([':debit_reference' => $debitReference, ':id' => $id]);
+    }
+
+    /**
+     * Update debit reference with status update in one call
+     */
+    public function updateDebitAndStatus(int $id, string $debitReference, ContributionStatus $status): bool
+    {
+        $sql = "
+            UPDATE pool_contributions 
+            SET debit_reference = :debit_reference,
+                status = :status,
+                debited_at = NOW(), 
+                updated_at = NOW() 
+            WHERE id = :id
+        ";
+        $stmt = $this->db->prepare($sql);
+        return $stmt->execute([
+            ':debit_reference' => $debitReference,
+            ':status' => $status->value,
+            ':id' => $id
+        ]);
     }
 
     public function deleteByPoolId(string $poolId): bool
@@ -240,6 +354,29 @@ class PoolContributionRepository
         }
         
         return $contributions;
+    }
+
+    /**
+     * Get all contributions as arrays (not objects) for PoolCoordinator
+     */
+    public function getAllByPoolIdAsArray(string $poolId): array
+    {
+        $sql = "SELECT * FROM pool_contributions WHERE pool_id = :pool_id ORDER BY source_order ASC";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':pool_id' => $poolId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Get a single contribution as array (not object) for PoolCoordinator
+     */
+    public function findByIdAsArray(int $id): ?array
+    {
+        $sql = "SELECT * FROM pool_contributions WHERE id = :id";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':id' => $id]);
+        $data = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $data ?: null;
     }
 
     private function hydrate(array $data): PoolContribution
