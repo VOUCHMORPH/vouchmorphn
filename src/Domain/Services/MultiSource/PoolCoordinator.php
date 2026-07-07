@@ -13,6 +13,8 @@ use Domain\Services\MultiSourceFeeCalculator;
 use Domain\Repositories\FundingPoolRepository;
 use Domain\Repositories\PoolContributionRepository;
 use Domain\ValueObjects\PoolStatus;
+use Domain\ValueObjects\ContributionStatus;
+use Domain\Models\PoolContribution;
 use Infrastructure\Crypto\AggregateSigner;
 use Infrastructure\Banks\GenericBankClient;
 
@@ -99,6 +101,10 @@ class PoolCoordinator
             $contributions = $this->calculateContributions($pool, $payload);
             $this->logger->info('Contributions calculated', ['count' => count($contributions)]);
             
+            // NEW: persist contributions immediately so they exist in the DB
+            // before verification/holds even start
+            $contributions = $this->persistContributions($pool, $contributions);
+            
             // 3. Transition to VERIFYING
             $this->stateMachine->transition($pool, PoolStatus::VERIFYING);
             
@@ -123,7 +129,7 @@ class PoolCoordinator
             // 9. Transition to DESTINATION_PENDING
             $this->stateMachine->transition($pool, PoolStatus::DESTINATION_PENDING);
             
-            // 10. Execute destination
+            // 10. Execute destination (FIXED: uses captured destination identifier)
             $destinationResult = $this->executeDestination($pool, $contributions, $masterSignature);
             $this->logger->info('Destination executed', ['success' => $destinationResult['success'] ?? false]);
             
@@ -131,7 +137,7 @@ class PoolCoordinator
             $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED);
             
             // 12. Debit sources
-            $debits = $this->debitSources($pool, $holds);
+            $debits = $this->debitSources($pool, $holds, $contributions);
             $this->logger->info('Sources debited', ['debits' => count($debits)]);
             
             // 13. Settle
@@ -161,6 +167,36 @@ class PoolCoordinator
         }
     }
 
+    /**
+     * Persist each calculated contribution as a real DB row, so pool_contributions
+     * actually reflects what was calculated/verified/held/debited instead of only
+     * existing in memory for the request.
+     */
+    private function persistContributions(array $pool, array $contributions): array
+    {
+        $persisted = [];
+        foreach ($contributions as $index => $contribution) {
+            $model = new PoolContribution(
+                $pool['id'],
+                $pool['reference'] . '-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT),
+                $index + 1,
+                $contribution['institution'],
+                $contribution['asset_type'] ?? 'ACCOUNT',
+                $contribution['account_id'] ?? $contribution['identifier'] ?? '',
+                (float)($contribution['requested_amount'] ?? $contribution['amount']),
+                (float)$contribution['amount'],
+                $contribution['currency'] ?? $pool['currency'] ?? 'BWP'
+            );
+            $saved = $this->contributionRepository->save($model);
+            // Carry the DB id back onto the working array so later stages
+            // (verify/hold/debit) can reference the correct row.
+            $contribution['_contribution_id'] = $saved->getId();
+            $contribution['_sub_reference'] = $pool['reference'] . '-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT);
+            $persisted[] = $contribution;
+        }
+        return $persisted;
+    }
+
     private function createPool(array $payload): array
     {
         $poolId = $payload['pool_id'] ?? 'POOL_' . uniqid();
@@ -171,6 +207,12 @@ class PoolCoordinator
             $payload['destination_currency'] ?? 'BWP'
         );
         
+        // FIXED: Extract destination identifier and asset type the same way
+        // every other SwapService flow does, instead of expecting a pre-shaped
+        // 'destination_account_id' key that nothing ever populates.
+        $destinationIdentifier = $this->swapService->extractDestinationIdentifier($payload);
+        $destinationAssetType = $this->swapService->extractDestinationAssetType($payload);
+        
         $pool = [
             'id' => $poolId,
             'sources' => $payload['sources'] ?? [],
@@ -180,14 +222,19 @@ class PoolCoordinator
             'status' => PoolStatus::CREATED,
             'source_institution' => $payload['from_institution'] ?? $payload['source_institution'] ?? null,
             'destination_institution' => $payload['to_institution'] ?? $payload['destination_institution'] ?? null,
+            // FIXED: Use the real captured identifier instead of a key that
+            // was never populated anywhere in the pool record.
+            'destination_identifier' => $destinationIdentifier['identifier'] ?? null,
+            'destination_identifier_type' => $destinationIdentifier['type'] ?? null,
+            'destination_asset_type' => $destinationAssetType,
             'reference' => $payload['reference'] ?? uniqid(),
             'forex_rate' => $this->forexRateSnapshot,
             'created_at' => date('Y-m-d H:i:s'),
             'updated_at' => date('Y-m-d H:i:s')
         ];
         
-        // Save to repository
-        $this->poolRepository->save($pool);
+        // FIXED: Use array-friendly save method
+        $this->poolRepository->saveFromArray($pool);
         
         return $pool;
     }
@@ -230,6 +277,21 @@ class PoolCoordinator
                 'asset_id' => $result['asset_id'] ?? null,
                 'balance' => $result['balance'] ?? 0
             ];
+            
+            // NEW: reflect verification in the persisted row
+            if (isset($contribution['_contribution_id'])) {
+                try {
+                    $this->contributionRepository->updateStatus(
+                        $contribution['_contribution_id'],
+                        ContributionStatus::VERIFIED
+                    );
+                } catch (Exception $e) {
+                    $this->logger->warning('Failed to update contribution verification status', [
+                        'contribution_id' => $contribution['_contribution_id'],
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
         }
         
         return $verifications;
@@ -273,6 +335,25 @@ class PoolCoordinator
                 'source_payload' => $contribution // Store for rollback
             ];
             
+            // NEW: persist hold reference against the contribution row
+            if (isset($contribution['_contribution_id']) && !empty($holdData['hold_reference'])) {
+                try {
+                    $this->contributionRepository->updateHoldReference(
+                        $contribution['_contribution_id'],
+                        $holdData['hold_reference']
+                    );
+                    $this->contributionRepository->updateStatus(
+                        $contribution['_contribution_id'],
+                        ContributionStatus::HELD
+                    );
+                } catch (Exception $e) {
+                    $this->logger->warning('Failed to update contribution hold status', [
+                        'contribution_id' => $contribution['_contribution_id'],
+                        'error' => $e->getMessage()
+                    });
+                }
+            }
+            
             $holds[] = $holdData;
             $heldSources[] = $holdData; // Track for rollback
         }
@@ -309,6 +390,22 @@ class PoolCoordinator
                 
                 // Then clean up local bookkeeping
                 $this->releaseLocalHold($held['hold_id'] ?? null);
+                
+                // NEW: reflect the failure on the contribution row too
+                $contribution = $held['source_payload'] ?? null;
+                if ($contribution && isset($contribution['_contribution_id'])) {
+                    try {
+                        $this->contributionRepository->updateStatus(
+                            $contribution['_contribution_id'],
+                            ContributionStatus::FAILED
+                        );
+                    } catch (Exception $e) {
+                        $this->logger->warning('Failed to update contribution rollback status', [
+                            'contribution_id' => $contribution['_contribution_id'],
+                            'error' => $e->getMessage()
+                        ]);
+                    }
+                }
                 
             } catch (Exception $e) {
                 $this->logger->error('Failed to release hold', [
@@ -349,8 +446,12 @@ class PoolCoordinator
         $totalAmount = $pool['amount'];
         $currency = $pool['currency'] ?? 'BWP';
         
+        // FIXED: use the real captured identifier instead of a key that
+        // was never populated anywhere in the pool record.
         $destinationPayload = [
-            'destination_account_id' => $pool['destination_account_id'] ?? null,
+            'destination_identifier' => $pool['destination_identifier'] ?? null,
+            'destination_identifier_type' => $pool['destination_identifier_type'] ?? 'account',
+            'destination_asset_type' => $pool['destination_asset_type'] ?? 'WALLET',
             'destination_institution' => $destinationInstitution,
             'to_institution' => $destinationInstitution,
             'amount' => $totalAmount,
@@ -364,7 +465,7 @@ class PoolCoordinator
         return $this->swapService->creditDestination($destinationPayload, $destinationInstitution);
     }
 
-    private function debitSources(array $pool, array $holds): array
+    private function debitSources(array $pool, array $holds, array $contributions): array
     {
         $debits = [];
         
@@ -393,6 +494,26 @@ class PoolCoordinator
                 'debited' => true,
                 'transaction_reference' => $result['transaction_reference'] ?? null
             ];
+            
+            // NEW: mark the contribution as debited with its transaction reference
+            $matchingContribution = $hold['source_payload'] ?? null;
+            if ($matchingContribution && isset($matchingContribution['_contribution_id']) && !empty($result['transaction_reference'])) {
+                try {
+                    $this->contributionRepository->updateDebitReference(
+                        $matchingContribution['_contribution_id'],
+                        $result['transaction_reference']
+                    );
+                    $this->contributionRepository->updateStatus(
+                        $matchingContribution['_contribution_id'],
+                        ContributionStatus::DEBITED
+                    );
+                } catch (Exception $e) {
+                    $this->logger->warning('Failed to update contribution debit status', [
+                        'contribution_id' => $matchingContribution['_contribution_id'],
+                        'error' => $e->getMessage()
+                    });
+                }
+            }
         }
         
         return $debits;
@@ -460,6 +581,7 @@ class PoolCoordinator
     {
         if ($pool && isset($pool['id'])) {
             try {
+                // FIXED: updateStatus now exists in FundingPoolRepository
                 $this->poolRepository->updateStatus($pool['id'], PoolStatus::FAILED);
                 $this->logger->warning('Pool rolled back', ['pool_id' => $pool['id']]);
             } catch (Exception $e) {
@@ -488,7 +610,8 @@ class PoolCoordinator
 
     public function getStatus(string $poolId): array
     {
-        $pool = $this->poolRepository->findById($poolId);
+        // FIXED: Use array-friendly findByIdAsArray method
+        $pool = $this->poolRepository->findByIdAsArray($poolId);
         
         if (!$pool) {
             return [
@@ -499,7 +622,7 @@ class PoolCoordinator
         
         return [
             'success' => true,
-            'pool_id' => $pool['id'],
+            'pool_id' => $pool['id'] ?? $poolId,
             'status' => $pool['status'] ?? PoolStatus::UNKNOWN,
             'amount' => $pool['amount'] ?? 0,
             'currency' => $pool['currency'] ?? 'BWP',
@@ -510,7 +633,8 @@ class PoolCoordinator
 
     public function cancel(string $poolId, string $reason): array
     {
-        $pool = $this->poolRepository->findById($poolId);
+        // FIXED: Use array-friendly findByIdAsArray method
+        $pool = $this->poolRepository->findByIdAsArray($poolId);
         
         if (!$pool) {
             return [
@@ -519,6 +643,7 @@ class PoolCoordinator
             ];
         }
         
+        // FIXED: updateStatus now exists in FundingPoolRepository
         $this->poolRepository->updateStatus($poolId, PoolStatus::CANCELLED);
         
         return [
