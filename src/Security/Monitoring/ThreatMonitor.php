@@ -1,24 +1,24 @@
 <?php
 
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
-
-// SECURITY_LAYER/Monitoring/ThreatMonitor.php
-
-namespace SECURITY_LAYER\Monitoring;
+namespace Security\Monitoring;
 
 class ThreatMonitor
 {
     public function scanLogs(array $logs): array
     {
-        // Example: return logs with errors or attacks
         return array_filter($logs, fn($log) => strpos(strtolower($log['message']), 'error') !== false);
     }
 
     public function alertAdmin(string $message): void
     {
-        // Could call NotificationService
-        file_put_contents(__DIR__ . '/../../DATA_PERSISTENCE_LAYER/models/ThreatAlerts.log',
-            date('Y-m-d H:i:s') . " - $message\n", FILE_APPEND
+        $dir = STORAGE_PATH . '/logs';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+        file_put_contents(
+            $dir . '/ThreatAlerts.log',
+            date('Y-m-d H:i:s') . " - $message\n",
+            FILE_APPEND
         );
     }
 }
