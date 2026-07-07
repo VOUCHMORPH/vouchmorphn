@@ -31,7 +31,12 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 }
 
 // ============================================
-// 3. LOAD SYSTEM CONFIG & CORE
+// 3. BOOTSTRAP - Load container
+// ============================================
+$container = require_once ROOT_PATH . '/src/bootstrap.php';
+
+// ============================================
+// 4. LOAD SYSTEM CONFIG & CORE
 // ============================================
 require_once ROOT_PATH . '/src/CORE_CONFIG/system_country.php';
 require_once ROOT_PATH . '/src/CORE_CONFIG/load_country.php';
@@ -39,16 +44,14 @@ require_once ROOT_PATH . '/src/CORE_CONFIG/load_country.php';
 $country = defined('SYSTEM_COUNTRY') ? SYSTEM_COUNTRY : 'BW';
 
 // ============================================
-// 4. LOAD REQUIRED CLASSES
+// 5. LOAD REQUIRED CLASSES (fixed paths)
 // ============================================
-require_once ROOT_PATH . '/src/DATA_PERSISTENCE_LAYER/config/DBConnection.php';
-require_once ROOT_PATH . '/src/BUSINESS_LOGIC_LAYER/services/CardService.php';
+require_once ROOT_PATH . '/src/Domain/Services/CardService.php';
 
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
-use BUSINESS_LOGIC_LAYER\services\CardService;
+use Domain\Services\CardService;
 
 // ============================================
-// 5. LOAD ENVIRONMENT
+// 6. LOAD ENVIRONMENT
 // ============================================
 $envFile = ROOT_PATH . "/src/CORE_CONFIG/countries/{$country}/.env_{$country}";
 if (file_exists($envFile)) {
@@ -78,7 +81,7 @@ if (!function_exists('get_env_val')) {
 }
 
 // ============================================
-// 6. AUTHENTICATION
+// 7. AUTHENTICATION - No hardcoded fallback
 // ============================================
 $headers = function_exists('getallheaders') ? getallheaders() : [];
 $headersLower = array_change_key_case($headers, CASE_LOWER);
@@ -92,7 +95,7 @@ if (!$providedKey || !in_array($providedKey, $validKeys, true)) {
 }
 
 // ============================================
-// 7. GET CARD IDENTIFIER
+// 8. GET CARD IDENTIFIER
 // ============================================
 $cardNumber = $_GET['card_number'] ?? '';
 $cardSuffix = $_GET['card_suffix'] ?? '';
@@ -107,10 +110,10 @@ if (!$cardNumber && !$cardSuffix) {
 }
 
 // ============================================
-// 8. DATABASE CONNECTION
+// 9. DATABASE CONNECTION - from container
 // ============================================
 try {
-    $pdo = DBConnection::getConnection();
+    $pdo = $container->get(PDO::class);
     if (!$pdo) throw new Exception('Database connection failed');
 } catch (Exception $e) {
     http_response_code(500);
@@ -119,7 +122,7 @@ try {
 }
 
 // ============================================
-// 9. FETCH CARD BALANCE
+// 10. FETCH CARD BALANCE
 // ============================================
 try {
     if ($cardSuffix) {
