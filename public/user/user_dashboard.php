@@ -1,6 +1,6 @@
 <?php
-// public/user/dashboard.php - QUIET DASHBOARD
-// Only shows content when user interacts with buttons
+// public/user/dashboard.php - REDESIGNED SHARP DASHBOARD
+// Clean, sharp, voucher-stub aesthetic with one action per screen
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
@@ -30,37 +30,22 @@ $userIdentifiers['passport'] = $user['passport'] ?? null;
 
 // Get primary identifier
 $primaryIdentifier = '';
-$primaryType = 'phone';
 $displayIdentifier = '';
-
-if (!empty($user['phone'])) {
-    $primaryIdentifier = $user['phone'];
-    $primaryType = 'phone';
-    $displayIdentifier = $user['phone'];
-} elseif (!empty($user['email'])) {
-    $primaryIdentifier = $user['email'];
-    $primaryType = 'email';
-    $displayIdentifier = $user['email'];
-} elseif (!empty($user['national_id'])) {
-    $primaryIdentifier = $user['national_id'];
-    $primaryType = 'national_id';
-    $displayIdentifier = $user['national_id'];
-} elseif (!empty($user['drivers_license'])) {
-    $primaryIdentifier = $user['drivers_license'];
-    $primaryType = 'drivers_license';
-    $displayIdentifier = $user['drivers_license'];
-} elseif (!empty($user['passport'])) {
-    $primaryIdentifier = $user['passport'];
-    $primaryType = 'passport';
-    $displayIdentifier = $user['passport'];
-} elseif (!empty($user['phone2'])) {
-    $primaryIdentifier = $user['phone2'];
-    $primaryType = 'phone';
-    $displayIdentifier = $user['phone2'];
-} elseif (!empty($user['phone3'])) {
-    $primaryIdentifier = $user['phone3'];
-    $primaryType = 'phone';
-    $displayIdentifier = $user['phone3'];
+foreach (['phone', 'email', 'national_id', 'drivers_license', 'passport'] as $type) {
+    if (!empty($user[$type])) {
+        $primaryIdentifier = $user[$type];
+        $displayIdentifier = $user[$type];
+        break;
+    }
+}
+if (empty($primaryIdentifier)) {
+    foreach (['phone2', 'phone3'] as $type) {
+        if (!empty($user[$type])) {
+            $primaryIdentifier = $user[$type];
+            $displayIdentifier = $user[$type];
+            break;
+        }
+    }
 }
 
 // Build valid identifiers list
@@ -85,8 +70,6 @@ foreach ($userIdentifiers as $type => $value) {
         ];
     }
 }
-
-$loggedPhone = htmlspecialchars($user['phone'] ?? $displayIdentifier);
 
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
@@ -200,7 +183,7 @@ function parseParticipantsYaml($path) {
 $participants = parseParticipantsYaml($participantsYamlPath);
 
 // ============================================================
-// LOAD ASSET TYPES FROM AssetTypeRegistry (assets.yaml)
+// LOAD ASSET TYPES FROM AssetTypeRegistry
 // ============================================================
 AssetTypeRegistry::initialize();
 $allAssetTypes = AssetTypeRegistry::all();
@@ -223,7 +206,7 @@ foreach ($allAssetTypes as $code => $config) {
     $assetTypeNames[] = $code;
 }
 
-// Get cloud balances (money sent to identifiers)
+// Get cloud balances
 $cloudBalances = [];
 $cloudTotal = 0;
 try {
@@ -292,882 +275,836 @@ $identifiersJson = json_encode($validIdentifiers);
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VouchMorph | <?= htmlspecialchars($countryName) ?></title>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
+        /* ============================================================
+           TOKENS
+           ink        #121212  primary text / borders / stamps
+           paper      #F7F5F0  page background
+           panel      #FFFFFF  card surface
+           cobalt     #2440FF  primary action accent
+           amber      #FFB400  pending / cloud-balance accent
+           forest     #14804A  success accent
+           ============================================================ */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0a0e27;
-            padding: 16px;
-            color: #fff;
+            font-family: 'Inter', sans-serif;
+            background: #F7F5F0;
+            color: #121212;
             min-height: 100vh;
         }
-        .container { max-width: 1000px; margin: 0 auto; }
+        .font-display { font-family: 'Space Grotesk', sans-serif; }
         
-        .header {
-            background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
-            padding: 16px 20px;
-            border-radius: 12px;
-            margin-bottom: 16px;
+        /* ============================================================
+           CLIPPED CORNER UTILITY
+           ============================================================ */
+        .clip-corner { clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%); }
+        .clip-corner-sm { clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%); }
+        .clip-corner-lg { clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 0 100%); }
+        
+        /* ============================================================
+           LAYOUT
+           ============================================================ */
+        .container { max-width: 640px; margin: 0 auto; padding: 0; }
+        
+        /* ============================================================
+           TOP BAR
+           ============================================================ */
+        .topbar {
+            background: #121212;
+            color: #F7F5F0;
+            padding: 14px 20px;
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            flex-wrap: wrap;
-            gap: 12px;
-            border: 1px solid rgba(255,255,255,0.08);
+            justify-content: space-between;
         }
-        .logo h1 { font-size: 22px; background: linear-gradient(135deg, #fff, #00f0ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .logo p { font-size: 11px; color: #888; margin-top: 2px; }
-        .badge { padding: 4px 12px; background: rgba(0,240,255,0.1); border: 1px solid #00f0ff; border-radius: 20px; font-size: 11px; }
-        .user-info { text-align: right; }
-        .user-phone { color: #00f0ff; font-weight: bold; }
-        
-        .card {
-            background: #12162e;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 16px;
-            border: 1px solid rgba(255,255,255,0.06);
-        }
-        .card h3 { font-size: 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
-        .card h4 { font-size: 13px; color: #00f0ff; margin: 10px 0 6px 0; }
-        
-        /* Action Buttons - Clean & Minimal */
-        .action-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
+        .topbar .logo {
+            display: flex;
+            align-items: center;
             gap: 10px;
-            margin-bottom: 16px;
         }
-        .action-btn {
-            padding: 16px 12px;
-            background: #1a1f3a;
-            border: 1px solid #2a2f4a;
-            border-radius: 10px;
-            text-align: center;
+        .topbar .logo-mark {
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #2440FF;
+            font-weight: 700;
+            font-size: 14px;
+            font-family: 'Space Grotesk', sans-serif;
+            clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);
+        }
+        .topbar .logo-text {
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 600;
+            font-size: 15px;
+            letter-spacing: -0.3px;
+        }
+        .topbar .user-area {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            font-size: 13px;
+        }
+        .topbar .user-area .phone { opacity: 0.7; }
+        .topbar .user-area .logout-btn {
+            background: none;
+            border: none;
+            color: #F7F5F0;
+            opacity: 0.5;
             cursor: pointer;
-            transition: all 0.2s;
-            color: #fff;
+            font-size: 13px;
+            font-family: 'Inter', sans-serif;
+            transition: opacity 0.2s;
         }
-        .action-btn:hover { background: #2a2f4a; border-color: #00f0ff; transform: translateY(-2px); }
-        .action-btn .icon { font-size: 24px; display: block; margin-bottom: 6px; }
-        .action-btn .label { font-size: 12px; font-weight: 600; }
-        .action-btn .desc { font-size: 9px; color: #888; margin-top: 2px; }
-        .action-btn.primary { border-color: #00f0ff; background: rgba(0,240,255,0.05); }
-        .action-btn.danger { border-color: #ff6b6b; background: rgba(255,107,107,0.05); }
-        .action-btn.danger:hover { background: rgba(255,107,107,0.15); }
+        .topbar .user-area .logout-btn:hover { opacity: 1; }
         
-        /* Panels - Hidden by default */
-        .panel {
+        /* ============================================================
+           HOME
+           ============================================================ */
+        .home { padding: 20px; }
+        
+        /* Cloud Strip */
+        .cloud-strip {
             display: none;
-            animation: fadeIn 0.3s ease;
+            width: 100%;
+            padding: 16px 20px;
+            margin-bottom: 20px;
+            background: #FFB400;
+            border: 2px solid #121212;
+            clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
+            cursor: pointer;
+            transition: transform 0.15s;
+            text-align: left;
         }
-        .panel.active { display: block; }
+        .cloud-strip.visible { display: flex; align-items: center; justify-content: space-between; }
+        .cloud-strip:hover { transform: translateY(-2px); }
+        .cloud-strip .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.6; }
+        .cloud-strip .amount { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 26px; }
         
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        
-        .form-row {
+        /* Product Grid */
+        .product-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 14px;
-            margin-bottom: 14px;
+            margin-bottom: 24px;
         }
-        .form-group { margin-bottom: 12px; }
-        label {
-            display: block;
-            font-size: 11px;
-            font-weight: 600;
-            margin-bottom: 4px;
-            color: #a0a0b0;
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
+        .product-tile {
+            background: #FFFFFF;
+            border: 2px solid #121212;
+            padding: 20px 18px;
+            text-align: left;
+            cursor: pointer;
+            transition: transform 0.15s;
+            clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
         }
-        select, input {
-            width: 100%;
-            padding: 10px 12px;
-            background: #1a1f3a;
-            border: 1px solid #2a2f4a;
-            border-radius: 8px;
-            color: #fff;
-            font-size: 14px;
-        }
-        select:focus, input:focus { outline: none; border-color: #00f0ff; }
-        select option { background: #1a1f3a; padding: 6px; }
-        select optgroup { background: #0a0e27; color: #00f0ff; font-weight: bold; font-size: 12px; }
+        .product-tile:hover { transform: translateY(-3px); }
+        .product-tile .icon { margin-bottom: 10px; display: block; }
+        .product-tile .label { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 16px; }
+        .product-tile .desc { font-size: 12px; opacity: 0.5; margin-top: 4px; line-height: 1.4; }
         
-        .help-text { font-size: 11px; color: #888; margin-top: 4px; }
-        .quick-amounts {
+        /* Activity Link */
+        .activity-link {
             display: flex;
-            gap: 6px;
-            margin-top: 6px;
-            flex-wrap: wrap;
-        }
-        .quick-amount {
-            padding: 4px 12px;
-            background: #1a1f3a;
-            border-radius: 16px;
-            cursor: pointer;
-            font-size: 12px;
-            border: 1px solid #2a2f4a;
-            color: #a0a0b0;
-        }
-        .quick-amount:hover { background: #00f0ff; color: #0a0e27; }
-        
-        .info-box {
-            background: rgba(0, 240, 255, 0.04);
-            border-left: 3px solid #00f0ff;
-            padding: 10px 14px;
-            border-radius: 6px;
-            font-size: 12px;
-            margin: 8px 0;
-            color: #a0a0b0;
-        }
-        .info-box strong { color: #fff; }
-        
-        .warning-box {
-            background: rgba(255, 193, 7, 0.08);
-            border-left: 3px solid #ffc107;
-            padding: 10px 14px;
-            border-radius: 6px;
-            font-size: 12px;
-            margin: 8px 0;
-            display: none;
-        }
-        .warning-box.show { display: block; }
-        
-        .btn {
-            padding: 12px 20px;
-            border: none;
-            border-radius: 8px;
-            font-size: 15px;
-            font-weight: bold;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .btn-primary {
-            background: linear-gradient(135deg, #00f0ff, #b000ff);
-            color: #0a0e27;
-            width: 100%;
-            padding: 14px;
-        }
-        .btn-primary:hover { transform: translateY(-1px); filter: brightness(1.05); }
-        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-        .btn-danger { background: #ff6b6b; color: #fff; padding: 4px 12px; font-size: 12px; border: none; border-radius: 4px; cursor: pointer; }
-        .btn-danger:hover { background: #ff4444; }
-        .btn-add {
-            background: transparent;
-            border: 2px dashed #2a2f4a;
-            color: #888;
-            padding: 10px;
-            border-radius: 8px;
-            cursor: pointer;
-            width: 100%;
-            font-size: 13px;
-            margin-top: 8px;
-        }
-        .btn-add:hover { border-color: #00f0ff; color: #00f0ff; background: rgba(0,240,255,0.05); }
-        .btn-cloud {
-            background: linear-gradient(135deg, #ff6b6b, #ff3366);
-            color: #fff;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 8px;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 0;
+            border-top: 2px solid #D8D4CB;
             cursor: pointer;
             font-size: 14px;
-            font-weight: bold;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
+            font-weight: 500;
+            transition: opacity 0.2s;
         }
-        .btn-cloud:hover { transform: translateY(-1px); filter: brightness(1.05); }
-        .btn-cloud:disabled { opacity: 0.5; cursor: not-allowed; }
-        .btn-cloud-small {
-            background: rgba(255,107,107,0.15);
-            color: #ff6b6b;
-            padding: 6px 14px;
-            border: 1px solid #ff6b6b;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 11px;
-            transition: all 0.2s;
+        .activity-link:hover { opacity: 0.6; }
+        .activity-link .arrow { font-size: 18px; opacity: 0.4; }
+        
+        /* ============================================================
+           PANELS - Full screen overlay
+           ============================================================ */
+        .panel-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #F7F5F0;
+            z-index: 1000;
+            overflow-y: auto;
+            padding: 0;
         }
-        .btn-cloud-small:hover { background: rgba(255,107,107,0.25); }
-        .btn-close-panel {
-            background: transparent;
-            color: #888;
-            border: 1px solid #2a2f4a;
-            padding: 6px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 12px;
-            margin-top: 8px;
-        }
-        .btn-close-panel:hover { background: #2a2f4a; color: #fff; }
+        .panel-overlay.active { display: block; }
         
         .panel-header {
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            margin-bottom: 16px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid #2a2f4a;
-        }
-        .panel-header h4 { margin: 0; color: #00f0ff; }
-        
-        .cloud-balance-card {
-            background: linear-gradient(135deg, #1a1f3a, #0a0e27);
-            border: 1px solid rgba(255,107,107,0.3);
-            border-radius: 10px;
-            padding: 16px;
-            margin-bottom: 12px;
-        }
-        .cloud-balance-card .amount {
-            font-size: 28px;
-            font-weight: bold;
-            color: #ff6b6b;
-        }
-        .cloud-balance-card .detail {
-            font-size: 12px;
-            color: #888;
-            margin-top: 4px;
-        }
-        .cloud-balance-card .actions {
-            margin-top: 10px;
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        .cloud-item {
-            display: flex;
             justify-content: space-between;
-            padding: 8px 12px;
-            border-bottom: 1px solid #1a1f3a;
-            font-size: 12px;
+            padding: 16px 20px;
+            border-bottom: 2px solid #121212;
+            background: #F7F5F0;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .panel-header .back-btn {
+            background: none;
+            border: none;
+            font-size: 22px;
+            cursor: pointer;
+            padding: 4px;
+            color: #121212;
+        }
+        .panel-header .title {
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 600;
+            font-size: 15px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .panel-header .close-btn {
+            background: none;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 4px;
+            color: #121212;
+        }
+        
+        .panel-body { padding: 20px; }
+        
+        /* ============================================================
+           FORM ELEMENTS
+           ============================================================ */
+        .field { margin-bottom: 18px; }
+        .field-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            opacity: 0.6;
+            margin-bottom: 6px;
+        }
+        
+        .pill-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .pill {
+            padding: 10px 16px;
+            background: #FFFFFF;
+            border: 2px solid #D8D4CB;
+            font-family: 'Inter', sans-serif;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);
+        }
+        .pill:hover { border-color: #121212; }
+        .pill.active {
+            background: #2440FF;
+            border-color: #2440FF;
+            color: #FFFFFF;
+        }
+        
+        .text-input {
+            width: 100%;
+            padding: 12px 14px;
+            background: #FFFFFF;
+            border: 2px solid #D8D4CB;
+            font-family: 'Inter', sans-serif;
+            font-size: 14px;
+            outline: none;
+            clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);
+            transition: border-color 0.2s;
+        }
+        .text-input:focus { border-color: #2440FF; }
+        .text-input::placeholder { opacity: 0.4; }
+        
+        .quick-amounts {
+            display: flex;
             flex-wrap: wrap;
             gap: 6px;
+            margin-top: 6px;
         }
-        .cloud-item:last-child { border-bottom: none; }
-        .cloud-item .ident { color: #00f0ff; }
-        .cloud-item .amount { color: #ff6b6b; font-weight: bold; }
+        .quick-amount {
+            padding: 4px 14px;
+            background: #FFFFFF;
+            border: 1px solid #D8D4CB;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.15s;
+            clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 0 100%);
+        }
+        .quick-amount:hover { background: #121212; color: #FFFFFF; border-color: #121212; }
         
+        .info-note {
+            padding: 12px 16px;
+            background: rgba(36, 64, 255, 0.06);
+            border-left: 3px solid #2440FF;
+            font-size: 13px;
+            line-height: 1.5;
+            margin: 8px 0 16px 0;
+        }
+        .info-note strong { color: #121212; }
+        
+        /* ============================================================
+           CONFIRM STEP
+           ============================================================ */
+        .confirm-box {
+            padding: 20px;
+            background: #FFFFFF;
+            border: 2px solid #121212;
+            margin-bottom: 20px;
+            clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
+        }
+        .confirm-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            font-size: 14px;
+        }
+        .confirm-row .label { opacity: 0.5; }
+        .confirm-row .value { font-weight: 600; }
+        .confirm-row .value.highlight { color: #2440FF; font-family: 'Space Grotesk', sans-serif; font-size: 18px; }
+        .confirm-row .value.negative { color: #121212; opacity: 0.6; }
+        .confirm-divider { border-top: 2px solid #D8D4CB; margin: 8px 0; }
+        
+        /* ============================================================
+           BUTTONS
+           ============================================================ */
+        .btn-primary {
+            width: 100%;
+            padding: 16px;
+            background: #121212;
+            color: #FFFFFF;
+            border: none;
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 600;
+            font-size: 15px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .btn-primary:hover { opacity: 0.8; }
+        .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-primary .arrow { font-size: 18px; }
+        
+        .btn-primary.cobalt {
+            background: #2440FF;
+        }
+        
+        /* ============================================================
+           SUCCESS STATE
+           ============================================================ */
+        .success-box {
+            text-align: center;
+            padding: 40px 20px;
+        }
+        .success-box .check {
+            width: 64px;
+            height: 64px;
+            background: #14804A;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 32px;
+            color: #FFFFFF;
+            margin: 0 auto 16px;
+            clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
+        }
+        .success-box .title {
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 700;
+            font-size: 22px;
+            margin-bottom: 6px;
+        }
+        .success-box .ref {
+            font-size: 13px;
+            opacity: 0.5;
+            margin-bottom: 16px;
+        }
+        .success-box .code-box {
+            padding: 16px 24px;
+            background: #FFFFFF;
+            border: 2px solid #121212;
+            display: inline-block;
+            margin: 12px auto;
+            clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
+        }
+        .success-box .code-box .code-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            opacity: 0.5;
+        }
+        .success-box .code-box .code {
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 700;
+            font-size: 32px;
+            letter-spacing: 4px;
+        }
+        
+        /* ============================================================
+           MULTI-SOURCE
+           ============================================================ */
         .source-entry {
-            background: #0a0e27;
-            border-radius: 8px;
-            padding: 14px;
-            margin-bottom: 10px;
-            border: 1px solid #2a2f4a;
+            background: #FFFFFF;
+            border: 2px solid #D8D4CB;
+            padding: 16px;
+            margin-bottom: 12px;
+            clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
         }
         .source-entry .source-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 10px;
+            margin-bottom: 12px;
         }
-        .source-entry .source-number { color: #888; font-size: 12px; }
+        .source-entry .source-header .num { font-size: 12px; font-weight: 600; opacity: 0.5; }
+        .source-entry .source-header .remove-btn {
+            background: none;
+            border: none;
+            font-size: 16px;
+            cursor: pointer;
+            opacity: 0.3;
+            transition: opacity 0.2s;
+        }
+        .source-entry .source-header .remove-btn:hover { opacity: 1; }
         .source-entry .source-fields {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
+            grid-template-columns: 1fr 1fr;
             gap: 10px;
         }
-        .source-entry .source-fields .form-group { margin-bottom: 0; }
-        .source-entry .source-fields select,
-        .source-entry .source-fields input { padding: 8px 10px; font-size: 13px; }
+        .source-entry .source-fields .field { margin-bottom: 0; }
+        .source-entry .source-fields select, .source-entry .source-fields input {
+            width: 100%;
+            padding: 8px 10px;
+            background: #F7F5F0;
+            border: 1px solid #D8D4CB;
+            font-family: 'Inter', sans-serif;
+            font-size: 13px;
+            outline: none;
+        }
+        .source-entry .source-fields select:focus, .source-entry .source-fields input:focus { border-color: #2440FF; }
+        .source-entry .asset-fields {
+            margin-top: 10px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .source-entry .asset-fields input {
+            width: 100%;
+            padding: 8px 10px;
+            background: #F7F5F0;
+            border: 1px solid #D8D4CB;
+            font-family: 'Inter', sans-serif;
+            font-size: 13px;
+            outline: none;
+        }
+        .source-entry .asset-fields input:focus { border-color: #2440FF; }
         
-        .multi-toggle {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 10px 14px;
-            background: #0a0e27;
-            border-radius: 8px;
-            border: 1px solid #2a2f4a;
-            margin-bottom: 12px;
+        .add-source-btn {
+            width: 100%;
+            padding: 12px;
+            background: transparent;
+            border: 2px dashed #D8D4CB;
+            font-family: 'Inter', sans-serif;
+            font-size: 13px;
             cursor: pointer;
+            transition: all 0.2s;
+            clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
         }
-        .multi-toggle input[type="checkbox"] {
-            width: 20px;
-            height: 20px;
-            accent-color: #00f0ff;
-            cursor: pointer;
-            flex-shrink: 0;
-        }
-        .multi-toggle .count { color: #00f0ff; font-weight: bold; font-size: 14px; margin-left: auto; }
-        .multi-toggle .hint { color: #888; font-size: 12px; }
+        .add-source-btn:hover { border-color: #121212; background: rgba(18, 18, 18, 0.03); }
         
         .source-summary {
-            background: rgba(0, 240, 255, 0.05);
-            border-radius: 8px;
-            padding: 12px;
-            margin: 10px 0;
-            border: 1px solid rgba(0, 240, 255, 0.15);
-            font-size: 13px;
+            padding: 12px 16px;
+            background: rgba(36, 64, 255, 0.05);
+            border: 1px solid rgba(36, 64, 255, 0.2);
+            margin-top: 12px;
+            clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
         }
-        .source-summary .total { color: #00f0ff; font-weight: bold; font-size: 18px; }
-        .source-summary .list { color: #a0a0b0; font-size: 12px; margin-top: 4px; }
-        
-        .result {
-            padding: 16px;
-            border-radius: 8px;
-            margin-top: 16px;
-            display: none;
+        .source-summary .total {
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 700;
+            font-size: 20px;
+            color: #2440FF;
         }
-        .result.success { background: rgba(76, 175, 80, 0.15); border: 1px solid #4caf50; display: block; color: #4caf50; }
-        .result.error { background: rgba(244, 67, 54, 0.15); border: 1px solid #f44336; display: block; color: #f44336; }
-        .result .code { font-size: 28px; font-family: monospace; letter-spacing: 3px; color: #00f0ff; }
+        .source-summary .list { font-size: 12px; opacity: 0.6; margin-top: 4px; }
         
-        .swap-item {
+        /* ============================================================
+           CLOUD PANEL
+           ============================================================ */
+        .cloud-item {
             display: flex;
             justify-content: space-between;
-            padding: 10px 12px;
-            border-bottom: 1px solid #1a1f3a;
-            font-size: 12px;
-            flex-wrap: wrap;
-            gap: 6px;
-            cursor: pointer;
-            transition: background 0.2s;
+            padding: 12px 0;
+            border-bottom: 1px solid #D8D4CB;
+            font-size: 14px;
         }
-        .swap-item:hover { background: #1a1f3a; border-radius: 6px; }
-        .swap-status.completed { color: #4caf50; }
-        .swap-status.failed { color: #f44336; }
-        .swap-status.pending { color: #ffc107; }
-        .swap-status.processing { color: #00f0ff; }
+        .cloud-item:last-child { border-bottom: none; }
+        .cloud-item .ident { font-weight: 500; }
+        .cloud-item .amount { font-family: 'Space Grotesk', sans-serif; font-weight: 600; color: #FFB400; }
+        .cloud-item .expires { font-size: 12px; opacity: 0.4; }
         
-        .asset-fields-container {
-            background: #0a0e27;
-            border-radius: 8px;
-            padding: 12px;
-            margin-top: 8px;
-        }
-        
-        .destination-type-selector {
+        .cloud-total {
+            padding: 16px 20px;
+            background: #FFB400;
+            border: 2px solid #121212;
+            margin-bottom: 16px;
+            clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
             display: flex;
-            gap: 10px;
-            margin: 8px 0 12px 0;
+            justify-content: space-between;
+            align-items: center;
         }
-        .dest-option {
-            padding: 8px 16px;
-            background: #1a1f3a;
-            border: 2px solid #2a2f4a;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 13px;
-            flex: 1;
-            text-align: center;
-            transition: all 0.2s;
-        }
-        .dest-option:hover { border-color: #00f0ff; }
-        .dest-option.active { border-color: #00f0ff; background: rgba(0,240,255,0.05); }
+        .cloud-total .label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.6; }
+        .cloud-total .amount { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 28px; }
         
-        /* Modal */
+        /* ============================================================
+           HISTORY
+           ============================================================ */
+        .history-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 14px 0;
+            border-bottom: 1px solid #D8D4CB;
+            font-size: 14px;
+        }
+        .history-item:last-child { border-bottom: none; }
+        .history-item .route { font-weight: 500; }
+        .history-item .route .arrow { opacity: 0.3; margin: 0 6px; }
+        .history-item .amount { font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
+        .history-item .status { font-size: 12px; font-weight: 500; }
+        .history-item .status.completed { color: #14804A; }
+        .history-item .status.pending { color: #FFB400; }
+        .history-item .status.failed { color: #121212; opacity: 0.4; }
+        .history-item .when { font-size: 12px; opacity: 0.4; margin-top: 2px; }
+        
+        /* ============================================================
+           IDENTIFIERS
+           ============================================================ */
+        .identifier-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        .identifier-card {
+            background: #FFFFFF;
+            border: 2px solid #D8D4CB;
+            padding: 16px;
+            text-align: center;
+            clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
+        }
+        .identifier-card .icon { font-size: 28px; display: block; margin-bottom: 6px; }
+        .identifier-card .value { font-weight: 600; font-size: 14px; }
+        .identifier-card .type { font-size: 11px; text-transform: uppercase; opacity: 0.4; margin-top: 4px; }
+        
+        /* ============================================================
+           MODAL
+           ============================================================ */
         .modal-overlay {
             display: none;
             position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.85);
-            z-index: 1000;
-            justify-content: center;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(18, 18, 18, 0.85);
+            z-index: 2000;
             align-items: center;
+            justify-content: center;
             padding: 20px;
         }
         .modal-overlay.show { display: flex; }
-        .modal {
-            background: #12162e;
-            border-radius: 16px;
-            padding: 24px;
-            max-width: 500px;
+        .modal-box {
+            background: #F7F5F0;
+            max-width: 480px;
             width: 100%;
             max-height: 90vh;
             overflow-y: auto;
-            border: 1px solid rgba(255,255,255,0.1);
+            padding: 24px;
+            clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 0 100%);
         }
-        .modal h2 { font-size: 20px; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; }
-        .modal .details { background: #0a0e27; border-radius: 10px; padding: 14px; margin-bottom: 16px; }
-        .modal .row {
-            display: flex;
-            justify-content: space-between;
-            padding: 8px 0;
-            border-bottom: 1px solid #1a1f3a;
+        .modal-box h2 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 20px;
+            margin-bottom: 16px;
         }
-        .modal .row:last-child { border-bottom: none; }
-        .modal .row .label { color: #888; font-size: 13px; }
-        .modal .row .value { font-weight: bold; font-size: 14px; }
-        .modal .row .value.highlight { color: #00f0ff; }
-        .modal .row .value.negative { color: #ff6b6b; }
-        .modal .total { font-size: 18px; padding-top: 10px; margin-top: 8px; border-top: 2px solid #00f0ff; color: #00f0ff; }
-        
+        .modal-error {
+            display: none;
+            padding: 12px 16px;
+            background: rgba(18, 18, 18, 0.06);
+            border-left: 3px solid #121212;
+            margin-bottom: 12px;
+            font-size: 14px;
+            color: #121212;
+        }
+        .modal-error.show { display: block; }
         .modal-actions {
             display: flex;
             gap: 12px;
             margin-top: 16px;
         }
-        .modal-actions button { flex: 1; padding: 12px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 14px; border: none; }
-        .btn-cancel { background: transparent; border: 1px solid #ff6b6b !important; color: #ff6b6b; }
-        .btn-cancel:hover { background: rgba(255,107,107,0.1); }
-        .btn-confirm { background: linear-gradient(135deg, #00f0ff, #b000ff); color: #0a0e27; }
-        .btn-confirm:hover { transform: translateY(-1px); filter: brightness(1.05); }
-        .btn-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
-        .modal-error { color: #ff6b6b; font-size: 13px; display: none; padding: 10px; background: rgba(255,107,107,0.1); border-radius: 6px; margin-bottom: 12px; }
-        
-        .loading-spinner {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid rgba(255,255,255,0.2);
-            border-radius: 50%;
-            border-top-color: #00f0ff;
-            animation: spin 0.8s linear infinite;
+        .modal-actions .btn-cancel {
+            flex: 1;
+            padding: 14px;
+            background: transparent;
+            border: 2px solid #121212;
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
+            transition: background 0.2s;
         }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        
-        .hidden { display: none !important; }
-        
-        /* Empty state */
-        .empty-state {
-            text-align: center;
-            padding: 40px 20px;
-            color: #888;
+        .modal-actions .btn-cancel:hover { background: rgba(18, 18, 18, 0.05); }
+        .modal-actions .btn-confirm {
+            flex: 2;
+            padding: 14px;
+            background: #121212;
+            color: #FFFFFF;
+            border: none;
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
+            transition: opacity 0.2s;
         }
-        .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
-        .empty-state h4 { color: #fff; margin-bottom: 8px; }
-        .empty-state p { font-size: 13px; }
+        .modal-actions .btn-confirm:hover { opacity: 0.8; }
+        .modal-actions .btn-confirm:disabled { opacity: 0.4; cursor: not-allowed; }
         
-        @media (max-width: 768px) {
-            .form-row { grid-template-columns: 1fr; gap: 8px; }
-            .action-grid { grid-template-columns: repeat(2, 1fr); }
-            .source-entry .source-fields { grid-template-columns: 1fr; }
-            .modal { padding: 16px; }
-            .modal-actions { flex-direction: column; }
-            .header { flex-direction: column; text-align: center; }
-            .user-info { text-align: center; }
-            .destination-type-selector { flex-direction: column; }
-        }
+        /* ============================================================
+           RESPONSIVE
+           ============================================================ */
         @media (max-width: 480px) {
-            .action-grid { grid-template-columns: 1fr 1fr; }
+            .product-grid { gap: 10px; }
+            .product-tile { padding: 16px 14px; }
+            .product-tile .label { font-size: 14px; }
+            .source-entry .source-fields { grid-template-columns: 1fr; }
+            .source-entry .asset-fields { grid-template-columns: 1fr; }
+            .identifier-grid { grid-template-columns: 1fr; }
+            .modal-actions { flex-direction: column; }
+            .topbar .logo-text { font-size: 13px; }
+            .topbar .user-area .phone { font-size: 12px; }
+            .confirm-row { font-size: 13px; }
+            .cloud-total .amount { font-size: 22px; }
         }
     </style>
 </head>
 <body>
-<div class="container">
-    <!-- HEADER -->
-    <div class="header">
-        <div class="logo">
-            <h1>💱 VouchMorph</h1>
-            <p>🇧🇼 <?= htmlspecialchars($countryName) ?></p>
+
+<!-- ============================================================
+     TOP BAR
+     ============================================================ -->
+<div class="topbar">
+    <div class="logo">
+        <div class="logo-mark">V</div>
+        <span class="logo-text">VOUCHMORPH</span>
+    </div>
+    <div class="user-area">
+        <span class="phone"><?= htmlspecialchars($primaryIdentifier) ?></span>
+        <a href="logout.php" class="logout-btn">Log out</a>
+    </div>
+</div>
+
+<!-- ============================================================
+     HOME
+     ============================================================ -->
+<div id="homeView" class="home">
+    <!-- Cloud Balance Strip -->
+    <div id="cloudStrip" class="cloud-strip <?= $cloudTotal > 0 ? 'visible' : '' ?>" onclick="openPanel('cloud')">
+        <div>
+            <div class="label">Waiting for you</div>
+            <div class="amount"><?= $currencySymbol ?> <?= number_format($cloudTotal, 2) ?></div>
         </div>
-        <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
-            <span class="badge"><?= htmlspecialchars($currency) ?></span>
-            <div class="user-info">
-                <div>👤 <span class="user-phone"><?= htmlspecialchars($primaryIdentifier) ?></span></div>
-                <div style="font-size:10px; margin-top:2px;"><a href="logout.php" style="color:#888;">Logout</a></div>
-            </div>
+        <span style="font-size:22px;">›</span>
+    </div>
+
+    <!-- Product Grid -->
+    <div class="product-grid">
+        <div class="product-tile" onclick="openFlow('send')">
+            <span class="icon" style="font-size:28px;">↗</span>
+            <div class="label">Send</div>
+            <div class="desc">Account or wallet, direct</div>
+        </div>
+        <div class="product-tile" onclick="openFlow('cashout')">
+            <span class="icon" style="font-size:28px;">💵</span>
+            <div class="label">Cashout</div>
+            <div class="desc">Get cash, no deposit needed</div>
+        </div>
+        <div class="product-tile" onclick="openFlow('identity')">
+            <span class="icon" style="font-size:28px;">🔐</span>
+            <div class="label">Send to identity</div>
+            <div class="desc">Phone, ID or email — they choose</div>
+        </div>
+        <div class="product-tile" onclick="openFlow('pool')">
+            <span class="icon" style="font-size:28px;">📦</span>
+            <div class="label">Combine sources</div>
+            <div class="desc">Use several accounts at once</div>
         </div>
     </div>
 
-    <!-- QUIET DASHBOARD - Only action buttons visible initially -->
-    <div class="card">
-        <h3>🔘 What would you like to do?</h3>
-        <div class="action-grid">
-            <div class="action-btn primary" onclick="showPanel('swapPanel')">
-                <span class="icon">⬆️➡️</span>
-                <div class="label">New Swap</div>
-                <div class="desc">Send money</div>
-            </div>
-            <div class="action-btn danger" onclick="showPanel('cloudPanel')">
-                <span class="icon">☁️</span>
-                <div class="label">Cloud Balance</div>
-                <div class="desc">Money waiting for you</div>
-            </div>
-            <div class="action-btn" onclick="showPanel('historyPanel')">
-                <span class="icon">📋</span>
-                <div class="label">History</div>
-                <div class="desc">Recent activity</div>
-            </div>
-            <div class="action-btn" onclick="showPanel('identifiersPanel')">
-                <span class="icon">🔑</span>
-                <div class="label">Identifiers</div>
-                <div class="desc">Your IDs</div>
-            </div>
-        </div>
+    <!-- Activity -->
+    <div class="activity-link" onclick="openPanel('history')">
+        <span>Recent activity</span>
+        <span class="arrow">›</span>
     </div>
-
-    <!-- ============================================================
-         PANEL: NEW SWAP
-         ============================================================ -->
-    <div id="swapPanel" class="panel">
-        <div class="card">
-            <div class="panel-header">
-                <h4>🔄 New Swap</h4>
-                <button class="btn-close-panel" onclick="hidePanel('swapPanel')">✕ Close</button>
-            </div>
-            
-            <!-- Swap Type Selector -->
-            <div class="swap-type-selector" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px;">
-                <div class="swap-type-option active" data-value="STANDARD" onclick="selectSwapType('STANDARD')" style="padding:12px; background:#1a1f3a; border:2px solid #2a2f4a; border-radius:8px; text-align:center; cursor:pointer;">
-                    <span style="font-size:20px;display:block;">⬆️➡️</span>
-                    <div style="font-size:12px;font-weight:600;">Standard</div>
-                </div>
-                <div class="swap-type-option" data-value="IDENTITY" onclick="selectSwapType('IDENTITY')" style="padding:12px; background:#1a1f3a; border:2px solid #2a2f4a; border-radius:8px; text-align:center; cursor:pointer;">
-                    <span style="font-size:20px;display:block;">🔐</span>
-                    <div style="font-size:12px;font-weight:600;">To Identity</div>
-                </div>
-                <div class="swap-type-option" data-value="MULTI_SOURCE" onclick="selectSwapType('MULTI_SOURCE')" style="padding:12px; background:#1a1f3a; border:2px solid #2a2f4a; border-radius:8px; text-align:center; cursor:pointer;">
-                    <span style="font-size:20px;display:block;">📦</span>
-                    <div style="font-size:12px;font-weight:600;">Multi-Source</div>
-                </div>
-            </div>
-            
-            <div id="swapTypeHelp" class="info-box" style="margin-bottom:12px;">
-                💡 <strong>Standard:</strong> Send from one account to another
-                <span id="identityHelp" style="display:none;">🔐 <strong>To Identity:</strong> Send to National ID/Phone/Email (recipient claims later)</span>
-                <span id="multiHelp" style="display:none;">📦 <strong>Multi-Source:</strong> Combine funds from multiple accounts</span>
-            </div>
-            
-            <!-- STANDARD SWAP -->
-            <div id="standardSwapSection">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>📤 Source Institution</label>
-                        <select id="stdFromInstitution" onchange="updateStdAssetTypes()">
-                            <option value="">-- Select --</option>
-                            <?php foreach ($participants as $code => $p): ?>
-                                <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>🏷️ Asset Type</label>
-                        <select id="stdAssetType" onchange="updateStdAssetFields()">
-                            <option value="">-- Select --</option>
-                            <?php foreach ($allAssetTypes as $code => $config): ?>
-                                <option value="<?= htmlspecialchars($code) ?>">
-                                    <?= ($config['ui']['icon'] ?? '📦') . ' ' . ($config['ui']['display_name'] ?? $code) ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                </div>
-                <div id="stdAssetFieldsContainer" class="asset-fields-container"><div class="info-box">Select asset type above</div></div>
-                <div class="form-group">
-                    <label>🔑 Your Identifier</label>
-                    <select id="stdSourceIdentifier" style="width:100%; padding:10px 12px; background:#1a1f3a; border:1px solid #2a2f4a; border-radius:8px; color:#fff; font-size:14px;">
-                        <option value="">-- Select --</option>
-                        <?php foreach ($validIdentifiers as $id): ?>
-                            <option value="<?= htmlspecialchars($id['value']) ?>" data-type="<?= htmlspecialchars($id['type']) ?>"><?= $id['icon'] ?> <?= htmlspecialchars($id['value']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>📥 Destination Institution</label>
-                        <select id="stdToInstitution" onchange="validateStdCorridor()">
-                            <option value="">-- Select --</option>
-                            <?php foreach ($participants as $code => $p): ?>
-                                <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>📦 Delivery</label>
-                        <select id="stdSwapType" onchange="updateStdDestination()">
-                            <option value="DEPOSIT" selected>💳 Deposit</option>
-                            <option value="CASHOUT">🏧 Cashout</option>
-                        </select>
-                    </div>
-                </div>
-                <div id="stdDestTypeContainer" style="display:none;">
-                    <label style="font-size:11px;color:#888;text-transform:uppercase;">📥 Destination Type</label>
-                    <div class="destination-type-selector">
-                        <div class="dest-option active" data-value="ACCOUNT" onclick="selectStdDestType('ACCOUNT')">🏦 Account</div>
-                        <div class="dest-option" data-value="WALLET" onclick="selectStdDestType('WALLET')">📱 Wallet</div>
-                    </div>
-                </div>
-                <div id="stdDestinationFields"></div>
-                <div class="form-group">
-                    <label>💰 Amount (<?= $currencySymbol ?>)</label>
-                    <input type="number" id="stdAmount" step="0.01" placeholder="0.00">
-                    <div class="quick-amounts">
-                        <?php foreach ($atmDenominations as $denom): ?>
-                            <span class="quick-amount" data-amount="<?= $denom ?>" onclick="document.getElementById('stdAmount').value=this.dataset.amount;updateSummary();"><?= $denom ?></span>
-                        <?php endforeach; ?>
-                        <span class="quick-amount" data-amount="500" onclick="document.getElementById('stdAmount').value=this.dataset.amount;updateSummary();">500</span>
-                        <span class="quick-amount" data-amount="1000" onclick="document.getElementById('stdAmount').value=this.dataset.amount;updateSummary();">1000</span>
-                    </div>
-                </div>
-                <div id="stdCorridorWarning" class="warning-box">⚠️ Source and destination must be different.</div>
-            </div>
-            
-            <!-- IDENTITY SWAP -->
-            <div id="identitySwapSection" style="display:none;">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>📤 Source Institution</label>
-                        <select id="idFromInstitution" onchange="updateIdAssetTypes()">
-                            <option value="">-- Select --</option>
-                            <?php foreach ($participants as $code => $p): ?>
-                                <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>🏷️ Asset Type</label>
-                        <select id="idAssetType" onchange="updateIdAssetFields()">
-                            <option value="">-- Select --</option>
-                            <?php foreach ($allAssetTypes as $code => $config): ?>
-                                <option value="<?= htmlspecialchars($code) ?>">
-                                    <?= ($config['ui']['icon'] ?? '📦') . ' ' . ($config['ui']['display_name'] ?? $code) ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                </div>
-                <div id="idAssetFieldsContainer" class="asset-fields-container"><div class="info-box">Select asset type above</div></div>
-                <div class="form-group">
-                    <label>🔑 Your Identifier</label>
-                    <select id="idSourceIdentifier" style="width:100%; padding:10px 12px; background:#1a1f3a; border:1px solid #2a2f4a; border-radius:8px; color:#fff; font-size:14px;">
-                        <option value="">-- Select --</option>
-                        <?php foreach ($validIdentifiers as $id): ?>
-                            <option value="<?= htmlspecialchars($id['value']) ?>" data-type="<?= htmlspecialchars($id['type']) ?>"><?= $id['icon'] ?> <?= htmlspecialchars($id['value']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="info-box" style="margin-bottom:12px;">🔐 Money held for this identity. Recipient claims it later.</div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>🆔 Identity Type</label>
-                        <select id="idIdentityType">
-                            <option value="national_id">🆔 National ID</option>
-                            <option value="phone">📱 Phone</option>
-                            <option value="email">✉️ Email</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>🔑 Identity Value</label>
-                        <input type="text" id="idIdentityValue" placeholder="e.g., 123456789 or +26770000000">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>💰 Amount (<?= $currencySymbol ?>)</label>
-                    <input type="number" id="idAmount" step="0.01" placeholder="0.00">
-                    <div class="quick-amounts">
-                        <?php foreach ($atmDenominations as $denom): ?>
-                            <span class="quick-amount" data-amount="<?= $denom ?>" onclick="document.getElementById('idAmount').value=this.dataset.amount;updateSummary();"><?= $denom ?></span>
-                        <?php endforeach; ?>
-                        <span class="quick-amount" data-amount="500" onclick="document.getElementById('idAmount').value=this.dataset.amount;updateSummary();">500</span>
-                        <span class="quick-amount" data-amount="1000" onclick="document.getElementById('idAmount').value=this.dataset.amount;updateSummary();">1000</span>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- MULTI-SOURCE SWAP -->
-            <div id="multiSourceSection" style="display:none;">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>📥 Destination Institution</label>
-                        <select id="msToInstitution" onchange="updateMsDestination()">
-                            <option value="">-- Select --</option>
-                            <?php foreach ($participants as $code => $p): ?>
-                                <option value="<?= htmlspecialchars($code) ?>"><?= htmlspecialchars($p['name'] ?? $code) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>📦 Delivery</label>
-                        <select id="msSwapType" onchange="updateMsDestination()">
-                            <option value="DEPOSIT" selected>💳 Deposit</option>
-                            <option value="CASHOUT">🏧 Cashout</option>
-                        </select>
-                    </div>
-                </div>
-                <div id="msDestTypeContainer" style="display:none;">
-                    <label style="font-size:11px;color:#888;text-transform:uppercase;">📥 Destination Type</label>
-                    <div class="destination-type-selector">
-                        <div class="dest-option active" data-value="ACCOUNT" onclick="selectMsDestType('ACCOUNT')">🏦 Account</div>
-                        <div class="dest-option" data-value="WALLET" onclick="selectMsDestType('WALLET')">📱 Wallet</div>
-                    </div>
-                </div>
-                <div id="msDestinationFields"></div>
-                
-                <div class="multi-toggle" onclick="toggleMultiSource(event)">
-                    <input type="checkbox" id="multiSourceCheckbox" onchange="toggleMultiSource(event)">
-                    <span class="label">📦 Combine Multiple Sources</span>
-                    <span class="count" id="sourceCount">0 sources</span>
-                </div>
-                <div id="sourcesContainer" style="display:none;">
-                    <div id="sourceEntries"></div>
-                    <button class="btn-add" onclick="addSource()">➕ Add Source</button>
-                    <div id="sourceSummary" class="source-summary" style="display:none;">
-                        <div>💰 Total: <span class="total" id="totalSourceAmount"><?= $currencySymbol ?> 0.00</span></div>
-                        <div class="list" id="sourceList">No sources configured</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="form-group" id="pinGroup">
-                <label>🔑 Your PIN</label>
-                <input type="password" id="userPin" placeholder="Enter your PIN" autocomplete="new-password">
-            </div>
-            
-            <div class="info-box" id="summary" style="margin-top:12px;">📋 Fill in the fields above</div>
-            <button class="btn btn-primary" id="executeBtn">🚀 Execute Swap</button>
-            <div id="result" class="result"></div>
-        </div>
+    <div class="activity-link" onclick="openPanel('identifiers')" style="border-top: none; padding-top: 8px;">
+        <span>Your identifiers</span>
+        <span class="arrow">›</span>
     </div>
+</div>
 
-    <!-- ============================================================
-         PANEL: CLOUD BALANCE
-         ============================================================ -->
-    <div id="cloudPanel" class="panel">
-        <div class="card">
-            <div class="panel-header">
-                <h4>☁️ Money on Cloud</h4>
-                <div>
-                    <button class="btn-cloud" onclick="checkCloudBalance()" style="margin-right:8px;">🔄 Refresh</button>
-                    <button class="btn-close-panel" onclick="hidePanel('cloudPanel')">✕ Close</button>
-                </div>
-            </div>
-            <div id="cloudBalanceContent">
-                <?php if (empty($cloudBalances)): ?>
-                    <div class="empty-state">
-                        <div class="icon">☁️</div>
-                        <h4>No money waiting</h4>
-                        <p>When someone sends money to your identity, it will appear here.</p>
-                        <button class="btn-cloud-small" onclick="showPanel('swapPanel')" style="margin-top:12px;">⬆️ Send Money</button>
-                    </div>
-                <?php else: ?>
-                    <div class="cloud-balance-card">
-                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                            <div>
-                                <div style="font-size:12px; color:#888;">Total Cloud Balance</div>
-                                <div class="amount"><?= $currencySymbol ?> <?= number_format($cloudTotal, 2) ?></div>
-                            </div>
-                            <div style="text-align:right;">
-                                <div style="font-size:11px; color:#888;"><?= count($cloudBalances) ?> pending item(s)</div>
-                                <button class="btn-cloud-small" onclick="toggleCloudDetails()">📋 Details</button>
-                            </div>
-                        </div>
-                    </div>
-                    <div id="cloudDetails" style="display:none; margin-top:8px;">
-                        <?php foreach ($cloudBalances as $cb): ?>
-                            <div class="cloud-item">
-                                <div>
-                                    <span class="ident"><?= htmlspecialchars($cb['identity_type']) ?>:</span>
-                                    <strong><?= htmlspecialchars($cb['identity_value']) ?></strong>
-                                    <span style="color:#888;font-size:10px;">(<?= $cb['count'] ?> items)</span>
-                                </div>
-                                <div>
-                                    <span class="amount"><?= $currencySymbol ?> <?= number_format($cb['total_amount'], 2) ?></span>
-                                    <span style="color:#888;font-size:10px;margin-left:8px;">Expires: <?= date('M d, H:i', strtotime($cb['expires_at'])) ?></span>
-                                </div>
-                            </div>
-                        <?php endforeach; ?>
-                        <div style="margin-top:8px; text-align:center;">
-                            <button class="btn-cloud-small" onclick="toggleCloudDetails()">Hide Details</button>
-                        </div>
-                    </div>
-                    <button id="toggleCloudBtn" class="btn-cloud-small" style="margin-top:8px;" onclick="toggleCloudDetails()">📋 Show Details</button>
-                <?php endif; ?>
-            </div>
-        </div>
+<!-- ============================================================
+     FLOW PANEL (Shared for send/cashout/identity/pool)
+     ============================================================ -->
+<div id="flowPanel" class="panel-overlay">
+    <div class="panel-header">
+        <button class="back-btn" onclick="closeFlow()">‹</button>
+        <span class="title" id="flowTitle">Send</span>
+        <button class="close-btn" onclick="closeFlow()">✕</button>
     </div>
+    <div class="panel-body" id="flowBody">
+        <!-- Dynamic content rendered by JS -->
+    </div>
+</div>
 
-    <!-- ============================================================
-         PANEL: HISTORY
-         ============================================================ -->
-    <div id="historyPanel" class="panel">
-        <div class="card">
-            <div class="panel-header">
-                <h4>📋 Recent Activity</h4>
-                <button class="btn-close-panel" onclick="hidePanel('historyPanel')">✕ Close</button>
+<!-- ============================================================
+     CLOUD PANEL
+     ============================================================ -->
+<div id="cloudPanel" class="panel-overlay">
+    <div class="panel-header">
+        <button class="back-btn" onclick="closePanel('cloud')">‹</button>
+        <span class="title">Waiting for you</span>
+        <button class="close-btn" onclick="closePanel('cloud')">✕</button>
+    </div>
+    <div class="panel-body" id="cloudBody">
+        <?php if (empty($cloudBalances)): ?>
+            <div style="text-align:center;padding:60px 20px;">
+                <div style="font-size:48px;margin-bottom:16px;">☁️</div>
+                <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:18px;">Nothing waiting</div>
+                <div style="opacity:0.4;font-size:14px;margin-top:8px;">When someone sends to your identity, it appears here.</div>
             </div>
-            <?php if (empty($recentSwaps)): ?>
-                <div class="empty-state">
-                    <div class="icon">📭</div>
-                    <h4>No activity yet</h4>
-                    <p>Your recent swaps will appear here.</p>
-                    <button class="btn-cloud-small" onclick="showPanel('swapPanel')" style="margin-top:12px;">⬆️ Make a Swap</button>
+        <?php else: ?>
+            <div class="cloud-total">
+                <span class="label">Total</span>
+                <span class="amount"><?= $currencySymbol ?> <?= number_format($cloudTotal, 2) ?></span>
+            </div>
+            <?php foreach ($cloudBalances as $cb): ?>
+                <div class="cloud-item">
+                    <div>
+                        <span class="ident"><?= htmlspecialchars($cb['identity_type']) ?>: <?= htmlspecialchars($cb['identity_value']) ?></span>
+                        <div class="expires">Expires <?= date('M d, H:i', strtotime($cb['expires_at'])) ?></div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div class="amount"><?= $currencySymbol ?> <?= number_format($cb['total_amount'], 2) ?></div>
+                        <div style="font-size:11px;opacity:0.4;"><?= $cb['count'] ?> item(s)</div>
+                    </div>
                 </div>
-            <?php else: ?>
-                <?php foreach ($recentSwaps as $swap): ?>
-                    <?php $ref = $swap['swap_reference'] ?? null; if (!$ref) continue; ?>
-                    <div class="swap-item" onclick="window.location.href='history.php?id=<?= urlencode($ref) ?>'">
-                        <div>
-                            <strong><?= htmlspecialchars($swap['from_institution'] ?? '?') ?></strong>
-                            <span style="color:#888;">→</span>
-                            <strong><?= htmlspecialchars($swap['to_institution'] ?? '?') ?></strong>
-                            <?php if (!empty($swap['swap_type'])): ?>
-                                <span style="font-size:10px; color:#888; margin-left:6px;"><?= htmlspecialchars($swap['swap_type']) ?></span>
-                            <?php endif; ?>
+            <?php endforeach; ?>
+        <?php endif; ?>
+    </div>
+</div>
+
+<!-- ============================================================
+     HISTORY PANEL
+     ============================================================ -->
+<div id="historyPanel" class="panel-overlay">
+    <div class="panel-header">
+        <button class="back-btn" onclick="closePanel('history')">‹</button>
+        <span class="title">Recent activity</span>
+        <button class="close-btn" onclick="closePanel('history')">✕</button>
+    </div>
+    <div class="panel-body">
+        <?php if (empty($recentSwaps)): ?>
+            <div style="text-align:center;padding:60px 20px;">
+                <div style="font-size:48px;margin-bottom:16px;">📭</div>
+                <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:18px;">No activity</div>
+                <div style="opacity:0.4;font-size:14px;margin-top:8px;">Your swaps will appear here.</div>
+            </div>
+        <?php else: ?>
+            <?php foreach ($recentSwaps as $swap): ?>
+                <?php $ref = $swap['swap_reference'] ?? null; if (!$ref) continue; ?>
+                <div class="history-item" onclick="window.location.href='history.php?id=<?= urlencode($ref) ?>'">
+                    <div>
+                        <div class="route">
+                            <?= htmlspecialchars($swap['from_institution'] ?? '?') ?>
+                            <span class="arrow">→</span>
+                            <?= htmlspecialchars($swap['to_institution'] ?? '?') ?>
                         </div>
-                        <div style="text-align:right;">
-                            <div style="font-weight:bold;"><?= number_format($swap['amount'] ?? 0, 2) ?> <?= $currencySymbol ?></div>
-                            <div class="swap-status <?= strtolower($swap['status'] ?? 'completed') ?>"><?= $swap['status'] ?? 'Completed' ?></div>
-                            <div style="font-size:10px; color:#888;"><?= date('M d, H:i', strtotime($swap['created_at'] ?? 'now')) ?></div>
-                        </div>
+                        <div class="when"><?= date('M d, H:i', strtotime($swap['created_at'] ?? 'now')) ?></div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div class="amount"><?= $currencySymbol ?> <?= number_format($swap['amount'] ?? 0, 2) ?></div>
+                        <div class="status <?= strtolower($swap['status'] ?? 'completed') ?>"><?= $swap['status'] ?? 'Completed' ?></div>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        <?php endif; ?>
+    </div>
+</div>
+
+<!-- ============================================================
+     IDENTIFIERS PANEL
+     ============================================================ -->
+<div id="identifiersPanel" class="panel-overlay">
+    <div class="panel-header">
+        <button class="back-btn" onclick="closePanel('identifiers')">‹</button>
+        <span class="title">Your identifiers</span>
+        <button class="close-btn" onclick="closePanel('identifiers')">✕</button>
+    </div>
+    <div class="panel-body">
+        <?php if (empty($validIdentifiers)): ?>
+            <div style="text-align:center;padding:60px 20px;">
+                <div style="font-size:48px;margin-bottom:16px;">🔑</div>
+                <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:18px;">No identifiers</div>
+                <div style="opacity:0.4;font-size:14px;margin-top:8px;">Add identifiers to receive money.</div>
+            </div>
+        <?php else: ?>
+            <div class="identifier-grid">
+                <?php foreach ($validIdentifiers as $id): ?>
+                    <div class="identifier-card">
+                        <span class="icon"><?= $id['icon'] ?></span>
+                        <div class="value"><?= htmlspecialchars($id['value']) ?></div>
+                        <div class="type"><?= htmlspecialchars($id['type']) ?></div>
                     </div>
                 <?php endforeach; ?>
-                <div style="text-align:center; margin-top:12px;">
-                    <a href="history.php" style="color:#00f0ff; font-size:13px; text-decoration:none;">View Full History →</a>
-                </div>
-            <?php endif; ?>
-        </div>
+            </div>
+        <?php endif; ?>
     </div>
+</div>
 
-    <!-- ============================================================
-         PANEL: IDENTIFIERS
-         ============================================================ -->
-    <div id="identifiersPanel" class="panel">
-        <div class="card">
-            <div class="panel-header">
-                <h4>🔑 Your Identifiers</h4>
-                <button class="btn-close-panel" onclick="hidePanel('identifiersPanel')">✕ Close</button>
+<!-- ============================================================
+     CONFIRMATION MODAL
+     ============================================================ -->
+<div id="confirmModal" class="modal-overlay">
+    <div class="modal-box">
+        <h2>Confirm swap</h2>
+        <div id="modalDetails">
+            <div style="text-align:center;padding:20px;">
+                <div style="display:inline-block;width:24px;height:24px;border:3px solid #D8D4CB;border-top-color:#121212;border-radius:50%;animation:spin 0.8s linear infinite;"></div>
+                <br><br>Calculating fees...
             </div>
-            <?php if (empty($validIdentifiers)): ?>
-                <div class="empty-state">
-                    <div class="icon">🔑</div>
-                    <h4>No identifiers added</h4>
-                    <p>Add your identifiers to receive money.</p>
-                </div>
-            <?php else: ?>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-                    <?php foreach ($validIdentifiers as $id): ?>
-                        <div style="background:#1a1f3a; border-radius:8px; padding:12px; border:1px solid #2a2f4a; text-align:center;">
-                            <div style="font-size:28px;"><?= $id['icon'] ?></div>
-                            <div style="font-weight:bold; font-size:14px; margin-top:4px;"><?= htmlspecialchars($id['value']) ?></div>
-                            <div style="font-size:10px; color:#888; text-transform:uppercase;"><?= htmlspecialchars($id['type']) ?></div>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
-                <div class="info-box" style="margin-top:12px;">
-                    💡 These are the identifiers you can use to receive money.
-                </div>
-            <?php endif; ?>
         </div>
-    </div>
-
-    <!-- CONFIRMATION MODAL -->
-    <div id="confirmModal" class="modal-overlay">
-        <div class="modal">
-            <h2>🔄 Confirm Swap</h2>
-            <div id="modalDetails" class="details">
-                <div style="text-align:center; padding:20px;">
-                    <div class="loading-spinner"></div>
-                    <br>Calculating fees...
-                </div>
-            </div>
-            <div id="modalError" class="modal-error"></div>
-            <div class="modal-actions">
-                <button class="btn-cancel" onclick="closeConfirmation()">Cancel</button>
-                <button id="confirmBtn" class="btn-confirm">✅ Confirm</button>
-            </div>
+        <div id="modalError" class="modal-error"></div>
+        <div class="modal-actions">
+            <button class="btn-cancel" onclick="closeConfirm()">Cancel</button>
+            <button id="confirmBtn" class="btn-confirm">Confirm</button>
         </div>
     </div>
 </div>
 
+<style>
+    @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+
 <script>
 // ============================================================
-// CONFIGURATION
+// CONFIG
 // ============================================================
 const participants = <?= json_encode($participantOptions) ?>;
 const assetFields = <?= json_encode($assetFieldsMap) ?>;
@@ -1176,196 +1113,326 @@ const currencySymbol = '<?= $currencySymbol ?>';
 const userIdentifiers = <?= $identifiersJson ?>;
 const apiUrl = '<?= $apiUrl ?>';
 const previewUrl = '<?= $previewUrl ?>';
-const cloudBalanceUrl = '<?= $cloudBalanceUrl ?>';
 const apiKey = '<?= $apiKey ?>';
 const userId = '<?= $userId ?>';
-
-// ============================================================
-// FALLBACK: Ensure VOUCHER fields exist
-// ============================================================
-if (assetFields['VOUCHER'] && assetFields['VOUCHER'].length === 0) {
-    assetFields['VOUCHER'] = [
-        { name: 'voucher_number', label: '🎫 Voucher Number', type: 'text', required: true, placeholder: 'Enter voucher number' },
-        { name: 'voucher_pin', label: '🔑 Voucher PIN', type: 'password', required: true, vault_field: 'pin', placeholder: 'Enter voucher PIN' },
-        { name: 'amount', label: '💰 Amount', type: 'number', required: true, placeholder: '0.00' },
-        { name: 'phone', label: '📱 Phone Number', type: 'tel', required: false, placeholder: '+267XXXXXXXX' }
-    ];
-}
-if (assetFields['ATM'] && assetFields['ATM'].length === 0) {
-    assetFields['ATM'] = [
-        { name: 'atm_code', label: '🏧 ATM Code', type: 'text', required: true, placeholder: 'Enter ATM code' },
-        { name: 'atm_pin', label: '🔑 ATM PIN', type: 'password', required: true, vault_field: 'pin', placeholder: 'Enter ATM PIN' }
-    ];
-}
+const loggedPhone = '<?= htmlspecialchars($primaryIdentifier) ?>';
 
 // ============================================================
 // STATE
 // ============================================================
-let currentSwapType = 'STANDARD';
-let stdDestType = 'ACCOUNT';
-let msDestType = 'ACCOUNT';
-let sources = [];
-let sourceCounter = 0;
+let currentFlow = null; // 'send' | 'cashout' | 'identity' | 'pool'
+let currentStep = 0; // 0 = details, 1 = confirm, 2 = done
 let pendingPayload = null;
 let previewData = null;
-let cloudDetailsVisible = false;
+let sources = [];
+let sourceCounter = 0;
+let stdDestType = 'ACCOUNT';
+let msDestType = 'ACCOUNT';
 
 // ============================================================
-// PANEL CONTROLS
+// PANEL NAVIGATION
 // ============================================================
-
-function showPanel(panelId) {
-    // Hide all panels
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    // Show target panel
-    const panel = document.getElementById(panelId);
-    if (panel) {
-        panel.classList.add('active');
-        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+function openPanel(type) {
+    const map = {
+        'cloud': 'cloudPanel',
+        'history': 'historyPanel',
+        'identifiers': 'identifiersPanel'
+    };
+    const id = map[type];
+    if (id) document.getElementById(id).classList.add('active');
 }
 
-function hidePanel(panelId) {
-    document.getElementById(panelId).classList.remove('active');
+function closePanel(type) {
+    const map = {
+        'cloud': 'cloudPanel',
+        'history': 'historyPanel',
+        'identifiers': 'identifiersPanel'
+    };
+    const id = map[type];
+    if (id) document.getElementById(id).classList.remove('active');
+}
+
+function openFlow(type) {
+    currentFlow = type;
+    currentStep = 0;
+    document.getElementById('flowPanel').classList.add('active');
+    renderFlow();
+}
+
+function closeFlow() {
+    document.getElementById('flowPanel').classList.remove('active');
+    currentFlow = null;
+    currentStep = 0;
 }
 
 // ============================================================
-// CLOUD BALANCE FUNCTIONS
+// FLOW RENDERER
 // ============================================================
-
-function checkCloudBalance() {
-    const btn = document.querySelector('#cloudPanel .btn-cloud');
-    if (!btn) return;
-    const originalText = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '⏳ Loading...';
+function renderFlow() {
+    const titleMap = {
+        'send': 'Send',
+        'cashout': 'Cashout',
+        'identity': 'Send to identity',
+        'pool': 'Combine sources'
+    };
+    document.getElementById('flowTitle').textContent = titleMap[currentFlow] || 'Swap';
+    const body = document.getElementById('flowBody');
     
-    fetch(cloudBalanceUrl + '?user_id=' + userId, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey }
-    })
-    .then(response => response.json())
-    .then(data => {
-        const container = document.getElementById('cloudBalanceContent');
-        if (!container) return;
-        
-        if (data.success) {
-            const total = data.total || 0;
-            const items = data.items || [];
-            
-            if (items.length === 0) {
-                container.innerHTML = `
-                    <div class="empty-state">
-                        <div class="icon">☁️</div>
-                        <h4>No money waiting</h4>
-                        <p>When someone sends money to your identity, it will appear here.</p>
-                        <button class="btn-cloud-small" onclick="showPanel('swapPanel')" style="margin-top:12px;">⬆️ Send Money</button>
-                    </div>
-                `;
-                return;
-            }
-            
-            let html = `
-                <div class="cloud-balance-card">
-                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                        <div>
-                            <div style="font-size:12px; color:#888;">Total Cloud Balance</div>
-                            <div class="amount">${currencySymbol} ${total.toFixed(2)}</div>
-                        </div>
-                        <div style="text-align:right;">
-                            <div style="font-size:11px; color:#888;">${items.length} pending item(s)</div>
-                            <button class="btn-cloud-small" onclick="toggleCloudDetails()">📋 Details</button>
-                        </div>
-                    </div>
-                </div>
-                <div id="cloudDetails" style="display:none; margin-top:8px;">
-                    ${items.map(item => `
-                        <div class="cloud-item">
-                            <div>
-                                <span class="ident">${item.identity_type}:</span>
-                                <strong>${item.identity_value}</strong>
-                                <span style="color:#888;font-size:10px;">(${item.count} items)</span>
-                            </div>
-                            <div>
-                                <span class="amount">${currencySymbol} ${parseFloat(item.total_amount).toFixed(2)}</span>
-                                <span style="color:#888;font-size:10px;margin-left:8px;">Expires: ${new Date(item.expires_at).toLocaleDateString()} ${new Date(item.expires_at).toLocaleTimeString()}</span>
-                            </div>
-                        </div>
+    if (currentStep === 0) body.innerHTML = renderDetails();
+    else if (currentStep === 1) body.innerHTML = renderConfirm();
+    else if (currentStep === 2) body.innerHTML = renderDone();
+}
+
+function renderDetails() {
+    const flow = currentFlow;
+    let html = '';
+    
+    // Common: Source selection for all except pool
+    if (flow !== 'pool') {
+        html += `
+            <div class="field">
+                <div class="field-label">Send from</div>
+                <div class="pill-group" id="fromPills">
+                    ${Object.entries(participants).map(([code, p]) => `
+                        <button class="pill" data-value="${code}" onclick="selectFrom('${code}')">${p.name}</button>
                     `).join('')}
-                    <div style="margin-top:8px; text-align:center;">
-                        <button class="btn-cloud-small" onclick="toggleCloudDetails()">Hide Details</button>
-                    </div>
                 </div>
-                <button id="toggleCloudBtn" class="btn-cloud-small" style="margin-top:8px;" onclick="toggleCloudDetails()">📋 Show Details</button>
-            `;
-            container.innerHTML = html;
-            cloudDetailsVisible = false;
-        } else {
-            container.innerHTML = `<div class="info-box" style="color:#ff6b6b;">❌ ${data.message || 'Failed to load cloud balance'}</div>`;
+            </div>
+            <div class="field" id="assetField">
+                <div class="field-label">Asset type</div>
+                <div class="pill-group" id="assetPills"></div>
+            </div>
+            <div class="field" id="sourceIdField">
+                <div class="field-label">Your identifier</div>
+                <select class="text-input" id="sourceIdentifier">
+                    <option value="">Select an identifier</option>
+                    ${userIdentifiers.map(id => `<option value="${id.value}">${id.icon} ${id.value}</option>`).join('')}
+                </select>
+            </div>
+            <div class="field">
+                <div class="field-label">Amount (${currencySymbol})</div>
+                <input type="number" class="text-input" id="amountInput" placeholder="0.00" step="0.01">
+                <div class="quick-amounts">
+                    ${[200, 100, 50, 20, 10, 500, 1000].map(a => `<span class="quick-amount" onclick="document.getElementById('amountInput').value=${a};updateSummary()">${a}</span>`).join('')}
+                </div>
+            </div>
+            <div id="assetFieldsContainer" class="field"></div>
+        `;
+    }
+    
+    // Flow-specific fields
+    if (flow === 'send') {
+        html += `
+            <div class="field">
+                <div class="field-label">Send to</div>
+                <div class="pill-group" id="toPills">
+                    ${Object.entries(participants).map(([code, p]) => `
+                        <button class="pill" data-value="${code}" onclick="selectTo('${code}')">${p.name}</button>
+                    `).join('')}
+                </div>
+            </div>
+            <div class="field">
+                <div class="field-label">Destination type</div>
+                <div class="pill-group">
+                    <button class="pill active" data-value="ACCOUNT" onclick="selectDestType('ACCOUNT')">Account</button>
+                    <button class="pill" data-value="WALLET" onclick="selectDestType('WALLET')">Wallet</button>
+                </div>
+            </div>
+            <div class="field" id="destField">
+                <div class="field-label">Destination identifier</div>
+                <input class="text-input" id="destInput" placeholder="Account number or phone">
+            </div>
+        `;
+    }
+    
+    if (flow === 'cashout') {
+        html += `
+            <div class="info-note">💳 They receive an ATM code via SMS. No destination account needed.</div>
+            <div class="field">
+                <div class="field-label">Beneficiary phone</div>
+                <input class="text-input" id="beneficiaryPhone" placeholder="+267 7X XXX XXX" value="${loggedPhone}">
+            </div>
+        `;
+    }
+    
+    if (flow === 'identity') {
+        html += `
+            <div class="info-note">🔐 Funds held against this identity. Recipient chooses cashout or deposit later — fees set at that point.</div>
+            <div class="field">
+                <div class="field-label">Identity type</div>
+                <div class="pill-group">
+                    <button class="pill active" data-value="phone" onclick="selectIdentityType('phone')">Phone</button>
+                    <button class="pill" data-value="national_id" onclick="selectIdentityType('national_id')">National ID</button>
+                    <button class="pill" data-value="email" onclick="selectIdentityType('email')">Email</button>
+                </div>
+            </div>
+            <div class="field">
+                <div class="field-label">Identity value</div>
+                <input class="text-input" id="identityValue" placeholder="Enter phone, ID or email">
+            </div>
+        `;
+    }
+    
+    if (flow === 'pool') {
+        html += `
+            <div class="field">
+                <div class="field-label">Pay to</div>
+                <div class="pill-group" id="toPills">
+                    ${Object.entries(participants).map(([code, p]) => `
+                        <button class="pill" data-value="${code}" onclick="selectTo('${code}')">${p.name}</button>
+                    `).join('')}
+                </div>
+            </div>
+            <div class="field">
+                <div class="field-label">Destination type</div>
+                <div class="pill-group">
+                    <button class="pill active" data-value="ACCOUNT" onclick="selectMsDestType('ACCOUNT')">Account</button>
+                    <button class="pill" data-value="WALLET" onclick="selectMsDestType('WALLET')">Wallet</button>
+                </div>
+            </div>
+            <div class="field" id="destField">
+                <div class="field-label">Destination identifier</div>
+                <input class="text-input" id="destInput" placeholder="Account number or phone">
+            </div>
+            <div class="field">
+                <div class="field-label">Sources (2+ required)</div>
+                <div id="sourceEntries"></div>
+                <button class="add-source-btn" onclick="addSource()">+ Add source</button>
+                <div id="sourceSummary" class="source-summary" style="display:none;">
+                    <div>Total: <span class="total" id="totalSourceAmount">${currencySymbol} 0.00</span></div>
+                    <div class="list" id="sourceList">No sources configured</div>
+                </div>
+            </div>
+        `;
+    }
+    
+    // PIN field (always at bottom)
+    html += `
+        <div class="field">
+            <div class="field-label">Your PIN</div>
+            <input type="password" class="text-input" id="pinInput" placeholder="••••" autocomplete="new-password">
+        </div>
+        <div id="summaryBox" class="info-note" style="margin-top:0;">Fill in the fields above</div>
+        <button class="btn-primary" id="reviewBtn" onclick="goToConfirm()">
+            Review <span class="arrow">›</span>
+        </button>
+    `;
+    
+    // Initialize dynamic fields
+    setTimeout(() => {
+        if (flow !== 'pool') {
+            const fromPills = document.querySelectorAll('#fromPills .pill');
+            if (fromPills.length) fromPills[0].click();
         }
-    })
-    .catch(error => {
-        const container = document.getElementById('cloudBalanceContent');
-        if (container) {
-            container.innerHTML = `<div class="info-box" style="color:#ff6b6b;">❌ Network error: ${error.message}</div>`;
-        }
-    })
-    .finally(() => {
-        btn.disabled = false;
-        btn.innerHTML = originalText;
+        if (flow === 'pool' && sources.length === 0) addSource();
+        updateSummary();
+    }, 50);
+    
+    return html;
+}
+
+// ============================================================
+// FLOW HELPERS
+// ============================================================
+let selectedFrom = null;
+let selectedTo = null;
+let selectedAsset = null;
+let selectedIdentType = 'phone';
+
+function selectFrom(code) {
+    selectedFrom = code;
+    document.querySelectorAll('#fromPills .pill').forEach(el => {
+        el.classList.toggle('active', el.dataset.value === code);
     });
+    updateAssetTypes();
+    updateSummary();
 }
 
-function toggleCloudDetails() {
-    cloudDetailsVisible = !cloudDetailsVisible;
-    const details = document.getElementById('cloudDetails');
-    const toggleBtn = document.getElementById('toggleCloudBtn');
-    if (details) details.style.display = cloudDetailsVisible ? 'block' : 'none';
-    if (toggleBtn) toggleBtn.textContent = cloudDetailsVisible ? '📋 Hide Details' : '📋 Show Details';
+function selectTo(code) {
+    selectedTo = code;
+    const pills = document.querySelectorAll('#toPills .pill');
+    if (pills.length) {
+        pills.forEach(el => el.classList.toggle('active', el.dataset.value === code));
+    }
+    updateSummary();
 }
 
-// ============================================================
-// ASSET FIELD FUNCTIONS
-// ============================================================
+function selectDestType(type) {
+    stdDestType = type;
+    document.querySelectorAll('#destField .pill-group .pill').forEach(el => {
+        el.classList.toggle('active', el.dataset.value === type);
+    });
+    const input = document.getElementById('destInput');
+    if (input) input.placeholder = type === 'ACCOUNT' ? 'Account number' : 'Phone number';
+    updateSummary();
+}
 
-function renderAssetFields(prefix, assetType, containerId) {
-    const container = document.getElementById(containerId);
+function selectMsDestType(type) {
+    msDestType = type;
+    document.querySelectorAll('#destField .pill-group .pill').forEach(el => {
+        el.classList.toggle('active', el.dataset.value === type);
+    });
+    const input = document.getElementById('destInput');
+    if (input) input.placeholder = type === 'ACCOUNT' ? 'Account number' : 'Phone number';
+    updateSummary();
+}
+
+function selectIdentityType(type) {
+    selectedIdentType = type;
+    document.querySelectorAll('#identityTypePills .pill').forEach(el => {
+        el.classList.toggle('active', el.dataset.value === type);
+    });
+    updateSummary();
+}
+
+function updateAssetTypes() {
+    const container = document.getElementById('assetPills');
     if (!container) return;
     container.innerHTML = '';
-    if (!assetType) {
-        container.innerHTML = '<div class="info-box">Select asset type above</div>';
+    const assets = participants[selectedFrom]?.asset_types || ['ACCOUNT'];
+    assets.forEach(type => {
+        const ui = assetUI[type] || {};
+        const pill = document.createElement('button');
+        pill.className = 'pill';
+        pill.dataset.value = type;
+        pill.textContent = (ui.icon || '') + ' ' + (ui.display_name || type);
+        pill.onclick = () => selectAsset(type);
+        container.appendChild(pill);
+    });
+    if (container.children.length) container.children[0].click();
+}
+
+function selectAsset(type) {
+    selectedAsset = type;
+    document.querySelectorAll('#assetPills .pill').forEach(el => {
+        el.classList.toggle('active', el.dataset.value === type);
+    });
+    renderAssetFields();
+    updateSummary();
+}
+
+function renderAssetFields() {
+    const container = document.getElementById('assetFieldsContainer');
+    if (!container) return;
+    container.innerHTML = '';
+    if (!selectedAsset) return;
+    const fields = assetFields[selectedAsset] || [];
+    if (fields.length === 0) {
+        container.innerHTML = '<div class="info-note" style="margin:0;">✅ No additional fields required</div>';
         return;
     }
-    const fields = assetFields[assetType] || [];
-    if (!fields || fields.length === 0) {
-        container.innerHTML = '<div class="info-box">✅ No additional fields required</div>';
-        return;
-    }
-    let html = '<div class="form-row">';
+    let html = '<div style="margin-top:8px;">';
     fields.forEach(f => {
         const isPin = f.type === 'password' || f.name.includes('pin') || f.vault_field === 'pin';
-        const fieldId = prefix + '_' + f.name;
-        const required = f.required ? ' required' : '';
-        const pattern = f.pattern ? ` pattern="${f.pattern}"` : '';
-        const minAttr = f.min !== undefined ? ` min="${f.min}"` : '';
-        const maxAttr = f.max !== undefined ? ` max="${f.max}"` : '';
-        const minLen = f.min_length ? ` minlength="${f.min_length}"` : '';
-        const maxLen = f.max_length ? ` maxlength="${f.max_length}"` : '';
-        const placeholder = f.placeholder || '';
-        const helpText = f.help_text || '';
-        const label = f.label || f.name;
-        
         html += `
-            <div class="form-group">
-                <label>${label}</label>
+            <div class="field" style="margin-bottom:10px;">
+                <div class="field-label">${f.label || f.name}</div>
                 <input type="${isPin ? 'password' : (f.type || 'text')}" 
-                       id="${fieldId}" 
-                       placeholder="${placeholder}"
-                       ${required}${pattern}${minAttr}${maxAttr}${minLen}${maxLen}
-                       class="asset-field"
+                       class="text-input" 
+                       id="asset_${f.name}" 
+                       placeholder="${f.placeholder || ''}"
                        autocomplete="${isPin ? 'new-password' : 'on'}">
-                ${helpText ? `<div style="font-size:10px;color:#888;margin-top:4px;">💡 ${helpText}</div>` : ''}
-                ${isPin ? '<div style="font-size:10px;color:#b000ff;margin-top:4px;">🔑 PIN field</div>' : ''}
+                ${isPin ? '<div style="font-size:10px;opacity:0.4;margin-top:4px;">🔑 PIN field</div>' : ''}
             </div>
         `;
     });
@@ -1373,277 +1440,77 @@ function renderAssetFields(prefix, assetType, containerId) {
     container.innerHTML = html;
 }
 
-function collectAssetFields(prefix, assetType) {
-    const fields = {};
-    const def = assetFields[assetType] || [];
-    def.forEach(f => {
-        const el = document.getElementById(prefix + '_' + f.name);
-        if (el && el.value.trim()) fields[f.name] = el.value.trim();
-    });
-    return fields;
-}
-
 // ============================================================
-// SWAP TYPE SELECTOR
+// POOL SOURCES
 // ============================================================
-
-function selectSwapType(type) {
-    currentSwapType = type;
-    document.querySelectorAll('.swap-type-option').forEach(el => {
-        el.style.borderColor = el.dataset.value === type ? '#00f0ff' : '#2a2f4a';
-        el.style.background = el.dataset.value === type ? 'rgba(0,240,255,0.05)' : '#1a1f3a';
-    });
-    const isStandard = type === 'STANDARD';
-    const isIdentity = type === 'IDENTITY';
-    const isMulti = type === 'MULTI_SOURCE';
-    document.getElementById('standardSwapSection').style.display = isStandard ? 'block' : 'none';
-    document.getElementById('identitySwapSection').style.display = isIdentity ? 'block' : 'none';
-    document.getElementById('multiSourceSection').style.display = isMulti ? 'block' : 'none';
-    document.getElementById('identityHelp').style.display = isIdentity ? 'inline' : 'none';
-    document.getElementById('multiHelp').style.display = isMulti ? 'inline' : 'none';
-    if (isStandard) updateStdDestination();
-    if (isIdentity) updateIdAssetTypes();
-    if (isMulti) { updateMsDestination(); if (sources.length === 0) addSource(); }
-    updateSummary();
-}
-
-// ============================================================
-// STANDARD SWAP
-// ============================================================
-
-function updateStdAssetTypes() {
-    const inst = document.getElementById('stdFromInstitution').value;
-    const assetSelect = document.getElementById('stdAssetType');
-    assetSelect.innerHTML = '<option value="">-- Select --</option>';
-    if (inst && participants[inst]) {
-        (participants[inst].asset_types || ['ACCOUNT']).forEach(type => {
-            const ui = assetUI[type] || {};
-            const opt = document.createElement('option');
-            opt.value = type;
-            opt.textContent = (ui.icon || '') + ' ' + (ui.display_name || type);
-            assetSelect.appendChild(opt);
-        });
-    }
-    if (assetSelect.options.length === 2 && assetSelect.options[1].value) {
-        assetSelect.value = assetSelect.options[1].value;
-        updateStdAssetFields();
-    }
-    updateSummary();
-}
-
-function updateStdAssetFields() {
-    const assetType = document.getElementById('stdAssetType').value;
-    renderAssetFields('std', assetType, 'stdAssetFieldsContainer');
-}
-
-function selectStdDestType(type) {
-    stdDestType = type;
-    document.querySelectorAll('#stdDestTypeContainer .dest-option').forEach(el => {
-        el.classList.toggle('active', el.dataset.value === type);
-    });
-    updateStdDestination();
-}
-
-function updateStdDestination() {
-    const swapType = document.getElementById('stdSwapType').value;
-    const container = document.getElementById('stdDestinationFields');
-    const typeContainer = document.getElementById('stdDestTypeContainer');
-    if (swapType === 'CASHOUT') {
-        typeContainer.style.display = 'none';
-        container.innerHTML = `
-            <div class="form-group">
-                <label>📱 Beneficiary Phone</label>
-                <input type="tel" id="stdBeneficiaryPhone" placeholder="+267XXXXXXXX" value="<?= $loggedPhone ?>">
-            </div>
-            <div class="info-box">🏧 They will receive an ATM code via SMS.</div>
-        `;
-        return;
-    }
-    typeContainer.style.display = 'block';
-    if (stdDestType === 'ACCOUNT') {
-        container.innerHTML = `
-            <div class="form-group">
-                <label>🏦 Account Number</label>
-                <input type="text" id="stdDestAccount" placeholder="Enter account number">
-            </div>
-            <div class="form-group">
-                <label>🏦 Account Name (Optional)</label>
-                <input type="text" id="stdDestAccountName" placeholder="Enter account name">
-            </div>
-            <div class="info-box">💳 Depositing to a bank account.</div>
-        `;
-    } else {
-        container.innerHTML = `
-            <div class="form-group">
-                <label>📱 Phone Number (Wallet)</label>
-                <input type="tel" id="stdDestPhone" placeholder="+267XXXXXXXX" value="<?= $loggedPhone ?>">
-            </div>
-            <div class="info-box">📱 Depositing to a mobile wallet.</div>
-        `;
-    }
-}
-
-function validateStdCorridor() {
-    const from = document.getElementById('stdFromInstitution').value;
-    const to = document.getElementById('stdToInstitution').value;
-    const warn = document.getElementById('stdCorridorWarning');
-    if (from && to && from === to) { warn.classList.add('show'); return false; }
-    warn.classList.remove('show'); return true;
-}
-
-// ============================================================
-// IDENTITY SWAP
-// ============================================================
-
-function updateIdAssetTypes() {
-    const inst = document.getElementById('idFromInstitution').value;
-    const assetSelect = document.getElementById('idAssetType');
-    assetSelect.innerHTML = '<option value="">-- Select --</option>';
-    if (inst && participants[inst]) {
-        (participants[inst].asset_types || ['ACCOUNT']).forEach(type => {
-            const ui = assetUI[type] || {};
-            const opt = document.createElement('option');
-            opt.value = type;
-            opt.textContent = (ui.icon || '') + ' ' + (ui.display_name || type);
-            assetSelect.appendChild(opt);
-        });
-    }
-    if (assetSelect.options.length === 2 && assetSelect.options[1].value) {
-        assetSelect.value = assetSelect.options[1].value;
-        updateIdAssetFields();
-    }
-    updateSummary();
-}
-
-function updateIdAssetFields() {
-    const assetType = document.getElementById('idAssetType').value;
-    renderAssetFields('id', assetType, 'idAssetFieldsContainer');
-}
-
-// ============================================================
-// MULTI-SOURCE
-// ============================================================
-
-function selectMsDestType(type) {
-    msDestType = type;
-    document.querySelectorAll('#msDestTypeContainer .dest-option').forEach(el => {
-        el.classList.toggle('active', el.dataset.value === type);
-    });
-    updateMsDestination();
-}
-
-function updateMsDestination() {
-    const swapType = document.getElementById('msSwapType').value;
-    const container = document.getElementById('msDestinationFields');
-    const typeContainer = document.getElementById('msDestTypeContainer');
-    if (swapType === 'CASHOUT') {
-        typeContainer.style.display = 'none';
-        container.innerHTML = `
-            <div class="form-group">
-                <label>📱 Beneficiary Phone</label>
-                <input type="tel" id="msBeneficiaryPhone" placeholder="+267XXXXXXXX" value="<?= $loggedPhone ?>">
-            </div>
-            <div class="info-box">🏧 They will receive an ATM code via SMS.</div>
-        `;
-        return;
-    }
-    typeContainer.style.display = 'block';
-    if (msDestType === 'ACCOUNT') {
-        container.innerHTML = `
-            <div class="form-group">
-                <label>🏦 Account Number</label>
-                <input type="text" id="msDestAccount" placeholder="Enter account number">
-            </div>
-            <div class="form-group">
-                <label>🏦 Account Name (Optional)</label>
-                <input type="text" id="msDestAccountName" placeholder="Enter account name">
-            </div>
-            <div class="info-box">💳 Depositing to a bank account.</div>
-        `;
-    } else {
-        container.innerHTML = `
-            <div class="form-group">
-                <label>📱 Phone Number (Wallet)</label>
-                <input type="tel" id="msDestPhone" placeholder="+267XXXXXXXX" value="<?= $loggedPhone ?>">
-            </div>
-            <div class="info-box">📱 Depositing to a mobile wallet.</div>
-        `;
-    }
-}
-
-function toggleMultiSource(event) {
-    const checked = document.getElementById('multiSourceCheckbox').checked;
-    document.getElementById('sourcesContainer').style.display = checked ? 'block' : 'none';
-    if (checked && sources.length === 0) addSource();
-    updateSummary();
-}
-
 function addSource() {
     sourceCounter++;
-    const sourceId = 'source_' + sourceCounter;
-    let assetOptions = '';
-    for (const [code, config] of Object.entries(assetUI)) {
-        const icon = config.icon || '📦';
-        const name = config.display_name || code;
-        assetOptions += `<option value="${code}">${icon} ${name}</option>`;
-    }
+    const id = 'src_' + sourceCounter;
     const entry = document.createElement('div');
     entry.className = 'source-entry';
-    entry.id = sourceId;
+    entry.id = id;
+    let assetOpts = '';
+    for (const [code, config] of Object.entries(assetUI)) {
+        assetOpts += `<option value="${code}">${config.icon || '📦'} ${config.display_name || code}</option>`;
+    }
     entry.innerHTML = `
         <div class="source-header">
-            <span class="source-number">📤 Source ${sourceCounter}</span>
-            <button class="btn-danger" onclick="removeSource('${sourceId}')">✕</button>
+            <span class="num">Source ${sourceCounter}</span>
+            <button class="remove-btn" onclick="removeSource('${id}')">✕</button>
         </div>
         <div class="source-fields">
-            <div class="form-group">
-                <label>Institution</label>
-                <select id="${sourceId}_institution" onchange="updateSourceAssetTypes('${sourceId}')">
-                    <option value="">-- Select --</option>
+            <div class="field">
+                <div class="field-label">Institution</div>
+                <select id="${id}_inst" onchange="updateSourceAssets('${id}')">
+                    <option value="">Select</option>
                     ${Object.entries(participants).map(([code, p]) => `<option value="${code}">${p.name}</option>`).join('')}
                 </select>
             </div>
-            <div class="form-group">
-                <label>Asset Type</label>
-                <select id="${sourceId}_assetType" onchange="updateSourceFields('${sourceId}')">
-                    <option value="">-- Select --</option>
-                    ${assetOptions}
+            <div class="field">
+                <div class="field-label">Asset type</div>
+                <select id="${id}_asset" onchange="updateSourceFields('${id}')">
+                    <option value="">Select</option>
+                    ${assetOpts}
                 </select>
             </div>
-            <div class="form-group">
-                <label>Amount (${currencySymbol})</label>
-                <input type="number" id="${sourceId}_amount" step="0.01" placeholder="0.00" oninput="updateSummary()">
-            </div>
         </div>
-        <div id="${sourceId}_fields" class="asset-fields-container" style="margin-top:8px;"></div>
-        <div class="form-group" style="margin-top:8px;">
-            <label>Identifier</label>
-            <select id="${sourceId}_identifierSelect" style="width:100%; padding:8px 10px; background:#1a1f3a; border:1px solid #2a2f4a; border-radius:8px; color:#fff; font-size:13px;">
-                <option value="">-- Select --</option>
-                ${userIdentifiers.map(id => `<option value="${id.value}" data-type="${id.type}">${id.icon} ${id.value}</option>`).join('')}
+        <div class="field" style="margin-top:10px;">
+            <div class="field-label">Amount (${currencySymbol})</div>
+            <input type="number" class="text-input" id="${id}_amount" placeholder="0.00" step="0.01" oninput="updateSummary()">
+        </div>
+        <div class="field" style="margin-top:10px;">
+            <div class="field-label">Identifier</div>
+            <select class="text-input" id="${id}_ident">
+                <option value="">Select</option>
+                ${userIdentifiers.map(id => `<option value="${id.value}">${id.icon} ${id.value}</option>`).join('')}
             </select>
         </div>
+        <div id="${id}_fields" class="asset-fields"></div>
     `;
     document.getElementById('sourceEntries').appendChild(entry);
-    sources.push({ id: sourceId, counter: sourceCounter });
+    sources.push({ id, counter: sourceCounter });
     updateSourceCount();
     updateSummary();
 }
 
-function removeSource(sourceId) {
-    const entry = document.getElementById(sourceId);
-    if (entry) { entry.remove(); sources = sources.filter(s => s.id !== sourceId); updateSourceCount(); updateSummary(); }
+function removeSource(id) {
+    const el = document.getElementById(id);
+    if (el) el.remove();
+    sources = sources.filter(s => s.id !== id);
+    updateSourceCount();
+    updateSummary();
     if (sources.length === 0) addSource();
 }
 
 function updateSourceCount() {
-    document.getElementById('sourceCount').textContent = sources.length + ' source' + (sources.length > 1 ? 's' : '');
+    const count = sources.length;
+    // Update any display of source count if needed
 }
 
-function updateSourceAssetTypes(sourceId) {
-    const inst = document.getElementById(sourceId + '_institution').value;
-    const assetSelect = document.getElementById(sourceId + '_assetType');
-    assetSelect.innerHTML = '<option value="">-- Select --</option>';
+function updateSourceAssets(id) {
+    const inst = document.getElementById(id + '_inst').value;
+    const assetSelect = document.getElementById(id + '_asset');
+    assetSelect.innerHTML = '<option value="">Select</option>';
     if (inst && participants[inst]) {
         (participants[inst].asset_types || ['ACCOUNT']).forEach(type => {
             const ui = assetUI[type] || {};
@@ -1653,132 +1520,199 @@ function updateSourceAssetTypes(sourceId) {
             assetSelect.appendChild(opt);
         });
     }
-    if (assetSelect.options.length === 2 && assetSelect.options[1].value) {
+    if (assetSelect.options.length === 2) {
         assetSelect.value = assetSelect.options[1].value;
-        updateSourceFields(sourceId);
+        updateSourceFields(id);
     }
 }
 
-function updateSourceFields(sourceId) {
-    const assetType = document.getElementById(sourceId + '_assetType').value;
-    const container = document.getElementById(sourceId + '_fields');
+function updateSourceFields(id) {
+    const asset = document.getElementById(id + '_asset').value;
+    const container = document.getElementById(id + '_fields');
     container.innerHTML = '';
-    if (!assetType) { container.innerHTML = '<div class="info-box">Select asset type</div>'; return; }
-    const fields = assetFields[assetType] || [];
-    if (fields.length === 0) { container.innerHTML = '<div class="info-box">✅ No additional fields</div>'; return; }
-    let html = '<div class="form-row" style="margin-bottom:0;">';
+    if (!asset) return;
+    const fields = assetFields[asset] || [];
+    if (fields.length === 0) return;
     fields.forEach(f => {
         const isPin = f.type === 'password' || f.name.includes('pin') || f.vault_field === 'pin';
-        html += `
-            <div class="form-group">
-                <label>${f.label || f.name}</label>
+        const div = document.createElement('div');
+        div.innerHTML = `
+            <div class="field" style="margin:0;">
+                <div class="field-label">${f.label || f.name}</div>
                 <input type="${isPin ? 'password' : (f.type || 'text')}" 
-                       id="${sourceId}_${f.name}" 
+                       class="text-input" 
+                       id="${id}_${f.name}" 
                        placeholder="${f.placeholder || ''}"
-                       class="source-asset-field">
-                ${isPin ? '<div style="font-size:10px;color:#b000ff;margin-top:4px;">🔑 PIN field</div>' : ''}
+                       autocomplete="${isPin ? 'new-password' : 'on'}">
             </div>
         `;
+        container.appendChild(div.firstElementChild);
     });
-    html += '</div>';
-    container.innerHTML = html;
 }
 
 // ============================================================
 // SUMMARY
 // ============================================================
-
 function updateSummary() {
-    const isStandard = currentSwapType === 'STANDARD';
-    const isIdentity = currentSwapType === 'IDENTITY';
-    const isMulti = currentSwapType === 'MULTI_SOURCE';
-    const summary = document.getElementById('summary');
-    if (!summary) return;
+    const box = document.getElementById('summaryBox');
+    if (!box) return;
+    const flow = currentFlow;
+    let text = 'Fill in the fields above';
     
-    if (isStandard) {
-        const from = document.getElementById('stdFromInstitution')?.value || '?';
-        const to = document.getElementById('stdToInstitution')?.value || '?';
-        const amount = parseFloat(document.getElementById('stdAmount')?.value) || 0;
-        const type = document.getElementById('stdSwapType')?.value || 'DEPOSIT';
-        summary.innerHTML = `📋 ${from} → ${to} · ${currencySymbol} ${amount.toFixed(2)} · ${type}`;
-    } else if (isIdentity) {
-        const from = document.getElementById('idFromInstitution')?.value || '?';
-        const amount = parseFloat(document.getElementById('idAmount')?.value) || 0;
-        const idType = document.getElementById('idIdentityType')?.value || '?';
-        const idValue = document.getElementById('idIdentityValue')?.value || '?';
-        summary.innerHTML = `🔐 ${from} → ${idType}: ${idValue} · ${currencySymbol} ${amount.toFixed(2)}`;
-    } else if (isMulti) {
+    if (flow === 'send') {
+        const from = selectedFrom || '?';
+        const to = selectedTo || '?';
+        const amt = parseFloat(document.getElementById('amountInput')?.value) || 0;
+        text = `${from} → ${to} · ${currencySymbol} ${amt.toFixed(2)}`;
+    } else if (flow === 'cashout') {
+        const from = selectedFrom || '?';
+        const amt = parseFloat(document.getElementById('amountInput')?.value) || 0;
+        text = `${from} → Cashout · ${currencySymbol} ${amt.toFixed(2)}`;
+    } else if (flow === 'identity') {
+        const from = selectedFrom || '?';
+        const amt = parseFloat(document.getElementById('amountInput')?.value) || 0;
+        const idVal = document.getElementById('identityValue')?.value || '?';
+        text = `${from} → ${selectedIdentType}: ${idVal} · ${currencySymbol} ${amt.toFixed(2)}`;
+    } else if (flow === 'pool') {
         let total = 0;
-        sources.forEach(s => { total += parseFloat(document.getElementById(s.id + '_amount')?.value) || 0; });
+        sources.forEach(s => {
+            total += parseFloat(document.getElementById(s.id + '_amount')?.value) || 0;
+        });
+        const to = selectedTo || '?';
         document.getElementById('totalSourceAmount').textContent = currencySymbol + ' ' + total.toFixed(2);
-        const to = document.getElementById('msToInstitution')?.value || '?';
-        const type = document.getElementById('msSwapType')?.value || 'DEPOSIT';
-        summary.innerHTML = `📦 ${to} · ${type} · ${currencySymbol} ${total.toFixed(2)} · ${sources.length} source(s)`;
+        text = `${to} · ${currencySymbol} ${total.toFixed(2)} · ${sources.length} source(s)`;
+    }
+    box.textContent = '📋 ' + text;
+}
+
+// ============================================================
+// GO TO CONFIRM
+// ============================================================
+function goToConfirm() {
+    const pin = document.getElementById('pinInput')?.value;
+    if (!pin || pin.length < 4) {
+        alert('Enter your PIN');
+        return;
+    }
+    
+    // Validate based on flow
+    const flow = currentFlow;
+    let valid = true;
+    
+    if (flow === 'send') {
+        if (!selectedFrom || !selectedTo) { alert('Select source and destination'); return; }
+        if (selectedFrom === selectedTo) { alert('Source and destination must be different'); return; }
+        const amt = parseFloat(document.getElementById('amountInput')?.value) || 0;
+        if (amt <= 0) { alert('Enter a valid amount'); return; }
+        const dest = document.getElementById('destInput')?.value?.trim();
+        if (!dest) { alert('Enter destination identifier'); return; }
+        const srcId = document.getElementById('sourceIdentifier')?.value;
+        if (!srcId) { alert('Select your source identifier'); return; }
+    } else if (flow === 'cashout') {
+        if (!selectedFrom) { alert('Select source'); return; }
+        const amt = parseFloat(document.getElementById('amountInput')?.value) || 0;
+        if (amt <= 0) { alert('Enter a valid amount'); return; }
+        const phone = document.getElementById('beneficiaryPhone')?.value?.trim();
+        if (!phone) { alert('Enter beneficiary phone'); return; }
+        const srcId = document.getElementById('sourceIdentifier')?.value;
+        if (!srcId) { alert('Select your source identifier'); return; }
+    } else if (flow === 'identity') {
+        if (!selectedFrom) { alert('Select source'); return; }
+        const amt = parseFloat(document.getElementById('amountInput')?.value) || 0;
+        if (amt <= 0) { alert('Enter a valid amount'); return; }
+        const idVal = document.getElementById('identityValue')?.value?.trim();
+        if (!idVal) { alert('Enter the identity value'); return; }
+        const srcId = document.getElementById('sourceIdentifier')?.value;
+        if (!srcId) { alert('Select your source identifier'); return; }
+    } else if (flow === 'pool') {
+        let hasError = false;
+        sources.forEach(s => {
+            const amt = parseFloat(document.getElementById(s.id + '_amount')?.value) || 0;
+            const inst = document.getElementById(s.id + '_inst')?.value;
+            const ident = document.getElementById(s.id + '_ident')?.value;
+            if (!inst) { hasError = true; alert('Select institution for source ' + s.counter); return; }
+            if (!ident) { hasError = true; alert('Select identifier for source ' + s.counter); return; }
+            if (amt <= 0) { hasError = true; alert('Enter amount for source ' + s.counter); return; }
+        });
+        if (hasError) return;
+        if (sources.length < 2) { alert('Add at least 2 sources'); return; }
+        if (!selectedTo) { alert('Select destination'); return; }
+        const dest = document.getElementById('destInput')?.value?.trim();
+        if (!dest) { alert('Enter destination identifier'); return; }
+    }
+    
+    const payload = buildPayload();
+    if (payload) {
+        pendingPayload = payload;
+        showConfirm(payload);
     }
 }
 
 // ============================================================
 // BUILD PAYLOAD
 // ============================================================
-
 function buildPayload() {
-    const isStandard = currentSwapType === 'STANDARD';
-    const isIdentity = currentSwapType === 'IDENTITY';
-    const isMulti = currentSwapType === 'MULTI_SOURCE';
-    
+    const flow = currentFlow;
     const payload = {
         reference: 'SWAP_' + Date.now(),
         idempotency_key: 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8),
         currency: '<?= $currency ?>'
     };
     
-    if (isStandard) {
-        payload.swap_type = document.getElementById('stdSwapType').value || 'DEPOSIT';
-        payload.from_institution = document.getElementById('stdFromInstitution').value || '';
-        payload.to_institution = document.getElementById('stdToInstitution').value || '';
-        payload.asset_type = document.getElementById('stdAssetType').value || 'ACCOUNT';
-        payload.source_identifier = document.getElementById('stdSourceIdentifier').value || '';
-        payload.amount = parseFloat(document.getElementById('stdAmount').value) || 0;
+    if (flow === 'send' || flow === 'cashout') {
+        payload.swap_type = flow === 'cashout' ? 'CASHOUT' : 'DEPOSIT';
+        payload.from_institution = selectedFrom;
+        payload.to_institution = selectedTo || 'ATM';
+        payload.asset_type = selectedAsset || 'ACCOUNT';
+        payload.source_identifier = document.getElementById('sourceIdentifier')?.value || '';
+        payload.amount = parseFloat(document.getElementById('amountInput')?.value) || 0;
         payload.destination_asset_type = stdDestType || 'ACCOUNT';
         
-        const assetFieldsData = collectAssetFields('std', payload.asset_type);
-        Object.assign(payload, assetFieldsData);
+        // Asset fields
+        const fields = assetFields[selectedAsset] || [];
+        fields.forEach(f => {
+            const el = document.getElementById('asset_' + f.name);
+            if (el && el.value.trim()) payload[f.name] = el.value.trim();
+        });
         
-        if (payload.swap_type === 'CASHOUT') {
-            payload.beneficiary_phone = document.getElementById('stdBeneficiaryPhone')?.value || '';
+        if (flow === 'cashout') {
+            payload.beneficiary_phone = document.getElementById('beneficiaryPhone')?.value || '';
             payload.destination_identifier = payload.beneficiary_phone;
             payload.destination_identifier_type = 'phone';
         } else {
+            const dest = document.getElementById('destInput')?.value?.trim() || '';
             if (stdDestType === 'ACCOUNT') {
-                payload.destination_account = document.getElementById('stdDestAccount')?.value || '';
-                payload.account_name = document.getElementById('stdDestAccountName')?.value || '';
-                payload.destination_identifier = payload.destination_account;
+                payload.destination_account = dest;
+                payload.destination_identifier = dest;
                 payload.destination_identifier_type = 'account';
             } else {
-                payload.destination_phone = document.getElementById('stdDestPhone')?.value || '';
-                payload.destination_identifier = payload.destination_phone;
+                payload.destination_phone = dest;
+                payload.destination_identifier = dest;
                 payload.destination_identifier_type = 'phone';
             }
         }
-    } else if (isIdentity) {
+    } else if (flow === 'identity') {
         payload.swap_type = 'IDENTITY';
-        payload.from_institution = document.getElementById('idFromInstitution').value || '';
-        payload.asset_type = document.getElementById('idAssetType').value || 'ACCOUNT';
-        payload.source_identifier = document.getElementById('idSourceIdentifier').value || '';
-        payload.amount = parseFloat(document.getElementById('idAmount').value) || 0;
-        payload.identity_type = document.getElementById('idIdentityType').value || 'national_id';
-        payload.identity_value = document.getElementById('idIdentityValue').value || '';
-        const assetFieldsData = collectAssetFields('id', payload.asset_type);
-        Object.assign(payload, assetFieldsData);
-    } else if (isMulti) {
+        payload.from_institution = selectedFrom;
+        payload.asset_type = selectedAsset || 'ACCOUNT';
+        payload.source_identifier = document.getElementById('sourceIdentifier')?.value || '';
+        payload.amount = parseFloat(document.getElementById('amountInput')?.value) || 0;
+        payload.identity_type = selectedIdentType || 'phone';
+        payload.identity_value = document.getElementById('identityValue')?.value?.trim() || '';
+        const fields = assetFields[selectedAsset] || [];
+        fields.forEach(f => {
+            const el = document.getElementById('asset_' + f.name);
+            if (el && el.value.trim()) payload[f.name] = el.value.trim();
+        });
+    } else if (flow === 'pool') {
         payload.swap_type = 'MULTI_SOURCE';
         payload.sources = [];
         let total = 0;
         sources.forEach(s => {
-            const inst = document.getElementById(s.id + '_institution')?.value || '';
-            const asset = document.getElementById(s.id + '_assetType')?.value || 'ACCOUNT';
+            const inst = document.getElementById(s.id + '_inst')?.value || '';
+            const asset = document.getElementById(s.id + '_asset')?.value || 'ACCOUNT';
             const amount = parseFloat(document.getElementById(s.id + '_amount')?.value) || 0;
-            const ident = document.getElementById(s.id + '_identifierSelect')?.value || '';
+            const ident = document.getElementById(s.id + '_ident')?.value || '';
             if (inst && amount > 0) {
                 const source = { institution: inst, asset_type: asset, amount: amount, identifier: ident };
                 const fields = assetFields[asset] || [];
@@ -1791,111 +1725,42 @@ function buildPayload() {
             }
         });
         payload.amount = total;
-        payload.to_institution = document.getElementById('msToInstitution').value || '';
-        payload.delivery_method = document.getElementById('msSwapType').value || 'DEPOSIT';
+        payload.to_institution = selectedTo;
+        payload.delivery_method = 'DEPOSIT';
         payload.destination_asset_type = msDestType || 'ACCOUNT';
         payload.contribution_strategy = 'SMART';
-        if (payload.delivery_method === 'CASHOUT') {
-            payload.beneficiary_phone = document.getElementById('msBeneficiaryPhone')?.value || '';
-            payload.destination_identifier = payload.beneficiary_phone;
-            payload.destination_identifier_type = 'phone';
+        const dest = document.getElementById('destInput')?.value?.trim() || '';
+        if (msDestType === 'ACCOUNT') {
+            payload.destination_account = dest;
+            payload.destination_identifier = dest;
+            payload.destination_identifier_type = 'account';
         } else {
-            if (msDestType === 'ACCOUNT') {
-                payload.destination_account = document.getElementById('msDestAccount')?.value || '';
-                payload.account_name = document.getElementById('msDestAccountName')?.value || '';
-                payload.destination_identifier = payload.destination_account;
-                payload.destination_identifier_type = 'account';
-            } else {
-                payload.destination_phone = document.getElementById('msDestPhone')?.value || '';
-                payload.destination_identifier = payload.destination_phone;
-                payload.destination_identifier_type = 'phone';
-            }
+            payload.destination_phone = dest;
+            payload.destination_identifier = dest;
+            payload.destination_identifier_type = 'phone';
         }
     }
     
-    const pin = document.getElementById('userPin')?.value || '';
+    const pin = document.getElementById('pinInput')?.value || '';
     if (pin) { payload.pin = pin; payload.wallet_pin = pin; }
     return payload;
 }
 
 // ============================================================
-// EXECUTE
+// CONFIRM MODAL
 // ============================================================
-
-document.getElementById('executeBtn').addEventListener('click', async function() {
-    const pin = document.getElementById('userPin').value;
-    if (!pin) { alert('🔑 Enter your PIN'); return; }
-    
-    // Validate based on swap type
-    const isStandard = currentSwapType === 'STANDARD';
-    const isIdentity = currentSwapType === 'IDENTITY';
-    const isMulti = currentSwapType === 'MULTI_SOURCE';
-    
-    if (isStandard) {
-        const from = document.getElementById('stdFromInstitution').value;
-        const to = document.getElementById('stdToInstitution').value;
-        const amount = parseFloat(document.getElementById('stdAmount').value);
-        const sourceId = document.getElementById('stdSourceIdentifier').value;
-        if (!from) { alert('Select source institution'); return; }
-        if (!to) { alert('Select destination institution'); return; }
-        if (!sourceId) { alert('Select your source identifier'); return; }
-        if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
-        if (from === to) { alert('Source and destination must be different'); return; }
-        if (document.getElementById('stdSwapType').value === 'CASHOUT' && !document.getElementById('stdBeneficiaryPhone').value) { alert('Enter beneficiary phone'); return; }
-        if (document.getElementById('stdSwapType').value === 'DEPOSIT') {
-            if (stdDestType === 'ACCOUNT' && !document.getElementById('stdDestAccount').value) { alert('Enter destination account number'); return; }
-            if (stdDestType === 'WALLET' && !document.getElementById('stdDestPhone').value) { alert('Enter destination phone number'); return; }
-        }
-    } else if (isIdentity) {
-        const from = document.getElementById('idFromInstitution').value;
-        const amount = parseFloat(document.getElementById('idAmount').value);
-        const idValue = document.getElementById('idIdentityValue').value.trim();
-        const sourceId = document.getElementById('idSourceIdentifier').value;
-        if (!from) { alert('Select source institution'); return; }
-        if (!sourceId) { alert('Select your source identifier'); return; }
-        if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
-        if (!idValue) { alert('Enter the identity value'); return; }
-    } else if (isMulti) {
-        let hasError = false;
-        let total = 0;
-        sources.forEach(s => {
-            const amt = parseFloat(document.getElementById(s.id + '_amount')?.value) || 0;
-            const inst = document.getElementById(s.id + '_institution')?.value;
-            const ident = document.getElementById(s.id + '_identifierSelect')?.value;
-            if (!inst) { hasError = true; alert('Select institution for source ' + s.counter); return; }
-            if (!ident) { hasError = true; alert('Select identifier for source ' + s.counter); return; }
-            if (amt <= 0) { hasError = true; alert('Enter valid amount for source ' + s.counter); return; }
-            total += amt;
-        });
-        if (hasError) return;
-        if (sources.length < 2) { alert('Add at least 2 sources'); return; }
-        if (total <= 0) { alert('Total amount must be > 0'); return; }
-        if (!document.getElementById('msToInstitution').value) { alert('Select destination institution'); return; }
-        if (document.getElementById('msSwapType').value === 'CASHOUT' && !document.getElementById('msBeneficiaryPhone').value) { alert('Enter beneficiary phone'); return; }
-        if (document.getElementById('msSwapType').value === 'DEPOSIT') {
-            if (msDestType === 'ACCOUNT' && !document.getElementById('msDestAccount').value) { alert('Enter destination account number'); return; }
-            if (msDestType === 'WALLET' && !document.getElementById('msDestPhone').value) { alert('Enter destination phone number'); return; }
-        }
-    }
-    
-    const payload = buildPayload();
-    await showConfirmation(payload);
-});
-
-// ============================================================
-// CONFIRMATION MODAL
-// ============================================================
-
-async function showConfirmation(payload) {
+async function showConfirm(payload) {
     const modal = document.getElementById('confirmModal');
     const details = document.getElementById('modalDetails');
     const error = document.getElementById('modalError');
-    const confirmBtn = document.getElementById('confirmBtn');
-    error.style.display = 'none';
-    confirmBtn.disabled = true;
-    confirmBtn.textContent = '⏳ Loading...';
-    details.innerHTML = '<div style="text-align:center;padding:20px;"><div class="loading-spinner"></div><br>Calculating fees...</div>';
+    const btn = document.getElementById('confirmBtn');
+    
+    error.classList.remove('show');
+    btn.disabled = true;
+    btn.textContent = 'Loading...';
+    details.innerHTML = '<div style="text-align:center;padding:20px;"><div style="display:inline-block;width:24px;height:24px;border:3px solid #D8D4CB;border-top-color:#121212;border-radius:50%;animation:spin 0.8s linear infinite;"></div><br><br>Calculating fees...</div>';
     modal.classList.add('show');
+    
     try {
         const resp = await fetch(previewUrl, {
             method: 'POST',
@@ -1904,17 +1769,18 @@ async function showConfirmation(payload) {
         });
         const result = await resp.json();
         if (!result.success) throw new Error(result.error || 'Fee calculation failed');
+        
         previewData = result.preview;
-        pendingPayload = payload;
         const p = previewData;
         const totalFee = p.total_fee || 0;
         const netAmount = p.net_amount_destination_currency || p.amount || 0;
+        
         let feeHTML = '';
         if (p.fee_breakdown && p.fee_breakdown.length > 0) {
-            feeHTML = '<div style="margin-top:10px;padding-top:10px;border-top:1px solid #1a1f3a;">';
+            feeHTML = '<div style="margin-top:10px;padding-top:10px;border-top:1px solid #D8D4CB;">';
             p.fee_breakdown.forEach(item => {
                 if ((item.amount || 0) > 0) {
-                    feeHTML += `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;color:#ccc;">
+                    feeHTML += `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px;opacity:0.6;">
                         <span>${item.name || item.slot || 'Fee'}</span>
                         <span>${(item.amount || 0).toFixed(2)} ${p.source_currency || 'BWP'}</span>
                     </div>`;
@@ -1922,42 +1788,54 @@ async function showConfirmation(payload) {
             });
             feeHTML += '</div>';
         }
+        
         details.innerHTML = `
-            <div style="margin-bottom:12px;">
-                <div style="font-size:12px;color:#888;">${p.swap_type || 'Swap'}</div>
-                <div style="color:#00f0ff;">${p.source_institution || '?'} → ${p.destination_institution || '?'}</div>
+            <div class="confirm-box">
+                <div class="confirm-row">
+                    <span class="label">Swap</span>
+                    <span>${p.source_institution || '?'} → ${p.destination_institution || '?'}</span>
+                </div>
+                <div class="confirm-row">
+                    <span class="label">Amount</span>
+                    <span>${(p.amount_requested || p.amount || 0).toFixed(2)} ${p.source_currency || 'BWP'}</span>
+                </div>
+                <div class="confirm-row">
+                    <span class="label">Fee</span>
+                    <span class="value negative">${totalFee.toFixed(2)} ${p.source_currency || 'BWP'}</span>
+                </div>
+                ${feeHTML}
+                <div class="confirm-divider"></div>
+                <div class="confirm-row">
+                    <span class="label">You receive</span>
+                    <span class="value highlight">${netAmount.toFixed(2)} ${p.destination_currency || p.source_currency || 'BWP'}</span>
+                </div>
+                ${p.is_multi_source ? `<div style="margin-top:8px;font-size:13px;opacity:0.5;">📦 ${p.source_count || 0} source(s)</div>` : ''}
+                ${p.identity_type ? `<div style="margin-top:8px;font-size:13px;opacity:0.5;">🔐 ${p.identity_type}: ${p.identity_value}</div>` : ''}
             </div>
-            <div class="row"><span class="label">💰 Amount</span><span class="value">${(p.amount_requested || p.amount || 0).toFixed(2)} ${p.source_currency || 'BWP'}</span></div>
-            <div class="row"><span class="label">📊 Fee</span><span class="value negative">${totalFee.toFixed(2)} ${p.source_currency || 'BWP'}</span></div>
-            ${feeHTML}
-            <div class="row total"><span class="label">📥 You Receive</span><span class="value highlight">${netAmount.toFixed(2)} ${p.destination_currency || p.source_currency || 'BWP'}</span></div>
-            ${p.is_multi_source ? `<div class="info-box" style="margin-top:10px;">📦 Multi-Source · ${p.source_count || 0} source(s)</div>` : ''}
-            ${p.identity_type ? `<div class="info-box" style="margin-top:10px;">🔐 Identity: ${p.identity_type} → ${p.identity_value}</div>` : ''}
         `;
-        confirmBtn.disabled = false;
-        confirmBtn.textContent = '✅ Confirm & Execute';
+        btn.disabled = false;
+        btn.textContent = 'Confirm';
+        btn.onclick = () => executeSwap();
     } catch (err) {
         error.textContent = '❌ ' + err.message;
-        error.style.display = 'block';
-        details.innerHTML = '<div style="text-align:center;padding:20px;color:#ff6b6b;">❌ Failed to calculate fees</div>';
-        confirmBtn.disabled = true;
-        confirmBtn.textContent = '❌ Error';
+        error.classList.add('show');
+        details.innerHTML = '<div style="text-align:center;padding:20px;opacity:0.5;">Failed to calculate fees</div>';
+        btn.disabled = true;
+        btn.textContent = 'Error';
     }
 }
 
-function closeConfirmation() {
+function closeConfirm() {
     document.getElementById('confirmModal').classList.remove('show');
-    pendingPayload = null;
-    previewData = null;
 }
 
-document.getElementById('confirmBtn').addEventListener('click', async function() {
-    if (!pendingPayload) return;
-    const btn = this;
-    const resultDiv = document.getElementById('result');
+async function executeSwap() {
+    const btn = document.getElementById('confirmBtn');
+    const error = document.getElementById('modalError');
     btn.disabled = true;
-    btn.innerHTML = '<div class="loading-spinner"></div> Executing...';
-    document.getElementById('modalError').style.display = 'none';
+    btn.textContent = 'Executing...';
+    error.classList.remove('show');
+    
     try {
         const resp = await fetch(apiUrl, {
             method: 'POST',
@@ -1966,61 +1844,65 @@ document.getElementById('confirmBtn').addEventListener('click', async function()
         });
         const result = await resp.json();
         const isSuccess = result.success === true || result.status === 'pending_cashout' || result.atomic_commit?.status === 'committed';
+        
         if (isSuccess) {
-            closeConfirmation();
-            resultDiv.className = 'result success';
+            closeConfirm();
             const ref = result.reference || result.swap_reference || 'N/A';
             const atmCode = result.atm_code || result.atm_pin || result.data?.atm_code || null;
-            let html = `<strong>✅ Swap Successful!</strong><br><br>`;
-            html += `📋 Reference: <span style="color:#888;font-size:12px;">${ref}</span><br>`;
-            html += `💰 Amount: ${currencySymbol} ${(pendingPayload.amount || 0).toFixed(2)}<br>`;
-            if (result.fee) html += `📊 Fee: ${currencySymbol} ${parseFloat(result.fee).toFixed(2)}<br>`;
-            if (atmCode) html += `<br>🏧 <span class="code">${atmCode}</span><br><span style="font-size:12px;color:#888;">ATM Cashout Code</span>`;
-            if (pendingPayload.identity_type) {
-                html += `<br>🔐 Identity: ${pendingPayload.identity_type} → ${pendingPayload.identity_value}`;
-            }
-            html += `<br><br><a href="history.php?id=${ref}" style="color:#00f0ff;">View Details →</a>`;
-            resultDiv.innerHTML = html;
-            resultDiv.scrollIntoView({ behavior: 'smooth' });
-            setTimeout(() => location.reload(), 3000);
+            pendingResult = { ref, atmCode, amount: pendingPayload.amount || 0, fee: result.fee || 0, identity: pendingPayload.identity_type };
+            currentStep = 2;
+            renderFlow();
         } else {
             const err = result.message || result.error || 'Unknown error';
-            document.getElementById('modalError').textContent = '❌ ' + err;
-            document.getElementById('modalError').style.display = 'block';
+            error.textContent = '❌ ' + err;
+            error.classList.add('show');
             btn.disabled = false;
-            btn.innerHTML = '🔄 Try Again';
+            btn.textContent = 'Try again';
         }
     } catch (err) {
-        document.getElementById('modalError').textContent = '❌ Network error: ' + err.message;
-        document.getElementById('modalError').style.display = 'block';
+        error.textContent = '❌ Network error: ' + err.message;
+        error.classList.add('show');
         btn.disabled = false;
-        btn.innerHTML = '🔄 Try Again';
+        btn.textContent = 'Try again';
     }
-});
+}
+
+let pendingResult = null;
+
+function renderDone() {
+    const r = pendingResult || {};
+    const isIdentity = currentFlow === 'identity';
+    return `
+        <div class="success-box">
+            <div class="check">✓</div>
+            <div class="title">${isIdentity ? 'Held for recipient' : 'Done'}</div>
+            <div class="ref">Ref ${r.ref || 'N/A'}</div>
+            ${r.atmCode ? `
+                <div class="code-box">
+                    <div class="code-label">Withdrawal code</div>
+                    <div class="code">${r.atmCode}</div>
+                </div>
+            ` : ''}
+            ${r.identity ? `<div style="font-size:14px;opacity:0.5;margin-top:12px;">🔐 ${r.identity}</div>` : ''}
+            <button class="btn-primary" style="max-width:200px;margin:20px auto 0;" onclick="closeFlow()">
+                Back to home
+            </button>
+        </div>
+    `;
+}
 
 // ============================================================
-// EVENT LISTENERS & INITIALIZATION
+// INIT
 // ============================================================
-
 document.addEventListener('DOMContentLoaded', function() {
-    updateStdDestination();
-    updateMsDestination();
-    updateSummary();
-    selectSwapType('STANDARD');
+    // Identity type pills need special handling because they're rendered dynamically
+    // The inline onclick handlers handle it
+    console.log('✅ VouchMorph Sharp Dashboard loaded');
     
-    document.getElementById('idSourceIdentifier')?.addEventListener('change', function() {
-        const opt = this.options[this.selectedIndex];
-        if (opt && opt.dataset.type) {
-            const typeMap = { 'phone': 'phone', 'email': 'email', 'national_id': 'national_id' };
-            const idType = document.getElementById('idIdentityType');
-            if (idType && typeMap[opt.dataset.type]) {
-                idType.value = typeMap[opt.dataset.type];
-            }
-        }
-        updateSummary();
+    // Close modal on overlay click
+    document.getElementById('confirmModal').addEventListener('click', function(e) {
+        if (e.target === this) closeConfirm();
     });
-    
-    console.log('✅ VouchMorph Quiet Dashboard loaded');
 });
 </script>
 </body>
