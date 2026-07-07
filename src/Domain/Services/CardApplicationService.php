@@ -1,21 +1,19 @@
 <?php
 
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
-
 declare(strict_types=1);
 
-namespace BUSINESS_LOGIC_LAYER\services;
+namespace Domain\Services;
 
 require_once __DIR__ . '/KYCDocumentService.php';
-require_once __DIR__ . '/../../INTEGRATION_LAYER/CLIENTS/CardSchemes/CardNumberGenerator.php';
+require_once __DIR__ . '/../../Infrastructure/Cards/CardNumberGenerator.php';
 require_once __DIR__ . '/../Helpers/CardHelper.php';
 
 use PDO;
 use Exception;
 use RuntimeException;
-use BUSINESS_LOGIC_LAYER\services\KYCDocumentService;
-use INTEGRATION_LAYER\CLIENTS\CardSchemes\CardNumberGenerator;
-use BUSINESS_LOGIC_LAYER\Helpers\CardHelper;
+use Domain\Services\KYCDocumentService;
+use Infrastructure\Cards\CardNumberGenerator;
+use Domain\Helpers\CardHelper;
 
 /**
  * CardApplicationService - Handles card applications for general public
@@ -183,45 +181,45 @@ class CardApplicationService
     /**
      * Create application record
      */
-   private function createApplication(int $userId, array $data): string
-{
-    $applicationId = 'APP-' . date('Ymd') . '-' . strtoupper(substr(uniqid(), -6));
-    
-    $stmt = $this->db->prepare("
-        INSERT INTO card_applications (
-            application_id, user_id, full_name, id_number, id_type,
-            date_of_birth, phone, email, occupation, income_range,
-            source_of_funds, card_type, delivery_address, delivery_method, branch_location,
-            status, consent, created_at, submitted_at
-        ) VALUES (
-            :app_id, :user_id, :full_name, :id_number, :id_type,
-            :dob, :phone, :email, :occupation, :income_range,
-            :source_of_funds,:card_type, :address, :delivery_method, :branch_location,
-            'PENDING_KYC', :consent, NOW(), NOW()
-        )
-    ");
-    
-    $stmt->execute([
-        ':app_id' => $applicationId,
-        ':user_id' => $userId,
-        ':full_name' => $data['full_name'],
-        ':id_number' => $data['id_number'],
-        ':id_type' => $data['id_type'],
-        ':dob' => $data['date_of_birth'],
-        ':phone' => $data['phone'],
-        ':email' => $data['email'],
-        ':occupation' => $data['occupation'] ?? null,
-        ':income_range' => $data['income_range'] ?? null,
-        ':source_of_funds' => $data['source_of_funds'] ?? null,
-        ':card_type' => $data['card_type'],
-        ':address' => json_encode($data['delivery_address'] ?? null),
-        ':delivery_method' => $data['delivery_method'] ?? 'BRANCH_PICKUP',
-        ':branch_location' => $data['branch_location'] ?? null,
-        ':consent' => json_encode($data['consent'] ?? [])
-    ]);
-    
-    return $applicationId;
-}
+    private function createApplication(int $userId, array $data): string
+    {
+        $applicationId = 'APP-' . date('Ymd') . '-' . strtoupper(substr(uniqid(), -6));
+        
+        $stmt = $this->db->prepare("
+            INSERT INTO card_applications (
+                application_id, user_id, full_name, id_number, id_type,
+                date_of_birth, phone, email, occupation, income_range,
+                source_of_funds, card_type, delivery_address, delivery_method, branch_location,
+                status, consent, created_at, submitted_at
+            ) VALUES (
+                :app_id, :user_id, :full_name, :id_number, :id_type,
+                :dob, :phone, :email, :occupation, :income_range,
+                :source_of_funds, :card_type, :address, :delivery_method, :branch_location,
+                'PENDING_KYC', :consent, NOW(), NOW()
+            )
+        ");
+        
+        $stmt->execute([
+            ':app_id' => $applicationId,
+            ':user_id' => $userId,
+            ':full_name' => $data['full_name'],
+            ':id_number' => $data['id_number'],
+            ':id_type' => $data['id_type'],
+            ':dob' => $data['date_of_birth'],
+            ':phone' => $data['phone'],
+            ':email' => $data['email'],
+            ':occupation' => $data['occupation'] ?? null,
+            ':income_range' => $data['income_range'] ?? null,
+            ':source_of_funds' => $data['source_of_funds'] ?? null,
+            ':card_type' => $data['card_type'],
+            ':address' => json_encode($data['delivery_address'] ?? null),
+            ':delivery_method' => $data['delivery_method'] ?? 'BRANCH_PICKUP',
+            ':branch_location' => $data['branch_location'] ?? null,
+            ':consent' => json_encode($data['consent'] ?? [])
+        ]);
+        
+        return $applicationId;
+    }
     
     /**
      * Assign physical card from inventory
