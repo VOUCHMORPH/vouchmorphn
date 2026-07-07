@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * Card Pool Finalize Workers
+ * Card Pool Finalize Worker
  *
  * Polls card_pool_finalize_queue for approved swipes and runs the real,
  * potentially-slow work: debiting pooled sources, releasing unused hold
