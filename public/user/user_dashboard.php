@@ -259,11 +259,15 @@ $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
 
 $denominationsList = implode(', ', $atmDenominations);
 
+// ============================================================
+// FIXED: Include 'type' in participantOptions for JS badge rendering
+// ============================================================
 $participantOptions = [];
 foreach ($participants as $code => $p) {
     $participantOptions[$code] = [
         'name' => $p['name'] ?? $code,
-        'asset_types' => $p['asset_types'] ?? ['ACCOUNT']
+        'asset_types' => $p['asset_types'] ?? ['ACCOUNT'],
+        'type' => $p['type'] ?? 'BANK', // BANK, MNO, or ORCHESTRATOR from participants.yaml
     ];
 }
 
@@ -492,6 +496,8 @@ $identifiersJson = json_encode($validIdentifiers);
             gap: 8px;
         }
         .pill {
+            display: inline-flex;
+            align-items: center;
             padding: 10px 16px;
             background: #FFFFFF;
             border: 2px solid #D8D4CB;
@@ -1118,6 +1124,15 @@ const userId = '<?= $userId ?>';
 const loggedPhone = '<?= htmlspecialchars($primaryIdentifier) ?>';
 
 // ============================================================
+// NEW: Institution type badge mapping
+// ============================================================
+const participantTypeBadge = {
+    'BANK':         { label: 'Bank',    icon: '🏦' },
+    'MNO':          { label: 'Mobile',  icon: '📱' },
+    'ORCHESTRATOR': { label: 'Network', icon: '⚙️' },
+};
+
+// ============================================================
 // STATE
 // ============================================================
 let currentFlow = null; // 'send' | 'cashout' | 'identity' | 'pool'
@@ -1128,6 +1143,7 @@ let sources = [];
 let sourceCounter = 0;
 let stdDestType = 'ACCOUNT';
 let msDestType = 'ACCOUNT';
+let sourceSelections = {}; // { [sourceId]: { inst: code, asset: type } }
 
 // ============================================================
 // PANEL NAVIGATION
@@ -1193,9 +1209,14 @@ function renderDetails() {
             <div class="field">
                 <div class="field-label">Send from</div>
                 <div class="pill-group" id="fromPills">
-                    ${Object.entries(participants).map(([code, p]) => `
-                        <button class="pill" data-value="${code}" onclick="selectFrom('${code}')">${p.name}</button>
-                    `).join('')}
+                    ${Object.entries(participants).map(([code, p]) => {
+                        const badge = participantTypeBadge[p.type] || participantTypeBadge['BANK'];
+                        return `
+                            <button class="pill" data-value="${code}" onclick="selectFrom('${code}')">
+                                <span style="opacity:0.6;font-size:11px;margin-right:4px;">${badge.icon}</span>${p.name}
+                            </button>
+                        `;
+                    }).join('')}
                 </div>
             </div>
             <div class="field" id="assetField">
@@ -1226,9 +1247,14 @@ function renderDetails() {
             <div class="field">
                 <div class="field-label">Send to</div>
                 <div class="pill-group" id="toPills">
-                    ${Object.entries(participants).map(([code, p]) => `
-                        <button class="pill" data-value="${code}" onclick="selectTo('${code}')">${p.name}</button>
-                    `).join('')}
+                    ${Object.entries(participants).map(([code, p]) => {
+                        const badge = participantTypeBadge[p.type] || participantTypeBadge['BANK'];
+                        return `
+                            <button class="pill" data-value="${code}" onclick="selectTo('${code}')">
+                                <span style="opacity:0.6;font-size:11px;margin-right:4px;">${badge.icon}</span>${p.name}
+                            </button>
+                        `;
+                    }).join('')}
                 </div>
             </div>
             <div class="field">
@@ -1260,7 +1286,7 @@ function renderDetails() {
             <div class="info-note">🔐 Funds held against this identity. Recipient chooses cashout or deposit later — fees set at that point.</div>
             <div class="field">
                 <div class="field-label">Identity type</div>
-                <div class="pill-group">
+                <div class="pill-group" id="identityTypePills">
                     <button class="pill active" data-value="phone" onclick="selectIdentityType('phone')">Phone</button>
                     <button class="pill" data-value="national_id" onclick="selectIdentityType('national_id')">National ID</button>
                     <button class="pill" data-value="email" onclick="selectIdentityType('email')">Email</button>
@@ -1278,9 +1304,14 @@ function renderDetails() {
             <div class="field">
                 <div class="field-label">Pay to</div>
                 <div class="pill-group" id="toPills">
-                    ${Object.entries(participants).map(([code, p]) => `
-                        <button class="pill" data-value="${code}" onclick="selectTo('${code}')">${p.name}</button>
-                    `).join('')}
+                    ${Object.entries(participants).map(([code, p]) => {
+                        const badge = participantTypeBadge[p.type] || participantTypeBadge['BANK'];
+                        return `
+                            <button class="pill" data-value="${code}" onclick="selectTo('${code}')">
+                                <span style="opacity:0.6;font-size:11px;margin-right:4px;">${badge.icon}</span>${p.name}
+                            </button>
+                        `;
+                    }).join('')}
                 </div>
             </div>
             <div class="field">
@@ -1441,7 +1472,7 @@ function renderAssetFields() {
 }
 
 // ============================================================
-// POOL SOURCES
+// POOL SOURCES - FIXED with pill-driven selection
 // ============================================================
 function addSource() {
     sourceCounter++;
@@ -1449,30 +1480,28 @@ function addSource() {
     const entry = document.createElement('div');
     entry.className = 'source-entry';
     entry.id = id;
-    let assetOpts = '';
-    for (const [code, config] of Object.entries(assetUI)) {
-        assetOpts += `<option value="${code}">${config.icon || '📦'} ${config.display_name || code}</option>`;
-    }
+    
     entry.innerHTML = `
         <div class="source-header">
             <span class="num">Source ${sourceCounter}</span>
             <button class="remove-btn" onclick="removeSource('${id}')">✕</button>
         </div>
-        <div class="source-fields">
-            <div class="field">
-                <div class="field-label">Institution</div>
-                <select id="${id}_inst" onchange="updateSourceAssets('${id}')">
-                    <option value="">Select</option>
-                    ${Object.entries(participants).map(([code, p]) => `<option value="${code}">${p.name}</option>`).join('')}
-                </select>
+        <div class="field">
+            <div class="field-label">Institution</div>
+            <div class="pill-group" id="${id}_instPills">
+                ${Object.entries(participants).map(([code, p]) => {
+                    const badge = participantTypeBadge[p.type] || participantTypeBadge['BANK'];
+                    return `
+                        <button type="button" class="pill" data-value="${code}" onclick="selectSourceInst('${id}','${code}')">
+                            <span style="opacity:0.6;font-size:11px;margin-right:4px;">${badge.icon}</span>${p.name}
+                        </button>
+                    `;
+                }).join('')}
             </div>
-            <div class="field">
-                <div class="field-label">Asset type</div>
-                <select id="${id}_asset" onchange="updateSourceFields('${id}')">
-                    <option value="">Select</option>
-                    ${assetOpts}
-                </select>
-            </div>
+        </div>
+        <div class="field" style="margin-top:10px;">
+            <div class="field-label">Asset type</div>
+            <div class="pill-group" id="${id}_assetPills"></div>
         </div>
         <div class="field" style="margin-top:10px;">
             <div class="field-label">Amount (${currencySymbol})</div>
@@ -1497,37 +1526,61 @@ function removeSource(id) {
     const el = document.getElementById(id);
     if (el) el.remove();
     sources = sources.filter(s => s.id !== id);
+    delete sourceSelections[id]; // Clean up stale state
     updateSourceCount();
     updateSummary();
     if (sources.length === 0) addSource();
 }
 
 function updateSourceCount() {
-    const count = sources.length;
-    // Update any display of source count if needed
+    // Count is tracked via sources array length
 }
 
-function updateSourceAssets(id) {
-    const inst = document.getElementById(id + '_inst').value;
-    const assetSelect = document.getElementById(id + '_asset');
-    assetSelect.innerHTML = '<option value="">Select</option>';
-    if (inst && participants[inst]) {
-        (participants[inst].asset_types || ['ACCOUNT']).forEach(type => {
-            const ui = assetUI[type] || {};
-            const opt = document.createElement('option');
-            opt.value = type;
-            opt.textContent = (ui.icon || '') + ' ' + (ui.display_name || type);
-            assetSelect.appendChild(opt);
-        });
-    }
-    if (assetSelect.options.length === 2) {
-        assetSelect.value = assetSelect.options[1].value;
-        updateSourceFields(id);
-    }
+function selectSourceInst(sourceId, code) {
+    sourceSelections[sourceId] = sourceSelections[sourceId] || {};
+    sourceSelections[sourceId].inst = code;
+    sourceSelections[sourceId].asset = null;
+
+    document.querySelectorAll(`#${sourceId}_instPills .pill`).forEach(el => {
+        el.classList.toggle('active', el.dataset.value === code);
+    });
+
+    renderSourceAssetPills(sourceId, code);
+    updateSummary();
+}
+
+function renderSourceAssetPills(sourceId, instCode) {
+    const container = document.getElementById(sourceId + '_assetPills');
+    if (!container) return;
+    container.innerHTML = '';
+    const assets = participants[instCode]?.asset_types || ['ACCOUNT'];
+    assets.forEach(type => {
+        const ui = assetUI[type] || {};
+        const pill = document.createElement('button');
+        pill.type = 'button';
+        pill.className = 'pill';
+        pill.dataset.value = type;
+        pill.textContent = (ui.icon || '') + ' ' + (ui.display_name || type);
+        pill.onclick = () => selectSourceAsset(sourceId, type);
+        container.appendChild(pill);
+    });
+    if (container.children.length) container.children[0].click();
+}
+
+function selectSourceAsset(sourceId, type) {
+    sourceSelections[sourceId] = sourceSelections[sourceId] || {};
+    sourceSelections[sourceId].asset = type;
+
+    document.querySelectorAll(`#${sourceId}_assetPills .pill`).forEach(el => {
+        el.classList.toggle('active', el.dataset.value === type);
+    });
+
+    updateSourceFields(sourceId);
+    updateSummary();
 }
 
 function updateSourceFields(id) {
-    const asset = document.getElementById(id + '_asset').value;
+    const asset = sourceSelections[id]?.asset || '';
     const container = document.getElementById(id + '_fields');
     container.innerHTML = '';
     if (!asset) return;
@@ -1628,7 +1681,7 @@ function goToConfirm() {
         let hasError = false;
         sources.forEach(s => {
             const amt = parseFloat(document.getElementById(s.id + '_amount')?.value) || 0;
-            const inst = document.getElementById(s.id + '_inst')?.value;
+            const inst = sourceSelections[s.id]?.inst;
             const ident = document.getElementById(s.id + '_ident')?.value;
             if (!inst) { hasError = true; alert('Select institution for source ' + s.counter); return; }
             if (!ident) { hasError = true; alert('Select identifier for source ' + s.counter); return; }
@@ -1649,7 +1702,7 @@ function goToConfirm() {
 }
 
 // ============================================================
-// BUILD PAYLOAD
+// BUILD PAYLOAD - FIXED for pool sourceSelections
 // ============================================================
 function buildPayload() {
     const flow = currentFlow;
@@ -1709,8 +1762,8 @@ function buildPayload() {
         payload.sources = [];
         let total = 0;
         sources.forEach(s => {
-            const inst = document.getElementById(s.id + '_inst')?.value || '';
-            const asset = document.getElementById(s.id + '_asset')?.value || 'ACCOUNT';
+            const inst = sourceSelections[s.id]?.inst || '';
+            const asset = sourceSelections[s.id]?.asset || 'ACCOUNT';
             const amount = parseFloat(document.getElementById(s.id + '_amount')?.value) || 0;
             const ident = document.getElementById(s.id + '_ident')?.value || '';
             if (inst && amount > 0) {
@@ -1895,8 +1948,6 @@ function renderDone() {
 // INIT
 // ============================================================
 document.addEventListener('DOMContentLoaded', function() {
-    // Identity type pills need special handling because they're rendered dynamically
-    // The inline onclick handlers handle it
     console.log('✅ VouchMorph Sharp Dashboard loaded');
     
     // Close modal on overlay click
