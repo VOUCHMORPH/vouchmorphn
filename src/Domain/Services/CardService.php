@@ -11,11 +11,18 @@ use Exception;
 use DateTimeImmutable;
 use RuntimeException;
 use Domain\Helpers\CardHelper;
+use Domain\Services\FeeService;
+use Domain\Services\ForexService;
 use Infrastructure\Cards\CardNumberGenerator;
 
 /**
  * CardService - Message Card Management
  * Handles issuance, authorization, and lifecycle of message-based cards
+ * 
+ * FEE/FOREX INTEGRATION:
+ * - Card issuance fees are calculated via FeeService
+ * - Card load fees (when funding from a swap) use the same fee structure
+ * - Forex conversion for cross-currency card loads
  */
 class CardService
 {
@@ -23,6 +30,9 @@ class CardService
     private string $countryCode;
     private array $config;
     private CardNumberGenerator $cardGenerator;
+    private ?FeeService $feeService = null;
+    private ?ForexService $forexService = null;
+    private ?array $feeCalculationDetails = null;
     
     // Card constants
     private const CARD_EXPIRY_YEARS = 3;
@@ -31,16 +41,25 @@ class CardService
     private const ATM_DAILY_LIMIT = 2000;
     private const POS_MAX_TRANSACTION = 5000;
     
-    public function __construct(PDO $db, string $countryCode, array $config)
-    {
+    public function __construct(
+        PDO $db, 
+        string $countryCode, 
+        array $config,
+        ?FeeService $feeService = null,
+        ?ForexService $forexService = null
+    ) {
         $this->db = $db;
         $this->countryCode = $countryCode;
         $this->config = $config;
         $this->cardGenerator = new CardNumberGenerator($config);
+        $this->feeService = $feeService;
+        $this->forexService = $forexService;
     }
     
     /**
      * Authorize a card load (for message-based cards)
+     * 
+     * FIXED: Now calculates fees and forex if services are available
      */
     public function authorizeCardLoad(array $data): array
     {
@@ -61,11 +80,17 @@ class CardService
                 throw new RuntimeException("Valid amount is required for card authorization");
             }
             
+            // Calculate fees and forex for this card load
+            $feeResult = $this->calculateCardFees($data);
+            
             $loadData = [
                 'hold_reference' => $data['hold_reference'],
                 'swap_reference' => $data['swap_reference'] ?? null,
                 'card_suffix' => $data['card_suffix'],
-                'amount' => $data['amount']
+                'amount' => $data['amount'],
+                'fee_amount' => $feeResult['total_fee'] ?? 0,
+                'forex_applied' => $feeResult['forex_applied'] ?? false,
+                'exchange_rate' => $feeResult['exchange_rate'] ?? 1.0
             ];
             
             $result = $this->loadCard($loadData);
@@ -75,6 +100,7 @@ class CardService
             $result['authorized_amount'] = $data['amount'];
             $result['remaining_balance'] = $result['new_balance'] ?? $data['amount'];
             $result['status'] = 'AUTHORIZED';
+            $result['fee_breakdown'] = $feeResult;
             
             error_log("[CardService] authorizeCardLoad successful: " . json_encode($result));
             
@@ -94,6 +120,8 @@ class CardService
     
     /**
      * Issue a new message card from a hold
+     * 
+     * FIXED: Now applies card issuance fees
      */
     public function issueCard(array $data): array
     {
@@ -128,6 +156,21 @@ class CardService
                 throw new RuntimeException("Initial amount exceeds hold amount");
             }
             
+            // Calculate card issuance fee
+            $feeResult = $this->calculateCardFees([
+                'amount' => $initialAmount,
+                'currency' => $hold['currency'] ?? 'BWP',
+                'fee_type' => 'CARD_ISSUE',
+                'purpose' => $data['purpose'] ?? 'student'
+            ]);
+            
+            $totalFee = $feeResult['total_fee'] ?? 0;
+            $netAmount = $initialAmount - $totalFee;
+            
+            if ($netAmount <= 0) {
+                throw new RuntimeException("Amount after fees ({$netAmount}) is too small to issue card");
+            }
+            
             $purpose = $data['purpose'] ?? 'student';
             $cardDetails = $this->cardGenerator->generateForPurpose($purpose);
             
@@ -152,8 +195,9 @@ class CardService
                     daily_limit,
                     monthly_limit,
                     atm_daily_limit,
+                    fee_amount,
                     metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NOW(), ?, ?, ?, ?, ?, ?::jsonb)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NOW(), ?, ?, ?, ?, ?, ?, ?::jsonb)
                 RETURNING card_id
             ");
             
@@ -165,19 +209,23 @@ class CardService
                 $hold['swap_reference'] ?? null,
                 $userId,
                 $data['cardholder_name'] ?? 'Cardholder',
-                $initialAmount,
-                $initialAmount,
+                $netAmount,
+                $netAmount,
                 $hold['currency'] ?? 'BWP',
                 $cardDetails['expiry_year'],
                 $cardDetails['expiry_month'],
                 $data['daily_limit'] ?? self::DAILY_SPEND_LIMIT,
                 $data['monthly_limit'] ?? self::MONTHLY_SPEND_LIMIT,
                 $data['atm_daily_limit'] ?? self::ATM_DAILY_LIMIT,
+                $totalFee,
                 json_encode([
                     'source_institution' => $hold['source_institution'] ?? 'unknown',
                     'purpose' => $purpose,
                     'issued_by' => $data['issued_by'] ?? 'system',
-                    'notes' => $data['notes'] ?? null
+                    'notes' => $data['notes'] ?? null,
+                    'fee_breakdown' => $feeResult,
+                    'original_amount' => $initialAmount,
+                    'currency' => $hold['currency'] ?? 'BWP'
                 ])
             ]);
             
@@ -190,7 +238,8 @@ class CardService
             $this->logTransaction([
                 'card_id' => $cardId,
                 'type' => 'ISSUANCE',
-                'amount' => $initialAmount,
+                'amount' => $netAmount,
+                'fee_amount' => $totalFee,
                 'auth_code' => CardHelper::generateAuthCode(),
                 'reference' => $hold['hold_reference'],
                 'channel' => 'ISSUANCE'
@@ -210,8 +259,11 @@ class CardService
                 'cardholder_name' => $data['cardholder_name'] ?? 'Cardholder',
                 'brand' => $cardDetails['brand'],
                 'initial_amount' => $initialAmount,
-                'remaining_amount' => $initialAmount,
+                'fee_amount' => $totalFee,
+                'net_amount' => $netAmount,
+                'remaining_amount' => $netAmount,
                 'currency' => $hold['currency'] ?? 'BWP',
+                'fee_breakdown' => $feeResult,
                 'message' => 'Card issued successfully'
             ];
             
@@ -224,6 +276,8 @@ class CardService
 
     /**
      * Load funds onto an existing card (link hold to card)
+     * 
+     * FIXED: Now applies fees and forex on card loads
      */
     public function loadCard(array $data): array
     {
@@ -263,15 +317,27 @@ class CardService
                 throw new RuntimeException("Hold not found or not active");
             }
             
+            // Calculate fees for card load
+            $feeResult = $this->calculateCardFees([
+                'amount' => $data['amount'],
+                'currency' => $card['currency'] ?? 'BWP',
+                'fee_type' => 'CARD_LOAD'
+            ]);
+            
+            $totalFee = $feeResult['total_fee'] ?? 0;
+            $netAmount = $data['amount'] - $totalFee;
+            
             $updateStmt = $this->db->prepare("
                 UPDATE message_cards 
                 SET hold_reference = :hold_ref,
                     swap_reference = :swap_ref,
                     initial_amount = initial_amount + :amount,
                     remaining_amount = remaining_amount + :amount,
+                    fee_amount = COALESCE(fee_amount, 0) + :fee,
                     status = 'ACTIVE',
                     activated_at = COALESCE(activated_at, NOW()),
-                    updated_at = NOW()
+                    updated_at = NOW(),
+                    metadata = COALESCE(metadata, '{}'::jsonb) || :metadata::jsonb
                 WHERE card_id = :card_id
                 RETURNING *
             ");
@@ -279,8 +345,13 @@ class CardService
             $updateStmt->execute([
                 ':hold_ref' => $data['hold_reference'],
                 ':swap_ref' => $data['swap_reference'] ?? null,
-                ':amount' => $data['amount'],
-                ':card_id' => $card['card_id']
+                ':amount' => $netAmount,
+                ':fee' => $totalFee,
+                ':card_id' => $card['card_id'],
+                ':metadata' => json_encode([
+                    'load_fee_breakdown' => $feeResult,
+                    'original_load_amount' => $data['amount']
+                ])
             ]);
             
             $updatedCard = $updateStmt->fetch(PDO::FETCH_ASSOC);
@@ -288,7 +359,8 @@ class CardService
             $this->recordCardLoadTransaction(
                 $updatedCard['card_id'],
                 $data['hold_reference'],
-                $data['amount']
+                $data['amount'],
+                $totalFee
             );
             
             return [
@@ -298,6 +370,9 @@ class CardService
                 'new_balance' => (float)$updatedCard['remaining_amount'],
                 'old_balance' => (float)$card['remaining_amount'],
                 'amount_loaded' => $data['amount'],
+                'fee_amount' => $totalFee,
+                'net_loaded' => $netAmount,
+                'fee_breakdown' => $feeResult,
                 'hold_reference' => $data['hold_reference'],
                 'message' => 'Card loaded successfully'
             ];
@@ -306,6 +381,63 @@ class CardService
             error_log("Card load error: " . $e->getMessage());
             throw $e;
         }
+    }
+
+    /**
+     * Calculate card fees and forex conversion
+     * 
+     * NEW: Fee/forex integration for card operations
+     */
+    private function calculateCardFees(array $data): array
+    {
+        $this->feeCalculationDetails = [];
+        
+        $amount = (float)($data['amount'] ?? 0);
+        $currency = $data['currency'] ?? 'BWP';
+        $feeType = $data['fee_type'] ?? 'CARD_ISSUE';
+        $destinationCurrency = $data['destination_currency'] ?? $currency;
+        
+        $totalFee = 0;
+        $forexApplied = false;
+        $exchangeRate = 1.0;
+        $convertedAmount = $amount;
+        
+        // Apply forex if destination currency differs
+        if ($this->forexService !== null && $currency !== $destinationCurrency) {
+            try {
+                $rate = $this->forexService->getClientRate($currency, $destinationCurrency, 'retail');
+                $exchangeRate = $rate['rate'] ?? 1.0;
+                $convertedAmount = $amount * $exchangeRate;
+                $forexApplied = true;
+            } catch (Exception $e) {
+                error_log("[CardService] Forex conversion failed: " . $e->getMessage());
+                // Continue with 1:1 rate if forex fails
+            }
+        }
+        
+        // Apply fee if FeeService is available
+        if ($this->feeService !== null) {
+            try {
+                $feeResult = $this->feeService->calculateFees($feeType, $amount, $data);
+                $totalFee = $feeResult['total_fee'] ?? 0;
+                $this->feeCalculationDetails = $feeResult;
+            } catch (Exception $e) {
+                error_log("[CardService] Fee calculation failed: " . $e->getMessage());
+                // Continue with zero fee if fee service fails
+            }
+        }
+        
+        return [
+            'total_fee' => $totalFee,
+            'fee_type' => $feeType,
+            'fee_currency' => $currency,
+            'forex_applied' => $forexApplied,
+            'exchange_rate' => $exchangeRate,
+            'original_amount' => $amount,
+            'converted_amount' => $convertedAmount,
+            'breakdown' => $this->feeCalculationDetails,
+            'net_amount' => $convertedAmount - $totalFee
+        ];
     }
 
     /**
@@ -332,7 +464,8 @@ class CardService
                 mc.currency,
                 mc.daily_limit,
                 mc.monthly_limit,
-                mc.atm_daily_limit
+                mc.atm_daily_limit,
+                mc.fee_amount as card_issuance_fee
             FROM card_authorizations ca
             JOIN message_cards mc ON ca.card_suffix = mc.card_suffix
             WHERE ca.card_suffix = ? 
@@ -366,6 +499,7 @@ class CardService
                     'source_institution' => $card['source_institution'] ?? 'VOUCHMORPH',
                     'expiry' => $card['expiry_year'] . '-' . $card['expiry_month'] . '-01',
                     'currency' => $card['currency'] ?? 'BWP',
+                    'fee_amount' => (float)($card['fee_amount'] ?? 0),
                     'is_authorization' => false
                 ];
             }
@@ -383,8 +517,9 @@ class CardService
             'source_institution' => $auth['source_institution'] ?? 'VOUCHMORPH',
             'expiry' => $auth['expiry_at'],
             'currency' => $auth['currency'] ?? 'BWP',
-            'fee_amount' => (float)$auth['fee_amount'],
-            'vat_amount' => (float)$auth['vat_amount'],
+            'fee_amount' => (float)($auth['fee_amount'] ?? 0),
+            'card_issuance_fee' => (float)($auth['card_issuance_fee'] ?? 0),
+            'vat_amount' => (float)($auth['vat_amount'] ?? 0),
             'status' => $auth['status'],
             'daily_limit' => (float)$auth['daily_limit'],
             'monthly_limit' => (float)$auth['monthly_limit'],
@@ -631,6 +766,7 @@ class CardService
             'expiry' => $card['expiry'],
             'status' => $card['status'],
             'total_spent' => (float)$card['total_spent'],
+            'total_fees' => (float)($card['total_fees'] ?? 0),
             'transaction_count' => (int)$card['transaction_count'],
             'last_transaction' => $card['last_transaction'],
             'source_institution' => $card['source_institution']
@@ -697,7 +833,8 @@ class CardService
                 ct.channel,
                 ct.created_at,
                 ct.response_code,
-                ct.response_message
+                ct.response_message,
+                ct.fee_amount
             FROM card_transactions ct
             JOIN message_cards mc ON ct.card_id = mc.card_id
             WHERE mc.card_number_hash = ?
@@ -836,13 +973,14 @@ class CardService
     /**
      * Record card load transaction
      */
-    private function recordCardLoadTransaction(int $cardId, string $holdReference, float $amount): void
+    private function recordCardLoadTransaction(int $cardId, string $holdReference, float $amount, float $fee = 0): void
     {
         $stmt = $this->db->prepare("
             INSERT INTO card_transactions (
                 card_id,
                 transaction_type,
                 amount,
+                fee_amount,
                 hold_reference,
                 auth_status,
                 created_at
@@ -850,6 +988,7 @@ class CardService
                 :card_id,
                 'LOAD',
                 :amount,
+                :fee,
                 :hold_ref,
                 'APPROVED',
                 NOW()
@@ -858,7 +997,8 @@ class CardService
         
         $stmt->execute([
             ':card_id' => $cardId,
-            ':amount' => $amount,
+            ':amount' => $amount - $fee,
+            ':fee' => $fee,
             ':hold_ref' => $holdReference
         ]);
     }
@@ -899,6 +1039,7 @@ class CardService
                     card_id,
                     transaction_type,
                     amount,
+                    fee_amount,
                     auth_code,
                     auth_status,
                     merchant_name,
@@ -910,13 +1051,14 @@ class CardService
                     reference,
                     response_code,
                     response_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             
             $stmt->execute([
                 $data['card_id'],
                 $data['type'],
                 $data['amount'],
+                $data['fee_amount'] ?? 0,
                 $data['auth_code'] ?? null,
                 $data['auth_status'] ?? 'APPROVED',
                 $data['merchant_name'] ?? null,
