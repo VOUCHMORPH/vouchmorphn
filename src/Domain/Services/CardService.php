@@ -18,6 +18,8 @@ use Domain\Services\Settlement\HybridSettlementStrategy;
 use Domain\Services\ContributionCalculator;
 use Infrastructure\Cards\CardNumberGenerator;
 use Core\Config\AssetTypeRegistry;
+use Security\Encryption\KeyVault;
+use PragmaRX\Google2FA\Google2FA;
 
 /**
  * CardService - Message Card Management
@@ -29,9 +31,11 @@ use Core\Config\AssetTypeRegistry;
  * - Forex conversion for cross-currency card loads
  * 
  * PCI-DSS COMPLIANCE FIXES:
- * - CVV is NEVER stored (removed cvv_hash from storage and verification)
+ * - CVV is NEVER stored (replaced with TOTP dynamic code)
  * - PAN is hashed with HMAC-SHA256 (not bare SHA-256)
  * - PIN/CVV material is never logged in plaintext
+ * - TOTP secrets are encrypted with AES-256-GCM using KeyVault
+ * - TOTP secrets are NEVER returned after issuance (one-time reveal only)
  */
 class CardService
 {
@@ -65,8 +69,22 @@ class CardService
         $this->feeService = $feeService;
         $this->forexService = $forexService;
         
-        // Load PAN HMAC key from environment (in production, this should come from KeyVault)
-        $this->panHmacKey = getenv('PAN_HMAC_KEY') ?: 'default-pan-hmac-key-32-chars!!';
+        // ============================================================
+        // FIXED: PAN HMAC key from KeyVault - NO HARDCODED FALLBACK
+        // ============================================================
+        try {
+            $keyVault = KeyVault::getInstance();
+            $this->panHmacKey = $keyVault->getKey('pan_hmac_key') ?? getenv('PAN_HMAC_KEY');
+        } catch (Exception $e) {
+            $this->panHmacKey = getenv('PAN_HMAC_KEY');
+        }
+        
+        if (empty($this->panHmacKey) || strlen($this->panHmacKey) < 32) {
+            throw new RuntimeException(
+                'PAN HMAC key is missing or too short (min 32 bytes required). ' .
+                'CardService cannot start without a real key - refusing to fall back to a hardcoded default.'
+            );
+        }
     }
     
     /**
@@ -77,6 +95,107 @@ class CardService
     {
         $cleanPan = preg_replace('/\D/', '', $cardNumber);
         return hash_hmac('sha256', $cleanPan, $this->panHmacKey);
+    }
+    
+    // ============================================================
+    // TOTP DYNAMIC CODE - REPLACES STATIC CVV
+    // ============================================================
+    
+    /**
+     * Encrypt a TOTP secret at rest using KeyVault's master encryption key.
+     * Uses AES-256-GCM directly rather than routing through HSMKeyManager,
+     * since HSMKeyManager's software fallback does not persist keys across
+     * requests.
+     */
+    private function encryptTotpSecret(string $secret): array
+    {
+        $keyVault = KeyVault::getInstance();
+        $key = $keyVault->getEncryptionKey();
+        
+        if (empty($key) || strlen($key) < 32) {
+            throw new RuntimeException('Encryption key missing or too short');
+        }
+        
+        $iv = random_bytes(12);
+        $tag = '';
+        $ciphertext = openssl_encrypt(
+            $secret,
+            'aes-256-gcm',
+            substr(hash('sha256', $key, true), 0, 32),
+            OPENSSL_RAW_DATA,
+            $iv,
+            $tag
+        );
+        
+        if ($ciphertext === false) {
+            throw new RuntimeException('Failed to encrypt TOTP secret');
+        }
+        
+        return [
+            'ciphertext' => base64_encode($ciphertext),
+            'iv' => base64_encode($iv),
+            'tag' => base64_encode($tag),
+        ];
+    }
+    
+    /**
+     * Decrypt a TOTP secret from storage.
+     */
+    private function decryptTotpSecret(string $ciphertext, string $iv, string $tag): string
+    {
+        $keyVault = KeyVault::getInstance();
+        $key = $keyVault->getEncryptionKey();
+        
+        if (empty($key) || strlen($key) < 32) {
+            throw new RuntimeException('Encryption key missing or too short');
+        }
+        
+        $plaintext = openssl_decrypt(
+            base64_decode($ciphertext),
+            'aes-256-gcm',
+            substr(hash('sha256', $key, true), 0, 32),
+            OPENSSL_RAW_DATA,
+            base64_decode($iv),
+            base64_decode($tag)
+        );
+        
+        if ($plaintext === false) {
+            throw new RuntimeException('Failed to decrypt TOTP secret - key mismatch or data corruption');
+        }
+        
+        return $plaintext;
+    }
+    
+    /**
+     * Verify a dynamic code the app displayed against the card's stored secret.
+     * Replaces static CVV verification entirely.
+     */
+    public function verifyDynamicCode(string $cardSuffix, string $providedCode): bool
+    {
+        $stmt = $this->db->prepare("
+            SELECT totp_secret_encrypted, totp_secret_iv, totp_secret_tag
+            FROM message_cards WHERE card_suffix = ? AND status = 'ACTIVE'
+        ");
+        $stmt->execute([$cardSuffix]);
+        $card = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$card || empty($card['totp_secret_encrypted'])) {
+            return false;
+        }
+        
+        try {
+            $secret = $this->decryptTotpSecret(
+                $card['totp_secret_encrypted'],
+                $card['totp_secret_iv'],
+                $card['totp_secret_tag']
+            );
+            
+            $google2fa = new Google2FA();
+            return $google2fa->verifyKey($secret, $providedCode, 1); // 1 window of drift tolerance
+        } catch (Exception $e) {
+            error_log("[CardService] TOTP verification failed: " . $e->getMessage());
+            return false;
+        }
     }
     
     /**
@@ -152,6 +271,7 @@ class CardService
      * FIXED: Removed cvv_hash storage (PCI-DSS violation)
      * FIXED: Uses HMAC-SHA256 for PAN hashing
      * FIXED: Now applies card issuance fees
+     * FIXED: Generates TOTP secret for dynamic code verification
      */
     public function issueCard(array $data): array
     {
@@ -206,7 +326,14 @@ class CardService
             
             $userId = $this->getOrCreateUser($data);
             
-            // PCI-DSS COMPLIANCE: cvv_hash REMOVED - CVV is NEVER stored
+            // ============================================================
+            // GENERATE TOTP SECRET - replaces CVV
+            // ============================================================
+            $google2fa = new Google2FA();
+            $totpSecret = $google2fa->generateSecretKey();
+            $encryptedSecret = $this->encryptTotpSecret($totpSecret);
+            
+            // PCI-DSS COMPLIANCE: cvv_hash REMOVED - replaced with TOTP secret
             $cardStmt = $this->db->prepare("
                 INSERT INTO message_cards (
                     card_number_hash,
@@ -226,8 +353,11 @@ class CardService
                     monthly_limit,
                     atm_daily_limit,
                     fee_amount,
-                    metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NOW(), ?, ?, ?, ?, ?, ?, ?::jsonb)
+                    metadata,
+                    totp_secret_encrypted,
+                    totp_secret_iv,
+                    totp_secret_tag
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NOW(), ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)
                 RETURNING card_id
             ");
             
@@ -255,7 +385,10 @@ class CardService
                     'fee_breakdown' => $feeResult,
                     'original_amount' => $initialAmount,
                     'currency' => $hold['currency'] ?? 'BWP'
-                ])
+                ]),
+                $encryptedSecret['ciphertext'],
+                $encryptedSecret['iv'],
+                $encryptedSecret['tag'],
             ]);
             
             $cardId = $cardStmt->fetchColumn();
@@ -281,7 +414,6 @@ class CardService
                 'card_id' => $cardId,
                 'card_number' => $cardDetails['pan_formatted'],
                 'card_suffix' => $cardDetails['pan_suffix'],
-                'cvv' => $cardDetails['cvv'],
                 'expiry' => $cardDetails['expiry_formatted'],
                 'expiry_month' => $cardDetails['expiry_month'],
                 'expiry_year' => $cardDetails['expiry_year'],
@@ -293,6 +425,7 @@ class CardService
                 'remaining_amount' => $netAmount,
                 'currency' => $hold['currency'] ?? 'BWP',
                 'fee_breakdown' => $feeResult,
+                'totp_secret' => $totpSecret,  // SHOWN ONCE at issuance, never retrievable again
                 'message' => 'Card issued successfully'
             ];
             
@@ -580,7 +713,7 @@ class CardService
     /**
      * Authorize a transaction (called by ATM/POS/online)
      * 
-     * FIXED: CVV check REMOVED entirely (PCI-DSS prohibits CVV retention)
+     * FIXED: CVV check REPLACED with TOTP dynamic code verification
      * FIXED: Uses HMAC-SHA256 for PAN lookup
      */
     public function authorizeTransaction(array $data): array
@@ -606,8 +739,15 @@ class CardService
                 throw new RuntimeException("Card not found or inactive");
             }
             
-            // CVV CHECK REMOVED - PCI-DSS prohibits CVV storage/verification
-            // Card verification is now based on PAN + expiry + card status only
+            // ============================================================
+            // TOTP DYNAMIC CODE CHECK - replaces static CVV
+            // ============================================================
+            if (empty($data['dynamic_code'])) {
+                throw new RuntimeException("Dynamic code is required");
+            }
+            if (!$this->verifyDynamicCode($card['card_suffix'], $data['dynamic_code'])) {
+                throw new RuntimeException("Invalid or expired dynamic code");
+            }
             
             $currentYear = (int)date('Y');
             $currentMonth = (int)date('m');
@@ -1072,7 +1212,7 @@ class CardService
         try {
             // Redact sensitive fields
             $logData = $data;
-            unset($logData['cvv'], $logData['pin'], $logData['card_number']);
+            unset($logData['cvv'], $logData['pin'], $logData['card_number'], $logData['dynamic_code']);
             
             $stmt = $this->db->prepare("
                 INSERT INTO card_transactions (
@@ -1126,10 +1266,10 @@ class CardService
         try {
             // Redact sensitive fields
             $safeRequest = $request;
-            unset($safeRequest['cvv'], $safeRequest['pin'], $safeRequest['card_number']);
+            unset($safeRequest['cvv'], $safeRequest['pin'], $safeRequest['card_number'], $safeRequest['dynamic_code']);
             
             $safeResponse = $response;
-            unset($safeResponse['cvv'], $safeResponse['pin'], $safeResponse['card_number']);
+            unset($safeResponse['cvv'], $safeResponse['pin'], $safeResponse['card_number'], $safeResponse['dynamic_code']);
             
             $stmt = $this->db->prepare("
                 INSERT INTO card_auth_logs (
@@ -1317,10 +1457,28 @@ class CardService
      * FAST PATH ONLY. Called at swipe time. No bank calls - a local check
      * against currently-valid held totals. This is what has to happen in
      * milliseconds; the real debits happen afterward in finalizePooledSwipe().
+     * 
+     * FIXED: Added TOTP dynamic code verification (same as authorizeTransaction)
      */
     public function authorizePooledSwipe(string $cardSuffix, float $amount, array $merchantContext): array
     {
         $startTime = microtime(true);
+
+        // ============================================================
+        // TOTP DYNAMIC CODE CHECK - required for pooled swipes too
+        // ============================================================
+        if (empty($merchantContext['dynamic_code'])) {
+            return [
+                'success' => false, 'authorized' => false,
+                'response_code' => '57', 'response_message' => 'Dynamic code required',
+            ];
+        }
+        if (!$this->verifyDynamicCode($cardSuffix, $merchantContext['dynamic_code'])) {
+            return [
+                'success' => false, 'authorized' => false,
+                'response_code' => '57', 'response_message' => 'Invalid or expired dynamic code',
+            ];
+        }
 
         $stmt = $this->db->prepare("
             SELECT * FROM card_pool_hooks
