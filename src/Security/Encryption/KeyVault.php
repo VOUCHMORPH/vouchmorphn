@@ -10,6 +10,8 @@ use RuntimeException;
  * 
  * Zero hardcoded values. Works for ANY country, ANY participant.
  * 
+ * FIXED: Added PAN_HMAC_KEY support for CardService
+ * 
  * Compliant with:
  * - PSD2 / EBA RTS (Strong Customer Authentication)
  * - ISO 27001:2022 (Asset & Access Control)
@@ -44,6 +46,18 @@ class KeyVault
         }
         
         $this->keys['encryption_master'] = $this->encryptionKey;
+        
+        // ============================================================
+        // PAN HMAC KEY - for CardService PAN hashing
+        // FIXED: Load as first-class key with length validation
+        // ============================================================
+        $panHmacKey = getenv('PAN_HMAC_KEY');
+        if ($panHmacKey && strlen($panHmacKey) >= 32) {
+            $this->keys['pan_hmac_key'] = $panHmacKey;
+        } else {
+            // Log warning but don't fail - CardService will validate on use
+            error_log("[KeyVault] WARNING: PAN_HMAC_KEY not set or too short (min 32 bytes)");
+        }
         
         // Dynamically load ALL participant keys from environment
         $this->loadAllParticipantKeys();
@@ -180,21 +194,21 @@ class KeyVault
         return $this->keys['encryption_master'];
     }
 
-   /**
- * Get any key by name
- */
-public function getKey(string $name): ?string
-{
-    return $this->keys[$name] ?? null;
-}
+    /**
+     * Get any key by name
+     */
+    public function getKey(string $name): ?string
+    {
+        return $this->keys[$name] ?? null;
+    }
 
-/**
- * Alias for getKey - for compatibility with SmsGatewayClient
- */
-public function get(string $name): ?string
-{
-    return $this->getKey($name);
-}
+    /**
+     * Alias for getKey - for compatibility with SmsGatewayClient
+     */
+    public function get(string $name): ?string
+    {
+        return $this->getKey($name);
+    }
 
     /**
      * Get configuration for a specific participant (bank, MNO, PSP)
@@ -223,258 +237,4 @@ public function get(string $name): ?string
         return [
             'api_key' => $this->keys[$participant . '_api_key'] ?? null,
             'base_url' => $this->keys[$participant . '_base_url'] ?? null,
-            'upstream_key' => $this->keys['upstream_' . $participant . '_key'] ?? null,
-            'client_id' => $this->keys[$participant . '_client_id'] ?? null,
-            'client_secret' => $this->keys[$participant . '_client_secret'] ?? null,
-            'auth_type' => 'API_KEY',
-            'header_name' => 'X-API-Key',
-            'timeout' => 10
-        ];
-    }
-
-    /**
-     * Get upstream key for sending requests TO a participant
-     */
-    public function getUpstreamKey(string $participantName): ?string
-    {
-        $participant = strtolower($participantName);
-        
-        // Priority: UPSTREAM_PARTICIPANT_KEY > PARTICIPANT_API_KEY
-        return $this->keys['upstream_' . $participant . '_key'] 
-            ?? $this->keys[$participant . '_api_key'] 
-            ?? null;
-    }
-
-    /**
-     * Get configuration for SMS/communication provider (dynamic by telco)
-     */
-    public function getCommunicationConfig(string $providerType, ?string $telco = null): array
-    {
-        // If telco specified, get its config
-        if ($telco) {
-            $telcoLower = strtolower($telco);
-            return [
-                'provider' => $telcoLower,
-                'api_key' => $this->keys[$telcoLower . '_api_key'] ?? null,
-                'base_url' => $this->keys[$telcoLower . '_base_url'] ?? null,
-                'enabled' => true,
-                'timeout' => 10,
-                'retry_attempts' => 3,
-                'api_key_header' => 'X-API-Key'
-            ];
-        }
-        
-        // Otherwise return generic config from communication.json
-        $commConfig = $this->loadCommunicationConfig();
-        $providerKey = strtolower($providerType);
-        
-        return $commConfig[$providerKey] ?? [];
-    }
-
-    /**
-     * Load communication.json dynamically for active country
-     */
-    private function loadCommunicationConfig(): array
-    {
-        $possiblePaths = [
-            __DIR__ . "/../../Core/Config/Countries/{$this->activeCountry}/communication.json",
-            __DIR__ . "/../../../src/Core/Config/Countries/{$this->activeCountry}/communication.json",
-            getenv('COMMUNICATION_CONFIG_PATH') ?: ''
-        ];
-        
-        foreach ($possiblePaths as $path) {
-            if ($path && file_exists($path)) {
-                $content = file_get_contents($path);
-                $config = json_decode($content, true);
-                if (json_last_error() === JSON_ERROR_NONE) {
-                    return $config;
-                }
-            }
-        }
-        
-        return [];
-    }
-
-    /**
-     * Get VouchMorph's own API key (for authenticating incoming requests)
-     */
-    public function getOwnApiKey(): string
-    {
-        return $this->keys['vouchmorph_api_key'] ?? $this->keys['api_key_system'] ?? 'SYSTEM_KEY';
-    }
-
-    /**
-     * Validate an incoming API key against a participant
-     * Works for ANY participant dynamically
-     */
-    public function validateIncomingKey(string $participant, string $providedKey): bool
-    {
-        $expectedKey = $this->keys[strtolower($participant) . '_api_key'] ?? null;
-        
-        if (!$expectedKey) {
-            return false;
-        }
-        
-        return hash_equals($expectedKey, $providedKey);
-    }
-
-    /**
-     * Get all configured participants dynamically
-     */
-    public function getAllParticipants(): array
-    {
-        $participants = [];
-        
-        // Find all participants from environment keys
-        foreach ($this->keys as $key => $value) {
-            if (str_ends_with($key, '_api_key') && !str_starts_with($key, 'upstream_')) {
-                $participant = str_replace('_api_key', '', $key);
-                if (!in_array($participant, ['encryption_master', 'vouchmorph'])) {
-                    $participants[] = $participant;
-                }
-            }
-        }
-        
-        // Also add from participants.json
-        foreach ($this->participantConfigs as $name => $config) {
-            if (!in_array($name, $participants)) {
-                $participants[] = $name;
-            }
-        }
-        
-        return array_unique($participants);
-    }
-
-    /**
-     * Get all configured telcos (MNOs) dynamically
-     */
-    public function getAvailableTelcos(): array
-    {
-        $telcos = [];
-        $commConfig = $this->loadCommunicationConfig();
-        
-        // Check for telcos in communication.json
-        if (isset($commConfig['telcos'])) {
-            foreach ($commConfig['telcos'] as $name => $config) {
-                if ($this->keys[$name . '_api_key'] ?? $config['enabled'] ?? false) {
-                    $telcos[$name] = [
-                        'name' => $config['name'] ?? $name,
-                        'prefixes' => $config['prefixes'] ?? [],
-                        'services' => $this->getEnabledServices($config)
-                    ];
-                }
-            }
-        }
-        
-        // Also detect from *_API_KEY patterns
-        foreach ($this->keys as $key => $value) {
-            if (str_ends_with($key, '_api_key') && $value) {
-                $possibleTelco = str_replace('_api_key', '', $key);
-                if (!isset($telcos[$possibleTelco]) && $this->isLikelyTelco($possibleTelco)) {
-                    $telcos[$possibleTelco] = [
-                        'name' => ucfirst($possibleTelco),
-                        'prefixes' => [],
-                        'services' => ['sms']
-                    ];
-                }
-            }
-        }
-        
-        return $telcos;
-    }
-
-    /**
-     * Detect if a participant is likely a telco (MNO)
-     */
-    private function isLikelyTelco(string $participant): bool
-    {
-        $telcoKeywords = ['telco', 'mobile', 'mno', 'cazacom', 'mascom', 'orange', 'airtel', 'mtn', 'vodacom'];
-        $lower = strtolower($participant);
-        
-        foreach ($telcoKeywords as $keyword) {
-            if (str_contains($lower, $keyword)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Get enabled services for a telco
-     */
-    private function getEnabledServices(array $config): array
-    {
-        $services = [];
-        if ($config['sms_enabled'] ?? false) $services[] = 'sms';
-        if ($config['ussd_enabled'] ?? false) $services[] = 'ussd';
-        if ($config['airtime_enabled'] ?? false) $services[] = 'airtime';
-        if ($config['mobile_money_enabled'] ?? false) $services[] = 'mobile_money';
-        if ($config['swap_enabled'] ?? false) $services[] = 'swap';
-        return $services;
-    }
-
-    /**
-     * Detect telco by phone number (dynamic based on country config)
-     */
-    public function detectTelcoByPhone(string $phoneNumber): ?string
-    {
-        $clean = preg_replace('/[^0-9]/', '', $phoneNumber);
-        
-        // Remove country code if present (get from communication.json)
-        $commConfig = $this->loadCommunicationConfig();
-        $countryCode = $commConfig['country_code'] ?? '267';
-        
-        if (substr($clean, 0, strlen($countryCode)) === $countryCode) {
-            $clean = substr($clean, strlen($countryCode));
-        }
-        
-        foreach ($this->getAvailableTelcos() as $telco => $config) {
-            foreach ($config['prefixes'] as $prefix) {
-                if (strpos($clean, $prefix) === 0) {
-                    return $telco;
-                }
-            }
-        }
-        
-        return null;
-    }
-
-    /**
-     * Rotate a key (manual operation for banking compliance)
-     * Keys must be rotated every 90 days per NIST SP 800-57
-     */
-    public function rotateKey(string $keyName, string $newKey): void
-    {
-        if (strlen($newKey) < 32) {
-            throw new RuntimeException('New key must be at least 32 bytes for banking compliance');
-        }
-        
-        $this->logKeyRotation($keyName);
-        $this->keys[$keyName] = $newKey;
-    }
-
-    /**
-     * Log key rotation for audit trail (SWIFT CSP requirement)
-     */
-    private function logKeyRotation(string $keyName): void
-    {
-        $logEntry = [
-            'timestamp' => date('Y-m-d H:i:s'),
-            'action' => 'KEY_ROTATION',
-            'key_name' => $keyName,
-            'source' => 'KeyVault',
-            'country' => $this->activeCountry,
-            'compliance' => 'NIST_SP_800_57'
-        ];
-        
-        error_log(json_encode($logEntry));
-    }
-
-    /**
-     * Get active country
-     */
-    public function getActiveCountry(): string
-    {
-        return $this->activeCountry;
-    }
-}
+            'upstream_key' => $this->keys['up
