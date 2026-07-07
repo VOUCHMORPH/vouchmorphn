@@ -270,6 +270,108 @@ function extractValidSwapTypes(string $dispatchBody): array
     return array_values(array_unique($types));
 }
 
+// ============================================================
+// SECTION C: CROSS-CLASS CALL-TARGET VALIDATION
+// ============================================================
+$report['C_cross_class_call_validation'] = [
+    'how' => 'for each $this->property->method() call found in a caller, resolves the target class via its constructor type-hint, then checks the target method exists AND is public',
+];
+
+function extractPropertyTypeHints(string $classSource): array
+{
+    $hints = [];
+    // Pattern: private ClassName $propertyName
+    preg_match_all('/private\s+([\w\\\\]+)\s+\$(\w+)\s*[;,)]/', $classSource, $m, PREG_SET_ORDER);
+    foreach ($m as $match) {
+        $hints[$match[2]] = $match[1];
+    }
+    // Also catch constructor parameter type hints that become properties
+    preg_match_all('/public function __construct\(([^)]*)\)/', $classSource, $constructMatches);
+    if (!empty($constructMatches[1])) {
+        $params = $constructMatches[1][0];
+        preg_match_all('/(?:private\s+)?([\w\\\\]+)\s+\$(\w+)/', $params, $paramMatches, PREG_SET_ORDER);
+        foreach ($paramMatches as $match) {
+            $hints[$match[2]] = $match[1];
+        }
+    }
+    return $hints;
+}
+
+function checkCrossClassCall(string $callerSrc, string $callerFile, array $classFileMap): array
+{
+    $propertyTypes = extractPropertyTypeHints($callerSrc);
+    $results = [];
+    
+    // Find all $this->property->method() calls
+    preg_match_all('/\$this->(\w+)->(\w+)\s*\(/', $callerSrc, $calls, PREG_SET_ORDER);
+    $processed = [];
+    
+    foreach ($calls as $call) {
+        [, $property, $method] = $call;
+        $key = "{$property}->{$method}()";
+        
+        // Skip duplicates
+        if (in_array($key, $processed)) continue;
+        $processed[] = $key;
+        
+        // Skip known safe properties
+        if (in_array($property, ['logger', 'db', 'stateMachine', 'contributionCalculator', 'feeCalculator'])) {
+            $results[$key] = 'SKIPPED - known internal/helper property (logger, db, calculator, statemachine)';
+            continue;
+        }
+        
+        $targetClass = $propertyTypes[$property] ?? null;
+        if (!$targetClass) {
+            $results[$key] = "WARNING: Could not resolve type hint for property \${$property}";
+            continue;
+        }
+        
+        // Clean up the class name (remove leading backslash if present)
+        $targetClass = ltrim($targetClass, '\\');
+        
+        $targetFile = $classFileMap[$targetClass] ?? null;
+        if (!$targetFile) {
+            $results[$key] = "WARNING: target class {$targetClass} not in classFileMap - add to map";
+            continue;
+        }
+        
+        $targetSrc = readSource($targetFile);
+        if ($targetSrc === null) {
+            $results[$key] = "CRITICAL: target file {$targetFile} not found on disk";
+            continue;
+        }
+        
+        // Check for PUBLIC specifically - private/protected won't match
+        if (preg_match('/public\s+function\s+' . preg_quote($method, '/') . '\s*\(/', $targetSrc)) {
+            $results[$key] = "OK - public method exists on {$targetClass}";
+        } elseif (preg_match('/(?:private|protected)\s+function\s+' . preg_quote($method, '/') . '\s*\(/', $targetSrc)) {
+            $results[$key] = "CRITICAL: method exists on {$targetClass} but is NOT public - caller will get a fatal Error, not a catchable Exception";
+        } else {
+            // Check if method exists at all (any visibility)
+            if (preg_match('/function\s+' . preg_quote($method, '/') . '\s*\(/', $targetSrc)) {
+                $results[$key] = "CRITICAL: method exists on {$targetClass} but no visibility keyword found (unusual)";
+            } else {
+                $results[$key] = "CRITICAL: method does not exist on {$targetClass} at all";
+            }
+        }
+    }
+    
+    return $results;
+}
+
+// Map every class this tool cares about to its file path
+$classFileMap = [
+    'Domain\Services\SwapService' => 'src/Domain/Services/SwapService.php',
+    'Domain\Repositories\FundingPoolRepository' => 'src/Domain/Repositories/FundingPoolRepository.php',
+    'Domain\Repositories\PoolContributionRepository' => 'src/Domain/Repositories/PoolContributionRepository.php',
+    'Domain\Services\Settlement\HybridSettlementStrategy' => 'src/Domain/Services/Settlement/HybridSettlementStrategy.php',
+    'Domain\Services\ContributionCalculator' => 'src/Domain/Services/ContributionCalculator.php',
+    'Domain\Services\MultiSourceFeeCalculator' => 'src/Domain/Services/MultiSourceFeeCalculator.php',
+    'Domain\Services\MultiSource\PoolStateMachine' => 'src/Domain/ValueObjects/PoolStateMachine.php',
+    'Infrastructure\Crypto\AggregateSigner' => 'src/Infrastructure/Crypto/AggregateSigner.php',
+    'Infrastructure\Adapters\InstitutionAdapterFactory' => 'src/Infrastructure/Adapters/InstitutionAdapterFactory.php',
+];
+
 $swapServiceSrc      = readSource('src/Domain/Services/SwapService.php');
 $adapterSrc          = readSource('src/Infrastructure/Adapters/GenericInstitutionAdapter.php');
 $poolCoordinatorSrc  = readSource('src/Domain/Services/MultiSource/PoolCoordinator.php');
@@ -282,6 +384,24 @@ $contributionCalcSrc = readSource('src/Domain/Services/ContributionCalculator.ph
 $settlementSrc       = readSource('src/Domain/Services/Settlement/HybridSettlementStrategy.php');
 
 $dispatchBody = ($swapServiceSrc !== null) ? extractMethodBody($swapServiceSrc, 'executeAtomicSwap') : null;
+
+// Run cross-class validation for PoolCoordinator
+if ($poolCoordinatorSrc !== null) {
+    $report['C_cross_class_call_validation']['PoolCoordinator'] = 
+        checkCrossClassCall($poolCoordinatorSrc, 'PoolCoordinator.php', $classFileMap);
+}
+
+// Also check Orchestrator against SwapService
+if ($orchestratorSrc !== null) {
+    $report['C_cross_class_call_validation']['MultiSourceSwapOrchestrator'] = 
+        checkCrossClassCall($orchestratorSrc, 'MultiSourceSwapOrchestrator.php', $classFileMap);
+}
+
+// Check Executor against SwapService and repositories
+if ($executorSrc !== null) {
+    $report['C_cross_class_call_validation']['MultiSourceSwapExecutor'] = 
+        checkCrossClassCall($executorSrc, 'MultiSourceSwapExecutor.php', $classFileMap);
+}
 
 // ============================================================
 // SECTION A1: DOES A ONE-SOURCE -> MULTI-DESTINATION ORCHESTRATOR EXIST?
@@ -592,7 +712,7 @@ if ($poolCoordinatorSrc !== null) {
 }
 
 // ============================================================
-// SUMMARY
+// SUMMARY (UPDATED with Section C)
 // ============================================================
 $criticalIssues = [];
 
@@ -628,6 +748,17 @@ if (($report['B4_pool_state_machine_failure_handling']['has_failure_terminal_sta
 }
 if (str_starts_with($report['B5_pool_persistence_wiring']['VERDICT'] ?? '', 'CRITICAL')) {
     $criticalIssues[] = 'B5: PoolCoordinator missing repository persistence wiring';
+}
+
+// NEW: Add Section C issues to summary
+foreach (($report['C_cross_class_call_validation'] ?? []) as $caller => $checks) {
+    if (is_array($checks)) {
+        foreach ($checks as $call => $status) {
+            if (is_string($status) && str_starts_with($status, 'CRITICAL')) {
+                $criticalIssues[] = "C: {$caller} -> {$call}: {$status}";
+            }
+        }
+    }
 }
 
 $report['summary'] = [
