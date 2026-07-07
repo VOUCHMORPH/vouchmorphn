@@ -261,8 +261,10 @@ class SwapService
 
     /**
      * Extract destination asset type - ACCOUNT or WALLET
+     * 
+     * FIXED: Made PUBLIC for PoolCoordinator access
      */
-    private function extractDestinationAssetType(array $payload): string
+    public function extractDestinationAssetType(array $payload): string
     {
         $assetType = strtoupper($payload['destination_asset_type'] ?? 
                                   $payload['asset_type'] ?? 
@@ -336,8 +338,10 @@ class SwapService
 
     /**
      * Extract destination identifier from payload
+     * 
+     * FIXED: Made PUBLIC for PoolCoordinator access
      */
-    private function extractDestinationIdentifier(array $payload): array
+    public function extractDestinationIdentifier(array $payload): array
     {
         $destinationIdentifier = null;
         $destinationIdentifierType = null;
@@ -2659,8 +2663,10 @@ class SwapService
     /**
      * Verify asset at institution using adapter pattern
      * SOURCE OPERATION - Requires PIN
+     * 
+     * FIXED: Made PUBLIC for PoolCoordinator access
      */
-    private function verifyAssetSigned(array $payload, string $institution): array
+    public function verifyAssetSigned(array $payload, string $institution): array
     {
         $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
         $timestamp = time();
@@ -2701,8 +2707,10 @@ class SwapService
     /**
      * Place hold at institution using adapter pattern
      * SOURCE OPERATION - Requires PIN
+     * 
+     * FIXED: Made PUBLIC for PoolCoordinator access
      */
-    private function placeHoldSigned(array $payload, string $institution, array $verificationResult): array
+    public function placeHoldSigned(array $payload, string $institution, array $verificationResult): array
     {
         $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
         $timestamp = time();
@@ -2759,8 +2767,10 @@ class SwapService
     /**
      * Debit source institution using adapter pattern
      * SOURCE OPERATION - Requires PIN
+     * 
+     * FIXED: Made PUBLIC for PoolCoordinator access
      */
-    private function debitSource(array $payload, string $institution): array
+    public function debitSource(array $payload, string $institution): array
     {
         $debitPayload = [
             'reference' => $payload['reference'] ?? $this->currentSwapRef,
@@ -2881,6 +2891,106 @@ class SwapService
                 'error' => $e->getMessage()
             ];
         }
+    }
+
+    // ============================================================================
+    // NEW: GET FOREX RATE FOR POOL COORDINATOR
+    // ============================================================================
+
+    /**
+     * Get forex rate between two currencies at a point in time.
+     * Used by PoolCoordinator to snapshot a rate once at pool creation,
+     * so all contributions/fees in a multi-source swap use one consistent rate.
+     */
+    public function getForexRate(string $fromCurrency, string $toCurrency, string $clientTier = 'retail'): array
+    {
+        if (strtoupper($fromCurrency) === strtoupper($toCurrency)) {
+            return [
+                'rate' => 1.0,
+                'wholesale_rate' => 1.0,
+                'from_currency' => $fromCurrency,
+                'to_currency' => $toCurrency,
+                'applied' => false,
+            ];
+        }
+
+        $clientRate = $this->forexService->getClientRate($fromCurrency, $toCurrency, $clientTier);
+        $wholesaleRate = $this->forexService->getWholesaleRate($fromCurrency, $toCurrency);
+
+        return [
+            'rate' => $clientRate,
+            'wholesale_rate' => $wholesaleRate,
+            'from_currency' => $fromCurrency,
+            'to_currency' => $toCurrency,
+            'applied' => true,
+        ];
+    }
+
+    // ============================================================================
+    // NEW: CREDIT DESTINATION FOR POOL COORDINATOR
+    // ============================================================================
+
+    /**
+     * Credit a destination institution as part of a multi-source pool payout.
+     * Unlike processDepositWithProof, this is called directly by PoolCoordinator
+     * after a master signature has been generated across all pooled sources —
+     * the destination sees ONE credit, not N separate deposits.
+     */
+    public function creditDestination(array $payload, string $institution): array
+    {
+        error_log("[SwapService] creditDestination called for institution: {$institution}");
+
+        $amount = (float)($payload['amount'] ?? 0);
+        $destId = $this->extractDestinationIdentifier($payload);
+        $destinationAssetType = $this->extractDestinationAssetType($payload);
+
+        $creditPayload = [
+            'reference' => $payload['reference'] ?? $this->currentSwapRef,
+            'amount' => $amount,
+            'currency' => $payload['currency'] ?? 'BWP',
+            'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
+            'destination_asset_type' => $destinationAssetType,
+            'asset_type' => $destinationAssetType,
+            'to_institution' => $institution,
+            'destination_institution' => $institution,
+            'source_type' => 'VIRTUAL_POOL',
+            'pool_id' => $payload['pool_id'] ?? null,
+            'master_signature' => $payload['master_signature'] ?? null,
+        ];
+
+        if ($destId['has_value']) {
+            $creditPayload['destination_identifier'] = $destId['identifier'];
+            $creditPayload['destination_identifier_type'] = $destId['type'];
+
+            if ($destinationAssetType === 'ACCOUNT') {
+                $creditPayload['account_number'] = $destId['identifier'];
+                $creditPayload['destination_account'] = $destId['identifier'];
+            } else {
+                $creditPayload['phone'] = $destId['identifier'];
+                $creditPayload['wallet_phone'] = $destId['identifier'];
+            }
+        }
+
+        // DESTINATION operation - NO PIN forwarding (same rule as processDepositWithProof)
+
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        $result = $adapter->credit($creditPayload, [
+            'swap_reference' => $creditPayload['reference'],
+            'destination_institution' => $institution,
+            'destination_identifier' => $destId['identifier'] ?? null,
+            'destination_asset_type' => $destinationAssetType,
+            'pool_id' => $payload['pool_id'] ?? null,
+        ]);
+
+        if (!($result['credited'] ?? false)) {
+            return ['success' => false, 'message' => $result['message'] ?? 'Pool credit failed'];
+        }
+
+        return [
+            'success' => true,
+            'transaction_reference' => $result['transaction_reference'] ?? null,
+            'message' => $result['message'] ?? 'Pool credit successful',
+        ];
     }
 
     /**
