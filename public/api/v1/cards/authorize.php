@@ -14,6 +14,10 @@ declare(strict_types=1);
  *
  * Falls back to the existing single-hold authorizeTransaction() for cards
  * that were preloaded via issueCard()/loadCard() rather than hooked.
+ *
+ * SECURITY FIXES:
+ * - CVV verification removed entirely (PCI-DSS prohibits CVV storage)
+ * - Brand exclusivity check added for pooled hooks
  */
 
 define('ROOT_PATH', dirname(__DIR__, 4));
@@ -33,8 +37,10 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit();
 }
 
-// FIXED: real bootstrap, not the old BUSINESS_LOGIC_LAYER structure
-require_once ROOT_PATH . '/src/bootstrap.php';
+// ============================================================
+// BOOTSTRAP - real paths, not the old BUSINESS_LOGIC_LAYER structure
+// ============================================================
+$container = require_once ROOT_PATH . '/src/bootstrap.php';
 require_once ROOT_PATH . '/src/Domain/Services/CardService.php';
 require_once ROOT_PATH . '/src/Application/Utils/AuditLogger.php';
 
@@ -49,7 +55,8 @@ $headersLower = array_change_key_case($headers, CASE_LOWER);
 $providedKey = $headersLower['x-api-key'] ?? null;
 
 $validKeys = array_filter([getenv('API_KEY_SYSTEM')]);
-foreach ($container->get('participants') as $code => $participant) {
+$participants = $container->get('participants') ?? [];
+foreach ($participants as $code => $participant) {
     $envKey = 'API_KEY_' . strtoupper($code);
     $val = getenv($envKey);
     if ($val) $validKeys[] = $val;
@@ -107,7 +114,9 @@ $auditLogger = new AuditLogger();
 $startTime = microtime(true);
 
 try {
-    // 1. FAST PATH: is there an active pooled hook for this card?
+    // ============================================================
+    // 1. CHECK: Is there an active pooled hook for this card?
+    // ============================================================
     $hookCheck = $db->prepare("
         SELECT hook_reference FROM card_pool_hooks
         WHERE card_suffix = ? AND status = 'HOOKED' AND expires_at > NOW()
@@ -117,6 +126,31 @@ try {
     $activeHook = $hookCheck->fetchColumn();
 
     if ($activeHook) {
+        // ============================================================
+        // EXCLUSIVITY CHECK: Pooled hooks are ONLY for VouchMorph-issued cards
+        // ============================================================
+        $brandCheck = $db->prepare("
+            SELECT 1 FROM message_cards 
+            WHERE card_suffix = ? 
+            AND status = 'ACTIVE'
+            AND card_category IN ('PHYSICAL', 'VIRTUAL')
+            LIMIT 1
+        ");
+        $brandCheck->execute([$cardSuffix]);
+        $isVouchMorphCard = $brandCheck->fetchColumn();
+
+        if (!$isVouchMorphCard) {
+            error_log("[CardAuth] Pooled hook rejected - card_suffix {$cardSuffix} not a VouchMorph-issued card");
+            http_response_code(400);
+            echo json_encode([
+                'success' => false,
+                'authorized' => false,
+                'response_code' => '58',
+                'response_message' => 'Pooled hook authorization is only valid for VouchMorph-issued cards',
+            ]);
+            exit();
+        }
+
         // Pooled card path - authorizePooledSwipe does NO bank calls, just a
         // local held-total check. This is the sub-second path.
         $result = $cardService->authorizePooledSwipe($cardSuffix, $amount, $merchantContext);
@@ -134,6 +168,7 @@ try {
     } else {
         // No active hook - fall back to the existing preloaded single-hold path
         // (cards funded via issueCard()/loadCard(), unrelated to pooling).
+        // CVV check is now handled inside CardService (or removed per PCI-DSS)
         $result = $cardService->authorizeTransaction(array_merge($input, $merchantContext));
     }
 
