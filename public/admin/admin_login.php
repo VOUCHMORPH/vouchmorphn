@@ -19,10 +19,12 @@ error_log("[ADMIN LOGIN] Starting login process");
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
+require_once PROJECT_ROOT . '/src/Security/Monitoring/ApiRateLimiter.php'; // ADDED
 
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
 use Application\Admin\Auth\AdminAuth;
+use Security\Monitoring\ApiRateLimiter; // ADDED
 
 // Load configuration for country data only (not database)
 $configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
@@ -77,43 +79,65 @@ $adminId = null;
 
 // Handle login POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth)) {
-    try {
-        if (isset($_POST['mfa_code'])) {
-            // MFA verification
-            $result = $auth->verifyMfa($_POST['mfa_code'], $systemCountry);
-            if ($result['success']) {
-                header('Location: admin_dashboard.php?country=' . $systemCountry);
-                exit;
-            } else {
-                $error = $result['message'];
-            }
-        } else {
-            // Initial login
-            $username = trim($_POST['username'] ?? '');
-            $password = $_POST['password'] ?? '';
 
-            if (empty($username) || empty($password)) {
-                $error = 'Username and password are required';
-            } else {
-                $result = $auth->login($username, $password, $systemCountry);
-                
+    // --- RATE LIMITING (ADDED) ---
+    $clientIp = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+    $rateLimitKey = 'admin_login:' . $clientIp;
+    $rateLimited = false;
+
+    try {
+        // 8 attempts per 5 minutes per IP — tune as needed
+        $limiter = new ApiRateLimiter(8, 300);
+        if (!$limiter->check($rateLimitKey)) {
+            $rateLimited = true;
+            error_log("[ADMIN LOGIN] Rate limit exceeded for IP: {$clientIp}");
+        }
+    } catch (\Throwable $e) {
+        // Redis unreachable — log it, do NOT block login on infra failure
+        error_log("[ADMIN LOGIN] Rate limiter unavailable: " . $e->getMessage());
+    }
+
+    if ($rateLimited) {
+        $error = 'Too many login attempts. Please try again in a few minutes.';
+    } else {
+        try {
+            if (isset($_POST['mfa_code'])) {
+                // MFA verification
+                $result = $auth->verifyMfa($_POST['mfa_code'], $systemCountry);
                 if ($result['success']) {
-                    if (isset($result['mfa_required']) && $result['mfa_required'] === true) {
-                        $mfaRequired = true;
-                        $adminId = $result['admin_id'];
-                    } else {
-                        header('Location: admin_dashboard.php?country=' . $systemCountry);
-                        exit;
-                    }
+                    header('Location: admin_dashboard.php?country=' . $systemCountry);
+                    exit;
                 } else {
                     $error = $result['message'];
                 }
+            } else {
+                // Initial login
+                $username = trim($_POST['username'] ?? '');
+                $password = $_POST['password'] ?? '';
+
+                if (empty($username) || empty($password)) {
+                    $error = 'Username and password are required';
+                } else {
+                    $result = $auth->login($username, $password, $systemCountry);
+                    
+                    if ($result['success']) {
+                        if (isset($result['mfa_required']) && $result['mfa_required'] === true) {
+                            $mfaRequired = true;
+                            $adminId = $result['admin_id'];
+                        } else {
+                            header('Location: admin_dashboard.php?country=' . $systemCountry);
+                            exit;
+                        }
+                    } else {
+                        $error = $result['message'];
+                    }
+                }
             }
+        } catch (Throwable $e) {
+            error_log("[ADMIN LOGIN] Exception: " . $e->getMessage());
+            $error = "Authentication error occurred.";
         }
-    } catch (Throwable $e) {
-        error_log("[ADMIN LOGIN] Exception: " . $e->getMessage());
-        $error = "Authentication error occurred.";
-    }
+    } // close rate-limit else
 }
 
 // Get available countries
