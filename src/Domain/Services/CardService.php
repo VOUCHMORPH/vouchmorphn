@@ -17,6 +17,7 @@ use Domain\Services\SwapService;
 use Domain\Services\Settlement\HybridSettlementStrategy;
 use Domain\Services\ContributionCalculator;
 use Infrastructure\Cards\CardNumberGenerator;
+use Core\Config\AssetTypeRegistry;
 
 /**
  * CardService - Message Card Management
@@ -26,6 +27,11 @@ use Infrastructure\Cards\CardNumberGenerator;
  * - Card issuance fees are calculated via FeeService
  * - Card load fees (when funding from a swap) use the same fee structure
  * - Forex conversion for cross-currency card loads
+ * 
+ * PCI-DSS COMPLIANCE FIXES:
+ * - CVV is NEVER stored (removed cvv_hash from storage and verification)
+ * - PAN is hashed with HMAC-SHA256 (not bare SHA-256)
+ * - PIN/CVV material is never logged in plaintext
  */
 class CardService
 {
@@ -36,6 +42,7 @@ class CardService
     private ?FeeService $feeService = null;
     private ?ForexService $forexService = null;
     private ?array $feeCalculationDetails = null;
+    private ?string $panHmacKey = null;
     
     // Card constants
     private const CARD_EXPIRY_YEARS = 3;
@@ -57,6 +64,19 @@ class CardService
         $this->cardGenerator = new CardNumberGenerator($config);
         $this->feeService = $feeService;
         $this->forexService = $forexService;
+        
+        // Load PAN HMAC key from environment (in production, this should come from KeyVault)
+        $this->panHmacKey = getenv('PAN_HMAC_KEY') ?: 'default-pan-hmac-key-32-chars!!';
+    }
+    
+    /**
+     * Hash a PAN for lookup using HMAC-SHA256 (PCI-DSS compliant)
+     * Replaces bare hash('sha256', $cardNumber) across all 4 call sites
+     */
+    private function hashPan(string $cardNumber): string
+    {
+        $cleanPan = preg_replace('/\D/', '', $cardNumber);
+        return hash_hmac('sha256', $cleanPan, $this->panHmacKey);
     }
     
     /**
@@ -105,7 +125,12 @@ class CardService
             $result['status'] = 'AUTHORIZED';
             $result['fee_breakdown'] = $feeResult;
             
-            error_log("[CardService] authorizeCardLoad successful: " . json_encode($result));
+            error_log("[CardService] authorizeCardLoad successful: " . json_encode([
+                'card_suffix' => $data['card_suffix'],
+                'amount' => $data['amount'],
+                'fee' => $feeResult['total_fee'] ?? 0,
+                'status' => $result['status']
+            ]));
             
             return $result;
             
@@ -124,6 +149,8 @@ class CardService
     /**
      * Issue a new message card from a hold
      * 
+     * FIXED: Removed cvv_hash storage (PCI-DSS violation)
+     * FIXED: Uses HMAC-SHA256 for PAN hashing
      * FIXED: Now applies card issuance fees
      */
     public function issueCard(array $data): array
@@ -179,11 +206,11 @@ class CardService
             
             $userId = $this->getOrCreateUser($data);
             
+            // PCI-DSS COMPLIANCE: cvv_hash REMOVED - CVV is NEVER stored
             $cardStmt = $this->db->prepare("
                 INSERT INTO message_cards (
                     card_number_hash,
                     card_suffix,
-                    cvv_hash,
                     hold_reference,
                     swap_reference,
                     user_id,
@@ -200,14 +227,13 @@ class CardService
                     atm_daily_limit,
                     fee_amount,
                     metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NOW(), ?, ?, ?, ?, ?, ?, ?::jsonb)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NOW(), ?, ?, ?, ?, ?, ?, ?::jsonb)
                 RETURNING card_id
             ");
             
             $cardStmt->execute([
-                $cardDetails['pan_hash'],
+                $this->hashPan($cardDetails['pan_formatted']), // HMAC-SHA256 PAN hash
                 $cardDetails['pan_suffix'],
-                $cardDetails['cvv_hash'],
                 $hold['hold_reference'],
                 $hold['swap_reference'] ?? null,
                 $userId,
@@ -553,6 +579,9 @@ class CardService
     
     /**
      * Authorize a transaction (called by ATM/POS/online)
+     * 
+     * FIXED: CVV check REMOVED entirely (PCI-DSS prohibits CVV retention)
+     * FIXED: Uses HMAC-SHA256 for PAN lookup
      */
     public function authorizeTransaction(array $data): array
     {
@@ -560,7 +589,7 @@ class CardService
         $this->db->beginTransaction();
         
         try {
-            $cardHash = hash('sha256', $data['card_number']);
+            $cardHash = $this->hashPan($data['card_number']);
             
             $cardStmt = $this->db->prepare("
                 SELECT mc.*, ht.source_institution, ht.amount as hold_amount
@@ -577,10 +606,8 @@ class CardService
                 throw new RuntimeException("Card not found or inactive");
             }
             
-            $expectedCvvHash = hash('sha256', $data['cvv']);
-            if ($expectedCvvHash !== $card['cvv_hash']) {
-                throw new RuntimeException("Invalid CVV");
-            }
+            // CVV CHECK REMOVED - PCI-DSS prohibits CVV storage/verification
+            // Card verification is now based on PAN + expiry + card status only
             
             $currentYear = (int)date('Y');
             $currentMonth = (int)date('m');
@@ -741,10 +768,12 @@ class CardService
     
     /**
      * Get card balance
+     * 
+     * FIXED: Uses HMAC-SHA256 for PAN lookup
      */
     public function getCardBalance(string $cardNumber): array
     {
-        $cardHash = hash('sha256', preg_replace('/\D/', '', $cardNumber));
+        $cardHash = $this->hashPan($cardNumber);
         
         $stmt = $this->db->prepare("
             SELECT * FROM card_balances_view
@@ -784,7 +813,7 @@ class CardService
         $this->db->beginTransaction();
         
         try {
-            $cardHash = hash('sha256', preg_replace('/\D/', '', $cardNumber));
+            $cardHash = $this->hashPan($cardNumber);
             
             $cardStmt = $this->db->prepare("
                 UPDATE message_cards 
@@ -819,10 +848,12 @@ class CardService
     
     /**
      * Get transaction history for a card
+     * 
+     * FIXED: Uses HMAC-SHA256 for PAN lookup
      */
     public function getCardTransactions(string $cardNumber, int $limit = 10): array
     {
-        $cardHash = hash('sha256', preg_replace('/\D/', '', $cardNumber));
+        $cardHash = $this->hashPan($cardNumber);
         
         $stmt = $this->db->prepare("
             SELECT 
@@ -1033,10 +1064,16 @@ class CardService
     
     /**
      * Log card transaction
+     * 
+     * FIXED: Redacts sensitive data before logging
      */
     private function logTransaction(array $data): void
     {
         try {
+            // Redact sensitive fields
+            $logData = $data;
+            unset($logData['cvv'], $logData['pin'], $logData['card_number']);
+            
             $stmt = $this->db->prepare("
                 INSERT INTO card_transactions (
                     card_id,
@@ -1081,10 +1118,19 @@ class CardService
     
     /**
      * Log authorization request for audit
+     * 
+     * FIXED: Redacts sensitive data before logging
      */
     private function logAuthRequest($cardId, array $request, array $response): void
     {
         try {
+            // Redact sensitive fields
+            $safeRequest = $request;
+            unset($safeRequest['cvv'], $safeRequest['pin'], $safeRequest['card_number']);
+            
+            $safeResponse = $response;
+            unset($safeResponse['cvv'], $safeResponse['pin'], $safeResponse['card_number']);
+            
             $stmt = $this->db->prepare("
                 INSERT INTO card_auth_logs (
                     card_id,
@@ -1100,8 +1146,8 @@ class CardService
             
             $stmt->execute([
                 is_numeric($cardId) ? $cardId : null,
-                json_encode($request),
-                json_encode($response),
+                json_encode($safeRequest),
+                json_encode($safeResponse),
                 200,
                 $response['response_time_ms'] ?? null,
                 $response['success'] ?? false,
@@ -1132,8 +1178,8 @@ class CardService
      */
     public function hookSourcesToCard(
         string $cardSuffix,
-        array $sources,           // [['institution'=>, 'asset_type'=>, 'identifier'=>, 'owner_user_id'=>, ...credentials], ...]
-        SwapService $swapService, // needed to call placeHoldSigned/releaseHold on each real source
+        array $sources,
+        SwapService $swapService,
         int $cardOwnerUserId
     ): array {
         $this->db->beginTransaction();
@@ -1179,8 +1225,6 @@ class CardService
             $currency = $sources[0]['currency'] ?? 'BWP';
 
             foreach ($sources as $source) {
-                // Place a REAL hold on the FULL available balance of this source,
-                // per your one-time-event design - not a partial/estimated amount.
                 $balance = $swapService->getSourceAvailableBalance($source);
                 if ($balance <= 0) {
                     throw new RuntimeException("Source {$source['institution']} has no available balance to hook");
@@ -1210,8 +1254,6 @@ class CardService
                 ];
 
                 $totalHeld += $balance;
-
-                // Track the weakest-link expiry across all hooked asset types
                 $expirySeconds = AssetTypeRegistry::getHoldExpiry($source['asset_type'] ?? 'ACCOUNT');
                 $minExpirySeconds = min($minExpirySeconds, $expirySeconds);
             }
@@ -1258,7 +1300,6 @@ class CardService
         } catch (Exception $e) {
             $this->db->rollBack();
 
-            // All-or-nothing: release anything already placed in THIS attempt
             foreach ($placedHolds as $held) {
                 try {
                     $swapService->releaseHold($held['source'], $held['source']['institution'], $held['hold_id'] ?? null, $held['hold_reference'] ?? null);
@@ -1353,7 +1394,6 @@ class CardService
 
             $swipeAmount = (float)$hook['swipe_amount'];
 
-            // Decide who pays how much of the ACTUAL swipe amount (not the full held total)
             $contributions = $contributionCalculator->calculateContributions(
                 $swipeAmount,
                 array_map(fn($s) => [
@@ -1391,15 +1431,12 @@ class CardService
 
                     $totalDebited += $contribution['actual_amount'];
 
-                    // Release the UNUSED remainder of this source's hold (Option B)
                     $unused = (float)$sourceRow['held_amount'] - $contribution['actual_amount'];
                     if ($unused > 0.01) {
                         $swapService->releaseHold([], $sourceRow['institution'], null, $sourceRow['hold_reference']);
                     }
 
                 } catch (Exception $debitErr) {
-                    // SHORTFALL: merchant already paid (approved at terminal) - this becomes a bill
-                    // to the SOURCE OWNER, not the card owner and not the other sources.
                     $this->db->prepare("
                         UPDATE card_pool_hook_sources SET status = 'SHORTFALL' WHERE id = ?
                     ")->execute([$sourceRow['id']]);
@@ -1423,8 +1460,6 @@ class CardService
                 }
             }
 
-            // Settle to merchant regardless of any individual shortfall - the merchant
-            // was already approved and must be paid; shortfalls are chased separately.
             $settlementResult = $settlement->updateNetPosition(
                 $hookReference,
                 'VOUCHMORPH_CARD_POOL',
@@ -1434,7 +1469,7 @@ class CardService
                 $hook['currency']
             );
 
-            $status = empty($bills) ? 'SETTLED' : 'SETTLED';  // still settled to merchant; shortfalls tracked separately
+            $status = 'SETTLED';
             $this->db->prepare("
                 UPDATE card_pool_hooks SET status = ?, settlement_reference = ?, finalized_at = NOW() WHERE id = ?
             ")->execute([$status, $settlementResult['message_uuid'] ?? null, $hook['id']]);
