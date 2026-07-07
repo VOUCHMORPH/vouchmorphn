@@ -1,9 +1,6 @@
 <?php
-// public/user/dashboard.php - REDESIGNED v3
-// Philosophy: ask WHO and HOW MUCH. Resolve asset type/delivery mode
-// silently whenever there's only one real answer for that institution;
-// only surface a choice when the institution genuinely offers more than
-// one option. Fluid scaling from phone to large-screen/TV via clamp().
+// public/user/dashboard.php - REDESIGNED v3 FIXED
+// Proper form field rendering when asset types are selected
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
@@ -68,9 +65,6 @@ try {
     die("Database error");
 }
 
-// ============================================================
-// FIXED PARSER: indentation-depth aware
-// ============================================================
 function parseParticipantsYaml($path) {
     $participants = [];
     if (!file_exists($path)) return $participants;
@@ -562,7 +556,7 @@ const badgeMap = { BANK: '🏦', MNO: '📱', ORCHESTRATOR: '⚙️' };
 const assetLabel = { ACCOUNT: 'ACCOUNT', WALLET: 'WALLET', 'MNO-WALLET': 'MOBILE WALLET', 'BANK-WALLET': 'BANK WALLET', VOUCHER: 'VOUCHER', CARD: 'CARD', ATM: 'ATM' };
 
 // ============================================================
-// FILTERING FUNCTIONS - source vs destination aware
+// FILTERING FUNCTIONS
 // ============================================================
 function getDepositCapableAssets(instCode) {
     const raw = participants[instCode]?.asset_types || ['ACCOUNT'];
@@ -574,6 +568,45 @@ function getCashoutCapableAssets(instCode) {
 }
 function getAllAssets(instCode) {
     return participants[instCode]?.asset_types || ['ACCOUNT'];
+}
+
+// ============================================================
+// RENDER ASSET FIELDS - FIXED: shows fields based on asset type
+// ============================================================
+function renderAssetFields(prefix, assetType, containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = '';
+    if (!assetType) {
+        container.innerHTML = '<div class="info-note">SELECT ASSET TYPE ABOVE</div>';
+        return;
+    }
+    const fields = assetFields[assetType] || [];
+    if (!fields || fields.length === 0) {
+        container.innerHTML = '<div class="info-note">✅ NO ADDITIONAL FIELDS REQUIRED</div>';
+        return;
+    }
+    let html = '';
+    fields.forEach(f => {
+        const isPin = f.type === 'password' || f.name.includes('pin') || f.vault_field === 'pin';
+        const fieldId = prefix + '_' + f.name;
+        const required = f.required ? ' required' : '';
+        const placeholder = f.placeholder || '';
+        const label = f.label || f.name;
+        html += `
+            <div class="field">
+                <div class="field-label">${label}</div>
+                <input type="${isPin ? 'password' : (f.type || 'text')}" 
+                       id="${fieldId}" 
+                       placeholder="${placeholder}"
+                       ${required}
+                       class="text-input"
+                       autocomplete="${isPin ? 'new-password' : 'on'}">
+                ${isPin ? '<div style="font-size:10px;opacity:0.4;margin-top:4px;">🔑 PIN FIELD</div>' : ''}
+            </div>
+        `;
+    });
+    container.innerHTML = html;
 }
 
 // ============================================================
@@ -624,7 +657,7 @@ function dots(total, current) {
 }
 
 // ============================================================
-// STEP 0: WHO - filtered by delivery capability based on flow
+// STEP 0: WHO
 // ============================================================
 function renderWho() {
     const isCashout = currentFlow === 'cashout';
@@ -632,7 +665,7 @@ function renderWho() {
     const rows = Object.entries(participants).map(([code, p]) => {
         const badge = badgeMap[p.type] || '🏦';
         const assets = isCashout ? getCashoutCapableAssets(code) : getDepositCapableAssets(code);
-        if (assets.length === 0) return ''; // hide if no compatible assets
+        if (assets.length === 0) return '';
         const assetDisplay = assets.map(a => assetLabel[a] || a).join(' · ');
         return `<div class="who-card" data-code="${code}" data-name="${p.name.toLowerCase()}" onclick="pickWho('${code}')" tabindex="0">
             <div class="main"><span class="badge">${badge}</span><div><div class="name">${p.name}</div><div class="assets">${assetDisplay}</div></div></div>
@@ -663,27 +696,65 @@ function pickWho(code) {
 }
 
 // ============================================================
-// STEP 1: AMOUNT
+// STEP 1: AMOUNT - FIXED: shows fields when asset selected
 // ============================================================
 function renderAmount() {
-    const p = participants[selWho];
     const isCashout = currentFlow === 'cashout';
     const assets = isCashout ? getCashoutCapableAssets(selWho) : getDepositCapableAssets(selWho);
     const needsAssetChoice = assets.length > 1;
+    
     const assetChoiceHtml = needsAssetChoice ? `
         <div style="font-weight:700;font-size:var(--fs-label);text-transform:uppercase;margin-top:var(--space-unit);opacity:0.5;">SELECT TYPE</div>
-        <div class="asset-choice">
+        <div class="asset-choice" id="assetChoiceContainer">
             ${assets.map(a => `<button class="asset-pill ${selAsset===a?'active':''}" onclick="chooseAsset('${a}')">${assetLabel[a]||a}</button>`).join('')}
         </div>` : '';
 
-    const destFieldsHtml = isCashout ? `
-        <div class="field"><div class="field-label">BENEFICIARY PHONE</div>
-            <input class="text-input" id="beneficiaryPhone" placeholder="+267 7X XXX XXX" value="${loggedPhone}"></div>
-        <div class="info-note">💳 They receive a withdrawal code via SMS. No destination account needed.</div>
-    ` : `
-        <div class="field"><div class="field-label">${selAsset === 'ACCOUNT' ? 'ACCOUNT NUMBER' : 'RECIPIENT IDENTIFIER'}</div>
-            <input class="text-input" id="destInput" placeholder="Enter identifier"></div>
-    `;
+    // Destination fields based on selected asset
+    let destFieldsHtml = '';
+    if (isCashout) {
+        destFieldsHtml = `
+            <div class="field">
+                <div class="field-label">BENEFICIARY PHONE</div>
+                <input class="text-input" id="beneficiaryPhone" placeholder="+267 7X XXX XXX" value="${loggedPhone}">
+            </div>
+            <div class="info-note">💳 They receive a withdrawal code via SMS. No destination account needed.</div>
+        `;
+    } else if (selAsset === 'ACCOUNT') {
+        destFieldsHtml = `
+            <div class="field">
+                <div class="field-label">ACCOUNT NUMBER</div>
+                <input class="text-input" id="destInput" placeholder="Enter account number">
+            </div>
+        `;
+    } else if (selAsset === 'WALLET' || selAsset === 'MNO-WALLET' || selAsset === 'BANK-WALLET') {
+        destFieldsHtml = `
+            <div class="field">
+                <div class="field-label">PHONE NUMBER / WALLET ID</div>
+                <input class="text-input" id="destInput" placeholder="Enter phone or wallet ID">
+            </div>
+        `;
+    } else if (selAsset === 'CARD') {
+        destFieldsHtml = `
+            <div class="field">
+                <div class="field-label">CARD NUMBER</div>
+                <input class="text-input" id="destInput" placeholder="Enter card number">
+            </div>
+        `;
+    } else if (selAsset === 'VOUCHER') {
+        destFieldsHtml = `
+            <div class="field">
+                <div class="field-label">VOUCHER CODE</div>
+                <input class="text-input" id="destInput" placeholder="Enter voucher code">
+            </div>
+        `;
+    } else {
+        destFieldsHtml = `
+            <div class="field">
+                <div class="field-label">IDENTIFIER</div>
+                <input class="text-input" id="destInput" placeholder="Enter identifier">
+            </div>
+        `;
+    }
 
     return `
         ${dots(3, 1)}
@@ -696,42 +767,104 @@ function renderAmount() {
             ${assetChoiceHtml}
         </div>
         ${destFieldsHtml}
-        <div class="field"><div class="field-label">SEND FROM</div>
+        <div class="field">
+            <div class="field-label">SEND FROM</div>
             <select class="text-input" id="fromSelect" onchange="onFromChange()">
                 <option value="">SELECT INSTITUTION</option>
                 ${Object.entries(participants).map(([c,pp])=>`<option value="${c}">${pp.name}</option>`).join('')}
             </select>
         </div>
         <div id="fromAssetField"></div>
-        <div class="field"><div class="field-label">YOUR IDENTIFIER</div>
+        <div id="fromAssetFieldsContainer"></div>
+        <div class="field">
+            <div class="field-label">YOUR IDENTIFIER</div>
             <select class="text-input" id="sourceIdentifier">
                 <option value="">SELECT</option>
                 ${userIdentifiers.map(id=>`<option value="${id.value}">${id.icon} ${id.value}</option>`).join('')}
             </select>
         </div>
-        <div class="field"><div class="field-label">YOUR PIN</div>
-            <input type="password" class="text-input" id="pinInput" placeholder="••••" autocomplete="new-password"></div>
+        <div class="field">
+            <div class="field-label">YOUR PIN</div>
+            <input type="password" class="text-input" id="pinInput" placeholder="••••" autocomplete="new-password">
+        </div>
         <button class="btn-primary" onclick="goConfirm()">REVIEW →</button>
     `;
 }
+
 function chooseAsset(a) {
     selAsset = a;
-    document.querySelectorAll('.asset-pill').forEach(el => el.classList.toggle('active', el.textContent.trim() === (assetLabel[a]||a)));
+    document.querySelectorAll('#assetChoiceContainer .asset-pill').forEach(el => {
+        el.classList.toggle('active', el.textContent.trim() === (assetLabel[a] || a));
+    });
+    // Re-render to show fields for selected asset
+    render();
 }
+
 function onFromChange() {
     selFromInst = document.getElementById('fromSelect').value;
     const assets = getAllAssets(selFromInst);
     selFromAsset = assets.length === 1 ? assets[0] : null;
     const container = document.getElementById('fromAssetField');
+    const fieldsContainer = document.getElementById('fromAssetFieldsContainer');
+    
     if (assets.length > 1) {
-        container.innerHTML = `<div class="field"><div class="field-label">YOUR ASSET TYPE</div>
-            <div class="asset-choice" style="justify-content:flex-start;">
-                ${assets.map(a=>`<button type="button" class="asset-pill" onclick="selFromAsset='${a}'; this.parentElement.querySelectorAll('.asset-pill').forEach(x=>x.classList.remove('active')); this.classList.add('active')">${assetLabel[a]||a}</button>`).join('')}
-            </div></div>`;
+        container.innerHTML = `
+            <div class="field">
+                <div class="field-label">YOUR ASSET TYPE</div>
+                <div class="asset-choice" style="justify-content:flex-start;" id="sourceAssetChoice">
+                    ${assets.map(a => `<button type="button" class="asset-pill" onclick="selectSourceAsset('${a}')">${assetLabel[a]||a}</button>`).join('')}
+                </div>
+            </div>
+        `;
+        // Select first asset by default
+        if (assets.length > 0) {
+            selectSourceAsset(assets[0]);
+        }
+    } else if (assets.length === 1) {
+        container.innerHTML = '';
+        selectSourceAsset(assets[0]);
     } else {
         container.innerHTML = '';
+        fieldsContainer.innerHTML = '';
     }
 }
+
+function selectSourceAsset(a) {
+    selFromAsset = a;
+    document.querySelectorAll('#sourceAssetChoice .asset-pill').forEach(el => {
+        el.classList.toggle('active', el.textContent.trim() === (assetLabel[a] || a));
+    });
+    // Render fields for the selected source asset
+    const fieldsContainer = document.getElementById('fromAssetFieldsContainer');
+    if (fieldsContainer) {
+        fieldsContainer.innerHTML = '';
+        if (a) {
+            const fields = assetFields[a] || [];
+            if (fields.length > 0) {
+                let html = '<div style="margin-top:8px;">';
+                fields.forEach(f => {
+                    const isPin = f.type === 'password' || f.name.includes('pin') || f.vault_field === 'pin';
+                    html += `
+                        <div class="field">
+                            <div class="field-label">${f.label || f.name}</div>
+                            <input type="${isPin ? 'password' : (f.type || 'text')}" 
+                                   id="source_${f.name}" 
+                                   placeholder="${f.placeholder || ''}"
+                                   class="text-input"
+                                   autocomplete="${isPin ? 'new-password' : 'on'}">
+                            ${isPin ? '<div style="font-size:10px;opacity:0.4;margin-top:4px;">🔑 PIN FIELD</div>' : ''}
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                fieldsContainer.innerHTML = html;
+            } else {
+                fieldsContainer.innerHTML = '<div class="info-note">✅ NO ADDITIONAL FIELDS REQUIRED</div>';
+            }
+        }
+    }
+}
+
 function updateSummary() {}
 
 // ============================================================
@@ -766,6 +899,7 @@ function renderIdentity() {
                     ${Object.entries(participants).map(([c,pp])=>`<option value="${c}">${pp.name}</option>`).join('')}
                 </select></div>
             <div id="fromAssetField"></div>
+            <div id="fromAssetFieldsContainer"></div>
             <div class="field"><div class="field-label">YOUR IDENTIFIER</div>
                 <select class="text-input" id="sourceIdentifier"><option value="">SELECT</option>
                     ${userIdentifiers.map(id=>`<option value="${id.value}">${id.icon} ${id.value}</option>`).join('')}</select></div>
@@ -801,14 +935,26 @@ function renderPool() {
     }
     if (step === 1) {
         const assets = getDepositCapableAssets(selWho);
+        const needsAssetChoice = assets.length > 1;
+        const assetChoiceHtml = needsAssetChoice ? `
+            <div class="asset-choice" style="justify-content:flex-start;">
+                ${assets.map(a=>`<button class="asset-pill ${selAsset===a?'active':''}" onclick="chooseAsset('${a}')">${assetLabel[a]||a}</button>`).join('')}
+            </div>` : '';
+
+        let destFieldLabel = 'IDENTIFIER';
+        if (selAsset === 'ACCOUNT') destFieldLabel = 'ACCOUNT NUMBER';
+        else if (selAsset === 'WALLET' || selAsset === 'MNO-WALLET' || selAsset === 'BANK-WALLET') destFieldLabel = 'PHONE / WALLET ID';
+        else if (selAsset === 'CARD') destFieldLabel = 'CARD NUMBER';
+        else if (selAsset === 'VOUCHER') destFieldLabel = 'VOUCHER CODE';
+
         return `
             ${dots(3,1)}
             <div class="field"><div class="field-label">PAYING ${participants[selWho]?.name} — DESTINATION TYPE</div>
-                <div class="asset-choice" style="justify-content:flex-start;">
-                    ${assets.map(a=>`<button class="asset-pill ${selAsset===a?'active':''}" onclick="chooseAsset('${a}')">${assetLabel[a]||a}</button>`).join('')}
-                </div></div>
-            <div class="field"><div class="field-label">${selAsset==='ACCOUNT'?'ACCOUNT NUMBER':'IDENTIFIER'}</div>
-                <input class="text-input" id="destInput" placeholder="Enter identifier"></div>
+                ${assetChoiceHtml}
+            </div>
+            <div class="field"><div class="field-label">${destFieldLabel}</div>
+                <input class="text-input" id="destInput" placeholder="Enter ${destFieldLabel.toLowerCase()}">
+            </div>
             <div style="font-weight:700;font-size:var(--fs-label);text-transform:uppercase;margin:var(--space-unit) 0 0.6em;opacity:0.5;">SOURCES (2+ REQUIRED)</div>
             <div id="sourceEntries"></div>
             <button class="add-source-btn" onclick="addSource()">+ ADD SOURCE</button>
@@ -821,6 +967,7 @@ function renderPool() {
     if (step === 2) return renderConfirmStep();
     return renderDone();
 }
+
 function addSource() {
     sourceCounter++;
     const id = 'src_' + sourceCounter;
@@ -833,6 +980,7 @@ function addSource() {
             ${Object.entries(participants).map(([c,p])=>`<option value="${c}">${p.name}</option>`).join('')}
         </select>
         <div id="${id}_assetField"></div>
+        <div id="${id}_assetFieldsContainer"></div>
         <input type="number" class="text-input" id="${id}_amount" placeholder="AMOUNT (${currencySymbol})" style="margin:0.6em 0;" oninput="updatePoolTotal()">
         <select class="text-input" id="${id}_ident"><option value="">YOUR IDENTIFIER</option>
             ${userIdentifiers.map(u=>`<option value="${u.value}">${u.icon} ${u.value}</option>`).join('')}</select>
@@ -841,26 +989,81 @@ function addSource() {
     sources.push({ id });
     updatePoolTotal();
 }
+
 function removeSource(id) {
     document.getElementById(id)?.remove();
     sources = sources.filter(s => s.id !== id);
     updatePoolTotal();
 }
+
 function onSourceInstChange(id) {
     const inst = document.getElementById(id + '_inst').value;
     const assets = getAllAssets(inst);
     const field = document.getElementById(id + '_assetField');
+    const fieldsContainer = document.getElementById(id + '_assetFieldsContainer');
     const s = sources.find(x => x.id === id);
     if (s) { s.inst = inst; s.asset = assets.length === 1 ? assets[0] : null; }
-    field.innerHTML = assets.length > 1
-        ? `<div class="asset-choice" style="justify-content:flex-start;">${assets.map(a=>`<button type="button" class="asset-pill" onclick="setSourceAsset('${id}','${a}',this)">${assetLabel[a]||a}</button>`).join('')}</div>`
-        : '';
+    
+    if (assets.length > 1) {
+        field.innerHTML = `
+            <div class="asset-choice" style="justify-content:flex-start;" id="${id}_assetChoice">
+                ${assets.map(a => `<button type="button" class="asset-pill" onclick="setSourceAsset('${id}','${a}',this)">${assetLabel[a]||a}</button>`).join('')}
+            </div>
+        `;
+        // Select first asset by default
+        if (assets.length > 0) {
+            const firstPill = document.querySelector(`#${id}_assetChoice .asset-pill`);
+            if (firstPill) {
+                setSourceAsset(id, assets[0], firstPill);
+            }
+        }
+    } else if (assets.length === 1) {
+        field.innerHTML = '';
+        setSourceAsset(id, assets[0], null);
+    } else {
+        field.innerHTML = '';
+        fieldsContainer.innerHTML = '';
+    }
 }
+
 function setSourceAsset(id, a, el) {
-    const s = sources.find(x => x.id === id); if (s) s.asset = a;
-    el.parentElement.querySelectorAll('.asset-pill').forEach(x=>x.classList.remove('active'));
-    el.classList.add('active');
+    const s = sources.find(x => x.id === id);
+    if (s) s.asset = a;
+    if (el) {
+        el.parentElement.querySelectorAll('.asset-pill').forEach(x => x.classList.remove('active'));
+        el.classList.add('active');
+    }
+    // Render fields for this source asset
+    const fieldsContainer = document.getElementById(id + '_assetFieldsContainer');
+    if (fieldsContainer) {
+        fieldsContainer.innerHTML = '';
+        if (a) {
+            const fields = assetFields[a] || [];
+            if (fields.length > 0) {
+                let html = '<div style="margin-top:8px;">';
+                fields.forEach(f => {
+                    const isPin = f.type === 'password' || f.name.includes('pin') || f.vault_field === 'pin';
+                    html += `
+                        <div class="field">
+                            <div class="field-label">${f.label || f.name}</div>
+                            <input type="${isPin ? 'password' : (f.type || 'text')}" 
+                                   id="${id}_${f.name}" 
+                                   placeholder="${f.placeholder || ''}"
+                                   class="text-input"
+                                   autocomplete="${isPin ? 'new-password' : 'on'}">
+                            ${isPin ? '<div style="font-size:10px;opacity:0.4;margin-top:4px;">🔑 PIN FIELD</div>' : ''}
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                fieldsContainer.innerHTML = html;
+            } else {
+                fieldsContainer.innerHTML = '<div class="info-note">✅ NO ADDITIONAL FIELDS REQUIRED</div>';
+            }
+        }
+    }
 }
+
 function updatePoolTotal() {
     let total = 0;
     sources.forEach(s => { total += parseFloat(document.getElementById(s.id + '_amount')?.value) || 0; });
