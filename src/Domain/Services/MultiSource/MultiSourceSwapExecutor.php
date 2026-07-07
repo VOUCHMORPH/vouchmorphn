@@ -10,6 +10,7 @@ use Domain\Services\SwapService;
 use Domain\Services\Settlement\HybridSettlementStrategy;
 use Domain\Services\ContributionCalculator;
 use Domain\Services\MultiSourceFeeCalculator;
+use Domain\Services\CardService;
 use Domain\Repositories\FundingPoolRepository;
 use Domain\Repositories\PoolContributionRepository;
 use Domain\Models\PoolContribution;
@@ -27,10 +28,14 @@ use Infrastructure\Crypto\SignatureVerifier;
  * -> place holds -> sign aggregate -> credit destination once -> debit all
  * sources -> settle & invoice -> mark complete.
  *
+ * NOW SUPPORTS CARD DESTINATIONS:
+ * - destination_asset_type = 'CARD' routes to CardService::loadCard()
+ * - Works for ANY card brand (VouchMorph, Visa, Mastercard) since it's
+ *   just a deposit to a card, not a network-specific hook
+ *
  * Built against the REAL, verified APIs of SwapService, FundingPoolRepository,
  * PoolContributionRepository, ContributionCalculator, MultiSourceFeeCalculator,
- * HybridSettlementStrategy, CertificateManager, and SignatureVerifier - not
- * against the broken assumptions in the old VirtualFundingPoolExecutor.
+ * HybridSettlementStrategy, CertificateManager, and SignatureVerifier.
  */
 class MultiSourceSwapExecutor
 {
@@ -43,6 +48,7 @@ class MultiSourceSwapExecutor
     private PoolContributionRepository $contributionRepository;
     private CertificateManager $certManager;
     private SignatureVerifier $signatureVerifier;
+    private ?CardService $cardService = null;
     private $logger;
     private array $config;
     private string $countryCode;
@@ -53,6 +59,7 @@ class MultiSourceSwapExecutor
         HybridSettlementStrategy $settlement,
         array $config,
         string $countryCode,
+        ?CardService $cardService = null,
         $logger = null
     ) {
         $this->db = $db;
@@ -60,6 +67,7 @@ class MultiSourceSwapExecutor
         $this->settlement = $settlement;
         $this->config = $config;
         $this->countryCode = $countryCode;
+        $this->cardService = $cardService;
 
         $this->contributionCalculator = new ContributionCalculator();
         $this->feeCalculator = new MultiSourceFeeCalculator($config, $countryCode);
@@ -104,8 +112,15 @@ class MultiSourceSwapExecutor
             $masterSignature = $this->generateMasterSignature($pool, $holds);
             $this->logger->info('Master signature generated');
 
-            $destinationResult = $this->executeDestination($pool, $masterSignature);
-            $this->logger->info('Destination credited', ['success' => $destinationResult['success'] ?? false]);
+            // ============================================================
+            // DESTINATION: Route based on destination_asset_type
+            // ============================================================
+            $destinationAssetType = strtoupper($pool['destination_asset_type'] ?? 'WALLET');
+            $destinationResult = $this->executeDestination($pool, $masterSignature, $destinationAssetType);
+            $this->logger->info('Destination executed', [
+                'success' => $destinationResult['success'] ?? false,
+                'asset_type' => $destinationAssetType
+            ]);
 
             $debits = $this->debitAllSources($pool, $holds);
             $this->logger->info('Sources debited', ['count' => count($debits)]);
@@ -183,7 +198,6 @@ class MultiSourceSwapExecutor
             $sourcesWithBalances[] = array_merge($source, ['available_balance' => $balance]);
         }
 
-        // Real ContributionCalculator method - calculateContributions(), not calculate()
         $contributions = $this->contributionCalculator->calculateContributions(
             $pool['amount'],
             $sourcesWithBalances,
@@ -213,7 +227,6 @@ class MultiSourceSwapExecutor
             $contribution['_contribution_id'] = $saved->getId();
             $contribution['_sub_reference'] = $model->getSubReference();
             $contribution['institution'] = $sourceInfo['institution'];
-            // Normalize to a single 'amount' key for the rest of this class
             $contribution['amount'] = $contribution['actual_amount'];
 
             $persisted[] = $contribution;
@@ -243,7 +256,6 @@ class MultiSourceSwapExecutor
                 'source_institution' => $institution,
             ];
 
-            // Real, now-public SwapService method
             $result = $this->swapService->verifyAssetSigned($verifyPayload, $institution);
 
             if (!($result['verified'] ?? false)) {
@@ -293,7 +305,6 @@ class MultiSourceSwapExecutor
                 'source_institution' => $institution,
             ];
 
-            // Real, now-public SwapService method
             $result = $this->swapService->placeHoldSigned($holdPayload, $institution, $verificationResult);
 
             if (!($result['hold_placed'] ?? false)) {
@@ -329,7 +340,7 @@ class MultiSourceSwapExecutor
     }
 
     // ============================================================
-    // MASTER SIGNATURE (Chain of Trust)
+    // MASTER SIGNATURE
     // ============================================================
 
     private function generateMasterSignature(array $pool, array $holds): array
@@ -350,9 +361,6 @@ class MultiSourceSwapExecutor
         ];
         ksort($aggregatePayload);
 
-        // Real CertificateManager method - createSignedRequest returns the
-        // WHOLE signed envelope (payload + signature + certificate + timestamp),
-        // not a bare signature string. signPayload()/getCertificate() never existed.
         $signedEnvelope = $this->certManager->createSignedRequest($aggregatePayload, 'VOUCHMORPH');
 
         return [
@@ -364,18 +372,68 @@ class MultiSourceSwapExecutor
     }
 
     // ============================================================
-    // DESTINATION (single credit, funded by the pool)
+    // DESTINATION - NOW SUPPORTS ACCOUNT, WALLET, AND CARD
     // ============================================================
 
-    private function executeDestination(array $pool, array $masterSignature): array
+    private function executeDestination(array $pool, array $masterSignature, string $destinationAssetType): array
     {
+        $destinationAssetType = strtoupper($destinationAssetType);
+
+        // ============================================================
+        // BRANCH: CARD DESTINATION
+        // ============================================================
+        if ($destinationAssetType === 'CARD') {
+            if ($this->cardService === null) {
+                throw new RuntimeException('CardService not available for CARD destination');
+            }
+
+            $cardSuffix = $pool['destination_identifier'] ?? null;
+            if (empty($cardSuffix)) {
+                throw new RuntimeException('destination_identifier (card_suffix) required for CARD destination');
+            }
+
+            $this->logger->info('Processing CARD destination', ['card_suffix' => $cardSuffix]);
+
+            // Load funds onto the card using CardService::loadCard()
+            // This works for ANY card brand - it's just a deposit
+            $loadResult = $this->cardService->loadCard([
+                'card_suffix' => $cardSuffix,
+                'hold_reference' => $pool['reference'] . '-CARD_LOAD',
+                'amount' => $pool['amount'],
+                'swap_reference' => $pool['reference'],
+                'currency' => $pool['currency'],
+                'metadata' => [
+                    'pool_id' => $pool['id'],
+                    'source_count' => count($pool['sources']),
+                    'master_signature' => $masterSignature['aggregate_signature']
+                ]
+            ]);
+
+            if (!$loadResult['success']) {
+                throw new RuntimeException('Card load failed: ' . ($loadResult['message'] ?? 'Unknown error'));
+            }
+
+            return [
+                'success' => true,
+                'type' => 'CARD',
+                'card_suffix' => $cardSuffix,
+                'amount_loaded' => $loadResult['amount_loaded'] ?? $pool['amount'],
+                'new_balance' => $loadResult['new_balance'] ?? 0,
+                'transaction_reference' => $loadResult['transaction_reference'] ?? null,
+                'message' => 'Card loaded successfully from pool'
+            ];
+        }
+
+        // ============================================================
+        // BRANCH: ACCOUNT / WALLET (existing path)
+        // ============================================================
         $destinationPayload = [
             'reference' => $pool['reference'],
             'amount' => $pool['amount'],
             'currency' => $pool['currency'],
             'destination_identifier' => $pool['destination_identifier'],
             'destination_identifier_type' => $pool['destination_identifier_type'] ?? 'account',
-            'destination_asset_type' => $pool['destination_asset_type'] ?? 'WALLET',
+            'destination_asset_type' => $destinationAssetType,
             'destination_institution' => $pool['destination_institution'],
             'to_institution' => $pool['destination_institution'],
             'source_type' => 'VIRTUAL_POOL',
@@ -384,7 +442,6 @@ class MultiSourceSwapExecutor
             'master_certificate' => $masterSignature['aggregate_certificate'],
         ];
 
-        // Real, newly-added SwapService method
         $result = $this->swapService->creditDestination($destinationPayload, $pool['destination_institution']);
 
         if (!($result['success'] ?? false)) {
@@ -395,7 +452,7 @@ class MultiSourceSwapExecutor
     }
 
     // ============================================================
-    // DEBIT SOURCES (only after destination succeeds)
+    // DEBIT SOURCES
     // ============================================================
 
     private function debitAllSources(array $pool, array $holds): array
@@ -414,7 +471,6 @@ class MultiSourceSwapExecutor
                 'source_institution' => $institution,
             ];
 
-            // Real, now-public SwapService method
             $result = $this->swapService->debitSource($debitPayload, $institution);
 
             if (!($result['debited'] ?? false)) {
@@ -451,7 +507,6 @@ class MultiSourceSwapExecutor
 
     private function settleAndInvoice(array $pool, array $contributions, array $destinationResult): array
     {
-        // Real MultiSourceFeeCalculator method - calculateFees(), not calculateSourceFee()
         $feeResult = $this->feeCalculator->calculateFees(
             count($contributions),
             $pool['delivery_mode'],
@@ -521,7 +576,6 @@ class MultiSourceSwapExecutor
     {
         foreach ($heldContributions as $held) {
             try {
-                // Real, already-public SwapService method
                 $this->swapService->releaseHold(
                     $held['source_payload'] ?? [],
                     $held['institution'],
