@@ -36,10 +36,10 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 $container = require_once ROOT_PATH . '/src/bootstrap.php';
 
 // ============================================
-// 4. LOAD SYSTEM CONFIG & CORE
+// 4. LOAD SYSTEM CONFIG & CORE (FIXED PATHS)
 // ============================================
-require_once ROOT_PATH . '/src/CORE_CONFIG/system_country.php';
-require_once ROOT_PATH . '/src/CORE_CONFIG/load_country.php';
+require_once ROOT_PATH . '/src/Core/Config/SystemCountry.php';
+require_once ROOT_PATH . '/src/Core/Config/LoadCountry.php';
 
 $country = defined('SYSTEM_COUNTRY') ? SYSTEM_COUNTRY : 'BW';
 
@@ -53,7 +53,7 @@ use Domain\Services\CardService;
 // ============================================
 // 6. LOAD ENVIRONMENT
 // ============================================
-$envFile = ROOT_PATH . "/src/CORE_CONFIG/countries/{$country}/.env_{$country}";
+$envFile = ROOT_PATH . "/src/Core/Config/Countries/{$country}/.env_{$country}";
 if (file_exists($envFile)) {
     $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($lines as $line) {
@@ -126,7 +126,6 @@ try {
 // ============================================
 try {
     if ($cardSuffix) {
-        // Search by suffix
         $stmt = $pdo->prepare("
             SELECT 
                 mc.card_id,
@@ -159,7 +158,6 @@ try {
         ");
         $stmt->execute([':suffix' => $cardSuffix]);
     } else {
-        // Search by full card number (hash it first)
         $cardNumberHash = hash('sha256', $cardNumber);
         $stmt = $pdo->prepare("
             SELECT 
@@ -205,7 +203,6 @@ try {
         exit();
     }
     
-    // Format response
     $response = [
         'success' => true,
         'card_id' => $card['card_id'],
