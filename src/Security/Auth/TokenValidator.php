@@ -5,21 +5,26 @@ namespace Security\Auth;
 
 use Core\Database\DBConnection;
 use Application\Utils\AuditLogger;
+use Security\Encryption\KeyVault;
 
 /**
  * Enterprise-grade token validator with PSD2 compliance
  * Works with existing clients table
+ * 
+ * FIXED: No hardcoded fallback keys - uses KeyVault exclusively
  */
 class TokenValidator
 {
     private static $db = null;
     private static $auditLogger = null;
+    private static $keyVault = null;
     
     private static function init(): void
     {
         if (self::$db === null) {
             self::$db = DBConnection::getInstance();
             self::$auditLogger = new AuditLogger();
+            self::$keyVault = KeyVault::getInstance();
         }
     }
     
@@ -280,7 +285,7 @@ class TokenValidator
     
     /**
      * Legacy simple token validation (for internal use only)
-     * WARNING: Do not use for external API endpoints
+     * FIXED: No hardcoded fallback - uses KeyVault
      */
     public static function validate(string $token, string $expected): bool
     {
@@ -292,6 +297,17 @@ class TokenValidator
         
         if (!$isInternal && getenv('APP_ENV') === 'production') {
             throw new \RuntimeException('Simple token validation not allowed for external requests');
+        }
+        
+        // FIXED: No hardcoded fallback - use KeyVault
+        $keyVault = KeyVault::getInstance();
+        $secretKey = $keyVault->getKey('internal_token_validation_key');
+        
+        if (!$secretKey) {
+            throw new \RuntimeException(
+                'Internal token validation key not found in KeyVault. ' .
+                'Set INTERNAL_TOKEN_VALIDATION_KEY in environment variables.'
+            );
         }
         
         return hash_equals($expected, $token);
