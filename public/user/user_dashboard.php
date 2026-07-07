@@ -260,14 +260,26 @@ $apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
 $denominationsList = implode(', ', $atmDenominations);
 
 // ============================================================
-// FIXED: Include 'type' in participantOptions for JS badge rendering
+// Participant options with asset type details for JS
 // ============================================================
 $participantOptions = [];
 foreach ($participants as $code => $p) {
     $participantOptions[$code] = [
         'name' => $p['name'] ?? $code,
         'asset_types' => $p['asset_types'] ?? ['ACCOUNT'],
-        'type' => $p['type'] ?? 'BANK', // BANK, MNO, or ORCHESTRATOR from participants.yaml
+        'type' => $p['type'] ?? 'BANK',
+        'delivery_modes' => $p['delivery_modes'] ?? ['CASHOUT', 'DEPOSIT'],
+    ];
+}
+
+// Build destination options with asset types
+$destinationOptions = [];
+foreach ($participants as $code => $p) {
+    $destinationOptions[$code] = [
+        'name' => $p['name'] ?? $code,
+        'type' => $p['type'] ?? 'BANK',
+        'asset_types' => $p['asset_types'] ?? ['ACCOUNT'],
+        'delivery_modes' => $p['delivery_modes'] ?? ['CASHOUT', 'DEPOSIT'],
     ];
 }
 
@@ -281,6 +293,7 @@ $identifiersJson = json_encode($validIdentifiers);
     <title>VouchMorph | <?= htmlspecialchars($countryName) ?></title>
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
+        /* [All existing styles remain the same] */
         /* ============================================================
            TOKENS
            ink        #121212  primary text / borders / stamps
@@ -514,6 +527,18 @@ $identifiersJson = json_encode($validIdentifiers);
             border-color: #2440FF;
             color: #FFFFFF;
         }
+        .pill .badge {
+            font-size: 11px;
+            opacity: 0.6;
+            margin-right: 6px;
+        }
+        .pill .asset-dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            margin-left: 6px;
+        }
         
         .text-input {
             width: 100%;
@@ -658,7 +683,7 @@ $identifiersJson = json_encode($validIdentifiers);
         }
         
         /* ============================================================
-           MULTI-SOURCE
+           MULTI-SOURCE - FIXED with destination institution/asset
            ============================================================ */
         .source-entry {
             background: #FFFFFF;
@@ -743,6 +768,32 @@ $identifiersJson = json_encode($validIdentifiers);
             color: #2440FF;
         }
         .source-summary .list { font-size: 12px; opacity: 0.6; margin-top: 4px; }
+        
+        /* ============================================================
+           DESTINATION ASSET SELECTION - NEW
+           ============================================================ */
+        .dest-asset-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .dest-asset-card {
+            background: #FFFFFF;
+            border: 2px solid #D8D4CB;
+            padding: 14px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.15s;
+            clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
+        }
+        .dest-asset-card:hover { border-color: #121212; }
+        .dest-asset-card.active {
+            border-color: #2440FF;
+            background: rgba(36, 64, 255, 0.05);
+        }
+        .dest-asset-card .icon { font-size: 24px; display: block; margin-bottom: 4px; }
+        .dest-asset-card .name { font-weight: 600; font-size: 14px; }
+        .dest-asset-card .desc { font-size: 11px; opacity: 0.4; margin-top: 2px; }
         
         /* ============================================================
            CLOUD PANEL
@@ -898,6 +949,7 @@ $identifiersJson = json_encode($validIdentifiers);
             .topbar .user-area .phone { font-size: 12px; }
             .confirm-row { font-size: 13px; }
             .cloud-total .amount { font-size: 22px; }
+            .dest-asset-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -1113,6 +1165,7 @@ $identifiersJson = json_encode($validIdentifiers);
 // CONFIG
 // ============================================================
 const participants = <?= json_encode($participantOptions) ?>;
+const destinationOptions = <?= json_encode($destinationOptions) ?>;
 const assetFields = <?= json_encode($assetFieldsMap) ?>;
 const assetUI = <?= json_encode($assetUIMap) ?>;
 const currencySymbol = '<?= $currencySymbol ?>';
@@ -1124,12 +1177,19 @@ const userId = '<?= $userId ?>';
 const loggedPhone = '<?= htmlspecialchars($primaryIdentifier) ?>';
 
 // ============================================================
-// NEW: Institution type badge mapping
+// Institution type badge mapping
 // ============================================================
 const participantTypeBadge = {
     'BANK':         { label: 'Bank',    icon: '🏦' },
     'MNO':          { label: 'Mobile',  icon: '📱' },
     'ORCHESTRATOR': { label: 'Network', icon: '⚙️' },
+};
+
+const assetDisplay = {
+    'ACCOUNT': { icon: '💰', name: 'Account' },
+    'WALLET': { icon: '📱', name: 'Wallet' },
+    'VOUCHER': { icon: '🎫', name: 'Voucher' },
+    'MNO-WALLET': { icon: '📱', name: 'Mobile Wallet' },
 };
 
 // ============================================================
@@ -1143,6 +1203,7 @@ let sources = [];
 let sourceCounter = 0;
 let stdDestType = 'ACCOUNT';
 let msDestType = 'ACCOUNT';
+let selectedDestAsset = null;
 let sourceSelections = {}; // { [sourceId]: { inst: code, asset: type } }
 
 // ============================================================
@@ -1171,6 +1232,7 @@ function closePanel(type) {
 function openFlow(type) {
     currentFlow = type;
     currentStep = 0;
+    selectedDestAsset = null;
     document.getElementById('flowPanel').classList.add('active');
     renderFlow();
 }
@@ -1179,6 +1241,9 @@ function closeFlow() {
     document.getElementById('flowPanel').classList.remove('active');
     currentFlow = null;
     currentStep = 0;
+    sources = [];
+    sourceSelections = {};
+    sourceCounter = 0;
 }
 
 // ============================================================
@@ -1315,10 +1380,15 @@ function renderDetails() {
                 </div>
             </div>
             <div class="field">
-                <div class="field-label">Destination type</div>
-                <div class="pill-group">
-                    <button class="pill active" data-value="ACCOUNT" onclick="selectMsDestType('ACCOUNT')">Account</button>
-                    <button class="pill" data-value="WALLET" onclick="selectMsDestType('WALLET')">Wallet</button>
+                <div class="field-label">Destination asset type</div>
+                <div class="dest-asset-grid" id="destAssetGrid">
+                    ${Object.entries(assetDisplay).map(([code, info]) => `
+                        <div class="dest-asset-card" data-value="${code}" onclick="selectDestAsset('${code}')">
+                            <span class="icon">${info.icon}</span>
+                            <div class="name">${info.name}</div>
+                            <div class="desc">${code}</div>
+                        </div>
+                    `).join('')}
                 </div>
             </div>
             <div class="field" id="destField">
@@ -1355,7 +1425,12 @@ function renderDetails() {
             const fromPills = document.querySelectorAll('#fromPills .pill');
             if (fromPills.length) fromPills[0].click();
         }
-        if (flow === 'pool' && sources.length === 0) addSource();
+        if (flow === 'pool') {
+            // Select first destination asset by default
+            const firstAsset = document.querySelector('.dest-asset-card');
+            if (firstAsset) firstAsset.click();
+            if (sources.length === 0) addSource();
+        }
         updateSummary();
     }, 50);
     
@@ -1398,13 +1473,12 @@ function selectDestType(type) {
     updateSummary();
 }
 
-function selectMsDestType(type) {
-    msDestType = type;
-    document.querySelectorAll('#destField .pill-group .pill').forEach(el => {
+function selectDestAsset(type) {
+    selectedDestAsset = type;
+    document.querySelectorAll('.dest-asset-card').forEach(el => {
         el.classList.toggle('active', el.dataset.value === type);
     });
-    const input = document.getElementById('destInput');
-    if (input) input.placeholder = type === 'ACCOUNT' ? 'Account number' : 'Phone number';
+    msDestType = type;
     updateSummary();
 }
 
@@ -1472,7 +1546,7 @@ function renderAssetFields() {
 }
 
 // ============================================================
-// POOL SOURCES - FIXED with pill-driven selection
+// POOL SOURCES
 // ============================================================
 function addSource() {
     sourceCounter++;
@@ -1526,7 +1600,7 @@ function removeSource(id) {
     const el = document.getElementById(id);
     if (el) el.remove();
     sources = sources.filter(s => s.id !== id);
-    delete sourceSelections[id]; // Clean up stale state
+    delete sourceSelections[id];
     updateSourceCount();
     updateSummary();
     if (sources.length === 0) addSource();
@@ -1628,12 +1702,19 @@ function updateSummary() {
         text = `${from} → ${selectedIdentType}: ${idVal} · ${currencySymbol} ${amt.toFixed(2)}`;
     } else if (flow === 'pool') {
         let total = 0;
+        const sourceDetails = [];
         sources.forEach(s => {
-            total += parseFloat(document.getElementById(s.id + '_amount')?.value) || 0;
+            const amt = parseFloat(document.getElementById(s.id + '_amount')?.value) || 0;
+            total += amt;
+            const inst = sourceSelections[s.id]?.inst || '?';
+            const asset = sourceSelections[s.id]?.asset || '?';
+            if (amt > 0) sourceDetails.push(`${inst}(${asset}):${amt.toFixed(2)}`);
         });
-        const to = selectedTo || '?';
         document.getElementById('totalSourceAmount').textContent = currencySymbol + ' ' + total.toFixed(2);
-        text = `${to} · ${currencySymbol} ${total.toFixed(2)} · ${sources.length} source(s)`;
+        document.getElementById('sourceList').textContent = sourceDetails.join(' | ') || 'No sources configured';
+        const to = selectedTo || '?';
+        const destAsset = selectedDestAsset || '?';
+        text = `${to} → ${destAsset} · ${currencySymbol} ${total.toFixed(2)} · ${sources.length} source(s)`;
     }
     box.textContent = '📋 ' + text;
 }
@@ -1682,14 +1763,17 @@ function goToConfirm() {
         sources.forEach(s => {
             const amt = parseFloat(document.getElementById(s.id + '_amount')?.value) || 0;
             const inst = sourceSelections[s.id]?.inst;
+            const asset = sourceSelections[s.id]?.asset;
             const ident = document.getElementById(s.id + '_ident')?.value;
             if (!inst) { hasError = true; alert('Select institution for source ' + s.counter); return; }
+            if (!asset) { hasError = true; alert('Select asset type for source ' + s.counter); return; }
             if (!ident) { hasError = true; alert('Select identifier for source ' + s.counter); return; }
             if (amt <= 0) { hasError = true; alert('Enter amount for source ' + s.counter); return; }
         });
         if (hasError) return;
         if (sources.length < 2) { alert('Add at least 2 sources'); return; }
         if (!selectedTo) { alert('Select destination'); return; }
+        if (!selectedDestAsset) { alert('Select destination asset type'); return; }
         const dest = document.getElementById('destInput')?.value?.trim();
         if (!dest) { alert('Enter destination identifier'); return; }
     }
@@ -1702,7 +1786,7 @@ function goToConfirm() {
 }
 
 // ============================================================
-// BUILD PAYLOAD - FIXED for pool sourceSelections
+// BUILD PAYLOAD
 // ============================================================
 function buildPayload() {
     const flow = currentFlow;
@@ -1721,7 +1805,6 @@ function buildPayload() {
         payload.amount = parseFloat(document.getElementById('amountInput')?.value) || 0;
         payload.destination_asset_type = stdDestType || 'ACCOUNT';
         
-        // Asset fields
         const fields = assetFields[selectedAsset] || [];
         fields.forEach(f => {
             const el = document.getElementById('asset_' + f.name);
@@ -1767,7 +1850,12 @@ function buildPayload() {
             const amount = parseFloat(document.getElementById(s.id + '_amount')?.value) || 0;
             const ident = document.getElementById(s.id + '_ident')?.value || '';
             if (inst && amount > 0) {
-                const source = { institution: inst, asset_type: asset, amount: amount, identifier: ident };
+                const source = { 
+                    institution: inst, 
+                    asset_type: asset, 
+                    amount: amount, 
+                    identifier: ident 
+                };
                 const fields = assetFields[asset] || [];
                 fields.forEach(f => {
                     const el = document.getElementById(s.id + '_' + f.name);
@@ -1780,10 +1868,10 @@ function buildPayload() {
         payload.amount = total;
         payload.to_institution = selectedTo;
         payload.delivery_method = 'DEPOSIT';
-        payload.destination_asset_type = msDestType || 'ACCOUNT';
+        payload.destination_asset_type = selectedDestAsset || 'ACCOUNT';
         payload.contribution_strategy = 'SMART';
         const dest = document.getElementById('destInput')?.value?.trim() || '';
-        if (msDestType === 'ACCOUNT') {
+        if (selectedDestAsset === 'ACCOUNT') {
             payload.destination_account = dest;
             payload.destination_identifier = dest;
             payload.destination_identifier_type = 'account';
@@ -1862,7 +1950,7 @@ async function showConfirm(payload) {
                     <span class="label">You receive</span>
                     <span class="value highlight">${netAmount.toFixed(2)} ${p.destination_currency || p.source_currency || 'BWP'}</span>
                 </div>
-                ${p.is_multi_source ? `<div style="margin-top:8px;font-size:13px;opacity:0.5;">📦 ${p.source_count || 0} source(s)</div>` : ''}
+                ${p.is_multi_source ? `<div style="margin-top:8px;font-size:13px;opacity:0.5;">📦 ${p.source_count || 0} source(s) → ${p.destination_asset_type || '?'}</div>` : ''}
                 ${p.identity_type ? `<div style="margin-top:8px;font-size:13px;opacity:0.5;">🔐 ${p.identity_type}: ${p.identity_value}</div>` : ''}
             </div>
         `;
