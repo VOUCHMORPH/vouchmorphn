@@ -239,9 +239,32 @@ class PoolCoordinator
         return $pool;
     }
 
+    /**
+     * FIXED: Calculate contributions using the real ContributionCalculator signature
+     * 
+     * Before: $this->contributionCalculator->calculate($pool, $payload)
+     * After: $this->contributionCalculator->calculateContributions(...)
+     * 
+     * The real method signature is:
+     * calculateContributions(float $targetAmount, array $sources, string $strategy, ?array $userSpecified, ?array $priorityOrder)
+     */
     private function calculateContributions(array $pool, array $payload): array
     {
-        return $this->contributionCalculator->calculate($pool, $payload);
+        // Build sources with available balances
+        $sourcesWithBalances = [];
+        foreach ($pool['sources'] as $source) {
+            $balance = $this->swapService->getSourceAvailableBalance($source);
+            $sourcesWithBalances[] = array_merge($source, ['available_balance' => $balance]);
+        }
+
+        // Call the real ContributionCalculator method with the correct signature
+        return $this->contributionCalculator->calculateContributions(
+            $pool['amount'],
+            $sourcesWithBalances,
+            $payload['contribution_strategy'] ?? 'RATIO',
+            $payload['user_amounts'] ?? null,
+            $payload['priority_order'] ?? null
+        );
     }
 
     private function verifySources(array $contributions, array $payload): array
@@ -350,7 +373,7 @@ class PoolCoordinator
                     $this->logger->warning('Failed to update contribution hold status', [
                         'contribution_id' => $contribution['_contribution_id'],
                         'error' => $e->getMessage()
-                    });
+                    ]);
                 }
             }
             
@@ -511,7 +534,7 @@ class PoolCoordinator
                     $this->logger->warning('Failed to update contribution debit status', [
                         'contribution_id' => $matchingContribution['_contribution_id'],
                         'error' => $e->getMessage()
-                    });
+                    ]);
                 }
             }
         }
