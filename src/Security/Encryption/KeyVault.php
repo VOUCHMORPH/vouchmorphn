@@ -66,6 +66,29 @@ class KeyVault
         $this->loadParticipantConfigs();
     }
 
+    // ============================================================
+// PAN HMAC KEY - for CardService PAN hashing
+// FIXED: Load as first-class key with length validation
+// ============================================================
+$panHmacKey = getenv('PAN_HMAC_KEY');
+if ($panHmacKey && strlen($panHmacKey) >= 32) {
+    $this->keys['pan_hmac_key'] = $panHmacKey;
+} else {
+    error_log("[KeyVault] WARNING: PAN_HMAC_KEY not set or too short (min 32 bytes)");
+}
+
+// ============================================================
+// VRN SIGNING KEY - for CardService cashout token signing
+// FIXED: Load as first-class key with length validation, same
+// pattern as PAN_HMAC_KEY - no hardcoded fallback anywhere downstream
+// ============================================================
+$vrnSigningKey = getenv('VRN_SIGNING_KEY');
+if ($vrnSigningKey && strlen($vrnSigningKey) >= 32) {
+    $this->keys['vrn_signing_key'] = $vrnSigningKey;
+} else {
+    error_log("[KeyVault] WARNING: VRN_SIGNING_KEY not set or too short (min 32 bytes)");
+}
+
     /**
      * Get singleton instance
      */
