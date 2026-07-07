@@ -591,7 +591,7 @@ if ($cardServiceSrc !== null) {
 
     // H2: Exception handling in hook
     $hookBody = extractMethodBody($cardServiceSrc, 'hookSourcesToCard');
-$hasTryCatch = $hookBody && preg_match('/try\s*\{.*?catch\s*\(/', $hookBody, $m, PREG_DOTALL);
+$hasTryCatch = $hookBody && preg_match('/try\s*\{.*?catch\s*\(/s', $hookBody);
     $report['H_error_handling_edge_cases']['hook_try_catch'] = $hasTryCatch ? 'OK' : 'CRITICAL';
 
     // H3: Null/empty checks
