@@ -107,7 +107,7 @@ class CardService
      * since HSMKeyManager's software fallback does not persist keys across
      * requests.
      */
-    private function encryptTotpSecret(string $secret): array
+    public function encryptTotpSecret(string $secret): array
     {
         $keyVault = KeyVault::getInstance();
         $key = $keyVault->getEncryptionKey();
@@ -141,7 +141,7 @@ class CardService
     /**
      * Decrypt a TOTP secret from storage.
      */
-    private function decryptTotpSecret(string $ciphertext, string $iv, string $tag): string
+    public function decryptTotpSecret(string $ciphertext, string $iv, string $tag): string
     {
         $keyVault = KeyVault::getInstance();
         $key = $keyVault->getEncryptionKey();
