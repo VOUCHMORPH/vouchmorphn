@@ -690,25 +690,38 @@ class CardService
         ];
     }
 
-    private function generateVRN($cardSuffix, $amount, $holdReference): array
-    {
-        $timestamp = date('YmdHis');
-        $random = bin2hex(random_bytes(4));
-        $uniqueId = substr(md5($cardSuffix . $amount . $holdReference . $timestamp), 0, 8);
-        
-        $vrn = "VRN-{$timestamp}-{$random}-{$uniqueId}";
-        
-        $signature = hash_hmac('sha256', 
-            $vrn . $cardSuffix . $amount . $holdReference, 
-            getenv('VRN_SIGNING_KEY') ?: 'default-vrn-key-32-chars-long!!'
+    /**
+ * FIXED: VRN signing key now sourced from KeyVault, no hardcoded fallback.
+ * Fails loudly if the key is missing/too short rather than silently
+ * signing with a value visible in source control.
+ */
+private function generateVRN($cardSuffix, $amount, $holdReference): array
+{
+    $timestamp = date('YmdHis');
+    $random = bin2hex(random_bytes(4));
+    $uniqueId = substr(md5($cardSuffix . $amount . $holdReference . $timestamp), 0, 8);
+    
+    $vrn = "VRN-{$timestamp}-{$random}-{$uniqueId}";
+    
+    $vrnSigningKey = KeyVault::getInstance()->getKey('vrn_signing_key') ?? getenv('VRN_SIGNING_KEY');
+    if (empty($vrnSigningKey) || strlen($vrnSigningKey) < 32) {
+        throw new RuntimeException(
+            'VRN signing key is missing or too short (min 32 bytes required). ' .
+            'Refusing to fall back to a hardcoded default.'
         );
-        
-        return [
-            'vrn' => $vrn,
-            'signature' => $signature,
-            'format' => 'ISO-8583-COMPLIANT'
-        ];
     }
+    
+    $signature = hash_hmac('sha256', 
+        $vrn . $cardSuffix . $amount . $holdReference, 
+        $vrnSigningKey
+    );
+    
+    return [
+        'vrn' => $vrn,
+        'signature' => $signature,
+        'format' => 'ISO-8583-COMPLIANT'
+    ];
+}
     
     /**
      * Authorize a transaction (called by ATM/POS/online)
