@@ -7,7 +7,7 @@ $user = requireEnterpriseAuth();
 $pdo = getDBConnection();
 $orgId = getOrganizationId();
 $userRole = $user['role'] ?? 'viewer';
-$departmentId = $user['department_id'] ?? null;
+$departmentId = $user['department_id'] ?? null; 
 
 // ============================================================
 // ROLE-BASED DATA FETCHING
