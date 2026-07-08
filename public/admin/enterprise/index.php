@@ -217,17 +217,18 @@ function formatCurrency($amount) {
         .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
 
         /* ============================================================
-           MASTHEAD - WITH USER MENU (Settings + Logout)
+           MASTHEAD - PERFECTLY CENTERED TITLE, USER MENU ON RIGHT
            ============================================================ */
         .masthead {
             background: var(--ink-900);
             color: white;
-            padding: 12px 32px;
+            padding: 14px 32px;
             display: flex;
             align-items: center;
-            justify-content: space-between;
+            justify-content: center;
             position: relative;
             border-bottom: 3px solid var(--brass);
+            min-height: 80px;
         }
         .masthead .center {
             display: flex;
@@ -242,6 +243,7 @@ function formatCurrency($amount) {
             font-weight: 700;
             letter-spacing: 0.03em;
             text-transform: uppercase;
+            text-align: center;
         }
         .masthead .file-ref {
             font-family: var(--f-mono);
@@ -250,14 +252,18 @@ function formatCurrency($amount) {
             margin-top: 2px;
             text-transform: uppercase;
             letter-spacing: 0.04em;
+            text-align: center;
         }
 
-        /* User menu in masthead */
+        /* User menu - positioned absolutely on the right */
         .masthead .user-menu {
+            position: absolute;
+            right: 32px;
+            top: 50%;
+            transform: translateY(-50%);
             display: flex;
             align-items: center;
-            gap: 16px;
-            flex-shrink: 0;
+            gap: 14px;
         }
         .masthead .user-menu .role-pill {
             font-family: var(--f-cond);
@@ -271,24 +277,24 @@ function formatCurrency($amount) {
         }
         .masthead .user-menu .status-dot {
             display: inline-block;
-            width: 7px;
-            height: 7px;
+            width: 6px;
+            height: 6px;
             border-radius: 50%;
             background: #5FAE7E;
-            margin-right: 5px;
+            margin-right: 4px;
         }
         .masthead .user-menu .time {
             font-family: var(--f-mono);
-            font-size: 11px;
-            color: rgba(255,255,255,0.5);
+            font-size: 10px;
+            color: rgba(255,255,255,0.4);
         }
         .masthead .user-menu .menu-divider {
             width: 1px;
-            height: 24px;
-            background: rgba(255,255,255,0.1);
+            height: 20px;
+            background: rgba(255,255,255,0.08);
         }
         .masthead .user-menu .menu-link {
-            color: rgba(255,255,255,0.5);
+            color: rgba(255,255,255,0.4);
             text-decoration: none;
             font-family: var(--f-cond);
             font-size: 10px;
@@ -304,7 +310,7 @@ function formatCurrency($amount) {
             border-color: var(--brass);
         }
         .masthead .user-menu .menu-link.logout-link {
-            color: rgba(255,255,255,0.3);
+            color: rgba(255,255,255,0.25);
         }
         .masthead .user-menu .menu-link.logout-link:hover {
             color: var(--seal-red);
@@ -439,15 +445,30 @@ function formatCurrency($amount) {
         .page-footer .notice { font-family: var(--f-cond); font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-300); }
         .page-footer .role-line { font-family: var(--f-mono); font-size: 9px; color: var(--ink-300); margin-top: 4px; text-transform: uppercase; }
 
-        @media (max-width: 640px) {
-            .masthead { flex-direction: column; gap: 8px; padding: 12px 16px; }
-            .masthead .user-menu { flex-wrap: wrap; justify-content: center; }
-            .masthead .user-menu .time { display: none; }
+        @media (max-width: 992px) {
+            .masthead { padding: 12px 16px; flex-direction: column; min-height: auto; gap: 6px; }
+            .masthead .user-menu {
+                position: static;
+                transform: none;
+                justify-content: center;
+                flex-wrap: wrap;
+            }
             .vouchmorph-watermark { display: none; }
+            .stage { padding: 80px 16px 40px; }
+        }
+
+        @media (max-width: 640px) {
+            .masthead h1 { font-size: 14px; }
+            .masthead .file-ref { font-size: 9px; }
+            .masthead .user-menu { gap: 8px; }
+            .masthead .user-menu .role-pill { font-size: 8px; padding: 1px 6px; }
+            .masthead .user-menu .time { font-size: 8px; }
+            .masthead .user-menu .menu-link { font-size: 8px; padding: 2px 6px; }
             .stage { padding: 60px 14px 30px; }
             .action-btn { width: 150px; padding: 18px 12px 14px; }
             .statement-item { border-left: none; padding: 10px 0 0; border-top: 1px solid var(--line); flex: 1 1 100%; }
             .statement-item:first-child { border-top: none; }
+            .vouchmorph-watermark { display: none; }
         }
 
         @media (prefers-color-scheme: dark) {
@@ -465,7 +486,7 @@ function formatCurrency($amount) {
     </style>
 </head>
 <body>
-    <!-- VouchMorph™ Watermark - Rotated 90° on left side -->
+    <!-- VouchMorph™ Watermark -->
     <div class="vouchmorph-watermark">VouchMorph<span class="tm">™</span></div>
 
     <!-- Masthead -->
