@@ -11,15 +11,10 @@ if (session_status() === PHP_SESSION_NONE) {
 
 // ============================================================================
 // DATABASE CONNECTION
-// STANDARDIZED on DBConnection::getInstance() -- this codebase currently has
-// three different call patterns across files (getInstance(), getConnection(),
-// new DBConnection()->getConnection()). Pick ONE and update the other call
-// sites (public/api/v1/swap/execute.php and system_diagnostic.php currently
-// use DBConnection::getConnection() instead) so all requests share the same
-// connection/transaction semantics.
+// FIXED: Use getConnection() instead of getInstance()
 // ============================================================================
 function getDBConnection() {
-    return DBConnection::getInstance();
+    return DBConnection::getConnection(); // FIXED: was getInstance()
 }
 
 function requireEnterpriseAuth() {
