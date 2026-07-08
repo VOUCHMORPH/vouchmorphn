@@ -221,7 +221,7 @@ function formatCurrency($amount) {
         .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
 
         /* ============================================================
-           MASTHEAD - WITH VERTICAL TM
+           MASTHEAD - BIGGER FONTS, MORE SPACING
            ============================================================ */
         .masthead {
             background: var(--ink-900);
@@ -244,12 +244,6 @@ function formatCurrency($amount) {
             font-weight: 700;
             letter-spacing: 0.03em;
             text-transform: uppercase;
-        }
-        .masthead h1 span {
-            font-weight: 400;
-            color: rgba(255,255,255,0.5);
-            font-size: 0.65em;
-            letter-spacing: 0.08em;
         }
         .masthead .file-ref {
             font-family: var(--f-mono);
@@ -290,20 +284,29 @@ function formatCurrency($amount) {
             text-transform: uppercase;
         }
 
-        /* Vertical TM on the far right */
-        .tm-vertical {
-            position: absolute;
-            right: 8px;
+        /* ============================================================
+           VOUCHMORPH™ WATERMARK - ROTATED 90° ON LEFT SIDE
+           ============================================================ */
+        .vouchmorph-watermark {
+            position: fixed;
+            left: 8px;
             top: 50%;
-            transform: translateY(-50%) rotate(90deg);
+            transform: translateY(-50%) rotate(-90deg);
             font-family: var(--f-mono);
-            font-size: 10px;
-            letter-spacing: 0.15em;
-            color: rgba(255,255,255,0.08);
+            font-size: 11px;
+            letter-spacing: 0.25em;
+            color: rgba(138, 109, 59, 0.12);
             font-weight: 700;
             text-transform: uppercase;
             user-select: none;
             pointer-events: none;
+            white-space: nowrap;
+            z-index: 0;
+        }
+        .vouchmorph-watermark .tm {
+            font-size: 8px;
+            vertical-align: super;
+            letter-spacing: 0;
         }
 
         /* ============================================================
@@ -312,6 +315,8 @@ function formatCurrency($amount) {
         .stage {
             flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center;
             padding: 140px 20px 60px;
+            position: relative;
+            z-index: 1;
         }
         .stage-inner { width: 100%; max-width: 980px; display: flex; flex-direction: column; align-items: center; gap: 34px; }
 
@@ -407,7 +412,7 @@ function formatCurrency($amount) {
         @media (max-width: 640px) {
             .masthead { flex-direction: column; gap: 8px; padding: 12px 16px; }
             .masthead .right-fixed { position: static; transform: none; margin-top: 4px; }
-            .tm-vertical { display: none; }
+            .vouchmorph-watermark { display: none; }
             .stage { padding: 60px 14px 30px; }
             .action-btn { width: 150px; padding: 18px 12px 14px; }
             .statement-item { border-left: none; padding: 10px 0 0; border-top: 1px solid var(--line); flex: 1 1 100%; }
@@ -422,24 +427,28 @@ function formatCurrency($amount) {
             }
             tbody tr:nth-child(even) td { background: #182129; }
             .action-btn { border-color: var(--ink-900); }
+            .vouchmorph-watermark {
+                color: rgba(201, 151, 42, 0.08);
+            }
         }
     </style>
 </head>
 <body>
+    <!-- VouchMorph™ Watermark - Rotated 90° on left side -->
+    <div class="vouchmorph-watermark">VouchMorph<span class="tm">™</span></div>
+
     <!-- Masthead -->
     <div class="masthead">
         <div class="center">
             <div>
-                <h1>VouchMorph™ <span>NATIONAL DISBURSEMENT</span></h1>
-                <div class="file-ref"><?php echo $orgName; ?> · FILE NO. <?php echo htmlspecialchars($fileRef); ?> · <?php echo strtoupper(date('d M Y')); ?></div>
+                <h1><?php echo $orgName; ?> — National Disbursement</h1>
+                <div class="file-ref">FILE NO. <?php echo htmlspecialchars($fileRef); ?> · <?php echo strtoupper(date('d M Y')); ?></div>
             </div>
         </div>
         <div class="right-fixed">
             <span class="role-pill"><?php echo $roleDisplay; ?></span>
             <span><span class="status-dot"></span><?php echo date('H:i'); ?> UTC+2</span>
         </div>
-        <!-- Vertical rotated TM on the right side -->
-        <div class="tm-vertical">™</div>
     </div>
 
     <!-- Central stage -->
