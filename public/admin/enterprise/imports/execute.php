@@ -4,10 +4,15 @@ $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
-$db = DBConnection::getInstance();
+// ============================================================
+// FIX: Use getConnection() instead of getInstance()
+// ============================================================
+$db = DBConnection::getConnection();
+
 $orgId = getOrganizationId();
 $batchId = $_GET['batch_id'] ?? 0;
 
+// Rest of your code remains the same...
 $stmt = $db->prepare("SELECT * FROM import_batches WHERE id = :id AND organization_id = :org_id");
 $stmt->execute([':id' => $batchId, ':org_id' => $orgId]);
 $batch = $stmt->fetch(PDO::FETCH_ASSOC);
