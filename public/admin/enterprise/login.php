@@ -1,6 +1,6 @@
 <?php
-// login.php
-require_once 'auth.php'; // auth.php now handles session hardening BEFORE session_start()
+// login.php - Enterprise Login
+require_once 'auth.php'; // auth.php handles session hardening BEFORE session_start()
 
 $pdo = getDBConnection();
 $error = '';
@@ -155,6 +155,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .btn:hover { background: #0f172a; }
         .error { background: #fef2f2; color: #dc2626; padding: 12px 16px; border-radius: 12px; margin-bottom: 24px; font-size: 14px; }
         .footer { text-align: center; margin-top: 32px; color: #94a3b8; font-size: 13px; }
+        .demo-badge {
+            display: inline-block;
+            margin-top: 12px;
+            padding: 6px 12px;
+            background: #fef3c7;
+            color: #92400e;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 500;
+        }
     </style>
 </head>
 <body>
@@ -171,10 +181,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="error">⚠️ <?php echo htmlspecialchars($error); ?></div>
         <?php endif; ?>
 
+        <!-- Demo credentials removed - no pre-filled values on production login -->
         <form method="POST">
             <div class="form-group">
                 <label>Email address</label>
-                <input type="email" name="email" required placeholder="admin@government.gov.bw" autocomplete="username">
+                <input type="email" name="email" required placeholder="admin@organization.gov.bw" autocomplete="username">
             </div>
             <div class="form-group">
                 <label>Password</label>
