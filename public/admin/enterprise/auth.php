@@ -11,7 +11,7 @@ if (session_status() === PHP_SESSION_NONE) {
 
 // ============================================================================
 // DATABASE CONNECTION
-// FIXED: Use getConnection() instead of getInstance()
+// FIXED: Use DBConnection::getConnection() as the single source of truth
 // ============================================================================
 function getDBConnection() {
     return DBConnection::getConnection(); // FIXED: was getInstance()
@@ -43,9 +43,11 @@ function requireEnterpriseAuth() {
             exit;
         }
 
-        // Keep department_id fresh in session in case it changed since login
-        // (e.g. a department_head got reassigned) without forcing re-login.
+        // Keep department_id AND role fresh in session in case either changed
+        // since login (e.g. promoted to owner, or reassigned to a different
+        // department) without forcing re-login.
         $_SESSION['enterprise_user']['department_id'] = $result['department_id'];
+        $_SESSION['enterprise_user']['role'] = $result['role'];
     } catch (PDOException $e) {
         error_log("Auth verification error: " . $e->getMessage());
     }
@@ -165,6 +167,53 @@ function getApprovalRequirement(PDO $pdo, int $departmentId, float $amount): arr
         error_log("getApprovalRequirement failed: " . $e->getMessage());
         return ['required_count' => 1, 'required_role' => 'approver']; // safe default
     }
+}
+
+/**
+ * Get current user's role info
+ */
+function getCurrentUserRole(): ?array {
+    $user = $_SESSION['enterprise_user'] ?? null;
+    if (!$user) return null;
+    
+    try {
+        $pdo = getDBConnection();
+        $stmt = $pdo->prepare("
+            SELECT role_code, role_name, role_level, is_system_role
+            FROM organization_roles
+            WHERE role_code = :role
+            LIMIT 1
+        ");
+        $stmt->execute([':role' => $user['role'] ?? '']);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log("getCurrentUserRole failed: " . $e->getMessage());
+        return null;
+    }
+}
+
+/**
+ * Check if current user has a specific role
+ */
+function hasRole(string $roleCode): bool {
+    $user = $_SESSION['enterprise_user'] ?? null;
+    if (!$user) return false;
+    return strtolower($user['role'] ?? '') === strtolower($roleCode);
+}
+
+/**
+ * Check if current user has any of the given roles
+ */
+function hasAnyRole(array $roleCodes): bool {
+    $user = $_SESSION['enterprise_user'] ?? null;
+    if (!$user) return false;
+    $userRole = strtolower($user['role'] ?? '');
+    foreach ($roleCodes as $role) {
+        if (strtolower($role) === $userRole) {
+            return true;
+        }
+    }
+    return false;
 }
 
 function getOrganizationId() {
