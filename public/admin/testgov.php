@@ -8,10 +8,10 @@
  * ============================================================================
  */
 
-// Start session and check authentication - use absolute paths
+// Start session and check authentication
 require_once __DIR__ . '/enterprise/auth.php';
 
-// This will redirect to /public/admin/enterprise/login.php if not authenticated
+// This will redirect to /admin/enterprise/login.php if not authenticated
 $user = requireEnterpriseAuth();
 
 // Check for admin/owner role
@@ -24,7 +24,7 @@ if (!in_array($user['role'] ?? '', ['owner', 'admin'])) {
 $pdo = getDBConnection();
 $orgId = getOrganizationId();
 
-// Project root, used to grep other source files for wiring checks
+// Project root - adjust for Railway structure
 $projectRoot = realpath(__DIR__ . '/../..');
 
 // ============================================================================
@@ -272,16 +272,6 @@ $readinessScore = $totalChecks > 0 ? round(($passCount / $totalChecks) * 100) : 
             text-decoration: none; font-weight: 500;
         }
         .back-link:hover { text-decoration: underline; }
-        .login-prompt {
-            background: #fef2f2; border: 1px solid #fca5a5; border-radius: 12px;
-            padding: 40px; text-align: center; margin: 40px 0;
-        }
-        .login-prompt h2 { color: #991b1b; margin-bottom: 12px; }
-        .login-prompt a {
-            display: inline-block; margin-top: 16px; padding: 12px 32px;
-            background: #0f172a; color: white; border-radius: 40px;
-            text-decoration: none; font-weight: 600;
-        }
     </style>
 </head>
 <body>
@@ -295,14 +285,6 @@ $readinessScore = $totalChecks > 0 ? round(($passCount / $totalChecks) * 100) : 
             on <?php echo date('F d, Y H:i'); ?>
         </p>
     </div>
-
-    <?php if (!isset($user) || empty($user)): ?>
-    <div class="login-prompt">
-        <h2>🔒 Authentication Required</h2>
-        <p>You need to be logged in to access the system diagnostic.</p>
-        <a href="/public/admin/enterprise/login.php">Go to Login →</a>
-    </div>
-    <?php else: ?>
 
     <div class="score-banner">
         <div class="score-circle">
@@ -318,7 +300,7 @@ $readinessScore = $totalChecks > 0 ? round(($passCount / $totalChecks) * 100) : 
                 <span class="pill pill-warn">⚠ <?php echo $warnCount; ?> Needs Attention</span>
                 <span class="pill pill-fail">✗ <?php echo $failCount; ?> Failing</span>
             </div>
-            <a href="/public/admin/enterprise/index.php" class="back-link">← Back to Dashboard</a>
+            <a href="/admin/enterprise/index.php" class="back-link">← Back to Dashboard</a>
         </div>
     </div>
 
@@ -346,8 +328,6 @@ $readinessScore = $totalChecks > 0 ? round(($passCount / $totalChecks) * 100) : 
         This diagnostic reads your live schema and greps your actual source files — it does not modify anything.
         Re-run after each fix to watch the readiness score move.
     </p>
-    
-    <?php endif; ?>
 </div>
 </body>
 </html>
