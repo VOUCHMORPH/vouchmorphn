@@ -190,41 +190,73 @@ addResult(
 // every 30 days, and so you can prove "this exact recipient has been paid for
 // 14 consecutive quarters" to an auditor.
 
-$hasOrgBeneficiaries = tableExists($db, 'organization_beneficiaries');
+// NOTE: your real table is named "organizations_beneficiaries" (plural
+// "organizations") but enterprise/index.php queries "organization_beneficiaries"
+// (singular) for its dashboard stat card. Every other child table in this
+// system (organization_sources, organization_users, organization_audit_logs)
+// uses the singular convention, so we check both and flag the mismatch.
+$actualBeneficiaryTable = tableExists($db, 'organizations_beneficiaries') ? 'organizations_beneficiaries' : (tableExists($db, 'organization_beneficiaries') ? 'organization_beneficiaries' : null);
+$codeExpectsTable = 'organization_beneficiaries'; // what index.php's SQL literally queries
+
 addResult(
     '3. Beneficiary & Program Management',
-    'organization_beneficiaries table',
-    $hasOrgBeneficiaries ? 'pass' : 'fail',
-    $hasOrgBeneficiaries ? 'Present — ' . (rowCount($db, 'organization_beneficiaries') ?? '?') . ' active beneficiaries on file' : 'MISSING (referenced by index.php dashboard stats but table does not exist)',
-    $hasOrgBeneficiaries ? '' : 'This table is already queried by enterprise/index.php but was never created — that dashboard stat is silently failing or returning 0.'
+    'Beneficiary table exists',
+    $actualBeneficiaryTable ? 'pass' : 'fail',
+    $actualBeneficiaryTable ? "Present as `{$actualBeneficiaryTable}` — " . (rowCount($db, $actualBeneficiaryTable) ?? '?') . ' beneficiaries on file' : 'MISSING entirely',
+    ''
 );
 
-if ($hasOrgBeneficiaries) {
-    $hasCategoryCol = columnExists($db, 'organization_beneficiaries', 'beneficiary_category');
+addResult(
+    '3. Beneficiary & Program Management',
+    'Table name matches code (dashboard stat card)',
+    ($actualBeneficiaryTable === $codeExpectsTable) ? 'pass' : 'fail',
+    ($actualBeneficiaryTable === $codeExpectsTable)
+        ? 'Match — enterprise/index.php\'s beneficiary count stat will resolve correctly'
+        : "MISMATCH — enterprise/index.php runs \"SELECT COUNT(*) FROM organization_beneficiaries\" (singular) but your real table is `{$actualBeneficiaryTable}` (plural \"organizations\"). This query either throws or silently returns 0/false depending on your PDO error mode — the 'Saved beneficiaries' stat card on the dashboard has likely never shown a real number.",
+    ($actualBeneficiaryTable === $codeExpectsTable) ? '' : "Rename for consistency with every other child table in the system (organization_sources, organization_users, organization_audit_logs are all singular \"organization_\"): ALTER TABLE organizations_beneficiaries RENAME TO organization_beneficiaries; -- one-line fix, no code changes needed elsewhere"
+);
+
+if ($actualBeneficiaryTable) {
+    $hasCategoryCol = columnExists($db, $actualBeneficiaryTable, 'beneficiary_category');
+    $hasTagsCol = columnExists($db, $actualBeneficiaryTable, 'tags');
+    $hasMetadataCol = columnExists($db, $actualBeneficiaryTable, 'metadata');
     addResult(
         '3. Beneficiary & Program Management',
-        'Beneficiary categorization',
-        $hasCategoryCol ? 'pass' : 'fail',
-        $hasCategoryCol ? 'Categorized' : 'MISSING beneficiary_category column — cannot distinguish a pensioner from an orphanage ward from a disability grant recipient in reporting or eligibility rules',
-        $hasCategoryCol ? '' : "ALTER TABLE organization_beneficiaries ADD COLUMN beneficiary_category VARCHAR(50); -- e.g. 'OLD_AGE_PENSIONER', 'ORPHAN_VULNERABLE_CHILD', 'DISABILITY_GRANT', 'DESTITUTE', 'SOCIAL_SECURITY'"
+        'Beneficiary categorization (pensioner / orphan / disability / etc.)',
+        $hasCategoryCol ? 'pass' : 'warn',
+        $hasCategoryCol
+            ? 'Categorized via first-class column'
+            : ('No dedicated beneficiary_category column yet' . (($hasTagsCol || $hasMetadataCol) ? ' — you do have `tags`/`metadata` JSONB, which can hold this as a stopgap (e.g. metadata->>\'category\'), but a first-class column is needed for indexed reporting (e.g. "how many active pensioners" without scanning JSONB).' : '.')),
+        $hasCategoryCol ? '' : "ALTER TABLE {$actualBeneficiaryTable} ADD COLUMN beneficiary_category VARCHAR(50); -- OLD_AGE_PENSIONER, ORPHAN_VULNERABLE_CHILD, DISABILITY_GRANT, DESTITUTE, SOCIAL_SECURITY, EMPLOYEE, SUPPLIER. Then backfill from metadata if you've been using that as a stopgap, and index it."
     );
 
-    $hasGuardianCol = columnExists($db, 'organization_beneficiaries', 'guardian_national_id');
+    $hasGuardianCol = columnExists($db, $actualBeneficiaryTable, 'guardian_national_id');
     addResult(
         '3. Beneficiary & Program Management',
-        'Guardian/dependent linkage',
+        'Guardian/dependent linkage (orphanages, minors)',
         $hasGuardianCol ? 'pass' : 'warn',
-        $hasGuardianCol ? 'Present' : 'MISSING — orphanage and minor-dependent disbursements need a legal guardian/institution of record on file, separate from the payment destination',
-        $hasGuardianCol ? '' : 'ADD COLUMN guardian_national_id VARCHAR(20), guardian_relationship VARCHAR(50), institution_name VARCHAR(200) — needed when the beneficiary is a minor or ward of an orphanage/care institution and someone else administers the funds.'
+        $hasGuardianCol ? 'Present' : 'MISSING — your beneficiary table already has excellent destination coverage (account_number, bank_code, wallet_provider, wallet_id, card_number) but nothing to record who legally administers funds for a minor or ward of an orphanage, distinct from the payment destination itself',
+        $hasGuardianCol ? '' : "ALTER TABLE {$actualBeneficiaryTable} ADD COLUMN guardian_national_id VARCHAR(20), ADD COLUMN guardian_relationship VARCHAR(50), ADD COLUMN institution_name VARCHAR(200); -- institution_name = e.g. the orphanage/care home name when it administers the grant on the child's behalf"
     );
 
-    $hasEligibilityCol = columnExists($db, 'organization_beneficiaries', 'eligibility_status');
+    $hasEligibilityCol = columnExists($db, $actualBeneficiaryTable, 'eligibility_status');
     addResult(
         '3. Beneficiary & Program Management',
-        'Eligibility / recertification tracking',
+        'Eligibility / recertification status',
         $hasEligibilityCol ? 'pass' : 'warn',
-        $hasEligibilityCol ? 'Present' : 'MISSING — no way to flag a beneficiary as pending recertification, deceased, or suspended without deleting their record (destroys audit history)',
-        $hasEligibilityCol ? '' : "ADD COLUMN eligibility_status VARCHAR(30) DEFAULT 'ACTIVE'; -- ACTIVE, PENDING_RECERT, SUSPENDED, DECEASED, TRANSFERRED. Governments are legally required to keep the historical record, not delete it, when someone becomes ineligible."
+        $hasEligibilityCol
+            ? 'Present'
+            : 'You have `is_active` (boolean) but no graduated eligibility state — a government auditor will ask why a pensioner\'s record disappeared rather than being marked SUSPENDED/DECEASED/PENDING_RECERT with a timestamp and reason. is_active alone destroys the "why" when someone becomes flagged.',
+        $hasEligibilityCol ? '' : "ALTER TABLE {$actualBeneficiaryTable} ADD COLUMN eligibility_status VARCHAR(30) DEFAULT 'ACTIVE', ADD COLUMN eligibility_changed_reason TEXT, ADD COLUMN eligibility_reviewed_at TIMESTAMP; -- ACTIVE | PENDING_RECERT | SUSPENDED | DECEASED | TRANSFERRED. Keep is_active as a fast filter, driven by this richer status."
+    );
+
+    $hasDeptLink = columnExists($db, $actualBeneficiaryTable, 'department_id');
+    addResult(
+        '3. Beneficiary & Program Management',
+        'Beneficiary linked to department/program',
+        $hasDeptLink ? 'pass' : 'warn',
+        $hasDeptLink ? 'Present' : 'MISSING — beneficiaries currently belong only to an organization_id, with no link to which department/program they\'re enrolled under (a Ministry with both a Pension department and a Disability department needs this to run separate rolls and budgets)',
+        $hasDeptLink ? '' : "ALTER TABLE {$actualBeneficiaryTable} ADD COLUMN department_id INTEGER, ADD COLUMN program_id INTEGER; -- FKs to departments/disbursement_programs, see migration script"
     );
 }
 
@@ -318,16 +350,48 @@ addResult(
     '5. Disbursement Pipeline Wiring',
     'Institution/provider registry',
     $hasProviderRegistry ? 'pass' : 'fail',
-    $hasProviderRegistry ? 'Present' : 'MISSING — import_rows.destination_provider is currently a free-text string typed by whoever mapped the column ("ZURUBANK"), with no validation against SwapService\'s InstitutionAdapterFactory, which needs an exact provider_code matching Countries/{country}/participants.yaml',
-    $hasProviderRegistry ? '' : "Create a providers table (provider_code, display_name, institution_type ENUM[BANK, MOBILE_WALLET, CARD, CRYPTO], country_code, supported_asset_types[], active) seeded from participants.yaml, and validate/normalize destination_provider against it during validate.php — right now a typo'd bank name would fail silently or throw deep inside GenericBankClient instead of at upload time."
+    $hasProviderRegistry ? 'Present' : 'MISSING — import_rows.destination_provider and organization_sources.provider are both currently free-text strings typed by whoever mapped the column ("ZURUBANK"), with no validation against SwapService\'s InstitutionAdapterFactory, which needs an exact provider_code matching Countries/{country}/participants.yaml',
+    $hasProviderRegistry ? '' : "Create a providers table (provider_code, display_name, institution_type ENUM[BANK, MOBILE_WALLET, CARD, CRYPTO], country_code, supported_asset_types[], active) seeded from participants.yaml, and validate/normalize both destination_provider and organization_sources.provider against it — right now a typo'd bank name fails silently or throws deep inside GenericBankClient instead of at upload/setup time."
 );
+
+// organization_sources already has account_identifier (good — covers what
+// SwapService::extractSourceIdentifier() needs) and provider + metadata JSONB.
+// What's actually missing is a normalized asset_type and a link to a hooked
+// source_reference for PIN-less execution.
+$hasAssetTypeCol = columnExists($db, 'organization_sources', 'asset_type');
+addResult(
+    '5. Disbursement Pipeline Wiring',
+    'organization_sources: identifier present',
+    columnExists($db, 'organization_sources', 'account_identifier') ? 'pass' : 'fail',
+    columnExists($db, 'organization_sources', 'account_identifier') ? 'Present — account_identifier covers what SwapService::extractSourceIdentifier() needs' : 'MISSING',
+    ''
+);
+addResult(
+    '5. Disbursement Pipeline Wiring',
+    'organization_sources: asset_type (ACCOUNT vs WALLET)',
+    $hasAssetTypeCol ? 'pass' : 'warn',
+    $hasAssetTypeCol ? 'Present' : 'MISSING as a first-class column — SwapService::extractDestinationAssetType() (and the equivalent source-side logic) expects ACCOUNT or WALLET explicitly; without it, code defaults to WALLET which will misroute a source that is actually a bank account',
+    $hasAssetTypeCol ? '' : "ALTER TABLE organization_sources ADD COLUMN asset_type VARCHAR(20) DEFAULT 'WALLET', ADD COLUMN source_reference VARCHAR(100); -- source_reference links to user_authorized_sources for PIN-less 'hooked' execution on recurring government batches"
+);
+
+// Verify SwapService's own naming assumption against your real table
+$multiDestTableCandidates = ['multi_destination_swaps', 'multi_destinations_swap'];
+$actualMultiDestTable = null;
+foreach ($multiDestTableCandidates as $candidate) {
+    if (tableExists($db, $candidate)) { $actualMultiDestTable = $candidate; break; }
+}
+$codeExpectsMultiDestTable = 'multi_destination_swaps'; // literal string in SwapService::storeMultiDestinationRecord()
 
 addResult(
     '5. Disbursement Pipeline Wiring',
-    'Source institution/identifier on organization_sources',
-    columnExists($db, 'organization_sources', 'institution') ? 'pass' : 'fail',
-    columnExists($db, 'organization_sources', 'institution') ? 'Present' : 'MISSING — organization_sources currently only has source_name/provider/balance, but SwapService::extractSourceInstitution() and extractSourceIdentifier() need a real institution code and account/wallet identifier to place a hold',
-    columnExists($db, 'organization_sources', 'institution') ? '' : 'ADD COLUMN institution VARCHAR(50), source_identifier VARCHAR(100), asset_type VARCHAR(20) DEFAULT \'WALLET\', source_reference VARCHAR(100) -- the last one links to user_authorized_sources if this wallet is registered as a "hooked" source, avoiding per-batch PIN entry.'
+    'Multi-destination swap record table matches SwapService',
+    ($actualMultiDestTable === $codeExpectsMultiDestTable) ? 'pass' : 'fail',
+    ($actualMultiDestTable === $codeExpectsMultiDestTable)
+        ? "Match — `{$actualMultiDestTable}`"
+        : ($actualMultiDestTable
+            ? "MISMATCH — SwapService::storeMultiDestinationRecord() runs \"INSERT INTO multi_destination_swaps (...)\" but your real table is `{$actualMultiDestTable}`. That INSERT is wrapped in a try/catch(PDOException) that only error_logs and returns 0 — so every multi-destination swap you run today is silently failing to record its own summary row, with no visible error anywhere in the UI."
+            : 'Neither multi_destination_swaps nor multi_destinations_swap exists in this database.'),
+    ($actualMultiDestTable === $codeExpectsMultiDestTable) ? '' : ($actualMultiDestTable ? "Rename to match the code (simplest fix, no PHP changes needed): ALTER TABLE {$actualMultiDestTable} RENAME TO multi_destination_swaps; -- verify no other code references the old name before renaming" : 'Create the table per SwapService::storeMultiDestinationRecord()\'s INSERT columns.')
 );
 
 addResult(
@@ -372,21 +436,69 @@ addResult(
 // 7. AUDIT & COMPLIANCE
 // ============================================================================
 
-$hasAuditLog = tableExists($db, 'audit_logs') || tableExists($db, 'AuditLog');
+$hasAuditLog = tableExists($db, 'organization_audit_logs');
 addResult(
     '7. Audit & Compliance',
     'Immutable audit log table',
     $hasAuditLog ? 'pass' : 'fail',
-    $hasAuditLog ? 'Present — ' . (rowCount($db, 'audit_logs') ?? '?') . ' entries' : 'MISSING at the enterprise dashboard layer — src/Domain/Models/AuditLog.php and src/Domain/Services/AuditTrailService.php exist in your codebase but nothing in the enterprise/ dashboard (upload, approve, reject, execute) calls them',
-    $hasAuditLog ? 'Confirm every state-changing action in enterprise/ (upload, mapping save, approve, reject, execute) writes an entry — right now it appears AuditTrailService is only used elsewhere in the system, not from the enterprise dashboard flow.' : 'Create audit_logs (id, organization_id, department_id, user_id, action, entity_type, entity_id, before_state JSONB, after_state JSONB, ip_address, user_agent, created_at) and call it from every mutating action in the enterprise dashboard, not just the core swap engine.'
+    $hasAuditLog ? 'Present — organization_audit_logs, ' . (rowCount($db, 'organization_audit_logs') ?? '?') . ' entries recorded to date' : 'MISSING',
+    ''
 );
+
+if ($hasAuditLog) {
+    // Check whether the enterprise dashboard's own mutating actions actually
+    // write here, by looking for any reference to it (or a wrapping service)
+    // in the four state-changing endpoints.
+    $auditWiring = [
+        'imports/upload.php' => fileContains($projectRoot, 'public/admin/enterprise/imports/upload.php', ['organization_audit_logs', 'AuditTrailService']),
+        'imports/approve.php' => fileContains($projectRoot, 'public/admin/enterprise/imports/approve.php', ['organization_audit_logs', 'AuditTrailService']),
+        'imports/save_mapping.php' => fileContains($projectRoot, 'public/admin/enterprise/imports/save_mapping.php', ['organization_audit_logs', 'AuditTrailService']),
+        'imports/execute.php' => fileContains($projectRoot, 'public/admin/enterprise/imports/execute.php', ['organization_audit_logs', 'AuditTrailService']),
+    ];
+    $unwired = [];
+    foreach ($auditWiring as $file => $check) {
+        $writes = $check['exists'] && ((($check['matches']['organization_audit_logs'] ?? false)) || (($check['matches']['AuditTrailService'] ?? false)));
+        if (!$writes) $unwired[] = $file;
+    }
+    addResult(
+        '7. Audit & Compliance',
+        'Dashboard actions actually write to the audit log',
+        empty($unwired) ? 'pass' : 'fail',
+        empty($unwired)
+            ? 'All checked mutating endpoints reference the audit log or AuditTrailService'
+            : 'The audit table exists, but these enterprise dashboard endpoints show no reference to it or to AuditTrailService, meaning uploads/approvals/rejections/executions currently leave no entry in organization_audit_logs: ' . implode(', ', $unwired),
+        empty($unwired) ? '' : 'Insert an organization_audit_logs row (action, entity_type, entity_id, old_values, new_values, ip_address, user_agent) at the end of each of these endpoints — upload → \'BATCH_UPLOADED\', approve.php\'s three branches → \'BATCH_SUBMITTED\'/\'BATCH_APPROVED\'/\'BATCH_REJECTED\', save_mapping.php → \'MAPPING_TEMPLATE_SAVED\'. Government/enterprise auditors will ask for this trail by name.'
+    );
+}
+
+$hasExecSummary = tableExists($db, 'batch_execution_summary');
+addResult(
+    '7. Audit & Compliance',
+    'Batch execution summary / reconciliation table',
+    $hasExecSummary ? 'pass' : 'fail',
+    $hasExecSummary ? 'Present' : 'MISSING',
+    ''
+);
+
+if ($hasExecSummary) {
+    $execWritesToSummary = fileContains($projectRoot, 'public/admin/enterprise/imports/execute.php', ['batch_execution_summary']);
+    addResult(
+        '7. Audit & Compliance',
+        'execute.php populates batch_execution_summary',
+        ($execWritesToSummary['exists'] && ($execWritesToSummary['matches']['batch_execution_summary'] ?? false)) ? 'pass' : 'fail',
+        ($execWritesToSummary['exists'] && ($execWritesToSummary['matches']['batch_execution_summary'] ?? false))
+            ? 'Referenced in execute.php'
+            : 'batch_execution_summary is a well-designed reconciliation table (total_instructions, successful/failed/pending, total_amount_sent, total_fees, total_fx_applied, settlement_reference, reconciliation_status) — but execute.php never inserts into it, and since execute.php also never calls SwapService (see item 5), any reconciliation report built on this table today would show zero real activity or none at all.',
+        ($execWritesToSummary['exists'] && ($execWritesToSummary['matches']['batch_execution_summary'] ?? false)) ? '' : 'Once execute.php is wired to SwapService::executeMultiDestinationSwap() (item 5), have it write one batch_execution_summary row per batch from the returned result: total_destinations→total_instructions, successful_destinations→successful, failed_destinations→failed, total_delivered→total_amount_sent, total_fees→total_fees, and the multi_destination_swaps.reference→settlement_reference.'
+    );
+}
 
 addResult(
     '7. Audit & Compliance',
     'Reconciliation reports wired to real data',
     'warn',
-    'reports/daily_reconciliations.php, weekly_reconciliations.php, monthly_reconciliations.php exist, but since execute.php never calls SwapService, any reconciliation report reading from payment_instructions is reconciling against fabricated SUCCESS rows, not real settlement data.',
-    'These reports will only be trustworthy once item 5 (execute.php wiring) is fixed — flag this dependency explicitly so nobody signs off a reconciliation report against synthetic data.'
+    'reports/daily_reconciliations.php, weekly_reconciliations.php, monthly_reconciliations.php exist and batch_execution_summary is a solid table for them to read from — but since execute.php never calls SwapService (item 5) or writes to batch_execution_summary, these reports currently have no real settlement data to reconcile.',
+    'This is entirely downstream of item 5 — once execute.php is wired and populating batch_execution_summary, re-check these reports read from it correctly.'
 );
 
 addResult(
