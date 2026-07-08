@@ -1,6 +1,10 @@
 <?php
 // auth.php - Enterprise authentication helper
 
+// Import the DBConnection class at the top level
+require_once '../../../src/Core/Database/DBConnection.php';
+use Core\Database\DBConnection;
+
 // Only start session if not already active
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -8,9 +12,6 @@ if (session_status() === PHP_SESSION_NONE) {
 
 // Database connection helper
 function getDBConnection() {
-    require_once '../../../src/Core/Database/DBConnection.php';
-    use Core\Database\DBConnection;
-    
     $db = new DBConnection();
     $pdo = $db->getConnection();
     
