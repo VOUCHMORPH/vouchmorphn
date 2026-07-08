@@ -19,12 +19,14 @@ error_log("[ADMIN LOGIN] Starting login process");
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
-require_once PROJECT_ROOT . '/src/Security/Monitoring/ApiRateLimiter.php'; // ADDED
+require_once PROJECT_ROOT . '/src/Security/Monitoring/ApiRateLimiter.php';
+require_once PROJECT_ROOT . '/src/Domain/Services/AuditTrailService.php'; // ADDED
 
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
 use Application\Admin\Auth\AdminAuth;
-use Security\Monitoring\ApiRateLimiter; // ADDED
+use Security\Monitoring\ApiRateLimiter;
+use Domain\Services\AuditTrailService; // ADDED
 
 // Load configuration for country data only (not database)
 $configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
@@ -52,6 +54,11 @@ if (session_status() === PHP_SESSION_NONE) {
 $_SESSION['admin_country'] = $systemCountry;
 
 // Initialize database connection using DBConnection (Single Source of Truth)
+$db = null;
+$auth = null;
+$dbError = null;
+$auditService = null;
+
 try {
     $db = DBConnection::getConnection();
     
@@ -68,6 +75,15 @@ try {
     $auth = new AdminAuth($db);
     error_log("[ADMIN LOGIN] AdminAuth initialized");
     
+    // Initialize AuditTrailService
+    $auditService = new AuditTrailService(
+        $db,
+        $config ?? [],
+        null,
+        $systemCountry
+    );
+    error_log("[ADMIN LOGIN] AuditTrailService initialized");
+    
 } catch (Throwable $e) {
     error_log("[ADMIN LOGIN] DB Error: " . $e->getMessage());
     $dbError = $e->getMessage();
@@ -76,39 +92,92 @@ try {
 $error = '';
 $mfaRequired = false;
 $adminId = null;
+$username = '';
+$loginResult = null;
 
 // Handle login POST
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth)) {
-
-    // --- RATE LIMITING (ADDED) ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService)) {
     $clientIp = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
     $rateLimitKey = 'admin_login:' . $clientIp;
     $rateLimited = false;
 
+    // --- RATE LIMITING ---
     try {
-        // 8 attempts per 5 minutes per IP — tune as needed
         $limiter = new ApiRateLimiter(8, 300);
         if (!$limiter->check($rateLimitKey)) {
             $rateLimited = true;
             error_log("[ADMIN LOGIN] Rate limit exceeded for IP: {$clientIp}");
         }
     } catch (\Throwable $e) {
-        // Redis unreachable — log it, do NOT block login on infra failure
         error_log("[ADMIN LOGIN] Rate limiter unavailable: " . $e->getMessage());
     }
 
     if ($rateLimited) {
         $error = 'Too many login attempts. Please try again in a few minutes.';
+        
+        // Log rate limit event
+        try {
+            $auditService->recordLog(
+                'admin_login',
+                null,
+                'RATE_LIMIT_EXCEEDED',
+                'security',
+                'WARNING',
+                json_encode(['ip' => $clientIp]),
+                null,
+                null,
+                $clientIp,
+                $_SERVER['HTTP_USER_AGENT'] ?? null
+            );
+        } catch (Throwable $e) {
+            error_log("[ADMIN LOGIN] Failed to audit rate limit: " . $e->getMessage());
+        }
     } else {
         try {
             if (isset($_POST['mfa_code'])) {
                 // MFA verification
-                $result = $auth->verifyMfa($_POST['mfa_code'], $systemCountry);
-                if ($result['success']) {
+                $loginResult = $auth->verifyMfa($_POST['mfa_code'], $systemCountry);
+                if ($loginResult['success']) {
+                    // Log successful MFA
+                    try {
+                        $auditService->recordLog(
+                            'admin_login',
+                            SessionManager::get('admin_id'),
+                            'MFA_VERIFIED',
+                            'security',
+                            'INFO',
+                            null,
+                            json_encode(['method' => 'totp']),
+                            SessionManager::get('admin_id'),
+                            $clientIp,
+                            $_SERVER['HTTP_USER_AGENT'] ?? null
+                        );
+                    } catch (Throwable $e) {
+                        error_log("[ADMIN LOGIN] Failed to audit MFA: " . $e->getMessage());
+                    }
+                    
                     header('Location: admin_dashboard.php?country=' . $systemCountry);
                     exit;
                 } else {
-                    $error = $result['message'];
+                    $error = $loginResult['message'];
+                    
+                    // Log failed MFA
+                    try {
+                        $auditService->recordLog(
+                            'admin_login',
+                            SessionManager::get('admin_id'),
+                            'MFA_FAILED',
+                            'security',
+                            'WARNING',
+                            json_encode(['reason' => $error]),
+                            null,
+                            SessionManager::get('admin_id'),
+                            $clientIp,
+                            $_SERVER['HTTP_USER_AGENT'] ?? null
+                        );
+                    } catch (Throwable $e) {
+                        error_log("[ADMIN LOGIN] Failed to audit MFA failure: " . $e->getMessage());
+                    }
                 }
             } else {
                 // Initial login
@@ -118,26 +187,80 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth)) {
                 if (empty($username) || empty($password)) {
                     $error = 'Username and password are required';
                 } else {
-                    $result = $auth->login($username, $password, $systemCountry);
+                    $loginResult = $auth->login($username, $password, $systemCountry);
                     
-                    if ($result['success']) {
-                        if (isset($result['mfa_required']) && $result['mfa_required'] === true) {
+                    if ($loginResult['success']) {
+                        // Log successful login
+                        try {
+                            $auditService->recordLog(
+                                'admin_login',
+                                $loginResult['admin_id'] ?? null,
+                                'LOGIN_SUCCESS',
+                                'security',
+                                'INFO',
+                                null,
+                                json_encode(['username' => $username, 'method' => 'password']),
+                                $loginResult['admin_id'] ?? null,
+                                $clientIp,
+                                $_SERVER['HTTP_USER_AGENT'] ?? null
+                            );
+                        } catch (Throwable $e) {
+                            error_log("[ADMIN LOGIN] Failed to audit login success: " . $e->getMessage());
+                        }
+                        
+                        if (isset($loginResult['mfa_required']) && $loginResult['mfa_required'] === true) {
                             $mfaRequired = true;
-                            $adminId = $result['admin_id'];
+                            $adminId = $loginResult['admin_id'];
                         } else {
                             header('Location: admin_dashboard.php?country=' . $systemCountry);
                             exit;
                         }
                     } else {
-                        $error = $result['message'];
+                        $error = $loginResult['message'];
+                        
+                        // Log failed login
+                        try {
+                            $auditService->recordLog(
+                                'admin_login',
+                                null,
+                                'LOGIN_FAILED',
+                                'security',
+                                'WARNING',
+                                json_encode(['username' => $username, 'reason' => $error]),
+                                null,
+                                null,
+                                $clientIp,
+                                $_SERVER['HTTP_USER_AGENT'] ?? null
+                            );
+                        } catch (Throwable $e) {
+                            error_log("[ADMIN LOGIN] Failed to audit login failure: " . $e->getMessage());
+                        }
                     }
                 }
             }
         } catch (Throwable $e) {
             error_log("[ADMIN LOGIN] Exception: " . $e->getMessage());
             $error = "Authentication error occurred.";
+            
+            // Log exception
+            try {
+                $auditService->recordLog(
+                    'admin_login',
+                    null,
+                    'LOGIN_EXCEPTION',
+                    'security',
+                    'ERROR',
+                    json_encode(['exception' => $e->getMessage()]),
+                    null,
+                    null,
+                    $clientIp,
+                    $_SERVER['HTTP_USER_AGENT'] ?? null
+                );
+            } catch (Throwable $auditErr) {
+                error_log("[ADMIN LOGIN] Failed to audit exception: " . $auditErr->getMessage());
+            }
         }
-    } // close rate-limit else
+    }
 }
 
 // Get available countries
