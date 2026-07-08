@@ -4,7 +4,7 @@ $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
-$db = DBConnection::getInstance();
+$db = DBConnection::getConnection();
 $orgId = getOrganizationId();
 
 $stmt = $db->prepare("SELECT * FROM column_mapping_templates WHERE organization_id = :org_id ORDER BY template_name");
