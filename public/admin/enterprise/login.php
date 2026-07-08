@@ -46,7 +46,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($user && password_verify($password, $user['password_hash'])) {
-            
+
             // ============================================================
             // STEP 2: Validate the role exists in organization_role_catalog
             // ============================================================
@@ -59,10 +59,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $roleInfo = $roleCheck->fetch(PDO::FETCH_ASSOC);
 
             if (!$roleInfo) {
-                // Role not found in catalog - security issue
                 error_log("[SECURITY] Login attempt with invalid role: " . $user['role'] . " for user: " . $email);
-                
-                // Log the security incident
+
                 try {
                     $logStmt = $pdo->prepare("
                         INSERT INTO organization_audit_logs
@@ -76,22 +74,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } catch (PDOException $e) {
                     error_log("Failed to create audit log: " . $e->getMessage());
                 }
-                
+
                 $error = 'Invalid account configuration. Please contact your system administrator.';
-                // Don't proceed with login
             } else {
                 // ============================================================
                 // STEP 3: Validate role scoping matches department assignment
                 // ============================================================
                 $scope = $roleInfo['default_scope'];
-                
+
                 if ($scope === 'department' && empty($user['department_id'])) {
-                    // Department-scoped role but no department assigned
                     error_log("[SECURITY] Department-scoped role " . $user['role'] . " has no department_id for user: " . $email);
-                    
+
                     $error = 'Your account is not fully configured. Please contact your system administrator.';
-                    
-                    // Log the issue
+
                     try {
                         $logStmt = $pdo->prepare("
                             INSERT INTO organization_audit_logs
@@ -111,8 +106,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // ============================================================
                     // STEP 4: All valid - proceed with login
                     // ============================================================
-                    
-                    // Add role info to session
                     $_SESSION['enterprise_user'] = [
                         'id' => $user['user_id'],
                         'org_user_id' => $user['org_user_id'],
@@ -134,10 +127,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'wallet_uuid' => $user['wallet_uuid']
                     ];
 
-                    // Regenerate session ID on privilege change
                     session_regenerate_id(true);
 
-                    // Update last login
                     try {
                         $updateStmt = $pdo->prepare("UPDATE users SET updated_at = NOW() WHERE user_id = :user_id");
                         $updateStmt->execute([':user_id' => $user['user_id']]);
@@ -145,17 +136,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         error_log("Failed to update last login: " . $e->getMessage());
                     }
 
-                    // Log successful login with role info
                     try {
                         $logStmt = $pdo->prepare("
                             INSERT INTO organization_audit_logs
                             (organization_id, user_id, action, entity_type, entity_id, old_values, new_values, ip_address, user_agent, created_at)
-                            VALUES (:org_id, :user_id, 'LOGIN', 'user', :user_id, NULL, :new_values, :ip, :ua, NOW())
+                            VALUES (:org_id, :user_id, 'LOGIN', 'user', :entity_id, NULL, :new_values, :ip, :ua, NOW())
                         ");
                         $logStmt->execute([
                             ':org_id' => $user['organization_id'],
                             ':user_id' => $user['user_id'],
-                            ':user_id' => $user['user_id'],
+                            ':entity_id' => $user['user_id'],
                             ':new_values' => json_encode([
                                 'role' => $user['role'],
                                 'role_label' => $roleInfo['label'],
@@ -176,7 +166,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $error = 'Invalid email or password';
 
-            // Log failed login attempt
             try {
                 $logStmt = $pdo->prepare("
                     INSERT INTO organization_audit_logs
@@ -202,141 +191,142 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Enterprise Login - VouchMorph</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <title>Sign in — VouchMorph Enterprise</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Inter', sans-serif;
-            background: linear-gradient(135deg, #0a1628 0%, #1a2d4a 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
+        :root{
+            --ink:#0a1628; --ink-soft:#16243d;
+            --gold:#c9972a; --gold-bright:#e0ad3d;
+            --paper:#ffffff; --line:#e4e1d6; --line-soft:#eeece3;
+            --text:#191712; --mist:#6b6a63;
+            --danger:#b3261e; --danger-bg:#fbeceb;
+            --font-display:'Fraunces',serif; --font-body:'Inter',sans-serif; --font-mono:'JetBrains Mono',monospace;
         }
-        .login-container { max-width: 450px; width: 100%; }
-        .logo { text-align: center; margin-bottom: 40px; }
-        .logo h1 { 
-            color: white; 
-            font-size: 32px; 
-            font-weight: 800; 
-            letter-spacing: -1px;
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{
+            font-family:var(--font-body);
+            background:
+                radial-gradient(1100px 500px at 15% -10%, rgba(201,151,42,.10), transparent 60%),
+                linear-gradient(160deg, #060b16 0%, var(--ink) 55%, #10203a 100%);
+            min-height:100vh; display:flex; align-items:center; justify-content:center; padding:32px;
         }
-        .logo span { color: #fbbf24; }
-        .logo p { color: #94a3b8; margin-top: 8px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase; font-size: 12px; }
-        .card { 
-            background: white; 
-            border: 2px solid #fbbf24;
-            padding: 40px; 
-            box-shadow: 8px 8px 0 #fbbf24;
+        :focus-visible{outline:2px solid var(--gold); outline-offset:2px;}
+
+        .stage{width:100%; max-width:404px;}
+
+        .brand{text-align:center; margin-bottom:36px;}
+        .brand-mark{
+            width:46px; height:46px; margin:0 auto 16px; background:var(--gold);
+            display:flex; align-items:center; justify-content:center; font-family:var(--font-display);
+            font-weight:600; font-size:19px; color:var(--ink);
         }
-        .card h2 { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
-        .card .subtitle { color: #64748b; margin-bottom: 32px; }
-        .form-group { margin-bottom: 24px; }
-        .form-group label { 
-            display: block; 
-            margin-bottom: 8px; 
-            font-weight: 600; 
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: #475569;
+        .brand h1{color:#fff; font-family:var(--font-display); font-weight:500; font-size:26px; letter-spacing:-.3px;}
+        .brand h1 em{font-style:normal; color:var(--gold);}
+        .brand p{color:#8791a6; font-size:11px; margin-top:8px; letter-spacing:1.6px; text-transform:uppercase; font-weight:500;}
+
+        .card{
+            background:var(--paper); border:1px solid var(--ink);
+            box-shadow:6px 6px 0 rgba(201,151,42,.9);
+            padding:38px 36px 32px;
         }
-        .form-group input {
-            width: 100%; 
-            padding: 12px 16px; 
-            border: 2px solid #e2e8f0;
-            font-size: 15px; 
-            transition: all 0.2s;
-            border-radius: 0;
-            font-family: 'Inter', sans-serif;
+        .card h2{font-family:var(--font-display); font-size:21px; font-weight:600; color:var(--text); letter-spacing:-.2px;}
+        .card .subtitle{color:var(--mist); font-size:13px; margin-top:4px; margin-bottom:28px;}
+
+        .field{margin-bottom:20px;}
+        .field label{
+            display:block; margin-bottom:7px; font-weight:600; font-size:11px;
+            text-transform:uppercase; letter-spacing:.8px; color:var(--ink-soft);
         }
-        .form-group input:focus { 
-            outline: none; 
-            border-color: #fbbf24; 
-            box-shadow: 0 0 0 3px rgba(251,191,36,0.1);
+        .field-input{position:relative;}
+        .field-input svg{
+            position:absolute; left:13px; top:50%; transform:translateY(-50%);
+            width:16px; height:16px; color:var(--mist); pointer-events:none;
         }
-        .btn {
-            width: 100%; 
-            padding: 14px; 
-            background: #0f172a; 
-            color: white;
-            border: 2px solid #0f172a;
-            font-size: 16px; 
-            font-weight: 700;
-            cursor: pointer; 
-            transition: all 0.2s;
-            border-radius: 0;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            font-family: 'Inter', sans-serif;
+        .field input{
+            width:100%; padding:12px 14px 12px 40px; border:1.5px solid var(--line);
+            font-size:14.5px; font-family:var(--font-body); background:#fdfcf9; transition:border-color .15s, background .15s;
         }
-        .btn:hover { 
-            background: #fbbf24; 
-            color: #0f172a;
-            border-color: #fbbf24;
+        .field input:focus{outline:none; border-color:var(--gold); background:#fff;}
+        .field input::placeholder{color:#b8b6a9;}
+
+        .btn{
+            width:100%; padding:13px; background:var(--ink); color:#fff; border:1.5px solid var(--ink);
+            font-size:13.5px; font-weight:600; cursor:pointer; transition:.15s;
+            text-transform:uppercase; letter-spacing:1px; font-family:var(--font-body);
+            display:flex; align-items:center; justify-content:center; gap:8px;
         }
-        .error { 
-            background: #fee2e2; 
-            color: #dc2626; 
-            padding: 12px 16px; 
-            margin-bottom: 24px; 
-            font-size: 14px; 
-            border-left: 4px solid #dc2626;
-            border-radius: 0;
+        .btn:hover{background:var(--gold); border-color:var(--gold); color:var(--ink);}
+        .btn svg{width:15px; height:15px; transition:transform .15s;}
+        .btn:hover svg{transform:translateX(3px);}
+
+        .error{
+            display:flex; align-items:flex-start; gap:10px;
+            background:var(--danger-bg); color:var(--danger); padding:12px 14px; margin-bottom:22px;
+            font-size:13px; border-left:3px solid var(--danger); line-height:1.5;
         }
-        .footer { text-align: center; margin-top: 32px; color: #94a3b8; font-size: 13px; }
-        .secure-badge {
-            display: flex;
-            justify-content: space-between;
-            margin-top: 16px;
-            padding-top: 16px;
-            border-top: 2px solid #e2e8f0;
-            font-size: 12px;
-            color: #64748b;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-weight: 600;
+        .error svg{width:16px; height:16px; flex-shrink:0; margin-top:1px;}
+
+        .trust-row{
+            display:flex; justify-content:space-between; margin-top:24px; padding-top:20px;
+            border-top:1px solid var(--line-soft); font-size:11px; color:var(--mist);
+            text-transform:uppercase; letter-spacing:.5px; font-weight:600;
         }
-        .secure-badge span { display: flex; align-items: center; gap: 6px; }
+        .trust-row span{display:flex; align-items:center; gap:6px;}
+        .trust-row svg{width:13px; height:13px; color:var(--gold);}
+
+        .footer{text-align:center; margin-top:30px; color:#5c6779; font-size:11.5px; letter-spacing:.3px;}
+        .footer strong{color:#8791a6;}
     </style>
 </head>
 <body>
-<div class="login-container">
-    <div class="logo">
-        <h1>VouchMorph <span>Enterprise</span></h1>
-        <p>Government Payment Orchestration Layer</p>
+<div class="stage">
+    <div class="brand">
+        <div class="brand-mark">VM</div>
+        <h1>VouchMorph <em>Enterprise</em></h1>
+        <p>Sovereign Disbursement Network</p>
     </div>
+
     <div class="card">
-        <h2>Welcome back</h2>
-        <p class="subtitle">Sign in to your organization dashboard</p>
+        <h2>Sign in</h2>
+        <p class="subtitle">Access your organization's command center</p>
 
         <?php if ($error): ?>
-            <div class="error">⚠️ <?php echo htmlspecialchars($error); ?></div>
+            <div class="error">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+                <span><?php echo htmlspecialchars($error); ?></span>
+            </div>
         <?php endif; ?>
 
         <form method="POST">
-            <div class="form-group">
+            <div class="field">
                 <label>Email address</label>
-                <input type="email" name="email" required placeholder="admin@government.gov.bw" autocomplete="username">
+                <div class="field-input">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 7l9 6 9-6"/></svg>
+                    <input type="email" name="email" required placeholder="you@government.gov.bw" autocomplete="username">
+                </div>
             </div>
-            <div class="form-group">
+            <div class="field">
                 <label>Password</label>
-                <input type="password" name="password" required placeholder="••••••••" autocomplete="current-password">
+                <div class="field-input">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="1"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+                    <input type="password" name="password" required placeholder="••••••••" autocomplete="current-password">
+                </div>
             </div>
-            <button type="submit" class="btn">Sign in →</button>
+            <button type="submit" class="btn">
+                Sign in
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            </button>
         </form>
 
-        <div class="secure-badge">
-            <span>🔒 Secure Login</span>
-            <span>🛡️ 2FA Available</span>
-            <span>🔐 ISO 27001</span>
+        <div class="trust-row">
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg>Secure</span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>2FA Ready</span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m4 12 5 5L20 6"/></svg>ISO 27001</span>
         </div>
     </div>
-    <div class="footer">
-        Secure enterprise payment platform • Government of Botswana
-    </div>
+
+    <div class="footer">Secure enterprise payment platform &middot; <strong>Government of Botswana</strong></div>
 </div>
 </body>
 </html>
