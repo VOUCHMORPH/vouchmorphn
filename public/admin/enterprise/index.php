@@ -1,61 +1,74 @@
 <?php
+session_start();
 require_once 'auth.php';
 $user = requireEnterpriseAuth();
-require_once '../../../src/Core/Database/DBConnection.php';
-use Core\Database\DBConnection;
 
-$db = DBConnection::getInstance();
+// Database connection is already set up in auth.php
+// Use the global $pdo variable
+global $pdo;
 $orgId = getOrganizationId();
 
 // Get stats
 $stats = [];
 
-// Total batches this month
-$stmt = $db->prepare("
-    SELECT COUNT(*) as total, SUM(total_amount) as amount 
-    FROM import_batches 
-    WHERE organization_id = :org_id 
-    AND created_at >= DATE_TRUNC('month', CURRENT_DATE)
-");
-$stmt->execute([':org_id' => $orgId]);
-$stats['batches'] = $stmt->fetch(PDO::FETCH_ASSOC);
+try {
+    // Total batches this month
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) as total, COALESCE(SUM(total_amount), 0) as amount 
+        FROM import_batches 
+        WHERE organization_id = :org_id 
+        AND created_at >= DATE_TRUNC('month', CURRENT_DATE)
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $stats['batches'] = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['total' => 0, 'amount' => 0];
 
-// Pending approvals
-$stmt = $db->prepare("
-    SELECT COUNT(*) as count, SUM(total_amount) as amount 
-    FROM import_batches 
-    WHERE organization_id = :org_id AND status = 'READY_FOR_APPROVAL'
-");
-$stmt->execute([':org_id' => $orgId]);
-$stats['pending_approval'] = $stmt->fetch(PDO::FETCH_ASSOC);
+    // Pending approvals
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as amount 
+        FROM import_batches 
+        WHERE organization_id = :org_id AND status = 'READY_FOR_APPROVAL'
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $stats['pending_approval'] = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['count' => 0, 'amount' => 0];
 
-// Recent batches
-$stmt = $db->prepare("
-    SELECT * FROM import_batches 
-    WHERE organization_id = :org_id 
-    ORDER BY created_at DESC LIMIT 10
-");
-$stmt->execute([':org_id' => $orgId]);
-$recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    // Recent batches
+    $stmt = $pdo->prepare("
+        SELECT * FROM import_batches 
+        WHERE organization_id = :org_id 
+        ORDER BY created_at DESC LIMIT 10
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Beneficiary count
-$stmt = $db->prepare("
-    SELECT COUNT(*) as total FROM organization_beneficiaries 
-    WHERE organization_id = :org_id AND is_active = true
-");
-$stmt->execute([':org_id' => $orgId]);
-$beneficiaryCount = $stmt->fetchColumn();
+    // Beneficiary count - using organizations_beneficiaries table
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) as total FROM organizations_beneficiaries 
+        WHERE organization_id = :org_id AND is_active = true
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $beneficiaryCount = $stmt->fetchColumn() ?: 0;
 
-// Successful payments this month
-$stmt = $db->prepare("
-    SELECT COUNT(*) as count, SUM(amount) as amount 
-    FROM payment_instructions 
-    WHERE organization_id = :org_id 
-    AND status = 'SUCCESS'
-    AND completed_at >= DATE_TRUNC('month', CURRENT_DATE)
-");
-$stmt->execute([':org_id' => $orgId]);
-$successfulPayments = $stmt->fetch(PDO::FETCH_ASSOC);
+    // Successful payments this month - you may need to adjust this query based on your actual payment table
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as amount 
+        FROM import_batches 
+        WHERE organization_id = :org_id 
+        AND status = 'COMPLETED'
+        AND created_at >= DATE_TRUNC('month', CURRENT_DATE)
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $successfulPayments = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['count' => 0, 'amount' => 0];
+    
+} catch (PDOException $e) {
+    error_log("Dashboard error: " . $e->getMessage());
+    $stats = [
+        'batches' => ['total' => 0, 'amount' => 0],
+        'pending_approval' => ['count' => 0, 'amount' => 0]
+    ];
+    $recentBatches = [];
+    $beneficiaryCount = 0;
+    $successfulPayments = ['count' => 0, 'amount' => 0];
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -64,7 +77,6 @@ $successfulPayments = $stmt->fetch(PDO::FETCH_ASSOC);
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard - VouchMorph Enterprise</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="assets/css/enterprise.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -130,12 +142,14 @@ $successfulPayments = $stmt->fetch(PDO::FETCH_ASSOC);
         .avatar {
             width: 48px;
             height: 48px;
-            background: #e2e8f0;
+            background: linear-gradient(135deg, #fbbf24, #f59e0b);
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-weight: 600;
+            font-weight: 700;
+            color: #0f172a;
+            font-size: 18px;
         }
         
         /* Stats grid */
@@ -147,7 +161,7 @@ $successfulPayments = $stmt->fetch(PDO::FETCH_ASSOC);
         }
         .stat-card {
             background: white;
-            padding: 20px;
+            padding: 24px;
             border-radius: 16px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         }
@@ -169,15 +183,25 @@ $successfulPayments = $stmt->fetch(PDO::FETCH_ASSOC);
             display: inline-flex;
             align-items: center;
             gap: 8px;
+            transition: all 0.2s;
         }
         .action-primary {
             background: #0f172a;
             color: white;
         }
+        .action-primary:hover {
+            background: #1e293b;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(15,23,42,0.2);
+        }
         .action-secondary {
             background: white;
             color: #0f172a;
             border: 1px solid #e2e8f0;
+        }
+        .action-secondary:hover {
+            background: #f8fafc;
+            border-color: #94a3b8;
         }
         
         /* Table */
@@ -191,6 +215,15 @@ $successfulPayments = $stmt->fetch(PDO::FETCH_ASSOC);
             padding: 20px 24px;
             border-bottom: 1px solid #e2e8f0;
             font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .card-header a {
+            color: #3b82f6;
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 14px;
         }
         table {
             width: 100%;
@@ -206,6 +239,8 @@ $successfulPayments = $stmt->fetch(PDO::FETCH_ASSOC);
             font-weight: 600;
             font-size: 13px;
             color: #475569;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
         .status {
             display: inline-block;
@@ -214,10 +249,36 @@ $successfulPayments = $stmt->fetch(PDO::FETCH_ASSOC);
             font-size: 12px;
             font-weight: 500;
         }
-        .status-completed { background: #dcfce7; color: #166534; }
-        .status-processing { background: #fef3c7; color: #92400e; }
-        .status-pending { background: #e0e7ff; color: #3730a3; }
-        .status-failed { background: #fee2e2; color: #991b1b; }
+        .status-completed, .status-success { background: #dcfce7; color: #166534; }
+        .status-processing, .status-pending { background: #fef3c7; color: #92400e; }
+        .status-ready_for_approval { background: #e0e7ff; color: #3730a3; }
+        .status-failed, .status-error { background: #fee2e2; color: #991b1b; }
+        .status-draft { background: #f1f5f9; color: #475569; }
+        
+        .view-link {
+            color: #3b82f6;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .view-link:hover { text-decoration: underline; }
+        
+        code {
+            background: #f1f5f9;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #64748b;
+        }
+        .empty-state a {
+            color: #3b82f6;
+            text-decoration: none;
+            font-weight: 500;
+        }
     </style>
 </head>
 <body>
@@ -244,17 +305,17 @@ $successfulPayments = $stmt->fetch(PDO::FETCH_ASSOC);
     <div class="main">
         <div class="top-bar">
             <div class="greeting">
-                <h1>Welcome back, <?php echo htmlspecialchars($user['email']); ?></h1>
+                <h1>Welcome back, <?php echo htmlspecialchars($user['full_name'] ?? $user['email']); ?></h1>
                 <p><?php echo htmlspecialchars($user['organization_name']); ?> • <?php echo ucfirst($user['role']); ?></p>
             </div>
             <div class="user-menu">
-                <div class="avatar"><?php echo strtoupper(substr($user['email'], 0, 1)); ?></div>
+                <div class="avatar"><?php echo strtoupper(substr($user['full_name'] ?? $user['email'], 0, 1)); ?></div>
             </div>
         </div>
         
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="stat-value">P<?php echo number_format($stats['batches']['amount'] ?? 0, 2); ?></div>
+                <div class="stat-value">BWP <?php echo number_format($stats['batches']['amount'] ?? 0, 2); ?></div>
                 <div class="stat-label">Disbursed this month</div>
             </div>
             <div class="stat-card">
@@ -278,25 +339,40 @@ $successfulPayments = $stmt->fetch(PDO::FETCH_ASSOC);
         </div>
         
         <div class="card">
-            <div class="card-header">📦 Recent Batches</div>
+            <div class="card-header">
+                📦 Recent Batches
+                <a href="batches/index.php">View all →</a>
+            </div>
             <div style="overflow-x: auto;">
                 <table>
                     <thead>
-                        <tr><th>Reference</th><th>Name</th><th>Amount</th><th>Status</th><th>Created</th><th></th></tr>
+                        <tr>
+                            <th>Reference</th>
+                            <th>Name</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                            <th>Created</th>
+                            <th></th>
+                        </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($recentBatches as $batch): ?>
-                        <tr>
-                            <td><code><?php echo htmlspecialchars($batch['batch_reference']); ?></code></td>
-                            <td><?php echo htmlspecialchars($batch['batch_name']); ?></td>
-                            <td>P<?php echo number_format($batch['total_amount'], 2); ?></td>
-                            <td><span class="status status-<?php echo strtolower($batch['status']); ?>"><?php echo $batch['status']; ?></span></td>
-                            <td><?php echo date('M d, H:i', strtotime($batch['created_at'])); ?></td>
-                            <td><a href="batches/view.php?id=<?php echo $batch['id']; ?>">View →</a></td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php if (empty($recentBatches)): ?>
-                        <tr><td colspan="6" style="text-align: center; padding: 40px;">No batches yet. <a href="imports/upload.php">Create your first batch →</a></td></tr>
+                        <?php if (!empty($recentBatches)): ?>
+                            <?php foreach ($recentBatches as $batch): ?>
+                            <tr>
+                                <td><code><?php echo htmlspecialchars($batch['batch_reference'] ?? $batch['id']); ?></code></td>
+                                <td><?php echo htmlspecialchars($batch['batch_name'] ?? 'Batch #' . $batch['id']); ?></td>
+                                <td>BWP <?php echo number_format($batch['total_amount'] ?? 0, 2); ?></td>
+                                <td><span class="status status-<?php echo strtolower(str_replace(' ', '_', $batch['status'] ?? 'draft')); ?>"><?php echo htmlspecialchars($batch['status'] ?? 'Draft'); ?></span></td>
+                                <td><?php echo date('M d, H:i', strtotime($batch['created_at'] ?? 'now')); ?></td>
+                                <td><a href="batches/view.php?id=<?php echo $batch['id']; ?>" class="view-link">View →</a></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <tr>
+                                <td colspan="6" class="empty-state">
+                                    No batches yet. <a href="imports/upload.php">Create your first batch →</a>
+                                </td>
+                            </tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
