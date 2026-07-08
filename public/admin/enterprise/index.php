@@ -108,6 +108,7 @@ $config = [
     'show_beneficiaries' => in_array($userRole, ['owner', 'auditor', 'program_officer', 'beneficiary_registrar', 'department_head', 'viewer']),
     'show_all_batches' => !in_array($userRole, ['beneficiary_registrar']),
     'show_governance' => in_array($userRole, ['owner', 'auditor', 'department_head']),
+    'show_settings' => in_array($userRole, ['owner']),
 ];
 
 $departmentName = '';
@@ -141,9 +142,11 @@ if ($config['show_governance']) {
     $actions[] = ['label' => 'AUDIT TRAIL', 'href' => 'reports/audit_trail.php', 'mark' => '§5', 'badge' => null];
 }
 $actions[] = ['label' => 'REPORTS', 'href' => 'reports/index.php', 'mark' => '§6', 'badge' => null];
-if ($userRole === 'owner') {
-    $actions[] = ['label' => 'DIAGNOSTICS', 'href' => 'testgov.php', 'mark' => '§7', 'badge' => null];
+// Settings and Logout at the bottom
+if ($config['show_settings']) {
+    $actions[] = ['label' => 'SETTINGS', 'href' => 'settings/index.php', 'mark' => '⚙', 'badge' => null, 'is_bottom' => true];
 }
+$actions[] = ['label' => 'LOGOUT', 'href' => 'logout.php', 'mark' => '↗', 'badge' => null, 'is_bottom' => true];
 
 function formatCurrency($amount) {
     return 'BWP ' . number_format($amount, 2);
@@ -356,6 +359,34 @@ function formatCurrency($amount) {
             padding: 0 5px; border: 1.5px solid var(--paper);
         }
 
+        /* Bottom row buttons - Settings and Logout */
+        .action-btn.bottom-btn {
+            border-color: var(--ink-500);
+            background: var(--panel);
+            opacity: 0.85;
+        }
+        .action-btn.bottom-btn:hover {
+            opacity: 1;
+            transform: translateY(-2px);
+        }
+
+        /* Logout button special styling */
+        .action-btn.logout-btn {
+            border-color: var(--seal-red);
+            background: var(--panel);
+        }
+        .action-btn.logout-btn:hover {
+            background: var(--seal-red);
+            border-color: var(--seal-red);
+            color: white;
+        }
+        .action-btn.logout-btn .mark {
+            color: var(--seal-red);
+        }
+        .action-btn.logout-btn:hover .mark {
+            color: white;
+        }
+
         .reveal-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 6px; }
         .reveal-btn {
             font-family: var(--f-cond); font-weight: 700; font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase;
@@ -467,7 +498,17 @@ function formatCurrency($amount) {
             <!-- Role-based launcher -->
             <div class="launcher">
                 <div class="launcher-grid">
-                    <?php foreach ($actions as $action): ?>
+                    <?php 
+                    // Separate main buttons from bottom buttons
+                    $mainActions = array_filter($actions, function($a) {
+                        return !isset($a['is_bottom']) || !$a['is_bottom'];
+                    });
+                    $bottomActions = array_filter($actions, function($a) {
+                        return isset($a['is_bottom']) && $a['is_bottom'];
+                    });
+                    ?>
+                    
+                    <?php foreach ($mainActions as $action): ?>
                     <a href="<?php echo htmlspecialchars($action['href']); ?>" class="action-btn">
                         <?php if ($action['badge'] !== null): ?>
                         <span class="badge"><?php echo (int)$action['badge']; ?></span>
@@ -476,6 +517,18 @@ function formatCurrency($amount) {
                         <span class="label"><?php echo htmlspecialchars($action['label']); ?></span>
                     </a>
                     <?php endforeach; ?>
+                    
+                    <!-- Bottom row: Settings + Logout -->
+                    <?php if (!empty($bottomActions)): ?>
+                    <div style="width:100%; display:flex; justify-content:center; gap:16px; margin-top:8px; flex-wrap:wrap;">
+                        <?php foreach ($bottomActions as $action): ?>
+                        <a href="<?php echo htmlspecialchars($action['href']); ?>" class="action-btn bottom-btn <?php echo $action['label'] === 'LOGOUT' ? 'logout-btn' : ''; ?>" style="width:190px;">
+                            <span class="mark"><?php echo htmlspecialchars($action['mark']); ?></span>
+                            <span class="label"><?php echo htmlspecialchars($action['label']); ?></span>
+                        </a>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php endif; ?>
                 </div>
             </div>
 
