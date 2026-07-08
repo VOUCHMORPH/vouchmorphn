@@ -1,6 +1,6 @@
 <?php
 // upload.php - ENTERPRISE DISBURSEMENT UPLOAD
-// MATCHES INDEX.PHP STYLE - Government Registry Aesthetic
+// MATCHES INDEX.PHP EXACTLY - Same layout, same components
 require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
@@ -101,16 +101,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $csrfToken = generateCsrfToken();
+
+// Get stats for consistency with index.php
+$stats = ['total_batches' => 0, 'pending' => 0, 'beneficiaries' => 0];
+try {
+    $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM import_batches WHERE organization_id = :org_id");
+    $stmt->execute([':org_id' => $orgId]);
+    $stats['total_batches'] = $stmt->fetchColumn() ?: 0;
+
+    $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM import_batches WHERE organization_id = :org_id AND status = 'READY_FOR_APPROVAL'");
+    $stmt->execute([':org_id' => $orgId]);
+    $stats['pending'] = $stmt->fetchColumn() ?: 0;
+
+    $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM organization_beneficiaries WHERE organization_id = :org_id AND is_active = true");
+    $stmt->execute([':org_id' => $orgId]);
+    $stats['beneficiaries'] = $stmt->fetchColumn() ?: 0;
+} catch (PDOException $e) {
+    // Silent fail
+}
+
+$config = [
+    'show_actions' => in_array($user['role'] ?? '', ['owner', 'program_officer', 'department_head']),
+    'show_beneficiaries' => in_array($user['role'] ?? '', ['owner', 'auditor', 'program_officer', 'beneficiary_registrar', 'department_head', 'viewer']),
+    'show_all_batches' => !in_array($user['role'] ?? '', ['beneficiary_registrar']),
+    'show_governance' => in_array($user['role'] ?? '', ['owner', 'auditor', 'department_head']),
+    'show_settings' => in_array($user['role'] ?? '', ['owner']),
+];
+
+$departmentName = '';
+$departmentId = $user['department_id'] ?? null;
+if ($departmentId) {
+    $stmt = $pdo->prepare("SELECT name FROM departments WHERE id = :id AND organization_id = :org_id");
+    $stmt->execute([':id' => $departmentId, ':org_id' => $orgId]);
+    $dept = $stmt->fetch(PDO::FETCH_ASSOC);
+    $departmentName = $dept['name'] ?? '';
+}
+
 $roleDisplay = strtoupper($user['role'] ?? 'USER');
-$orgName = htmlspecialchars($user['organization_name'] ?? 'GOVERNMENT');
-$fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)(rand(1, 999)), 3, '0', STR_PAD_LEFT);
+$orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
+$fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats['pending'] + 1), 3, '0', STR_PAD_LEFT);
+
+// ============================================================
+// ACTION BUTTONS - SAME AS INDEX
+// ============================================================
+$actions = [];
+if ($config['show_actions']) {
+    $actions[] = ['label' => 'DISBURSE FUNDS', 'href' => 'upload.php', 'mark' => '§1', 'badge' => null, 'active' => true];
+}
+if ($config['show_all_batches']) {
+    $actions[] = ['label' => 'BATCHES', 'href' => '../batches/index.php', 'mark' => '§2', 'badge' => $stats['total_batches'] > 0 ? $stats['total_batches'] : null];
+}
+$actions[] = ['label' => 'PENDING APPROVALS', 'href' => '../batches/index.php?filter=pending', 'mark' => '§3', 'badge' => $stats['pending'] > 0 ? $stats['pending'] : null];
+if ($config['show_beneficiaries']) {
+    $actions[] = ['label' => 'BENEFICIARIES', 'href' => '../beneficiaries/index.php', 'mark' => '§4', 'badge' => $stats['beneficiaries'] > 0 ? $stats['beneficiaries'] : null];
+}
+if ($config['show_governance']) {
+    $actions[] = ['label' => 'AUDIT TRAIL', 'href' => '../reports/audit_trail.php', 'mark' => '§5', 'badge' => null];
+}
+$actions[] = ['label' => 'REPORTS', 'href' => '../reports/index.php', 'mark' => '§6', 'badge' => null];
+
+function formatCurrency($amount) {
+    return 'BWP ' . number_format($amount, 2);
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · NEW DISBURSEMENT</title>
+    <title>VOUCHMORPH · MULTI-ASSET DISBURSEMENT REGISTRY</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -154,84 +213,41 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)(rand(1,
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: var(--line-strong); }
-        a { color: inherit; text-decoration: none; }
+        a { color: inherit; }
         button { font-family: inherit; cursor: pointer; }
 
-        .app { display: flex; min-height: 100vh; }
+        .doc-panel { position: relative; background: var(--panel); border: 1px solid var(--line); }
+        .doc-panel::before, .doc-panel::after { content: ""; position: absolute; width: 9px; height: 9px; pointer-events: none; }
+        .doc-panel::before { top: -1px; left: -1px; border-top: 2px solid var(--brass); border-left: 2px solid var(--brass); }
+        .doc-panel::after  { bottom: -1px; right: -1px; border-bottom: 2px solid var(--brass); border-right: 2px solid var(--brass); }
+
+        .stamp {
+            display: inline-block; padding: 2px 8px; border: 1.5px solid currentColor;
+            transform: rotate(-2.5deg); font-family: var(--f-mono); font-size: 9px; font-weight: 600;
+            letter-spacing: 0.09em; text-transform: uppercase; white-space: nowrap;
+        }
+        .stamp.completed  { color: var(--ledger-green); }
+        .stamp.processing { color: var(--ink-700); }
+        .stamp.pending     { color: var(--amber); }
+        .stamp.failed      { color: var(--seal-red); }
+        .stamp.draft       { color: var(--ink-300); }
+
+        .eyebrow { font-family: var(--f-cond); font-weight: 700; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-500); }
+        .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
 
         /* ============================================================
-           SIDEBAR - MATCHES INDEX
-           ============================================================ */
-        .sidebar {
-            width: 220px;
-            background: var(--ink-900);
-            color: #dbe1ea;
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            position: sticky;
-            top: 0;
-            overflow: hidden;
-            flex-shrink: 0;
-            border-right: 2px solid var(--brass);
-        }
-
-        .sidebar-header { padding: 16px 18px 12px; border-bottom: 1px solid rgba(255,255,255,0.05); flex-shrink: 0; }
-        .sidebar-header .brand { font-family: var(--f-mono); font-weight: 700; font-size: 12px; letter-spacing: 2px; color: var(--brass); }
-        .sidebar-header .sub { font-size: 7px; font-weight: 500; color: rgba(255,255,255,0.2); text-transform: uppercase; letter-spacing: 1.5px; }
-        .sidebar-header .org { font-size: 9px; color: rgba(255,255,255,0.35); margin-top: 4px; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.05); }
-
-        .sidebar-nav { padding: 8px 10px; overflow-y: auto; flex: 1; }
-        .sidebar-nav .nav-group { font-size: 7px; text-transform: uppercase; letter-spacing: 1.5px; color: rgba(255,255,255,0.12); padding: 10px 8px 3px; font-weight: 600; }
-
-        .nav-item {
-            display: flex; align-items: center; gap: 8px; padding: 5px 8px;
-            color: rgba(255,255,255,0.35); text-decoration: none; font-size: 11px;
-            font-weight: 500; transition: all 0.15s ease; border-left: 2px solid transparent;
-        }
-        .nav-item:hover { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.7); }
-        .nav-item.active { background: rgba(138,109,59,0.08); color: var(--brass); border-left-color: var(--brass); }
-        .nav-item .icon { width: 14px; text-align: center; font-size: 11px; opacity: 0.5; }
-        .nav-item.active .icon { opacity: 1; }
-
-        .sidebar-footer { padding: 8px 12px; border-top: 1px solid rgba(255,255,255,0.05); flex-shrink: 0; }
-        .sidebar-footer .user-row { display: flex; align-items: center; gap: 8px; }
-        .sidebar-footer .avatar {
-            width: 22px; height: 22px; background: var(--brass); display: flex; align-items: center;
-            justify-content: center; font-weight: 700; font-size: 9px; color: var(--ink-900);
-            font-family: var(--f-mono); flex-shrink: 0;
-        }
-        .sidebar-footer .user-info { flex: 1; min-width: 0; }
-        .sidebar-footer .user-info .name { font-size: 10px; font-weight: 600; color: rgba(255,255,255,0.7); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .sidebar-footer .user-info .meta { font-size: 7px; color: rgba(255,255,255,0.2); text-transform: uppercase; letter-spacing: 0.3px; }
-        .sidebar-footer .logout-link { color: rgba(255,255,255,0.15); font-size: 12px; transition: all 0.15s ease; }
-        .sidebar-footer .logout-link:hover { color: var(--brass); }
-
-        /* ============================================================
-           MAIN CONTENT
-           ============================================================ */
-        .main {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            min-height: 100vh;
-            background: var(--paper);
-        }
-
-        /* ============================================================
-           MASTHEAD - MATCHES INDEX
+           MASTHEAD - PERFECTLY CENTERED TITLE, USER MENU ON RIGHT
            ============================================================ */
         .masthead {
             background: var(--ink-900);
             color: white;
-            padding: 12px 32px;
+            padding: 14px 32px;
             display: flex;
             align-items: center;
             justify-content: center;
             position: relative;
             border-bottom: 3px solid var(--brass);
-            min-height: 72px;
-            flex-shrink: 0;
+            min-height: 80px;
         }
         .masthead .center {
             display: flex;
@@ -242,7 +258,7 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)(rand(1,
             flex: 1;
         }
         .masthead h1 {
-            font-size: 16px;
+            font-size: 19px;
             font-weight: 700;
             letter-spacing: 0.03em;
             text-transform: uppercase;
@@ -250,13 +266,15 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)(rand(1,
         }
         .masthead .file-ref {
             font-family: var(--f-mono);
-            font-size: 10px;
-            color: rgba(255,255,255,0.3);
+            font-size: 11px;
+            color: rgba(255,255,255,0.35);
             margin-top: 2px;
             text-transform: uppercase;
             letter-spacing: 0.04em;
             text-align: center;
         }
+
+        /* User menu - positioned absolutely on the right */
         .masthead .user-menu {
             position: absolute;
             right: 32px;
@@ -268,7 +286,7 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)(rand(1,
         }
         .masthead .user-menu .role-pill {
             font-family: var(--f-cond);
-            font-size: 9px;
+            font-size: 10px;
             font-weight: 700;
             letter-spacing: 0.08em;
             color: var(--brass);
@@ -278,181 +296,135 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)(rand(1,
         }
         .masthead .user-menu .status-dot {
             display: inline-block;
-            width: 5px;
-            height: 5px;
+            width: 6px;
+            height: 6px;
             border-radius: 50%;
             background: #5FAE7E;
-            margin-right: 3px;
+            margin-right: 4px;
         }
         .masthead .user-menu .time {
             font-family: var(--f-mono);
-            font-size: 9px;
-            color: rgba(255,255,255,0.35);
+            font-size: 10px;
+            color: rgba(255,255,255,0.4);
         }
         .masthead .user-menu .menu-divider {
             width: 1px;
-            height: 18px;
-            background: rgba(255,255,255,0.06);
+            height: 20px;
+            background: rgba(255,255,255,0.08);
         }
         .masthead .user-menu .menu-link {
-            color: rgba(255,255,255,0.3);
+            color: rgba(255,255,255,0.4);
             text-decoration: none;
             font-family: var(--f-cond);
-            font-size: 9px;
+            font-size: 10px;
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.05em;
-            transition: all 0.15s ease;
-            padding: 3px 6px;
+            transition: var(--transition);
+            padding: 4px 8px;
             border: 1px solid transparent;
         }
         .masthead .user-menu .menu-link:hover {
             color: var(--brass);
             border-color: var(--brass);
         }
+        .masthead .user-menu .menu-link.logout-link {
+            color: rgba(255,255,255,0.25);
+        }
         .masthead .user-menu .menu-link.logout-link:hover {
             color: var(--seal-red);
             border-color: var(--seal-red);
         }
-        .masthead .user-menu .menu-link .icon { margin-right: 3px; }
-
-        /* ============================================================
-           DASHBOARD CONTENT
-           ============================================================ */
-        .dashboard-content {
-            flex: 1;
-            padding: 24px 32px 40px;
-            max-width: 980px;
-            width: 100%;
-            margin: 0 auto;
-            display: flex;
-            flex-direction: column;
+        .masthead .user-menu .menu-link .icon {
+            margin-right: 4px;
         }
 
         /* ============================================================
-           STEP INDICATOR
+           VOUCHMORPH™ WATERMARK - ROTATED 90° ON LEFT SIDE
            ============================================================ */
-        .step-indicator {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 28px;
-            padding: 0 20px;
-            flex-shrink: 0;
-        }
-        .step {
-            flex: 1;
-            text-align: center;
-            position: relative;
-        }
-        .step::after {
-            content: '';
-            position: absolute;
-            top: 14px;
-            left: 55%;
-            width: 90%;
-            height: 2px;
-            background: var(--line);
+        .vouchmorph-watermark {
+            position: fixed;
+            left: 8px;
+            top: 50%;
+            transform: translateY(-50%) rotate(-90deg);
+            font-family: var(--f-mono);
+            font-size: 11px;
+            letter-spacing: 0.25em;
+            color: rgba(138, 109, 59, 0.12);
+            font-weight: 700;
+            text-transform: uppercase;
+            user-select: none;
+            pointer-events: none;
+            white-space: nowrap;
             z-index: 0;
         }
-        .step:last-child::after { display: none; }
-        .step .step-number {
-            width: 28px;
-            height: 28px;
-            background: var(--line);
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            font-size: 11px;
-            font-family: var(--f-mono);
-            color: var(--ink-300);
+        .vouchmorph-watermark .tm {
+            font-size: 8px;
+            vertical-align: super;
+            letter-spacing: 0;
+        }
+
+        /* ============================================================
+           CENTRAL LAYOUT
+           ============================================================ */
+        .stage {
+            flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center;
+            padding: 140px 20px 60px;
             position: relative;
             z-index: 1;
-            border: 2px solid var(--line);
         }
-        .step.active .step-number {
-            background: var(--brass);
-            border-color: var(--brass);
-            color: white;
-        }
-        .step.done .step-number {
-            background: var(--ledger-green);
-            border-color: var(--ledger-green);
-            color: white;
-        }
-        .step .step-label {
-            font-size: 9px;
-            color: var(--ink-300);
-            margin-top: 6px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-weight: 600;
-            font-family: var(--f-cond);
-        }
-        .step.active .step-label { color: var(--ink-900); }
-        .step.done .step-label { color: var(--ledger-green); }
+        .stage-inner { width: 100%; max-width: 980px; display: flex; flex-direction: column; align-items: center; gap: 34px; }
+
+        .welcome { text-align: center; margin-bottom: 12px; }
+        .welcome .eyebrow { justify-content: center; }
+        .welcome h2 { font-size: 20px; font-weight: 700; letter-spacing: 0.01em; text-transform: uppercase; margin-top: 6px; }
+        .welcome p { font-family: var(--f-cond); font-size: 11px; color: var(--ink-500); margin-top: 4px; letter-spacing: 0.02em; text-transform: uppercase; }
 
         /* ============================================================
-           PANEL - MATCHES INDEX
+           ACTION LAUNCHER
            ============================================================ */
-        .panel {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            overflow: hidden;
+        .launcher { width: 100%; }
+        .launcher-grid {
+            display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; margin-top: 28px;
+        }
+        .action-btn {
             position: relative;
-            flex: 1;
+            width: 190px;
+            padding: 22px 16px 16px;
+            background: var(--panel);
+            border: 1.5px solid var(--ink-900);
+            text-decoration: none;
+            color: var(--ink-900);
+            display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px;
+            transition: background 0.12s ease, transform 0.12s ease;
         }
-        .panel::before {
-            content: "";
-            position: absolute;
-            top: -1px;
-            left: -1px;
-            width: 9px;
-            height: 9px;
-            border-top: 2px solid var(--brass);
-            border-left: 2px solid var(--brass);
-            pointer-events: none;
+        .action-btn:hover { background: var(--brass-tint); transform: translateY(-2px); }
+        .action-btn .mark { font-family: var(--f-mono); font-size: 10px; color: var(--brass); font-weight: 700; letter-spacing: 0.08em; }
+        .action-btn .label { font-family: var(--f-cond); font-weight: 700; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; }
+        .action-btn .badge {
+            position: absolute; top: -9px; right: -9px;
+            background: var(--seal-red); color: white; font-family: var(--f-mono); font-weight: 700;
+            font-size: 10px; min-width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+            padding: 0 5px; border: 1.5px solid var(--paper);
         }
-        .panel::after {
-            content: "";
-            position: absolute;
-            bottom: -1px;
-            right: -1px;
-            width: 9px;
-            height: 9px;
-            border-bottom: 2px solid var(--brass);
-            border-right: 2px solid var(--brass);
-            pointer-events: none;
-        }
-
-        .panel-header {
-            padding: 10px 20px;
+        .action-btn.active {
             background: var(--brass-tint);
-            border-bottom: 1px solid var(--line);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 9px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: var(--ink-500);
-            font-family: var(--f-cond);
-            flex-shrink: 0;
+            border-color: var(--brass);
         }
-        .panel-header .section-mark { color: var(--brass); margin-right: 5px; }
-
-        .panel-body { padding: 24px 28px; }
+        .action-btn.active .mark {
+            color: var(--brass);
+        }
 
         /* ============================================================
-           FORM ELEMENTS
+           UPLOAD FORM - INSIDE THE SAME STAGE INNER
            ============================================================ */
+        .upload-form {
+            width: 100%;
+        }
         .form-group { margin-bottom: 20px; }
-        .form-group:last-child { margin-bottom: 0; }
         .form-group label {
             display: block;
-            margin-bottom: 5px;
+            margin-bottom: 6px;
             font-weight: 600;
             font-size: 9px;
             text-transform: uppercase;
@@ -479,9 +451,6 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)(rand(1,
         }
         .form-group input::placeholder { color: var(--ink-300); opacity: 0.7; }
 
-        /* ============================================================
-           UPLOAD AREA
-           ============================================================ */
         .upload-area {
             border: 2px dashed var(--line);
             padding: 40px 20px;
@@ -494,22 +463,9 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)(rand(1,
             border-color: var(--brass);
             background: #f8f5ee;
         }
-        .upload-area .icon {
-            font-size: 36px;
-            display: block;
-            margin-bottom: 12px;
-            color: var(--brass);
-        }
-        .upload-area .title {
-            font-weight: 600;
-            font-size: 14px;
-            color: var(--ink-700);
-            margin-bottom: 4px;
-        }
-        .upload-area .hint {
-            font-size: 11px;
-            color: var(--ink-300);
-        }
+        .upload-area .icon { font-size: 36px; display: block; margin-bottom: 12px; color: var(--brass); }
+        .upload-area .title { font-weight: 600; font-size: 14px; color: var(--ink-700); margin-bottom: 4px; }
+        .upload-area .hint { font-size: 11px; color: var(--ink-300); }
 
         .supported-formats {
             display: flex;
@@ -530,11 +486,8 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)(rand(1,
             font-family: var(--f-cond);
         }
 
-        /* ============================================================
-           BUTTONS
-           ============================================================ */
         .btn {
-            padding: 11px 24px;
+            padding: 13px 24px;
             font-weight: 700;
             font-size: 12px;
             cursor: pointer;
@@ -547,13 +500,13 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)(rand(1,
             align-items: center;
             justify-content: center;
             gap: 8px;
+            width: 100%;
+            margin-top: 20px;
         }
         .btn-primary {
             background: var(--ink-900);
             color: white;
             border-color: var(--ink-900);
-            width: 100%;
-            margin-top: 20px;
         }
         .btn-primary:hover {
             background: var(--brass);
@@ -575,74 +528,48 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)(rand(1,
         }
         .error .icon { font-size: 16px; flex-shrink: 0; }
 
-        .back-link {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            color: var(--ink-500);
-            text-decoration: none;
-            font-size: 11px;
-            font-weight: 600;
-            font-family: var(--f-cond);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            border-bottom: 2px solid transparent;
-            transition: all 0.15s ease;
-            margin-bottom: 16px;
-        }
-        .back-link:hover {
-            color: var(--brass);
-            border-bottom-color: var(--brass);
-        }
+        .empty-state { text-align: center; padding: 30px 12px; color: var(--ink-300); }
+        .empty-state .mark { font-family: var(--f-mono); font-size: 20px; display: block; margin-bottom: 8px; color: var(--brass); }
+        .empty-state p { font-family: var(--f-cond); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+        .empty-state a { color: var(--ink-700); font-weight: 700; text-decoration: none; border-bottom: 1px solid var(--brass); }
 
-        /* ============================================================
-           RESPONSIVE
-           ============================================================ */
+        .page-footer { padding: 16px 0 26px; text-align: center; border-top: 1px solid var(--line); width: 100%; }
+        .page-footer .notice { font-family: var(--f-cond); font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-300); }
+        .page-footer .role-line { font-family: var(--f-mono); font-size: 9px; color: var(--ink-300); margin-top: 4px; text-transform: uppercase; }
+
         @media (max-width: 992px) {
-            .sidebar { width: 60px; }
-            .sidebar-header h2, .sidebar-header .org, .sidebar-nav .nav-group,
-            .nav-item span:not(.icon), .sidebar-footer .user-info { display: none; }
-            .sidebar-header .brand { font-size: 9px; }
-            .nav-item { justify-content: center; }
-            .sidebar-footer .user-row { justify-content: center; }
-            .main { margin-left: 60px; }
-            .masthead { padding: 10px 16px; min-height: 60px; }
-            .masthead h1 { font-size: 13px; }
-            .masthead .file-ref { font-size: 8px; }
-            .masthead .user-menu { right: 12px; gap: 8px; }
-            .masthead .user-menu .time { display: none; }
-            .dashboard-content { padding: 16px; }
-            .panel-body { padding: 16px; }
-            .step-indicator { padding: 0 8px; }
-            .step .step-label { font-size: 7px; }
+            .masthead { padding: 12px 16px; flex-direction: column; min-height: auto; gap: 6px; }
+            .masthead .user-menu {
+                position: static;
+                transform: none;
+                justify-content: center;
+                flex-wrap: wrap;
+            }
+            .vouchmorph-watermark { display: none; }
+            .stage { padding: 80px 16px 40px; }
+            .upload-area { padding: 24px 12px; }
         }
 
         @media (max-width: 640px) {
-            .masthead { flex-direction: column; min-height: auto; padding: 10px 12px; gap: 4px; }
-            .masthead .user-menu { position: static; transform: none; flex-wrap: wrap; justify-content: center; }
-            .masthead h1 { font-size: 12px; }
-            .dashboard-content { padding: 12px; }
-            .panel-body { padding: 12px; }
-            .upload-area { padding: 24px 12px; }
-            .step-indicator { flex-wrap: wrap; gap: 8px; }
-            .step { flex: 0 0 45%; }
-            .step::after { display: none; }
+            .masthead h1 { font-size: 14px; }
+            .masthead .file-ref { font-size: 9px; }
+            .masthead .user-menu { gap: 8px; }
+            .masthead .user-menu .role-pill { font-size: 8px; padding: 1px 6px; }
+            .masthead .user-menu .time { font-size: 8px; }
+            .masthead .user-menu .menu-link { font-size: 8px; padding: 2px 6px; }
+            .stage { padding: 60px 14px 30px; }
+            .action-btn { width: 150px; padding: 18px 12px 14px; }
+            .vouchmorph-watermark { display: none; }
         }
 
         @media (prefers-color-scheme: dark) {
             :root {
-                --paper: #131C24;
-                --panel: #1B2733;
-                --line: #2C3A45;
-                --line-strong: #3C4C58;
-                --ink-900: #ECEFF2;
-                --ink-700: #C9D2D9;
-                --ink-500: #93A2AC;
-                --ink-300: #6B7A85;
-                --brass-tint: #22303A;
-                --blue-tint: #1D2A38;
-                --green-tint: #17261D;
+                --paper: #131C24; --panel: #1B2733; --line: #2C3A45; --line-strong: #3C4C58;
+                --ink-900: #ECEFF2; --ink-700: #C9D2D9; --ink-500: #93A2AC; --ink-300: #6B7A85;
+                --brass-tint: #22303A; --blue-tint: #1D2A38; --green-tint: #17261D;
             }
+            .action-btn { border-color: var(--ink-900); }
+            .vouchmorph-watermark { color: rgba(201, 151, 42, 0.08); }
             .form-group input,
             .form-group select {
                 background: #1B2733;
@@ -684,138 +611,119 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)(rand(1,
                 border-color: var(--brass);
                 color: var(--ink-900);
             }
-            .step .step-number { background: #2C3A45; }
-            .step.active .step-number { background: var(--brass); }
         }
     </style>
 </head>
 <body>
-    <div class="app">
-        <!-- Sidebar -->
-        <div class="sidebar">
-            <div class="sidebar-header">
-                <div class="brand">VOUCHMORPH</div>
-                <div class="sub">Enterprise</div>
-                <div class="org"><?php echo $orgName; ?></div>
-            </div>
-            <nav class="sidebar-nav">
-                <div class="nav-group">Main</div>
-                <a href="../index.php" class="nav-item"><span class="icon">◈</span><span>Dashboard</span></a>
-                <a href="upload.php" class="nav-item active"><span class="icon">▣</span><span>New Disbursement</span></a>
-                <a href="../batches/index.php" class="nav-item"><span class="icon">▦</span><span>Batches</span></a>
-                <a href="../beneficiaries/index.php" class="nav-item"><span class="icon">◈</span><span>Beneficiaries</span></a>
-                <div class="nav-group">Management</div>
-                <a href="../templates/index.php" class="nav-item"><span class="icon">▤</span><span>Templates</span></a>
-                <a href="../reports/index.php" class="nav-item"><span class="icon">▥</span><span>Reports</span></a>
-                <a href="../settings/index.php" class="nav-item"><span class="icon">◆</span><span>Settings</span></a>
-            </nav>
-            <div class="sidebar-footer">
-                <div class="user-row">
-                    <div class="avatar"><?php echo strtoupper(substr($user['full_name'] ?? $user['email'], 0, 1)); ?></div>
-                    <div class="user-info">
-                        <div class="name"><?php echo htmlspecialchars($user['full_name'] ?? $user['email']); ?></div>
-                        <div class="meta"><?php echo $roleDisplay; ?></div>
-                    </div>
-                    <a href="../logout.php" class="logout-link">↗</a>
-                </div>
-            </div>
+    <!-- VouchMorph™ Watermark -->
+    <div class="vouchmorph-watermark">VouchMorph<span class="tm">™</span></div>
+
+    <!-- Masthead - IDENTICAL TO INDEX -->
+    <div class="masthead">
+        <div class="center">
+            <h1><?php echo $orgName; ?> — National Disbursement</h1>
+            <div class="file-ref">FILE NO. <?php echo htmlspecialchars($fileRef); ?> · <?php echo strtoupper(date('d M Y')); ?></div>
         </div>
-
-        <!-- Main -->
-        <div class="main">
-            <!-- Masthead -->
-            <div class="masthead">
-                <div class="center">
-                    <h1>VouchMorph — Sovereign Disbursement Platform</h1>
-                    <div class="file-ref">FILE NO. <?php echo htmlspecialchars($fileRef); ?> · <?php echo strtoupper(date('d M Y')); ?></div>
-                </div>
-                <div class="user-menu">
-                    <span class="role-pill"><?php echo $roleDisplay; ?></span>
-                    <span class="time"><span class="status-dot"></span><?php echo date('H:i'); ?> UTC+2</span>
-                    <span class="menu-divider"></span>
-                    <a href="../settings/index.php" class="menu-link"><span class="icon">⚙</span>Settings</a>
-                    <a href="../logout.php" class="menu-link logout-link"><span class="icon">↗</span>Sign Out</a>
-                </div>
-            </div>
-
-            <!-- Dashboard Content -->
-            <div class="dashboard-content">
-                <!-- Back link -->
-                <a href="../index.php" class="back-link">← Return to Dashboard</a>
-
-                <!-- Step Indicator -->
-                <div class="step-indicator">
-                    <div class="step active">
-                        <div class="step-number">1</div>
-                        <div class="step-label">Upload</div>
-                    </div>
-                    <div class="step">
-                        <div class="step-number">2</div>
-                        <div class="step-label">Map</div>
-                    </div>
-                    <div class="step">
-                        <div class="step-number">3</div>
-                        <div class="step-label">Validate</div>
-                    </div>
-                    <div class="step">
-                        <div class="step-number">4</div>
-                        <div class="step-label">Execute</div>
-                    </div>
-                </div>
-
-                <!-- Upload Panel -->
-                <div class="panel">
-                    <div class="panel-header">
-                        <span><span class="section-mark">§</span>New Disbursement Upload</span>
-                        <span>STEP 1 OF 4</span>
-                    </div>
-                    <div class="panel-body">
-                        <?php if ($error): ?>
-                        <div class="error">
-                            <span class="icon">⚠</span>
-                            <span><?php echo htmlspecialchars($error); ?></span>
-                        </div>
-                        <?php endif; ?>
-
-                        <form method="POST" enctype="multipart/form-data">
-                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-
-                            <div class="form-group">
-                                <label>Batch Name (optional)</label>
-                                <input type="text" name="batch_name" placeholder="e.g., Pensioners April 2026">
-                            </div>
-
-                            <div class="form-group">
-                                <label>Use Saved Template (optional)</label>
-                                <select name="template_id">
-                                    <option value="">— No template, map manually —</option>
-                                    <?php foreach ($templates as $template): ?>
-                                        <option value="<?php echo $template['id']; ?>"><?php echo htmlspecialchars($template['template_name']); ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                            </div>
-
-                            <div class="upload-area" onclick="document.getElementById('file_input').click()">
-                                <span class="icon">📄</span>
-                                <div class="title">Click to upload or drag and drop</div>
-                                <div class="hint">CSV, Excel, JSON, XML</div>
-                                <input type="file" name="payment_file" id="file_input" style="display: none" accept=".csv,.xlsx,.xls,.json,.xml">
-                            </div>
-
-                            <div class="supported-formats">
-                                <span class="format-badge">Excel (.xlsx, .xls)</span>
-                                <span class="format-badge">CSV</span>
-                                <span class="format-badge">JSON</span>
-                                <span class="format-badge">XML</span>
-                            </div>
-
-                            <button type="submit" class="btn btn-primary">Continue to Preview →</button>
-                        </form>
-                    </div>
-                </div>
-            </div>
+        <div class="user-menu">
+            <span class="role-pill"><?php echo $roleDisplay; ?></span>
+            <span class="time"><span class="status-dot"></span><?php echo date('H:i'); ?> UTC+2</span>
+            <span class="menu-divider"></span>
+            <?php if ($config['show_settings']): ?>
+            <a href="../settings/index.php" class="menu-link">
+                <span class="icon">⚙</span> Settings
+            </a>
+            <?php endif; ?>
+            <a href="../logout.php" class="menu-link logout-link">
+                <span class="icon">↗</span> Sign Out
+            </a>
         </div>
     </div>
+
+    <!-- Central stage - IDENTICAL TO INDEX -->
+    <div class="stage">
+        <div class="stage-inner">
+
+            <!-- Welcome - IDENTICAL TO INDEX -->
+            <div class="welcome">
+                <div class="eyebrow"><span class="section-mark">§</span>Registry Access</div>
+                <h2>WELCOME, <?php echo strtoupper(substr($user['full_name'] ?? $user['email'], 0, 24)); ?></h2>
+                <p>SELECT A WORKING PAGE FOR YOUR ROLE<?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?></p>
+            </div>
+
+            <!-- Role-based launcher - IDENTICAL TO INDEX -->
+            <div class="launcher">
+                <div class="launcher-grid">
+                    <?php foreach ($actions as $action): ?>
+                    <a href="<?php echo htmlspecialchars($action['href']); ?>" class="action-btn <?php echo isset($action['active']) && $action['active'] ? 'active' : ''; ?>">
+                        <?php if ($action['badge'] !== null): ?>
+                        <span class="badge"><?php echo (int)$action['badge']; ?></span>
+                        <?php endif; ?>
+                        <span class="mark"><?php echo htmlspecialchars($action['mark']); ?></span>
+                        <span class="label"><?php echo htmlspecialchars($action['label']); ?></span>
+                    </a>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+
+            <!-- ==========================================================
+                 UPLOAD FORM - The only thing different from index
+                 ========================================================== -->
+            <div class="doc-panel" style="width:100%; padding:28px 32px;">
+                <div class="eyebrow" style="margin-bottom:16px;">
+                    <span class="section-mark">§</span>New Disbursement Upload
+                </div>
+
+                <?php if ($error): ?>
+                <div class="error">
+                    <span class="icon">⚠</span>
+                    <span><?php echo htmlspecialchars($error); ?></span>
+                </div>
+                <?php endif; ?>
+
+                <form method="POST" enctype="multipart/form-data" class="upload-form">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
+
+                    <div class="form-group">
+                        <label>Batch Name (optional)</label>
+                        <input type="text" name="batch_name" placeholder="e.g., Pensioners April 2026">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Use Saved Template (optional)</label>
+                        <select name="template_id">
+                            <option value="">— No template, map manually —</option>
+                            <?php foreach ($templates as $template): ?>
+                                <option value="<?php echo $template['id']; ?>"><?php echo htmlspecialchars($template['template_name']); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div class="upload-area" onclick="document.getElementById('file_input').click()">
+                        <span class="icon">📄</span>
+                        <div class="title">Click to upload or drag and drop</div>
+                        <div class="hint">CSV, Excel, JSON, XML</div>
+                        <input type="file" name="payment_file" id="file_input" style="display: none" accept=".csv,.xlsx,.xls,.json,.xml">
+                    </div>
+
+                    <div class="supported-formats">
+                        <span class="format-badge">Excel (.xlsx, .xls)</span>
+                        <span class="format-badge">CSV</span>
+                        <span class="format-badge">JSON</span>
+                        <span class="format-badge">XML</span>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">Continue to Preview →</button>
+                </form>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Footer - IDENTICAL TO INDEX -->
+    <footer class="page-footer">
+        <div class="notice">SECURE ENTERPRISE MULTI ASSET PAYMENT · DISTRIBUTION RESTRICTED · ISO 27001 · © <?php echo date('Y'); ?> VOUCHMORPH</div>
+        <div class="role-line"><?php echo $roleDisplay; ?><?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?> · <?php echo htmlspecialchars($fileRef); ?></div>
+    </footer>
 
     <script>
         document.getElementById('file_input').addEventListener('change', function(e) {
