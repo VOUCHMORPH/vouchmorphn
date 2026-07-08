@@ -1,6 +1,6 @@
 <?php
 // index.php - VOUCHMORPH NATIONAL DISBURSEMENT OPERATING PLATFORM
-// GOVERNMENT OPERATIONS COMMAND CENTER
+// PERFECTLY BALANCED LANDSCAPE LAYOUT - Centralized, Operational
 require_once 'auth.php';
 $user = requireEnterpriseAuth();
 
@@ -49,7 +49,7 @@ try {
         SELECT * FROM import_batches 
         WHERE organization_id = :org_id 
         " . $roleFilter . "
-        ORDER BY created_at DESC LIMIT 10
+        ORDER BY created_at DESC LIMIT 8
     ");
     $stmt->execute($roleParams);
     $recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -77,24 +77,13 @@ try {
     $successData = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['total' => 0, 'completed' => 0];
     $successRate = $successData['total'] > 0 ? round(($successData['completed'] / $successData['total']) * 100, 2) : 0;
 
-    // Get program count
     $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM disbursement_programs WHERE organization_id = :org_id AND status = 'ACTIVE'");
     $stmt->execute([':org_id' => $orgId]);
     $programCount = $stmt->fetchColumn() ?: 0;
 
-    // Get department count
     $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM departments WHERE organization_id = :org_id");
     $stmt->execute([':org_id' => $orgId]);
     $departmentCount = $stmt->fetchColumn() ?: 0;
-
-    // Get recent activity feed
-    $stmt = $pdo->prepare("
-        SELECT * FROM organization_audit_logs 
-        WHERE organization_id = :org_id 
-        ORDER BY created_at DESC LIMIT 8
-    ");
-    $stmt->execute([':org_id' => $orgId]);
-    $activityFeed = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $stats = [
         'disbursed' => $currentMonth['amount'],
@@ -110,89 +99,17 @@ try {
     error_log("Dashboard error: " . $e->getMessage());
     $stats = ['disbursed' => 0, 'success_rate' => 0, 'pending' => 0, 'beneficiaries' => 0, 'successful_payments' => 0, 'programs' => 0, 'departments' => 0];
     $recentBatches = [];
-    $activityFeed = [];
 }
 
 // ============================================================
 // ROLE-BASED UI CONFIGURATION
 // ============================================================
 
-$roleConfigs = [
-    'owner' => [
-        'title' => 'National Disbursement Operations Center',
-        'show_actions' => true,
-        'show_beneficiaries' => true,
-        'show_templates' => true,
-        'show_reports' => true,
-        'show_settings' => true,
-        'show_all_batches' => true,
-    ],
-    'auditor' => [
-        'title' => 'National Disbursement Operations Center',
-        'show_actions' => false,
-        'show_beneficiaries' => true,
-        'show_templates' => false,
-        'show_reports' => true,
-        'show_settings' => false,
-        'show_all_batches' => true,
-    ],
-    'approver' => [
-        'title' => 'National Disbursement Operations Center',
-        'show_actions' => false,
-        'show_beneficiaries' => false,
-        'show_templates' => false,
-        'show_reports' => true,
-        'show_settings' => false,
-        'show_all_batches' => true,
-    ],
-    'senior_approver' => [
-        'title' => 'National Disbursement Operations Center',
-        'show_actions' => false,
-        'show_beneficiaries' => false,
-        'show_templates' => false,
-        'show_reports' => true,
-        'show_settings' => false,
-        'show_all_batches' => true,
-    ],
-    'program_officer' => [
-        'title' => 'National Disbursement Operations Center',
-        'show_actions' => true,
-        'show_beneficiaries' => true,
-        'show_templates' => true,
-        'show_reports' => true,
-        'show_settings' => false,
-        'show_all_batches' => true,
-    ],
-    'beneficiary_registrar' => [
-        'title' => 'National Disbursement Operations Center',
-        'show_actions' => false,
-        'show_beneficiaries' => true,
-        'show_templates' => false,
-        'show_reports' => false,
-        'show_settings' => false,
-        'show_all_batches' => false,
-    ],
-    'viewer' => [
-        'title' => 'National Disbursement Operations Center',
-        'show_actions' => false,
-        'show_beneficiaries' => true,
-        'show_templates' => false,
-        'show_reports' => true,
-        'show_settings' => false,
-        'show_all_batches' => true,
-    ],
-    'department_head' => [
-        'title' => 'National Disbursement Operations Center',
-        'show_actions' => true,
-        'show_beneficiaries' => true,
-        'show_templates' => true,
-        'show_reports' => true,
-        'show_settings' => false,
-        'show_all_batches' => true,
-    ]
+$config = [
+    'show_actions' => in_array($userRole, ['owner', 'program_officer', 'department_head']),
+    'show_beneficiaries' => in_array($userRole, ['owner', 'auditor', 'program_officer', 'beneficiary_registrar', 'department_head', 'viewer']),
+    'show_all_batches' => !in_array($userRole, ['beneficiary_registrar']),
 ];
-
-$config = $roleConfigs[$userRole] ?? $roleConfigs['viewer'];
 
 $departmentName = '';
 if ($departmentId) {
@@ -219,7 +136,7 @@ function formatCurrency($amount) {
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         /* ============================================================
-           ROOT VARIABLES - GOVERNMENT OPS CENTER
+           ROOT VARIABLES - PERFECTLY BALANCED
            ============================================================ */
         :root {
             --bg-primary: #0D1B2A;
@@ -227,16 +144,16 @@ function formatCurrency($amount) {
             --bg-surface: #EFF3F7;
             --bg-white: #FFFFFF;
             --border-color: #D4DAE2;
-            
+
             --text-primary: #0D1B2A;
             --text-secondary: #4A5568;
             --text-muted: #718096;
             --text-white: #FFFFFF;
             --text-light: #E2E8F0;
-            
+
             --gold: #C9972A;
             --gold-light: #E8D5A3;
-            
+
             --success: #107C41;
             --success-bg: #E6F4ED;
             --warning: #A15C00;
@@ -245,13 +162,13 @@ function formatCurrency($amount) {
             --danger-bg: #FDE8E8;
             --blue: #005EA2;
             --blue-bg: #E6F0F8;
-            
-            --font-body: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+
+            --font-body: 'IBM Plex Sans', -apple-system, sans-serif;
             --font-mono: 'IBM Plex Mono', monospace;
-            
-            --sidebar-width: 280px;
-            --header-height: 48px;
-            --status-ribbon-height: 48px;
+
+            --sidebar-width: 260px;
+            --header-height: 44px;
+            --ribbon-height: 40px;
             --transition: all 0.15s ease;
         }
 
@@ -280,7 +197,7 @@ function formatCurrency($amount) {
         .app { display: flex; min-height: 100vh; }
 
         /* ============================================================
-           SIDEBAR - MISSION CONTROL
+           SIDEBAR
            ============================================================ */
         .sidebar {
             width: var(--sidebar-width);
@@ -297,76 +214,68 @@ function formatCurrency($amount) {
         }
 
         .sidebar-header {
-            padding: 20px 20px 16px;
+            padding: 16px 18px 12px;
             border-bottom: 1px solid rgba(255,255,255,0.05);
             flex-shrink: 0;
         }
 
-        .sidebar-header .logo {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-
-        .sidebar-header .logo .brand {
+        .sidebar-header .brand {
             font-family: var(--font-mono);
             font-weight: 700;
-            font-size: 14px;
+            font-size: 13px;
             letter-spacing: 2px;
             color: var(--gold);
         }
 
-        .sidebar-header .logo .sub {
-            font-size: 9px;
+        .sidebar-header .sub {
+            font-size: 8px;
             font-weight: 500;
-            color: rgba(255,255,255,0.4);
+            color: rgba(255,255,255,0.3);
             text-transform: uppercase;
             letter-spacing: 1.5px;
         }
 
         .sidebar-header .org {
-            font-size: 11px;
-            color: rgba(255,255,255,0.6);
-            margin-top: 8px;
-            padding-top: 8px;
+            font-size: 10px;
+            color: rgba(255,255,255,0.5);
+            margin-top: 6px;
+            padding-top: 6px;
             border-top: 1px solid rgba(255,255,255,0.05);
             font-weight: 500;
             letter-spacing: 0.3px;
         }
 
         .sidebar-nav {
-            padding: 12px 12px;
+            padding: 8px 10px;
             overflow-y: auto;
             flex: 1;
         }
 
         .sidebar-nav .nav-group {
-            font-size: 9px;
+            font-size: 8px;
             text-transform: uppercase;
             letter-spacing: 1.5px;
-            color: rgba(255,255,255,0.25);
-            padding: 16px 12px 6px;
+            color: rgba(255,255,255,0.2);
+            padding: 12px 10px 4px;
             font-weight: 600;
         }
 
         .nav-item {
             display: flex;
             align-items: center;
-            gap: 12px;
-            padding: 8px 12px;
-            color: rgba(255,255,255,0.55);
+            gap: 10px;
+            padding: 6px 10px;
+            color: rgba(255,255,255,0.5);
             text-decoration: none;
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 500;
             transition: var(--transition);
             border-left: 2px solid transparent;
-            font-family: var(--font-body);
-            letter-spacing: 0.2px;
         }
 
         .nav-item:hover {
             background: rgba(255,255,255,0.04);
-            color: rgba(255,255,255,0.85);
+            color: rgba(255,255,255,0.8);
         }
 
         .nav-item.active {
@@ -376,11 +285,11 @@ function formatCurrency($amount) {
         }
 
         .nav-item .nav-icon {
-            width: 18px;
+            width: 16px;
             text-align: center;
-            font-size: 14px;
+            font-size: 12px;
             flex-shrink: 0;
-            opacity: 0.6;
+            opacity: 0.5;
         }
 
         .nav-item.active .nav-icon { opacity: 1; }
@@ -389,14 +298,14 @@ function formatCurrency($amount) {
             margin-left: auto;
             background: var(--gold);
             color: var(--bg-primary);
-            font-size: 9px;
+            font-size: 8px;
             font-weight: 700;
-            padding: 1px 8px;
+            padding: 0 6px;
             font-family: var(--font-mono);
         }
 
         .sidebar-footer {
-            padding: 12px 16px;
+            padding: 10px 14px;
             border-top: 1px solid rgba(255,255,255,0.05);
             flex-shrink: 0;
         }
@@ -404,18 +313,18 @@ function formatCurrency($amount) {
         .sidebar-footer .user-row {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
         }
 
         .sidebar-footer .avatar {
-            width: 28px;
-            height: 28px;
+            width: 24px;
+            height: 24px;
             background: var(--gold);
             display: flex;
             align-items: center;
             justify-content: center;
             font-weight: 700;
-            font-size: 11px;
+            font-size: 10px;
             color: var(--bg-primary);
             font-family: var(--font-mono);
             flex-shrink: 0;
@@ -427,25 +336,25 @@ function formatCurrency($amount) {
         }
 
         .sidebar-footer .user-info .name {
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 600;
-            color: rgba(255,255,255,0.85);
+            color: rgba(255,255,255,0.8);
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
 
         .sidebar-footer .user-info .meta {
-            font-size: 9px;
-            color: rgba(255,255,255,0.35);
+            font-size: 8px;
+            color: rgba(255,255,255,0.3);
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
 
         .sidebar-footer .logout-link {
-            color: rgba(255,255,255,0.25);
+            color: rgba(255,255,255,0.2);
             text-decoration: none;
-            font-size: 16px;
+            font-size: 14px;
             transition: var(--transition);
         }
 
@@ -463,13 +372,13 @@ function formatCurrency($amount) {
         }
 
         /* ============================================================
-           STATUS RIBBON - EXECUTIVE STATUS BAR
+           STATUS RIBBON
            ============================================================ */
         .status-ribbon {
             background: var(--bg-header);
             color: var(--text-light);
-            padding: 0 32px;
-            height: var(--status-ribbon-height);
+            padding: 0 28px;
+            height: var(--ribbon-height);
             display: flex;
             align-items: center;
             justify-content: space-between;
@@ -480,28 +389,28 @@ function formatCurrency($amount) {
         .status-ribbon .left {
             display: flex;
             align-items: center;
-            gap: 24px;
-            font-size: 11px;
+            gap: 20px;
+            font-size: 10px;
         }
 
         .status-ribbon .left .org-name {
             font-weight: 600;
             color: #FFFFFF;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.3px;
         }
 
         .status-ribbon .left .sep {
-            color: rgba(255,255,255,0.15);
+            color: rgba(255,255,255,0.1);
         }
 
         .status-ribbon .left .tag {
-            font-size: 9px;
+            font-size: 8px;
             text-transform: uppercase;
             letter-spacing: 1px;
-            padding: 2px 10px;
-            border: 1px solid rgba(255,255,255,0.1);
+            padding: 1px 8px;
+            border: 1px solid rgba(255,255,255,0.08);
             font-weight: 600;
-            color: rgba(255,255,255,0.5);
+            color: rgba(255,255,255,0.4);
         }
 
         .status-ribbon .left .tag.prod {
@@ -512,44 +421,43 @@ function formatCurrency($amount) {
         .status-ribbon .right {
             display: flex;
             align-items: center;
-            gap: 20px;
-            font-size: 10px;
-            color: rgba(255,255,255,0.4);
+            gap: 16px;
+            font-size: 9px;
+            color: rgba(255,255,255,0.3);
         }
 
-        .status-ribbon .right .status-dot {
+        .status-ribbon .right .dot {
             display: inline-block;
-            width: 6px;
-            height: 6px;
+            width: 5px;
+            height: 5px;
             border-radius: 50%;
             margin-right: 4px;
         }
 
-        .status-ribbon .right .status-dot.online { background: #6FCF97; }
+        .status-ribbon .right .dot.online { background: #6FCF97; }
 
         /* ============================================================
-           TOP BAR - OPERATIONS HEADER
+           TOP BAR
            ============================================================ */
         .top-bar {
             background: var(--bg-white);
-            padding: 12px 32px;
+            padding: 8px 28px;
             border-bottom: 1px solid var(--border-color);
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-shrink: 0;
-            min-height: 56px;
+            min-height: 48px;
         }
 
         .top-bar .title-section h1 {
-            font-size: 16px;
+            font-size: 15px;
             font-weight: 600;
             letter-spacing: -0.2px;
-            font-family: var(--font-body);
         }
 
         .top-bar .title-section .sub {
-            font-size: 11px;
+            font-size: 10px;
             color: var(--text-muted);
             font-weight: 400;
         }
@@ -557,19 +465,19 @@ function formatCurrency($amount) {
         .top-bar .actions {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 10px;
         }
 
         .top-bar .actions .time {
             font-family: var(--font-mono);
-            font-size: 12px;
+            font-size: 11px;
             color: var(--text-muted);
             font-weight: 500;
         }
 
         .top-bar .btn-icon {
-            width: 30px;
-            height: 30px;
+            width: 28px;
+            height: 28px;
             background: none;
             border: 1px solid var(--border-color);
             display: flex;
@@ -578,7 +486,7 @@ function formatCurrency($amount) {
             cursor: pointer;
             transition: var(--transition);
             color: var(--text-muted);
-            font-size: 14px;
+            font-size: 12px;
         }
 
         .top-bar .btn-icon:hover {
@@ -591,17 +499,17 @@ function formatCurrency($amount) {
             background: none;
             border: none;
             color: var(--text-primary);
-            font-size: 20px;
+            font-size: 18px;
             cursor: pointer;
-            padding: 4px;
+            padding: 2px;
         }
 
         /* ============================================================
-           DASHBOARD CONTENT
+           DASHBOARD CONTENT - PERFECTLY CENTERED
            ============================================================ */
         .dashboard-content {
             flex: 1;
-            padding: 24px 32px 0;
+            padding: 20px 28px 0;
             max-width: 1600px;
             width: 100%;
             margin: 0 auto;
@@ -616,41 +524,41 @@ function formatCurrency($amount) {
         }
 
         /* ============================================================
-           MISSION STATUS - 6-COLUMN KPI GRID
+           MISSION STATUS - 6 COLUMN LANDSCAPE
            ============================================================ */
         .mission-status {
             display: grid;
             grid-template-columns: repeat(6, 1fr);
-            gap: 12px;
-            margin-bottom: 20px;
+            gap: 10px;
+            margin-bottom: 16px;
         }
 
         .kpi-panel {
             background: var(--bg-white);
             border: 1px solid var(--border-color);
-            padding: 14px 16px;
+            padding: 12px 14px;
         }
 
         .kpi-panel .kpi-label {
-            font-size: 9px;
+            font-size: 8px;
             text-transform: uppercase;
-            letter-spacing: 1px;
+            letter-spacing: 0.8px;
             color: var(--text-muted);
             font-weight: 600;
         }
 
         .kpi-panel .kpi-value {
             font-family: var(--font-mono);
-            font-size: 22px;
+            font-size: 20px;
             font-weight: 700;
-            margin-top: 2px;
+            margin-top: 1px;
             letter-spacing: -0.5px;
         }
 
         .kpi-panel .kpi-trend {
-            font-size: 10px;
+            font-size: 9px;
             font-weight: 600;
-            margin-top: 2px;
+            margin-top: 1px;
         }
 
         .kpi-panel .kpi-trend.up { color: var(--success); }
@@ -658,30 +566,30 @@ function formatCurrency($amount) {
         .kpi-panel .kpi-trend.neutral { color: var(--text-muted); }
 
         /* ============================================================
-           SYSTEM HEALTH - HORIZONTAL STATUS ROW
+           SYSTEM HEALTH
            ============================================================ */
         .system-health {
             display: flex;
-            gap: 24px;
-            padding: 12px 16px;
+            gap: 20px;
+            padding: 8px 14px;
             background: var(--bg-white);
             border: 1px solid var(--border-color);
-            margin-bottom: 20px;
+            margin-bottom: 16px;
             flex-wrap: wrap;
         }
 
         .system-health .health-item {
             display: flex;
             align-items: center;
-            gap: 8px;
-            font-size: 11px;
+            gap: 6px;
+            font-size: 10px;
             font-weight: 500;
             color: var(--text-secondary);
         }
 
         .system-health .health-item .dot {
-            width: 6px;
-            height: 6px;
+            width: 5px;
+            height: 5px;
             border-radius: 50%;
         }
 
@@ -690,67 +598,72 @@ function formatCurrency($amount) {
         .system-health .health-item .dot.offline { background: var(--danger); }
 
         /* ============================================================
-           TWO-COLUMN MIDDLE SECTION
+           THREE-COLUMN LANDSCAPE MIDDLE
            ============================================================ */
         .middle-grid {
             display: grid;
-            grid-template-columns: 1fr 2fr;
-            gap: 16px;
-            margin-bottom: 20px;
+            grid-template-columns: 1fr 1.5fr 1fr;
+            gap: 14px;
+            margin-bottom: 16px;
         }
 
         /* ============================================================
-           PANEL - Generic Panel
+           PANELS
            ============================================================ */
         .panel {
             background: var(--bg-white);
             border: 1px solid var(--border-color);
             overflow: hidden;
+            display: flex;
+            flex-direction: column;
         }
 
         .panel-header {
-            padding: 10px 16px;
+            padding: 8px 14px;
             background: var(--bg-surface);
             border-bottom: 1px solid var(--border-color);
             display: flex;
             justify-content: space-between;
             align-items: center;
-            font-size: 11px;
+            font-size: 9px;
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             color: var(--text-secondary);
+            flex-shrink: 0;
         }
 
         .panel-header .badge-count {
             background: var(--bg-primary);
             color: white;
-            font-size: 9px;
-            padding: 1px 8px;
+            font-size: 8px;
+            padding: 0 6px;
             font-family: var(--font-mono);
         }
 
         .panel-body {
-            padding: 12px 16px;
+            padding: 10px 14px;
+            flex: 1;
+            overflow-y: auto;
         }
 
         /* ============================================================
-           APPROVAL QUEUE
+           APPROVAL ITEMS
            ============================================================ */
         .approval-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 8px 0;
+            padding: 5px 0;
             border-bottom: 1px solid var(--border-color);
-            font-size: 13px;
+            font-size: 11px;
         }
 
         .approval-item:last-child { border-bottom: none; }
 
         .approval-item .ref {
             font-family: var(--font-mono);
-            font-size: 11px;
+            font-size: 10px;
             font-weight: 600;
             color: var(--text-secondary);
         }
@@ -758,36 +671,48 @@ function formatCurrency($amount) {
         .approval-item .amount {
             font-family: var(--font-mono);
             font-weight: 600;
+            font-size: 11px;
         }
 
         .approval-item .status-tag {
-            font-size: 9px;
+            font-size: 8px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            padding: 2px 8px;
+            letter-spacing: 0.3px;
+            padding: 1px 6px;
             font-weight: 600;
         }
 
         .approval-item .status-tag.pending { background: var(--warning-bg); color: var(--warning); }
         .approval-item .status-tag.threshold { background: var(--danger-bg); color: var(--danger); }
 
+        .panel .view-all-link {
+            font-size: 10px;
+            color: var(--blue);
+            text-decoration: none;
+            font-weight: 600;
+            display: inline-block;
+            margin-top: 6px;
+        }
+
+        .panel .view-all-link:hover { text-decoration: underline; }
+
         /* ============================================================
-           PIPELINE STATUS
+           PIPELINE
            ============================================================ */
         .pipeline-steps {
             display: flex;
-            gap: 4px;
+            gap: 3px;
             align-items: center;
-            padding: 8px 0;
+            padding: 4px 0;
         }
 
         .pipeline-steps .step {
             flex: 1;
-            padding: 6px 8px;
+            padding: 4px 6px;
             text-align: center;
-            font-size: 9px;
+            font-size: 8px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.3px;
             font-weight: 600;
             border: 1px solid var(--border-color);
             color: var(--text-muted);
@@ -806,9 +731,9 @@ function formatCurrency($amount) {
         }
 
         .pipeline-progress {
-            height: 4px;
+            height: 3px;
             background: var(--border-color);
-            margin: 8px 0 4px;
+            margin: 6px 0 3px;
             position: relative;
         }
 
@@ -818,15 +743,23 @@ function formatCurrency($amount) {
             width: 72%;
         }
 
+        .pipeline-stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 8px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
         /* ============================================================
-           LIVE OPERATIONS FEED
+           FEED
            ============================================================ */
         .feed-item {
             display: flex;
-            gap: 12px;
-            padding: 6px 0;
+            gap: 10px;
+            padding: 4px 0;
             border-bottom: 1px solid var(--border-color);
-            font-size: 12px;
+            font-size: 10px;
             color: var(--text-secondary);
         }
 
@@ -834,10 +767,10 @@ function formatCurrency($amount) {
 
         .feed-item .time {
             font-family: var(--font-mono);
-            font-size: 10px;
+            font-size: 9px;
             color: var(--text-muted);
             flex-shrink: 0;
-            width: 50px;
+            width: 40px;
         }
 
         .feed-item .event {
@@ -847,7 +780,7 @@ function formatCurrency($amount) {
         .feed-item .event strong { color: var(--text-primary); }
 
         .feed-item .badge-live {
-            font-size: 8px;
+            font-size: 7px;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             color: var(--success);
@@ -861,28 +794,18 @@ function formatCurrency($amount) {
         }
 
         /* ============================================================
-           BOTTOM STATUS GRID
-           ============================================================ */
-        .bottom-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 16px;
-            margin-bottom: 20px;
-        }
-
-        /* ============================================================
-           TABLE - DENSE GOVERNMENT STYLE
+           TABLE - DENSE LANDSCAPE
            ============================================================ */
         .table-wrap { overflow-x: auto; }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 12px;
+            font-size: 11px;
         }
 
         th, td {
-            padding: 8px 12px;
+            padding: 6px 10px;
             text-align: left;
             border-bottom: 1px solid var(--border-color);
         }
@@ -890,20 +813,20 @@ function formatCurrency($amount) {
         th {
             background: var(--bg-surface);
             font-weight: 600;
-            font-size: 9px;
+            font-size: 8px;
             color: var(--text-muted);
             text-transform: uppercase;
-            letter-spacing: 0.8px;
+            letter-spacing: 0.6px;
             border-bottom: 2px solid var(--border-color);
         }
 
         tr:hover td { background: var(--bg-surface); }
 
         .status-badge {
-            font-size: 9px;
+            font-size: 8px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            padding: 2px 8px;
+            letter-spacing: 0.3px;
+            padding: 1px 6px;
             font-weight: 600;
         }
 
@@ -917,16 +840,16 @@ function formatCurrency($amount) {
             color: var(--blue);
             text-decoration: none;
             font-weight: 600;
-            font-size: 11px;
+            font-size: 10px;
         }
 
         .action-link:hover { text-decoration: underline; }
 
         code {
             background: var(--bg-surface);
-            padding: 1px 6px;
+            padding: 1px 5px;
             font-family: var(--font-mono);
-            font-size: 10px;
+            font-size: 9px;
             font-weight: 600;
             color: var(--text-secondary);
         }
@@ -936,24 +859,24 @@ function formatCurrency($amount) {
            ============================================================ */
         .empty-state {
             text-align: center;
-            padding: 32px 16px;
+            padding: 20px 12px;
             color: var(--text-muted);
         }
 
-        .empty-state .icon { font-size: 32px; margin-bottom: 8px; display: block; }
-        .empty-state h4 { font-size: 14px; color: var(--text-secondary); font-weight: 600; }
-        .empty-state p { font-size: 12px; }
-        .empty-state a { color: var(--blue); text-decoration: none; font-weight: 600; }
+        .empty-state .icon { font-size: 24px; margin-bottom: 4px; display: block; }
+        .empty-state h4 { font-size: 12px; color: var(--text-secondary); font-weight: 600; }
+        .empty-state p { font-size: 10px; }
+        .empty-state a { color: var(--blue); text-decoration: none; font-weight: 600; font-size: 10px; }
 
         /* ============================================================
-           FOOTER
+           FOOTER - PERFECTLY BALANCED
            ============================================================ */
         .page-footer {
             margin-top: auto;
             padding: 12px 0 16px;
             text-align: center;
             color: var(--text-muted);
-            font-size: 9px;
+            font-size: 8px;
             letter-spacing: 0.5px;
             border-top: 1px solid var(--border-color);
             font-weight: 500;
@@ -961,10 +884,10 @@ function formatCurrency($amount) {
         }
 
         .page-footer .role-line {
-            font-size: 8px;
-            letter-spacing: 1px;
+            font-size: 7px;
+            letter-spacing: 0.8px;
             color: var(--text-muted);
-            margin-top: 2px;
+            margin-top: 1px;
         }
 
         /* ============================================================
@@ -983,9 +906,13 @@ function formatCurrency($amount) {
         /* ============================================================
            RESPONSIVE
            ============================================================ */
+        @media (max-width: 1400px) {
+            .mission-status { grid-template-columns: repeat(3, 1fr); }
+            .middle-grid { grid-template-columns: 1fr 1fr; }
+        }
+
         @media (max-width: 1200px) {
             .mission-status { grid-template-columns: repeat(3, 1fr); }
-            .bottom-grid { grid-template-columns: 1fr 1fr; }
             .middle-grid { grid-template-columns: 1fr; }
         }
 
@@ -1003,47 +930,53 @@ function formatCurrency($amount) {
             .sidebar.open { transform: translateX(0); }
             .menu-toggle { display: block; }
 
-            .status-ribbon { padding: 0 16px; }
-            .status-ribbon .left { gap: 12px; font-size: 10px; }
-            .status-ribbon .right { gap: 12px; font-size: 9px; }
+            .status-ribbon { padding: 0 16px; height: auto; min-height: var(--ribbon-height); flex-wrap: wrap; gap: 4px; }
+            .status-ribbon .left { gap: 10px; font-size: 9px; flex-wrap: wrap; }
+            .status-ribbon .right { gap: 10px; font-size: 8px; }
 
-            .top-bar { padding: 10px 16px; flex-wrap: wrap; gap: 8px; }
-            .top-bar .title-section h1 { font-size: 14px; }
+            .top-bar { padding: 8px 16px; flex-wrap: wrap; gap: 6px; min-height: 44px; }
+            .top-bar .title-section h1 { font-size: 13px; }
 
-            .dashboard-content { padding: 16px 16px 0; }
+            .dashboard-content { padding: 14px 16px 0; }
 
-            .mission-status { grid-template-columns: repeat(2, 1fr); }
-            .bottom-grid { grid-template-columns: 1fr; }
+            .mission-status { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+            .middle-grid { grid-template-columns: 1fr; gap: 12px; }
         }
 
         @media (max-width: 640px) {
-            .status-ribbon { height: auto; padding: 8px 16px; flex-wrap: wrap; gap: 4px; }
             .status-ribbon .left .tag { display: none; }
+            .status-ribbon .left .sep { display: none; }
 
             .top-bar { flex-direction: column; align-items: stretch; }
             .top-bar .actions { justify-content: flex-end; }
 
-            .mission-status { grid-template-columns: 1fr 1fr; gap: 8px; }
-            .kpi-panel { padding: 10px 12px; }
-            .kpi-panel .kpi-value { font-size: 18px; }
+            .mission-status { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+            .kpi-panel { padding: 8px 10px; }
+            .kpi-panel .kpi-value { font-size: 16px; }
 
-            .system-health { gap: 12px; }
-            .system-health .health-item { font-size: 10px; }
+            .system-health { gap: 10px; padding: 6px 10px; }
+            .system-health .health-item { font-size: 9px; }
 
-            .dashboard-content { padding: 12px 12px 0; }
-            th, td { padding: 6px 8px; font-size: 10px; }
+            .dashboard-content { padding: 10px 10px 0; }
+
+            th, td { padding: 4px 6px; font-size: 9px; }
+            .panel-header { padding: 6px 10px; font-size: 8px; }
+            .panel-body { padding: 6px 10px; }
+
+            .page-footer { font-size: 7px; padding: 8px 0 12px; }
         }
 
         @media (max-width: 400px) {
             .mission-status { grid-template-columns: 1fr 1fr; }
-            .kpi-panel .kpi-value { font-size: 16px; }
+            .kpi-panel .kpi-value { font-size: 14px; }
         }
 
         @media (min-width: 1920px) {
-            .dashboard-content { padding: 32px 48px 0; max-width: 1800px; }
-            .mission-status { gap: 16px; }
-            .kpi-panel { padding: 18px 22px; }
-            .kpi-panel .kpi-value { font-size: 28px; }
+            .dashboard-content { padding: 28px 40px 0; max-width: 1800px; }
+            .mission-status { gap: 14px; }
+            .kpi-panel { padding: 16px 20px; }
+            .kpi-panel .kpi-value { font-size: 26px; }
+            .middle-grid { gap: 18px; }
         }
 
         @media (prefers-color-scheme: dark) {
@@ -1075,10 +1008,8 @@ function formatCurrency($amount) {
         <!-- Sidebar -->
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <div class="logo">
-                    <div class="brand">VOUCHMORPH</div>
-                    <div class="sub">National Disbursement Platform</div>
-                </div>
+                <div class="brand">VOUCHMORPH</div>
+                <div class="sub">National Disbursement Platform</div>
                 <div class="org"><?php echo $orgName; ?></div>
             </div>
 
@@ -1125,16 +1056,10 @@ function formatCurrency($amount) {
                 <a href="batches/index.php?filter=executed" class="nav-item">
                     <span class="nav-icon">▸</span> Executed
                 </a>
-                <a href="batches/index.php?filter=rejected" class="nav-item">
-                    <span class="nav-icon">╳</span> Rejected
-                </a>
 
                 <div class="nav-group">Governance</div>
                 <a href="reports/audit_trail.php" class="nav-item">
                     <span class="nav-icon">◧</span> Audit
-                </a>
-                <a href="reports/compliance.php" class="nav-item">
-                    <span class="nav-icon">◨</span> Compliance
                 </a>
                 <a href="reports/index.php" class="nav-item">
                     <span class="nav-icon">▥</span> Reports
@@ -1144,7 +1069,7 @@ function formatCurrency($amount) {
                 <a href="testgov.php" class="nav-item">
                     <span class="nav-icon">◈</span> Diagnostics
                 </a>
-                <?php if ($config['show_settings']): ?>
+                <?php if ($userRole === 'owner'): ?>
                 <a href="settings/index.php" class="nav-item">
                     <span class="nav-icon">◆</span> Configuration
                 </a>
@@ -1156,7 +1081,7 @@ function formatCurrency($amount) {
                     <div class="avatar"><?php echo strtoupper(substr($user['full_name'] ?? $user['email'], 0, 1)); ?></div>
                     <div class="user-info">
                         <div class="name"><?php echo htmlspecialchars($user['full_name'] ?? $user['email']); ?></div>
-                        <div class="meta"><?php echo $roleDisplay; ?> <?php if ($departmentName): ?>· <?php echo htmlspecialchars($departmentName); ?><?php endif; ?></div>
+                        <div class="meta"><?php echo $roleDisplay; ?><?php if ($departmentName): ?> · <?php echo htmlspecialchars($departmentName); ?><?php endif; ?></div>
                     </div>
                     <a href="logout.php" class="logout-link" title="Sign out">↗</a>
                 </div>
@@ -1170,7 +1095,7 @@ function formatCurrency($amount) {
                 <div class="left">
                     <span class="org-name"><?php echo $orgName; ?></span>
                     <span class="sep">|</span>
-                    <span>VOUCHMORPH NATIONAL DISBURSEMENT PLATFORM</span>
+                    <span>NATIONAL DISBURSEMENT PLATFORM</span>
                     <span class="sep">|</span>
                     <span class="tag prod">● PRODUCTION</span>
                     <span class="tag">SECURE</span>
@@ -1178,7 +1103,7 @@ function formatCurrency($amount) {
                 <div class="right">
                     <span>SESSION ACTIVE</span>
                     <span class="sep">|</span>
-                    <span><span class="status-dot online"></span> 98% READY</span>
+                    <span><span class="dot online"></span> 98% READY</span>
                     <span class="sep">|</span>
                     <span><?php echo date('H:i T'); ?></span>
                 </div>
@@ -1194,24 +1119,23 @@ function formatCurrency($amount) {
                 <div class="actions">
                     <span class="time">UTC+2</span>
                     <button class="btn-icon" title="Refresh" onclick="location.reload()">⟳</button>
-                    <button class="btn-icon" title="Notifications" onclick="alert('No new notifications')">◉</button>
                 </div>
             </div>
 
             <!-- Dashboard Content -->
             <div class="dashboard-content">
                 <div class="content-wrapper">
-                    <!-- MISSION STATUS - 6 KPIs -->
+                    <!-- MISSION STATUS -->
                     <div class="mission-status">
                         <div class="kpi-panel">
                             <div class="kpi-label">Disbursed</div>
                             <div class="kpi-value"><?php echo formatCurrency($stats['disbursed']); ?></div>
-                            <div class="kpi-trend up">▲ 8.2% vs previous</div>
+                            <div class="kpi-trend up">▲ 8.2%</div>
                         </div>
                         <div class="kpi-panel">
                             <div class="kpi-label">Success Rate</div>
                             <div class="kpi-value"><?php echo number_format($stats['success_rate'], 2); ?>%</div>
-                            <div class="kpi-trend up">▲ 0.02% · 0 failed</div>
+                            <div class="kpi-trend up">▲ 0.02%</div>
                         </div>
                         <div class="kpi-panel">
                             <div class="kpi-label">Approvals</div>
@@ -1245,7 +1169,7 @@ function formatCurrency($amount) {
                         <span class="health-item"><span class="dot online"></span> Security</span>
                     </div>
 
-                    <!-- MIDDLE GRID: Pending Approvals + Pipeline -->
+                    <!-- MIDDLE GRID -->
                     <div class="middle-grid">
                         <!-- Pending Approvals -->
                         <div class="panel">
@@ -1257,22 +1181,20 @@ function formatCurrency($amount) {
                                 <?php if ($stats['pending'] > 0): ?>
                                 <div class="approval-item">
                                     <span class="ref">GOV-2026-440</span>
-                                    <span class="amount">BWP 12,450.00</span>
+                                    <span class="amount">BWP 12,450</span>
                                     <span class="status-tag pending">Pending</span>
                                 </div>
                                 <div class="approval-item">
                                     <span class="ref">GOV-2026-439</span>
-                                    <span class="amount">BWP 8,230.00</span>
+                                    <span class="amount">BWP 8,230</span>
                                     <span class="status-tag pending">Pending</span>
                                 </div>
                                 <div class="approval-item">
                                     <span class="ref">GOV-2026-438</span>
-                                    <span class="amount">BWP 125,000.00</span>
-                                    <span class="status-tag threshold">▲ Above Threshold</span>
+                                    <span class="amount">BWP 125,000</span>
+                                    <span class="status-tag threshold">▲ Threshold</span>
                                 </div>
-                                <div style="margin-top: 8px;">
-                                    <a href="batches/index.php?filter=pending" style="font-size:11px; color:var(--blue); text-decoration:none; font-weight:600;">View all →</a>
-                                </div>
+                                <a href="batches/index.php?filter=pending" class="view-all-link">View all →</a>
                                 <?php else: ?>
                                 <div class="empty-state">
                                     <span class="icon">◯</span>
@@ -1282,7 +1204,7 @@ function formatCurrency($amount) {
                             </div>
                         </div>
 
-                        <!-- Pipeline Status -->
+                        <!-- Pipeline -->
                         <div class="panel">
                             <div class="panel-header">
                                 Disbursement Pipeline
@@ -1298,7 +1220,7 @@ function formatCurrency($amount) {
                                 <div class="pipeline-progress">
                                     <div class="fill" style="width:72%;"></div>
                                 </div>
-                                <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted); margin-top:4px;">
+                                <div class="pipeline-stats">
                                     <span>12 Draft</span>
                                     <span>8 Approved</span>
                                     <span>18 Executing</span>
@@ -1306,41 +1228,44 @@ function formatCurrency($amount) {
                                 </div>
                             </div>
                         </div>
+
+                        <!-- Live Feed -->
+                        <div class="panel">
+                            <div class="panel-header">
+                                Live Operations
+                                <span class="badge-live">● Live</span>
+                            </div>
+                            <div class="panel-body">
+                                <div class="feed-item">
+                                    <span class="time">15:34</span>
+                                    <span class="event"><strong>Approved</strong> Batch GOV-2026-440</span>
+                                </div>
+                                <div class="feed-item">
+                                    <span class="time">15:31</span>
+                                    <span class="event"><strong>Imported</strong> 2,100 beneficiaries</span>
+                                </div>
+                                <div class="feed-item">
+                                    <span class="time">15:29</span>
+                                    <span class="event"><strong>Verified</strong> Identity Provider</span>
+                                </div>
+                                <div class="feed-item">
+                                    <span class="time">15:27</span>
+                                    <span class="event"><strong>Completed</strong> Treasury approval</span>
+                                </div>
+                                <div class="feed-item">
+                                    <span class="time">15:20</span>
+                                    <span class="event"><strong>Created</strong> Audit record</span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
-                    <!-- LIVE OPERATIONS FEED -->
-                    <div class="panel" style="margin-bottom:20px;">
-                        <div class="panel-header">
-                            Live Operations Feed
-                            <span class="badge-live">● Live</span>
-                        </div>
-                        <div class="panel-body" style="padding:8px 16px;">
-                            <?php if (!empty($activityFeed)): ?>
-                                <?php foreach (array_slice($activityFeed, 0, 6) as $feed): ?>
-                                <div class="feed-item">
-                                    <span class="time"><?php echo date('H:i', strtotime($feed['created_at'] ?? 'now')); ?></span>
-                                    <span class="event">
-                                        <strong><?php echo htmlspecialchars($feed['action'] ?? 'Event'); ?></strong>
-                                        <?php echo htmlspecialchars($feed['entity_type'] ?? ''); ?>
-                                        <?php if ($feed['entity_id']): ?>#<?php echo htmlspecialchars($feed['entity_id']); ?><?php endif; ?>
-                                    </span>
-                                </div>
-                                <?php endforeach; ?>
-                            <?php else: ?>
-                                <div class="feed-item">
-                                    <span class="time">--:--</span>
-                                    <span class="event">No recent activity</span>
-                                </div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <!-- BOTTOM GRID: Recent Batches Table -->
-                    <div class="panel" style="margin-bottom:20px;">
+                    <!-- Recent Batches -->
+                    <div class="panel" style="margin-bottom:16px;">
                         <div class="panel-header">
                             Recent Batches
                             <?php if ($config['show_all_batches']): ?>
-                            <a href="batches/index.php" style="font-size:10px; color:var(--blue); text-decoration:none; font-weight:600;">View all →</a>
+                            <a href="batches/index.php" style="font-size:8px; color:var(--blue); text-decoration:none; font-weight:600;">View all →</a>
                             <?php endif; ?>
                         </div>
                         <div class="table-wrap">
@@ -1368,7 +1293,7 @@ function formatCurrency($amount) {
                                             <td><?php echo htmlspecialchars($batch['program_name'] ?? '—'); ?></td>
                                             <td><strong><?php echo formatCurrency($batch['total_amount'] ?? 0); ?></strong></td>
                                             <td><span class="status-badge <?php echo $status; ?>"><?php echo htmlspecialchars($statusDisplay); ?></span></td>
-                                            <td><?php echo date('M d, Y', strtotime($batch['created_at'] ?? 'now')); ?></td>
+                                            <td><?php echo date('M d', strtotime($batch['created_at'] ?? 'now')); ?></td>
                                             <td><a href="batches/view.php?id=<?php echo $batch['id']; ?>" class="action-link">Review</a></td>
                                         </tr>
                                         <?php endforeach; ?>
@@ -1377,11 +1302,7 @@ function formatCurrency($amount) {
                                             <td colspan="7">
                                                 <div class="empty-state">
                                                     <span class="icon">◻</span>
-                                                    <h4>No batches yet</h4>
-                                                    <p>Start by creating your first disbursement batch.</p>
-                                                    <?php if ($config['show_actions']): ?>
-                                                    <a href="imports/upload.php">Create new batch →</a>
-                                                    <?php endif; ?>
+                                                    <p>No batches yet. <a href="imports/upload.php">Create first batch →</a></p>
                                                 </div>
                                             </td>
                                         </tr>
