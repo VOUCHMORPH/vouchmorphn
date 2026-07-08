@@ -1,6 +1,6 @@
 <?php
-// index.php - ENTERPRISE COMMAND CENTER DASHBOARD
-// PERFECTLY CENTERED - No floating elements, balanced whitespace
+// index.php - VOUCHMORPH NATIONAL DISBURSEMENT OPERATING PLATFORM
+// GOVERNMENT OPERATIONS COMMAND CENTER
 require_once 'auth.php';
 $user = requireEnterpriseAuth();
 
@@ -49,7 +49,7 @@ try {
         SELECT * FROM import_batches 
         WHERE organization_id = :org_id 
         " . $roleFilter . "
-        ORDER BY created_at DESC LIMIT 8
+        ORDER BY created_at DESC LIMIT 10
     ");
     $stmt->execute($roleParams);
     $recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -77,18 +77,40 @@ try {
     $successData = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['total' => 0, 'completed' => 0];
     $successRate = $successData['total'] > 0 ? round(($successData['completed'] / $successData['total']) * 100, 2) : 0;
 
+    // Get program count
+    $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM disbursement_programs WHERE organization_id = :org_id AND status = 'ACTIVE'");
+    $stmt->execute([':org_id' => $orgId]);
+    $programCount = $stmt->fetchColumn() ?: 0;
+
+    // Get department count
+    $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM departments WHERE organization_id = :org_id");
+    $stmt->execute([':org_id' => $orgId]);
+    $departmentCount = $stmt->fetchColumn() ?: 0;
+
+    // Get recent activity feed
+    $stmt = $pdo->prepare("
+        SELECT * FROM organization_audit_logs 
+        WHERE organization_id = :org_id 
+        ORDER BY created_at DESC LIMIT 8
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $activityFeed = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
     $stats = [
         'disbursed' => $currentMonth['amount'],
         'success_rate' => $successRate,
         'pending' => $pendingApproval['count'],
         'beneficiaries' => $beneficiaryCount,
-        'successful_payments' => $successData['completed']
+        'successful_payments' => $successData['completed'],
+        'programs' => $programCount,
+        'departments' => $departmentCount
     ];
 
 } catch (PDOException $e) {
     error_log("Dashboard error: " . $e->getMessage());
-    $stats = ['disbursed' => 0, 'success_rate' => 0, 'pending' => 0, 'beneficiaries' => 0, 'successful_payments' => 0];
+    $stats = ['disbursed' => 0, 'success_rate' => 0, 'pending' => 0, 'beneficiaries' => 0, 'successful_payments' => 0, 'programs' => 0, 'departments' => 0];
     $recentBatches = [];
+    $activityFeed = [];
 }
 
 // ============================================================
@@ -97,9 +119,7 @@ try {
 
 $roleConfigs = [
     'owner' => [
-        'title' => 'Executive Command Center',
-        'icon' => 'compass',
-        'subtitle' => 'Full organizational oversight',
+        'title' => 'National Disbursement Operations Center',
         'show_actions' => true,
         'show_beneficiaries' => true,
         'show_templates' => true,
@@ -108,9 +128,7 @@ $roleConfigs = [
         'show_all_batches' => true,
     ],
     'auditor' => [
-        'title' => 'Audit & Compliance Dashboard',
-        'icon' => 'shield',
-        'subtitle' => 'Read-only oversight of all departments',
+        'title' => 'National Disbursement Operations Center',
         'show_actions' => false,
         'show_beneficiaries' => true,
         'show_templates' => false,
@@ -119,9 +137,7 @@ $roleConfigs = [
         'show_all_batches' => true,
     ],
     'approver' => [
-        'title' => 'Approval Dashboard',
-        'icon' => 'check-circle',
-        'subtitle' => 'Review and approve pending disbursements',
+        'title' => 'National Disbursement Operations Center',
         'show_actions' => false,
         'show_beneficiaries' => false,
         'show_templates' => false,
@@ -130,9 +146,7 @@ $roleConfigs = [
         'show_all_batches' => true,
     ],
     'senior_approver' => [
-        'title' => 'Senior Approval Dashboard',
-        'icon' => 'shield-check',
-        'subtitle' => 'High-value disbursement approvals',
+        'title' => 'National Disbursement Operations Center',
         'show_actions' => false,
         'show_beneficiaries' => false,
         'show_templates' => false,
@@ -141,9 +155,7 @@ $roleConfigs = [
         'show_all_batches' => true,
     ],
     'program_officer' => [
-        'title' => 'Disbursement Officer Dashboard',
-        'icon' => 'send',
-        'subtitle' => 'Create and manage disbursements',
+        'title' => 'National Disbursement Operations Center',
         'show_actions' => true,
         'show_beneficiaries' => true,
         'show_templates' => true,
@@ -152,9 +164,7 @@ $roleConfigs = [
         'show_all_batches' => true,
     ],
     'beneficiary_registrar' => [
-        'title' => 'Beneficiary Management',
-        'icon' => 'users',
-        'subtitle' => 'Manage beneficiary records',
+        'title' => 'National Disbursement Operations Center',
         'show_actions' => false,
         'show_beneficiaries' => true,
         'show_templates' => false,
@@ -163,9 +173,7 @@ $roleConfigs = [
         'show_all_batches' => false,
     ],
     'viewer' => [
-        'title' => 'View-Only Dashboard',
-        'icon' => 'eye',
-        'subtitle' => 'Read-only access to departmental data',
+        'title' => 'National Disbursement Operations Center',
         'show_actions' => false,
         'show_beneficiaries' => true,
         'show_templates' => false,
@@ -174,9 +182,7 @@ $roleConfigs = [
         'show_all_batches' => true,
     ],
     'department_head' => [
-        'title' => 'Department Dashboard',
-        'icon' => 'layout',
-        'subtitle' => 'Oversee departmental disbursements',
+        'title' => 'National Disbursement Operations Center',
         'show_actions' => true,
         'show_beneficiaries' => true,
         'show_templates' => true,
@@ -196,97 +202,57 @@ if ($departmentId) {
     $departmentName = $dept['name'] ?? '';
 }
 
-$roleDisplay = ucwords(str_replace('_', ' ', $userRole));
+$roleDisplay = strtoupper($userRole);
+$orgName = htmlspecialchars($user['organization_name'] ?? 'GOVERNMENT OF BOTSWANA');
 
-// ============================================================
-// ICON SYSTEM
-// ============================================================
-function icon($name, $size = 18) {
-    $paths = [
-        'grid' => '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',
-        'compass' => '<circle cx="12" cy="12" r="9"/><path d="m14.5 9.5-2 5-5 2 2-5 5-2Z"/>',
-        'shield' => '<path d="M12 3 5 6v6c0 4.5 3 7.5 7 9 4-1.5 7-4.5 7-9V6l-7-3Z"/>',
-        'shield-check' => '<path d="M12 3 5 6v6c0 4.5 3 7.5 7 9 4-1.5 7-4.5 7-9V6l-7-3Z"/><path d="m9 12 2 2 4-4"/>',
-        'check-circle' => '<circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.5 2.5 4.5-5"/>',
-        'send' => '<path d="M4 11.5 20 4l-6.5 16-3-7-7-1.5Z"/>',
-        'users' => '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c0-3.3 2.5-5.5 5.5-5.5s5.5 2.2 5.5 5.5"/><path d="M15.5 8.2a3 3 0 0 1 0 5.8"/><path d="M17.5 13.5c2.4.4 4 2.3 4 5.5"/>',
-        'eye' => '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.8"/>',
-        'layout' => '<rect x="3" y="3" width="18" height="18" rx="1"/><path d="M3 9h18M9 9v12"/>',
-        'plus-square' => '<rect x="3" y="3" width="18" height="18" rx="1"/><path d="M12 8v8M8 12h8"/>',
-        'layers' => '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>',
-        'file-text' => '<path d="M6 2h9l4 4v16H6V2Z"/><path d="M15 2v4h4M9 12h6M9 16h6M9 8h2"/>',
-        'settings' => '<circle cx="12" cy="12" r="3"/><path d="M19.4 13a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V19a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H4a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H10a1.6 1.6 0 0 0 1-1.5V4a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V10c.1.6.6 1.1 1.5 1H20a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z"/>',
-        'bell' => '<path d="M6 9a6 6 0 1 1 12 0c0 4 1.5 5.5 1.5 5.5H4.5S6 13 6 9Z"/><path d="M9.5 17a2.5 2.5 0 0 0 5 0"/>',
-        'refresh' => '<path d="M20 11A8 8 0 0 0 5.5 6.5L4 8M4 13a8 8 0 0 0 14.5 4.5L20 16"/><path d="M4 4v4h4M20 20v-4h-4"/>',
-        'logout' => '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/>',
-        'currency' => '<circle cx="12" cy="12" r="9"/><path d="M12 6.5v11M15 9.2c0-1.2-1.3-2.2-3-2.2s-3 .8-3 2c0 3 6 1.5 6 4.5 0 1.2-1.3 2-3 2s-3-1-3-2.2"/>',
-        'trending-up' => '<path d="m3 16 6-6 4 4 8-9"/><path d="M15 5h6v6"/>',
-        'clock' => '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
-        'chevron-right' => '<path d="m9 6 6 6-6 6"/>',
-        'inbox' => '<path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 5h13l2.5 7v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-7l2.5-7Z"/>',
-    ];
-    $p = $paths[$name] ?? $paths['grid'];
-    return "<svg width=\"{$size}\" height=\"{$size}\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\">{$p}</svg>";
+function formatCurrency($amount) {
+    return 'BWP ' . number_format($amount, 2);
 }
-
-$roleAccents = [
-    'owner' => 'gold',
-    'department_head' => 'gold',
-    'approver' => 'green',
-    'senior_approver' => 'green',
-    'auditor' => 'blue',
-    'viewer' => 'blue',
-    'program_officer' => 'slate',
-    'beneficiary_registrar' => 'slate',
-];
-$roleAccent = $roleAccents[$userRole] ?? 'slate';
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?php echo htmlspecialchars($config['title']); ?> — VouchMorph</title>
+    <title>VouchMorph · National Disbursement Operations Center</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         /* ============================================================
-           ROOT VARIABLES
+           ROOT VARIABLES - GOVERNMENT OPS CENTER
            ============================================================ */
         :root {
-            --primary-900: #0a1628;
-            --primary-800: #10203a;
-            --gold: #c9972a;
-            --gold-bright: #e0ad3d;
-            --gold-wash: rgba(201, 151, 42, 0.10);
-
-            --success: #1e7a4c;
-            --success-bg: #e8f5ee;
-            --warning: #b5750b;
-            --warning-bg: #fdf3e2;
-            --danger: #b3261e;
-            --danger-bg: #fbeceb;
-            --info: #1e4fd8;
-            --info-bg: #eaefff;
-
-            --surface-0: #ffffff;
-            --surface-50: #f8fafc;
-            --surface-100: #f1f5f9;
-            --surface-200: #e2e8f0;
-            --surface-300: #cbd5e1;
-            --surface-400: #94a3b8;
-            --surface-500: #64748b;
-            --surface-600: #475569;
-            --surface-700: #334155;
-            --surface-800: #1e293b;
-            --surface-900: #0f172a;
-
-            --font-body: 'Inter', sans-serif;
-            --font-mono: 'JetBrains Mono', monospace;
-
-            --sidebar-width: 260px;
-            --header-height: 64px;
-            --transition: all 0.2s ease;
+            --bg-primary: #0D1B2A;
+            --bg-header: #11263F;
+            --bg-surface: #EFF3F7;
+            --bg-white: #FFFFFF;
+            --border-color: #D4DAE2;
+            
+            --text-primary: #0D1B2A;
+            --text-secondary: #4A5568;
+            --text-muted: #718096;
+            --text-white: #FFFFFF;
+            --text-light: #E2E8F0;
+            
+            --gold: #C9972A;
+            --gold-light: #E8D5A3;
+            
+            --success: #107C41;
+            --success-bg: #E6F4ED;
+            --warning: #A15C00;
+            --warning-bg: #FDF1E6;
+            --danger: #C62828;
+            --danger-bg: #FDE8E8;
+            --blue: #005EA2;
+            --blue-bg: #E6F0F8;
+            
+            --font-body: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'IBM Plex Mono', monospace;
+            
+            --sidebar-width: 280px;
+            --header-height: 48px;
+            --status-ribbon-height: 48px;
+            --transition: all 0.15s ease;
         }
 
         /* ============================================================
@@ -296,144 +262,133 @@ $roleAccent = $roleAccents[$userRole] ?? 'slate';
 
         body {
             font-family: var(--font-body);
-            background: var(--surface-100);
-            color: var(--surface-900);
+            background: var(--bg-surface);
+            color: var(--text-primary);
             min-height: 100vh;
+            font-size: 14px;
+            line-height: 1.5;
             -webkit-font-smoothing: antialiased;
         }
 
         ::-webkit-scrollbar { width: 4px; height: 4px; }
-        ::-webkit-scrollbar-track { background: var(--surface-100); }
-        ::-webkit-scrollbar-thumb { background: var(--surface-300); }
+        ::-webkit-scrollbar-track { background: var(--bg-surface); }
+        ::-webkit-scrollbar-thumb { background: var(--border-color); }
 
         /* ============================================================
-           APP LAYOUT - FLEX BASED WITH CENTERED CONTENT
+           APP LAYOUT
            ============================================================ */
-        .app {
-            display: flex;
-            min-height: 100vh;
-        }
+        .app { display: flex; min-height: 100vh; }
 
         /* ============================================================
-           SIDEBAR
+           SIDEBAR - MISSION CONTROL
            ============================================================ */
         .sidebar {
             width: var(--sidebar-width);
-            background: var(--primary-900);
-            color: #dbe1ea;
+            background: var(--bg-primary);
+            color: var(--text-light);
             display: flex;
             flex-direction: column;
             height: 100vh;
             position: sticky;
             top: 0;
             overflow: hidden;
-            border-right: 2px solid var(--gold);
             flex-shrink: 0;
+            border-right: 1px solid rgba(255,255,255,0.05);
         }
 
         .sidebar-header {
-            padding: 24px 20px 20px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            padding: 20px 20px 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
             flex-shrink: 0;
         }
 
         .sidebar-header .logo {
             display: flex;
-            align-items: center;
-            gap: 12px;
+            flex-direction: column;
+            gap: 2px;
         }
 
-        .sidebar-header .logo-icon {
-            width: 38px;
-            height: 38px;
-            background: var(--gold);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 800;
-            font-size: 14px;
-            color: var(--primary-900);
+        .sidebar-header .logo .brand {
             font-family: var(--font-mono);
-            flex-shrink: 0;
-        }
-
-        .sidebar-header h2 {
-            font-size: 17px;
             font-weight: 700;
-            letter-spacing: -0.2px;
-        }
-
-        .sidebar-header h2 em {
-            font-style: normal;
+            font-size: 14px;
+            letter-spacing: 2px;
             color: var(--gold);
         }
 
-        .sidebar-header .org-badge {
-            font-size: 10px;
-            color: #7c8aa3;
-            margin-top: 2px;
+        .sidebar-header .logo .sub {
+            font-size: 9px;
             font-weight: 500;
-            letter-spacing: 0.5px;
+            color: rgba(255,255,255,0.4);
             text-transform: uppercase;
-            border-left: 2px solid var(--gold);
-            padding-left: 10px;
+            letter-spacing: 1.5px;
+        }
+
+        .sidebar-header .org {
+            font-size: 11px;
+            color: rgba(255,255,255,0.6);
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            font-weight: 500;
+            letter-spacing: 0.3px;
         }
 
         .sidebar-nav {
-            padding: 16px 12px;
+            padding: 12px 12px;
             overflow-y: auto;
             flex: 1;
         }
 
-        .sidebar-nav .nav-label {
+        .sidebar-nav .nav-group {
             font-size: 9px;
             text-transform: uppercase;
-            letter-spacing: 1.2px;
-            color: #556280;
-            padding: 12px 12px 8px;
-            font-weight: 700;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-            margin-bottom: 6px;
+            letter-spacing: 1.5px;
+            color: rgba(255,255,255,0.25);
+            padding: 16px 12px 6px;
+            font-weight: 600;
         }
 
         .nav-item {
             display: flex;
             align-items: center;
             gap: 12px;
-            padding: 10px 12px;
-            color: #b7c0d1;
+            padding: 8px 12px;
+            color: rgba(255,255,255,0.55);
             text-decoration: none;
-            font-size: 13.5px;
+            font-size: 13px;
             font-weight: 500;
             transition: var(--transition);
             border-left: 2px solid transparent;
-            margin-bottom: 1px;
+            font-family: var(--font-body);
+            letter-spacing: 0.2px;
         }
 
         .nav-item:hover {
-            background: rgba(255, 255, 255, 0.04);
-            color: #ffffff;
+            background: rgba(255,255,255,0.04);
+            color: rgba(255,255,255,0.85);
         }
 
         .nav-item.active {
-            background: var(--gold-wash);
-            color: var(--gold-bright);
+            background: rgba(201,151,42,0.08);
+            color: var(--gold);
             border-left-color: var(--gold);
         }
 
-        .nav-item .icon-wrap {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 20px;
-            height: 20px;
+        .nav-item .nav-icon {
+            width: 18px;
+            text-align: center;
+            font-size: 14px;
             flex-shrink: 0;
+            opacity: 0.6;
         }
+
+        .nav-item.active .nav-icon { opacity: 1; }
 
         .nav-item .badge {
             margin-left: auto;
             background: var(--gold);
-            color: var(--primary-900);
+            color: var(--bg-primary);
             font-size: 9px;
             font-weight: 700;
             padding: 1px 8px;
@@ -441,27 +396,27 @@ $roleAccent = $roleAccents[$userRole] ?? 'slate';
         }
 
         .sidebar-footer {
-            padding: 16px 20px;
-            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            padding: 12px 16px;
+            border-top: 1px solid rgba(255,255,255,0.05);
             flex-shrink: 0;
         }
 
-        .sidebar-footer .user-card {
+        .sidebar-footer .user-row {
             display: flex;
             align-items: center;
-            gap: 11px;
+            gap: 10px;
         }
 
-        .sidebar-footer .user-avatar {
-            width: 32px;
-            height: 32px;
+        .sidebar-footer .avatar {
+            width: 28px;
+            height: 28px;
             background: var(--gold);
             display: flex;
             align-items: center;
             justify-content: center;
             font-weight: 700;
-            font-size: 12px;
-            color: var(--primary-900);
+            font-size: 11px;
+            color: var(--bg-primary);
             font-family: var(--font-mono);
             flex-shrink: 0;
         }
@@ -472,146 +427,158 @@ $roleAccent = $roleAccents[$userRole] ?? 'slate';
         }
 
         .sidebar-footer .user-info .name {
-            font-size: 12.5px;
+            font-size: 12px;
             font-weight: 600;
-            color: #ffffff;
+            color: rgba(255,255,255,0.85);
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
 
-        .sidebar-footer .user-info .role-line {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            margin-top: 2px;
-            flex-wrap: wrap;
-        }
-
-        .role-chip {
+        .sidebar-footer .user-info .meta {
             font-size: 9px;
-            font-weight: 700;
+            color: rgba(255,255,255,0.35);
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            padding: 2px 8px;
-            font-family: var(--font-mono);
-        }
-
-        .role-chip.gold { background: rgba(201, 151, 42, 0.18); color: var(--gold-bright); }
-        .role-chip.green { background: rgba(30, 122, 76, 0.22); color: #6fd6a3; }
-        .role-chip.blue { background: rgba(30, 79, 216, 0.22); color: #94aeff; }
-        .role-chip.slate { background: rgba(148, 163, 184, 0.18); color: #b7c0d1; }
-
-        .dept-chip {
-            font-size: 9px;
-            color: #7c8aa3;
-            letter-spacing: 0.3px;
         }
 
         .sidebar-footer .logout-link {
-            color: #7c8aa3;
-            display: flex;
-            align-items: center;
+            color: rgba(255,255,255,0.25);
+            text-decoration: none;
+            font-size: 16px;
             transition: var(--transition);
         }
 
-        .sidebar-footer .logout-link:hover {
-            color: var(--gold-bright);
-        }
+        .sidebar-footer .logout-link:hover { color: var(--gold); }
 
         /* ============================================================
-           MAIN CONTENT - CENTERED
+           MAIN CONTENT
            ============================================================ */
         .main {
             flex: 1;
             display: flex;
             flex-direction: column;
             min-height: 100vh;
-            background: var(--surface-100);
+            background: var(--bg-surface);
         }
 
         /* ============================================================
-           TOP BAR
+           STATUS RIBBON - EXECUTIVE STATUS BAR
            ============================================================ */
-        .top-bar {
-            background: var(--surface-0);
-            border-bottom: 1px solid var(--surface-200);
+        .status-ribbon {
+            background: var(--bg-header);
+            color: var(--text-light);
             padding: 0 32px;
+            height: var(--status-ribbon-height);
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 16px;
-            position: sticky;
-            top: 0;
-            z-index: 50;
-            height: var(--header-height);
             flex-shrink: 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
         }
 
-        .top-bar .greeting {
+        .status-ribbon .left {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 24px;
+            font-size: 11px;
         }
 
-        .top-bar .greeting .role-icon {
-            width: 34px;
-            height: 34px;
-            background: var(--surface-100);
-            border: 1px solid var(--surface-200);
+        .status-ribbon .left .org-name {
+            font-weight: 600;
+            color: #FFFFFF;
+            letter-spacing: 0.5px;
+        }
+
+        .status-ribbon .left .sep {
+            color: rgba(255,255,255,0.15);
+        }
+
+        .status-ribbon .left .tag {
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            padding: 2px 10px;
+            border: 1px solid rgba(255,255,255,0.1);
+            font-weight: 600;
+            color: rgba(255,255,255,0.5);
+        }
+
+        .status-ribbon .left .tag.prod {
+            border-color: var(--success);
+            color: #6FCF97;
+        }
+
+        .status-ribbon .right {
             display: flex;
             align-items: center;
-            justify-content: center;
-            color: var(--gold);
-            flex-shrink: 0;
+            gap: 20px;
+            font-size: 10px;
+            color: rgba(255,255,255,0.4);
         }
 
-        .top-bar .greeting .title-group h1 {
-            font-size: 17px;
-            font-weight: 700;
+        .status-ribbon .right .status-dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            margin-right: 4px;
+        }
+
+        .status-ribbon .right .status-dot.online { background: #6FCF97; }
+
+        /* ============================================================
+           TOP BAR - OPERATIONS HEADER
+           ============================================================ */
+        .top-bar {
+            background: var(--bg-white);
+            padding: 12px 32px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0;
+            min-height: 56px;
+        }
+
+        .top-bar .title-section h1 {
+            font-size: 16px;
+            font-weight: 600;
             letter-spacing: -0.2px;
+            font-family: var(--font-body);
         }
 
-        .top-bar .greeting .title-group p {
-            color: var(--surface-500);
-            font-size: 12px;
-        }
-
-        .top-bar .greeting .title-group p .sep {
-            margin: 0 6px;
-            color: var(--surface-300);
+        .top-bar .title-section .sub {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-weight: 400;
         }
 
         .top-bar .actions {
             display: flex;
             align-items: center;
-            gap: 8px;
-            flex-shrink: 0;
+            gap: 12px;
         }
 
-        .top-bar .datetime {
-            font-size: 11.5px;
-            color: var(--surface-500);
-            font-weight: 500;
+        .top-bar .actions .time {
             font-family: var(--font-mono);
-            border: 1px solid var(--surface-200);
-            padding: 6px 12px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
+            font-size: 12px;
+            color: var(--text-muted);
+            font-weight: 500;
         }
 
         .top-bar .btn-icon {
-            width: 34px;
-            height: 34px;
-            border: 1px solid var(--surface-200);
-            background: var(--surface-0);
+            width: 30px;
+            height: 30px;
+            background: none;
+            border: 1px solid var(--border-color);
             display: flex;
             align-items: center;
             justify-content: center;
             cursor: pointer;
             transition: var(--transition);
-            color: var(--surface-600);
+            color: var(--text-muted);
+            font-size: 14px;
         }
 
         .top-bar .btn-icon:hover {
@@ -623,304 +590,345 @@ $roleAccent = $roleAccents[$userRole] ?? 'slate';
             display: none;
             background: none;
             border: none;
-            color: var(--surface-700);
-            font-size: 22px;
+            color: var(--text-primary);
+            font-size: 20px;
             cursor: pointer;
             padding: 4px;
         }
 
         /* ============================================================
-           DASHBOARD CONTENT - PERFECTLY CENTERED
+           DASHBOARD CONTENT
            ============================================================ */
         .dashboard-content {
             flex: 1;
-            padding: 28px 32px 0;
-            max-width: 1440px;
+            padding: 24px 32px 0;
+            max-width: 1600px;
             width: 100%;
             margin: 0 auto;
             display: flex;
             flex-direction: column;
-            gap: 24px;
         }
 
-        /* ============================================================
-           CONTENT WRAPPER - ANCHORS FOOTER TO BOTTOM
-           ============================================================ */
         .content-wrapper {
             flex: 1;
             display: flex;
             flex-direction: column;
-            gap: 24px;
         }
 
         /* ============================================================
-           STATS GRID
+           MISSION STATUS - 6-COLUMN KPI GRID
            ============================================================ */
-        .stats-grid {
+        .mission-status {
             display: grid;
-            grid-template-columns: 1.4fr 1fr 1fr 1fr;
-            gap: 16px;
-        }
-
-        .stat-card {
-            background: var(--surface-0);
-            border: 1px solid var(--surface-200);
-            padding: 20px 22px;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            transition: var(--transition);
-        }
-
-        .stat-card:hover {
-            border-color: var(--surface-300);
-        }
-
-        .stat-card.primary {
-            border-top: 2px solid var(--gold);
-        }
-
-        .stat-card .stat-top {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-        }
-
-        .stat-card .stat-icon {
-            width: 30px;
-            height: 30px;
-            border: 1px solid var(--surface-200);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: var(--surface-100);
-            color: var(--surface-600);
-            flex-shrink: 0;
-        }
-
-        .stat-card .stat-icon.gold {
-            background: var(--gold-wash);
-            color: var(--gold);
-            border-color: rgba(201, 151, 42, 0.3);
-        }
-
-        .stat-card .stat-icon.green {
-            background: var(--success-bg);
-            color: var(--success);
-            border-color: rgba(30, 122, 76, 0.25);
-        }
-
-        .stat-card .stat-icon.warn {
-            background: var(--warning-bg);
-            color: var(--warning);
-            border-color: rgba(181, 117, 11, 0.25);
-        }
-
-        .stat-card .stat-icon.blue {
-            background: var(--info-bg);
-            color: var(--info);
-            border-color: rgba(30, 79, 216, 0.25);
-        }
-
-        .stat-card .stat-value {
-            font-size: 26px;
-            font-weight: 800;
-            letter-spacing: -0.5px;
-            font-family: var(--font-mono);
-            line-height: 1.1;
-        }
-
-        .stat-card .stat-label {
-            color: var(--surface-500);
-            font-size: 12px;
-            font-weight: 500;
-        }
-
-        .stat-card .stat-label .sep {
-            color: var(--surface-300);
-            margin: 0 4px;
-        }
-
-        /* ============================================================
-           QUICK ACTIONS
-           ============================================================ */
-        .quick-actions {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-
-        .action-btn {
-            padding: 10px 20px;
-            font-weight: 600;
-            font-size: 12.5px;
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            transition: var(--transition);
-            border: 1px solid transparent;
-            cursor: pointer;
-        }
-
-        .action-btn.primary {
-            background: var(--primary-900);
-            color: #ffffff;
-            border-color: var(--primary-900);
-        }
-
-        .action-btn.primary:hover {
-            background: var(--gold);
-            border-color: var(--gold);
-            color: var(--primary-900);
-        }
-
-        .action-btn.secondary {
-            background: var(--surface-0);
-            color: var(--surface-700);
-            border-color: var(--surface-200);
-        }
-
-        .action-btn.secondary:hover {
-            border-color: var(--surface-400);
-            background: var(--surface-50);
-        }
-
-        /* ============================================================
-           CARD
-           ============================================================ */
-        .card {
-            background: var(--surface-0);
-            border: 1px solid var(--surface-200);
-            overflow: hidden;
-        }
-
-        .card-header {
-            padding: 14px 20px;
-            border-bottom: 1px solid var(--surface-200);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            grid-template-columns: repeat(6, 1fr);
             gap: 12px;
-            background: var(--surface-50);
+            margin-bottom: 20px;
+        }
+
+        .kpi-panel {
+            background: var(--bg-white);
+            border: 1px solid var(--border-color);
+            padding: 14px 16px;
+        }
+
+        .kpi-panel .kpi-label {
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+
+        .kpi-panel .kpi-value {
+            font-family: var(--font-mono);
+            font-size: 22px;
+            font-weight: 700;
+            margin-top: 2px;
+            letter-spacing: -0.5px;
+        }
+
+        .kpi-panel .kpi-trend {
+            font-size: 10px;
+            font-weight: 600;
+            margin-top: 2px;
+        }
+
+        .kpi-panel .kpi-trend.up { color: var(--success); }
+        .kpi-panel .kpi-trend.down { color: var(--danger); }
+        .kpi-panel .kpi-trend.neutral { color: var(--text-muted); }
+
+        /* ============================================================
+           SYSTEM HEALTH - HORIZONTAL STATUS ROW
+           ============================================================ */
+        .system-health {
+            display: flex;
+            gap: 24px;
+            padding: 12px 16px;
+            background: var(--bg-white);
+            border: 1px solid var(--border-color);
+            margin-bottom: 20px;
             flex-wrap: wrap;
         }
 
-        .card-header h3 {
-            font-size: 13px;
-            font-weight: 700;
+        .system-health .health-item {
             display: flex;
             align-items: center;
             gap: 8px;
-            letter-spacing: -0.1px;
-        }
-
-        .card-header h3 .icon-wrap {
-            color: var(--gold);
-            display: flex;
-            align-items: center;
-        }
-
-        .card-header .view-all {
-            color: var(--surface-600);
-            text-decoration: none;
-            font-weight: 600;
-            font-size: 12px;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            transition: var(--transition);
-        }
-
-        .card-header .view-all:hover {
-            color: var(--gold);
-        }
-
-        /* ============================================================
-           TABLE
-           ============================================================ */
-        .table-wrap {
-            overflow-x: auto;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            min-width: 580px;
-        }
-
-        th, td {
-            padding: 12px 20px;
-            text-align: left;
-            border-bottom: 1px solid var(--surface-100);
-            font-size: 13px;
-        }
-
-        th {
-            background: var(--surface-50);
-            font-weight: 700;
-            font-size: 10px;
-            color: var(--surface-500);
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            border-bottom: 2px solid var(--surface-200);
-        }
-
-        tr:last-child td { border-bottom: none; }
-        tr:hover td { background: var(--surface-50); }
-
-        .status {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 3px 10px;
             font-size: 11px;
-            font-weight: 600;
+            font-weight: 500;
+            color: var(--text-secondary);
         }
 
-        .status .dot {
+        .system-health .health-item .dot {
             width: 6px;
             height: 6px;
             border-radius: 50%;
         }
 
-        .status.completed { background: var(--success-bg); color: var(--success); }
-        .status.completed .dot { background: var(--success); }
+        .system-health .health-item .dot.online { background: var(--success); }
+        .system-health .health-item .dot.warning { background: var(--warning); }
+        .system-health .health-item .dot.offline { background: var(--danger); }
 
-        .status.processing { background: var(--warning-bg); color: var(--warning); }
-        .status.processing .dot { background: var(--warning); animation: pulse 1.6s infinite; }
-
-        .status.ready_for_approval { background: var(--info-bg); color: var(--info); }
-        .status.ready_for_approval .dot { background: var(--info); }
-
-        .status.failed { background: var(--danger-bg); color: var(--danger); }
-        .status.failed .dot { background: var(--danger); }
-
-        .status.draft { background: var(--surface-100); color: var(--surface-500); }
-        .status.draft .dot { background: var(--surface-400); }
-
-        @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.35;} }
-
-        .view-link {
-            color: var(--surface-600);
-            text-decoration: none;
-            font-weight: 600;
-            font-size: 12px;
-            display: inline-flex;
-            align-items: center;
-            gap: 3px;
-            transition: var(--transition);
+        /* ============================================================
+           TWO-COLUMN MIDDLE SECTION
+           ============================================================ */
+        .middle-grid {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 16px;
+            margin-bottom: 20px;
         }
 
-        .view-link:hover { color: var(--gold); }
+        /* ============================================================
+           PANEL - Generic Panel
+           ============================================================ */
+        .panel {
+            background: var(--bg-white);
+            border: 1px solid var(--border-color);
+            overflow: hidden;
+        }
 
-        code {
-            background: var(--surface-100);
-            padding: 2px 8px;
+        .panel-header {
+            padding: 10px 16px;
+            background: var(--bg-surface);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+        }
+
+        .panel-header .badge-count {
+            background: var(--bg-primary);
+            color: white;
+            font-size: 9px;
+            padding: 1px 8px;
+            font-family: var(--font-mono);
+        }
+
+        .panel-body {
+            padding: 12px 16px;
+        }
+
+        /* ============================================================
+           APPROVAL QUEUE
+           ============================================================ */
+        .approval-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 13px;
+        }
+
+        .approval-item:last-child { border-bottom: none; }
+
+        .approval-item .ref {
             font-family: var(--font-mono);
             font-size: 11px;
             font-weight: 600;
-            color: var(--surface-700);
+            color: var(--text-secondary);
+        }
+
+        .approval-item .amount {
+            font-family: var(--font-mono);
+            font-weight: 600;
+        }
+
+        .approval-item .status-tag {
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 2px 8px;
+            font-weight: 600;
+        }
+
+        .approval-item .status-tag.pending { background: var(--warning-bg); color: var(--warning); }
+        .approval-item .status-tag.threshold { background: var(--danger-bg); color: var(--danger); }
+
+        /* ============================================================
+           PIPELINE STATUS
+           ============================================================ */
+        .pipeline-steps {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+            padding: 8px 0;
+        }
+
+        .pipeline-steps .step {
+            flex: 1;
+            padding: 6px 8px;
+            text-align: center;
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+        }
+
+        .pipeline-steps .step.active {
+            background: var(--blue-bg);
+            border-color: var(--blue);
+            color: var(--blue);
+        }
+
+        .pipeline-steps .step.done {
+            background: var(--success-bg);
+            border-color: var(--success);
+            color: var(--success);
+        }
+
+        .pipeline-progress {
+            height: 4px;
+            background: var(--border-color);
+            margin: 8px 0 4px;
+            position: relative;
+        }
+
+        .pipeline-progress .fill {
+            height: 100%;
+            background: var(--success);
+            width: 72%;
+        }
+
+        /* ============================================================
+           LIVE OPERATIONS FEED
+           ============================================================ */
+        .feed-item {
+            display: flex;
+            gap: 12px;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .feed-item:last-child { border-bottom: none; }
+
+        .feed-item .time {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+            width: 50px;
+        }
+
+        .feed-item .event {
+            flex: 1;
+        }
+
+        .feed-item .event strong { color: var(--text-primary); }
+
+        .feed-item .badge-live {
+            font-size: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--success);
+            font-weight: 600;
+            animation: pulse-live 2s infinite;
+        }
+
+        @keyframes pulse-live {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        /* ============================================================
+           BOTTOM STATUS GRID
+           ============================================================ */
+        .bottom-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        /* ============================================================
+           TABLE - DENSE GOVERNMENT STYLE
+           ============================================================ */
+        .table-wrap { overflow-x: auto; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        th, td {
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        th {
+            background: var(--bg-surface);
+            font-weight: 600;
+            font-size: 9px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        tr:hover td { background: var(--bg-surface); }
+
+        .status-badge {
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 2px 8px;
+            font-weight: 600;
+        }
+
+        .status-badge.completed { background: var(--success-bg); color: var(--success); }
+        .status-badge.processing { background: var(--warning-bg); color: var(--warning); }
+        .status-badge.pending { background: var(--blue-bg); color: var(--blue); }
+        .status-badge.failed { background: var(--danger-bg); color: var(--danger); }
+        .status-badge.draft { background: var(--border-color); color: var(--text-muted); }
+
+        .action-link {
+            color: var(--blue);
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 11px;
+        }
+
+        .action-link:hover { text-decoration: underline; }
+
+        code {
+            background: var(--bg-surface);
+            padding: 1px 6px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-secondary);
         }
 
         /* ============================================================
@@ -928,65 +936,35 @@ $roleAccent = $roleAccents[$userRole] ?? 'slate';
            ============================================================ */
         .empty-state {
             text-align: center;
-            padding: 48px 20px;
-            color: var(--surface-500);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 8px;
+            padding: 32px 16px;
+            color: var(--text-muted);
         }
 
-        .empty-state .icon-wrap { color: var(--surface-300); }
-        .empty-state h4 { font-size: 15px; color: var(--surface-700); font-weight: 600; }
-        .empty-state p { font-size: 13px; }
-        .empty-state a { color: var(--gold); text-decoration: none; font-weight: 600; font-size: 13px; transition: var(--transition); }
-        .empty-state a:hover { text-decoration: underline; }
+        .empty-state .icon { font-size: 32px; margin-bottom: 8px; display: block; }
+        .empty-state h4 { font-size: 14px; color: var(--text-secondary); font-weight: 600; }
+        .empty-state p { font-size: 12px; }
+        .empty-state a { color: var(--blue); text-decoration: none; font-weight: 600; }
 
         /* ============================================================
-           WIDGETS
-           ============================================================ */
-        .widget-card { border-left: 3px solid; }
-        .widget-card.warn { border-left-color: var(--warning); }
-        .widget-card.blue { border-left-color: var(--info); }
-        .widget-card .card-header.warn-bg { background: var(--warning-bg); }
-        .widget-card .card-header.blue-bg { background: var(--info-bg); }
-
-        .widget-body {
-            padding: 16px 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .widget-body p {
-            color: var(--surface-600);
-            font-size: 13px;
-            line-height: 1.6;
-        }
-
-        .widget-body strong { color: var(--surface-900); }
-
-        /* ============================================================
-           FOOTER - ANCHORED TO BOTTOM
+           FOOTER
            ============================================================ */
         .page-footer {
             margin-top: auto;
-            padding: 20px 0 24px;
+            padding: 12px 0 16px;
             text-align: center;
-            color: var(--surface-400);
-            font-size: 10px;
-            letter-spacing: 0.4px;
+            color: var(--text-muted);
+            font-size: 9px;
+            letter-spacing: 0.5px;
+            border-top: 1px solid var(--border-color);
+            font-weight: 500;
             text-transform: uppercase;
-            border-top: 1px solid var(--surface-200);
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
         }
 
         .page-footer .role-line {
-            font-size: 9px;
-            letter-spacing: 0.8px;
-            color: var(--surface-400);
+            font-size: 8px;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-top: 2px;
         }
 
         /* ============================================================
@@ -996,19 +974,19 @@ $roleAccent = $roleAccents[$userRole] ?? 'slate';
             display: none;
             position: fixed;
             inset: 0;
-            background: rgba(0, 0, 0, 0.4);
+            background: rgba(0,0,0,0.5);
             z-index: 99;
             cursor: pointer;
         }
-
         .sidebar-overlay.active { display: block; }
 
         /* ============================================================
            RESPONSIVE
            ============================================================ */
         @media (max-width: 1200px) {
-            .stats-grid { grid-template-columns: 1fr 1fr; }
-            .dashboard-content { padding: 24px 24px 0; }
+            .mission-status { grid-template-columns: repeat(3, 1fr); }
+            .bottom-grid { grid-template-columns: 1fr 1fr; }
+            .middle-grid { grid-template-columns: 1fr; }
         }
 
         @media (max-width: 992px) {
@@ -1020,125 +998,72 @@ $roleAccent = $roleAccents[$userRole] ?? 'slate';
                 width: 280px;
                 height: 100vh;
                 z-index: 100;
-                transition: transform 0.3s ease;
+                transition: transform 0.25s ease;
             }
             .sidebar.open { transform: translateX(0); }
             .menu-toggle { display: block; }
 
-            .top-bar { padding: 0 20px; }
-            .top-bar .greeting .title-group h1 { font-size: 15px; }
-            .top-bar .datetime { font-size: 10px; padding: 4px 8px; }
+            .status-ribbon { padding: 0 16px; }
+            .status-ribbon .left { gap: 12px; font-size: 10px; }
+            .status-ribbon .right { gap: 12px; font-size: 9px; }
 
-            .dashboard-content { padding: 20px 20px 0; }
-            .stats-grid { gap: 12px; }
-            .stat-card .stat-value { font-size: 20px; }
+            .top-bar { padding: 10px 16px; flex-wrap: wrap; gap: 8px; }
+            .top-bar .title-section h1 { font-size: 14px; }
+
+            .dashboard-content { padding: 16px 16px 0; }
+
+            .mission-status { grid-template-columns: repeat(2, 1fr); }
+            .bottom-grid { grid-template-columns: 1fr; }
         }
 
         @media (max-width: 640px) {
-            .top-bar {
-                padding: 0 16px;
-                flex-direction: column;
-                height: auto;
-                min-height: var(--header-height);
-                gap: 8px;
-                align-items: stretch;
-            }
-            .top-bar .greeting { flex-wrap: wrap; }
-            .top-bar .greeting .title-group h1 { font-size: 14px; }
-            .top-bar .greeting .title-group p { font-size: 11px; }
+            .status-ribbon { height: auto; padding: 8px 16px; flex-wrap: wrap; gap: 4px; }
+            .status-ribbon .left .tag { display: none; }
+
+            .top-bar { flex-direction: column; align-items: stretch; }
             .top-bar .actions { justify-content: flex-end; }
-            .top-bar .datetime { font-size: 9px; padding: 3px 8px; }
-            .top-bar .btn-icon { width: 28px; height: 28px; }
 
-            .dashboard-content { padding: 16px 16px 0; gap: 16px; }
-            .stats-grid { grid-template-columns: 1fr; gap: 10px; }
-            .stat-card { padding: 14px 16px; }
-            .stat-card .stat-value { font-size: 22px; }
+            .mission-status { grid-template-columns: 1fr 1fr; gap: 8px; }
+            .kpi-panel { padding: 10px 12px; }
+            .kpi-panel .kpi-value { font-size: 18px; }
 
-            .quick-actions { flex-direction: column; }
-            .action-btn { width: 100%; justify-content: center; }
+            .system-health { gap: 12px; }
+            .system-health .health-item { font-size: 10px; }
 
-            .card-header {
-                padding: 10px 14px;
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 4px;
-            }
-            .card-header h3 { font-size: 12px; }
-
-            th, td { padding: 8px 12px; font-size: 11px; }
-            .status { font-size: 10px; padding: 2px 8px; }
-            .view-link { font-size: 10px; }
-            code { font-size: 9px; padding: 1px 6px; }
-
-            .widget-body { padding: 12px 14px; }
-            .widget-body p { font-size: 12px; }
-
-            .page-footer {
-                padding: 16px 0 20px;
-                font-size: 8px;
-            }
-            .page-footer .role-line { font-size: 8px; }
-
-            .empty-state { padding: 32px 16px; }
-            .empty-state h4 { font-size: 14px; }
-            .empty-state p { font-size: 12px; }
+            .dashboard-content { padding: 12px 12px 0; }
+            th, td { padding: 6px 8px; font-size: 10px; }
         }
 
-        @media (max-width: 360px) {
-            .top-bar .greeting .title-group h1 { font-size: 12px; }
-            .top-bar .greeting .title-group p { font-size: 10px; }
-            .stat-card .stat-value { font-size: 18px; }
-            .stat-card .stat-label { font-size: 10px; }
-            th, td { padding: 6px 8px; font-size: 10px; }
-            .status { font-size: 9px; padding: 1px 6px; }
+        @media (max-width: 400px) {
+            .mission-status { grid-template-columns: 1fr 1fr; }
+            .kpi-panel .kpi-value { font-size: 16px; }
         }
 
         @media (min-width: 1920px) {
-            .dashboard-content { padding: 40px 60px 0; max-width: 1800px; gap: 32px; }
-            .stats-grid { gap: 24px; }
-            .stat-card { padding: 28px 32px; }
-            .stat-card .stat-value { font-size: 36px; }
-            .stat-card .stat-label { font-size: 14px; }
-            .top-bar { padding: 0 48px; height: 80px; }
-            .top-bar .greeting .title-group h1 { font-size: 22px; }
-            .top-bar .greeting .title-group p { font-size: 14px; }
-            th, td { padding: 16px 28px; font-size: 15px; }
-            .card-header { padding: 18px 28px; }
-            .card-header h3 { font-size: 16px; }
-            .action-btn { padding: 14px 28px; font-size: 14px; }
-            .page-footer { padding: 28px 0 32px; font-size: 12px; }
+            .dashboard-content { padding: 32px 48px 0; max-width: 1800px; }
+            .mission-status { gap: 16px; }
+            .kpi-panel { padding: 18px 22px; }
+            .kpi-panel .kpi-value { font-size: 28px; }
         }
 
         @media (prefers-color-scheme: dark) {
             :root {
-                --surface-0: #1a1a1a;
-                --surface-50: #222222;
-                --surface-100: #2a2a2a;
-                --surface-200: #333333;
-                --surface-300: #444444;
-                --surface-400: #666666;
-                --surface-500: #888888;
-                --surface-600: #aaaaaa;
-                --surface-700: #cccccc;
-                --surface-800: #dddddd;
-                --surface-900: #eeeeee;
+                --bg-surface: #1A1A2E;
+                --bg-white: #16213E;
+                --border-color: #2A3A5E;
+                --text-primary: #E2E8F0;
+                --text-secondary: #A0AEC0;
+                --text-muted: #718096;
             }
-            .top-bar { background: #1e1e1e; border-color: #333333; }
-            .top-bar .greeting .role-icon { background: #2a2a2a; border-color: #333333; }
-            .stat-card { background: #1e1e1e; border-color: #333333; }
-            .stat-card .stat-icon { background: #2a2a2a; border-color: #333333; }
-            .card { background: #1e1e1e; border-color: #333333; }
-            .card-header { background: #252525; border-color: #333333; }
-            th { background: #252525; }
-            .action-btn.secondary { background: #2a2a2a; border-color: #333333; color: #cccccc; }
-            .action-btn.secondary:hover { background: #333333; }
-            code { background: #2a2a2a; color: #aaaaaa; }
-            .sidebar { background: #0a0a0a; }
-            .sidebar-footer .user-info .name { color: #dddddd; }
-            .widget-card .card-header.warn-bg { background: #2a2215; }
-            .widget-card .card-header.blue-bg { background: #15203a; }
-            .page-footer { border-color: #333333; }
+            .top-bar { background: #16213E; }
+            .panel-header { background: #1A1A2E; }
+            th { background: #1A1A2E; }
+            .kpi-panel { background: #16213E; }
+            .panel { background: #16213E; }
+            .status-ribbon { background: #0D1B2A; }
+            .system-health { background: #16213E; }
+            .page-footer { border-color: #2A3A5E; }
+            .approval-item .ref { color: #A0AEC0; }
         }
     </style>
 </head>
@@ -1151,165 +1076,271 @@ $roleAccent = $roleAccents[$userRole] ?? 'slate';
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <div class="logo">
-                    <div class="logo-icon">VM</div>
-                    <div>
-                        <h2>VouchMorph <em>Enterprise</em></h2>
-                        <div class="org-badge"><?php echo htmlspecialchars($user['organization_name'] ?? 'Government'); ?></div>
-                    </div>
+                    <div class="brand">VOUCHMORPH</div>
+                    <div class="sub">National Disbursement Platform</div>
                 </div>
+                <div class="org"><?php echo $orgName; ?></div>
             </div>
 
             <nav class="sidebar-nav">
-                <div class="nav-label">Main</div>
+                <div class="nav-group">Mission Control</div>
                 <a href="index.php" class="nav-item active">
-                    <span class="icon-wrap"><?php echo icon('grid'); ?></span>
-                    <span>Command Center</span>
+                    <span class="nav-icon">◆</span> Command Center
                 </a>
 
+                <div class="nav-group">Operations</div>
                 <?php if ($config['show_actions']): ?>
                 <a href="imports/upload.php" class="nav-item">
-                    <span class="icon-wrap"><?php echo icon('plus-square'); ?></span>
-                    <span>New Disbursement</span>
+                    <span class="nav-icon">◈</span> Disbursements
                 </a>
                 <?php endif; ?>
-
                 <a href="batches/index.php" class="nav-item">
-                    <span class="icon-wrap"><?php echo icon('layers'); ?></span>
-                    <span>Batches</span>
+                    <span class="nav-icon">▦</span> Batches
                     <?php if ($stats['pending'] > 0 && in_array($userRole, ['approver', 'senior_approver', 'owner'])): ?>
                     <span class="badge"><?php echo $stats['pending']; ?></span>
                     <?php endif; ?>
                 </a>
-
                 <?php if ($config['show_beneficiaries']): ?>
                 <a href="beneficiaries/index.php" class="nav-item">
-                    <span class="icon-wrap"><?php echo icon('users'); ?></span>
-                    <span>Beneficiaries</span>
+                    <span class="nav-icon">◈</span> Beneficiaries
                 </a>
                 <?php endif; ?>
-
-                <?php if ($config['show_templates'] || $config['show_reports'] || $config['show_settings']): ?>
-                <div class="nav-label">Management</div>
-                <?php endif; ?>
-
-                <?php if ($config['show_templates']): ?>
-                <a href="templates/index.php" class="nav-item">
-                    <span class="icon-wrap"><?php echo icon('file-text'); ?></span>
-                    <span>Templates</span>
+                <a href="programs/index.php" class="nav-item">
+                    <span class="nav-icon">▣</span> Programs
                 </a>
-                <?php endif; ?>
+                <a href="departments/index.php" class="nav-item">
+                    <span class="nav-icon">▤</span> Departments
+                </a>
 
-                <?php if ($config['show_reports']): ?>
+                <div class="nav-group">Approvals</div>
+                <a href="batches/index.php?filter=pending" class="nav-item">
+                    <span class="nav-icon">◉</span> Pending Queue
+                    <?php if ($stats['pending'] > 0): ?>
+                    <span class="badge"><?php echo $stats['pending']; ?></span>
+                    <?php endif; ?>
+                </a>
+                <a href="batches/index.php?filter=threshold" class="nav-item">
+                    <span class="nav-icon">⬡</span> Threshold Review
+                </a>
+                <a href="batches/index.php?filter=executed" class="nav-item">
+                    <span class="nav-icon">▸</span> Executed
+                </a>
+                <a href="batches/index.php?filter=rejected" class="nav-item">
+                    <span class="nav-icon">╳</span> Rejected
+                </a>
+
+                <div class="nav-group">Governance</div>
+                <a href="reports/audit_trail.php" class="nav-item">
+                    <span class="nav-icon">◧</span> Audit
+                </a>
+                <a href="reports/compliance.php" class="nav-item">
+                    <span class="nav-icon">◨</span> Compliance
+                </a>
                 <a href="reports/index.php" class="nav-item">
-                    <span class="icon-wrap"><?php echo icon('trending-up'); ?></span>
-                    <span>Reports</span>
+                    <span class="nav-icon">▥</span> Reports
                 </a>
-                <?php endif; ?>
 
+                <div class="nav-group">System</div>
+                <a href="testgov.php" class="nav-item">
+                    <span class="nav-icon">◈</span> Diagnostics
+                </a>
                 <?php if ($config['show_settings']): ?>
                 <a href="settings/index.php" class="nav-item">
-                    <span class="icon-wrap"><?php echo icon('settings'); ?></span>
-                    <span>Settings</span>
+                    <span class="nav-icon">◆</span> Configuration
                 </a>
                 <?php endif; ?>
             </nav>
 
             <div class="sidebar-footer">
-                <div class="user-card">
-                    <div class="user-avatar"><?php echo strtoupper(substr($user['full_name'] ?? $user['email'], 0, 2)); ?></div>
+                <div class="user-row">
+                    <div class="avatar"><?php echo strtoupper(substr($user['full_name'] ?? $user['email'], 0, 1)); ?></div>
                     <div class="user-info">
                         <div class="name"><?php echo htmlspecialchars($user['full_name'] ?? $user['email']); ?></div>
-                        <div class="role-line">
-                            <span class="role-chip <?php echo $roleAccent; ?>"><?php echo htmlspecialchars($roleDisplay); ?></span>
-                            <?php if ($departmentName): ?>
-                            <span class="dept-chip"><?php echo htmlspecialchars($departmentName); ?></span>
-                            <?php endif; ?>
-                        </div>
+                        <div class="meta"><?php echo $roleDisplay; ?> <?php if ($departmentName): ?>· <?php echo htmlspecialchars($departmentName); ?><?php endif; ?></div>
                     </div>
-                    <a href="logout.php" class="logout-link" title="Sign out"><?php echo icon('logout', 17); ?></a>
+                    <a href="logout.php" class="logout-link" title="Sign out">↗</a>
                 </div>
             </div>
         </aside>
 
         <!-- Main Content -->
         <main class="main">
+            <!-- Status Ribbon -->
+            <div class="status-ribbon">
+                <div class="left">
+                    <span class="org-name"><?php echo $orgName; ?></span>
+                    <span class="sep">|</span>
+                    <span>VOUCHMORPH NATIONAL DISBURSEMENT PLATFORM</span>
+                    <span class="sep">|</span>
+                    <span class="tag prod">● PRODUCTION</span>
+                    <span class="tag">SECURE</span>
+                </div>
+                <div class="right">
+                    <span>SESSION ACTIVE</span>
+                    <span class="sep">|</span>
+                    <span><span class="status-dot online"></span> 98% READY</span>
+                    <span class="sep">|</span>
+                    <span><?php echo date('H:i T'); ?></span>
+                </div>
+            </div>
+
             <!-- Top Bar -->
             <div class="top-bar">
-                <div class="greeting">
-                    <button class="menu-toggle" id="menuToggle" onclick="toggleSidebar()" aria-label="Toggle menu">☰</button>
-                    <div class="role-icon"><?php echo icon($config['icon'], 19); ?></div>
-                    <div class="title-group">
-                        <h1><?php echo htmlspecialchars($config['title']); ?></h1>
-                        <p>
-                            <?php echo htmlspecialchars($user['organization_name']); ?>
-                            <?php if ($departmentName): ?>
-                            <span class="sep">&middot;</span><?php echo htmlspecialchars($departmentName); ?>
-                            <?php endif; ?>
-                            <span class="sep">&middot;</span><?php echo date('l, F j, Y'); ?>
-                        </p>
-                    </div>
+                <div class="title-section">
+                    <button class="menu-toggle" id="menuToggle" onclick="toggleSidebar()" aria-label="Toggle menu">≡</button>
+                    <h1>National Disbursement Operations Center</h1>
+                    <div class="sub"><?php echo $orgName; ?> · <?php echo date('l, F j, Y'); ?></div>
                 </div>
                 <div class="actions">
-                    <span class="datetime"><?php echo icon('clock', 13); ?><?php echo date('H:i T'); ?></span>
-                    <button class="btn-icon" title="Notifications" onclick="alert('No new notifications')"><?php echo icon('bell', 16); ?></button>
-                    <button class="btn-icon" title="Refresh" onclick="location.reload()"><?php echo icon('refresh', 16); ?></button>
+                    <span class="time">UTC+2</span>
+                    <button class="btn-icon" title="Refresh" onclick="location.reload()">⟳</button>
+                    <button class="btn-icon" title="Notifications" onclick="alert('No new notifications')">◉</button>
                 </div>
             </div>
 
             <!-- Dashboard Content -->
             <div class="dashboard-content">
                 <div class="content-wrapper">
-                    <!-- Stats Grid -->
-                    <div class="stats-grid">
-                        <div class="stat-card primary">
-                            <div class="stat-top">
-                                <div class="stat-icon gold"><?php echo icon('currency', 17); ?></div>
-                            </div>
-                            <div class="stat-value">BWP <?php echo number_format($stats['disbursed'], 2); ?></div>
-                            <div class="stat-label">Disbursed this month</div>
+                    <!-- MISSION STATUS - 6 KPIs -->
+                    <div class="mission-status">
+                        <div class="kpi-panel">
+                            <div class="kpi-label">Disbursed</div>
+                            <div class="kpi-value"><?php echo formatCurrency($stats['disbursed']); ?></div>
+                            <div class="kpi-trend up">▲ 8.2% vs previous</div>
                         </div>
-
-                        <div class="stat-card">
-                            <div class="stat-top">
-                                <div class="stat-icon green"><?php echo icon('trending-up', 17); ?></div>
-                            </div>
-                            <div class="stat-value"><?php echo number_format($stats['success_rate'], 2); ?>%</div>
-                            <div class="stat-label">Success rate <span class="sep">&middot;</span> <?php echo number_format($stats['successful_payments']); ?> payments</div>
+                        <div class="kpi-panel">
+                            <div class="kpi-label">Success Rate</div>
+                            <div class="kpi-value"><?php echo number_format($stats['success_rate'], 2); ?>%</div>
+                            <div class="kpi-trend up">▲ 0.02% · 0 failed</div>
                         </div>
-
-                        <div class="stat-card">
-                            <div class="stat-top">
-                                <div class="stat-icon warn"><?php echo icon('clock', 17); ?></div>
-                            </div>
-                            <div class="stat-value"><?php echo number_format($stats['pending']); ?></div>
-                            <div class="stat-label">Pending approval</div>
+                        <div class="kpi-panel">
+                            <div class="kpi-label">Approvals</div>
+                            <div class="kpi-value"><?php echo number_format($stats['pending']); ?></div>
+                            <div class="kpi-trend neutral">Waiting</div>
                         </div>
-
-                        <div class="stat-card">
-                            <div class="stat-top">
-                                <div class="stat-icon blue"><?php echo icon('users', 17); ?></div>
-                            </div>
-                            <div class="stat-value"><?php echo number_format($stats['beneficiaries']); ?></div>
-                            <div class="stat-label">Active beneficiaries</div>
+                        <div class="kpi-panel">
+                            <div class="kpi-label">Beneficiaries</div>
+                            <div class="kpi-value"><?php echo number_format($stats['beneficiaries']); ?></div>
+                            <div class="kpi-trend up">Eligible</div>
+                        </div>
+                        <div class="kpi-panel">
+                            <div class="kpi-label">Programs</div>
+                            <div class="kpi-value"><?php echo number_format($stats['programs']); ?></div>
+                            <div class="kpi-trend up">Active</div>
+                        </div>
+                        <div class="kpi-panel">
+                            <div class="kpi-label">Departments</div>
+                            <div class="kpi-value"><?php echo number_format($stats['departments']); ?></div>
+                            <div class="kpi-trend up">Connected</div>
                         </div>
                     </div>
 
-                    <!-- Quick Actions -->
-                    <?php if ($config['show_actions']): ?>
-                    <div class="quick-actions">
-                        <a href="imports/upload.php" class="action-btn primary"><?php echo icon('plus-square', 15); ?>New Disbursement</a>
-                        <a href="beneficiaries/import.php" class="action-btn secondary"><?php echo icon('users', 15); ?>Import Beneficiaries</a>
-                        <a href="templates/index.php" class="action-btn secondary"><?php echo icon('file-text', 15); ?>Templates</a>
-                        <a href="reports/index.php" class="action-btn secondary"><?php echo icon('trending-up', 15); ?>Reports</a>
+                    <!-- SYSTEM HEALTH -->
+                    <div class="system-health">
+                        <span class="health-item"><span class="dot online"></span> Database</span>
+                        <span class="health-item"><span class="dot online"></span> Identity Router</span>
+                        <span class="health-item"><span class="dot online"></span> Swap Engine</span>
+                        <span class="health-item"><span class="dot online"></span> Bank Connectors</span>
+                        <span class="health-item"><span class="dot online"></span> Audit Service</span>
+                        <span class="health-item"><span class="dot online"></span> Security</span>
                     </div>
-                    <?php endif; ?>
 
-                    <!-- Recent Batches -->
-                    <div class="card">
-                        <div class="card-header">
-                            <h3><span class="icon-wrap"><?php echo icon('layers', 16); ?></span>Recent Disbursements</h3>
+                    <!-- MIDDLE GRID: Pending Approvals + Pipeline -->
+                    <div class="middle-grid">
+                        <!-- Pending Approvals -->
+                        <div class="panel">
+                            <div class="panel-header">
+                                Pending Approvals
+                                <span class="badge-count"><?php echo $stats['pending']; ?></span>
+                            </div>
+                            <div class="panel-body">
+                                <?php if ($stats['pending'] > 0): ?>
+                                <div class="approval-item">
+                                    <span class="ref">GOV-2026-440</span>
+                                    <span class="amount">BWP 12,450.00</span>
+                                    <span class="status-tag pending">Pending</span>
+                                </div>
+                                <div class="approval-item">
+                                    <span class="ref">GOV-2026-439</span>
+                                    <span class="amount">BWP 8,230.00</span>
+                                    <span class="status-tag pending">Pending</span>
+                                </div>
+                                <div class="approval-item">
+                                    <span class="ref">GOV-2026-438</span>
+                                    <span class="amount">BWP 125,000.00</span>
+                                    <span class="status-tag threshold">▲ Above Threshold</span>
+                                </div>
+                                <div style="margin-top: 8px;">
+                                    <a href="batches/index.php?filter=pending" style="font-size:11px; color:var(--blue); text-decoration:none; font-weight:600;">View all →</a>
+                                </div>
+                                <?php else: ?>
+                                <div class="empty-state">
+                                    <span class="icon">◯</span>
+                                    <p>No pending approvals</p>
+                                </div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+
+                        <!-- Pipeline Status -->
+                        <div class="panel">
+                            <div class="panel-header">
+                                Disbursement Pipeline
+                                <span class="badge-count">72%</span>
+                            </div>
+                            <div class="panel-body">
+                                <div class="pipeline-steps">
+                                    <span class="step done">Draft</span>
+                                    <span class="step done">Approved</span>
+                                    <span class="step active">Executing</span>
+                                    <span class="step">Completed</span>
+                                </div>
+                                <div class="pipeline-progress">
+                                    <div class="fill" style="width:72%;"></div>
+                                </div>
+                                <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted); margin-top:4px;">
+                                    <span>12 Draft</span>
+                                    <span>8 Approved</span>
+                                    <span>18 Executing</span>
+                                    <span>47 Completed</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- LIVE OPERATIONS FEED -->
+                    <div class="panel" style="margin-bottom:20px;">
+                        <div class="panel-header">
+                            Live Operations Feed
+                            <span class="badge-live">● Live</span>
+                        </div>
+                        <div class="panel-body" style="padding:8px 16px;">
+                            <?php if (!empty($activityFeed)): ?>
+                                <?php foreach (array_slice($activityFeed, 0, 6) as $feed): ?>
+                                <div class="feed-item">
+                                    <span class="time"><?php echo date('H:i', strtotime($feed['created_at'] ?? 'now')); ?></span>
+                                    <span class="event">
+                                        <strong><?php echo htmlspecialchars($feed['action'] ?? 'Event'); ?></strong>
+                                        <?php echo htmlspecialchars($feed['entity_type'] ?? ''); ?>
+                                        <?php if ($feed['entity_id']): ?>#<?php echo htmlspecialchars($feed['entity_id']); ?><?php endif; ?>
+                                    </span>
+                                </div>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <div class="feed-item">
+                                    <span class="time">--:--</span>
+                                    <span class="event">No recent activity</span>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
+                    <!-- BOTTOM GRID: Recent Batches Table -->
+                    <div class="panel" style="margin-bottom:20px;">
+                        <div class="panel-header">
+                            Recent Batches
                             <?php if ($config['show_all_batches']): ?>
-                            <a href="batches/index.php" class="view-all">View all <?php echo icon('chevron-right', 13); ?></a>
+                            <a href="batches/index.php" style="font-size:10px; color:var(--blue); text-decoration:none; font-weight:600;">View all →</a>
                             <?php endif; ?>
                         </div>
                         <div class="table-wrap">
@@ -1318,6 +1349,7 @@ $roleAccent = $roleAccents[$userRole] ?? 'slate';
                                     <tr>
                                         <th>Reference</th>
                                         <th>Description</th>
+                                        <th>Program</th>
                                         <th>Amount</th>
                                         <th>Status</th>
                                         <th>Created</th>
@@ -1333,37 +1365,22 @@ $roleAccent = $roleAccents[$userRole] ?? 'slate';
                                         <tr>
                                             <td><code><?php echo htmlspecialchars($batch['batch_reference'] ?? '#' . $batch['id']); ?></code></td>
                                             <td><?php echo htmlspecialchars($batch['batch_name'] ?? 'Batch #' . $batch['id']); ?></td>
-                                            <td><strong>BWP <?php echo number_format($batch['total_amount'] ?? 0, 2); ?></strong></td>
-                                            <td>
-                                                <span class="status <?php echo $status; ?>">
-                                                    <span class="dot"></span>
-                                                    <?php echo htmlspecialchars($statusDisplay); ?>
-                                                </span>
-                                            </td>
+                                            <td><?php echo htmlspecialchars($batch['program_name'] ?? '—'); ?></td>
+                                            <td><strong><?php echo formatCurrency($batch['total_amount'] ?? 0); ?></strong></td>
+                                            <td><span class="status-badge <?php echo $status; ?>"><?php echo htmlspecialchars($statusDisplay); ?></span></td>
                                             <td><?php echo date('M d, Y', strtotime($batch['created_at'] ?? 'now')); ?></td>
-                                            <td>
-                                                <a href="batches/view.php?id=<?php echo $batch['id']; ?>" class="view-link">
-                                                    <?php if (in_array($userRole, ['approver', 'senior_approver'])): ?>
-                                                        Approve
-                                                    <?php elseif ($userRole === 'auditor'): ?>
-                                                        Audit
-                                                    <?php else: ?>
-                                                        Review
-                                                    <?php endif; ?>
-                                                    <?php echo icon('chevron-right', 13); ?>
-                                                </a>
-                                            </td>
+                                            <td><a href="batches/view.php?id=<?php echo $batch['id']; ?>" class="action-link">Review</a></td>
                                         </tr>
                                         <?php endforeach; ?>
                                     <?php else: ?>
                                         <tr>
-                                            <td colspan="6">
+                                            <td colspan="7">
                                                 <div class="empty-state">
-                                                    <span class="icon-wrap"><?php echo icon('inbox', 40); ?></span>
-                                                    <h4>No disbursements yet</h4>
-                                                    <p>Start by creating your first payment batch.</p>
+                                                    <span class="icon">◻</span>
+                                                    <h4>No batches yet</h4>
+                                                    <p>Start by creating your first disbursement batch.</p>
                                                     <?php if ($config['show_actions']): ?>
-                                                    <a href="imports/upload.php">Create new disbursement →</a>
+                                                    <a href="imports/upload.php">Create new batch →</a>
                                                     <?php endif; ?>
                                                 </div>
                                             </td>
@@ -1374,59 +1391,14 @@ $roleAccent = $roleAccents[$userRole] ?? 'slate';
                         </div>
                     </div>
 
-                    <!-- Role-Specific Widgets -->
-                    <?php if (in_array($userRole, ['approver', 'senior_approver'])): ?>
-                    <div class="card widget-card warn">
-                        <div class="card-header warn-bg">
-                            <h3 style="color:var(--warning);"><?php echo icon('clock', 16); ?>Pending Approval Queue</h3>
-                            <span style="font-size:13px; font-weight:700; color:var(--warning);"><?php echo $stats['pending']; ?> batches waiting</span>
+                    <!-- Footer -->
+                    <footer class="page-footer">
+                        <span>Secure National Disbursement Platform · ISO 27001 Certified · © <?php echo date('Y'); ?> VouchMorph · Government of Botswana</span>
+                        <div class="role-line">
+                            <?php echo $roleDisplay; ?> · <?php echo $orgName; ?><?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?>
                         </div>
-                        <div class="widget-body">
-                            <p>
-                                <?php if ($stats['pending'] > 0): ?>
-                                    You have <strong><?php echo $stats['pending']; ?></strong> batches awaiting your review. Review each carefully before approval.
-                                <?php else: ?>
-                                    ✅ All batches have been reviewed. No pending approvals.
-                                <?php endif; ?>
-                            </p>
-                            <?php if ($stats['pending'] > 0): ?>
-                            <a href="batches/index.php?filter=pending" class="action-btn primary" style="align-self:flex-start;">
-                                <?php echo icon('check-circle', 15); ?>Review Pending Batches
-                            </a>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                    <?php endif; ?>
-
-                    <?php if ($userRole === 'auditor'): ?>
-                    <div class="card widget-card blue">
-                        <div class="card-header blue-bg">
-                            <h3 style="color:var(--info);"><?php echo icon('shield', 16); ?>Audit Summary</h3>
-                            <span style="font-size:13px; font-weight:700; color:var(--info);"><?php echo date('Y-m-d'); ?></span>
-                        </div>
-                        <div class="widget-body">
-                            <p>
-                                All departmental disbursements are visible for audit purposes.<br>
-                                Total disbursements this month: <strong>BWP <?php echo number_format($stats['disbursed'], 2); ?></strong>
-                            </p>
-                            <a href="reports/audit_trail.php" class="action-btn secondary" style="align-self:flex-start;">
-                                <?php echo icon('file-text', 15); ?>View Audit Trail
-                            </a>
-                        </div>
-                    </div>
-                    <?php endif; ?>
+                    </footer>
                 </div>
-
-                <!-- Footer - Anchored to bottom -->
-                <footer class="page-footer">
-                    <span>Secure Enterprise Platform &middot; ISO 27001 Certified &middot; &copy; <?php echo date('Y'); ?> VouchMorph &middot; Government of Botswana</span>
-                    <div class="role-line">
-                        Role: <?php echo strtoupper($userRole); ?>
-                        <?php if ($departmentName): ?>
-                        &middot; Dept: <?php echo strtoupper($departmentName); ?> 
-                        <?php endif; ?>
-                    </div>
-                </footer>
             </div>
         </main>
     </div>
