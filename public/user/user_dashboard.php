@@ -1,6 +1,6 @@
 <?php
-// public/user/dashboard.php - REDESIGNED v3 FIXED
-// Proper form field rendering when asset types are selected
+// public/user/dashboard.php - REDESIGNED v4
+// Proper delivery-mode filtering: source uses full asset types, destination uses deposit-capable only
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
@@ -126,6 +126,19 @@ foreach ($allAssetTypes as $code => $cfg) {
     $assetUIMap[$code] = $cfg['ui'] ?? [];
     $assetDeliveryModes[$code] = $cfg['delivery_modes'] ?? ['deposit', 'cashout'];
 }
+
+// Destination asset types - what can receive money (deposit-capable only)
+$destinationAssetTypes = [];
+foreach ($allAssetTypes as $code => $cfg) {
+    $modes = $cfg['delivery_modes'] ?? ['deposit'];
+    if (in_array('deposit', $modes)) {
+        $destinationAssetTypes[] = $code;
+    }
+}
+// Filter out VOUCHER and ATM from destination - they are source-only
+$destinationAssetTypes = array_filter($destinationAssetTypes, function($type) {
+    return !in_array($type, ['VOUCHER', 'ATM']);
+});
 
 $cloudBalances = [];
 $cloudTotal = 0;
@@ -544,6 +557,7 @@ const participants = <?= json_encode($participantOptions) ?>;
 const assetFields = <?= json_encode($assetFieldsMap) ?>;
 const assetUI = <?= json_encode($assetUIMap) ?>;
 const assetDeliveryModes = <?= json_encode($assetDeliveryModes) ?>;
+const destinationAssetTypes = <?= json_encode($destinationAssetTypes) ?>;
 const currencySymbol = '<?= $currencySymbol ?>';
 const currency = '<?= $currency ?>';
 const userIdentifiers = <?= $identifiersJson ?>;
@@ -558,9 +572,15 @@ const assetLabel = { ACCOUNT: 'ACCOUNT', WALLET: 'WALLET', 'MNO-WALLET': 'MOBILE
 // ============================================================
 // FILTERING FUNCTIONS
 // ============================================================
+// Destination: only deposit-capable asset types (ACCOUNT, WALLET, CARD, etc.)
+// VOUCHER and ATM are excluded from destination
 function getDepositCapableAssets(instCode) {
     const raw = participants[instCode]?.asset_types || ['ACCOUNT'];
-    return raw.filter(a => (assetDeliveryModes[a] || ['deposit']).includes('deposit'));
+    return raw.filter(a => {
+        const modes = assetDeliveryModes[a] || ['deposit'];
+        // Only deposit-capable AND not source-only types
+        return modes.includes('deposit') && destinationAssetTypes.includes(a);
+    });
 }
 function getCashoutCapableAssets(instCode) {
     const raw = participants[instCode]?.asset_types || ['ACCOUNT'];
@@ -571,7 +591,7 @@ function getAllAssets(instCode) {
 }
 
 // ============================================================
-// RENDER ASSET FIELDS - FIXED: shows fields based on asset type
+// RENDER ASSET FIELDS
 // ============================================================
 function renderAssetFields(prefix, assetType, containerId) {
     const container = document.getElementById(containerId);
@@ -657,13 +677,15 @@ function dots(total, current) {
 }
 
 // ============================================================
-// STEP 0: WHO
+// STEP 0: WHO - FILTERED BY DELIVERY MODE
 // ============================================================
 function renderWho() {
     const isCashout = currentFlow === 'cashout';
     const isPool = currentFlow === 'pool';
     const rows = Object.entries(participants).map(([code, p]) => {
         const badge = badgeMap[p.type] || '🏦';
+        // For destination (send/pool), use deposit-capable assets only
+        // For cashout, use cashout-capable assets only
         const assets = isCashout ? getCashoutCapableAssets(code) : getDepositCapableAssets(code);
         if (assets.length === 0) return '';
         const assetDisplay = assets.map(a => assetLabel[a] || a).join(' · ');
@@ -696,7 +718,7 @@ function pickWho(code) {
 }
 
 // ============================================================
-// STEP 1: AMOUNT - FIXED: shows fields when asset selected
+// STEP 1: AMOUNT - DESTINATION FIELDS BASED ON ASSET TYPE
 // ============================================================
 function renderAmount() {
     const isCashout = currentFlow === 'cashout';
@@ -709,7 +731,7 @@ function renderAmount() {
             ${assets.map(a => `<button class="asset-pill ${selAsset===a?'active':''}" onclick="chooseAsset('${a}')">${assetLabel[a]||a}</button>`).join('')}
         </div>` : '';
 
-    // Destination fields based on selected asset
+    // Destination fields based on selected asset type
     let destFieldsHtml = '';
     if (isCashout) {
         destFieldsHtml = `
@@ -738,13 +760,6 @@ function renderAmount() {
             <div class="field">
                 <div class="field-label">CARD NUMBER</div>
                 <input class="text-input" id="destInput" placeholder="Enter card number">
-            </div>
-        `;
-    } else if (selAsset === 'VOUCHER') {
-        destFieldsHtml = `
-            <div class="field">
-                <div class="field-label">VOUCHER CODE</div>
-                <input class="text-input" id="destInput" placeholder="Enter voucher code">
             </div>
         `;
     } else {
@@ -796,7 +811,6 @@ function chooseAsset(a) {
     document.querySelectorAll('#assetChoiceContainer .asset-pill').forEach(el => {
         el.classList.toggle('active', el.textContent.trim() === (assetLabel[a] || a));
     });
-    // Re-render to show fields for selected asset
     render();
 }
 
@@ -816,7 +830,6 @@ function onFromChange() {
                 </div>
             </div>
         `;
-        // Select first asset by default
         if (assets.length > 0) {
             selectSourceAsset(assets[0]);
         }
@@ -834,7 +847,6 @@ function selectSourceAsset(a) {
     document.querySelectorAll('#sourceAssetChoice .asset-pill').forEach(el => {
         el.classList.toggle('active', el.textContent.trim() === (assetLabel[a] || a));
     });
-    // Render fields for the selected source asset
     const fieldsContainer = document.getElementById('fromAssetFieldsContainer');
     if (fieldsContainer) {
         fieldsContainer.innerHTML = '';
@@ -868,7 +880,7 @@ function selectSourceAsset(a) {
 function updateSummary() {}
 
 // ============================================================
-// IDENTITY FLOW
+// IDENTITY FLOW (unchanged - identity is universal)
 // ============================================================
 function renderIdentity() {
     if (step === 0) {
@@ -913,7 +925,7 @@ function renderIdentity() {
 }
 
 // ============================================================
-// POOL FLOW
+// POOL FLOW - uses destination asset filtering
 // ============================================================
 function renderPool() {
     if (step === 0) {
@@ -945,7 +957,6 @@ function renderPool() {
         if (selAsset === 'ACCOUNT') destFieldLabel = 'ACCOUNT NUMBER';
         else if (selAsset === 'WALLET' || selAsset === 'MNO-WALLET' || selAsset === 'BANK-WALLET') destFieldLabel = 'PHONE / WALLET ID';
         else if (selAsset === 'CARD') destFieldLabel = 'CARD NUMBER';
-        else if (selAsset === 'VOUCHER') destFieldLabel = 'VOUCHER CODE';
 
         return `
             ${dots(3,1)}
@@ -1010,7 +1021,6 @@ function onSourceInstChange(id) {
                 ${assets.map(a => `<button type="button" class="asset-pill" onclick="setSourceAsset('${id}','${a}',this)">${assetLabel[a]||a}</button>`).join('')}
             </div>
         `;
-        // Select first asset by default
         if (assets.length > 0) {
             const firstPill = document.querySelector(`#${id}_assetChoice .asset-pill`);
             if (firstPill) {
@@ -1033,7 +1043,6 @@ function setSourceAsset(id, a, el) {
         el.parentElement.querySelectorAll('.asset-pill').forEach(x => x.classList.remove('active'));
         el.classList.add('active');
     }
-    // Render fields for this source asset
     const fieldsContainer = document.getElementById(id + '_assetFieldsContainer');
     if (fieldsContainer) {
         fieldsContainer.innerHTML = '';
