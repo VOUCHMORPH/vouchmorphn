@@ -11,7 +11,7 @@ if (session_status() === PHP_SESSION_NONE) {
 
 // ============================================================================
 // DATABASE CONNECTION
-// FIXED: Use DBConnection::getConnection() as the single source of truth
+// FIXED: Standardized on DBConnection::getConnection()
 // ============================================================================
 function getDBConnection() {
     return DBConnection::getConnection(); // FIXED: was getInstance()
@@ -170,7 +170,37 @@ function getApprovalRequirement(PDO $pdo, int $departmentId, float $amount): arr
 }
 
 /**
- * Get current user's role info
+ * CSRF protection: one token per session, reused across requests (not
+ * regenerated per-form, which would break back-button/multi-tab use).
+ * Embed generateCsrfToken() as a hidden field in every state-changing form
+ * and every fetch() JSON body; verify with verifyCsrfToken() before acting
+ * on any POST.
+ */
+function generateCsrfToken(): string {
+    if (empty($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['csrf_token'];
+}
+
+function verifyCsrfToken(?string $token): bool {
+    if (empty($_SESSION['csrf_token']) || empty($token)) {
+        return false;
+    }
+    return hash_equals($_SESSION['csrf_token'], $token);
+}
+
+function requireCsrfToken(?string $token): void {
+    if (!verifyCsrfToken($token)) {
+        http_response_code(403);
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'error' => 'Invalid or missing CSRF token. Refresh the page and try again.']);
+        exit;
+    }
+}
+
+/**
+ * Get current user's role info from the role catalog
  */
 function getCurrentUserRole(): ?array {
     $user = $_SESSION['enterprise_user'] ?? null;
@@ -180,7 +210,7 @@ function getCurrentUserRole(): ?array {
         $pdo = getDBConnection();
         $stmt = $pdo->prepare("
             SELECT role_code, role_name, role_level, is_system_role
-            FROM organization_roles
+            FROM organization_role_catalog
             WHERE role_code = :role
             LIMIT 1
         ");
