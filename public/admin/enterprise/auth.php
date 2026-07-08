@@ -2,13 +2,17 @@
 // auth.php - Enterprise authentication helper
 
 // Import the DBConnection class at the top level
-require_once __DIR__ . '/../../../src/Core/Database/DBConnection.php';
+require_once dirname(__DIR__, 3) . '/src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
 // Only start session if not already active
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
+
+// Define base paths for redirects
+define('ENTERPRISE_LOGIN_PATH', '/public/admin/enterprise/login.php');
+define('ENTERPRISE_DASHBOARD_PATH', '/public/admin/enterprise/index.php');
 
 // Database connection helper
 function getDBConnection() {
@@ -36,8 +40,8 @@ function getDBConnection() {
 
 function requireEnterpriseAuth() {
     if (!isset($_SESSION['enterprise_user'])) {
-        // No output before header
-        header('Location: login.php');
+        // Redirect to enterprise login using absolute path from root
+        header('Location: /public/admin/enterprise/login.php');
         exit;
     }
     
@@ -57,7 +61,7 @@ function requireEnterpriseAuth() {
         
         if (!$result || !$result['is_active'] || $result['org_status'] !== 'ACTIVE') {
             session_destroy();
-            header('Location: login.php?error=Account+inactive');
+            header('Location: /public/admin/enterprise/login.php?error=Account+inactive');
             exit;
         }
     } catch (PDOException $e) {
@@ -122,7 +126,7 @@ function logout() {
     // Destroy session
     session_destroy();
     
-    // No output before header
-    header('Location: login.php');
+    // Redirect to login
+    header('Location: /public/admin/enterprise/login.php');
     exit;
 }
