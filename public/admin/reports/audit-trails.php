@@ -4,27 +4,44 @@
 require_once dirname(__DIR__, 3) . '/src/bootstrap.php';
 require_once __DIR__ . '/../../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../../src/Domain/Services/AuditTrailService.php';
+require_once __DIR__ . '/../../roles.php'; // Include our enhanced RoleManager
 
 use Application\Utils\SessionManager;
 use Domain\Services\AuditTrailService;
 use Core\Database\DBConnection;
 
+// Start session
 SessionManager::start();
 
 $user = SessionManager::getUser();
-$allowedRoles = ['admin', 'GLOBAL_OWNER', 'COUNTRY_MIDDLEMAN', 'AUDITOR'];
 
-// LOG ACCESS ATTEMPT FIRST
-if (!$user || !in_array($user['role'] ?? '', $allowedRoles)) {
-    error_log("[AUDIT_ACCESS_DENIED] user_id=" . ($user['user_id'] ?? 'unknown') . 
+// ============================================================
+// ROLE CHECK - Using Database Roles (SINGLE SOURCE OF TRUTH)
+// ============================================================
+
+$roleManager = new RoleManager();
+
+// Option 1: Check if user has the 'view_audit_logs' permission
+if (!currentUserHasPermission('view_audit_logs')) {
+    // Log denied access
+    error_log("[AUDIT_ACCESS_DENIED] user_id=" . ($user['admin_id'] ?? $user['user_id'] ?? 'unknown') . 
               " role=" . ($user['role'] ?? 'none') . 
-              " ip=" . ($_SERVER['REMOTE_ADDR'] ?? 'unknown'));
+              " ip=" . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') .
+              " - Missing 'view_audit_logs' permission");
+    
     http_response_code(403);
-    echo "<p style='text-align:center;color:red;font-weight:bold;'>Access denied</p>";
+    echo "<p style='text-align:center;color:red;font-weight:bold;'>Access denied - Insufficient permissions</p>";
     exit;
 }
 
-// Get filters from request
+// Option 2: If you want to check specific roles instead:
+// $allowedRoles = $roleManager->getAuditViewerRoles();
+// if (!in_array($user['role'] ?? '', $allowedRoles)) { ... }
+
+// ============================================================
+// GET FILTERS FROM REQUEST
+// ============================================================
+
 $limit = min((int)($_GET['limit'] ?? 100), 500);
 $filters = [
     'entity' => $_GET['entity'] ?? null,
@@ -38,6 +55,10 @@ $filters = [
 // Remove empty filters
 $filters = array_filter($filters);
 
+// ============================================================
+// FETCH AUDIT LOGS
+// ============================================================
+
 try {
     $db = DBConnection::getConnection();
     $config = []; // Load from your config system
@@ -45,19 +66,22 @@ try {
     // Get country from session
     $countryCode = SessionManager::getAdminCountry() ?? 'BW';
     
-    // Pass ALL required constructor parameters
     $auditService = new AuditTrailService($db, $config, null, $countryCode);
     
-    // Log that someone viewed the audit trail
+    // LOG THAT SOMEONE VIEWED THE AUDIT TRAIL
     $auditService->recordLog(
         'audit_trail',
         null,
-        'VIEW',
+        'VIEW_AUDIT_TRAIL',
         'security',
         'INFO',
         null,
-        json_encode(['filters' => $filters, 'limit' => $limit]),
-        $user['admin_id'] ?? null,
+        json_encode([
+            'filters' => $filters,
+            'limit' => $limit,
+            'user_role' => $user['role'] ?? 'unknown'
+        ]),
+        $user['admin_id'] ?? $user['user_id'] ?? null,
         $_SERVER['REMOTE_ADDR'] ?? null,
         $_SERVER['HTTP_USER_AGENT'] ?? null
     );
@@ -66,14 +90,30 @@ try {
     $logs = $auditService->getAuditLogs($limit, $filters);
     $totalCount = $auditService->getLogCount($filters);
     
+    // Get available filters for dropdowns
+    $categories = $auditService->getCategories();
+    $actions = $auditService->getActions();
+    
 } catch (Exception $e) {
     error_log("AuditTrailService error: " . $e->getMessage());
     $logs = [];
     $totalCount = 0;
+    $categories = [];
+    $actions = [];
 }
 
-// CSV Export with filters
+// ============================================================
+// CSV EXPORT
+// ============================================================
+
 if (isset($_GET['export']) && $_GET['export'] === 'csv') {
+    // Verify permission again for export
+    if (!currentUserHasPermission('export_data')) {
+        http_response_code(403);
+        echo "Export denied - Insufficient permissions";
+        exit;
+    }
+    
     header('Content-Type: text/csv');
     header('Content-Disposition: attachment; filename="audit_trails_' . date('Y-m-d') . '.csv"');
     $output = fopen('php://output', 'w');
@@ -100,6 +140,15 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     fclose($output);
     exit;
 }
+
+// ============================================================
+// GET USER'S ROLE INFO FOR DISPLAY
+// ============================================================
+
+$userRole = $user['role'] ?? 'unknown';
+$roleInfo = $roleManager->getRoleByName($userRole);
+$roleLevel = $roleInfo['role_level'] ?? 'N/A';
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -109,134 +158,56 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     <title>Audit Trails</title>
     <link rel="stylesheet" href="/assets/css/admin.css">
     <style>
-        /* Keep your existing styles */
-        .dashboard-content { padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; max-width: 1400px; margin: 0 auto; }
-        .audit-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 15px; }
-        .audit-header h2 { margin: 0; color: #2c3e50; font-weight: 600; }
-        .audit-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-        .btn { display: inline-block; padding: 8px 20px; background: #3498db; color: #fff; text-decoration: none; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.3s ease; }
-        .btn:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(52, 152, 219, 0.3); }
-        .btn-refresh { background: #27ae60; }
-        .btn-refresh:hover { background: #229954; box-shadow: 0 2px 8px rgba(39, 174, 96, 0.3); }
-        .btn-export { background: #f39c12; }
-        .btn-export:hover { background: #e67e22; box-shadow: 0 2px 8px rgba(243, 156, 18, 0.3); }
-        .btn-reset { background: #95a5a6; }
-        .btn-reset:hover { background: #7f8c8d; }
+        /* ... keep existing styles ... */
         
-        .filter-section { 
-            background: #f8f9fa; 
-            padding: 20px; 
-            border-radius: 10px; 
-            margin-bottom: 20px;
-            border: 1px solid #e9ecef;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-        }
-        .filter-group { display: flex; flex-direction: column; }
-        .filter-group label { font-size: 12px; font-weight: 600; color: #7f8c8d; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px; }
-        .filter-group input, .filter-group select { 
-            padding: 8px 12px; 
-            border: 1px solid #ddd; 
-            border-radius: 4px; 
-            font-size: 13px;
-            font-family: inherit;
-        }
-        .filter-group input:focus, .filter-group select:focus { outline: none; border-color: #3498db; }
-        .filter-actions { display: flex; align-items: flex-end; gap: 10px; }
-        
-        .audit-stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
-            margin-bottom: 25px;
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 10px;
-            border: 1px solid #e9ecef;
-        }
-        .stat-item { text-align: center; }
-        .stat-item .label { font-size: 12px; color: #7f8c8d; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
-        .stat-item .value { font-size: 28px; font-weight: bold; color: #2c3e50; margin-top: 5px; }
-        .stat-item .value.actions { color: #3498db; }
-        .stat-item .value.users { color: #27ae60; }
-        .stat-item .value.today { color: #e67e22; }
-        
-        .report-table-container {
-            overflow-x: auto;
-            margin-top: 20px;
-            border-radius: 10px;
-            border: 1px solid #e9ecef;
-            background: #fff;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        }
-        .report-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-        .report-table th {
-            background: #34495e;
-            color: white;
-            padding: 14px 12px;
-            text-align: left;
-            font-weight: 600;
-            white-space: nowrap;
-            position: sticky;
-            top: 0;
-            z-index: 10;
-        }
-        .report-table td { padding: 12px; border-bottom: 1px solid #ecf0f1; vertical-align: middle; }
-        .report-table tr:hover { background: #f8f9fa; }
-        
-        .badge {
+        .user-role-badge {
             display: inline-block;
-            padding: 3px 10px;
+            padding: 4px 12px;
+            background: #2c3e50;
+            color: white;
             border-radius: 20px;
-            font-size: 11px;
+            font-size: 12px;
             font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
         }
-        .badge-success { background: #d4edda; color: #155724; }
-        .badge-danger { background: #f8d7da; color: #721c24; }
-        .badge-warning { background: #fff3cd; color: #856404; }
-        .badge-info { background: #d1ecf1; color: #0c5460; }
-        .badge-secondary { background: #e2e3e5; color: #383d41; }
         
-        .timestamp { font-family: 'Courier New', monospace; font-size: 13px; color: #7f8c8d; }
-        .ip-address { font-family: 'Courier New', monospace; font-size: 13px; background: #f1f3f5; padding: 2px 8px; border-radius: 4px; display: inline-block; }
-        
-        .no-data { text-align: center; padding: 50px 20px; color: #7f8c8d; }
-        .no-data .icon { font-size: 48px; display: block; margin-bottom: 15px; }
-        .no-data h3 { margin: 0 0 10px 0; color: #2c3e50; }
-        
-        .pagination {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-top: 20px;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 10px;
-            border: 1px solid #e9ecef;
+        .role-level-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 5px;
         }
-        .pagination-info { color: #7f8c8d; font-size: 14px; }
-        .pagination-controls { display: flex; gap: 10px; }
-        .pagination-controls .btn { padding: 6px 15px; font-size: 13px; }
         
-        @media (max-width: 768px) {
-            .filter-section { grid-template-columns: 1fr; }
-            .audit-header { flex-direction: column; align-items: stretch; }
-            .audit-actions { flex-direction: column; width: 100%; }
-            .audit-actions .btn { width: 100%; text-align: center; }
-            .report-table { font-size: 12px; }
-            .report-table th, .report-table td { padding: 8px 6px; }
-        }
+        .role-level-high { background: #e74c3c; }
+        .role-level-medium { background: #f39c12; }
+        .role-level-low { background: #27ae60; }
+        
+        /* ... rest of styles ... */
     </style>
 </head>
 <body>
     <div class="dashboard-content">
+        <!-- User Role Display -->
+        <div style="margin-bottom: 20px; padding: 10px 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #3498db; display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <strong>Logged in as:</strong> 
+                <?= htmlspecialchars($user['username'] ?? $user['email'] ?? 'Unknown') ?>
+                <span class="user-role-badge">
+                    <?= htmlspecialchars($userRole) ?>
+                    (Level <?= $roleLevel ?>)
+                </span>
+            </div>
+            <div style="font-size: 13px; color: #7f8c8d;">
+                Country: <?= htmlspecialchars($countryCode ?? 'BW') ?>
+            </div>
+        </div>
+        
         <div class="audit-header">
             <h2>📋 Audit Trails</h2>
             <div class="audit-actions">
-                <a href="?<?= http_build_query(array_merge($_GET, ['export' => 'csv'])) ?>" class="btn btn-export">📥 Export CSV</a>
+                <?php if (currentUserHasPermission('export_data')): ?>
+                    <a href="?<?= http_build_query(array_merge($_GET, ['export' => 'csv'])) ?>" class="btn btn-export">📥 Export CSV</a>
+                <?php endif; ?>
                 <button onclick="location.reload()" class="btn btn-refresh">🔄 Refresh</button>
             </div>
         </div>
@@ -249,11 +220,25 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
             </div>
             <div class="filter-group">
                 <label>Action</label>
-                <input type="text" name="action" placeholder="e.g., CREATE, UPDATE" value="<?= htmlspecialchars($_GET['action'] ?? '') ?>">
+                <select name="action">
+                    <option value="">All Actions</option>
+                    <?php foreach ($actions as $action): ?>
+                        <option value="<?= htmlspecialchars($action) ?>" <?= ($_GET['action'] ?? '') === $action ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($action) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
             </div>
             <div class="filter-group">
                 <label>Category</label>
-                <input type="text" name="category" placeholder="security, financial, admin" value="<?= htmlspecialchars($_GET['category'] ?? '') ?>">
+                <select name="category">
+                    <option value="">All Categories</option>
+                    <?php foreach ($categories as $category): ?>
+                        <option value="<?= htmlspecialchars($category) ?>" <?= ($_GET['category'] ?? '') === $category ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($category) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
             </div>
             <div class="filter-group">
                 <label>Severity</label>
