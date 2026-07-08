@@ -221,32 +221,32 @@ function formatCurrency($amount) {
         .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
 
         /* ============================================================
-           MASTHEAD - REDUCED HEIGHT
+           MASTHEAD - BIGGER FONTS, MORE SPACING
            ============================================================ */
         .masthead {
-            background: var(--ink-900); color: white; padding: 10px 24px;
+            background: var(--ink-900); color: white; padding: 16px 32px;
             display: flex; align-items: center; justify-content: center; position: relative;
             border-bottom: 3px solid var(--brass);
         }
-        .masthead .center { display: flex; align-items: center; gap: 14px; text-align: left; }
-        .seal { width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--brass); display: flex; align-items: center; justify-content: center; position: relative; flex-shrink: 0; }
-        .seal::before { content: ""; position: absolute; inset: 4px; border-radius: 50%; border: 1px solid rgba(138,109,59,0.5); }
-        .seal span { font-family: var(--f-mono); font-weight: 700; font-size: 9px; color: var(--brass); }
-        .masthead h1 { font-size: 13px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; }
-        .masthead .file-ref { font-family: var(--f-mono); font-size: 9px; color: rgba(255,255,255,0.4); margin-top: 1px; text-transform: uppercase; }
+        .masthead .center { display: flex; align-items: center; gap: 18px; text-align: left; }
+        .seal { width: 48px; height: 48px; border-radius: 50%; border: 2px solid var(--brass); display: flex; align-items: center; justify-content: center; position: relative; flex-shrink: 0; }
+        .seal::before { content: ""; position: absolute; inset: 6px; border-radius: 50%; border: 1px solid rgba(138,109,59,0.5); }
+        .seal span { font-family: var(--f-mono); font-weight: 700; font-size: 14px; color: var(--brass); }
+        .masthead h1 { font-size: 19px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; }
+        .masthead .file-ref { font-family: var(--f-mono); font-size: 13px; color: rgba(255,255,255,0.4); margin-top: 2px; text-transform: uppercase; }
         .masthead .right-fixed {
-            position: absolute; right: 24px; top: 50%; transform: translateY(-50%);
-            display: flex; align-items: center; gap: 14px; font-family: var(--f-mono); font-size: 10px; color: rgba(255,255,255,0.6);
+            position: absolute; right: 32px; top: 50%; transform: translateY(-50%);
+            display: flex; align-items: center; gap: 18px; font-family: var(--f-mono); font-size: 13px; color: rgba(255,255,255,0.6);
         }
-        .status-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: #5FAE7E; margin-right: 4px; }
-        .role-pill { font-family: var(--f-cond); font-size: 8px; font-weight: 700; letter-spacing: 0.08em; color: var(--brass); border: 1px solid var(--brass); padding: 1px 6px; text-transform: uppercase; }
+        .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #5FAE7E; margin-right: 5px; }
+        .role-pill { font-family: var(--f-cond); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: var(--brass); border: 1px solid var(--brass); padding: 2px 10px; text-transform: uppercase; }
 
         /* ============================================================
-           CENTRAL LAYOUT — MORE VERTICAL SPACING
+           CENTRAL LAYOUT - PUSHED DOWN
            ============================================================ */
         .stage {
             flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center;
-            padding: 70px 20px 60px;
+            padding: 140px 20px 60px;
         }
         .stage-inner { width: 100%; max-width: 980px; display: flex; flex-direction: column; align-items: center; gap: 34px; }
 
@@ -340,9 +340,9 @@ function formatCurrency($amount) {
         .page-footer .role-line { font-family: var(--f-mono); font-size: 9px; color: var(--ink-300); margin-top: 4px; text-transform: uppercase; }
 
         @media (max-width: 640px) {
-            .masthead { flex-direction: column; gap: 8px; padding: 10px 16px; }
+            .masthead { flex-direction: column; gap: 8px; padding: 12px 16px; }
             .masthead .right-fixed { position: static; transform: none; margin-top: 4px; }
-            .stage { padding: 40px 14px 30px; }
+            .stage { padding: 60px 14px 30px; }
             .action-btn { width: 150px; padding: 18px 12px 14px; }
             .statement-item { border-left: none; padding: 10px 0 0; border-top: 1px solid var(--line); flex: 1 1 100%; }
             .statement-item:first-child { border-top: none; }
