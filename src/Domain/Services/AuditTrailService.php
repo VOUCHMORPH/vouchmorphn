@@ -385,6 +385,24 @@ class AuditTrailService
     }
 
     /**
+ * Log that someone viewed the audit trail
+ */
+public function logAuditView(array $filters, int $performedBy, string $ip, string $userAgent): bool
+{
+    return $this->recordLog(
+        'audit_trail',
+        null,
+        'VIEW_AUDIT_TRAIL',
+        'security',
+        'INFO',
+        null,
+        json_encode(['filters' => $filters]),
+        $performedBy,
+        $ip,
+        $userAgent
+    );
+}
+    /**
      * Clean up old audit logs (retention policy)
      */
     public function cleanOldLogs(int $daysToKeep = 90): int
