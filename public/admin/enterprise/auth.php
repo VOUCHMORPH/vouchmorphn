@@ -10,10 +10,6 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// Define base paths for redirects
-define('ENTERPRISE_LOGIN_PATH', '/admin/enterprise/login.php');
-define('ENTERPRISE_DASHBOARD_PATH', '/admin/enterprise/index.php');
-
 // Database connection helper
 function getDBConnection() {
     $db = new DBConnection();
@@ -40,8 +36,8 @@ function getDBConnection() {
 
 function requireEnterpriseAuth() {
     if (!isset($_SESSION['enterprise_user'])) {
-        // Redirect to enterprise login using absolute path from root
-        header('Location: /public/admin/enterprise/login.php');
+        // Redirect to enterprise login - Railway public directory is the root
+        header('Location: /admin/enterprise/login.php');
         exit;
     }
     
@@ -61,7 +57,7 @@ function requireEnterpriseAuth() {
         
         if (!$result || !$result['is_active'] || $result['org_status'] !== 'ACTIVE') {
             session_destroy();
-            header('Location: /public/admin/enterprise/login.php?error=Account+inactive');
+            header('Location: /admin/enterprise/login.php?error=Account+inactive');
             exit;
         }
     } catch (PDOException $e) {
@@ -127,6 +123,6 @@ function logout() {
     session_destroy();
     
     // Redirect to login
-    header('Location: /public/admin/enterprise/login.php');
+    header('Location: /admin/enterprise/login.php');
     exit;
 }
