@@ -141,25 +141,6 @@ $roleDisplay = strtoupper($user['role'] ?? 'USER');
 $orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
 $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats['pending'] + 1), 3, '0', STR_PAD_LEFT);
 
-// ============================================================
-// ACTION BUTTONS - SAME AS INDEX
-// ============================================================
-$actions = [];
-if ($config['show_actions']) {
-    $actions[] = ['label' => 'DISBURSE FUNDS', 'href' => 'upload.php', 'mark' => '§1', 'badge' => null, 'active' => true];
-}
-if ($config['show_all_batches']) {
-    $actions[] = ['label' => 'BATCHES', 'href' => '../batches/index.php', 'mark' => '§2', 'badge' => $stats['total_batches'] > 0 ? $stats['total_batches'] : null];
-}
-$actions[] = ['label' => 'PENDING APPROVALS', 'href' => '../batches/index.php?filter=pending', 'mark' => '§3', 'badge' => $stats['pending'] > 0 ? $stats['pending'] : null];
-if ($config['show_beneficiaries']) {
-    $actions[] = ['label' => 'BENEFICIARIES', 'href' => '../beneficiaries/index.php', 'mark' => '§4', 'badge' => $stats['beneficiaries'] > 0 ? $stats['beneficiaries'] : null];
-}
-if ($config['show_governance']) {
-    $actions[] = ['label' => 'AUDIT TRAIL', 'href' => '../reports/audit_trail.php', 'mark' => '§5', 'badge' => null];
-}
-$actions[] = ['label' => 'REPORTS', 'href' => '../reports/index.php', 'mark' => '§6', 'badge' => null];
-
 function formatCurrency($amount) {
     return 'BWP ' . number_format($amount, 2);
 }
@@ -369,54 +350,84 @@ function formatCurrency($amount) {
            ============================================================ */
         .stage {
             flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center;
-            padding: 140px 20px 60px;
+            padding: 120px 20px 60px;
             position: relative;
             z-index: 1;
         }
-        .stage-inner { width: 100%; max-width: 980px; display: flex; flex-direction: column; align-items: center; gap: 34px; }
+        .stage-inner { width: 100%; max-width: 980px; display: flex; flex-direction: column; align-items: center; gap: 28px; }
 
-        .welcome { text-align: center; margin-bottom: 12px; }
+        .welcome { text-align: center; margin-bottom: 8px; }
         .welcome .eyebrow { justify-content: center; }
         .welcome h2 { font-size: 20px; font-weight: 700; letter-spacing: 0.01em; text-transform: uppercase; margin-top: 6px; }
         .welcome p { font-family: var(--f-cond); font-size: 11px; color: var(--ink-500); margin-top: 4px; letter-spacing: 0.02em; text-transform: uppercase; }
 
         /* ============================================================
-           ACTION LAUNCHER
+           STEP INDICATOR
            ============================================================ */
-        .launcher { width: 100%; }
-        .launcher-grid {
-            display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; margin-top: 28px;
+        .step-indicator {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            width: 100%;
+            max-width: 700px;
+            margin: 0 auto;
+            padding: 0 20px;
         }
-        .action-btn {
+        .step {
+            flex: 1;
+            text-align: center;
             position: relative;
-            width: 190px;
-            padding: 22px 16px 16px;
-            background: var(--panel);
-            border: 1.5px solid var(--ink-900);
-            text-decoration: none;
-            color: var(--ink-900);
-            display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px;
-            transition: background 0.12s ease, transform 0.12s ease;
         }
-        .action-btn:hover { background: var(--brass-tint); transform: translateY(-2px); }
-        .action-btn .mark { font-family: var(--f-mono); font-size: 10px; color: var(--brass); font-weight: 700; letter-spacing: 0.08em; }
-        .action-btn .label { font-family: var(--f-cond); font-weight: 700; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; }
-        .action-btn .badge {
-            position: absolute; top: -9px; right: -9px;
-            background: var(--seal-red); color: white; font-family: var(--f-mono); font-weight: 700;
-            font-size: 10px; min-width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
-            padding: 0 5px; border: 1.5px solid var(--paper);
+        .step::after {
+            content: '';
+            position: absolute;
+            top: 14px;
+            left: 55%;
+            width: 90%;
+            height: 2px;
+            background: var(--line);
+            z-index: 0;
         }
-        .action-btn.active {
-            background: var(--brass-tint);
+        .step:last-child::after { display: none; }
+        .step .step-number {
+            width: 28px;
+            height: 28px;
+            background: var(--line);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 11px;
+            font-family: var(--f-mono);
+            color: var(--ink-300);
+            position: relative;
+            z-index: 1;
+            border: 2px solid var(--line);
+        }
+        .step.active .step-number {
+            background: var(--brass);
             border-color: var(--brass);
+            color: white;
         }
-        .action-btn.active .mark {
-            color: var(--brass);
+        .step.done .step-number {
+            background: var(--ledger-green);
+            border-color: var(--ledger-green);
+            color: white;
         }
+        .step .step-label {
+            font-size: 9px;
+            color: var(--ink-300);
+            margin-top: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+            font-family: var(--f-cond);
+        }
+        .step.active .step-label { color: var(--ink-900); }
+        .step.done .step-label { color: var(--ledger-green); }
 
         /* ============================================================
-           UPLOAD FORM - INSIDE THE SAME STAGE INNER
+           UPLOAD FORM
            ============================================================ */
         .upload-form {
             width: 100%;
@@ -528,6 +539,26 @@ function formatCurrency($amount) {
         }
         .error .icon { font-size: 16px; flex-shrink: 0; }
 
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--ink-500);
+            text-decoration: none;
+            font-size: 11px;
+            font-weight: 600;
+            font-family: var(--f-cond);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s ease;
+            margin-bottom: 16px;
+        }
+        .back-link:hover {
+            color: var(--brass);
+            border-bottom-color: var(--brass);
+        }
+
         .empty-state { text-align: center; padding: 30px 12px; color: var(--ink-300); }
         .empty-state .mark { font-family: var(--f-mono); font-size: 20px; display: block; margin-bottom: 8px; color: var(--brass); }
         .empty-state p { font-family: var(--f-cond); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
@@ -548,6 +579,8 @@ function formatCurrency($amount) {
             .vouchmorph-watermark { display: none; }
             .stage { padding: 80px 16px 40px; }
             .upload-area { padding: 24px 12px; }
+            .step-indicator { padding: 0 8px; }
+            .step .step-label { font-size: 7px; }
         }
 
         @media (max-width: 640px) {
@@ -558,8 +591,10 @@ function formatCurrency($amount) {
             .masthead .user-menu .time { font-size: 8px; }
             .masthead .user-menu .menu-link { font-size: 8px; padding: 2px 6px; }
             .stage { padding: 60px 14px 30px; }
-            .action-btn { width: 150px; padding: 18px 12px 14px; }
             .vouchmorph-watermark { display: none; }
+            .step-indicator { flex-wrap: wrap; gap: 8px; }
+            .step { flex: 0 0 45%; }
+            .step::after { display: none; }
         }
 
         @media (prefers-color-scheme: dark) {
@@ -568,7 +603,6 @@ function formatCurrency($amount) {
                 --ink-900: #ECEFF2; --ink-700: #C9D2D9; --ink-500: #93A2AC; --ink-300: #6B7A85;
                 --brass-tint: #22303A; --blue-tint: #1D2A38; --green-tint: #17261D;
             }
-            .action-btn { border-color: var(--ink-900); }
             .vouchmorph-watermark { color: rgba(201, 151, 42, 0.08); }
             .form-group input,
             .form-group select {
@@ -611,6 +645,10 @@ function formatCurrency($amount) {
                 border-color: var(--brass);
                 color: var(--ink-900);
             }
+            .step .step-number { background: #2C3A45; border-color: #2C3A45; }
+            .step.active .step-number { background: var(--brass); border-color: var(--brass); }
+            .step .step-label { color: #6B7A85; }
+            .step.active .step-label { color: #ECEFF2; }
         }
     </style>
 </head>
@@ -618,7 +656,7 @@ function formatCurrency($amount) {
     <!-- VouchMorph™ Watermark -->
     <div class="vouchmorph-watermark">VouchMorph<span class="tm">™</span></div>
 
-    <!-- Masthead - IDENTICAL TO INDEX -->
+    <!-- Masthead -->
     <div class="masthead">
         <div class="center">
             <h1><?php echo $orgName; ?> — National Disbursement</h1>
@@ -639,38 +677,44 @@ function formatCurrency($amount) {
         </div>
     </div>
 
-    <!-- Central stage - IDENTICAL TO INDEX -->
+    <!-- Central stage -->
     <div class="stage">
         <div class="stage-inner">
 
-            <!-- Welcome - IDENTICAL TO INDEX -->
+            <!-- Welcome -->
             <div class="welcome">
                 <div class="eyebrow"><span class="section-mark">§</span>Registry Access</div>
                 <h2>WELCOME, <?php echo strtoupper(substr($user['full_name'] ?? $user['email'], 0, 24)); ?></h2>
-                <p>SELECT A WORKING PAGE FOR YOUR ROLE<?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?></p>
+                <p>UPLOAD A NEW DISBURSEMENT BATCH<?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?></p>
             </div>
 
-            <!-- Role-based launcher - IDENTICAL TO INDEX -->
-            <div class="launcher">
-                <div class="launcher-grid">
-                    <?php foreach ($actions as $action): ?>
-                    <a href="<?php echo htmlspecialchars($action['href']); ?>" class="action-btn <?php echo isset($action['active']) && $action['active'] ? 'active' : ''; ?>">
-                        <?php if ($action['badge'] !== null): ?>
-                        <span class="badge"><?php echo (int)$action['badge']; ?></span>
-                        <?php endif; ?>
-                        <span class="mark"><?php echo htmlspecialchars($action['mark']); ?></span>
-                        <span class="label"><?php echo htmlspecialchars($action['label']); ?></span>
-                    </a>
-                    <?php endforeach; ?>
+            <!-- Back Link -->
+            <a href="../index.php" class="back-link">← Return to Dashboard</a>
+
+            <!-- Step Indicator -->
+            <div class="step-indicator">
+                <div class="step active">
+                    <div class="step-number">1</div>
+                    <div class="step-label">Upload</div>
+                </div>
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <div class="step-label">Map</div>
+                </div>
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <div class="step-label">Validate</div>
+                </div>
+                <div class="step">
+                    <div class="step-number">4</div>
+                    <div class="step-label">Execute</div>
                 </div>
             </div>
 
-            <!-- ==========================================================
-                 UPLOAD FORM - The only thing different from index
-                 ========================================================== -->
+            <!-- Upload Form -->
             <div class="doc-panel" style="width:100%; padding:28px 32px;">
                 <div class="eyebrow" style="margin-bottom:16px;">
-                    <span class="section-mark">§</span>New Disbursement Upload
+                    <span class="section-mark">§</span>New Disbursement Upload <span style="float:right; color:var(--ink-300); font-weight:400;">STEP 1 OF 4</span>
                 </div>
 
                 <?php if ($error): ?>
@@ -719,7 +763,7 @@ function formatCurrency($amount) {
         </div>
     </div>
 
-    <!-- Footer - IDENTICAL TO INDEX -->
+    <!-- Footer -->
     <footer class="page-footer">
         <div class="notice">SECURE ENTERPRISE MULTI ASSET PAYMENT · DISTRIBUTION RESTRICTED · ISO 27001 · © <?php echo date('Y'); ?> VOUCHMORPH</div>
         <div class="role-line"><?php echo $roleDisplay; ?><?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?> · <?php echo htmlspecialchars($fileRef); ?></div>
