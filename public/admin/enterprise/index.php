@@ -221,7 +221,7 @@ function formatCurrency($amount) {
         .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
 
         /* ============================================================
-           MASTHEAD - BIGGER FONTS, MORE SPACING
+           MASTHEAD - CENTERED
            ============================================================ */
         .masthead {
             background: var(--ink-900);
@@ -236,14 +236,16 @@ function formatCurrency($amount) {
         .masthead .center {
             display: flex;
             align-items: center;
-            gap: 18px;
-            text-align: left;
+            justify-content: center;
+            text-align: center;
+            width: 100%;
         }
         .masthead h1 {
             font-size: 19px;
             font-weight: 700;
             letter-spacing: 0.03em;
             text-transform: uppercase;
+            text-align: center;
         }
         .masthead .file-ref {
             font-family: var(--f-mono);
@@ -252,6 +254,7 @@ function formatCurrency($amount) {
             margin-top: 2px;
             text-transform: uppercase;
             letter-spacing: 0.04em;
+            text-align: center;
         }
         .masthead .right-fixed {
             position: absolute;
@@ -440,7 +443,7 @@ function formatCurrency($amount) {
     <!-- Masthead -->
     <div class="masthead">
         <div class="center">
-            <div>
+            <div style="text-align: center; width: 100%;">
                 <h1><?php echo $orgName; ?> — National Disbursement</h1>
                 <div class="file-ref">FILE NO. <?php echo htmlspecialchars($fileRef); ?> · <?php echo strtoupper(date('d M Y')); ?></div>
             </div>
