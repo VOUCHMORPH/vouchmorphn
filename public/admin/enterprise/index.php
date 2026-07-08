@@ -9,8 +9,7 @@ $userRole = $user['role'] ?? 'viewer';
 $departmentId = $user['department_id'] ?? null;
 
 // ============================================================
-// ROLE-BASED DATA FETCHING — every figure below comes from the database.
-// No placeholder rows, no sample activity, no synthetic totals.
+// ROLE-BASED DATA FETCHING
 // ============================================================
 
 $roleFilter = '';
@@ -124,8 +123,7 @@ $orgName = htmlspecialchars($user['organization_name'] ?? 'GOVERNMENT OF BOTSWAN
 $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats['pending'] + $stats['programs']), 3, '0', STR_PAD_LEFT);
 
 // ============================================================
-// ROLE-BASED ACTION BUTTONS — each entry maps to a real working page.
-// Badge values are pulled straight from $stats (real DB counts), or omitted.
+// ROLE-BASED ACTION BUTTONS
 // ============================================================
 $actions = [];
 if ($config['show_actions']) {
@@ -142,11 +140,6 @@ if ($config['show_governance']) {
     $actions[] = ['label' => 'AUDIT TRAIL', 'href' => 'reports/audit_trail.php', 'mark' => '§5', 'badge' => null];
 }
 $actions[] = ['label' => 'REPORTS', 'href' => 'reports/index.php', 'mark' => '§6', 'badge' => null];
-// Settings and Logout at the bottom
-if ($config['show_settings']) {
-    $actions[] = ['label' => 'SETTINGS', 'href' => 'settings/index.php', 'mark' => '⚙', 'badge' => null, 'is_bottom' => true];
-}
-$actions[] = ['label' => 'LOGOUT', 'href' => 'logout.php', 'mark' => '↗', 'badge' => null, 'is_bottom' => true];
 
 function formatCurrency($amount) {
     return 'BWP ' . number_format($amount, 2);
@@ -224,31 +217,31 @@ function formatCurrency($amount) {
         .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
 
         /* ============================================================
-           MASTHEAD - CENTERED
+           MASTHEAD - WITH USER MENU (Settings + Logout)
            ============================================================ */
         .masthead {
             background: var(--ink-900);
             color: white;
-            padding: 16px 32px;
+            padding: 12px 32px;
             display: flex;
             align-items: center;
-            justify-content: center;
+            justify-content: space-between;
             position: relative;
             border-bottom: 3px solid var(--brass);
         }
         .masthead .center {
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
             text-align: center;
-            width: 100%;
+            flex: 1;
         }
         .masthead h1 {
             font-size: 19px;
             font-weight: 700;
             letter-spacing: 0.03em;
             text-transform: uppercase;
-            text-align: center;
         }
         .masthead .file-ref {
             font-family: var(--f-mono);
@@ -257,21 +250,26 @@ function formatCurrency($amount) {
             margin-top: 2px;
             text-transform: uppercase;
             letter-spacing: 0.04em;
-            text-align: center;
         }
-        .masthead .right-fixed {
-            position: absolute;
-            right: 32px;
-            top: 50%;
-            transform: translateY(-50%);
+
+        /* User menu in masthead */
+        .masthead .user-menu {
             display: flex;
             align-items: center;
-            gap: 18px;
-            font-family: var(--f-mono);
-            font-size: 13px;
-            color: rgba(255,255,255,0.6);
+            gap: 16px;
+            flex-shrink: 0;
         }
-        .status-dot {
+        .masthead .user-menu .role-pill {
+            font-family: var(--f-cond);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            color: var(--brass);
+            border: 1px solid var(--brass);
+            padding: 2px 10px;
+            text-transform: uppercase;
+        }
+        .masthead .user-menu .status-dot {
             display: inline-block;
             width: 7px;
             height: 7px;
@@ -279,15 +277,41 @@ function formatCurrency($amount) {
             background: #5FAE7E;
             margin-right: 5px;
         }
-        .role-pill {
-            font-family: var(--f-cond);
+        .masthead .user-menu .time {
+            font-family: var(--f-mono);
             font-size: 11px;
-            font-weight: 700;
-            letter-spacing: 0.08em;
-            color: var(--brass);
-            border: 1px solid var(--brass);
-            padding: 2px 10px;
+            color: rgba(255,255,255,0.5);
+        }
+        .masthead .user-menu .menu-divider {
+            width: 1px;
+            height: 24px;
+            background: rgba(255,255,255,0.1);
+        }
+        .masthead .user-menu .menu-link {
+            color: rgba(255,255,255,0.5);
+            text-decoration: none;
+            font-family: var(--f-cond);
+            font-size: 10px;
+            font-weight: 600;
             text-transform: uppercase;
+            letter-spacing: 0.05em;
+            transition: var(--transition);
+            padding: 4px 8px;
+            border: 1px solid transparent;
+        }
+        .masthead .user-menu .menu-link:hover {
+            color: var(--brass);
+            border-color: var(--brass);
+        }
+        .masthead .user-menu .menu-link.logout-link {
+            color: rgba(255,255,255,0.3);
+        }
+        .masthead .user-menu .menu-link.logout-link:hover {
+            color: var(--seal-red);
+            border-color: var(--seal-red);
+        }
+        .masthead .user-menu .menu-link .icon {
+            margin-right: 4px;
         }
 
         /* ============================================================
@@ -316,7 +340,7 @@ function formatCurrency($amount) {
         }
 
         /* ============================================================
-           CENTRAL LAYOUT - PUSHED DOWN
+           CENTRAL LAYOUT
            ============================================================ */
         .stage {
             flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center;
@@ -357,34 +381,6 @@ function formatCurrency($amount) {
             background: var(--seal-red); color: white; font-family: var(--f-mono); font-weight: 700;
             font-size: 10px; min-width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
             padding: 0 5px; border: 1.5px solid var(--paper);
-        }
-
-        /* Bottom row buttons - Settings and Logout */
-        .action-btn.bottom-btn {
-            border-color: var(--ink-500);
-            background: var(--panel);
-            opacity: 0.85;
-        }
-        .action-btn.bottom-btn:hover {
-            opacity: 1;
-            transform: translateY(-2px);
-        }
-
-        /* Logout button special styling */
-        .action-btn.logout-btn {
-            border-color: var(--seal-red);
-            background: var(--panel);
-        }
-        .action-btn.logout-btn:hover {
-            background: var(--seal-red);
-            border-color: var(--seal-red);
-            color: white;
-        }
-        .action-btn.logout-btn .mark {
-            color: var(--seal-red);
-        }
-        .action-btn.logout-btn:hover .mark {
-            color: white;
         }
 
         .reveal-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 6px; }
@@ -445,7 +441,8 @@ function formatCurrency($amount) {
 
         @media (max-width: 640px) {
             .masthead { flex-direction: column; gap: 8px; padding: 12px 16px; }
-            .masthead .right-fixed { position: static; transform: none; margin-top: 4px; }
+            .masthead .user-menu { flex-wrap: wrap; justify-content: center; }
+            .masthead .user-menu .time { display: none; }
             .vouchmorph-watermark { display: none; }
             .stage { padding: 60px 14px 30px; }
             .action-btn { width: 150px; padding: 18px 12px 14px; }
@@ -474,14 +471,21 @@ function formatCurrency($amount) {
     <!-- Masthead -->
     <div class="masthead">
         <div class="center">
-            <div style="text-align: center; width: 100%;">
-                <h1><?php echo $orgName; ?> — National Disbursement</h1>
-                <div class="file-ref">FILE NO. <?php echo htmlspecialchars($fileRef); ?> · <?php echo strtoupper(date('d M Y')); ?></div>
-            </div>
+            <h1><?php echo $orgName; ?> — National Disbursement</h1>
+            <div class="file-ref">FILE NO. <?php echo htmlspecialchars($fileRef); ?> · <?php echo strtoupper(date('d M Y')); ?></div>
         </div>
-        <div class="right-fixed">
+        <div class="user-menu">
             <span class="role-pill"><?php echo $roleDisplay; ?></span>
-            <span><span class="status-dot"></span><?php echo date('H:i'); ?> UTC+2</span>
+            <span class="time"><span class="status-dot"></span><?php echo date('H:i'); ?> UTC+2</span>
+            <span class="menu-divider"></span>
+            <?php if ($config['show_settings']): ?>
+            <a href="settings/index.php" class="menu-link">
+                <span class="icon">⚙</span> Settings
+            </a>
+            <?php endif; ?>
+            <a href="logout.php" class="menu-link logout-link">
+                <span class="icon">↗</span> Sign Out
+            </a>
         </div>
     </div>
 
@@ -498,17 +502,7 @@ function formatCurrency($amount) {
             <!-- Role-based launcher -->
             <div class="launcher">
                 <div class="launcher-grid">
-                    <?php 
-                    // Separate main buttons from bottom buttons
-                    $mainActions = array_filter($actions, function($a) {
-                        return !isset($a['is_bottom']) || !$a['is_bottom'];
-                    });
-                    $bottomActions = array_filter($actions, function($a) {
-                        return isset($a['is_bottom']) && $a['is_bottom'];
-                    });
-                    ?>
-                    
-                    <?php foreach ($mainActions as $action): ?>
+                    <?php foreach ($actions as $action): ?>
                     <a href="<?php echo htmlspecialchars($action['href']); ?>" class="action-btn">
                         <?php if ($action['badge'] !== null): ?>
                         <span class="badge"><?php echo (int)$action['badge']; ?></span>
@@ -517,28 +511,16 @@ function formatCurrency($amount) {
                         <span class="label"><?php echo htmlspecialchars($action['label']); ?></span>
                     </a>
                     <?php endforeach; ?>
-                    
-                    <!-- Bottom row: Settings + Logout -->
-                    <?php if (!empty($bottomActions)): ?>
-                    <div style="width:100%; display:flex; justify-content:center; gap:16px; margin-top:8px; flex-wrap:wrap;">
-                        <?php foreach ($bottomActions as $action): ?>
-                        <a href="<?php echo htmlspecialchars($action['href']); ?>" class="action-btn bottom-btn <?php echo $action['label'] === 'LOGOUT' ? 'logout-btn' : ''; ?>" style="width:190px;">
-                            <span class="mark"><?php echo htmlspecialchars($action['mark']); ?></span>
-                            <span class="label"><?php echo htmlspecialchars($action['label']); ?></span>
-                        </a>
-                        <?php endforeach; ?>
-                    </div>
-                    <?php endif; ?>
                 </div>
             </div>
 
-            <!-- Reveal controls — real data only appears once pressed -->
+            <!-- Reveal controls -->
             <div class="reveal-controls">
                 <button type="button" class="reveal-btn" id="btnStatement" onclick="togglePanel('statement')">VIEW STATEMENT OF ACCOUNT</button>
                 <button type="button" class="reveal-btn" id="btnRegister" onclick="togglePanel('register')">VIEW RECENT REGISTER</button>
             </div>
 
-            <!-- Statement of Account (real DB figures) -->
+            <!-- Statement of Account -->
             <div class="reveal-panel doc-panel statement" id="panel-statement">
                 <div class="statement-head">
                     <span class="eyebrow"><span class="section-mark">§</span>Statement of Account</span>
@@ -576,7 +558,7 @@ function formatCurrency($amount) {
                 </div>
             </div>
 
-            <!-- Register of recent batches (real DB rows) -->
+            <!-- Register of recent batches -->
             <div class="reveal-panel doc-panel register-wrap" id="panel-register">
                 <div class="panel-head">
                     <span class="eyebrow"><span class="section-mark">§</span>Register of Recent Batches</span>
