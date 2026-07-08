@@ -22,7 +22,10 @@ use Core\Database\DBConnection;
 use Domain\Services\SwapService;
 use Core\Config\LoadCountry;
 
-$db = DBConnection::getInstance();
+// ============================================================
+// FIXED: Use getConnection() to match auth.php
+// ============================================================
+$db = DBConnection::getConnection(); // FIXED: was getInstance()
 $orgId = getOrganizationId();
 $batchId = (int)($_GET['batch_id'] ?? $_POST['batch_id'] ?? 0);
 
@@ -102,6 +105,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
         <form method="POST">
             <input type="hidden" name="batch_id" value="<?php echo $batchId; ?>">
+            <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
             <?php if (!$isHookedSource): ?>
             <div class="form-group">
                 <label>Source Wallet PIN</label>
@@ -126,6 +130,10 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 // ============================================================================
 // POST — ACTUAL EXECUTION
 // ============================================================================
+
+// CSRF Protection
+$csrfToken = $_POST['csrf_token'] ?? null;
+requireCsrfToken($csrfToken);
 
 $walletPin = $_POST['wallet_pin'] ?? null;
 
@@ -312,7 +320,6 @@ if (empty($destinations)) {
                 recipient_name, recipient_phone, amount, currency, swap_reference, status
             ) VALUES (
                 :org_id, :batch_id, :row_id, 'organization_wallet', :source_id,
-
                 :dest_type, :dest_provider, :dest_value, :name, :phone,
                 :amount, :currency, :swap_ref, :status
             )
@@ -416,11 +423,9 @@ foreach ($identityRows as $row) {
         'asset_type' => $source['asset_type'] ?? 'WALLET',
         'amount' => (float)$row['amount'],
         'currency' => $row['currency'] ?? $batch['currency'] ?? 'BWP',
-        // destination_value carries whichever identifier was mapped for this
-        // row (National ID, phone, or email) — destination_type tells us which
         'identity_type' => strtolower($row['identity_type'] ?? 'national_id'),
         'identity_value' => $row['destination_value'],
-        'user_id' => $orgId, // organization acts as the initiating party of record
+        'user_id' => $orgId,
     ];
 
     if ($isHookedSource) {
@@ -514,7 +519,7 @@ $stmt = $db->prepare("
         total_amount_sent, total_fees, total_fx_applied, execution_time_seconds,
         settlement_reference, reconciliation_status, reconciliation_report, created_at
     ) VALUES (
-        :batch_id, :total, :success, :failed, 0,
+        :batch_id, :total, :success, :failed, :pending,
         :amount_sent, :fees, :fx, :exec_time,
         :settlement_ref, :recon_status, :recon_report, NOW()
     )
@@ -524,6 +529,7 @@ $stmt->execute([
     ':total' => count($rows),
     ':success' => $successCount,
     ':failed' => $failedCount,
+    ':pending' => $pendingIdentityCount,
     ':amount_sent' => $totalDelivered,
     ':fees' => $totalFees,
     ':fx' => ($result['forex_applied'] ?? false) ? 1 : 0,
