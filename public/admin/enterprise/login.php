@@ -1,17 +1,6 @@
 <?php
 // login.php
-require_once 'auth.php'; // This handles session_start() properly
-
-// ----------------------------------------------------------------------
-// SESSION COOKIE HARDENING (item 8/9 from the diagnostic) — set BEFORE any
-// session is read/written elsewhere. auth.php's session_start() runs first
-// via require_once above, so these ini_set calls only take effect on a
-// fresh session; if you see this not applying, move this block to the very
-// top of auth.php before session_start() instead.
-// ----------------------------------------------------------------------
-ini_set('session.cookie_httponly', '1');
-ini_set('session.cookie_secure', '1');   // requires HTTPS -- Railway serves via HTTPS, so this is safe
-ini_set('session.cookie_samesite', 'Lax');
+require_once 'auth.php'; // auth.php now handles session hardening BEFORE session_start()
 
 $pdo = getDBConnection();
 $error = '';
@@ -55,7 +44,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($user && password_verify($password, $user['password_hash'])) {
             $_SESSION['enterprise_user'] = [
-                'id' => $user['user_id'],              // alias so older code using $user['id'] keeps working
+                'id' => $user['user_id'],
                 'org_user_id' => $user['org_user_id'],
                 'user_id' => $user['user_id'],
                 'organization_id' => $user['organization_id'],
@@ -105,11 +94,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $error = 'Invalid email or password';
 
-            // NOTE: organization_id/user_id are NULL here since the login
-            // failed before we knew who they were. If organization_id has a
-            // NOT NULL constraint, this insert throws silently (caught
-            // below) and failed logins go unrecorded -- worth confirming
-            // your schema allows NULL here for exactly this reason.
             try {
                 $logStmt = $pdo->prepare("
                     INSERT INTO organization_audit_logs
@@ -125,7 +109,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
     } catch (PDOException $e) {
-        $error = 'Unable to sign in right now. Please try again shortly.'; // FIXED: don't leak raw DB error text to the user
+        $error = 'Unable to sign in right now. Please try again shortly.';
         error_log("Login error: " . $e->getMessage());
     }
 }
@@ -187,9 +171,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="error">⚠️ <?php echo htmlspecialchars($error); ?></div>
         <?php endif; ?>
 
-        <!-- FIXED: demo credentials block and pre-filled value="" attributes
-             removed entirely. Never ship a working password on a public
-             login page, even for "testing only". -->
         <form method="POST">
             <div class="form-group">
                 <label>Email address</label>
