@@ -1,6 +1,6 @@
 <?php
-// public/user/dashboard.php - REDESIGNED v4
-// Proper delivery-mode filtering: source uses full asset types, destination uses deposit-capable only
+// public/user/dashboard.php - REDESIGNED v4 FINAL
+// YAML-driven: VOUCHER is a normal destination, ATM removed, Cashout removed as separate shortcut
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
@@ -127,18 +127,11 @@ foreach ($allAssetTypes as $code => $cfg) {
     $assetDeliveryModes[$code] = $cfg['delivery_modes'] ?? ['deposit', 'cashout'];
 }
 
-// Destination asset types - what can receive money (deposit-capable only)
-$destinationAssetTypes = [];
-foreach ($allAssetTypes as $code => $cfg) {
-    $modes = $cfg['delivery_modes'] ?? ['deposit'];
-    if (in_array('deposit', $modes)) {
-        $destinationAssetTypes[] = $code;
-    }
-}
-// Filter out VOUCHER and ATM from destination - they are source-only
-$destinationAssetTypes = array_filter($destinationAssetTypes, function($type) {
-    return !in_array($type, ['VOUCHER', 'ATM']);
-});
+// ============================================================
+// DESTINATION ASSET TYPES - VOUCHER included as normal destination
+// ATM removed entirely (no longer in participants.yaml)
+// ============================================================
+$destinationAssetTypes = ['ACCOUNT', 'WALLET', 'MNO-WALLET', 'BANK-WALLET', 'CARD', 'VOUCHER'];
 
 $cloudBalances = [];
 $cloudTotal = 0;
@@ -445,9 +438,6 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
     </button>
 
     <div class="shortcut-grid">
-        <div class="shortcut-tile clip" onclick="openFlow('cashout')" tabindex="0">
-            <span class="icon">💵</span><div class="label">CASHOUT</div><div class="desc">Get cash, no deposit needed</div>
-        </div>
         <div class="shortcut-tile clip" onclick="openFlow('identity')" tabindex="0">
             <span class="icon">🔐</span><div class="label">TO IDENTITY</div><div class="desc">They choose how to receive it</div>
         </div>
@@ -456,6 +446,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
         </div>
         <div class="shortcut-tile clip" onclick="openPanel('identifiers')" tabindex="0">
             <span class="icon">🔑</span><div class="label">YOUR IDENTIFIERS</div><div class="desc">What people can send to</div>
+        </div>
+        <div class="shortcut-tile clip" onclick="openPanel('history')" tabindex="0">
+            <span class="icon">📋</span><div class="label">ACTIVITY</div><div class="desc">Recent transactions</div>
         </div>
     </div>
 
@@ -567,24 +560,15 @@ const apiKey = '<?= $apiKey ?>';
 const loggedPhone = '<?= htmlspecialchars($primaryIdentifier) ?>';
 
 const badgeMap = { BANK: '🏦', MNO: '📱', ORCHESTRATOR: '⚙️' };
-const assetLabel = { ACCOUNT: 'ACCOUNT', WALLET: 'WALLET', 'MNO-WALLET': 'MOBILE WALLET', 'BANK-WALLET': 'BANK WALLET', VOUCHER: 'VOUCHER', CARD: 'CARD', ATM: 'ATM' };
+const assetLabel = { ACCOUNT: 'ACCOUNT', WALLET: 'WALLET', 'MNO-WALLET': 'MOBILE WALLET', 'BANK-WALLET': 'BANK WALLET', VOUCHER: 'VOUCHER', CARD: 'CARD' };
 
 // ============================================================
 // FILTERING FUNCTIONS
 // ============================================================
-// Destination: only deposit-capable asset types (ACCOUNT, WALLET, CARD, etc.)
-// VOUCHER and ATM are excluded from destination
+// Destination: only allow destinationAssetTypes
 function getDepositCapableAssets(instCode) {
     const raw = participants[instCode]?.asset_types || ['ACCOUNT'];
-    return raw.filter(a => {
-        const modes = assetDeliveryModes[a] || ['deposit'];
-        // Only deposit-capable AND not source-only types
-        return modes.includes('deposit') && destinationAssetTypes.includes(a);
-    });
-}
-function getCashoutCapableAssets(instCode) {
-    const raw = participants[instCode]?.asset_types || ['ACCOUNT'];
-    return raw.filter(a => (assetDeliveryModes[a] || ['deposit']).includes('cashout'));
+    return raw.filter(a => destinationAssetTypes.includes(a));
 }
 function getAllAssets(instCode) {
     return participants[instCode]?.asset_types || ['ACCOUNT'];
@@ -656,7 +640,7 @@ function closeFlow() { document.getElementById('flowPanel').classList.remove('ac
 function flowBack() { if (step > 0) { step--; render(); } else closeFlow(); }
 
 function titleFor(flow) {
-    return { send: 'PAY SOMEONE', cashout: 'CASHOUT', identity: 'TO IDENTITY', pool: 'COMBINE SOURCES' }[flow] || 'PAY';
+    return { send: 'PAY SOMEONE', identity: 'TO IDENTITY', pool: 'COMBINE SOURCES' }[flow] || 'PAY';
 }
 
 function render() {
@@ -677,16 +661,13 @@ function dots(total, current) {
 }
 
 // ============================================================
-// STEP 0: WHO - FILTERED BY DELIVERY MODE
+// STEP 0: WHO - filtered to destinationAssetTypes only
 // ============================================================
 function renderWho() {
-    const isCashout = currentFlow === 'cashout';
     const isPool = currentFlow === 'pool';
     const rows = Object.entries(participants).map(([code, p]) => {
         const badge = badgeMap[p.type] || '🏦';
-        // For destination (send/pool), use deposit-capable assets only
-        // For cashout, use cashout-capable assets only
-        const assets = isCashout ? getCashoutCapableAssets(code) : getDepositCapableAssets(code);
+        const assets = getDepositCapableAssets(code);
         if (assets.length === 0) return '';
         const assetDisplay = assets.map(a => assetLabel[a] || a).join(' · ');
         return `<div class="who-card" data-code="${code}" data-name="${p.name.toLowerCase()}" onclick="pickWho('${code}')" tabindex="0">
@@ -694,7 +675,7 @@ function renderWho() {
             <span style="opacity:0.3;font-size:1.2em;">›</span>
         </div>`;
     }).filter(Boolean).join('');
-    const label = isCashout ? 'CASHOUT FROM' : (isPool ? 'PAY TO' : 'PAY TO');
+    const label = isPool ? 'PAY TO' : 'PAY TO';
     return `
         ${dots(3, 0)}
         <div style="font-weight:700;font-size:var(--fs-h2);margin-bottom:0.5em;">${label}</div>
@@ -710,19 +691,17 @@ function filterWho(q) {
 }
 function pickWho(code) {
     selWho = code;
-    const isCashout = currentFlow === 'cashout';
-    const assets = isCashout ? getCashoutCapableAssets(code) : getDepositCapableAssets(code);
+    const assets = getDepositCapableAssets(code);
     selAsset = assets.length === 1 ? assets[0] : null;
     step = 1;
     render();
 }
 
 // ============================================================
-// STEP 1: AMOUNT - DESTINATION FIELDS BASED ON ASSET TYPE
+// STEP 1: AMOUNT - destination field based on asset type
 // ============================================================
 function renderAmount() {
-    const isCashout = currentFlow === 'cashout';
-    const assets = isCashout ? getCashoutCapableAssets(selWho) : getDepositCapableAssets(selWho);
+    const assets = getDepositCapableAssets(selWho);
     const needsAssetChoice = assets.length > 1;
     
     const assetChoiceHtml = needsAssetChoice ? `
@@ -733,15 +712,7 @@ function renderAmount() {
 
     // Destination fields based on selected asset type
     let destFieldsHtml = '';
-    if (isCashout) {
-        destFieldsHtml = `
-            <div class="field">
-                <div class="field-label">BENEFICIARY PHONE</div>
-                <input class="text-input" id="beneficiaryPhone" placeholder="+267 7X XXX XXX" value="${loggedPhone}">
-            </div>
-            <div class="info-note">💳 They receive a withdrawal code via SMS. No destination account needed.</div>
-        `;
-    } else if (selAsset === 'ACCOUNT') {
+    if (selAsset === 'ACCOUNT') {
         destFieldsHtml = `
             <div class="field">
                 <div class="field-label">ACCOUNT NUMBER</div>
@@ -761,6 +732,14 @@ function renderAmount() {
                 <div class="field-label">CARD NUMBER</div>
                 <input class="text-input" id="destInput" placeholder="Enter card number">
             </div>
+        `;
+    } else if (selAsset === 'VOUCHER') {
+        destFieldsHtml = `
+            <div class="field">
+                <div class="field-label">PHONE NUMBER</div>
+                <input class="text-input" id="destInput" placeholder="Enter phone number">
+            </div>
+            <div class="info-note">🎫 The recipient will receive a voucher code via SMS.</div>
         `;
     } else {
         destFieldsHtml = `
@@ -957,6 +936,7 @@ function renderPool() {
         if (selAsset === 'ACCOUNT') destFieldLabel = 'ACCOUNT NUMBER';
         else if (selAsset === 'WALLET' || selAsset === 'MNO-WALLET' || selAsset === 'BANK-WALLET') destFieldLabel = 'PHONE / WALLET ID';
         else if (selAsset === 'CARD') destFieldLabel = 'CARD NUMBER';
+        else if (selAsset === 'VOUCHER') destFieldLabel = 'PHONE NUMBER';
 
         return `
             ${dots(3,1)}
@@ -966,6 +946,7 @@ function renderPool() {
             <div class="field"><div class="field-label">${destFieldLabel}</div>
                 <input class="text-input" id="destInput" placeholder="Enter ${destFieldLabel.toLowerCase()}">
             </div>
+            ${selAsset === 'VOUCHER' ? '<div class="info-note">🎫 The recipient will receive a voucher code via SMS.</div>' : ''}
             <div style="font-weight:700;font-size:var(--fs-label);text-transform:uppercase;margin:var(--space-unit) 0 0.6em;opacity:0.5;">SOURCES (2+ REQUIRED)</div>
             <div id="sourceEntries"></div>
             <button class="add-source-btn" onclick="addSource()">+ ADD SOURCE</button>
@@ -1088,24 +1069,18 @@ function buildPayload() {
     const amt = parseFloat(document.getElementById('amountInput')?.value) || 0;
     const pin = document.getElementById('pinInput')?.value || '';
 
-    if (currentFlow === 'send' || currentFlow === 'cashout') {
-        payload.swap_type = currentFlow === 'cashout' ? 'CASHOUT' : 'DEPOSIT';
+    if (currentFlow === 'send') {
+        payload.swap_type = 'DEPOSIT';
         payload.from_institution = selFromInst;
         payload.asset_type = selFromAsset || 'ACCOUNT';
         payload.source_identifier = document.getElementById('sourceIdentifier')?.value || '';
         payload.amount = amt;
         payload.to_institution = selWho;
         payload.destination_asset_type = selAsset || 'ACCOUNT';
-        if (currentFlow === 'cashout') {
-            payload.beneficiary_phone = document.getElementById('beneficiaryPhone')?.value || '';
-            payload.destination_identifier = payload.beneficiary_phone;
-            payload.destination_identifier_type = 'phone';
-        } else {
-            const dest = document.getElementById('destInput')?.value?.trim() || '';
-            payload.destination_identifier = dest;
-            payload.destination_identifier_type = selAsset === 'ACCOUNT' ? 'account' : 'phone';
-            if (selAsset === 'ACCOUNT') payload.destination_account = dest; else payload.destination_phone = dest;
-        }
+        const dest = document.getElementById('destInput')?.value?.trim() || '';
+        payload.destination_identifier = dest;
+        payload.destination_identifier_type = selAsset === 'ACCOUNT' ? 'account' : 'phone';
+        if (selAsset === 'ACCOUNT') payload.destination_account = dest; else payload.destination_phone = dest;
     } else if (currentFlow === 'identity') {
         payload.swap_type = 'IDENTITY';
         payload.from_institution = selFromInst;
