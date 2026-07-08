@@ -4,7 +4,7 @@
  * VOUCHMORPH ENTERPRISE — GOVERNMENT/ENTERPRISE READINESS DIAGNOSTIC
  * ============================================================================
  *
- * DROP-IN LOCATION: public/admin/enterprise/testgov.php
+ * DROP-IN LOCATION: public/admin/enterprise/system_diagnostic.php
  * (lives INSIDE enterprise/, alongside auth.php — paths below reflect that)
  *
  * Categories:
@@ -24,26 +24,31 @@
  * ============================================================================
  */
 
-require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/auth.php'; // FIXED: same directory, not /enterprise/auth.php
 $user = requireEnterpriseAuth();
 
-// Only 'owner' has org-wide authority
+// FIXED: role catalog no longer includes 'admin'/'super_admin' — only
+// 'owner' has org-wide authority. Adjust here if you introduce a distinct
+// platform-support role later, but keep this narrow deliberately.
 if (($user['role'] ?? '') !== 'owner') {
     header('HTTP/1.1 403 Forbidden');
     die('System diagnostics require the owner role.');
 }
 
-// ============================================================
-// FIXED: Use getConnection() instead of getInstance()
-// ============================================================
+// FIXED: three levels up from public/admin/enterprise/ to reach repo root's src/
 require_once dirname(__DIR__, 3) . '/src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
-// FIXED: Use getConnection() - the correct method name
-$db = DBConnection::getConnection();
+// FIXED: standardized on getInstance() (see auth.php's own standardization
+// note) — getConnection() and `new DBConnection()->getConnection()` are the
+// other two patterns found elsewhere in this codebase; all three should
+// converge on one now.
+$db = DBConnection::getInstance();
 $orgId = getOrganizationId();
 
-// Project root - three levels up from public/admin/enterprise/
+// FIXED: three levels up, not two — fileContains() calls below use paths
+// like 'public/admin/enterprise/imports/execute.php' relative to the ACTUAL
+// repo root, not to public/.
 $projectRoot = realpath(dirname(__DIR__, 3));
 
 // ============================================================================
@@ -142,7 +147,7 @@ addResult('1. Core Infrastructure', 'DBConnection call pattern consistency',
     count($distinctPatterns) <= 1
         ? 'Consistent pattern across checked files: ' . (reset($distinctPatterns) ?: 'none found')
         : 'INCONSISTENT — ' . implode('; ', array_map(fn($l, $p) => "{$l} uses {$p}", array_keys($patternsFound), array_values($patternsFound))),
-    count($distinctPatterns) <= 1 ? '' : 'Pick one pattern (recommend DBConnection::getConnection()) and update every call site to match.'
+    count($distinctPatterns) <= 1 ? '' : 'Pick one pattern (recommend DBConnection::getInstance()) and update every call site to match — mixing patterns risks separate connections/transaction state within one request.'
 );
 
 // ============================================================================
@@ -172,12 +177,12 @@ $hasRoleCatalog = tableExists($db, 'organization_role_catalog');
 $hasRolePermissions = tableExists($db, 'organization_role_permissions');
 addResult('2. Organizational Structure', 'Government role catalog',
     $hasRoleCatalog ? 'pass' : 'fail',
-    $hasRoleCatalog ? 'Present — ' . (rowCount($db, 'organization_role_catalog') ?? '?') . ' roles defined' : 'MISSING — no defined role catalog',
+    $hasRoleCatalog ? 'Present — ' . (rowCount($db, 'organization_role_catalog') ?? '?') . ' roles defined' : 'MISSING — no defined role catalog (owner/department_head/program_officer/approver/senior_approver/beneficiary_registrar/auditor/viewer)',
     $hasRoleCatalog ? '' : 'Run migration_government_alignment.sql section B7.'
 );
 addResult('2. Organizational Structure', 'Role → permission matrix',
     $hasRolePermissions ? 'pass' : 'fail',
-    $hasRolePermissions ? 'Present — ' . (rowCount($db, 'organization_role_permissions') ?? '?') . ' role/permission mappings' : 'MISSING — hasPermission() will fail closed without this table',
+    $hasRolePermissions ? 'Present — ' . (rowCount($db, 'organization_role_permissions') ?? '?') . ' role/permission mappings' : 'MISSING — hasPermission() in auth.php will fail closed (deny everything except owner) without this table',
     $hasRolePermissions ? '' : 'Run migration_government_alignment.sql section B7.'
 );
 
@@ -242,22 +247,22 @@ $governmentRoles = ['owner', 'department_head', 'program_officer', 'approver', '
 $unrecognizedRoles = array_diff($roles, $governmentRoles);
 addResult('4. Access Control', 'Roles match the government role catalog',
     empty($unrecognizedRoles) ? 'pass' : 'warn',
-    empty($unrecognizedRoles) ? 'All in-use roles are recognized' : 'Roles in use but NOT in the catalog: ' . implode(', ', $unrecognizedRoles),
-    empty($unrecognizedRoles) ? '' : 'Either migrate these users to a catalog role, or add the role explicitly to organization_role_catalog.'
+    empty($unrecognizedRoles) ? 'All in-use roles are recognized' : 'Roles in use but NOT in the catalog (e.g. leftover "admin"): ' . implode(', ', $unrecognizedRoles),
+    empty($unrecognizedRoles) ? '' : 'Either migrate these users to a catalog role, or add the role explicitly to organization_role_catalog with a defined permission set.'
 );
 
 $hasUploaderRole = in_array('program_officer', $roles);
 $hasApproverRole = in_array('approver', $roles) || in_array('senior_approver', $roles);
 addResult('4. Access Control', 'Segregation of duties (maker-checker)',
     ($hasUploaderRole && $hasApproverRole) ? 'pass' : 'warn',
-    ($hasUploaderRole && $hasApproverRole) ? 'Has both program_officer and approver/senior_approver assigned' : 'No dedicated approver role distinct from uploaders yet',
-    ($hasUploaderRole && $hasApproverRole) ? '' : 'Assign at least one program_officer and one approver.'
+    ($hasUploaderRole && $hasApproverRole) ? 'Has both program_officer and approver/senior_approver assigned' : 'No one is assigned a dedicated approver role distinct from uploaders yet',
+    ($hasUploaderRole && $hasApproverRole) ? '' : 'Assign at least one program_officer and one approver — right now this may just be the same owner account doing both.'
 );
 
 $hasDeptIdCol = columnExists($db, 'organization_users', 'department_id');
 addResult('4. Access Control', 'organization_users.department_id (department scoping)',
     $hasDeptIdCol ? 'pass' : 'fail',
-    $hasDeptIdCol ? 'Present' : 'MISSING — getUserDepartmentScope() cannot function without this column',
+    $hasDeptIdCol ? 'Present' : 'MISSING — getUserDepartmentScope() in auth.php cannot function without this column',
     $hasDeptIdCol ? '' : 'Run migration_government_alignment.sql section B7.'
 );
 
@@ -271,9 +276,9 @@ if ($hasDeptIdCol && $hasDepartments) {
         ");
         $stmt->execute([':org_id' => $orgId]);
         $unscopedCount = (int)$stmt->fetchColumn();
-        addResult('4. Access Control', 'Department-scoped users have a department assigned',
+        addResult('4. Access Control', 'Department-scoped users actually have a department assigned',
             $unscopedCount === 0 ? 'pass' : 'fail',
-            $unscopedCount === 0 ? 'All department-scoped users have department_id set' : "{$unscopedCount} user(s) have department-scoped roles but NO department_id",
+            $unscopedCount === 0 ? 'All department-scoped users have department_id set' : "{$unscopedCount} user(s) have a department-scoped role but NO department_id — getUserDepartmentScope() would return null for them, meaning they'd see NOTHING (queries filtering on department_id would match zero rows) rather than being properly scoped",
             $unscopedCount === 0 ? '' : 'Assign a department_id to every user with a department-scoped role.'
         );
     } catch (Exception $e) {
@@ -319,7 +324,7 @@ addResult('5. Disbursement Pipeline Wiring', 'execute.php connected to SwapServi
 $hasIdentityRouting = $executeContent && preg_match('/->\s*initiateSwapToIdentity\s*\(/', $executeContent);
 addResult('5. Disbursement Pipeline Wiring', 'Identity-based routing (send-to-identity)',
     $hasIdentityRouting ? 'pass' : 'warn',
-    $hasIdentityRouting ? 'execute.php calls initiateSwapToIdentity() for IDENTITY-routed rows' : 'MISSING — no handling path for beneficiaries known only by National ID/phone/email',
+    $hasIdentityRouting ? 'execute.php calls initiateSwapToIdentity() for IDENTITY-routed rows' : 'MISSING — a batch with a beneficiary known only by National ID/phone/email (no wallet/account yet) has no handling path today',
     $hasIdentityRouting ? '' : 'Deploy execute_fixed.php, which splits IDENTITY rows out and processes them via initiateSwapToIdentity() individually.'
 );
 
@@ -358,7 +363,7 @@ addResult('6. Approval & Governance', 'Amount-based approval thresholds',
 $hasBatchApprovals = tableExists($db, 'batch_approvals');
 addResult('6. Approval & Governance', 'Multi-approver (dual control) tracking',
     $hasBatchApprovals ? 'pass' : 'fail',
-    $hasBatchApprovals ? 'Present — ' . (rowCount($db, 'batch_approvals') ?? '?') . ' approval records' : 'MISSING — cannot enforce "2 approvers required above a threshold"',
+    $hasBatchApprovals ? 'Present — ' . (rowCount($db, 'batch_approvals') ?? '?') . ' approval records' : 'MISSING — cannot enforce "2 approvers required above a threshold" without a way to record who has approved so far',
     $hasBatchApprovals ? '' : 'Run migration_government_alignment.sql.'
 );
 
@@ -368,7 +373,7 @@ $approveContent = file_exists($projectRoot . '/' . $approveRelPath) ? file_get_c
 $usesSelfApprovalGuard = $approveContent && preg_match('/assertNotSelfApproving\s*\(/', $approveContent);
 addResult('6. Approval & Governance', 'Approval self-check (maker ≠ checker) enforced',
     $usesSelfApprovalGuard ? 'pass' : 'fail',
-    $usesSelfApprovalGuard ? 'approve.php calls assertNotSelfApproving()' : 'Nothing prevents the uploader from approving their own batch',
+    $usesSelfApprovalGuard ? 'approve.php calls assertNotSelfApproving()' : 'Nothing prevents the uploader from approving their own batch — assertNotSelfApproving() exists in auth.php but approve.php does not call it',
     $usesSelfApprovalGuard ? '' : 'Add assertNotSelfApproving($batch[\'uploaded_by\']) to both the approve AND reject branches in approve.php.'
 );
 
@@ -403,7 +408,7 @@ if ($hasAuditLog) {
     addResult('7. Audit & Compliance', 'Dashboard actions write to audit log',
         empty($unwired) ? 'pass' : 'fail',
         empty($unwired) ? 'All checked endpoints reference the audit log' : 'Not writing to audit log: ' . implode(', ', $unwired),
-        empty($unwired) ? '' : 'Add organization_audit_logs inserts to each endpoint listed.'
+        empty($unwired) ? '' : 'Add organization_audit_logs inserts to each endpoint listed (execute_fixed.php already does this for execute.php).'
     );
 }
 
@@ -439,14 +444,32 @@ addResult('8. Security Hardening', 'Demo credentials removed from login page',
     $hasDemoCreds ? 'Remove the demo-cred block and pre-filled value="" attributes from login.php before any real pilot.' : ''
 );
 
-addResult('8. Security Hardening', 'Session cookie hardening', 'warn',
-    'No explicit session.cookie_secure / cookie_httponly / cookie_samesite configuration visible',
-    "Set these in auth.php before session_start()."
+$hasCookieHardening = $authContent && (
+    preg_match('/session\.cookie_httponly/', $authContent) &&
+    preg_match('/session\.cookie_secure/', $authContent)
+);
+$hardeningBeforeSessionStart = false;
+if ($hasCookieHardening) {
+    $httponlyPos = strpos($authContent, 'session.cookie_httponly');
+    $sessionStartPos = strpos($authContent, 'session_start(');
+    $hardeningBeforeSessionStart = ($httponlyPos !== false && $sessionStartPos !== false && $httponlyPos < $sessionStartPos);
+}
+addResult('8. Security Hardening', 'Session cookie hardening',
+    $hardeningBeforeSessionStart ? 'pass' : ($hasCookieHardening ? 'fail' : 'warn'),
+    $hardeningBeforeSessionStart
+        ? 'cookie_httponly/cookie_secure set before session_start() in auth.php'
+        : ($hasCookieHardening
+            ? 'FAIL — cookie hardening ini_set() calls found but positioned AFTER session_start() — PHP ignores session.cookie_* changes once a session is already active, so these currently have no effect'
+            : 'No explicit session.cookie_secure / cookie_httponly / cookie_samesite configuration visible'),
+    $hardeningBeforeSessionStart ? '' : "Set ini_set('session.cookie_httponly','1'), ini_set('session.cookie_secure','1'), ini_set('session.cookie_samesite','Lax') in auth.php, BEFORE the session_start() call, not in login.php after auth.php has already been required."
 );
 
 // ============================================================================
 // 9. PLATFORM / ORGANIZATION TIER SEPARATION
 // ============================================================================
+// VouchMorph's own staff (src/Application/Admin/Auth/AdminAuth.php) must
+// never share session state, tables, or login pages with organization users
+// (public/admin/enterprise/auth.php). Checking that separation holds.
 
 $hasAdminAuth = file_exists($projectRoot . '/src/Application/Admin/Auth/AdminAuth.php');
 addResult('9. Platform/Organization Tier Separation', 'Platform admin auth exists separately',
