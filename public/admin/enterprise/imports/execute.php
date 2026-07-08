@@ -160,14 +160,38 @@ if (empty($rows)) {
 }
 
 // ----------------------------------------------------------------------------
-// BUILD THE SwapService PAYLOAD — one source, many destinations
+// SPLIT ROWS: immediate destinations (known wallet/account/voucher) go into
+// ONE executeMultiDestinationSwap() call. IDENTITY rows (beneficiary known
+// only by National ID/phone/email, no wallet/account on file yet) are a
+// fundamentally different flow -- each is a hold-and-wait: SwapService places
+// a hold now via initiateSwapToIdentity(), then the RECIPIENT (or an agent
+// verifying their physical ID) claims it later via confirmAndFinalizeIdentitySwap(),
+// up to 24 hours after. These cannot be bundled into the same synchronous
+// destinations[] array because they don't complete immediately.
+// ----------------------------------------------------------------------------
+$immediateRows = [];
+$identityRows = [];
+foreach ($rows as $row) {
+    if (strtoupper($row['destination_type'] ?? '') === 'IDENTITY') {
+        $identityRows[] = $row;
+    } else {
+        $immediateRows[] = $row;
+    }
+}
+
+// ----------------------------------------------------------------------------
+// BUILD THE SwapService PAYLOAD FOR IMMEDIATE ROWS — one source, many
+// destinations, each independently routed to its own institution/delivery
+// method (BancABC wallet, Mascom wallet, BancABC cashout voucher, Bank
+// Gaborone cashout voucher, etc. can all sit in the same batch).
 // ----------------------------------------------------------------------------
 $destinations = [];
-foreach ($rows as $row) {
+foreach ($immediateRows as $row) {
     $deliveryMethod = match (strtoupper($row['destination_type'] ?? '')) {
         'WALLET' => 'WALLET',
         'ACCOUNT' => 'DEPOSIT',
         'PHONE' => 'CASHOUT',
+        'VOUCHER' => 'VOUCHER',
         default => 'DEPOSIT'
     };
 
@@ -190,7 +214,6 @@ $payload = [
     'source_identifier' => $source['account_identifier'],
     'asset_type' => $source['asset_type'] ?? 'WALLET',
     'currency' => $batch['currency'] ?? 'BWP',
-    'destinations' => $destinations,
 ];
 
 if ($isHookedSource) {
@@ -213,26 +236,48 @@ if ($isHookedSource) {
 
 // ----------------------------------------------------------------------------
 // CALL THE REAL SwapService — same pattern as public/api/v1/swap/execute.php
+// NOTE: executeMultiDestinationSwap() requires 2+ destinations. A batch with
+// exactly one immediate destination uses the standard single-swap fields
+// instead (destination_institution/destination_identifier directly on the
+// payload, not wrapped in a destinations[] array) — otherwise SwapService
+// would silently fall through to the wrong code path.
 // ----------------------------------------------------------------------------
 $startTime = microtime(true);
 $result = null;
 $executionError = null;
+$countryName = $_ENV['VOUCHMORPH_COUNTRY'] ?? getenv('VOUCHMORPH_COUNTRY') ?? 'Botswana';
 
-try {
-    $countryName = $_ENV['VOUCHMORPH_COUNTRY'] ?? getenv('VOUCHMORPH_COUNTRY') ?? 'Botswana';
-    $fullCountryConfig = LoadCountry::getConfig();
+if (count($destinations) >= 2) {
+    $payload['destinations'] = $destinations;
+} elseif (count($destinations) === 1) {
+    $only = $destinations[0];
+    $payload['amount'] = $only['amount'];
+    $payload['to_institution'] = $only['to_institution'];
+    $payload['destination_institution'] = $only['destination_institution'];
+    $payload['destination_identifier'] = $only['destination_identifier'];
+    $payload['destination_identifier_type'] = $only['destination_identifier_type'];
+    $payload['delivery_method'] = $only['delivery_method'];
+    $payload['beneficiary_phone'] = $only['beneficiary_phone'];
+    $payload['swap_type'] = in_array($only['delivery_method'], ['CASHOUT', 'VOUCHER', 'AGENT', 'ATM']) ? 'CASHOUT' : 'DEPOSIT';
+}
 
-    $swapService = new SwapService($db, $fullCountryConfig, $countryName);
-    $result = $swapService->executeAtomicSwap($payload);
-} catch (Throwable $e) {
-    $executionError = $e->getMessage();
-    error_log("[enterprise/execute.php] SwapService execution failed for batch {$batchId}: " . $e->getMessage());
+if (!empty($destinations)) {
+    try {
+        $fullCountryConfig = LoadCountry::getConfig();
+        $swapService = new SwapService($db, $fullCountryConfig, $countryName);
+        $result = $swapService->executeAtomicSwap($payload);
+    } catch (Throwable $e) {
+        $executionError = $e->getMessage();
+        error_log("[enterprise/execute.php] SwapService execution failed for batch {$batchId}: " . $e->getMessage());
+    }
 }
 
 $executionSeconds = round(microtime(true) - $startTime, 2);
 
 // ----------------------------------------------------------------------------
-// PROCESS RESULTS — write per-destination outcomes back to payment_instructions
+// PROCESS IMMEDIATE-ROW RESULTS — write per-destination outcomes back to
+// payment_instructions. Mapped against $immediateRows (NOT the full $rows
+// array) since identity rows never entered the destinations[] payload.
 // ----------------------------------------------------------------------------
 $successCount = 0;
 $failedCount = 0;
@@ -240,12 +285,15 @@ $totalDelivered = 0;
 $totalFees = 0;
 $settlementReference = null;
 
-if ($result && isset($result['destinations']) && is_array($result['destinations'])) {
+if (empty($destinations)) {
+    // Nothing immediate to process — batch was 100% identity rows
+} elseif ($result && isset($result['destinations']) && is_array($result['destinations'])) {
+    // Multi-destination path (2+ rows)
     $settlementReference = $result['reference'] ?? $batch['batch_reference'];
 
     foreach ($result['destinations'] as $destResult) {
         $idx = $destResult['index'] ?? null;
-        $row = ($idx !== null && isset($rows[$idx])) ? $rows[$idx] : null;
+        $row = ($idx !== null && isset($immediateRows[$idx])) ? $immediateRows[$idx] : null;
         if (!$row) continue;
 
         $isSuccess = ($destResult['status'] ?? '') === 'success';
@@ -264,6 +312,7 @@ if ($result && isset($result['destinations']) && is_array($result['destinations'
                 recipient_name, recipient_phone, amount, currency, swap_reference, status
             ) VALUES (
                 :org_id, :batch_id, :row_id, 'organization_wallet', :source_id,
+
                 :dest_type, :dest_provider, :dest_value, :name, :phone,
                 :amount, :currency, :swap_ref, :status
             )
@@ -284,10 +333,44 @@ if ($result && isset($result['destinations']) && is_array($result['destinations'
             ':status' => $isSuccess ? 'SUCCESS' : 'FAILED',
         ]);
     }
-} else {
+} elseif ($result && count($destinations) === 1 && ($result['status'] ?? '') === 'success') {
+    // Single-destination standard swap path — result has no 'destinations' key
+    $row = $immediateRows[0];
+    $successCount = 1;
+    $totalDelivered += (float)($result['amount'] ?? $row['amount']);
+    $totalFees += (float)($result['fee'] ?? 0);
+    $settlementReference = $result['reference'] ?? $batch['batch_reference'];
+
+    $stmt = $db->prepare("
+        INSERT INTO payment_instructions (
+            organization_id, batch_id, import_row_id, source_type, source_id,
+            destination_type, destination_provider, destination_value,
+            recipient_name, recipient_phone, amount, currency, swap_reference, status
+        ) VALUES (
+            :org_id, :batch_id, :row_id, 'organization_wallet', :source_id,
+            :dest_type, :dest_provider, :dest_value, :name, :phone,
+            :amount, :currency, :swap_ref, 'SUCCESS'
+        )
+    ");
+    $stmt->execute([
+        ':org_id' => $orgId,
+        ':batch_id' => $batchId,
+        ':row_id' => $row['id'],
+        ':source_id' => $batch['source_id'],
+        ':dest_type' => $row['destination_type'],
+        ':dest_provider' => $row['destination_provider'],
+        ':dest_value' => $row['destination_value'],
+        ':name' => $row['recipient_name'],
+        ':phone' => $row['recipient_phone'],
+        ':amount' => $row['amount'],
+        ':currency' => $row['currency'] ?? $batch['currency'] ?? 'BWP',
+        ':swap_ref' => $result['reference'] ?? null,
+    ]);
+} elseif (!empty($destinations)) {
     // executeAtomicSwap threw, or returned an unexpected shape — treat every
-    // row as failed rather than silently reporting success.
-    foreach ($rows as $row) {
+    // IMMEDIATE row as failed rather than silently reporting success.
+    // (Identity rows are untouched here — handled separately below.)
+    foreach ($immediateRows as $row) {
         $failedCount++;
         $stmt = $db->prepare("
             INSERT INTO payment_instructions (
@@ -317,22 +400,108 @@ if ($result && isset($result['destinations']) && is_array($result['destinations'
 }
 
 // ----------------------------------------------------------------------------
-// UPDATE BATCH STATUS
+// PROCESS IDENTITY ROWS — each placed as its OWN hold via initiateSwapToIdentity().
+// These do NOT complete now. The recipient (or an agent verifying their
+// physical National ID) must claim it later via the identity-confirmation
+// flow (confirmAndFinalizeIdentitySwap), within the 24-hour hold window.
+// ----------------------------------------------------------------------------
+$pendingIdentityCount = 0;
+
+foreach ($identityRows as $row) {
+    $identityPayload = [
+        'reference' => $batch['batch_reference'] . '_ID_' . $row['id'],
+        'from_institution' => $source['provider'],
+        'source_institution' => $source['provider'],
+        'source_identifier' => $source['account_identifier'],
+        'asset_type' => $source['asset_type'] ?? 'WALLET',
+        'amount' => (float)$row['amount'],
+        'currency' => $row['currency'] ?? $batch['currency'] ?? 'BWP',
+        // destination_value carries whichever identifier was mapped for this
+        // row (National ID, phone, or email) — destination_type tells us which
+        'identity_type' => strtolower($row['identity_type'] ?? 'national_id'),
+        'identity_value' => $row['destination_value'],
+        'user_id' => $orgId, // organization acts as the initiating party of record
+    ];
+
+    if ($isHookedSource) {
+        $identityPayload['_is_hooked'] = true;
+        $identityPayload['source_reference'] = $source['source_reference'];
+        if (!empty($payload['access_token'])) {
+            $identityPayload['access_token'] = $payload['access_token'];
+        }
+    } else {
+        $identityPayload['wallet_pin'] = $walletPin;
+        $identityPayload['pin'] = $walletPin;
+    }
+
+    $swapStatus = 'FAILED';
+    $swapRef = null;
+
+    try {
+        if (!isset($swapService)) {
+            $fullCountryConfig = LoadCountry::getConfig();
+            $swapService = new SwapService($db, $fullCountryConfig, $countryName);
+        }
+        $identityResult = $swapService->initiateSwapToIdentity($identityPayload);
+        if (($identityResult['status'] ?? '') === 'pending_identity_confirmation') {
+            $swapStatus = 'PENDING_IDENTITY';
+            $swapRef = $identityResult['swap_reference'] ?? null;
+            $pendingIdentityCount++;
+        }
+    } catch (Throwable $e) {
+        error_log("[enterprise/execute.php] initiateSwapToIdentity failed for row {$row['id']}: " . $e->getMessage());
+    }
+
+    $stmt = $db->prepare("
+        INSERT INTO payment_instructions (
+            organization_id, batch_id, import_row_id, source_type, source_id,
+            destination_type, destination_provider, destination_value,
+            recipient_name, recipient_phone, amount, currency, swap_reference, status
+        ) VALUES (
+            :org_id, :batch_id, :row_id, 'organization_wallet', :source_id,
+            'IDENTITY', NULL, :dest_value, :name, :phone,
+            :amount, :currency, :swap_ref, :status
+        )
+    ");
+    $stmt->execute([
+        ':org_id' => $orgId,
+        ':batch_id' => $batchId,
+        ':row_id' => $row['id'],
+        ':source_id' => $batch['source_id'],
+        ':dest_value' => $row['destination_value'],
+        ':name' => $row['recipient_name'],
+        ':phone' => $row['recipient_phone'],
+        ':amount' => $row['amount'],
+        ':currency' => $row['currency'] ?? $batch['currency'] ?? 'BWP',
+        ':swap_ref' => $swapRef,
+        ':status' => $swapStatus,
+    ]);
+
+    if ($swapStatus === 'FAILED') {
+        $failedCount++;
+    }
+}
+
+// ----------------------------------------------------------------------------
+// UPDATE BATCH STATUS — now accounts for rows still awaiting identity claim
 // ----------------------------------------------------------------------------
 $finalStatus = $executionError
     ? 'FAILED'
-    : ($failedCount === 0 ? 'COMPLETED' : ($successCount > 0 ? 'PARTIAL' : 'FAILED'));
+    : ($pendingIdentityCount > 0 && $failedCount === 0 && count($rows) === $pendingIdentityCount + $successCount
+        ? 'PARTIALLY_PENDING_IDENTITY'
+        : ($failedCount === 0 ? 'COMPLETED' : ($successCount > 0 || $pendingIdentityCount > 0 ? 'PARTIAL' : 'FAILED')));
 
 $stmt = $db->prepare("
     UPDATE import_batches
     SET status = :status, successful_count = :success, failed_count = :failed,
-        pending_count = 0, completed_at = NOW()
+        pending_count = :pending, completed_at = NOW()
     WHERE id = :id
 ");
 $stmt->execute([
     ':status' => $finalStatus,
     ':success' => $successCount,
     ':failed' => $failedCount,
+    ':pending' => $pendingIdentityCount,
     ':id' => $batchId,
 ]);
 
