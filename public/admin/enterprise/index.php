@@ -1,11 +1,10 @@
 <?php
-session_start();
+// index.php
 require_once 'auth.php';
-$user = requireEnterpriseAuth();
+$user = requireEnterpriseAuth(); // This handles session verification
 
-// Database connection is already set up in auth.php
-// Use the global $pdo variable
-global $pdo;
+// Get database connection
+$pdo = getDBConnection();
 $orgId = getOrganizationId();
 
 // Get stats
@@ -48,7 +47,7 @@ try {
     $stmt->execute([':org_id' => $orgId]);
     $beneficiaryCount = $stmt->fetchColumn() ?: 0;
 
-    // Successful payments this month - you may need to adjust this query based on your actual payment table
+    // Successful payments this month
     $stmt = $pdo->prepare("
         SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as amount 
         FROM import_batches 
