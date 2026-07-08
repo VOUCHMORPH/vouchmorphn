@@ -23,7 +23,6 @@ participants:
     
     asset_types:
       - ACCOUNT
-      - ATM
       - VOUCHER
     
     routing:
@@ -62,7 +61,7 @@ participants:
     
     asset_types:
       - ACCOUNT
-      - ATM
+      - VOUCHER
       - BANK-WALLET
     
     routing:
