@@ -5,71 +5,61 @@
  * ============================================================================
  *
  * DROP-IN LOCATION: public/admin/enterprise/system_diagnostic.php
- * (replaces public/admin/test.php as the "is this system aligned" tool)
+ * (lives INSIDE enterprise/, alongside auth.php — paths below reflect that)
  *
- * WHAT THIS DOES
- * This is not a static checklist. It runs live checks against your actual
- * database schema and your actual source files, and tells you exactly what
- * is missing or miswired, with the fix for each item.
- *
- * It is modeled on the checks a government financial system (think Oracle
- * Federal Financials / SAP Public Sector / a Mojaloop-based social protection
- * payment hub) needs before it can be trusted with pensioner rolls, orphanage
- * grants, or social security disbursements:
- *
+ * Categories:
  *   1. Core infrastructure & environment
- *   2. Organizational structure (departments, not just flat "organizations")
- *   3. Beneficiary & program management (persistent registry, not one-off CSVs)
- *   4. Access control / who gets to log in and do what
- *   5. Disbursement pipeline wiring (is money movement actually connected?)
- *   6. Approval & governance (dual control, thresholds)
- *   7. Audit & compliance (who did what, when, reconciliation)
+ *   2. Organizational structure (departments, programs, role catalog)
+ *   3. Beneficiary & program management (persistent registry)
+ *   4. Access control (government role layers, department scoping)
+ *   5. Disbursement pipeline wiring (money movement + multi-destination
+ *      + identity-based routing)
+ *   6. Approval & governance (dual control, maker-checker, thresholds)
+ *   7. Audit & compliance
  *   8. Security hardening
+ *   9. Platform/organization tier separation
  *
- * ACCESS: owner/admin role only. Safe to run repeatedly — read-only, except
- * it will optionally CREATE missing tables if you click "Apply Fix" (guarded,
- * shows the SQL first, requires confirmation).
+ * ACCESS: owner role only. This tool exposes file paths, extension lists,
+ * and infra details — narrower than the audit/reporting roles should see.
  * ============================================================================
  */
 
-// ============================================================
-// FIX: Use correct DBConnection method
-// ============================================================
-
-require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/auth.php'; // FIXED: same directory, not /enterprise/auth.php
 $user = requireEnterpriseAuth();
 
-if (!in_array($user['role'], ['owner', 'admin', 'super_admin'])) {
+// FIXED: role catalog no longer includes 'admin'/'super_admin' — only
+// 'owner' has org-wide authority. Adjust here if you introduce a distinct
+// platform-support role later, but keep this narrow deliberately.
+if (($user['role'] ?? '') !== 'owner') {
     header('HTTP/1.1 403 Forbidden');
-    die('System diagnostics require owner, admin, or super_admin role.');
+    die('System diagnostics require the owner role.');
 }
 
-require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
+// FIXED: three levels up from public/admin/enterprise/ to reach repo root's src/
+require_once dirname(__DIR__, 3) . '/src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
-// FIXED: Use getConnection() instead of getInstance()
-$db = DBConnection::getConnection();
+// FIXED: standardized on getInstance() (see auth.php's own standardization
+// note) — getConnection() and `new DBConnection()->getConnection()` are the
+// other two patterns found elsewhere in this codebase; all three should
+// converge on one now.
+$db = DBConnection::getInstance();
 $orgId = getOrganizationId();
 
-// Project root, used to grep other source files for wiring checks
-$projectRoot = realpath(__DIR__ . '/../../');
+// FIXED: three levels up, not two — fileContains() calls below use paths
+// like 'public/admin/enterprise/imports/execute.php' relative to the ACTUAL
+// repo root, not to public/.
+$projectRoot = realpath(dirname(__DIR__, 3));
 
 // ============================================================================
 // CHECK ENGINE
 // ============================================================================
 
-$results = []; // grouped by category
-$applyFix = $_POST['apply_fix'] ?? null;
-$fixMessage = '';
+$results = [];
 
 function addResult(string $category, string $name, string $status, string $message, string $fix = ''): void {
     global $results;
-    $results[$category][] = [
-        'name' => $name,
-        'status' => $status, // 'pass' | 'warn' | 'fail'
-        'message' => $message,
-        'fix' => $fix
-    ];
+    $results[$category][] = ['name' => $name, 'status' => $status, 'message' => $message, 'fix' => $fix];
 }
 
 function tableExists(PDO $db, string $table): bool {
@@ -84,10 +74,7 @@ function tableExists(PDO $db, string $table): bool {
 
 function columnExists(PDO $db, string $table, string $column): bool {
     try {
-        $stmt = $db->prepare("
-            SELECT COUNT(*) FROM information_schema.columns
-            WHERE table_name = :t AND column_name = :c
-        ");
+        $stmt = $db->prepare("SELECT COUNT(*) FROM information_schema.columns WHERE table_name = :t AND column_name = :c");
         $stmt->execute([':t' => $table, ':c' => $column]);
         return (int)$stmt->fetchColumn() > 0;
     } catch (Exception $e) {
@@ -97,8 +84,7 @@ function columnExists(PDO $db, string $table, string $column): bool {
 
 function rowCount(PDO $db, string $table): ?int {
     try {
-        $stmt = $db->query("SELECT COUNT(*) FROM " . $table);
-        return (int)$stmt->fetchColumn();
+        return (int)$db->query("SELECT COUNT(*) FROM " . $table)->fetchColumn();
     } catch (Exception $e) {
         return null;
     }
@@ -106,14 +92,10 @@ function rowCount(PDO $db, string $table): ?int {
 
 function fileContains(string $root, string $relPath, array $needles): array {
     $full = $root . '/' . ltrim($relPath, '/');
-    if (!file_exists($full)) {
-        return ['exists' => false, 'matches' => []];
-    }
+    if (!file_exists($full)) return ['exists' => false, 'matches' => []];
     $content = file_get_contents($full);
     $matches = [];
-    foreach ($needles as $needle) {
-        $matches[$needle] = (strpos($content, $needle) !== false);
-    }
+    foreach ($needles as $needle) { $matches[$needle] = (strpos($content, $needle) !== false); }
     return ['exists' => true, 'matches' => $matches];
 }
 
@@ -124,137 +106,129 @@ function fileContains(string $root, string $relPath, array $needles): array {
 addResult('1. Core Infrastructure', 'Database connectivity', 'pass', 'Connected successfully via ' . $db->getAttribute(PDO::ATTR_DRIVER_NAME));
 
 $phpVersion = PHP_VERSION;
-addResult(
-    '1. Core Infrastructure',
-    'PHP version',
+addResult('1. Core Infrastructure', 'PHP version',
     version_compare($phpVersion, '8.1.0', '>=') ? 'pass' : 'warn',
     "Running PHP {$phpVersion}",
-    version_compare($phpVersion, '8.1.0', '>=') ? '' : 'Upgrade to PHP 8.1+ for full compatibility with typed properties used across Domain\\Services.'
+    version_compare($phpVersion, '8.1.0', '>=') ? '' : 'Upgrade to PHP 8.1+.'
 );
 
 foreach (['pdo_pgsql', 'curl', 'openssl', 'mbstring', 'json'] as $ext) {
-    addResult(
-        '1. Core Infrastructure',
-        "Extension: {$ext}",
+    addResult('1. Core Infrastructure', "Extension: {$ext}",
         extension_loaded($ext) ? 'pass' : 'fail',
-        extension_loaded($ext) ? 'Loaded' : 'MISSING — required for ' . ($ext === 'pdo_pgsql' ? 'database access' : ($ext === 'curl' ? 'institution API calls' : ($ext === 'openssl' ? 'message signing/certificates' : 'core parsing'))),
-        extension_loaded($ext) ? '' : "Install php-{$ext} and restart the web server / container."
+        extension_loaded($ext) ? 'Loaded' : 'MISSING',
+        extension_loaded($ext) ? '' : "Install php-{$ext}."
     );
 }
 
-addResult(
-    '1. Core Infrastructure',
-    'Upload directory security',
+addResult('1. Core Infrastructure', 'Upload directory security',
     is_dir('/tmp/vouchmorph_uploads') ? (substr(sprintf('%o', fileperms('/tmp/vouchmorph_uploads')), -3) === '777' ? 'fail' : 'pass') : 'warn',
     is_dir('/tmp/vouchmorph_uploads') ? 'Permissions: ' . substr(sprintf('%o', fileperms('/tmp/vouchmorph_uploads')), -3) : 'Directory not yet created',
-    'upload.php creates this with mode 0777 (world-writable). Change to 0750 and ensure the web server user owns it — beneficiary files (National IDs, phone numbers, amounts) sitting world-writable in /tmp is a data protection finding in any government audit.'
+    'Change to 0750, web server user only.'
+);
+
+// DBConnection call-pattern consistency across the codebase
+$dbPatternFiles = [
+    'enterprise auth.php' => 'public/admin/enterprise/auth.php',
+    'imports/execute.php' => 'public/admin/enterprise/imports/execute.php',
+    'api/v1/swap/execute.php' => 'public/api/v1/swap/execute.php',
+];
+$patternsFound = [];
+foreach ($dbPatternFiles as $label => $relPath) {
+    $full = $projectRoot . '/' . $relPath;
+    if (!file_exists($full)) continue;
+    $content = file_get_contents($full);
+    if (preg_match('/DBConnection::getInstance\s*\(/', $content)) $patternsFound[$label] = 'getInstance()';
+    elseif (preg_match('/DBConnection::getConnection\s*\(/', $content)) $patternsFound[$label] = 'getConnection()';
+    elseif (preg_match('/new\s+DBConnection\s*\(/', $content)) $patternsFound[$label] = 'new DBConnection()';
+}
+$distinctPatterns = array_unique(array_values($patternsFound));
+addResult('1. Core Infrastructure', 'DBConnection call pattern consistency',
+    count($distinctPatterns) <= 1 ? 'pass' : 'warn',
+    count($distinctPatterns) <= 1
+        ? 'Consistent pattern across checked files: ' . (reset($distinctPatterns) ?: 'none found')
+        : 'INCONSISTENT — ' . implode('; ', array_map(fn($l, $p) => "{$l} uses {$p}", array_keys($patternsFound), array_values($patternsFound))),
+    count($distinctPatterns) <= 1 ? '' : 'Pick one pattern (recommend DBConnection::getInstance()) and update every call site to match — mixing patterns risks separate connections/transaction state within one request.'
 );
 
 // ============================================================================
-// 2. ORGANIZATIONAL STRUCTURE — DEPARTMENTS, NOT JUST FLAT ORGANIZATIONS
+// 2. ORGANIZATIONAL STRUCTURE
 // ============================================================================
 
-addResult(
-    '2. Organizational Structure',
-    'organizations table',
+addResult('2. Organizational Structure', 'organizations table',
     tableExists($db, 'organizations') ? 'pass' : 'fail',
-    tableExists($db, 'organizations') ? 'Present' : 'MISSING',
-    tableExists($db, 'organizations') ? '' : 'Core tenant table missing entirely.'
+    tableExists($db, 'organizations') ? 'Present' : 'MISSING', ''
 );
 
 $hasDepartments = tableExists($db, 'departments');
-addResult(
-    '2. Organizational Structure',
-    'departments table',
+addResult('2. Organizational Structure', 'departments table',
     $hasDepartments ? 'pass' : 'warn',
-    $hasDepartments ? 'Present — ' . rowCount($db, 'departments') . ' departments registered' : 'MISSING — a government tenant currently has no way to separate "Department of Social Protection" from "Department of Disability Services" under one Ministry account',
-    $hasDepartments ? '' : 'See migration script: creates departments (id, organization_id, name, code, budget_ceiling, cost_center, head_user_id). Every import_batch, beneficiary, and approval should carry a department_id so a Ministry can run separate books per department while sharing one login/RBAC layer.'
+    $hasDepartments ? 'Present — ' . rowCount($db, 'departments') . ' departments' : 'MISSING',
+    $hasDepartments ? '' : 'Run migration_government_alignment.sql.'
 );
 
-$hasBudgetLines = tableExists($db, 'budget_lines') || tableExists($db, 'disbursement_programs');
-addResult(
-    '2. Organizational Structure',
-    'Programs / budget lines',
+$hasBudgetLines = tableExists($db, 'disbursement_programs');
+addResult('2. Organizational Structure', 'Programs / budget lines',
     $hasBudgetLines ? 'pass' : 'warn',
-    $hasBudgetLines ? 'Present' : 'MISSING — no way to say "this batch is the Q3 2026 Old Age Pension program with a P50M ceiling" as opposed to an ad-hoc payment run',
-    $hasBudgetLines ? '' : 'Add disbursement_programs (id, department_id, program_name, program_type ENUM[PENSION, ORPHAN_GRANT, DISABILITY_GRANT, SOCIAL_SECURITY, EMERGENCY_RELIEF, PAYROLL, OTHER], fiscal_year, budget_ceiling, amount_disbursed_to_date, status, recurrence ENUM[ONE_OFF, MONTHLY, QUARTERLY]). Every import_batch should reference program_id.'
+    $hasBudgetLines ? 'Present' : 'MISSING',
+    $hasBudgetLines ? '' : 'Run migration_government_alignment.sql.'
+);
+
+$hasRoleCatalog = tableExists($db, 'organization_role_catalog');
+$hasRolePermissions = tableExists($db, 'organization_role_permissions');
+addResult('2. Organizational Structure', 'Government role catalog',
+    $hasRoleCatalog ? 'pass' : 'fail',
+    $hasRoleCatalog ? 'Present — ' . (rowCount($db, 'organization_role_catalog') ?? '?') . ' roles defined' : 'MISSING — no defined role catalog (owner/department_head/program_officer/approver/senior_approver/beneficiary_registrar/auditor/viewer)',
+    $hasRoleCatalog ? '' : 'Run migration_government_alignment.sql section B7.'
+);
+addResult('2. Organizational Structure', 'Role → permission matrix',
+    $hasRolePermissions ? 'pass' : 'fail',
+    $hasRolePermissions ? 'Present — ' . (rowCount($db, 'organization_role_permissions') ?? '?') . ' role/permission mappings' : 'MISSING — hasPermission() in auth.php will fail closed (deny everything except owner) without this table',
+    $hasRolePermissions ? '' : 'Run migration_government_alignment.sql section B7.'
 );
 
 // ============================================================================
-// 3. BENEFICIARY & PROGRAM MANAGEMENT — PERSISTENT REGISTRY
+// 3. BENEFICIARY & PROGRAM MANAGEMENT
 // ============================================================================
 
 $actualBeneficiaryTable = tableExists($db, 'organizations_beneficiaries') ? 'organizations_beneficiaries' : (tableExists($db, 'organization_beneficiaries') ? 'organization_beneficiaries' : null);
 $codeExpectsTable = 'organization_beneficiaries';
 
-addResult(
-    '3. Beneficiary & Program Management',
-    'Beneficiary table exists',
+addResult('3. Beneficiary & Program Management', 'Beneficiary table exists',
     $actualBeneficiaryTable ? 'pass' : 'fail',
-    $actualBeneficiaryTable ? "Present as `{$actualBeneficiaryTable}` — " . (rowCount($db, $actualBeneficiaryTable) ?? '?') . ' beneficiaries on file' : 'MISSING entirely',
-    ''
+    $actualBeneficiaryTable ? "Present as `{$actualBeneficiaryTable}` — " . (rowCount($db, $actualBeneficiaryTable) ?? '?') . ' beneficiaries' : 'MISSING', ''
 );
 
-addResult(
-    '3. Beneficiary & Program Management',
-    'Table name matches code (dashboard stat card)',
+addResult('3. Beneficiary & Program Management', 'Table name matches code',
     ($actualBeneficiaryTable === $codeExpectsTable) ? 'pass' : 'fail',
-    ($actualBeneficiaryTable === $codeExpectsTable)
-        ? 'Match — enterprise/index.php\'s beneficiary count stat will resolve correctly'
-        : "MISMATCH — enterprise/index.php runs \"SELECT COUNT(*) FROM organization_beneficiaries\" (singular) but your real table is `{$actualBeneficiaryTable}` (plural \"organizations\").",
-    ($actualBeneficiaryTable === $codeExpectsTable) ? '' : "Rename for consistency with every other child table in the system: ALTER TABLE organizations_beneficiaries RENAME TO organization_beneficiaries;"
+    ($actualBeneficiaryTable === $codeExpectsTable) ? 'Match' : "MISMATCH — real table is `{$actualBeneficiaryTable}`",
+    ($actualBeneficiaryTable === $codeExpectsTable) ? '' : "ALTER TABLE organizations_beneficiaries RENAME TO organization_beneficiaries;"
 );
 
 if ($actualBeneficiaryTable) {
-    $hasCategoryCol = columnExists($db, $actualBeneficiaryTable, 'beneficiary_category');
-    $hasGuardianCol = columnExists($db, $actualBeneficiaryTable, 'guardian_national_id');
-    $hasEligibilityCol = columnExists($db, $actualBeneficiaryTable, 'eligibility_status');
-    $hasDeptLink = columnExists($db, $actualBeneficiaryTable, 'department_id');
-    
-    addResult(
-        '3. Beneficiary & Program Management',
-        'Beneficiary categorization',
-        $hasCategoryCol ? 'pass' : 'warn',
-        $hasCategoryCol ? 'Categorized via first-class column' : 'No dedicated beneficiary_category column yet',
-        $hasCategoryCol ? '' : "ALTER TABLE {$actualBeneficiaryTable} ADD COLUMN beneficiary_category VARCHAR(50);"
-    );
-    
-    addResult(
-        '3. Beneficiary & Program Management',
-        'Guardian/dependent linkage',
-        $hasGuardianCol ? 'pass' : 'warn',
-        $hasGuardianCol ? 'Present' : 'MISSING — no way to record who administers funds for minors',
-        $hasGuardianCol ? '' : "ALTER TABLE {$actualBeneficiaryTable} ADD COLUMN guardian_national_id VARCHAR(20), ADD COLUMN guardian_relationship VARCHAR(50);"
-    );
-    
-    addResult(
-        '3. Beneficiary & Program Management',
-        'Eligibility status tracking',
-        $hasEligibilityCol ? 'pass' : 'warn',
-        $hasEligibilityCol ? 'Present' : 'Missing — only is_active boolean',
-        $hasEligibilityCol ? '' : "ALTER TABLE {$actualBeneficiaryTable} ADD COLUMN eligibility_status VARCHAR(30) DEFAULT 'ACTIVE';"
-    );
-    
-    addResult(
-        '3. Beneficiary & Program Management',
-        'Department/Program linkage',
-        $hasDeptLink ? 'pass' : 'warn',
-        $hasDeptLink ? 'Present' : 'MISSING — beneficiaries only belong to organization_id',
-        $hasDeptLink ? '' : "ALTER TABLE {$actualBeneficiaryTable} ADD COLUMN department_id INTEGER, ADD COLUMN program_id INTEGER;"
-    );
+    foreach ([
+        ['beneficiary_category', 'Beneficiary categorization'],
+        ['guardian_national_id', 'Guardian/dependent linkage'],
+        ['eligibility_status', 'Eligibility status tracking'],
+        ['department_id', 'Department/Program linkage'],
+    ] as [$col, $label]) {
+        $has = columnExists($db, $actualBeneficiaryTable, $col);
+        addResult('3. Beneficiary & Program Management', $label,
+            $has ? 'pass' : 'warn',
+            $has ? 'Present' : "MISSING column: {$col}",
+            $has ? '' : "ALTER TABLE {$actualBeneficiaryTable} ADD COLUMN {$col} ..."
+        );
+    }
 }
 
 $hasRecurringSchedule = tableExists($db, 'disbursement_schedules');
-addResult(
-    '3. Beneficiary & Program Management',
-    'Recurring disbursement schedules',
+addResult('3. Beneficiary & Program Management', 'Recurring disbursement schedules',
     $hasRecurringSchedule ? 'pass' : 'warn',
     $hasRecurringSchedule ? 'Present' : 'MISSING — every batch requires manual upload',
-    $hasRecurringSchedule ? '' : 'Add disbursement_schedules table for automated recurring payments.'
+    $hasRecurringSchedule ? '' : 'Add disbursement_schedules table.'
 );
 
 // ============================================================================
-// 4. ACCESS CONTROL — ENTERPRISE ROLES
+// 4. ACCESS CONTROL — GOVERNMENT ROLE LAYERS + DEPARTMENT SCOPING
 // ============================================================================
 
 $stmt = $db->prepare("SELECT DISTINCT role FROM organization_users WHERE organization_id = :org_id");
@@ -264,72 +238,114 @@ try {
 } catch (Exception $e) {
     $roles = [];
 }
-addResult(
-    '4. Access Control',
-    'Roles in use',
+addResult('4. Access Control', 'Roles in use',
     count($roles) > 0 ? 'pass' : 'warn',
-    count($roles) > 0 ? 'Roles found: ' . implode(', ', $roles) : 'No roles found for this organization',
-    ''
+    count($roles) > 0 ? 'Roles found: ' . implode(', ', $roles) : 'No roles found', ''
 );
 
-// Check for segregation of duties
-$hasUploader = in_array('uploader', $roles);
-$hasApprover = in_array('approver', $roles);
-addResult(
-    '4. Access Control',
-    'Segregation of duties (maker-checker)',
-    ($hasUploader && $hasApprover) ? 'pass' : 'warn',
-    ($hasUploader && $hasApprover) ? 'Has both uploader and approver roles' : 'No clear separation between who uploads and who approves',
-    'Add explicit UPLOADER and APPROVER roles and enforce maker-checker separation.'
+$governmentRoles = ['owner', 'department_head', 'program_officer', 'approver', 'senior_approver', 'beneficiary_registrar', 'auditor', 'viewer'];
+$unrecognizedRoles = array_diff($roles, $governmentRoles);
+addResult('4. Access Control', 'Roles match the government role catalog',
+    empty($unrecognizedRoles) ? 'pass' : 'warn',
+    empty($unrecognizedRoles) ? 'All in-use roles are recognized' : 'Roles in use but NOT in the catalog (e.g. leftover "admin"): ' . implode(', ', $unrecognizedRoles),
+    empty($unrecognizedRoles) ? '' : 'Either migrate these users to a catalog role, or add the role explicitly to organization_role_catalog with a defined permission set.'
+);
+
+$hasUploaderRole = in_array('program_officer', $roles);
+$hasApproverRole = in_array('approver', $roles) || in_array('senior_approver', $roles);
+addResult('4. Access Control', 'Segregation of duties (maker-checker)',
+    ($hasUploaderRole && $hasApproverRole) ? 'pass' : 'warn',
+    ($hasUploaderRole && $hasApproverRole) ? 'Has both program_officer and approver/senior_approver assigned' : 'No one is assigned a dedicated approver role distinct from uploaders yet',
+    ($hasUploaderRole && $hasApproverRole) ? '' : 'Assign at least one program_officer and one approver — right now this may just be the same owner account doing both.'
+);
+
+$hasDeptIdCol = columnExists($db, 'organization_users', 'department_id');
+addResult('4. Access Control', 'organization_users.department_id (department scoping)',
+    $hasDeptIdCol ? 'pass' : 'fail',
+    $hasDeptIdCol ? 'Present' : 'MISSING — getUserDepartmentScope() in auth.php cannot function without this column',
+    $hasDeptIdCol ? '' : 'Run migration_government_alignment.sql section B7.'
+);
+
+if ($hasDeptIdCol && $hasDepartments) {
+    try {
+        $stmt = $db->prepare("
+            SELECT COUNT(*) FROM organization_users
+            WHERE organization_id = :org_id
+              AND role IN ('department_head','program_officer','approver','senior_approver','beneficiary_registrar','viewer')
+              AND department_id IS NULL
+        ");
+        $stmt->execute([':org_id' => $orgId]);
+        $unscopedCount = (int)$stmt->fetchColumn();
+        addResult('4. Access Control', 'Department-scoped users actually have a department assigned',
+            $unscopedCount === 0 ? 'pass' : 'fail',
+            $unscopedCount === 0 ? 'All department-scoped users have department_id set' : "{$unscopedCount} user(s) have a department-scoped role but NO department_id — getUserDepartmentScope() would return null for them, meaning they'd see NOTHING (queries filtering on department_id would match zero rows) rather than being properly scoped",
+            $unscopedCount === 0 ? '' : 'Assign a department_id to every user with a department-scoped role.'
+        );
+    } catch (Exception $e) {
+        // table/column existence already covered above; skip on query issues
+    }
+}
+
+$authContent = file_exists(__DIR__ . '/auth.php') ? file_get_contents(__DIR__ . '/auth.php') : '';
+addResult('4. Access Control', 'getUserDepartmentScope() implemented',
+    (bool)preg_match('/function\s+getUserDepartmentScope/', $authContent) ? 'pass' : 'fail',
+    (bool)preg_match('/function\s+getUserDepartmentScope/', $authContent) ? 'Present' : 'MISSING from auth.php', ''
+);
+addResult('4. Access Control', 'assertNotSelfApproving() implemented',
+    (bool)preg_match('/function\s+assertNotSelfApproving/', $authContent) ? 'pass' : 'fail',
+    (bool)preg_match('/function\s+assertNotSelfApproving/', $authContent) ? 'Present' : 'MISSING from auth.php', ''
 );
 
 // ============================================================================
 // 5. DISBURSEMENT PIPELINE WIRING
 // ============================================================================
 
-$executeFilePath = $projectRoot . '/public/admin/enterprise/imports/execute.php';
-$executeContent = file_exists($executeFilePath) ? file_get_contents($executeFilePath) : '';
+$executeRelPath = 'public/admin/enterprise/imports/execute.php';
+$executeExists = file_exists($projectRoot . '/' . $executeRelPath);
+$executeContent = $executeExists ? file_get_contents($projectRoot . '/' . $executeRelPath) : '';
 
 $hasRealCall = $executeContent && (
     preg_match('/new\s+\\\\?(Domain\\\\Services\\\\)?SwapService\s*\(/', $executeContent) ||
     preg_match('/->\s*executeAtomicSwap\s*\(/', $executeContent) ||
     preg_match('/->\s*executeMultiDestinationSwap\s*\(/', $executeContent)
 );
-
 $isStubbed = $executeContent && (
     strpos($executeContent, 'Simulate swap execution') !== false ||
     preg_match('/\$swapReference\s*=\s*[\'"]SWAP_[\'"]\s*\.\s*date/i', $executeContent)
 );
-
 $isWired = $hasRealCall && !$isStubbed;
 
-addResult(
-    '5. Disbursement Pipeline Wiring',
-    'execute.php connected to SwapService',
+addResult('5. Disbursement Pipeline Wiring', 'execute.php connected to SwapService',
     $isWired ? 'pass' : 'fail',
-    $isWired
-        ? 'Real SwapService call found'
-        : ($isStubbed
-            ? 'FAIL — execute.php contains stubbed code, not real SwapService calls'
-            : 'execute.php not found or contains no real SwapService method call'),
-    $isWired ? '' : 'Rewrite execute.php to call SwapService::executeMultiDestinationSwap() with real payloads.'
+    $isWired ? 'Real SwapService call found, no stub pattern detected' : ($isStubbed ? 'FAIL — stubbed fabricated-reference pattern still present' : 'No real SwapService call found'),
+    $isWired ? '' : 'Deploy execute_fixed.php in place of the current stub.'
 );
 
-$hasProviderRegistry = tableExists($db, 'providers') || tableExists($db, 'institution_registry');
-addResult(
-    '5. Disbursement Pipeline Wiring',
-    'Institution/provider registry',
+$hasIdentityRouting = $executeContent && preg_match('/->\s*initiateSwapToIdentity\s*\(/', $executeContent);
+addResult('5. Disbursement Pipeline Wiring', 'Identity-based routing (send-to-identity)',
+    $hasIdentityRouting ? 'pass' : 'warn',
+    $hasIdentityRouting ? 'execute.php calls initiateSwapToIdentity() for IDENTITY-routed rows' : 'MISSING — a batch with a beneficiary known only by National ID/phone/email (no wallet/account yet) has no handling path today',
+    $hasIdentityRouting ? '' : 'Deploy execute_fixed.php, which splits IDENTITY rows out and processes them via initiateSwapToIdentity() individually.'
+);
+
+$hasIdentityTypeCol = columnExists($db, 'import_rows', 'identity_type');
+addResult('5. Disbursement Pipeline Wiring', 'import_rows.identity_type column',
+    $hasIdentityTypeCol ? 'pass' : 'warn',
+    $hasIdentityTypeCol ? 'Present' : 'MISSING — needed to record national_id/phone/email for IDENTITY-routed rows',
+    $hasIdentityTypeCol ? '' : 'Run migration_government_alignment.sql.'
+);
+
+$hasProviderRegistry = tableExists($db, 'providers');
+addResult('5. Disbursement Pipeline Wiring', 'Institution/provider registry',
     $hasProviderRegistry ? 'pass' : 'fail',
-    $hasProviderRegistry ? 'Present' : 'MISSING — destination_provider is free-text with no validation',
+    $hasProviderRegistry ? 'Present' : 'MISSING — destination_provider is free-text',
     $hasProviderRegistry ? '' : 'Create providers table seeded from participants.yaml.'
 );
 
 $hasAssetTypeCol = columnExists($db, 'organization_sources', 'asset_type');
-addResult(
-    '5. Disbursement Pipeline Wiring',
-    'organization_sources: asset_type',
+addResult('5. Disbursement Pipeline Wiring', 'organization_sources.asset_type',
     $hasAssetTypeCol ? 'pass' : 'warn',
-    $hasAssetTypeCol ? 'Present' : 'MISSING — SwapService expects ACCOUNT or WALLET explicitly',
+    $hasAssetTypeCol ? 'Present' : 'MISSING',
     $hasAssetTypeCol ? '' : "ALTER TABLE organization_sources ADD COLUMN asset_type VARCHAR(20) DEFAULT 'WALLET';"
 );
 
@@ -338,29 +354,34 @@ addResult(
 // ============================================================================
 
 $hasApprovalThresholds = tableExists($db, 'approval_thresholds');
-addResult(
-    '6. Approval & Governance',
-    'Amount-based approval thresholds',
+addResult('6. Approval & Governance', 'Amount-based approval thresholds',
     $hasApprovalThresholds ? 'pass' : 'warn',
-    $hasApprovalThresholds ? 'Present' : 'MISSING — all amounts go through identical single-approver flow',
-    $hasApprovalThresholds ? '' : 'Add approval_thresholds table for dual control based on amount.'
+    $hasApprovalThresholds ? 'Present' : 'MISSING',
+    $hasApprovalThresholds ? '' : 'Run migration_government_alignment.sql.'
 );
 
-$approveCheck = fileContains($projectRoot, 'public/admin/enterprise/imports/approve.php', ['approve_payments', 'permission']);
-addResult(
-    '6. Approval & Governance',
-    'Reject action permission check',
-    'warn',
-    'approve.php enforces permissions on "approve" but not on "reject" or "submit" actions',
-    'Add role/permission checks to reject and submit branches in approve.php.'
+$hasBatchApprovals = tableExists($db, 'batch_approvals');
+addResult('6. Approval & Governance', 'Multi-approver (dual control) tracking',
+    $hasBatchApprovals ? 'pass' : 'fail',
+    $hasBatchApprovals ? 'Present — ' . (rowCount($db, 'batch_approvals') ?? '?') . ' approval records' : 'MISSING — cannot enforce "2 approvers required above a threshold" without a way to record who has approved so far',
+    $hasBatchApprovals ? '' : 'Run migration_government_alignment.sql.'
 );
 
-addResult(
-    '6. Approval & Governance',
-    'Approval self-check (maker ≠ checker)',
-    'fail',
-    'Nothing prevents the user who uploaded a batch from approving it themselves',
-    'Compare $batch[\'uploaded_by\'] against $user[\'id\'] and block self-approval.'
+$approveRelPath = 'public/admin/enterprise/imports/approve.php';
+$approveContent = file_exists($projectRoot . '/' . $approveRelPath) ? file_get_contents($projectRoot . '/' . $approveRelPath) : '';
+
+$usesSelfApprovalGuard = $approveContent && preg_match('/assertNotSelfApproving\s*\(/', $approveContent);
+addResult('6. Approval & Governance', 'Approval self-check (maker ≠ checker) enforced',
+    $usesSelfApprovalGuard ? 'pass' : 'fail',
+    $usesSelfApprovalGuard ? 'approve.php calls assertNotSelfApproving()' : 'Nothing prevents the uploader from approving their own batch — assertNotSelfApproving() exists in auth.php but approve.php does not call it',
+    $usesSelfApprovalGuard ? '' : 'Add assertNotSelfApproving($batch[\'uploaded_by\']) to both the approve AND reject branches in approve.php.'
+);
+
+$rejectHasPermCheck = $approveContent && preg_match('/requirePermission\s*\(\s*[\'"]reject_batch[\'"]/', $approveContent);
+addResult('6. Approval & Governance', 'Reject action permission check',
+    $rejectHasPermCheck ? 'pass' : 'warn',
+    $rejectHasPermCheck ? 'Present' : 'approve.php likely still permission-checks "approve" only, not "reject"/"submit"',
+    $rejectHasPermCheck ? '' : "Add requirePermission('reject_batch') to the reject branch."
 );
 
 // ============================================================================
@@ -368,12 +389,9 @@ addResult(
 // ============================================================================
 
 $hasAuditLog = tableExists($db, 'organization_audit_logs');
-addResult(
-    '7. Audit & Compliance',
-    'Immutable audit log table',
+addResult('7. Audit & Compliance', 'Immutable audit log table',
     $hasAuditLog ? 'pass' : 'fail',
-    $hasAuditLog ? 'Present — ' . (rowCount($db, 'organization_audit_logs') ?? '?') . ' entries' : 'MISSING',
-    $hasAuditLog ? '' : 'Create organization_audit_logs table for compliance tracking.'
+    $hasAuditLog ? 'Present — ' . (rowCount($db, 'organization_audit_logs') ?? '?') . ' entries' : 'MISSING', ''
 );
 
 if ($hasAuditLog) {
@@ -387,24 +405,17 @@ if ($hasAuditLog) {
         $writes = $check['exists'] && ((($check['matches']['organization_audit_logs'] ?? false)) || (($check['matches']['AuditTrailService'] ?? false)));
         if (!$writes) $unwired[] = $file;
     }
-    addResult(
-        '7. Audit & Compliance',
-        'Dashboard actions write to audit log',
+    addResult('7. Audit & Compliance', 'Dashboard actions write to audit log',
         empty($unwired) ? 'pass' : 'fail',
-        empty($unwired)
-            ? 'All checked endpoints reference the audit log'
-            : 'Not writing to audit log: ' . implode(', ', $unwired),
-        empty($unwired) ? '' : 'Add organization_audit_logs inserts to each endpoint.'
+        empty($unwired) ? 'All checked endpoints reference the audit log' : 'Not writing to audit log: ' . implode(', ', $unwired),
+        empty($unwired) ? '' : 'Add organization_audit_logs inserts to each endpoint listed (execute_fixed.php already does this for execute.php).'
     );
 }
 
 $hasExecSummary = tableExists($db, 'batch_execution_summary');
-addResult(
-    '7. Audit & Compliance',
-    'Batch execution summary table',
+addResult('7. Audit & Compliance', 'Batch execution summary table',
     $hasExecSummary ? 'pass' : 'fail',
-    $hasExecSummary ? 'Present' : 'MISSING — needed for reconciliation',
-    $hasExecSummary ? '' : 'Create batch_execution_summary table for reconciliation reports.'
+    $hasExecSummary ? 'Present' : 'MISSING', ''
 );
 
 // ============================================================================
@@ -412,30 +423,54 @@ addResult(
 // ============================================================================
 
 $uploadCheck = fileContains($projectRoot, 'public/admin/enterprise/imports/upload.php', ['mkdir($uploadDir, 0777']);
-addResult(
-    '8. Security Hardening',
-    'Upload directory permission mode',
+addResult('8. Security Hardening', 'Upload directory permission mode',
     ($uploadCheck['exists'] && ($uploadCheck['matches']['mkdir($uploadDir, 0777'] ?? false)) ? 'fail' : 'pass',
     ($uploadCheck['exists'] && ($uploadCheck['matches']['mkdir($uploadDir, 0777'] ?? false)) ? 'FAIL — 0777 world-writable' : 'Not flagged',
     ($uploadCheck['exists'] && ($uploadCheck['matches']['mkdir($uploadDir, 0777'] ?? false)) ? "Change to mkdir(\$uploadDir, 0750, true)" : ''
 );
 
 $csrfCheck = fileContains($projectRoot, 'public/admin/enterprise/imports/review.php', ['csrf_token', 'CSRF']);
-addResult(
-    '8. Security Hardening',
-    'CSRF protection on forms',
+addResult('8. Security Hardening', 'CSRF protection on forms',
     ($csrfCheck['exists'] && (($csrfCheck['matches']['csrf_token'] ?? false) || ($csrfCheck['matches']['CSRF'] ?? false))) ? 'pass' : 'fail',
-    ($csrfCheck['exists'] && (($csrfCheck['matches']['csrf_token'] ?? false) || ($csrfCheck['matches']['CSRF'] ?? false))) ? 'Present' : 'MISSING — no CSRF tokens on state-changing forms',
-    ($csrfCheck['exists'] && (($csrfCheck['matches']['csrf_token'] ?? false) || ($csrfCheck['matches']['CSRF'] ?? false))) ? '' : 'Add CSRF tokens to all state-changing forms and verify server-side.'
+    ($csrfCheck['exists'] && (($csrfCheck['matches']['csrf_token'] ?? false) || ($csrfCheck['matches']['CSRF'] ?? false))) ? 'Present' : 'MISSING',
+    ($csrfCheck['exists'] && (($csrfCheck['matches']['csrf_token'] ?? false) || ($csrfCheck['matches']['CSRF'] ?? false))) ? '' : 'Add CSRF tokens to all state-changing forms.'
 );
 
-addResult(
-    '8. Security Hardening',
-    'Session cookie hardening',
-    'warn',
-    'No explicit session.cookie_secure / cookie_httponly / cookie_samesite configuration visible',
-    "Set session.cookie_httponly=1, session.cookie_secure=1, session.cookie_samesite=Strict in auth.php"
+$loginCheck = fileContains($projectRoot, 'public/admin/enterprise/login.php', ['demo-cred', 'value="password123"', 'value="test@vouchmorph.com"']);
+$hasDemoCreds = $loginCheck['exists'] && (($loginCheck['matches']['demo-cred'] ?? false) || ($loginCheck['matches']['value="password123"'] ?? false));
+addResult('8. Security Hardening', 'Demo credentials removed from login page',
+    $hasDemoCreds ? 'fail' : 'pass',
+    $hasDemoCreds ? 'FAIL — demo credentials still displayed/pre-filled on the public login page' : 'Not found',
+    $hasDemoCreds ? 'Remove the demo-cred block and pre-filled value="" attributes from login.php before any real pilot.' : ''
 );
+
+addResult('8. Security Hardening', 'Session cookie hardening', 'warn',
+    'No explicit session.cookie_secure / cookie_httponly / cookie_samesite configuration visible',
+    "Set these in auth.php before session_start()."
+);
+
+// ============================================================================
+// 9. PLATFORM / ORGANIZATION TIER SEPARATION
+// ============================================================================
+// VouchMorph's own staff (src/Application/Admin/Auth/AdminAuth.php) must
+// never share session state, tables, or login pages with organization users
+// (public/admin/enterprise/auth.php). Checking that separation holds.
+
+$hasAdminAuth = file_exists($projectRoot . '/src/Application/Admin/Auth/AdminAuth.php');
+addResult('9. Platform/Organization Tier Separation', 'Platform admin auth exists separately',
+    $hasAdminAuth ? 'pass' : 'warn',
+    $hasAdminAuth ? 'Present at src/Application/Admin/Auth/AdminAuth.php' : 'Not found at expected path', ''
+);
+
+if ($hasAdminAuth) {
+    $adminAuthContent = file_get_contents($projectRoot . '/src/Application/Admin/Auth/AdminAuth.php');
+    $usesSameSessionKey = preg_match('/\$_SESSION\[[\'"]enterprise_user[\'"]\]/', $adminAuthContent);
+    addResult('9. Platform/Organization Tier Separation', 'Platform admin uses a DISTINCT session key',
+        !$usesSameSessionKey ? 'pass' : 'fail',
+        !$usesSameSessionKey ? 'No overlap with $_SESSION[\'enterprise_user\'] detected' : 'FAIL — AdminAuth.php references $_SESSION[\'enterprise_user\'] — platform staff and organization users must never share a session key',
+        !$usesSameSessionKey ? '' : 'Use a distinct session key, e.g. $_SESSION[\'platform_admin\'], backed by its own table (not organization_users).'
+    );
+}
 
 // ============================================================================
 // SCORING
@@ -466,38 +501,13 @@ $readinessScore = $totalChecks > 0 ? round(($passCount / $totalChecks) * 100) : 
         .header { margin-bottom: 32px; }
         .header h1 { font-size: 28px; font-weight: 800; margin-bottom: 8px; }
         .header .subtitle { color: #64748b; }
-        .org-info {
-            background: #e0f2fe;
-            padding: 12px 20px;
-            border-radius: 12px;
-            margin-top: 12px;
-            border: 1px solid #7dd3fc;
-            display: flex;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
+        .org-info { background: #e0f2fe; padding: 12px 20px; border-radius: 12px; margin-top: 12px; border: 1px solid #7dd3fc; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
         .org-info .label { font-weight: 600; color: #0369a1; }
         .org-info .value { color: #0c4a6e; }
-        .score-banner {
-            display: flex; align-items: center; gap: 32px;
-            background: white; border-radius: 20px; padding: 32px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 32px;
-            flex-wrap: wrap;
-        }
-        .score-circle {
-            width: 120px; height: 120px; border-radius: 50%;
-            display: flex; align-items: center; justify-content: center;
-            flex-direction: column; font-weight: 800; flex-shrink: 0;
-            background: conic-gradient(
-                <?php echo $readinessScore >= 70 ? '#10b981' : ($readinessScore >= 40 ? '#f59e0b' : '#ef4444'); ?> <?php echo $readinessScore * 3.6; ?>deg,
-                #e2e8f0 0deg
-            );
-        }
-        .score-circle-inner {
-            width: 92px; height: 92px; border-radius: 50%; background: white;
-            display: flex; align-items: center; justify-content: center; flex-direction: column;
-        }
+        .score-banner { display: flex; align-items: center; gap: 32px; background: white; border-radius: 20px; padding: 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 32px; flex-wrap: wrap; }
+        .score-circle { width: 120px; height: 120px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-direction: column; font-weight: 800; flex-shrink: 0;
+            background: conic-gradient(<?php echo $readinessScore >= 70 ? '#10b981' : ($readinessScore >= 40 ? '#f59e0b' : '#ef4444'); ?> <?php echo $readinessScore * 3.6; ?>deg, #e2e8f0 0deg); }
+        .score-circle-inner { width: 92px; height: 92px; border-radius: 50%; background: white; display: flex; align-items: center; justify-content: center; flex-direction: column; }
         .score-circle-inner .num { font-size: 26px; font-weight: 800; }
         .score-circle-inner .label { font-size: 10px; color: #64748b; }
         .score-summary h2 { font-size: 20px; margin-bottom: 12px; }
@@ -511,36 +521,18 @@ $readinessScore = $totalChecks > 0 ? round(($passCount / $totalChecks) * 100) : 
         .check-row { padding: 18px 24px; border-bottom: 1px solid #f1f5f9; }
         .check-row:last-child { border-bottom: none; }
         .check-top { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 6px; }
-        .status-badge {
-            width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 12px; font-weight: 800; color: white; margin-top: 2px;
-        }
+        .status-badge { width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; color: white; margin-top: 2px; }
         .status-pass { background: #10b981; }
         .status-warn { background: #f59e0b; }
         .status-fail { background: #ef4444; }
         .check-name { font-weight: 600; font-size: 14.5px; }
         .check-message { font-size: 13.5px; color: #475569; margin-left: 34px; margin-bottom: 6px; line-height: 1.5; }
-        .check-fix {
-            margin-left: 34px; font-size: 13px; background: #f8fafc; border-left: 3px solid #3b82f6;
-            padding: 10px 14px; border-radius: 8px; color: #1e3a8a; line-height: 1.5;
-        }
+        .check-fix { margin-left: 34px; font-size: 13px; background: #f8fafc; border-left: 3px solid #3b82f6; padding: 10px 14px; border-radius: 8px; color: #1e3a8a; line-height: 1.5; }
         .check-fix strong { color: #1e40af; }
-        .back-link {
-            display: inline-block; margin-top: 20px; color: #3b82f6;
-            text-decoration: none; font-weight: 500;
-        }
+        .back-link { display: inline-block; margin-top: 20px; color: #3b82f6; text-decoration: none; font-weight: 500; }
         .back-link:hover { text-decoration: underline; }
         .timestamp { color: #94a3b8; font-size: 13px; }
-        .org-badge {
-            display: inline-block;
-            padding: 4px 12px;
-            background: #0f172a;
-            color: white;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-        }
+        .org-badge { display: inline-block; padding: 4px 12px; background: #0f172a; color: white; border-radius: 20px; font-size: 12px; font-weight: 600; }
     </style>
 </head>
 <body>
@@ -548,46 +540,17 @@ $readinessScore = $totalChecks > 0 ? round(($passCount / $totalChecks) * 100) : 
     <div class="header">
         <h1>🏛 System Readiness Diagnostic</h1>
         <p class="subtitle">Government / Enterprise disbursement platform alignment check</p>
-        
         <div class="org-info">
-            <div>
-                <span class="label">Organization:</span>
-                <span class="value"><?php echo htmlspecialchars($user['organization_name'] ?? 'N/A'); ?></span>
-            </div>
-            <div>
-                <span class="label">User:</span>
-                <span class="value"><?php echo htmlspecialchars($user['email']); ?></span>
-            </div>
-            <div>
-                <span class="label">Role:</span>
-                <span class="org-badge"><?php echo htmlspecialchars($user['role'] ?? 'user'); ?></span>
-            </div>
-            <div>
-                <span class="label">Organization ID:</span>
-                <span class="value">#<?php echo htmlspecialchars($orgId); ?></span>
-            </div>
+            <div><span class="label">Organization:</span> <span class="value"><?php echo htmlspecialchars($user['organization_name'] ?? 'N/A'); ?></span></div>
+            <div><span class="label">User:</span> <span class="value"><?php echo htmlspecialchars($user['email']); ?></span></div>
+            <div><span class="label">Role:</span> <span class="org-badge"><?php echo htmlspecialchars($user['role'] ?? 'user'); ?></span></div>
+            <div><span class="label">Organization ID:</span> <span class="value">#<?php echo htmlspecialchars((string)$orgId); ?></span></div>
         </div>
-        
-        <p class="timestamp" style="margin-top: 12px;">
-            Run on <?php echo date('F d, Y H:i'); ?>
-        </p>
+        <p class="timestamp" style="margin-top: 12px;">Run on <?php echo date('F d, Y H:i'); ?></p>
     </div>
-
-    <?php if (!isset($user) || empty($user)): ?>
-    <div class="login-prompt">
-        <h2>🔒 Authentication Required</h2>
-        <p>You need to be logged in to access the system diagnostic.</p>
-        <a href="login.php">Go to Login →</a>
-    </div>
-    <?php else: ?>
 
     <div class="score-banner">
-        <div class="score-circle">
-            <div class="score-circle-inner">
-                <div class="num"><?php echo $readinessScore; ?>%</div>
-                <div class="label">READY</div>
-            </div>
-        </div>
+        <div class="score-circle"><div class="score-circle-inner"><div class="num"><?php echo $readinessScore; ?>%</div><div class="label">READY</div></div></div>
         <div class="score-summary">
             <h2><?php echo $totalChecks; ?> checks run against live database + source code</h2>
             <div class="pill-row">
@@ -605,26 +568,20 @@ $readinessScore = $totalChecks > 0 ? round(($passCount / $totalChecks) * 100) : 
         <?php foreach ($items as $item): ?>
         <div class="check-row">
             <div class="check-top">
-                <div class="status-badge status-<?php echo $item['status']; ?>">
-                    <?php echo $item['status'] === 'pass' ? '✓' : ($item['status'] === 'warn' ? '!' : '✗'); ?>
-                </div>
+                <div class="status-badge status-<?php echo $item['status']; ?>"><?php echo $item['status'] === 'pass' ? '✓' : ($item['status'] === 'warn' ? '!' : '✗'); ?></div>
                 <div class="check-name"><?php echo htmlspecialchars($item['name']); ?></div>
             </div>
             <div class="check-message"><?php echo htmlspecialchars($item['message']); ?></div>
-            <?php if (!empty($item['fix'])): ?>
-            <div class="check-fix"><strong>Fix:</strong> <?php echo htmlspecialchars($item['fix']); ?></div>
-            <?php endif; ?>
+            <?php if (!empty($item['fix'])): ?><div class="check-fix"><strong>Fix:</strong> <?php echo htmlspecialchars($item['fix']); ?></div><?php endif; ?>
         </div>
         <?php endforeach; ?>
     </div>
     <?php endforeach; ?>
 
     <p style="text-align:center; color:#94a3b8; font-size:12px; margin-top:24px;">
-        This diagnostic reads your live schema (information_schema / to_regclass) and greps your actual source files —
-        it does not modify anything. Re-run after each fix to watch the readiness score move.
+        This diagnostic reads your live schema and greps your actual source files — it does not modify anything.
+        Re-run after each fix to watch the readiness score move.
     </p>
-    
-    <?php endif; ?>
 </div>
 </body>
 </html>
