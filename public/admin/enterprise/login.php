@@ -3,27 +3,25 @@ session_start();
 require_once '../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
-// Create database connection using the correct method
+// Database connection
 $db = new DBConnection();
-$pdo = $db->getConnection(); // Assuming getConnection() returns PDO instance
+$pdo = $db->getConnection();
 
-// If DBConnection doesn't have getConnection(), try direct PDO
+// Fallback if getConnection() doesn't exist
 if (!method_exists($db, 'getConnection')) {
-    // Fallback to direct PDO connection
     $host = 'localhost';
+    $port = '5432';
     $dbname = 'vouchmorph';
-    $username = 'root';
-    $password = '';
+    $username = 'postgres';
+    $password = 'postgres';
     
     try {
-        $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
+        $pdo = new PDO("pgsql:host=$host;port=$port;dbname=$dbname", $username, $password);
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
     } catch (PDOException $e) {
         die("Database connection failed: " . $e->getMessage());
     }
-} else {
-    $pdo = $db->getConnection();
 }
 
 $error = '';
@@ -33,32 +31,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $password = $_POST['password'] ?? '';
     
     try {
+        // First, check if user exists in your users table
+        // Since we don't have the users table structure, let's check if we need to create it
         $stmt = $pdo->prepare("
-            SELECT ou.*, o.name as org_name, o.id as organization_id, o.logo_url, u.email, u.password_hash
+            SELECT 
+                ou.id,
+                ou.organization_id,
+                ou.user_id,
+                ou.role,
+                ou.permissions,
+                ou.is_active,
+                o.name as org_name,
+                o.logo_url,
+                o.status as org_status,
+                u.email,
+                u.password_hash
             FROM organization_users ou
-            JOIN organizations o ON ou.organization_id = o.id
-            JOIN users u ON ou.user_id = u.id
-            WHERE u.email = :email AND ou.is_active = true AND o.status = 'ACTIVE'
+            INNER JOIN organizations o ON ou.organization_id = o.id
+            INNER JOIN users u ON ou.user_id = u.id
+            WHERE u.email = :email 
+                AND ou.is_active = true 
+                AND o.status = 'ACTIVE'
         ");
         $stmt->execute([':email' => $email]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
         
         if ($user && password_verify($password, $user['password_hash'])) {
+            // Store user session data
             $_SESSION['enterprise_user'] = [
                 'id' => $user['id'],
+                'user_id' => $user['user_id'],
                 'organization_id' => $user['organization_id'],
                 'organization_name' => $user['org_name'],
                 'role' => $user['role'],
                 'email' => $user['email'],
-                'permissions' => json_decode($user['permissions'] ?? '[]', true)
+                'permissions' => json_decode($user['permissions'] ?? '[]', true),
+                'logo_url' => $user['logo_url']
             ];
+            
+            // Log the login
+            try {
+                $logStmt = $pdo->prepare("
+                    INSERT INTO organization_audit_logs 
+                    (organization_id, user_id, action, entity_type, ip_address, user_agent, created_at)
+                    VALUES (:org_id, :user_id, 'LOGIN', 'user', :ip, :ua, NOW())
+                ");
+                $logStmt->execute([
+                    ':org_id' => $user['organization_id'],
+                    ':user_id' => $user['user_id'],
+                    ':ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+                    ':ua' => $_SERVER['HTTP_USER_AGENT'] ?? null
+                ]);
+            } catch (PDOException $e) {
+                // Log error but don't stop login
+                error_log("Failed to create audit log: " . $e->getMessage());
+            }
+            
+            // Redirect to dashboard
             header('Location: index.php');
             exit;
         } else {
             $error = 'Invalid email or password';
         }
     } catch (PDOException $e) {
-        $error = 'Database error: ' . $e->getMessage();
+        // Check if the error is because users table doesn't exist
+        if (strpos($e->getMessage(), 'relation "users" does not exist') !== false) {
+            $error = 'System setup incomplete: Users table not found. Please run database migrations.';
+        } else {
+            $error = 'Database error: ' . $e->getMessage();
+        }
     }
 }
 ?>
@@ -180,6 +221,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             display: block;
             margin-top: 4px;
         }
+        .alert-info {
+            background: #eff6ff;
+            color: #2563eb;
+            padding: 12px 16px;
+            border-radius: 12px;
+            margin-bottom: 24px;
+            font-size: 13px;
+            border: 1px solid #bfdbfe;
+        }
+        .alert-warning {
+            background: #fffbeb;
+            color: #d97706;
+            padding: 12px 16px;
+            border-radius: 12px;
+            margin-bottom: 24px;
+            font-size: 13px;
+            border: 1px solid #fde68a;
+        }
     </style>
 </head>
 <body>
@@ -196,14 +255,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="error">⚠️ <?php echo htmlspecialchars($error); ?></div>
         <?php endif; ?>
         
+        <div class="alert-info">
+            ℹ️ Use demo credentials below to test the system
+        </div>
+        
         <form method="POST">
             <div class="form-group">
                 <label>Email address</label>
-                <input type="email" name="email" required placeholder="admin@government.gov.bw">
+                <input type="email" name="email" required placeholder="admin@government.gov.bw" value="demo@vouchmorph.com">
             </div>
             <div class="form-group">
                 <label>Password</label>
-                <input type="password" name="password" required placeholder="••••••••">
+                <input type="password" name="password" required placeholder="••••••••" value="demo123">
             </div>
             <button type="submit" class="btn">Sign in →</button>
         </form>
@@ -213,6 +276,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <span>Email: demo@vouchmorph.com</span>
             <span>Password: demo123</span>
             <span style="font-size: 11px; color: #94a3b8;">(For testing only)</span>
+        </div>
+        
+        <div class="alert-warning" style="margin-top: 16px;">
+            ⚠️ <strong>Setup Required:</strong> Make sure the <code>users</code> table exists with <code>id</code>, <code>email</code>, and <code>password_hash</code> columns.
         </div>
     </div>
     <div class="footer">
