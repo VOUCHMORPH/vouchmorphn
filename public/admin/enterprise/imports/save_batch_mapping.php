@@ -4,7 +4,7 @@ $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
-$db = DBConnection::getInstance();
+$db = DBConnection::getConnection();
 $orgId = getOrganizationId();
 
 $data = json_decode(file_get_contents('php://input'), true);
