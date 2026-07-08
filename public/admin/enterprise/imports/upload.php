@@ -105,15 +105,15 @@ $csrfToken = generateCsrfToken();
 // Get stats for consistency with index.php
 $stats = ['total_batches' => 0, 'pending' => 0, 'beneficiaries' => 0];
 try {
-    $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM import_batches WHERE organization_id = :org_id");
+    $stmt = $db->prepare("SELECT COUNT(*) as total FROM import_batches WHERE organization_id = :org_id");
     $stmt->execute([':org_id' => $orgId]);
     $stats['total_batches'] = $stmt->fetchColumn() ?: 0;
 
-    $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM import_batches WHERE organization_id = :org_id AND status = 'READY_FOR_APPROVAL'");
+    $stmt = $db->prepare("SELECT COUNT(*) as total FROM import_batches WHERE organization_id = :org_id AND status = 'READY_FOR_APPROVAL'");
     $stmt->execute([':org_id' => $orgId]);
     $stats['pending'] = $stmt->fetchColumn() ?: 0;
 
-    $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM organization_beneficiaries WHERE organization_id = :org_id AND is_active = true");
+    $stmt = $db->prepare("SELECT COUNT(*) as total FROM organization_beneficiaries WHERE organization_id = :org_id AND is_active = true");
     $stmt->execute([':org_id' => $orgId]);
     $stats['beneficiaries'] = $stmt->fetchColumn() ?: 0;
 } catch (PDOException $e) {
@@ -131,7 +131,7 @@ $config = [
 $departmentName = '';
 $departmentId = $user['department_id'] ?? null;
 if ($departmentId) {
-    $stmt = $pdo->prepare("SELECT name FROM departments WHERE id = :id AND organization_id = :org_id");
+    $stmt = $db->prepare("SELECT name FROM departments WHERE id = :id AND organization_id = :org_id");
     $stmt->execute([':id' => $departmentId, ':org_id' => $orgId]);
     $dept = $stmt->fetch(PDO::FETCH_ASSOC);
     $departmentName = $dept['name'] ?? '';
