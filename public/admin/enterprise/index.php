@@ -1,6 +1,6 @@
 <?php
 // index.php - ENTERPRISE COMMAND CENTER DASHBOARD
-// ROLE-BASED VIEWS: owner, program_officer, approver, auditor, viewer
+// FULLY RESPONSIVE - Phones, Tablets, Laptops, 4K Displays
 require_once 'auth.php';
 $user = requireEnterpriseAuth();
 
@@ -10,7 +10,7 @@ $userRole = $user['role'] ?? 'viewer';
 $departmentId = $user['department_id'] ?? null;
 
 // ============================================================
-// ROLE-BASED DATA FETCHING (unchanged from original)
+// ROLE-BASED DATA FETCHING
 // ============================================================
 
 $roleFilter = '';
@@ -77,8 +77,7 @@ try {
     $successData = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['total' => 0, 'completed' => 0];
     $successRate = $successData['total'] > 0 ? round(($successData['completed'] / $successData['total']) * 100, 2) : 0;
 
-    // NEW: 14-day disbursement trend for the primary stat card's sparkline —
-    // real data when available, gracefully empty otherwise (no fake numbers).
+    // 14-day trend
     $sparkline = [];
     try {
         $trendStmt = $pdo->prepare("
@@ -111,7 +110,7 @@ try {
 }
 
 // ============================================================
-// ROLE-BASED UI CONFIGURATION (unchanged from original)
+// ROLE-BASED UI CONFIGURATION
 // ============================================================
 
 $roleConfigs = [
@@ -180,9 +179,7 @@ if ($departmentId) {
 $roleDisplay = ucwords(str_replace('_', ' ', $userRole));
 
 // ============================================================
-// ICON SYSTEM — replaces unicode glyphs with real inline SVG.
-// Single source of truth, 20x20 viewBox, 1.75 stroke, currentColor,
-// so every icon inherits its context's color automatically.
+// ICON SYSTEM
 // ============================================================
 function icon($name, $size = 18) {
     $paths = [
@@ -212,8 +209,6 @@ function icon($name, $size = 18) {
     return "<svg width=\"{$size}\" height=\"{$size}\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\">{$p}</svg>";
 }
 
-// Unified role accent — ONE hue family (gold=leadership, slate=neutral roles,
-// green=approval authority, blue=oversight) instead of 8 unrelated colors.
 $roleAccents = [
     'owner' => 'gold', 'department_head' => 'gold',
     'approver' => 'green', 'senior_approver' => 'green',
@@ -222,7 +217,6 @@ $roleAccents = [
 ];
 $roleAccent = $roleAccents[$userRole] ?? 'slate';
 
-// Sparkline SVG path builder for the primary stat card
 function sparklinePath($values, $w = 96, $h = 28) {
     if (count($values) < 2) return null;
     $max = max($values) ?: 1;
@@ -267,6 +261,9 @@ $sparkPts = sparklinePath($sparkline);
             --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             --font-mono: 'JetBrains Mono', monospace;
             --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+            
+            --sidebar-width: 264px;
+            --header-height: 72px;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: var(--font-body); background: var(--surface-100); color: var(--surface-900); min-height: 100vh; }
@@ -279,9 +276,10 @@ $sparkPts = sparklinePath($sparkline);
 
         /* ---------- Sidebar ---------- */
         .sidebar {
-            width: 264px; background: var(--primary-900); color: #dbe1ea;
+            width: var(--sidebar-width); background: var(--primary-900); color: #dbe1ea;
             position: fixed; height: 100vh; overflow-y: auto;
             display: flex; flex-direction: column; z-index: 100;
+            transition: transform 0.3s var(--ease);
         }
         .sidebar-header { padding: 26px 22px; border-bottom: 1px solid rgba(255,255,255,.08); flex-shrink: 0; }
         .sidebar-header .logo { display: flex; align-items: center; gap: 12px; }
@@ -338,49 +336,60 @@ $sparkPts = sparklinePath($sparkline);
         .role-chip.slate { background: rgba(148,163,184,.18); color: #b7c0d1; }
         .dept-chip { font-size: 9.5px; color: #7c8aa3; letter-spacing: .3px; }
 
+        /* ---------- Mobile Hamburger ---------- */
+        .menu-toggle {
+            display: none; background: none; border: none; color: var(--surface-700);
+            font-size: 24px; cursor: pointer; padding: 4px;
+        }
+        .sidebar-overlay {
+            display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4);
+            z-index: 99; cursor: pointer;
+        }
+
         /* ---------- Main ---------- */
-        .main { flex: 1; margin-left: 264px; min-height: 100vh; }
+        .main { flex: 1; margin-left: var(--sidebar-width); min-height: 100vh; }
 
         .top-bar {
-            padding: 20px 36px; background: var(--surface-0); border-bottom: 1px solid var(--surface-200);
+            padding: 16px 24px; background: var(--surface-0); border-bottom: 1px solid var(--surface-200);
             position: sticky; top: 0; z-index: 50; display: flex; justify-content: space-between;
-            align-items: center; flex-wrap: wrap; gap: 16px;
+            align-items: center; flex-wrap: wrap; gap: 12px;
+            min-height: var(--header-height);
         }
         .top-bar .greeting { display: flex; align-items: center; gap: 12px; }
         .top-bar .greeting .role-icon {
-            width: 38px; height: 38px; background: var(--surface-100); flex-shrink: 0;
+            width: 34px; height: 34px; background: var(--surface-100); flex-shrink: 0;
             display: flex; align-items: center; justify-content: center; color: var(--gold);
             border: 1px solid var(--surface-200);
         }
-        .top-bar .greeting h1 { font-size: 19px; font-weight: 600; letter-spacing: -.2px; font-family: var(--font-display); }
-        .top-bar .greeting p { color: var(--surface-500); font-size: 12.5px; margin-top: 2px; }
+        .top-bar .greeting h1 { font-size: 18px; font-weight: 600; letter-spacing: -.2px; font-family: var(--font-display); }
+        .top-bar .greeting p { color: var(--surface-500); font-size: 12px; margin-top: 2px; }
         .top-bar .greeting .subtitle-sep { margin: 0 6px; color: var(--surface-300); }
 
-        .top-bar .actions { display: flex; align-items: center; gap: 10px; }
+        .top-bar .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .top-bar .btn-icon {
-            width: 36px; height: 36px; border: 1px solid var(--surface-200); background: var(--surface-0);
+            width: 34px; height: 34px; border: 1px solid var(--surface-200); background: var(--surface-0);
             display: flex; align-items: center; justify-content: center; cursor: pointer;
             transition: .15s; color: var(--surface-600);
         }
         .top-bar .btn-icon:hover { border-color: var(--gold); color: var(--gold); }
         .top-bar .datetime {
-            font-size: 12px; color: var(--surface-500); font-weight: 500; font-family: var(--font-mono);
-            border: 1px solid var(--surface-200); padding: 7px 12px; display: flex; align-items: center; gap: 6px;
+            font-size: 11.5px; color: var(--surface-500); font-weight: 500; font-family: var(--font-mono);
+            border: 1px solid var(--surface-200); padding: 6px 10px; display: flex; align-items: center; gap: 6px;
         }
 
-        .dashboard-content { padding: 28px 36px 44px; max-width: 1440px; }
+        .dashboard-content { padding: 24px; max-width: 1440px; margin: 0 auto; }
 
         /* ---------- Stats ---------- */
-        .stats-grid { display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: 16px; margin-bottom: 26px; }
+        .stats-grid { display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: 14px; margin-bottom: 24px; }
         .stat-card {
-            background: var(--surface-0); padding: 22px 24px; border: 1px solid var(--surface-200);
+            background: var(--surface-0); padding: 18px 20px; border: 1px solid var(--surface-200);
             position: relative; overflow: hidden;
         }
         .stat-card::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background: var(--surface-200); }
         .stat-card.primary::before { background: var(--gold); }
         .stat-top { display: flex; justify-content: space-between; align-items: flex-start; }
         .stat-icon {
-            width: 34px; height: 34px; display: flex; align-items: center; justify-content: center;
+            width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
             background: var(--surface-100); color: var(--surface-600); border: 1px solid var(--surface-200);
         }
         .stat-icon.gold  { background: var(--gold-wash); color: var(--gold); border-color: rgba(201,151,42,.3); }
@@ -388,15 +397,15 @@ $sparkPts = sparklinePath($sparkline);
         .stat-icon.warn  { background: var(--warning-bg); color: var(--warning); border-color: rgba(181,117,11,.25); }
         .stat-icon.blue  { background: var(--info-bg); color: var(--info); border-color: rgba(30,79,216,.25); }
 
-        .stat-spark { width: 96px; height: 28px; opacity: .9; }
-        .stat-value { font-size: 27px; font-weight: 700; letter-spacing: -.5px; margin-top: 14px; font-family: var(--font-mono); }
-        .stat-label { color: var(--surface-500); font-size: 12px; font-weight: 500; margin-top: 4px; }
+        .stat-spark { width: 80px; height: 24px; opacity: .9; }
+        .stat-value { font-size: 22px; font-weight: 700; letter-spacing: -.3px; margin-top: 10px; font-family: var(--font-mono); }
+        .stat-label { color: var(--surface-500); font-size: 11.5px; font-weight: 500; margin-top: 4px; }
         .stat-label .sep { color: var(--surface-300); margin: 0 4px; }
 
         /* ---------- Quick actions ---------- */
-        .quick-actions { display: flex; gap: 10px; margin-bottom: 26px; flex-wrap: wrap; }
+        .quick-actions { display: flex; gap: 10px; margin-bottom: 24px; flex-wrap: wrap; }
         .action-btn {
-            padding: 11px 20px; font-weight: 600; font-size: 13px; text-decoration: none;
+            padding: 10px 18px; font-weight: 600; font-size: 12.5px; text-decoration: none;
             display: inline-flex; align-items: center; gap: 8px; transition: .15s var(--ease);
             border: 1px solid transparent; cursor: pointer;
         }
@@ -408,22 +417,23 @@ $sparkPts = sparklinePath($sparkline);
         /* ---------- Cards / tables ---------- */
         .card { background: var(--surface-0); border: 1px solid var(--surface-200); overflow: hidden; margin-bottom: 24px; }
         .card-header {
-            padding: 16px 22px; border-bottom: 1px solid var(--surface-200); display: flex;
+            padding: 14px 18px; border-bottom: 1px solid var(--surface-200); display: flex;
             justify-content: space-between; align-items: center; background: var(--surface-50);
+            flex-wrap: wrap; gap: 8px;
         }
-        .card-header h3 { font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 9px; letter-spacing: -.1px; }
+        .card-header h3 { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 8px; letter-spacing: -.1px; }
         .card-header h3 .icon-wrap { color: var(--gold); display:flex; }
         .card-header a.view-all { color: var(--surface-600); text-decoration: none; font-weight: 600; font-size: 12px; display: flex; align-items: center; gap: 4px; }
         .card-header a.view-all:hover { color: var(--gold); }
 
-        .table-wrap { overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 13px 22px; text-align: left; border-bottom: 1px solid var(--surface-100); }
+        .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        table { width: 100%; border-collapse: collapse; min-width: 580px; }
+        th, td { padding: 11px 16px; text-align: left; border-bottom: 1px solid var(--surface-100); font-size: 13px; }
         th { background: var(--surface-50); font-weight: 700; font-size: 10px; color: var(--surface-500); text-transform: uppercase; letter-spacing: .8px; }
         tr:last-child td { border-bottom: none; }
         tr:hover td { background: var(--surface-50); }
 
-        .status { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; font-size: 11.5px; font-weight: 600; }
+        .status { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; font-size: 11px; font-weight: 600; }
         .status .dot { width: 6px; height: 6px; border-radius: 50%; }
         .status.completed { background: var(--success-bg); color: var(--success); } .status.completed .dot { background: var(--success); }
         .status.processing { background: var(--warning-bg); color: var(--warning); } .status.processing .dot { background: var(--warning); animation: pulse 1.6s infinite; }
@@ -432,13 +442,13 @@ $sparkPts = sparklinePath($sparkline);
         .status.draft { background: var(--surface-100); color: var(--surface-500); } .status.draft .dot { background: var(--surface-400); }
         @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.35;} }
 
-        .view-link { color: var(--surface-600); text-decoration: none; font-weight: 600; font-size: 12.5px; display: inline-flex; align-items: center; gap: 3px; }
+        .view-link { color: var(--surface-600); text-decoration: none; font-weight: 600; font-size: 12px; display: inline-flex; align-items: center; gap: 3px; }
         .view-link:hover { color: var(--gold); }
-        code { background: var(--surface-100); padding: 2px 8px; font-family: var(--font-mono); font-size: 11.5px; font-weight: 600; color: var(--surface-700); }
+        code { background: var(--surface-100); padding: 2px 8px; font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--surface-700); }
 
-        .empty-state { text-align: center; padding: 52px 20px; color: var(--surface-500); }
+        .empty-state { text-align: center; padding: 40px 20px; color: var(--surface-500); }
         .empty-state .icon-wrap { color: var(--surface-300); margin-bottom: 12px; display: flex; justify-content: center; }
-        .empty-state h4 { font-size: 16px; color: var(--surface-700); margin-bottom: 4px; font-family: var(--font-display); font-weight: 600; }
+        .empty-state h4 { font-size: 15px; color: var(--surface-700); margin-bottom: 4px; font-family: var(--font-display); font-weight: 600; }
         .empty-state p { font-size: 13px; margin-bottom: 14px; }
         .empty-state a { color: var(--gold); text-decoration: none; font-weight: 600; font-size: 13px; }
 
@@ -448,40 +458,136 @@ $sparkPts = sparklinePath($sparkline);
         .widget-card.blue { border-left-color: var(--info); }
         .widget-card .card-header.warn-bg { background: var(--warning-bg); }
         .widget-card .card-header.blue-bg { background: var(--info-bg); }
-        .widget-body { padding: 16px 22px; }
-        .widget-body p { color: var(--surface-600); font-size: 13.5px; line-height: 1.6; }
+        .widget-body { padding: 14px 18px; }
+        .widget-body p { color: var(--surface-600); font-size: 13px; line-height: 1.6; }
         .widget-body strong { color: var(--surface-900); }
 
         footer.page-footer {
-            text-align: center; padding: 18px 0; color: var(--surface-400); font-size: 10.5px;
+            text-align: center; padding: 16px 0; color: var(--surface-400); font-size: 10px;
             border-top: 1px solid var(--surface-200); letter-spacing: .4px; text-transform: uppercase;
         }
-        footer.page-footer .role-line { font-size: 9.5px; letter-spacing: .8px; margin-top: 4px; color: var(--surface-400); }
+        footer.page-footer .role-line { font-size: 9px; letter-spacing: .8px; margin-top: 4px; color: var(--surface-400); }
 
-        @media (max-width: 1200px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
-        @media (max-width: 992px) {
-            .sidebar { width: 60px; }
-            .sidebar-header h2, .sidebar-header .org-badge, .sidebar-nav .nav-label,
-            .nav-item span.label, .sidebar-footer .user-info { display: none; }
-            .sidebar-header .logo { justify-content: center; }
-            .nav-item { justify-content: center; }
-            .sidebar-footer .user-card { justify-content: center; }
-            .main { margin-left: 60px; }
+        /* ============================================================
+           RESPONSIVE BREAKPOINTS
+           ============================================================ */
+
+        /* ---------- Tablets & Smaller Laptops ---------- */
+        @media (max-width: 1200px) {
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .stat-value { font-size: 20px; }
             .dashboard-content { padding: 20px; }
-            .top-bar { padding: 16px 20px; }
         }
-        @media (max-width: 640px) {
-            .stats-grid { grid-template-columns: 1fr; }
-            .quick-actions { flex-direction: column; }
+
+        /* ---------- Tablets & Mobile ---------- */
+        @media (max-width: 992px) {
+            .sidebar {
+                transform: translateX(-100%);
+                width: 280px;
+            }
+            .sidebar.open { transform: translateX(0); }
+            .menu-toggle { display: block; }
+            .sidebar-overlay.active { display: block; }
+            .main { margin-left: 0; }
             .top-bar .greeting h1 { font-size: 16px; }
-            .top-bar .datetime { display: none; }
+            .top-bar .datetime { font-size: 10px; padding: 4px 8px; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+            .stat-card { padding: 14px 16px; }
+            .stat-value { font-size: 18px; }
+            .stat-label { font-size: 10px; }
         }
-        @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+        /* ---------- Small Tablets ---------- */
+        @media (max-width: 768px) {
+            .top-bar { padding: 12px 16px; }
+            .top-bar .greeting .role-icon { display: none; }
+            .top-bar .actions .btn-icon { width: 30px; height: 30px; }
+            .dashboard-content { padding: 16px; }
+            .stats-grid { gap: 8px; }
+            .stat-card { padding: 12px 14px; }
+            .stat-value { font-size: 16px; }
+            .quick-actions { gap: 8px; }
+            .action-btn { padding: 8px 14px; font-size: 11px; }
+            .card-header { padding: 10px 14px; }
+            .card-header h3 { font-size: 12px; }
+            th, td { padding: 8px 10px; font-size: 11px; }
+            .status { font-size: 10px; padding: 2px 8px; }
+            .stat-spark { width: 60px; height: 20px; }
+            footer.page-footer { font-size: 8px; }
+        }
+
+        /* ---------- Mobile Phones ---------- */
+        @media (max-width: 480px) {
+            .top-bar { padding: 10px 12px; flex-direction: column; align-items: stretch; gap: 8px; }
+            .top-bar .greeting { justify-content: space-between; }
+            .top-bar .greeting h1 { font-size: 14px; }
+            .top-bar .greeting p { font-size: 10px; }
+            .top-bar .actions { justify-content: flex-end; }
+            .stats-grid { grid-template-columns: 1fr; }
+            .stat-card { padding: 10px 12px; }
+            .stat-value { font-size: 20px; }
+            .quick-actions { flex-direction: column; }
+            .action-btn { justify-content: center; width: 100%; }
+            .dashboard-content { padding: 12px; }
+            .card-header { flex-direction: column; align-items: flex-start; gap: 4px; }
+            .table-wrap { margin: 0 -12px; }
+            th, td { padding: 6px 8px; font-size: 10px; }
+            .view-link { font-size: 10px; }
+            code { font-size: 9px; padding: 1px 6px; }
+            footer.page-footer { font-size: 7px; padding: 12px 0; }
+            .sidebar { width: 100%; max-width: 300px; }
+        }
+
+        /* ---------- Large Screens (4K+) ---------- */
+        @media (min-width: 1920px) {
+            .dashboard-content { padding: 40px 60px; max-width: 1800px; }
+            .stats-grid { gap: 24px; }
+            .stat-card { padding: 32px 36px; }
+            .stat-value { font-size: 36px; }
+            .stat-label { font-size: 14px; }
+            .top-bar { padding: 24px 48px; }
+            .top-bar .greeting h1 { font-size: 28px; }
+            .dashboard-content { padding: 40px 48px; }
+            th, td { padding: 18px 28px; font-size: 15px; }
+            .card-header { padding: 20px 28px; }
+            .card-header h3 { font-size: 18px; }
+        }
+
+        /* ---------- Dark mode preference ---------- */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --surface-0: #1a1a1a;
+                --surface-50: #222222;
+                --surface-100: #2a2a2a;
+                --surface-200: #333333;
+                --surface-300: #444444;
+                --surface-400: #666666;
+                --surface-500: #888888;
+                --surface-600: #aaaaaa;
+                --surface-700: #cccccc;
+                --surface-900: #eeeeee;
+            }
+            .top-bar .greeting .role-icon { background: #2a2a2a; border-color: #333333; }
+            .stat-card { background: #1e1e1e; border-color: #333333; }
+            .stat-icon { background: #2a2a2a; border-color: #333333; }
+            .card { background: #1e1e1e; border-color: #333333; }
+            .card-header { background: #252525; border-color: #333333; }
+            th { background: #252525; }
+            .action-btn.secondary { background: #2a2a2a; border-color: #333333; color: #cccccc; }
+            .action-btn.secondary:hover { background: #333333; }
+            code { background: #2a2a2a; color: #aaaaaa; }
+            .sidebar { background: #0a0a0a; }
+            .sidebar-footer .user-info .name { color: #ddd; }
+        }
     </style>
 </head>
 <body>
 <div class="app">
-    <aside class="sidebar">
+    <!-- Sidebar Overlay (mobile) -->
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="logo">
                 <div class="logo-icon">VM</div>
@@ -552,6 +658,7 @@ $sparkPts = sparklinePath($sparkline);
     <main class="main">
         <div class="top-bar">
             <div class="greeting">
+                <button class="menu-toggle" id="menuToggle" onclick="toggleSidebar()" aria-label="Toggle menu">☰</button>
                 <div class="role-icon"><?php echo icon($config['icon'], 19); ?></div>
                 <div>
                     <h1><?php echo htmlspecialchars($config['title']); ?></h1>
@@ -694,5 +801,27 @@ $sparkPts = sparklinePath($sparkline);
         </div>
     </main>
 </div>
+
+<!-- ============================================================
+   JAVASCRIPT - Mobile Menu Toggle
+   ============================================================ -->
+<script>
+    function toggleSidebar() {
+        document.getElementById('sidebar').classList.toggle('open');
+        document.getElementById('sidebarOverlay').classList.toggle('active');
+    }
+    function closeSidebar() {
+        document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('sidebarOverlay').classList.remove('active');
+    }
+    // Close sidebar on escape key
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeSidebar();
+    });
+    // Auto-close sidebar on window resize to desktop
+    window.addEventListener('resize', function() {
+        if (window.innerWidth > 992) closeSidebar();
+    });
+</script>
 </body>
 </html>
