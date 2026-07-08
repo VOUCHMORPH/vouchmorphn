@@ -439,25 +439,55 @@ addResult('8. Security Hardening', 'Demo credentials removed from login page',
     $hasDemoCreds ? 'Remove the demo-cred block and pre-filled value="" attributes from login.php before any real pilot.' : ''
 );
 
-$hasCookieHardening = $authContent && (
+// ============================================================================
+// FIXED: Session Cookie Hardening - Validate Runtime Configuration
+// ============================================================================
+// Instead of grepping the source file (which can be brittle and read the wrong file),
+// check what PHP is ACTUALLY using at runtime.
+// ============================================================================
+$cookieHttponly = ini_get('session.cookie_httponly');
+$cookieSecure = ini_get('session.cookie_secure');
+$cookieSamesite = strtolower(ini_get('session.cookie_samesite'));
+
+$cookieSettingsActive = (
+    $cookieHttponly == '1' &&
+    $cookieSecure == '1' &&
+    ($cookieSamesite === 'lax' || $cookieSamesite === 'strict')
+);
+
+$cookieMessage = $cookieSettingsActive
+    ? "Session cookie settings are active. httponly={$cookieHttponly}, secure={$cookieSecure}, samesite={$cookieSamesite}"
+    : "Session cookie hardening is NOT active. httponly={$cookieHttponly}, secure={$cookieSecure}, samesite={$cookieSamesite}";
+
+$cookieFix = $cookieSettingsActive
+    ? ''
+    : "Add ini_set('session.cookie_httponly','1'); ini_set('session.cookie_secure','1'); ini_set('session.cookie_samesite','Lax'); to auth.php BEFORE the session_start() call.";
+
+addResult(
+    '8. Security Hardening',
+    'Session cookie hardening',
+    $cookieSettingsActive ? 'pass' : 'fail',
+    $cookieMessage,
+    $cookieFix
+);
+
+// Also check if the settings appear in auth.php (for debugging/info)
+$hasCookieHardeningInFile = $authContent && (
     preg_match('/session\.cookie_httponly/', $authContent) &&
-    preg_match('/session\.cookie_secure/', $authContent)
+    preg_match('/session\.cookie_secure/', $authContent) &&
+    preg_match('/session\.cookie_samesite/', $authContent)
 );
-$hardeningBeforeSessionStart = false;
-if ($hasCookieHardening) {
-    $httponlyPos = strpos($authContent, 'session.cookie_httponly');
-    $sessionStartPos = strpos($authContent, 'session_start(');
-    $hardeningBeforeSessionStart = ($httponlyPos !== false && $sessionStartPos !== false && $httponlyPos < $sessionStartPos);
+
+if (!$cookieSettingsActive && $hasCookieHardeningInFile) {
+    // Settings are in the file but not active - likely positioned after session_start()
+    addResult(
+        '8. Security Hardening',
+        '⚠️ Session cookie settings found in file but NOT active',
+        'warn',
+        'Cookie hardening settings exist in auth.php but are not taking effect. They must be positioned BEFORE session_start().',
+        'Move all ini_set(\'session.cookie_*\') calls to the VERY TOP of auth.php, before any session_start() call.'
+    );
 }
-addResult('8. Security Hardening', 'Session cookie hardening',
-    $hardeningBeforeSessionStart ? 'pass' : ($hasCookieHardening ? 'fail' : 'warn'),
-    $hardeningBeforeSessionStart
-        ? 'cookie_httponly/cookie_secure set before session_start() in auth.php'
-        : ($hasCookieHardening
-            ? 'FAIL — cookie hardening ini_set() calls found but positioned AFTER session_start()'
-            : 'No explicit session.cookie_secure / cookie_httponly / cookie_samesite configuration visible'),
-    $hardeningBeforeSessionStart ? '' : "Set ini_set('session.cookie_httponly','1'), ini_set('session.cookie_secure','1'), ini_set('session.cookie_samesite','Lax') in auth.php, BEFORE the session_start() call."
-);
 
 // ============================================================================
 // 9. PLATFORM / ORGANIZATION TIER SEPARATION
