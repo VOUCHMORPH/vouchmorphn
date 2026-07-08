@@ -3,36 +3,62 @@ session_start();
 require_once '../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
-$db = DBConnection::getInstance();
+// Create database connection using the correct method
+$db = new DBConnection();
+$pdo = $db->getConnection(); // Assuming getConnection() returns PDO instance
+
+// If DBConnection doesn't have getConnection(), try direct PDO
+if (!method_exists($db, 'getConnection')) {
+    // Fallback to direct PDO connection
+    $host = 'localhost';
+    $dbname = 'vouchmorph';
+    $username = 'root';
+    $password = '';
+    
+    try {
+        $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        die("Database connection failed: " . $e->getMessage());
+    }
+} else {
+    $pdo = $db->getConnection();
+}
+
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = $_POST['email'] ?? '';
     $password = $_POST['password'] ?? '';
     
-    $stmt = $db->prepare("
-        SELECT ou.*, o.name as org_name, o.id as organization_id, o.logo_url, u.email, u.password_hash
-        FROM organization_users ou
-        JOIN organizations o ON ou.organization_id = o.id
-        JOIN users u ON ou.user_id = u.id
-        WHERE u.email = :email AND ou.is_active = true AND o.status = 'ACTIVE'
-    ");
-    $stmt->execute([':email' => $email]);
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
-    
-    if ($user && password_verify($password, $user['password_hash'])) {
-        $_SESSION['enterprise_user'] = [
-            'id' => $user['id'],
-            'organization_id' => $user['organization_id'],
-            'organization_name' => $user['org_name'],
-            'role' => $user['role'],
-            'email' => $user['email'],
-            'permissions' => json_decode($user['permissions'] ?? '[]', true)
-        ];
-        header('Location: index.php');
-        exit;
-    } else {
-        $error = 'Invalid email or password';
+    try {
+        $stmt = $pdo->prepare("
+            SELECT ou.*, o.name as org_name, o.id as organization_id, o.logo_url, u.email, u.password_hash
+            FROM organization_users ou
+            JOIN organizations o ON ou.organization_id = o.id
+            JOIN users u ON ou.user_id = u.id
+            WHERE u.email = :email AND ou.is_active = true AND o.status = 'ACTIVE'
+        ");
+        $stmt->execute([':email' => $email]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($user && password_verify($password, $user['password_hash'])) {
+            $_SESSION['enterprise_user'] = [
+                'id' => $user['id'],
+                'organization_id' => $user['organization_id'],
+                'organization_name' => $user['org_name'],
+                'role' => $user['role'],
+                'email' => $user['email'],
+                'permissions' => json_decode($user['permissions'] ?? '[]', true)
+            ];
+            header('Location: index.php');
+            exit;
+        } else {
+            $error = 'Invalid email or password';
+        }
+    } catch (PDOException $e) {
+        $error = 'Database error: ' . $e->getMessage();
     }
 }
 ?>
@@ -147,6 +173,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-radius: 12px;
             font-size: 13px;
         }
+        .demo-cred strong {
+            color: #1e293b;
+        }
+        .demo-cred span {
+            display: block;
+            margin-top: 4px;
+        }
     </style>
 </head>
 <body>
@@ -176,9 +209,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </form>
         
         <div class="demo-cred">
-            <strong>🔐 Demo Credentials</strong><br>
-            Email: demo@vouchmorph.com<br>
-            Password: demo123<br>
+            <strong>🔐 Demo Credentials</strong>
+            <span>Email: demo@vouchmorph.com</span>
+            <span>Password: demo123</span>
             <span style="font-size: 11px; color: #94a3b8;">(For testing only)</span>
         </div>
     </div>
