@@ -1,6 +1,5 @@
 <?php
-// index.php - VOUCHMORPH NATIONAL DISBURSEMENT OPERATING PLATFORM
-// Fits comfortably on a laptop screen at normal data volumes; scrolls gracefully if content grows
+// index.php - VOUCHMORPH NATIONAL DISBURSEMENT REGISTRY
 require_once 'auth.php';
 $user = requireEnterpriseAuth();
 
@@ -117,6 +116,7 @@ if ($departmentId) {
 
 $roleDisplay = strtoupper($userRole);
 $orgName = htmlspecialchars($user['organization_name'] ?? 'GOVERNMENT OF BOTSWANA');
+$fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats['pending'] + $stats['programs']), 3, '0', STR_PAD_LEFT);
 
 function formatCurrency($amount) {
     return 'BWP ' . number_format($amount, 2);
@@ -127,437 +127,406 @@ function formatCurrency($amount) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VouchMorph · National Disbursement Operations Center</title>
+    <title>VouchMorph · National Disbursement Registry</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         /* ============================================================
-           ROOT VARIABLES - EXTREMELY COMPACT
+           TOKENS
            ============================================================ */
         :root {
-            --bg-primary: #0D1B2A;
-            --bg-header: #11263F;
-            --bg-surface: #EFF3F7;
-            --bg-white: #FFFFFF;
-            --border-color: #D4DAE2;
-            --text-primary: #0D1B2A;
-            --text-secondary: #4A5568;
-            --text-muted: #718096;
-            --gold: #C9972A;
-            --success: #107C41;
-            --success-bg: #E6F4ED;
-            --warning: #A15C00;
-            --warning-bg: #FDF1E6;
-            --danger: #C62828;
-            --danger-bg: #FDE8E8;
-            --blue: #005EA2;
-            --blue-bg: #E6F0F8;
-            --font-body: 'IBM Plex Sans', sans-serif;
-            --font-mono: 'IBM Plex Mono', monospace;
-            --sidebar-width: 200px;
-            --transition: all 0.15s ease;
+            --paper:        #EEF1EF;
+            --panel:        #FFFFFF;
+            --ink-900:      #0F2138;
+            --ink-700:      #1D3557;
+            --ink-500:      #4A5A6E;
+            --ink-300:      #8A96A3;
+            --line:         #D3DAD6;
+            --line-strong:  #AEB8B2;
+            --brass:        #8A6D3B;
+            --brass-tint:   #F4EFE3;
+            --seal-red:     #7A2118;
+            --seal-red-tint:#F6E9E7;
+            --amber:        #8A5A0B;
+            --amber-tint:   #F6EEDD;
+            --ledger-green: #24513A;
+            --green-tint:   #E5EEE7;
+            --blue-tint:    #E7EEF4;
+
+            --f-body: 'IBM Plex Sans', sans-serif;
+            --f-cond: 'IBM Plex Sans Condensed', sans-serif;
+            --f-mono: 'IBM Plex Mono', monospace;
+
+            --sidebar-width: 216px;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
-
-        html, body {
-            height: 100%;
-        }
+        html, body { height: 100%; }
 
         body {
-            font-family: var(--font-body);
-            background: var(--bg-surface);
-            color: var(--text-primary);
+            font-family: var(--f-body);
+            background: var(--paper);
+            color: var(--ink-900);
             font-size: 13px;
-            line-height: 1.4;
+            line-height: 1.45;
             -webkit-font-smoothing: antialiased;
             display: flex;
             min-height: 100vh;
         }
 
-        ::-webkit-scrollbar { width: 3px; height: 3px; }
-        ::-webkit-scrollbar-track { background: var(--bg-surface); }
-        ::-webkit-scrollbar-thumb { background: var(--border-color); }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--line-strong); }
 
-        .app {
-            display: flex;
-            width: 100%;
-            min-height: 100vh;
+        a { color: inherit; }
+
+        /* ============================================================
+           SIGNATURE: registration corner-marks on every doc panel
+           ============================================================ */
+        .doc-panel {
+            position: relative;
+            background: var(--panel);
+            border: 1px solid var(--line);
+        }
+        .doc-panel::before,
+        .doc-panel::after {
+            content: "";
+            position: absolute;
+            width: 9px;
+            height: 9px;
+            pointer-events: none;
+        }
+        .doc-panel::before {
+            top: -1px; left: -1px;
+            border-top: 2px solid var(--brass);
+            border-left: 2px solid var(--brass);
+        }
+        .doc-panel::after {
+            bottom: -1px; right: -1px;
+            border-bottom: 2px solid var(--brass);
+            border-right: 2px solid var(--brass);
         }
 
         /* ============================================================
-           SIDEBAR - ULTRA COMPACT
+           SIGNATURE: ink-stamp status marks
+           ============================================================ */
+        .stamp {
+            display: inline-block;
+            padding: 2px 8px;
+            border: 1.5px solid currentColor;
+            transform: rotate(-2.5deg);
+            font-family: var(--f-mono);
+            font-size: 9px;
+            font-weight: 600;
+            letter-spacing: 0.09em;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+        .stamp.completed  { color: var(--ledger-green); }
+        .stamp.processing { color: var(--ink-700); }
+        .stamp.pending     { color: var(--amber); }
+        .stamp.failed      { color: var(--seal-red); }
+        .stamp.draft       { color: var(--ink-300); }
+        .stamp.threshold   { color: var(--seal-red); background: var(--seal-red-tint); }
+
+        /* ============================================================
+           EYEBROW / SECTION MARK utility
+           ============================================================ */
+        .eyebrow {
+            font-family: var(--f-cond);
+            font-weight: 600;
+            font-size: 10px;
+            letter-spacing: 0.11em;
+            text-transform: uppercase;
+            color: var(--ink-500);
+        }
+        .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
+
+        /* ============================================================
+           APP SHELL
+           ============================================================ */
+        .app { display: flex; width: 100%; min-height: 100vh; }
+
+        /* ============================================================
+           SIDEBAR — "Registry Index"
            ============================================================ */
         .sidebar {
             width: var(--sidebar-width);
-            background: var(--bg-primary);
+            background: var(--ink-900);
             color: white;
             display: flex;
             flex-direction: column;
             height: 100vh;
             position: sticky;
             top: 0;
-            overflow: hidden;
             flex-shrink: 0;
-            border-right: 1px solid rgba(255,255,255,0.05);
+            border-right: 3px solid var(--brass);
         }
 
-        .sidebar-header { padding: 16px 16px 12px; border-bottom: 1px solid rgba(255,255,255,0.05); flex-shrink: 0; }
-        .sidebar-header .brand { font-family: var(--font-mono); font-weight: 700; font-size: 14px; letter-spacing: 1.5px; color: var(--gold); }
-        .sidebar-header .sub { font-size: 8px; font-weight: 500; color: rgba(255,255,255,0.25); text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
-        .sidebar-header .org { font-size: 9px; color: rgba(255,255,255,0.35); margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.05); }
+        .sidebar-header { padding: 20px 18px 14px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+        .sidebar-header .brand-row { display: flex; align-items: center; gap: 8px; }
+        .sidebar-header .brand { font-family: var(--f-mono); font-weight: 700; font-size: 15px; letter-spacing: 0.02em; color: white; }
+        .sidebar-header .brand em { color: var(--brass); font-style: normal; }
+        .sidebar-header .sub { font-family: var(--f-cond); font-size: 9px; font-weight: 600; letter-spacing: 0.14em; color: rgba(255,255,255,0.35); text-transform: uppercase; margin-top: 4px; }
+        .sidebar-header .org {
+            font-family: var(--f-mono); font-size: 9px; color: rgba(255,255,255,0.45);
+            margin-top: 12px; padding-top: 10px; border-top: 1px dashed rgba(255,255,255,0.15);
+            letter-spacing: 0.03em;
+        }
 
-        .sidebar-nav { padding: 10px 8px; overflow-y: auto; flex: 1; }
-        .sidebar-nav .nav-group { font-size: 8px; text-transform: uppercase; letter-spacing: 1px; color: rgba(255,255,255,0.15); padding: 12px 8px 4px; font-weight: 600; }
+        .sidebar-nav { padding: 10px 10px; overflow-y: auto; flex: 1; }
+        .nav-group {
+            font-family: var(--f-cond); font-size: 9px; text-transform: uppercase; letter-spacing: 0.14em;
+            color: rgba(255,255,255,0.28); padding: 14px 8px 4px; font-weight: 700;
+        }
+        .nav-group:first-child { padding-top: 4px; }
 
         .nav-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
+            display: flex; align-items: center; gap: 4px;
             padding: 7px 8px;
-            color: rgba(255,255,255,0.4);
+            color: rgba(255,255,255,0.55);
             text-decoration: none;
-            font-size: 12px;
+            font-size: 12.5px;
             font-weight: 500;
-            transition: var(--transition);
             border-left: 2px solid transparent;
+            transition: background 0.12s ease, color 0.12s ease;
         }
-        .nav-item:hover { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.7); }
-        .nav-item.active { background: rgba(201,151,42,0.08); color: var(--gold); border-left-color: var(--gold); }
-        .nav-item .nav-icon { width: 14px; text-align: center; font-size: 11px; flex-shrink: 0; opacity: 0.4; }
-        .nav-item.active .nav-icon { opacity: 1; }
-        .nav-item .badge { margin-left: auto; background: var(--gold); color: var(--bg-primary); font-size: 8px; font-weight: 700; padding: 1px 5px; font-family: var(--font-mono); }
+        .nav-item:hover { background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.85); }
+        .nav-item.active { background: rgba(138,109,59,0.16); color: var(--brass); border-left-color: var(--brass); font-weight: 600; }
+        .nav-item .mark { font-family: var(--f-mono); opacity: 0.65; font-size: 11px; width: 13px; }
+        .nav-item.active .mark { opacity: 1; }
+        .nav-item .count {
+            margin-left: auto; background: var(--brass); color: var(--ink-900);
+            font-size: 9px; font-weight: 700; padding: 1px 5px; font-family: var(--f-mono);
+        }
 
-        .sidebar-footer { padding: 10px 14px; border-top: 1px solid rgba(255,255,255,0.05); flex-shrink: 0; }
-        .sidebar-footer .user-row { display: flex; align-items: center; gap: 8px; }
-        .sidebar-footer .avatar { width: 26px; height: 26px; background: var(--gold); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 10px; color: var(--bg-primary); font-family: var(--font-mono); flex-shrink: 0; }
+        .sidebar-footer { padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.08); }
+        .sidebar-footer .user-row { display: flex; align-items: center; gap: 9px; }
+        .sidebar-footer .avatar {
+            width: 27px; height: 27px; background: var(--brass); flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+            font-family: var(--f-mono); font-weight: 700; font-size: 10px; color: var(--ink-900);
+        }
         .sidebar-footer .user-info { flex: 1; min-width: 0; }
-        .sidebar-footer .user-info .name { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.75); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .sidebar-footer .user-info .meta { font-size: 8px; color: rgba(255,255,255,0.2); text-transform: uppercase; letter-spacing: 0.3px; }
-        .sidebar-footer .logout-link { color: rgba(255,255,255,0.2); text-decoration: none; font-size: 13px; transition: var(--transition); }
-        .sidebar-footer .logout-link:hover { color: var(--gold); }
+        .sidebar-footer .name { font-size: 11.5px; font-weight: 600; color: rgba(255,255,255,0.85); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .sidebar-footer .meta { font-family: var(--f-cond); font-size: 9px; color: rgba(255,255,255,0.35); text-transform: uppercase; letter-spacing: 0.08em; }
+        .sidebar-footer .logout { color: rgba(255,255,255,0.3); text-decoration: none; font-size: 14px; }
+        .sidebar-footer .logout:hover { color: var(--brass); }
 
         /* ============================================================
-           MAIN - FULL HEIGHT
+           MAIN
            ============================================================ */
-        .main {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            min-height: 100vh;
-            min-width: 0;
-            background: var(--bg-surface);
-        }
+        .main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; min-width: 0; }
 
         /* ============================================================
-           STATUS RIBBON - TINY
+           MASTHEAD — official document header
            ============================================================ */
-        .status-ribbon {
-            background: var(--bg-header);
+        .masthead {
+            background: var(--ink-900);
             color: white;
-            padding: 0 24px;
-            height: 32px;
+            padding: 14px 28px;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            flex-shrink: 0;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-        }
-        .status-ribbon .left { display: flex; align-items: center; gap: 12px; font-size: 10px; }
-        .status-ribbon .left .org-name { font-weight: 600; color: #FFFFFF; }
-        .status-ribbon .left .sep { color: rgba(255,255,255,0.15); }
-        .status-ribbon .left .tag { font-size: 8px; text-transform: uppercase; letter-spacing: 0.8px; padding: 1px 6px; border: 1px solid rgba(255,255,255,0.08); font-weight: 600; color: rgba(255,255,255,0.35); }
-        .status-ribbon .left .tag.prod { border-color: var(--success); color: #6FCF97; }
-        .status-ribbon .right { display: flex; align-items: center; gap: 10px; font-size: 10px; color: rgba(255,255,255,0.3); }
-        .status-ribbon .right .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 3px; }
-        .status-ribbon .right .dot.online { background: #6FCF97; }
-
-        /* ============================================================
-           TOP BAR - TINY
-           ============================================================ */
-        .top-bar {
-            background: var(--bg-white);
-            padding: 12px 24px;
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-shrink: 0;
-            min-height: 30px;
-        }
-        .top-bar .title-section h1 { font-size: 16px; font-weight: 600; }
-        .top-bar .title-section .sub { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
-        .top-bar .actions { display: flex; align-items: center; gap: 10px; }
-        .top-bar .actions .time { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); }
-        .top-bar .btn-icon { width: 28px; height: 28px; background: none; border: 1px solid var(--border-color); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-muted); font-size: 12px; }
-        .top-bar .btn-icon:hover { border-color: var(--gold); color: var(--gold); }
-        .menu-toggle { display: none; background: none; border: none; color: var(--text-primary); font-size: 18px; cursor: pointer; padding: 2px; }
-
-        /* ============================================================
-           DASHBOARD CONTENT - FILLS ENTIRE REMAINING SPACE
-           ============================================================ */
-        .dashboard-content {
-            flex: 1;
-            padding: 16px 24px 0;
-            max-width: 1600px;
-            width: 100%;
-            margin: 0 auto;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .content-wrapper {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        /* ============================================================
-           MISSION STATUS - 6 COLUMN
-           ============================================================ */
-        .mission-status {
-            display: grid;
-            grid-template-columns: repeat(6, 1fr);
-            gap: 10px;
-            flex-shrink: 0;
-        }
-
-        .kpi-panel {
-            background: var(--bg-white);
-            border: 1px solid var(--border-color);
-            padding: 12px 14px;
-        }
-        .kpi-panel .kpi-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); font-weight: 600; }
-        .kpi-panel .kpi-value { font-family: var(--font-mono); font-size: 21px; font-weight: 700; margin-top: 4px; letter-spacing: -0.3px; }
-        .kpi-panel .kpi-trend { font-size: 9px; font-weight: 600; margin-top: 4px; }
-        .kpi-panel .kpi-trend.up { color: var(--success); }
-        .kpi-panel .kpi-trend.down { color: var(--danger); }
-        .kpi-panel .kpi-trend.neutral { color: var(--text-muted); }
-
-        /* ============================================================
-           SYSTEM HEALTH
-           ============================================================ */
-        .system-health {
-            display: flex;
-            gap: 18px;
-            padding: 10px 14px;
-            background: var(--bg-white);
-            border: 1px solid var(--border-color);
-            flex-shrink: 0;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
             flex-wrap: wrap;
-        }
-        .system-health .health-item {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            font-size: 10px;
-            font-weight: 500;
-            color: var(--text-secondary);
-        }
-        .system-health .health-item .dot { width: 6px; height: 6px; border-radius: 50%; }
-        .system-health .health-item .dot.online { background: var(--success); }
-
-        /* ============================================================
-           MIDDLE GRID - FLEXIBLE
-           ============================================================ */
-        .middle-grid {
-            display: grid;
-            grid-template-columns: 1fr 1.2fr 1fr;
             gap: 10px;
-            flex-shrink: 0;
         }
-
-        .panel {
-            background: var(--bg-white);
-            border: 1px solid var(--border-color);
-            display: flex;
-            flex-direction: column;
+        .masthead .left { display: flex; align-items: center; gap: 14px; }
+        .seal {
+            width: 38px; height: 38px; border-radius: 50%;
+            border: 1.5px solid var(--brass);
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0; position: relative;
         }
-
-        .panel-header {
-            padding: 8px 12px;
-            background: var(--bg-surface);
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 9px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: var(--text-secondary);
-            flex-shrink: 0;
+        .seal::before {
+            content: ""; position: absolute; inset: 4px; border-radius: 50%;
+            border: 1px solid rgba(138,109,59,0.5);
         }
-        .panel-header .badge-count { background: var(--bg-primary); color: white; font-size: 9px; padding: 1px 6px; font-family: var(--font-mono); }
-        .panel-body {
-            padding: 10px 12px;
-            flex: 1;
+        .seal span { font-family: var(--f-mono); font-weight: 700; font-size: 11px; color: var(--brass); letter-spacing: -0.02em; }
+        .masthead .titling h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.01em; }
+        .masthead .titling .file-ref { font-family: var(--f-mono); font-size: 10px; color: rgba(255,255,255,0.4); margin-top: 2px; letter-spacing: 0.02em; }
+        .masthead .right { display: flex; align-items: center; gap: 14px; }
+        .classification {
+            font-family: var(--f-cond); font-size: 9px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+            color: #E7B8B2; border: 1px solid #8C3A30; padding: 3px 8px; transform: rotate(-1.5deg);
         }
-
-        .approval-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 6px 0;
-            border-bottom: 1px solid var(--border-color);
-            font-size: 11px;
-        }
-        .approval-item:last-child { border-bottom: none; }
-        .approval-item .ref { font-family: var(--font-mono); font-size: 10px; font-weight: 600; color: var(--text-secondary); }
-        .approval-item .amount { font-family: var(--font-mono); font-weight: 600; font-size: 11px; }
-        .approval-item .status-tag { font-size: 8px; text-transform: uppercase; padding: 2px 6px; font-weight: 600; }
-        .approval-item .status-tag.pending { background: var(--warning-bg); color: var(--warning); }
-        .approval-item .status-tag.threshold { background: var(--danger-bg); color: var(--danger); }
-
-        .panel .view-all-link { font-size: 10px; color: var(--blue); text-decoration: none; font-weight: 600; display: inline-block; margin-top: 8px; }
-
-        .pipeline-steps { display: flex; gap: 4px; padding: 4px 0; }
-        .pipeline-steps .step {
-            flex: 1; padding: 6px 4px; text-align: center; font-size: 8px; text-transform: uppercase;
-            font-weight: 600; border: 1px solid var(--border-color); color: var(--text-muted);
-        }
-        .pipeline-steps .step.active { background: var(--blue-bg); border-color: var(--blue); color: var(--blue); }
-        .pipeline-steps .step.done { background: var(--success-bg); border-color: var(--success); color: var(--success); }
-        .pipeline-progress { height: 4px; background: var(--border-color); margin: 10px 0 6px; }
-        .pipeline-progress .fill { height: 100%; background: var(--success); width: 72%; }
-        .pipeline-stats { display: flex; justify-content: space-between; font-size: 9px; color: var(--text-muted); margin-top: 4px; }
-
-        .feed-item {
-            display: flex; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border-color);
-            font-size: 10px; color: var(--text-secondary);
-        }
-        .feed-item:last-child { border-bottom: none; }
-        .feed-item .time { font-family: var(--font-mono); font-size: 9px; color: var(--text-muted); flex-shrink: 0; width: 34px; }
-        .feed-item .event { flex: 1; }
-        .feed-item .event strong { color: var(--text-primary); }
-        .feed-item .badge-live { font-size: 8px; text-transform: uppercase; color: var(--success); font-weight: 600; animation: pulse-live 2s infinite; }
-
-        @keyframes pulse-live { 0%,100%{opacity:1;} 50%{opacity:0.3;} }
+        .clock { font-family: var(--f-mono); font-size: 11px; color: rgba(255,255,255,0.55); }
+        .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #5FAE7E; margin-right: 5px; }
+        .menu-toggle { display: none; background: none; border: none; color: white; font-size: 18px; cursor: pointer; }
 
         /* ============================================================
-           TABLE - FILLS REMAINING SPACE
+           CONTENT
            ============================================================ */
-        .table-panel {
-            display: flex;
-            flex-direction: column;
-            background: var(--bg-white);
-            border: 1px solid var(--border-color);
+        .content { flex: 1; padding: 22px 28px 0; max-width: 1560px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+
+        /* ============================================================
+           STATEMENT OF ACCOUNT — hero ledger strip
+           ============================================================ */
+        .statement { padding: 20px 24px 16px; }
+        .statement-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; }
+        .statement-head .eyebrow { }
+        .statement-head .period { font-family: var(--f-mono); font-size: 10px; color: var(--ink-300); }
+        .statement-row { display: flex; align-items: flex-end; gap: 0; flex-wrap: wrap; }
+        .statement-item { padding: 0 22px; border-left: 1px solid var(--line); }
+        .statement-item:first-child { border-left: none; padding-left: 0; }
+        .statement-item .label { font-family: var(--f-cond); font-size: 10px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-500); }
+        .statement-item .value { font-family: var(--f-mono); font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
+        .statement-item .trend { font-family: var(--f-cond); font-size: 10px; font-weight: 600; margin-top: 5px; letter-spacing: 0.02em; }
+        .trend.up { color: var(--ledger-green); }
+        .trend.neutral { color: var(--ink-300); }
+
+        .statement-item.hero { padding-left: 0; }
+        .statement-item.hero .value {
+            font-size: 30px;
+            border-bottom: 4px double var(--ink-900);
+            padding-bottom: 8px;
+            display: inline-block;
         }
-        .table-panel .panel-header { flex-shrink: 0; }
-        .table-wrap { max-height: 360px; overflow-y: auto; }
-        .table-wrap table { width: 100%; border-collapse: collapse; font-size: 11px; }
-        th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border-color); }
-        th { background: var(--bg-surface); font-weight: 600; font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid var(--border-color); position: sticky; top: 0; z-index: 1; }
-        tr:hover td { background: var(--bg-surface); }
+        .statement-item:not(.hero) .value { font-size: 19px; color: var(--ink-700); }
 
-        .status-badge { font-size: 8px; text-transform: uppercase; padding: 2px 6px; font-weight: 600; }
-        .status-badge.completed { background: var(--success-bg); color: var(--success); }
-        .status-badge.processing { background: var(--warning-bg); color: var(--warning); }
-        .status-badge.pending { background: var(--blue-bg); color: var(--blue); }
-        .status-badge.failed { background: var(--danger-bg); color: var(--danger); }
-        .status-badge.draft { background: var(--border-color); color: var(--text-muted); }
+        /* ============================================================
+           SYSTEM STRIP
+           ============================================================ */
+        .system-strip {
+            display: flex; flex-wrap: wrap; gap: 22px;
+            padding: 9px 24px;
+        }
+        .system-strip .item { display: flex; align-items: center; gap: 6px; font-family: var(--f-cond); font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; color: var(--ink-500); text-transform: uppercase; }
+        .system-strip .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--ledger-green); }
 
-        .action-link { color: var(--blue); text-decoration: none; font-weight: 600; font-size: 7px; }
-        .action-link:hover { text-decoration: underline; }
-        code { background: var(--bg-surface); padding: 0 3px; font-family: var(--font-mono); font-size: 6px; font-weight: 600; color: var(--text-secondary); }
+        /* ============================================================
+           MIDDLE GRID
+           ============================================================ */
+        .middle-grid { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 14px; }
+
+        .panel-head {
+            padding: 9px 16px;
+            background: var(--brass-tint);
+            border-bottom: 1px solid var(--line);
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .panel-head .eyebrow { color: var(--ink-700); }
+        .panel-head .count-chip { font-family: var(--f-mono); font-size: 10px; font-weight: 700; color: white; background: var(--ink-900); padding: 1px 6px; }
+        .panel-body { padding: 12px 16px; }
+
+        /* Schedule A — pending approvals */
+        .sched-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+        .sched-row:last-of-type { border-bottom: none; }
+        .sched-row .ref { font-family: var(--f-mono); font-size: 11px; font-weight: 600; color: var(--ink-700); }
+        .sched-row .amt { font-family: var(--f-mono); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+        .view-all { display: inline-block; margin-top: 10px; font-family: var(--f-cond); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-decoration: none; color: var(--ink-700); border-bottom: 1px solid var(--brass); }
+
+        /* Processing status */
+        .pipeline-steps { display: flex; gap: 5px; }
+        .pipeline-steps .step {
+            flex: 1; padding: 7px 4px; text-align: center;
+            font-family: var(--f-cond); font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+            border: 1px solid var(--line); color: var(--ink-300);
+        }
+        .pipeline-steps .step.done { border-color: var(--ledger-green); color: var(--ledger-green); background: var(--green-tint); }
+        .pipeline-steps .step.active { border-color: var(--ink-900); color: var(--ink-900); background: var(--blue-tint); }
+        .pipeline-bar { height: 5px; background: var(--line); margin: 12px 0 6px; position: relative; }
+        .pipeline-bar .fill { height: 100%; background: var(--ledger-green); width: 72%; }
+        .pipeline-figures { display: flex; justify-content: space-between; }
+        .pipeline-figures div { text-align: center; }
+        .pipeline-figures .n { font-family: var(--f-mono); font-weight: 700; font-size: 15px; display: block; }
+        .pipeline-figures .l { font-family: var(--f-cond); font-size: 8.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-300); }
+
+        /* Activity log */
+        .log-row { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--ink-500); }
+        .log-row:last-child { border-bottom: none; }
+        .log-row .t { font-family: var(--f-mono); font-size: 10px; color: var(--ink-300); flex-shrink: 0; width: 36px; }
+        .log-row strong { color: var(--ink-900); font-weight: 600; }
+        .live-flag { font-family: var(--f-cond); font-size: 9px; font-weight: 700; color: var(--ledger-green); letter-spacing: 0.06em; text-transform: uppercase; }
+        .live-flag::before { content: "●"; margin-right: 3px; animation: blink 1.8s infinite; }
+        @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.25;} }
+
+        /* ============================================================
+           REGISTER TABLE
+           ============================================================ */
+        .register-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; padding-bottom: 0; }
+        .table-scroll { max-height: 340px; overflow-y: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th, td { padding: 10px 16px; text-align: left; border-bottom: 1px solid var(--line); }
+        th {
+            background: var(--brass-tint); font-family: var(--f-cond); font-weight: 700; font-size: 10px;
+            color: var(--ink-500); text-transform: uppercase; letter-spacing: 0.07em;
+            border-bottom: 2px solid var(--line-strong); position: sticky; top: 0;
+        }
+        tbody tr:nth-child(even) td { background: #F8FAF8; }
+        tbody tr:hover td { background: var(--blue-tint); }
+        td code { font-family: var(--f-mono); font-size: 11px; font-weight: 600; color: var(--ink-700); background: var(--brass-tint); padding: 1px 5px; }
+        td .amt { font-family: var(--f-mono); font-weight: 700; font-variant-numeric: tabular-nums; }
+        .action-link { font-family: var(--f-cond); font-weight: 700; font-size: 11px; letter-spacing: 0.04em; text-decoration: none; color: var(--ink-700); border-bottom: 1px solid var(--brass); }
 
         /* ============================================================
            EMPTY STATE
            ============================================================ */
-        .empty-state { text-align: center; padding: 24px 12px; color: var(--text-muted); }
-        .empty-state .icon { font-size: 22px; display: block; margin-bottom: 6px; }
-        .empty-state p { font-size: 11px; }
-        .empty-state a { color: var(--blue); text-decoration: none; font-weight: 600; font-size: 11px; }
+        .empty-state { text-align: center; padding: 26px 12px; color: var(--ink-300); }
+        .empty-state .mark { font-family: var(--f-mono); font-size: 20px; display: block; margin-bottom: 8px; color: var(--brass); }
+        .empty-state p { font-size: 11.5px; }
+        .empty-state a { color: var(--ink-700); font-weight: 600; text-decoration: none; border-bottom: 1px solid var(--brass); }
 
         /* ============================================================
-           FOOTER - TINY
+           FOOTER — official notice
            ============================================================ */
         .page-footer {
-            flex-shrink: 0;
-            padding: 14px 0 20px;
+            padding: 16px 0 22px;
             text-align: center;
-            color: var(--text-muted);
-            font-size: 9px;
-            letter-spacing: 0.5px;
-            border-top: 1px solid var(--border-color);
-            font-weight: 500;
-            text-transform: uppercase;
-            margin-top: 12px;
+            border-top: 1px solid var(--line);
+            margin-top: 6px;
         }
-        .page-footer .role-line { font-size: 8px; letter-spacing: 0.5px; color: var(--text-muted); margin-top: 3px; }
+        .page-footer .notice { font-family: var(--f-cond); font-size: 9.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-300); }
+        .page-footer .role-line { font-family: var(--f-mono); font-size: 9px; color: var(--ink-300); margin-top: 4px; }
 
         /* ============================================================
-           SIDEBAR OVERLAY
+           SIDEBAR OVERLAY (mobile)
            ============================================================ */
-        .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 99; cursor: pointer; }
+        .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(15,33,56,0.6); z-index: 99; }
         .sidebar-overlay.active { display: block; }
 
         /* ============================================================
            RESPONSIVE
            ============================================================ */
-        @media (max-width: 1200px) {
-            .mission-status { grid-template-columns: repeat(3, 1fr); }
+        @media (max-width: 1180px) {
             .middle-grid { grid-template-columns: 1fr 1fr; }
+            .middle-grid .panel:nth-child(3) { grid-column: 1 / -1; }
+            .statement-row { row-gap: 14px; }
         }
-
-        @media (max-width: 992px) {
-            .sidebar { position: fixed; top: 0; left: 0; transform: translateX(-100%); width: 220px; height: 100vh; z-index: 100; transition: transform 0.25s ease; }
+        @media (max-width: 960px) {
+            .sidebar { position: fixed; top: 0; left: 0; transform: translateX(-100%); z-index: 100; transition: transform 0.2s ease; }
             .sidebar.open { transform: translateX(0); }
             .menu-toggle { display: block; }
-            .status-ribbon { padding: 0 14px; height: auto; min-height: 28px; flex-wrap: wrap; }
-            .status-ribbon .left { gap: 8px; font-size: 9px; flex-wrap: wrap; }
-            .status-ribbon .right { gap: 8px; font-size: 9px; }
-            .top-bar { padding: 10px 14px; flex-wrap: wrap; }
-            .top-bar .title-section h1 { font-size: 14px; }
-            .dashboard-content { padding: 12px 14px 0; }
-            .mission-status { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+            .content { padding: 16px 16px 0; }
             .middle-grid { grid-template-columns: 1fr; }
-            .kpi-panel .kpi-value { font-size: 17px; }
+            .middle-grid .panel:nth-child(3) { grid-column: auto; }
+            .statement-item { border-left: none; padding: 10px 0 0; border-top: 1px solid var(--line); }
+            .statement-item:first-child { border-top: none; }
+            .statement-row { flex-direction: column; }
         }
-
-        @media (max-width: 640px) {
-            .status-ribbon .left .tag { display: none; }
-            .status-ribbon .left .sep { display: none; }
-            .top-bar { flex-direction: column; align-items: stretch; }
-            .top-bar .actions { justify-content: flex-end; }
-            .mission-status { grid-template-columns: repeat(2, 1fr); }
-            .kpi-panel .kpi-value { font-size: 16px; }
-            .kpi-panel { padding: 10px 12px; }
-            .system-health { gap: 10px; padding: 8px 12px; }
-            .system-health .health-item { font-size: 9px; }
-            .dashboard-content { padding: 10px 12px 0; }
-            .panel-body { padding: 8px 10px; }
-            th, td { padding: 7px 8px; font-size: 10px; }
-            .page-footer { font-size: 8px; padding: 10px 0 14px; }
-            .middle-grid { gap: 8px; }
-            .approval-item { font-size: 10px; }
-            .approval-item .amount { font-size: 10px; }
-        }
-
-        @media (min-width: 1920px) {
-            .dashboard-content { padding: 20px 32px 0; }
-            .kpi-panel .kpi-value { font-size: 24px; }
-            .kpi-panel { padding: 16px 18px; }
+        @media (max-width: 600px) {
+            .masthead { padding: 12px 16px; }
+            .classification { display: none; }
+            .statement { padding: 16px 16px 12px; }
+            .statement-item.hero .value { font-size: 24px; }
         }
 
         @media (prefers-color-scheme: dark) {
             :root {
-                --bg-surface: #1A1A2E;
-                --bg-white: #16213E;
-                --border-color: #2A3A5E;
-                --text-primary: #E2E8F0;
-                --text-secondary: #A0AEC0;
-                --text-muted: #718096;
+                --paper: #131C24;
+                --panel: #1B2733;
+                --line: #2C3A45;
+                --line-strong: #3C4C58;
+                --ink-900: #ECEFF2;
+                --ink-700: #C9D2D9;
+                --ink-500: #93A2AC;
+                --ink-300: #6B7A85;
+                --brass-tint: #22303A;
+                --blue-tint: #1D2A38;
+                --green-tint: #17261D;
             }
-            .top-bar { background: #16213E; }
-            .panel-header { background: #1A1A2E; }
-            th { background: #1A1A2E; }
-            .kpi-panel { background: #16213E; }
-            .panel { background: #16213E; }
-            .status-ribbon { background: #0D1B2A; }
-            .system-health { background: #16213E; }
-            .table-panel { background: #16213E; }
-            .page-footer { border-color: #2A3A5E; }
+            tbody tr:nth-child(even) td { background: #182129; }
         }
     </style>
 </head>
@@ -568,204 +537,209 @@ function formatCurrency($amount) {
         <!-- Sidebar -->
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <div class="brand">VOUCHMORPH</div>
-                <div class="sub">National Disbursement</div>
-                <div class="org"><?php echo substr($orgName, 0, 20); ?></div>
+                <div class="brand-row">
+                    <span class="brand">VOUCH<em>MORPH</em></span>
+                </div>
+                <div class="sub">National Disbursement Registry</div>
+                <div class="org"><?php echo substr($orgName, 0, 26); ?></div>
             </div>
             <nav class="sidebar-nav">
                 <div class="nav-group">Mission</div>
-                <a href="index.php" class="nav-item active"><span class="nav-icon">◆</span>Command</a>
+                <a href="index.php" class="nav-item active"><span class="mark">§</span>Command</a>
                 <?php if ($config['show_actions']): ?>
-                <a href="imports/upload.php" class="nav-item"><span class="nav-icon">◈</span>Disburse</a>
+                <a href="imports/upload.php" class="nav-item"><span class="mark">§</span>Disburse</a>
                 <?php endif; ?>
-                <a href="batches/index.php" class="nav-item"><span class="nav-icon">▦</span>Batches <?php if ($stats['pending'] > 0): ?><span class="badge"><?php echo $stats['pending']; ?></span><?php endif; ?></a>
+                <a href="batches/index.php" class="nav-item"><span class="mark">§</span>Batches <?php if ($stats['pending'] > 0): ?><span class="count"><?php echo $stats['pending']; ?></span><?php endif; ?></a>
                 <?php if ($config['show_beneficiaries']): ?>
-                <a href="beneficiaries/index.php" class="nav-item"><span class="nav-icon">◈</span>Beneficiaries</a>
+                <a href="beneficiaries/index.php" class="nav-item"><span class="mark">§</span>Beneficiaries</a>
                 <?php endif; ?>
                 <div class="nav-group">Approvals</div>
-                <a href="batches/index.php?filter=pending" class="nav-item"><span class="nav-icon">◉</span>Pending <?php if ($stats['pending'] > 0): ?><span class="badge"><?php echo $stats['pending']; ?></span><?php endif; ?></a>
+                <a href="batches/index.php?filter=pending" class="nav-item"><span class="mark">§</span>Pending <?php if ($stats['pending'] > 0): ?><span class="count"><?php echo $stats['pending']; ?></span><?php endif; ?></a>
                 <div class="nav-group">Governance</div>
-                <a href="reports/audit_trail.php" class="nav-item"><span class="nav-icon">◧</span>Audit</a>
-                <a href="reports/index.php" class="nav-item"><span class="nav-icon">▥</span>Reports</a>
+                <a href="reports/audit_trail.php" class="nav-item"><span class="mark">§</span>Audit</a>
+                <a href="reports/index.php" class="nav-item"><span class="mark">§</span>Reports</a>
                 <div class="nav-group">System</div>
-                <a href="testgov.php" class="nav-item"><span class="nav-icon">◈</span>Diagnostics</a>
+                <a href="testgov.php" class="nav-item"><span class="mark">§</span>Diagnostics</a>
             </nav>
             <div class="sidebar-footer">
                 <div class="user-row">
                     <div class="avatar"><?php echo strtoupper(substr($user['full_name'] ?? $user['email'], 0, 1)); ?></div>
                     <div class="user-info">
-                        <div class="name"><?php echo substr($user['full_name'] ?? $user['email'], 0, 12); ?></div>
+                        <div class="name"><?php echo substr($user['full_name'] ?? $user['email'], 0, 14); ?></div>
                         <div class="meta"><?php echo $roleDisplay; ?></div>
                     </div>
-                    <a href="logout.php" class="logout-link" title="Sign out">↗</a>
+                    <a href="logout.php" class="logout" title="Sign out">↗</a>
                 </div>
             </div>
         </aside>
 
         <!-- Main -->
         <main class="main">
-            <!-- Status Ribbon -->
-            <div class="status-ribbon">
+            <!-- Masthead -->
+            <div class="masthead">
                 <div class="left">
-                    <span class="org-name"><?php echo $orgName; ?></span>
-                    <span class="sep">|</span>
-                    <span>NATIONAL DISBURSEMENT</span>
-                    <span class="sep">|</span>
-                    <span class="tag prod">● PROD</span>
-                    <span class="tag">SECURE</span>
+                    <button class="menu-toggle" id="menuToggle" onclick="toggleSidebar()" aria-label="Toggle menu">≡</button>
+                    <div class="seal"><span>VM</span></div>
+                    <div class="titling">
+                        <h1><?php echo $orgName; ?> — National Disbursement</h1>
+                        <div class="file-ref">FILE NO. <?php echo htmlspecialchars($fileRef); ?> &nbsp;·&nbsp; <?php echo date('d M Y'); ?></div>
+                    </div>
                 </div>
                 <div class="right">
-                    <span>ACTIVE</span>
-                    <span class="sep">|</span>
-                    <span><span class="dot online"></span> 98%</span>
-                    <span class="sep">|</span>
-                    <span><?php echo date('H:i'); ?></span>
+                    <span class="classification">Official · Restricted</span>
+                    <span class="clock"><span class="status-dot"></span><?php echo date('H:i'); ?> UTC+2</span>
                 </div>
             </div>
 
-            <!-- Top Bar -->
-            <div class="top-bar">
-                <div class="title-section">
-                    <button class="menu-toggle" id="menuToggle" onclick="toggleSidebar()" aria-label="Toggle menu">≡</button>
-                    <h1>National Disbursement Operations Center</h1>
-                    <div class="sub"><?php echo date('M d, Y'); ?></div>
+            <!-- Content -->
+            <div class="content">
+
+                <!-- Statement of Account -->
+                <section class="statement doc-panel">
+                    <div class="statement-head">
+                        <span class="eyebrow"><span class="section-mark">§1</span>Statement of Account</span>
+                        <span class="period">Period ending <?php echo date('d M Y'); ?></span>
+                    </div>
+                    <div class="statement-row">
+                        <div class="statement-item hero">
+                            <div class="label">Total Disbursed</div>
+                            <div class="value"><?php echo formatCurrency($stats['disbursed']); ?></div>
+                            <div class="trend up">▲ 8.2% vs. prior period</div>
+                        </div>
+                        <div class="statement-item">
+                            <div class="label">Success Rate</div>
+                            <div class="value"><?php echo number_format($stats['success_rate'], 1); ?>%</div>
+                            <div class="trend up">▲ 0.02%</div>
+                        </div>
+                        <div class="statement-item">
+                            <div class="label">Awaiting Approval</div>
+                            <div class="value"><?php echo number_format($stats['pending']); ?></div>
+                            <div class="trend neutral">Held for review</div>
+                        </div>
+                        <div class="statement-item">
+                            <div class="label">Beneficiaries</div>
+                            <div class="value"><?php echo number_format($stats['beneficiaries']); ?></div>
+                            <div class="trend neutral">On register</div>
+                        </div>
+                        <div class="statement-item">
+                            <div class="label">Active Programs</div>
+                            <div class="value"><?php echo number_format($stats['programs']); ?></div>
+                            <div class="trend neutral">In force</div>
+                        </div>
+                        <div class="statement-item">
+                            <div class="label">Departments</div>
+                            <div class="value"><?php echo number_format($stats['departments']); ?></div>
+                            <div class="trend neutral">Reporting</div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- System strip -->
+                <div class="system-strip doc-panel">
+                    <span class="item"><span class="dot"></span>Database</span>
+                    <span class="item"><span class="dot"></span>Identity</span>
+                    <span class="item"><span class="dot"></span>Swap Engine</span>
+                    <span class="item"><span class="dot"></span>Banking Rails</span>
+                    <span class="item"><span class="dot"></span>Audit Log</span>
+                    <span class="item"><span class="dot"></span>Security</span>
                 </div>
-                <div class="actions">
-                    <span class="time">UTC+2</span>
-                    <button class="btn-icon" title="Refresh" onclick="location.reload()">⟳</button>
-                </div>
-            </div>
 
-            <!-- Dashboard Content -->
-            <div class="dashboard-content">
-                <div class="content-wrapper">
-                    <!-- Mission Status -->
-                    <div class="mission-status">
-                        <div class="kpi-panel">
-                            <div class="kpi-label">Disbursed</div>
-                            <div class="kpi-value"><?php echo formatCurrency($stats['disbursed']); ?></div>
-                            <div class="kpi-trend up">▲ 8.2%</div>
+                <!-- Middle grid -->
+                <div class="middle-grid">
+                    <div class="panel doc-panel">
+                        <div class="panel-head">
+                            <span class="eyebrow"><span class="section-mark">§2</span>Schedule A — Pending Authorisation</span>
+                            <span class="count-chip"><?php echo $stats['pending']; ?></span>
                         </div>
-                        <div class="kpi-panel">
-                            <div class="kpi-label">Success</div>
-                            <div class="kpi-value"><?php echo number_format($stats['success_rate'], 1); ?>%</div>
-                            <div class="kpi-trend up">▲ 0.02%</div>
-                        </div>
-                        <div class="kpi-panel">
-                            <div class="kpi-label">Approvals</div>
-                            <div class="kpi-value"><?php echo number_format($stats['pending']); ?></div>
-                            <div class="kpi-trend neutral">Waiting</div>
-                        </div>
-                        <div class="kpi-panel">
-                            <div class="kpi-label">Beneficiaries</div>
-                            <div class="kpi-value"><?php echo number_format($stats['beneficiaries']); ?></div>
-                            <div class="kpi-trend up">Active</div>
-                        </div>
-                        <div class="kpi-panel">
-                            <div class="kpi-label">Programs</div>
-                            <div class="kpi-value"><?php echo number_format($stats['programs']); ?></div>
-                            <div class="kpi-trend up">Active</div>
-                        </div>
-                        <div class="kpi-panel">
-                            <div class="kpi-label">Departments</div>
-                            <div class="kpi-value"><?php echo number_format($stats['departments']); ?></div>
-                            <div class="kpi-trend up">Active</div>
-                        </div>
-                    </div>
-
-                    <!-- System Health -->
-                    <div class="system-health">
-                        <span class="health-item"><span class="dot online"></span> Database</span>
-                        <span class="health-item"><span class="dot online"></span> Identity</span>
-                        <span class="health-item"><span class="dot online"></span> Swap Engine</span>
-                        <span class="health-item"><span class="dot online"></span> Banks</span>
-                        <span class="health-item"><span class="dot online"></span> Audit</span>
-                        <span class="health-item"><span class="dot online"></span> Security</span>
-                    </div>
-
-                    <!-- Middle Grid -->
-                    <div class="middle-grid">
-                        <div class="panel">
-                            <div class="panel-header">Pending Approvals <span class="badge-count"><?php echo $stats['pending']; ?></span></div>
-                            <div class="panel-body">
-                                <?php if ($stats['pending'] > 0): ?>
-                                <div class="approval-item"><span class="ref">GOV-440</span><span class="amount">BWP 12.4K</span><span class="status-tag pending">Pending</span></div>
-                                <div class="approval-item"><span class="ref">GOV-439</span><span class="amount">BWP 8.2K</span><span class="status-tag pending">Pending</span></div>
-                                <div class="approval-item"><span class="ref">GOV-438</span><span class="amount">BWP 125K</span><span class="status-tag threshold">▲</span></div>
-                                <a href="batches/index.php?filter=pending" class="view-all-link">View all →</a>
-                                <?php else: ?>
-                                <div class="empty-state"><span class="icon">◯</span><p>No pending</p></div>
-                                <?php endif; ?>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-header">Pipeline <span class="badge-count">72%</span></div>
-                            <div class="panel-body">
-                                <div class="pipeline-steps">
-                                    <span class="step done">Draft</span>
-                                    <span class="step done">Approved</span>
-                                    <span class="step active">Executing</span>
-                                    <span class="step">Complete</span>
-                                </div>
-                                <div class="pipeline-progress"><div class="fill" style="width:72%;"></div></div>
-                                <div class="pipeline-stats"><span>12</span><span>8</span><span>18</span><span>47</span></div>
-                            </div>
-                        </div>
-
-                        <div class="panel">
-                            <div class="panel-header">Live <span class="badge-live">● Live</span></div>
-                            <div class="panel-body">
-                                <div class="feed-item"><span class="time">15:34</span><span class="event"><strong>Approved</strong> GOV-440</span></div>
-                                <div class="feed-item"><span class="time">15:31</span><span class="event"><strong>Imported</strong> 2.1K beneficiaries</span></div>
-                                <div class="feed-item"><span class="time">15:29</span><span class="event"><strong>Verified</strong> Identity</span></div>
-                                <div class="feed-item"><span class="time">15:27</span><span class="event"><strong>Completed</strong> Treasury</span></div>
-                                <div class="feed-item"><span class="time">15:20</span><span class="event"><strong>Created</strong> Audit</span></div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Table -->
-                    <div class="table-panel">
-                        <div class="panel-header">
-                            Recent Batches
-                            <?php if ($config['show_all_batches']): ?>
-                            <a href="batches/index.php" style="font-size:6px; color:var(--blue); text-decoration:none; font-weight:600;">View all →</a>
+                        <div class="panel-body">
+                            <?php if ($stats['pending'] > 0): ?>
+                            <div class="sched-row"><span class="ref">GOV-440</span><span class="amt">BWP 12,400.00</span><span class="stamp pending">Pending</span></div>
+                            <div class="sched-row"><span class="ref">GOV-439</span><span class="amt">BWP 8,200.00</span><span class="stamp pending">Pending</span></div>
+                            <div class="sched-row"><span class="ref">GOV-438</span><span class="amt">BWP 125,000.00</span><span class="stamp threshold">Over limit</span></div>
+                            <a href="batches/index.php?filter=pending" class="view-all">View schedule →</a>
+                            <?php else: ?>
+                            <div class="empty-state"><span class="mark">§</span><p>Nothing pending authorisation.</p></div>
                             <?php endif; ?>
                         </div>
-                        <div class="table-wrap">
-                            <table>
-                                <thead><tr><th>Reference</th><th>Description</th><th>Program</th><th>Amount</th><th>Status</th><th>Created</th><th></th></tr></thead>
-                                <tbody>
-                                    <?php if (!empty($recentBatches)): ?>
-                                        <?php foreach ($recentBatches as $batch):
-                                            $status = strtolower($batch['status'] ?? 'draft');
-                                            $statusDisplay = ucwords(str_replace('_', ' ', $batch['status'] ?? 'Draft'));
-                                        ?>
-                                        <tr>
-                                            <td><code><?php echo htmlspecialchars($batch['batch_reference'] ?? '#' . $batch['id']); ?></code></td>
-                                            <td><?php echo htmlspecialchars(substr($batch['batch_name'] ?? 'Batch #' . $batch['id'], 0, 20)); ?></td>
-                                            <td><?php echo htmlspecialchars($batch['program_name'] ?? '—'); ?></td>
-                                            <td><strong><?php echo formatCurrency($batch['total_amount'] ?? 0); ?></strong></td>
-                                            <td><span class="status-badge <?php echo $status; ?>"><?php echo htmlspecialchars($statusDisplay); ?></span></td>
-                                            <td><?php echo date('M d', strtotime($batch['created_at'] ?? 'now')); ?></td>
-                                            <td><a href="batches/view.php?id=<?php echo $batch['id']; ?>" class="action-link">Review</a></td>
-                                        </tr>
-                                        <?php endforeach; ?>
-                                    <?php else: ?>
-                                        <tr><td colspan="7"><div class="empty-state"><span class="icon">◻</span><p>No batches yet. <a href="imports/upload.php">Create →</a></p></div></td></tr>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
+                    </div>
+
+                    <div class="panel doc-panel">
+                        <div class="panel-head">
+                            <span class="eyebrow"><span class="section-mark">§3</span>Processing Status</span>
+                            <span class="count-chip">72%</span>
+                        </div>
+                        <div class="panel-body">
+                            <div class="pipeline-steps">
+                                <span class="step done">Draft</span>
+                                <span class="step done">Approved</span>
+                                <span class="step active">Executing</span>
+                                <span class="step">Complete</span>
+                            </div>
+                            <div class="pipeline-bar"><div class="fill"></div></div>
+                            <div class="pipeline-figures">
+                                <div><span class="n">12</span><span class="l">Draft</span></div>
+                                <div><span class="n">8</span><span class="l">Approved</span></div>
+                                <div><span class="n">18</span><span class="l">Executing</span></div>
+                                <div><span class="n">47</span><span class="l">Complete</span></div>
+                            </div>
                         </div>
                     </div>
 
-                    <!-- Footer -->
-                    <footer class="page-footer">
-                        <span>Secure · ISO 27001 · © <?php echo date('Y'); ?> VouchMorph · <?php echo $orgName; ?></span>
-                        <div class="role-line"><?php echo $roleDisplay; ?><?php if ($departmentName): ?> · <?php echo substr(strtoupper($departmentName), 0, 15); ?><?php endif; ?></div>
-                    </footer>
+                    <div class="panel doc-panel">
+                        <div class="panel-head">
+                            <span class="eyebrow"><span class="section-mark">§4</span>Activity Log</span>
+                            <span class="live-flag">Live</span>
+                        </div>
+                        <div class="panel-body">
+                            <div class="log-row"><span class="t">15:34</span><span><strong>Approved</strong> — batch GOV-440</span></div>
+                            <div class="log-row"><span class="t">15:31</span><span><strong>Imported</strong> — 2,100 beneficiaries</span></div>
+                            <div class="log-row"><span class="t">15:29</span><span><strong>Verified</strong> — identity checks cleared</span></div>
+                            <div class="log-row"><span class="t">15:27</span><span><strong>Completed</strong> — treasury settlement</span></div>
+                            <div class="log-row"><span class="t">15:20</span><span><strong>Created</strong> — audit record</span></div>
+                        </div>
+                    </div>
                 </div>
+
+                <!-- Register table -->
+                <div class="register-wrap panel doc-panel">
+                    <div class="panel-head">
+                        <span class="eyebrow"><span class="section-mark">§5</span>Register of Recent Batches</span>
+                        <?php if ($config['show_all_batches']): ?>
+                        <a href="batches/index.php" class="action-link">View full register →</a>
+                        <?php endif; ?>
+                    </div>
+                    <div class="table-scroll">
+                        <table>
+                            <thead><tr><th>Reference</th><th>Description</th><th>Program</th><th>Amount</th><th>Status</th><th>Created</th><th></th></tr></thead>
+                            <tbody>
+                                <?php if (!empty($recentBatches)): ?>
+                                    <?php foreach ($recentBatches as $batch):
+                                        $status = strtolower($batch['status'] ?? 'draft');
+                                        $statusDisplay = ucwords(str_replace('_', ' ', $batch['status'] ?? 'Draft'));
+                                    ?>
+                                    <tr>
+                                        <td><code><?php echo htmlspecialchars($batch['batch_reference'] ?? '#' . $batch['id']); ?></code></td>
+                                        <td><?php echo htmlspecialchars(substr($batch['batch_name'] ?? 'Batch #' . $batch['id'], 0, 24)); ?></td>
+                                        <td><?php echo htmlspecialchars($batch['program_name'] ?? '—'); ?></td>
+                                        <td><span class="amt"><?php echo formatCurrency($batch['total_amount'] ?? 0); ?></span></td>
+                                        <td><span class="stamp <?php echo $status; ?>"><?php echo htmlspecialchars($statusDisplay); ?></span></td>
+                                        <td><?php echo date('d M', strtotime($batch['created_at'] ?? 'now')); ?></td>
+                                        <td><a href="batches/view.php?id=<?php echo $batch['id']; ?>" class="action-link">Review</a></td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <tr><td colspan="7"><div class="empty-state"><span class="mark">§</span><p>No batches on record. <a href="imports/upload.php">Create the first entry →</a></p></div></td></tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Footer -->
+                <footer class="page-footer">
+                    <div class="notice">System-generated statement · Distribution restricted · ISO 27001 · © <?php echo date('Y'); ?> VouchMorph</div>
+                    <div class="role-line"><?php echo $roleDisplay; ?><?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?> · <?php echo htmlspecialchars($fileRef); ?></div>
+                </footer>
             </div>
         </main>
     </div>
@@ -774,7 +748,7 @@ function formatCurrency($amount) {
         function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); document.getElementById('sidebarOverlay').classList.toggle('active'); }
         function closeSidebar() { document.getElementById('sidebar').classList.remove('open'); document.getElementById('sidebarOverlay').classList.remove('active'); }
         document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeSidebar(); });
-        window.addEventListener('resize', function() { if (window.innerWidth > 992) closeSidebar(); });
+        window.addEventListener('resize', function() { if (window.innerWidth > 960) closeSidebar(); });
     </script>
 </body>
 </html>
