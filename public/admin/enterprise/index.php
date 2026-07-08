@@ -157,7 +157,7 @@ function formatCurrency($amount) {
     <title>VOUCHMORPH · NATIONAL DISBURSEMENT REGISTRY</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
+   <style>
         :root {
             --paper:        #EEF1EF;
             --panel:        #FFFFFF;
@@ -201,7 +201,6 @@ function formatCurrency($amount) {
         a { color: inherit; }
         button { font-family: inherit; cursor: pointer; }
 
-        /* corner-mark signature on every doc panel */
         .doc-panel { position: relative; background: var(--panel); border: 1px solid var(--line); }
         .doc-panel::before, .doc-panel::after { content: ""; position: absolute; width: 9px; height: 9px; pointer-events: none; }
         .doc-panel::before { top: -1px; left: -1px; border-top: 2px solid var(--brass); border-left: 2px solid var(--brass); }
@@ -222,46 +221,46 @@ function formatCurrency($amount) {
         .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
 
         /* ============================================================
-           MASTHEAD
+           MASTHEAD - REDUCED HEIGHT
            ============================================================ */
         .masthead {
-            background: var(--ink-900); color: white; padding: 14px 24px;
+            background: var(--ink-900); color: white; padding: 10px 24px;
             display: flex; align-items: center; justify-content: center; position: relative;
             border-bottom: 3px solid var(--brass);
         }
         .masthead .center { display: flex; align-items: center; gap: 14px; text-align: left; }
-        .seal { width: 36px; height: 36px; border-radius: 50%; border: 1.5px solid var(--brass); display: flex; align-items: center; justify-content: center; position: relative; flex-shrink: 0; }
+        .seal { width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--brass); display: flex; align-items: center; justify-content: center; position: relative; flex-shrink: 0; }
         .seal::before { content: ""; position: absolute; inset: 4px; border-radius: 50%; border: 1px solid rgba(138,109,59,0.5); }
-        .seal span { font-family: var(--f-mono); font-weight: 700; font-size: 10px; color: var(--brass); }
-        .masthead h1 { font-size: 14px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; }
-        .masthead .file-ref { font-family: var(--f-mono); font-size: 10px; color: rgba(255,255,255,0.4); margin-top: 2px; text-transform: uppercase; }
+        .seal span { font-family: var(--f-mono); font-weight: 700; font-size: 9px; color: var(--brass); }
+        .masthead h1 { font-size: 13px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; }
+        .masthead .file-ref { font-family: var(--f-mono); font-size: 9px; color: rgba(255,255,255,0.4); margin-top: 1px; text-transform: uppercase; }
         .masthead .right-fixed {
             position: absolute; right: 24px; top: 50%; transform: translateY(-50%);
-            display: flex; align-items: center; gap: 14px; font-family: var(--f-mono); font-size: 11px; color: rgba(255,255,255,0.6);
+            display: flex; align-items: center; gap: 14px; font-family: var(--f-mono); font-size: 10px; color: rgba(255,255,255,0.6);
         }
-        .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #5FAE7E; margin-right: 5px; }
-        .role-pill { font-family: var(--f-cond); font-size: 9px; font-weight: 700; letter-spacing: 0.08em; color: var(--brass); border: 1px solid var(--brass); padding: 2px 7px; text-transform: uppercase; }
+        .status-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: #5FAE7E; margin-right: 4px; }
+        .role-pill { font-family: var(--f-cond); font-size: 8px; font-weight: 700; letter-spacing: 0.08em; color: var(--brass); border: 1px solid var(--brass); padding: 1px 6px; text-transform: uppercase; }
 
         /* ============================================================
-           CENTRAL LAYOUT — everything anchored to a centered column
+           CENTRAL LAYOUT — MORE VERTICAL SPACING
            ============================================================ */
         .stage {
             flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center;
-            padding: 36px 20px 40px;
+            padding: 70px 20px 60px;
         }
-        .stage-inner { width: 100%; max-width: 980px; display: flex; flex-direction: column; align-items: center; gap: 26px; }
+        .stage-inner { width: 100%; max-width: 980px; display: flex; flex-direction: column; align-items: center; gap: 34px; }
 
-        .welcome { text-align: center; }
+        .welcome { text-align: center; margin-bottom: 12px; }
         .welcome .eyebrow { justify-content: center; }
-        .welcome h2 { font-size: 21px; font-weight: 700; letter-spacing: 0.01em; text-transform: uppercase; margin-top: 6px; }
-        .welcome p { font-family: var(--f-cond); font-size: 12px; color: var(--ink-500); margin-top: 6px; letter-spacing: 0.02em; text-transform: uppercase; }
+        .welcome h2 { font-size: 20px; font-weight: 700; letter-spacing: 0.01em; text-transform: uppercase; margin-top: 6px; }
+        .welcome p { font-family: var(--f-cond); font-size: 11px; color: var(--ink-500); margin-top: 4px; letter-spacing: 0.02em; text-transform: uppercase; }
 
         /* ============================================================
-           ACTION LAUNCHER — the central buttons
+           ACTION LAUNCHER
            ============================================================ */
         .launcher { width: 100%; }
         .launcher-grid {
-            display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; margin-top: 18px;
+            display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; margin-top: 28px;
         }
         .action-btn {
             position: relative;
@@ -284,10 +283,7 @@ function formatCurrency($amount) {
             padding: 0 5px; border: 1.5px solid var(--paper);
         }
 
-        /* ============================================================
-           REVEAL BUTTONS + PANELS (data appears only on click)
-           ============================================================ */
-        .reveal-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
+        .reveal-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 6px; }
         .reveal-btn {
             font-family: var(--f-cond); font-weight: 700; font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase;
             background: var(--ink-900); color: white; border: none; padding: 11px 22px;
@@ -303,7 +299,6 @@ function formatCurrency($amount) {
         .reveal-panel.is-open { display: block; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
 
-        /* Statement of account (real figures only) */
         .statement { padding: 20px 24px 16px; }
         .statement-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; flex-wrap: wrap; gap: 6px; }
         .statement-head .period { font-family: var(--f-mono); font-size: 10px; color: var(--ink-300); text-transform: uppercase; }
@@ -315,7 +310,6 @@ function formatCurrency($amount) {
         .statement-item.hero .value { font-size: 28px; border-bottom: 4px double var(--ink-900); padding-bottom: 8px; display: inline-block; }
         .statement-item:not(.hero) .value { font-size: 18px; color: var(--ink-700); }
 
-        /* Register table (real rows only) */
         .register-wrap { width: 100%; }
         .panel-head {
             padding: 9px 16px; background: var(--brass-tint); border-bottom: 1px solid var(--line);
@@ -341,17 +335,14 @@ function formatCurrency($amount) {
         .empty-state p { font-family: var(--f-cond); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
         .empty-state a { color: var(--ink-700); font-weight: 700; text-decoration: none; border-bottom: 1px solid var(--brass); }
 
-        /* ============================================================
-           FOOTER
-           ============================================================ */
         .page-footer { padding: 16px 0 26px; text-align: center; border-top: 1px solid var(--line); width: 100%; }
         .page-footer .notice { font-family: var(--f-cond); font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-300); }
         .page-footer .role-line { font-family: var(--f-mono); font-size: 9px; color: var(--ink-300); margin-top: 4px; text-transform: uppercase; }
 
         @media (max-width: 640px) {
-            .masthead { flex-direction: column; gap: 8px; padding: 14px 16px; }
+            .masthead { flex-direction: column; gap: 8px; padding: 10px 16px; }
             .masthead .right-fixed { position: static; transform: none; margin-top: 4px; }
-            .stage { padding: 24px 14px 30px; }
+            .stage { padding: 40px 14px 30px; }
             .action-btn { width: 150px; padding: 18px 12px 14px; }
             .statement-item { border-left: none; padding: 10px 0 0; border-top: 1px solid var(--line); flex: 1 1 100%; }
             .statement-item:first-child { border-top: none; }
@@ -366,7 +357,7 @@ function formatCurrency($amount) {
             tbody tr:nth-child(even) td { background: #182129; }
             .action-btn { border-color: var(--ink-900); }
         }
-    </style>
+</style>
 </head>
 <body>
     <!-- Masthead -->
