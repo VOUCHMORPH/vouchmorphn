@@ -6,7 +6,7 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
 // ============================================================
-// ADMIN LOGIN - Using DBConnection (Single Source of Truth)
+// ADMIN LOGIN - Using DBConnection + RoleManager (Single Source of Truth)
 // ============================================================
 
 // Define project root (goes up 2 levels: public/admin/ -> project root)
@@ -20,13 +20,14 @@ require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
 require_once PROJECT_ROOT . '/src/Security/Monitoring/ApiRateLimiter.php';
-require_once PROJECT_ROOT . '/src/Domain/Services/AuditTrailService.php'; // ADDED
+require_once PROJECT_ROOT . '/src/Domain/Services/AuditTrailService.php';
+require_once __DIR__ . '/roles.php'; // ADDED: RoleManager integration
 
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
 use Application\Admin\Auth\AdminAuth;
 use Security\Monitoring\ApiRateLimiter;
-use Domain\Services\AuditTrailService; // ADDED
+use Domain\Services\AuditTrailService;
 
 // Load configuration for country data only (not database)
 $configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
@@ -58,6 +59,7 @@ $db = null;
 $auth = null;
 $dbError = null;
 $auditService = null;
+$roleManager = null;
 
 try {
     $db = DBConnection::getConnection();
@@ -84,6 +86,10 @@ try {
     );
     error_log("[ADMIN LOGIN] AuditTrailService initialized");
     
+    // Initialize RoleManager
+    $roleManager = new RoleManager($db);
+    error_log("[ADMIN LOGIN] RoleManager initialized");
+    
 } catch (Throwable $e) {
     error_log("[ADMIN LOGIN] DB Error: " . $e->getMessage());
     $dbError = $e->getMessage();
@@ -96,7 +102,7 @@ $username = '';
 $loginResult = null;
 
 // Handle login POST
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService)) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService) && isset($roleManager)) {
     $clientIp = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
     $rateLimitKey = 'admin_login:' . $clientIp;
     $rateLimited = false;
@@ -190,30 +196,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                     $loginResult = $auth->login($username, $password, $systemCountry);
                     
                     if ($loginResult['success']) {
-                        // Log successful login
-                        try {
-                            $auditService->recordLog(
-                                'admin_login',
-                                $loginResult['admin_id'] ?? null,
-                                'LOGIN_SUCCESS',
-                                'security',
-                                'INFO',
-                                null,
-                                json_encode(['username' => $username, 'method' => 'password']),
-                                $loginResult['admin_id'] ?? null,
-                                $clientIp,
-                                $_SERVER['HTTP_USER_AGENT'] ?? null
-                            );
-                        } catch (Throwable $e) {
-                            error_log("[ADMIN LOGIN] Failed to audit login success: " . $e->getMessage());
-                        }
+                        // ============================================================
+                        // ROLE VALIDATION - Check if role exists in database
+                        // ============================================================
+                        $userRole = $loginResult['role'] ?? '';
                         
-                        if (isset($loginResult['mfa_required']) && $loginResult['mfa_required'] === true) {
-                            $mfaRequired = true;
-                            $adminId = $loginResult['admin_id'];
+                        if (!$roleManager->validateRole($userRole)) {
+                            // Invalid role - security issue
+                            $error = 'Invalid account configuration. Please contact support.';
+                            
+                            error_log("[SECURITY] Invalid role detected during login: " . $userRole . 
+                                     " for user: " . $username);
+                            
+                            // Log the security incident
+                            try {
+                                $auditService->recordLog(
+                                    'admin_login',
+                                    $loginResult['admin_id'] ?? null,
+                                    'INVALID_ROLE_DETECTED',
+                                    'security',
+                                    'CRITICAL',
+                                    json_encode(['username' => $username, 'role' => $userRole]),
+                                    null,
+                                    $loginResult['admin_id'] ?? null,
+                                    $clientIp,
+                                    $_SERVER['HTTP_USER_AGENT'] ?? null
+                                );
+                            } catch (Throwable $e) {
+                                error_log("[ADMIN LOGIN] Failed to audit invalid role: " . $e->getMessage());
+                            }
+                            
+                            // Log them out
+                            SessionManager::destroy();
+                            
+                            // Show error without proceeding
+                            $loginResult['success'] = false;
                         } else {
-                            header('Location: admin_dashboard.php?country=' . $systemCountry);
-                            exit;
+                            // ============================================================
+                            // ROLE VALID - Proceed with login
+                            // ============================================================
+                            
+                            // Get role details for logging
+                            $roleInfo = $roleManager->getRoleByName($userRole);
+                            $roleLevel = $roleInfo['role_level'] ?? 'N/A';
+                            
+                            // Log successful login
+                            try {
+                                $auditService->recordLog(
+                                    'admin_login',
+                                    $loginResult['admin_id'] ?? null,
+                                    'LOGIN_SUCCESS',
+                                    'security',
+                                    'INFO',
+                                    null,
+                                    json_encode([
+                                        'username' => $username,
+                                        'role' => $userRole,
+                                        'role_level' => $roleLevel,
+                                        'role_validated' => true
+                                    ]),
+                                    $loginResult['admin_id'] ?? null,
+                                    $clientIp,
+                                    $_SERVER['HTTP_USER_AGENT'] ?? null
+                                );
+                            } catch (Throwable $e) {
+                                error_log("[ADMIN LOGIN] Failed to audit login success: " . $e->getMessage());
+                            }
+                            
+                            // Check if MFA is required
+                            if (isset($loginResult['mfa_required']) && $loginResult['mfa_required'] === true) {
+                                $mfaRequired = true;
+                                $adminId = $loginResult['admin_id'];
+                            } else {
+                                header('Location: admin_dashboard.php?country=' . $systemCountry);
+                                exit;
+                            }
                         }
                     } else {
                         $error = $loginResult['message'];
