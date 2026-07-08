@@ -4,9 +4,6 @@
 // ============================================================================
 // SESSION COOKIE HARDENING — MUST be set BEFORE session_start()
 // ============================================================================
-// These settings MUST be set before the session starts. 
-// DO NOT move these after session_start() - PHP ignores them!
-// ============================================================================
 ini_set('session.cookie_httponly', '1');
 ini_set('session.cookie_secure', '1');   // Requires HTTPS
 ini_set('session.cookie_samesite', 'Lax');
@@ -15,9 +12,6 @@ ini_set('session.cookie_samesite', 'Lax');
 require_once dirname(__DIR__, 3) . '/src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
-// ============================================================================
-// SESSION START — MUST be AFTER the ini_set() calls above
-// ============================================================================
 // Only start session if not already active
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -25,7 +19,6 @@ if (session_status() === PHP_SESSION_NONE) {
 
 // ============================================================================
 // DATABASE CONNECTION
-// FIXED: Standardized on DBConnection::getConnection()
 // ============================================================================
 function getDBConnection() {
     return DBConnection::getConnection();
@@ -57,9 +50,7 @@ function requireEnterpriseAuth() {
             exit;
         }
 
-        // Keep department_id AND role fresh in session in case either changed
-        // since login (e.g. promoted to owner, or reassigned to a different
-        // department) without forcing re-login.
+        // Keep department_id AND role fresh in session
         $_SESSION['enterprise_user']['department_id'] = $result['department_id'];
         $_SESSION['enterprise_user']['role'] = $result['role'];
     } catch (PDOException $e) {
@@ -74,10 +65,6 @@ function requireEnterpriseAuth() {
  *   1. owner bypasses everything, org-wide
  *   2. per-user JSONB override in organization_users.permissions
  *   3. role's default permission set from organization_role_permissions
- *      (seeded by migration, not hardcoded here -- adjusting what a role can
- *      do doesn't require a code deploy)
- * Fails CLOSED on any DB error -- an unreadable permission table should never
- * silently grant access.
  */
 function hasPermission($permission) {
     $user = $_SESSION['enterprise_user'] ?? null;
@@ -100,7 +87,7 @@ function hasPermission($permission) {
         return (int)$stmt->fetchColumn() > 0;
     } catch (PDOException $e) {
         error_log("hasPermission role-catalog lookup failed: " . $e->getMessage());
-        return false; // fail closed, not open
+        return false;
     }
 }
 
@@ -112,18 +99,7 @@ function requirePermission($permission) {
 }
 
 /**
- * Department scoping: department-scoped roles (program_officer, approver,
- * senior_approver, beneficiary_registrar, viewer, department_head) can only
- * act on rows belonging to their own department_id. Organization-scoped
- * roles (owner, auditor) see everything.
- *
- * Returns null for org-wide scope (caller should NOT add a department filter),
- * or the department_id every query in this request should filter by.
- *
- * USAGE in any list/detail query:
- *   $deptScope = getUserDepartmentScope();
- *   $sql = "SELECT * FROM import_batches WHERE organization_id = :org_id";
- *   if ($deptScope !== null) { $sql .= " AND department_id = :dept_id"; }
+ * Department scoping: department-scoped roles can only act on their own department
  */
 function getUserDepartmentScope(): ?int {
     $user = $_SESSION['enterprise_user'] ?? null;
@@ -138,9 +114,7 @@ function getUserDepartmentScope(): ?int {
 }
 
 /**
- * Maker-checker enforcement: blocks a user from approving/rejecting a batch
- * they themselves uploaded. Call this from approve.php's approve AND reject
- * branches (not just approve) before taking any action.
+ * Maker-checker enforcement: blocks self-approval
  */
 function assertNotSelfApproving($batchUploadedBy): void {
     $user = $_SESSION['enterprise_user'] ?? null;
@@ -153,11 +127,7 @@ function assertNotSelfApproving($batchUploadedBy): void {
 }
 
 /**
- * Dual control: given an amount and department, returns how many distinct
- * approvers are required (from approval_thresholds) and how many have
- * approved so far (from batch_approvals). Call before marking a batch fully
- * APPROVED -- if approvalsSoFar < requiredCount, keep it in a
- * PENDING_ADDITIONAL_APPROVAL state instead of flipping to APPROVED.
+ * Dual control: returns required approver count for a given amount
  */
 function getApprovalRequirement(PDO $pdo, int $departmentId, float $amount): array {
     try {
@@ -179,16 +149,12 @@ function getApprovalRequirement(PDO $pdo, int $departmentId, float $amount): arr
         ];
     } catch (PDOException $e) {
         error_log("getApprovalRequirement failed: " . $e->getMessage());
-        return ['required_count' => 1, 'required_role' => 'approver']; // safe default
+        return ['required_count' => 1, 'required_role' => 'approver'];
     }
 }
 
 /**
- * CSRF protection: one token per session, reused across requests (not
- * regenerated per-form, which would break back-button/multi-tab use).
- * Embed generateCsrfToken() as a hidden field in every state-changing form
- * and every fetch() JSON body; verify with verifyCsrfToken() before acting
- * on any POST.
+ * CSRF protection
  */
 function generateCsrfToken(): string {
     if (empty($_SESSION['csrf_token'])) {
@@ -214,7 +180,7 @@ function requireCsrfToken(?string $token): void {
 }
 
 /**
- * Get current user's role info from the role catalog
+ * Role helper functions
  */
 function getCurrentUserRole(): ?array {
     $user = $_SESSION['enterprise_user'] ?? null;
@@ -236,18 +202,12 @@ function getCurrentUserRole(): ?array {
     }
 }
 
-/**
- * Check if current user has a specific role
- */
 function hasRole(string $roleCode): bool {
     $user = $_SESSION['enterprise_user'] ?? null;
     if (!$user) return false;
     return strtolower($user['role'] ?? '') === strtolower($roleCode);
 }
 
-/**
- * Check if current user has any of the given roles
- */
 function hasAnyRole(array $roleCodes): bool {
     $user = $_SESSION['enterprise_user'] ?? null;
     if (!$user) return false;
