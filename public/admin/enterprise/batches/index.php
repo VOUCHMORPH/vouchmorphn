@@ -79,23 +79,6 @@ $roleDisplay = strtoupper($user['role'] ?? 'USER');
 $orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
 $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats['pending'] + 1), 3, '0', STR_PAD_LEFT);
 
-// Action buttons for launcher
-$actions = [];
-if ($config['show_actions']) {
-    $actions[] = ['label' => 'DISBURSE FUNDS', 'href' => '../imports/upload.php', 'mark' => '§1', 'badge' => null];
-}
-if ($config['show_all_batches']) {
-    $actions[] = ['label' => 'BATCHES', 'href' => 'index.php', 'mark' => '§2', 'badge' => $stats['total_batches'] > 0 ? $stats['total_batches'] : null, 'active' => true];
-}
-$actions[] = ['label' => 'PENDING APPROVALS', 'href' => 'index.php?status=READY_FOR_APPROVAL', 'mark' => '§3', 'badge' => $stats['pending'] > 0 ? $stats['pending'] : null];
-if ($config['show_beneficiaries']) {
-    $actions[] = ['label' => 'BENEFICIARIES', 'href' => '../beneficiaries/index.php', 'mark' => '§4', 'badge' => $stats['beneficiaries'] > 0 ? $stats['beneficiaries'] : null];
-}
-if ($config['show_governance']) {
-    $actions[] = ['label' => 'AUDIT TRAIL', 'href' => '../reports/audit_trail.php', 'mark' => '§5', 'badge' => null];
-}
-$actions[] = ['label' => 'REPORTS', 'href' => '../reports/index.php', 'mark' => '§6', 'badge' => null];
-
 function formatCurrency($amount) {
     return 'BWP ' . number_format($amount, 2);
 }
@@ -317,38 +300,26 @@ function formatCurrency($amount) {
         .welcome p { font-family: var(--f-cond); font-size: 11px; color: var(--ink-500); margin-top: 4px; letter-spacing: 0.02em; text-transform: uppercase; }
 
         /* ============================================================
-           ACTION LAUNCHER
+           BACK LINK
            ============================================================ */
-        .launcher { width: 100%; }
-        .launcher-grid {
-            display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; margin-top: 28px;
-        }
-        .action-btn {
-            position: relative;
-            width: 190px;
-            padding: 22px 16px 16px;
-            background: var(--panel);
-            border: 1.5px solid var(--ink-900);
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--ink-500);
             text-decoration: none;
-            color: var(--ink-900);
-            display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px;
-            transition: background 0.12s ease, transform 0.12s ease;
+            font-size: 11px;
+            font-weight: 600;
+            font-family: var(--f-cond);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s ease;
+            align-self: flex-start;
         }
-        .action-btn:hover { background: var(--brass-tint); transform: translateY(-2px); }
-        .action-btn .mark { font-family: var(--f-mono); font-size: 10px; color: var(--brass); font-weight: 700; letter-spacing: 0.08em; }
-        .action-btn .label { font-family: var(--f-cond); font-weight: 700; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; }
-        .action-btn .badge {
-            position: absolute; top: -9px; right: -9px;
-            background: var(--seal-red); color: white; font-family: var(--f-mono); font-weight: 700;
-            font-size: 10px; min-width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
-            padding: 0 5px; border: 1.5px solid var(--paper);
-        }
-        .action-btn.active {
-            background: var(--brass-tint);
-            border-color: var(--brass);
-        }
-        .action-btn.active .mark {
+        .back-link:hover {
             color: var(--brass);
+            border-bottom-color: var(--brass);
         }
 
         /* ============================================================
@@ -548,7 +519,6 @@ function formatCurrency($amount) {
             .masthead .user-menu .time { font-size: 8px; }
             .masthead .user-menu .menu-link { font-size: 8px; padding: 2px 6px; }
             .stage { padding: 60px 14px 30px; }
-            .action-btn { width: 150px; padding: 18px 12px 14px; }
             .vouchmorph-watermark { display: none; }
             .filter-bar { gap: 6px; }
             .filter-btn { font-size: 8px; padding: 4px 10px; }
@@ -566,7 +536,6 @@ function formatCurrency($amount) {
                 --brass-tint: #22303A; --blue-tint: #1D2A38; --green-tint: #17261D;
             }
             .vouchmorph-watermark { color: rgba(201, 151, 42, 0.08); }
-            .action-btn { border-color: var(--ink-900); }
             .filter-btn {
                 background: #1B2733;
                 border-color: #2C3A45;
@@ -652,20 +621,8 @@ function formatCurrency($amount) {
                 <p>VIEW AND MANAGE DISBURSEMENT BATCHES<?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?></p>
             </div>
 
-            <!-- Role-based launcher -->
-            <div class="launcher">
-                <div class="launcher-grid">
-                    <?php foreach ($actions as $action): ?>
-                    <a href="<?php echo htmlspecialchars($action['href']); ?>" class="action-btn <?php echo isset($action['active']) && $action['active'] ? 'active' : ''; ?>">
-                        <?php if ($action['badge'] !== null): ?>
-                        <span class="badge"><?php echo (int)$action['badge']; ?></span>
-                        <?php endif; ?>
-                        <span class="mark"><?php echo htmlspecialchars($action['mark']); ?></span>
-                        <span class="label"><?php echo htmlspecialchars($action['label']); ?></span>
-                    </a>
-                    <?php endforeach; ?>
-                </div>
-            </div>
+            <!-- Return to Dashboard -->
+            <a href="../index.php" class="back-link">← Return to Dashboard</a>
 
             <!-- Filter Bar -->
             <div class="filter-bar">
