@@ -191,92 +191,335 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sign in — VouchMorph Enterprise</title>
+    <title>VOUCHMORPH · SIGN IN</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        :root{
-            --ink:#0a1628; --ink-soft:#16243d;
-            --gold:#c9972a; --gold-bright:#e0ad3d;
-            --paper:#ffffff; --line:#e4e1d6; --line-soft:#eeece3;
-            --text:#191712; --mist:#6b6a63;
-            --danger:#b3261e; --danger-bg:#fbeceb;
-            --font-display:'Fraunces',serif; --font-body:'Inter',sans-serif; --font-mono:'JetBrains Mono',monospace;
+        :root {
+            --paper:        #EEF1EF;
+            --panel:        #FFFFFF;
+            --ink-900:      #0F2138;
+            --ink-700:      #1D3557;
+            --ink-500:      #4A5A6E;
+            --ink-300:      #8A96A3;
+            --line:         #D3DAD6;
+            --line-strong:  #AEB8B2;
+            --brass:        #8A6D3B;
+            --brass-tint:   #F4EFE3;
+            --seal-red:     #7A2118;
+            --amber:        #8A5A0B;
+            --ledger-green: #24513A;
+            --green-tint:   #E5EEE7;
+            --blue-tint:    #E7EEF4;
+            --danger:       #b3261e;
+            --danger-bg:    #fbeceb;
+
+            --f-body: 'IBM Plex Sans', sans-serif;
+            --f-cond: 'IBM Plex Sans Condensed', sans-serif;
+            --f-mono: 'IBM Plex Mono', monospace;
         }
-        *{margin:0;padding:0;box-sizing:border-box;}
-        body{
-            font-family:var(--font-body);
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: var(--f-body);
             background:
-                radial-gradient(1100px 500px at 15% -10%, rgba(201,151,42,.10), transparent 60%),
-                linear-gradient(160deg, #060b16 0%, var(--ink) 55%, #10203a 100%);
-            min-height:100vh; display:flex; align-items:center; justify-content:center; padding:32px;
+                radial-gradient(1100px 500px at 15% -10%, rgba(138,109,59,.10), transparent 60%),
+                linear-gradient(160deg, #060b16 0%, var(--ink-900) 55%, #10203a 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 32px;
+            color: var(--ink-900);
+            font-size: 13px;
+            line-height: 1.45;
+            -webkit-font-smoothing: antialiased;
         }
-        :focus-visible{outline:2px solid var(--gold); outline-offset:2px;}
 
-        .stage{width:100%; max-width:404px;}
+        :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
-        .brand{text-align:center; margin-bottom:36px;}
-        .brand-mark{
-            width:46px; height:46px; margin:0 auto 16px; background:var(--gold);
-            display:flex; align-items:center; justify-content:center; font-family:var(--font-display);
-            font-weight:600; font-size:19px; color:var(--ink);
-        }
-        .brand h1{color:#fff; font-family:var(--font-display); font-weight:500; font-size:26px; letter-spacing:-.3px;}
-        .brand h1 em{font-style:normal; color:var(--gold);}
-        .brand p{color:#8791a6; font-size:11px; margin-top:8px; letter-spacing:1.6px; text-transform:uppercase; font-weight:500;}
+        .stage { width: 100%; max-width: 404px; }
 
-        .card{
-            background:var(--paper); border:1px solid var(--ink);
-            box-shadow:6px 6px 0 rgba(201,151,42,.9);
-            padding:38px 36px 32px;
+        /* ============================================================
+           BRAND / MASTHEAD
+           ============================================================ */
+        .brand {
+            text-align: center;
+            margin-bottom: 36px;
         }
-        .card h2{font-family:var(--font-display); font-size:21px; font-weight:600; color:var(--text); letter-spacing:-.2px;}
-        .card .subtitle{color:var(--mist); font-size:13px; margin-top:4px; margin-bottom:28px;}
+        .brand-mark {
+            width: 48px;
+            height: 48px;
+            margin: 0 auto 16px;
+            background: var(--brass);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--f-mono);
+            font-weight: 700;
+            font-size: 14px;
+            color: var(--ink-900);
+            letter-spacing: 0.1em;
+            border: 1px solid var(--brass);
+        }
+        .brand h1 {
+            color: #fff;
+            font-family: var(--f-cond);
+            font-weight: 700;
+            font-size: 22px;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+        }
+        .brand h1 em {
+            font-style: normal;
+            color: var(--brass);
+        }
+        .brand p {
+            color: rgba(255,255,255,0.35);
+            font-size: 9px;
+            margin-top: 8px;
+            letter-spacing: 1.6px;
+            text-transform: uppercase;
+            font-weight: 600;
+            font-family: var(--f-mono);
+        }
 
-        .field{margin-bottom:20px;}
-        .field label{
-            display:block; margin-bottom:7px; font-weight:600; font-size:11px;
-            text-transform:uppercase; letter-spacing:.8px; color:var(--ink-soft);
+        /* ============================================================
+           CARD - MATCHES DASHBOARD STYLE
+           ============================================================ */
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            padding: 38px 36px 32px;
+            position: relative;
         }
-        .field-input{position:relative;}
-        .field-input svg{
-            position:absolute; left:13px; top:50%; transform:translateY(-50%);
-            width:16px; height:16px; color:var(--mist); pointer-events:none;
+        .card::before {
+            content: "";
+            position: absolute;
+            top: -1px;
+            left: -1px;
+            width: 9px;
+            height: 9px;
+            border-top: 2px solid var(--brass);
+            border-left: 2px solid var(--brass);
+            pointer-events: none;
         }
-        .field input{
-            width:100%; padding:12px 14px 12px 40px; border:1.5px solid var(--line);
-            font-size:14.5px; font-family:var(--font-body); background:#fdfcf9; transition:border-color .15s, background .15s;
+        .card::after {
+            content: "";
+            position: absolute;
+            bottom: -1px;
+            right: -1px;
+            width: 9px;
+            height: 9px;
+            border-bottom: 2px solid var(--brass);
+            border-right: 2px solid var(--brass);
+            pointer-events: none;
         }
-        .field input:focus{outline:none; border-color:var(--gold); background:#fff;}
-        .field input::placeholder{color:#b8b6a9;}
 
-        .btn{
-            width:100%; padding:13px; background:var(--ink); color:#fff; border:1.5px solid var(--ink);
-            font-size:13.5px; font-weight:600; cursor:pointer; transition:.15s;
-            text-transform:uppercase; letter-spacing:1px; font-family:var(--font-body);
-            display:flex; align-items:center; justify-content:center; gap:8px;
+        .card h2 {
+            font-family: var(--f-cond);
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--ink-900);
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
         }
-        .btn:hover{background:var(--gold); border-color:var(--gold); color:var(--ink);}
-        .btn svg{width:15px; height:15px; transition:transform .15s;}
-        .btn:hover svg{transform:translateX(3px);}
-
-        .error{
-            display:flex; align-items:flex-start; gap:10px;
-            background:var(--danger-bg); color:var(--danger); padding:12px 14px; margin-bottom:22px;
-            font-size:13px; border-left:3px solid var(--danger); line-height:1.5;
+        .card .subtitle {
+            color: var(--ink-300);
+            font-size: 12px;
+            margin-top: 4px;
+            margin-bottom: 28px;
+            font-family: var(--f-body);
         }
-        .error svg{width:16px; height:16px; flex-shrink:0; margin-top:1px;}
 
-        .trust-row{
-            display:flex; justify-content:space-between; margin-top:24px; padding-top:20px;
-            border-top:1px solid var(--line-soft); font-size:11px; color:var(--mist);
-            text-transform:uppercase; letter-spacing:.5px; font-weight:600;
+        /* ============================================================
+           FORM FIELDS
+           ============================================================ */
+        .field { margin-bottom: 20px; }
+        .field label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 600;
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--ink-500);
+            font-family: var(--f-cond);
         }
-        .trust-row span{display:flex; align-items:center; gap:6px;}
-        .trust-row svg{width:13px; height:13px; color:var(--gold);}
+        .field-input {
+            position: relative;
+        }
+        .field-input svg {
+            position: absolute;
+            left: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 16px;
+            height: 16px;
+            color: var(--ink-300);
+            pointer-events: none;
+        }
+        .field input {
+            width: 100%;
+            padding: 11px 14px 11px 40px;
+            border: 1.5px solid var(--line);
+            font-size: 14px;
+            font-family: var(--f-body);
+            background: #fdfcf9;
+            transition: border-color .15s, background .15s;
+            color: var(--ink-900);
+        }
+        .field input:focus {
+            outline: none;
+            border-color: var(--brass);
+            background: #fff;
+        }
+        .field input::placeholder {
+            color: var(--ink-300);
+            opacity: 0.7;
+        }
 
-        .footer{text-align:center; margin-top:30px; color:#5c6779; font-size:11.5px; letter-spacing:.3px;}
-        .footer strong{color:#8791a6;}
+        /* ============================================================
+           BUTTON
+           ============================================================ */
+        .btn {
+            width: 100%;
+            padding: 13px;
+            background: var(--ink-900);
+            color: #fff;
+            border: 1.5px solid var(--ink-900);
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: .15s;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-family: var(--f-cond);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .btn:hover {
+            background: var(--brass);
+            border-color: var(--brass);
+            color: var(--ink-900);
+        }
+        .btn svg {
+            width: 15px;
+            height: 15px;
+            transition: transform .15s;
+        }
+        .btn:hover svg {
+            transform: translateX(3px);
+        }
+
+        /* ============================================================
+           ERROR
+           ============================================================ */
+        .error {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            background: var(--danger-bg);
+            color: var(--danger);
+            padding: 12px 14px;
+            margin-bottom: 22px;
+            font-size: 12px;
+            border-left: 3px solid var(--danger);
+            line-height: 1.5;
+            font-weight: 500;
+        }
+        .error svg {
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+            margin-top: 1px;
+        }
+
+        /* ============================================================
+           TRUST ROW
+           ============================================================ */
+        .trust-row {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 24px;
+            padding-top: 20px;
+            border-top: 1px solid var(--line);
+            font-size: 9px;
+            color: var(--ink-300);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+            font-family: var(--f-cond);
+        }
+        .trust-row span {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .trust-row svg {
+            width: 13px;
+            height: 13px;
+            color: var(--brass);
+        }
+
+        /* ============================================================
+           FOOTER
+           ============================================================ */
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            color: rgba(255,255,255,0.25);
+            font-size: 9px;
+            letter-spacing: 0.05em;
+            font-family: var(--f-mono);
+            text-transform: uppercase;
+        }
+        .footer strong {
+            color: rgba(255,255,255,0.4);
+        }
+
+        /* ============================================================
+           RESPONSIVE
+           ============================================================ */
+        @media (max-width: 480px) {
+            .stage { max-width: 100%; }
+            .card { padding: 28px 20px 24px; }
+            .brand h1 { font-size: 18px; }
+            .trust-row { flex-wrap: wrap; gap: 8px; justify-content: center; }
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .card {
+                background: #1B2733;
+                border-color: #2C3A45;
+            }
+            .card h2 { color: #ECEFF2; }
+            .card .subtitle { color: #6B7A85; }
+            .field input {
+                background: #1B2733;
+                border-color: #2C3A45;
+                color: #ECEFF2;
+            }
+            .field input:focus {
+                border-color: var(--brass);
+                background: #22303A;
+            }
+            .field input::placeholder { color: #6B7A85; }
+            .field label { color: #93A2AC; }
+            .trust-row { border-color: #2C3A45; color: #6B7A85; }
+            .btn {
+                background: #2C3A45;
+                border-color: #2C3A45;
+                color: #ECEFF2;
+            }
+            .btn:hover {
+                background: var(--brass);
+                border-color: var(--brass);
+                color: var(--ink-900);
+            }
+        }
     </style>
 </head>
 <body>
