@@ -11,8 +11,8 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 // Define base paths for redirects
-define('ENTERPRISE_LOGIN_PATH', '/public/admin/enterprise/login.php');
-define('ENTERPRISE_DASHBOARD_PATH', '/public/admin/enterprise/index.php');
+define('ENTERPRISE_LOGIN_PATH', '/admin/enterprise/login.php');
+define('ENTERPRISE_DASHBOARD_PATH', '/admin/enterprise/index.php');
 
 // Database connection helper
 function getDBConnection() {
