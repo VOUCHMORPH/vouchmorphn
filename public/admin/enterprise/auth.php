@@ -4,8 +4,8 @@
 // ============================================================================
 // SESSION COOKIE HARDENING — MUST be set BEFORE session_start()
 // ============================================================================
-// These settings MUST be set before the session starts. Since this file
-// is included before any session_start() call, this is the right place.
+// These settings MUST be set before the session starts. 
+// DO NOT move these after session_start() - PHP ignores them!
 // ============================================================================
 ini_set('session.cookie_httponly', '1');
 ini_set('session.cookie_secure', '1');   // Requires HTTPS
@@ -15,6 +15,9 @@ ini_set('session.cookie_samesite', 'Lax');
 require_once dirname(__DIR__, 3) . '/src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
+// ============================================================================
+// SESSION START — MUST be AFTER the ini_set() calls above
+// ============================================================================
 // Only start session if not already active
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -25,7 +28,7 @@ if (session_status() === PHP_SESSION_NONE) {
 // FIXED: Standardized on DBConnection::getConnection()
 // ============================================================================
 function getDBConnection() {
-    return DBConnection::getConnection(); // FIXED: was getInstance()
+    return DBConnection::getConnection();
 }
 
 function requireEnterpriseAuth() {
