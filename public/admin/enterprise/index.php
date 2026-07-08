@@ -14,7 +14,7 @@ $departmentId = $user['department_id'] ?? null;
 // ============================================================
 
 $roleFilter = '';
-$roleParams = [':org_id' => $orgId]; 
+$roleParams = [':org_id' => $orgId];
 
 if (!in_array($userRole, ['owner', 'auditor'])) {
     $roleFilter = ' AND department_id = :dept_id ';
@@ -157,7 +157,7 @@ function formatCurrency($amount) {
     <title>VOUCHMORPH · NATIONAL DISBURSEMENT REGISTRY</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-   <style>
+    <style>
         :root {
             --paper:        #EEF1EF;
             --panel:        #FFFFFF;
@@ -221,25 +221,90 @@ function formatCurrency($amount) {
         .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
 
         /* ============================================================
-           MASTHEAD - BIGGER FONTS, MORE SPACING
+           MASTHEAD - WITH VERTICAL TM
            ============================================================ */
         .masthead {
-            background: var(--ink-900); color: white; padding: 16px 32px;
-            display: flex; align-items: center; justify-content: center; position: relative;
+            background: var(--ink-900);
+            color: white;
+            padding: 16px 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
             border-bottom: 3px solid var(--brass);
         }
-        .masthead .center { display: flex; align-items: center; gap: 18px; text-align: left; }
-        .seal { width: 48px; height: 48px; border-radius: 50%; border: 2px solid var(--brass); display: flex; align-items: center; justify-content: center; position: relative; flex-shrink: 0; }
-        .seal::before { content: ""; position: absolute; inset: 6px; border-radius: 50%; border: 1px solid rgba(138,109,59,0.5); }
-        .seal span { font-family: var(--f-mono); font-weight: 700; font-size: 14px; color: var(--brass); }
-        .masthead h1 { font-size: 19px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; }
-        .masthead .file-ref { font-family: var(--f-mono); font-size: 13px; color: rgba(255,255,255,0.4); margin-top: 2px; text-transform: uppercase; }
-        .masthead .right-fixed {
-            position: absolute; right: 32px; top: 50%; transform: translateY(-50%);
-            display: flex; align-items: center; gap: 18px; font-family: var(--f-mono); font-size: 13px; color: rgba(255,255,255,0.6);
+        .masthead .center {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            text-align: left;
         }
-        .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #5FAE7E; margin-right: 5px; }
-        .role-pill { font-family: var(--f-cond); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: var(--brass); border: 1px solid var(--brass); padding: 2px 10px; text-transform: uppercase; }
+        .masthead h1 {
+            font-size: 19px;
+            font-weight: 700;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+        }
+        .masthead h1 span {
+            font-weight: 400;
+            color: rgba(255,255,255,0.5);
+            font-size: 0.65em;
+            letter-spacing: 0.08em;
+        }
+        .masthead .file-ref {
+            font-family: var(--f-mono);
+            font-size: 11px;
+            color: rgba(255,255,255,0.35);
+            margin-top: 2px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .masthead .right-fixed {
+            position: absolute;
+            right: 32px;
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            font-family: var(--f-mono);
+            font-size: 13px;
+            color: rgba(255,255,255,0.6);
+        }
+        .status-dot {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #5FAE7E;
+            margin-right: 5px;
+        }
+        .role-pill {
+            font-family: var(--f-cond);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            color: var(--brass);
+            border: 1px solid var(--brass);
+            padding: 2px 10px;
+            text-transform: uppercase;
+        }
+
+        /* Vertical TM on the far right */
+        .tm-vertical {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%) rotate(90deg);
+            font-family: var(--f-mono);
+            font-size: 10px;
+            letter-spacing: 0.15em;
+            color: rgba(255,255,255,0.08);
+            font-weight: 700;
+            text-transform: uppercase;
+            user-select: none;
+            pointer-events: none;
+        }
 
         /* ============================================================
            CENTRAL LAYOUT - PUSHED DOWN
@@ -342,6 +407,7 @@ function formatCurrency($amount) {
         @media (max-width: 640px) {
             .masthead { flex-direction: column; gap: 8px; padding: 12px 16px; }
             .masthead .right-fixed { position: static; transform: none; margin-top: 4px; }
+            .tm-vertical { display: none; }
             .stage { padding: 60px 14px 30px; }
             .action-btn { width: 150px; padding: 18px 12px 14px; }
             .statement-item { border-left: none; padding: 10px 0 0; border-top: 1px solid var(--line); flex: 1 1 100%; }
@@ -357,22 +423,23 @@ function formatCurrency($amount) {
             tbody tr:nth-child(even) td { background: #182129; }
             .action-btn { border-color: var(--ink-900); }
         }
-</style>
+    </style>
 </head>
 <body>
     <!-- Masthead -->
     <div class="masthead">
         <div class="center">
-            <div class="seal"><span>VM</span></div>
             <div>
-                <h1><?php echo $orgName; ?> — National Disbursement</h1>
-                <div class="file-ref">FILE NO. <?php echo htmlspecialchars($fileRef); ?> · <?php echo strtoupper(date('d M Y')); ?></div>
+                <h1>VouchMorph™ <span>NATIONAL DISBURSEMENT</span></h1>
+                <div class="file-ref"><?php echo $orgName; ?> · FILE NO. <?php echo htmlspecialchars($fileRef); ?> · <?php echo strtoupper(date('d M Y')); ?></div>
             </div>
         </div>
         <div class="right-fixed">
             <span class="role-pill"><?php echo $roleDisplay; ?></span>
             <span><span class="status-dot"></span><?php echo date('H:i'); ?> UTC+2</span>
         </div>
+        <!-- Vertical rotated TM on the right side -->
+        <div class="tm-vertical">™</div>
     </div>
 
     <!-- Central stage -->
