@@ -1,28 +1,9 @@
 <?php
-session_start();
-require_once '../../../src/Core/Database/DBConnection.php';
-use Core\Database\DBConnection;
+// login.php
+require_once 'auth.php'; // This handles session_start() properly
 
-// Database connection
-$db = new DBConnection();
-$pdo = $db->getConnection();
-
-// Fallback if getConnection() doesn't exist
-if (!method_exists($db, 'getConnection')) {
-    $host = 'localhost';
-    $port = '5432';
-    $dbname = 'vouchmorph';
-    $username = 'postgres';
-    $password = 'postgres';
-    
-    try {
-        $pdo = new PDO("pgsql:host=$host;port=$port;dbname=$dbname", $username, $password);
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-    } catch (PDOException $e) {
-        die("Database connection failed: " . $e->getMessage());
-    }
-}
+// Get database connection
+$pdo = getDBConnection();
 
 $error = '';
 
@@ -264,22 +245,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-bottom: 24px;
             font-size: 13px;
             border: 1px solid #bfdbfe;
-        }
-        .status-badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 500;
-            margin-top: 8px;
-        }
-        .status-badge.active {
-            background: #dcfce7;
-            color: #16a34a;
-        }
-        .status-badge.inactive {
-            background: #fee2e2;
-            color: #dc2626;
         }
     </style>
 </head>
