@@ -1423,7 +1423,7 @@ $roleAccent = $roleAccents[$userRole] ?? 'slate';
                     <div class="role-line">
                         Role: <?php echo strtoupper($userRole); ?>
                         <?php if ($departmentName): ?>
-                        &middot; Dept: <?php echo strtoupper($departmentName); ?>
+                        &middot; Dept: <?php echo strtoupper($departmentName); ?> 
                         <?php endif; ?>
                     </div>
                 </footer>
