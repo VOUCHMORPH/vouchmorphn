@@ -14,7 +14,7 @@ $departmentId = $user['department_id'] ?? null;
 // ============================================================
 
 $roleFilter = '';
-$roleParams = [':org_id' => $orgId];
+$roleParams = [':org_id' => $orgId]; 
 
 if (!in_array($userRole, ['owner', 'auditor'])) {
     $roleFilter = ' AND department_id = :dept_id ';
