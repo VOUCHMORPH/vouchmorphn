@@ -9,7 +9,8 @@ $userRole = $user['role'] ?? 'viewer';
 $departmentId = $user['department_id'] ?? null;
 
 // ============================================================
-// ROLE-BASED DATA FETCHING
+// ROLE-BASED DATA FETCHING — every figure below comes from the database.
+// No placeholder rows, no sample activity, no synthetic totals.
 // ============================================================
 
 $roleFilter = '';
@@ -48,7 +49,7 @@ try {
         SELECT * FROM import_batches 
         WHERE organization_id = :org_id 
         " . $roleFilter . "
-        ORDER BY created_at DESC LIMIT 4
+        ORDER BY created_at DESC LIMIT 6
     ");
     $stmt->execute($roleParams);
     $recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -86,8 +87,10 @@ try {
 
     $stats = [
         'disbursed' => $currentMonth['amount'],
+        'total_batches' => $currentMonth['total'],
         'success_rate' => $successRate,
         'pending' => $pendingApproval['count'],
+        'pending_amount' => $pendingApproval['amount'],
         'beneficiaries' => $beneficiaryCount,
         'successful_payments' => $successData['completed'],
         'programs' => $programCount,
@@ -96,7 +99,7 @@ try {
 
 } catch (PDOException $e) {
     error_log("Dashboard error: " . $e->getMessage());
-    $stats = ['disbursed' => 0, 'success_rate' => 0, 'pending' => 0, 'beneficiaries' => 0, 'successful_payments' => 0, 'programs' => 0, 'departments' => 0];
+    $stats = ['disbursed' => 0, 'total_batches' => 0, 'success_rate' => 0, 'pending' => 0, 'pending_amount' => 0, 'beneficiaries' => 0, 'successful_payments' => 0, 'programs' => 0, 'departments' => 0];
     $recentBatches = [];
 }
 
@@ -104,6 +107,7 @@ $config = [
     'show_actions' => in_array($userRole, ['owner', 'program_officer', 'department_head']),
     'show_beneficiaries' => in_array($userRole, ['owner', 'auditor', 'program_officer', 'beneficiary_registrar', 'department_head', 'viewer']),
     'show_all_batches' => !in_array($userRole, ['beneficiary_registrar']),
+    'show_governance' => in_array($userRole, ['owner', 'auditor', 'department_head']),
 ];
 
 $departmentName = '';
@@ -118,6 +122,29 @@ $roleDisplay = strtoupper($userRole);
 $orgName = htmlspecialchars($user['organization_name'] ?? 'GOVERNMENT OF BOTSWANA');
 $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats['pending'] + $stats['programs']), 3, '0', STR_PAD_LEFT);
 
+// ============================================================
+// ROLE-BASED ACTION BUTTONS — each entry maps to a real working page.
+// Badge values are pulled straight from $stats (real DB counts), or omitted.
+// ============================================================
+$actions = [];
+if ($config['show_actions']) {
+    $actions[] = ['label' => 'DISBURSE FUNDS', 'href' => 'imports/upload.php', 'mark' => '§1', 'badge' => null];
+}
+if ($config['show_all_batches']) {
+    $actions[] = ['label' => 'BATCHES', 'href' => 'batches/index.php', 'mark' => '§2', 'badge' => $stats['total_batches'] > 0 ? $stats['total_batches'] : null];
+}
+$actions[] = ['label' => 'PENDING APPROVALS', 'href' => 'batches/index.php?filter=pending', 'mark' => '§3', 'badge' => $stats['pending'] > 0 ? $stats['pending'] : null];
+if ($config['show_beneficiaries']) {
+    $actions[] = ['label' => 'BENEFICIARIES', 'href' => 'beneficiaries/index.php', 'mark' => '§4', 'badge' => $stats['beneficiaries'] > 0 ? $stats['beneficiaries'] : null];
+}
+if ($config['show_governance']) {
+    $actions[] = ['label' => 'AUDIT TRAIL', 'href' => 'reports/audit_trail.php', 'mark' => '§5', 'badge' => null];
+}
+$actions[] = ['label' => 'REPORTS', 'href' => 'reports/index.php', 'mark' => '§6', 'badge' => null];
+if ($userRole === 'owner') {
+    $actions[] = ['label' => 'DIAGNOSTICS', 'href' => 'testgov.php', 'mark' => '§7', 'badge' => null];
+}
+
 function formatCurrency($amount) {
     return 'BWP ' . number_format($amount, 2);
 }
@@ -127,13 +154,10 @@ function formatCurrency($amount) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VouchMorph · National Disbursement Registry</title>
+    <title>VOUCHMORPH · NATIONAL DISBURSEMENT REGISTRY</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ============================================================
-           TOKENS
-           ============================================================ */
         :root {
             --paper:        #EEF1EF;
             --panel:        #FFFFFF;
@@ -146,9 +170,7 @@ function formatCurrency($amount) {
             --brass:        #8A6D3B;
             --brass-tint:   #F4EFE3;
             --seal-red:     #7A2118;
-            --seal-red-tint:#F6E9E7;
             --amber:        #8A5A0B;
-            --amber-tint:   #F6EEDD;
             --ledger-green: #24513A;
             --green-tint:   #E5EEE7;
             --blue-tint:    #E7EEF4;
@@ -156,8 +178,6 @@ function formatCurrency($amount) {
             --f-body: 'IBM Plex Sans', sans-serif;
             --f-cond: 'IBM Plex Sans Condensed', sans-serif;
             --f-mono: 'IBM Plex Mono', monospace;
-
-            --sidebar-width: 216px;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -170,282 +190,138 @@ function formatCurrency($amount) {
             font-size: 13px;
             line-height: 1.45;
             -webkit-font-smoothing: antialiased;
-            display: flex;
             min-height: 100vh;
+            display: flex;
+            flex-direction: column;
         }
 
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: var(--line-strong); }
-
         a { color: inherit; }
+        button { font-family: inherit; cursor: pointer; }
 
-        /* ============================================================
-           SIGNATURE: registration corner-marks on every doc panel
-           ============================================================ */
-        .doc-panel {
-            position: relative;
-            background: var(--panel);
-            border: 1px solid var(--line);
-        }
-        .doc-panel::before,
-        .doc-panel::after {
-            content: "";
-            position: absolute;
-            width: 9px;
-            height: 9px;
-            pointer-events: none;
-        }
-        .doc-panel::before {
-            top: -1px; left: -1px;
-            border-top: 2px solid var(--brass);
-            border-left: 2px solid var(--brass);
-        }
-        .doc-panel::after {
-            bottom: -1px; right: -1px;
-            border-bottom: 2px solid var(--brass);
-            border-right: 2px solid var(--brass);
-        }
+        /* corner-mark signature on every doc panel */
+        .doc-panel { position: relative; background: var(--panel); border: 1px solid var(--line); }
+        .doc-panel::before, .doc-panel::after { content: ""; position: absolute; width: 9px; height: 9px; pointer-events: none; }
+        .doc-panel::before { top: -1px; left: -1px; border-top: 2px solid var(--brass); border-left: 2px solid var(--brass); }
+        .doc-panel::after  { bottom: -1px; right: -1px; border-bottom: 2px solid var(--brass); border-right: 2px solid var(--brass); }
 
-        /* ============================================================
-           SIGNATURE: ink-stamp status marks
-           ============================================================ */
         .stamp {
-            display: inline-block;
-            padding: 2px 8px;
-            border: 1.5px solid currentColor;
-            transform: rotate(-2.5deg);
-            font-family: var(--f-mono);
-            font-size: 9px;
-            font-weight: 600;
-            letter-spacing: 0.09em;
-            text-transform: uppercase;
-            white-space: nowrap;
+            display: inline-block; padding: 2px 8px; border: 1.5px solid currentColor;
+            transform: rotate(-2.5deg); font-family: var(--f-mono); font-size: 9px; font-weight: 600;
+            letter-spacing: 0.09em; text-transform: uppercase; white-space: nowrap;
         }
         .stamp.completed  { color: var(--ledger-green); }
         .stamp.processing { color: var(--ink-700); }
         .stamp.pending     { color: var(--amber); }
         .stamp.failed      { color: var(--seal-red); }
         .stamp.draft       { color: var(--ink-300); }
-        .stamp.threshold   { color: var(--seal-red); background: var(--seal-red-tint); }
 
-        /* ============================================================
-           EYEBROW / SECTION MARK utility
-           ============================================================ */
-        .eyebrow {
-            font-family: var(--f-cond);
-            font-weight: 600;
-            font-size: 10px;
-            letter-spacing: 0.11em;
-            text-transform: uppercase;
-            color: var(--ink-500);
-        }
+        .eyebrow { font-family: var(--f-cond); font-weight: 700; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-500); }
         .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
 
         /* ============================================================
-           APP SHELL
-           ============================================================ */
-        .app { display: flex; width: 100%; min-height: 100vh; }
-
-        /* ============================================================
-           SIDEBAR — "Registry Index"
-           ============================================================ */
-        .sidebar {
-            width: var(--sidebar-width);
-            background: var(--ink-900);
-            color: white;
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            position: sticky;
-            top: 0;
-            flex-shrink: 0;
-            border-right: 3px solid var(--brass);
-        }
-
-        .sidebar-header { padding: 20px 18px 14px; border-bottom: 1px solid rgba(255,255,255,0.08); }
-        .sidebar-header .brand-row { display: flex; align-items: center; gap: 8px; }
-        .sidebar-header .brand { font-family: var(--f-mono); font-weight: 700; font-size: 15px; letter-spacing: 0.02em; color: white; }
-        .sidebar-header .brand em { color: var(--brass); font-style: normal; }
-        .sidebar-header .sub { font-family: var(--f-cond); font-size: 9px; font-weight: 600; letter-spacing: 0.14em; color: rgba(255,255,255,0.35); text-transform: uppercase; margin-top: 4px; }
-        .sidebar-header .org {
-            font-family: var(--f-mono); font-size: 9px; color: rgba(255,255,255,0.45);
-            margin-top: 12px; padding-top: 10px; border-top: 1px dashed rgba(255,255,255,0.15);
-            letter-spacing: 0.03em;
-        }
-
-        .sidebar-nav { padding: 10px 10px; overflow-y: auto; flex: 1; }
-        .nav-group {
-            font-family: var(--f-cond); font-size: 9px; text-transform: uppercase; letter-spacing: 0.14em;
-            color: rgba(255,255,255,0.28); padding: 14px 8px 4px; font-weight: 700;
-        }
-        .nav-group:first-child { padding-top: 4px; }
-
-        .nav-item {
-            display: flex; align-items: center; gap: 4px;
-            padding: 7px 8px;
-            color: rgba(255,255,255,0.55);
-            text-decoration: none;
-            font-size: 12.5px;
-            font-weight: 500;
-            border-left: 2px solid transparent;
-            transition: background 0.12s ease, color 0.12s ease;
-        }
-        .nav-item:hover { background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.85); }
-        .nav-item.active { background: rgba(138,109,59,0.16); color: var(--brass); border-left-color: var(--brass); font-weight: 600; }
-        .nav-item .mark { font-family: var(--f-mono); opacity: 0.65; font-size: 11px; width: 13px; }
-        .nav-item.active .mark { opacity: 1; }
-        .nav-item .count {
-            margin-left: auto; background: var(--brass); color: var(--ink-900);
-            font-size: 9px; font-weight: 700; padding: 1px 5px; font-family: var(--f-mono);
-        }
-
-        .sidebar-footer { padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.08); }
-        .sidebar-footer .user-row { display: flex; align-items: center; gap: 9px; }
-        .sidebar-footer .avatar {
-            width: 27px; height: 27px; background: var(--brass); flex-shrink: 0;
-            display: flex; align-items: center; justify-content: center;
-            font-family: var(--f-mono); font-weight: 700; font-size: 10px; color: var(--ink-900);
-        }
-        .sidebar-footer .user-info { flex: 1; min-width: 0; }
-        .sidebar-footer .name { font-size: 11.5px; font-weight: 600; color: rgba(255,255,255,0.85); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .sidebar-footer .meta { font-family: var(--f-cond); font-size: 9px; color: rgba(255,255,255,0.35); text-transform: uppercase; letter-spacing: 0.08em; }
-        .sidebar-footer .logout { color: rgba(255,255,255,0.3); text-decoration: none; font-size: 14px; }
-        .sidebar-footer .logout:hover { color: var(--brass); }
-
-        /* ============================================================
-           MAIN
-           ============================================================ */
-        .main { flex: 1; display: flex; flex-direction: column; min-height: 100vh; min-width: 0; }
-
-        /* ============================================================
-           MASTHEAD — official document header
+           MASTHEAD
            ============================================================ */
         .masthead {
-            background: var(--ink-900);
-            color: white;
-            padding: 14px 28px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            border-bottom: 1px solid rgba(255,255,255,0.08);
-            flex-wrap: wrap;
-            gap: 10px;
+            background: var(--ink-900); color: white; padding: 14px 24px;
+            display: flex; align-items: center; justify-content: center; position: relative;
+            border-bottom: 3px solid var(--brass);
         }
-        .masthead .left { display: flex; align-items: center; gap: 14px; }
-        .seal {
-            width: 38px; height: 38px; border-radius: 50%;
-            border: 1.5px solid var(--brass);
-            display: flex; align-items: center; justify-content: center;
-            flex-shrink: 0; position: relative;
+        .masthead .center { display: flex; align-items: center; gap: 14px; text-align: left; }
+        .seal { width: 36px; height: 36px; border-radius: 50%; border: 1.5px solid var(--brass); display: flex; align-items: center; justify-content: center; position: relative; flex-shrink: 0; }
+        .seal::before { content: ""; position: absolute; inset: 4px; border-radius: 50%; border: 1px solid rgba(138,109,59,0.5); }
+        .seal span { font-family: var(--f-mono); font-weight: 700; font-size: 10px; color: var(--brass); }
+        .masthead h1 { font-size: 14px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; }
+        .masthead .file-ref { font-family: var(--f-mono); font-size: 10px; color: rgba(255,255,255,0.4); margin-top: 2px; text-transform: uppercase; }
+        .masthead .right-fixed {
+            position: absolute; right: 24px; top: 50%; transform: translateY(-50%);
+            display: flex; align-items: center; gap: 14px; font-family: var(--f-mono); font-size: 11px; color: rgba(255,255,255,0.6);
         }
-        .seal::before {
-            content: ""; position: absolute; inset: 4px; border-radius: 50%;
-            border: 1px solid rgba(138,109,59,0.5);
-        }
-        .seal span { font-family: var(--f-mono); font-weight: 700; font-size: 11px; color: var(--brass); letter-spacing: -0.02em; }
-        .masthead .titling h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.01em; }
-        .masthead .titling .file-ref { font-family: var(--f-mono); font-size: 10px; color: rgba(255,255,255,0.4); margin-top: 2px; letter-spacing: 0.02em; }
-        .masthead .right { display: flex; align-items: center; gap: 14px; }
-        .classification {
-            font-family: var(--f-cond); font-size: 9px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
-            color: #E7B8B2; border: 1px solid #8C3A30; padding: 3px 8px; transform: rotate(-1.5deg);
-        }
-        .clock { font-family: var(--f-mono); font-size: 11px; color: rgba(255,255,255,0.55); }
         .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #5FAE7E; margin-right: 5px; }
-        .menu-toggle { display: none; background: none; border: none; color: white; font-size: 18px; cursor: pointer; }
+        .role-pill { font-family: var(--f-cond); font-size: 9px; font-weight: 700; letter-spacing: 0.08em; color: var(--brass); border: 1px solid var(--brass); padding: 2px 7px; text-transform: uppercase; }
 
         /* ============================================================
-           CONTENT
+           CENTRAL LAYOUT — everything anchored to a centered column
            ============================================================ */
-        .content { flex: 1; padding: 22px 28px 0; max-width: 1560px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+        .stage {
+            flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center;
+            padding: 36px 20px 40px;
+        }
+        .stage-inner { width: 100%; max-width: 980px; display: flex; flex-direction: column; align-items: center; gap: 26px; }
+
+        .welcome { text-align: center; }
+        .welcome .eyebrow { justify-content: center; }
+        .welcome h2 { font-size: 21px; font-weight: 700; letter-spacing: 0.01em; text-transform: uppercase; margin-top: 6px; }
+        .welcome p { font-family: var(--f-cond); font-size: 12px; color: var(--ink-500); margin-top: 6px; letter-spacing: 0.02em; text-transform: uppercase; }
 
         /* ============================================================
-           STATEMENT OF ACCOUNT — hero ledger strip
+           ACTION LAUNCHER — the central buttons
            ============================================================ */
+        .launcher { width: 100%; }
+        .launcher-grid {
+            display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; margin-top: 18px;
+        }
+        .action-btn {
+            position: relative;
+            width: 190px;
+            padding: 22px 16px 16px;
+            background: var(--panel);
+            border: 1.5px solid var(--ink-900);
+            text-decoration: none;
+            color: var(--ink-900);
+            display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px;
+            transition: background 0.12s ease, transform 0.12s ease;
+        }
+        .action-btn:hover { background: var(--brass-tint); transform: translateY(-2px); }
+        .action-btn .mark { font-family: var(--f-mono); font-size: 10px; color: var(--brass); font-weight: 700; letter-spacing: 0.08em; }
+        .action-btn .label { font-family: var(--f-cond); font-weight: 700; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; }
+        .action-btn .badge {
+            position: absolute; top: -9px; right: -9px;
+            background: var(--seal-red); color: white; font-family: var(--f-mono); font-weight: 700;
+            font-size: 10px; min-width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+            padding: 0 5px; border: 1.5px solid var(--paper);
+        }
+
+        /* ============================================================
+           REVEAL BUTTONS + PANELS (data appears only on click)
+           ============================================================ */
+        .reveal-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
+        .reveal-btn {
+            font-family: var(--f-cond); font-weight: 700; font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase;
+            background: var(--ink-900); color: white; border: none; padding: 11px 22px;
+        }
+        .reveal-btn:hover { background: var(--brass); color: var(--ink-900); }
+        .reveal-btn.is-active { background: var(--brass); color: var(--ink-900); }
+
+        .reveal-panel {
+            width: 100%;
+            display: none;
+            animation: fadeIn 0.15s ease;
+        }
+        .reveal-panel.is-open { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* Statement of account (real figures only) */
         .statement { padding: 20px 24px 16px; }
-        .statement-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; }
-        .statement-head .eyebrow { }
-        .statement-head .period { font-family: var(--f-mono); font-size: 10px; color: var(--ink-300); }
-        .statement-row { display: flex; align-items: flex-end; gap: 0; flex-wrap: wrap; }
-        .statement-item { padding: 0 22px; border-left: 1px solid var(--line); }
+        .statement-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; flex-wrap: wrap; gap: 6px; }
+        .statement-head .period { font-family: var(--f-mono); font-size: 10px; color: var(--ink-300); text-transform: uppercase; }
+        .statement-row { display: flex; align-items: flex-end; gap: 0; flex-wrap: wrap; justify-content: center; }
+        .statement-item { padding: 0 22px; border-left: 1px solid var(--line); text-align: center; }
         .statement-item:first-child { border-left: none; padding-left: 0; }
-        .statement-item .label { font-family: var(--f-cond); font-size: 10px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-500); }
+        .statement-item .label { font-family: var(--f-cond); font-size: 10px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-500); }
         .statement-item .value { font-family: var(--f-mono); font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
-        .statement-item .trend { font-family: var(--f-cond); font-size: 10px; font-weight: 600; margin-top: 5px; letter-spacing: 0.02em; }
-        .trend.up { color: var(--ledger-green); }
-        .trend.neutral { color: var(--ink-300); }
+        .statement-item.hero .value { font-size: 28px; border-bottom: 4px double var(--ink-900); padding-bottom: 8px; display: inline-block; }
+        .statement-item:not(.hero) .value { font-size: 18px; color: var(--ink-700); }
 
-        .statement-item.hero { padding-left: 0; }
-        .statement-item.hero .value {
-            font-size: 30px;
-            border-bottom: 4px double var(--ink-900);
-            padding-bottom: 8px;
-            display: inline-block;
-        }
-        .statement-item:not(.hero) .value { font-size: 19px; color: var(--ink-700); }
-
-        /* ============================================================
-           SYSTEM STRIP
-           ============================================================ */
-        .system-strip {
-            display: flex; flex-wrap: wrap; gap: 22px;
-            padding: 9px 24px;
-        }
-        .system-strip .item { display: flex; align-items: center; gap: 6px; font-family: var(--f-cond); font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; color: var(--ink-500); text-transform: uppercase; }
-        .system-strip .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--ledger-green); }
-
-        /* ============================================================
-           MIDDLE GRID
-           ============================================================ */
-        .middle-grid { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 14px; }
-
+        /* Register table (real rows only) */
+        .register-wrap { width: 100%; }
         .panel-head {
-            padding: 9px 16px;
-            background: var(--brass-tint);
-            border-bottom: 1px solid var(--line);
-            display: flex; justify-content: space-between; align-items: center;
+            padding: 9px 16px; background: var(--brass-tint); border-bottom: 1px solid var(--line);
+            display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;
         }
         .panel-head .eyebrow { color: var(--ink-700); }
-        .panel-head .count-chip { font-family: var(--f-mono); font-size: 10px; font-weight: 700; color: white; background: var(--ink-900); padding: 1px 6px; }
-        .panel-body { padding: 12px 16px; }
-
-        /* Schedule A — pending approvals */
-        .sched-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
-        .sched-row:last-of-type { border-bottom: none; }
-        .sched-row .ref { font-family: var(--f-mono); font-size: 11px; font-weight: 600; color: var(--ink-700); }
-        .sched-row .amt { font-family: var(--f-mono); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
-        .view-all { display: inline-block; margin-top: 10px; font-family: var(--f-cond); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-decoration: none; color: var(--ink-700); border-bottom: 1px solid var(--brass); }
-
-        /* Processing status */
-        .pipeline-steps { display: flex; gap: 5px; }
-        .pipeline-steps .step {
-            flex: 1; padding: 7px 4px; text-align: center;
-            font-family: var(--f-cond); font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
-            border: 1px solid var(--line); color: var(--ink-300);
-        }
-        .pipeline-steps .step.done { border-color: var(--ledger-green); color: var(--ledger-green); background: var(--green-tint); }
-        .pipeline-steps .step.active { border-color: var(--ink-900); color: var(--ink-900); background: var(--blue-tint); }
-        .pipeline-bar { height: 5px; background: var(--line); margin: 12px 0 6px; position: relative; }
-        .pipeline-bar .fill { height: 100%; background: var(--ledger-green); width: 72%; }
-        .pipeline-figures { display: flex; justify-content: space-between; }
-        .pipeline-figures div { text-align: center; }
-        .pipeline-figures .n { font-family: var(--f-mono); font-weight: 700; font-size: 15px; display: block; }
-        .pipeline-figures .l { font-family: var(--f-cond); font-size: 8.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-300); }
-
-        /* Activity log */
-        .log-row { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--ink-500); }
-        .log-row:last-child { border-bottom: none; }
-        .log-row .t { font-family: var(--f-mono); font-size: 10px; color: var(--ink-300); flex-shrink: 0; width: 36px; }
-        .log-row strong { color: var(--ink-900); font-weight: 600; }
-        .live-flag { font-family: var(--f-cond); font-size: 9px; font-weight: 700; color: var(--ledger-green); letter-spacing: 0.06em; text-transform: uppercase; }
-        .live-flag::before { content: "●"; margin-right: 3px; animation: blink 1.8s infinite; }
-        @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.25;} }
-
-        /* ============================================================
-           REGISTER TABLE
-           ============================================================ */
-        .register-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; padding-bottom: 0; }
         .table-scroll { max-height: 340px; overflow-y: auto; }
         table { width: 100%; border-collapse: collapse; font-size: 12px; }
         th, td { padding: 10px 16px; text-align: left; border-bottom: 1px solid var(--line); }
@@ -456,299 +332,180 @@ function formatCurrency($amount) {
         }
         tbody tr:nth-child(even) td { background: #F8FAF8; }
         tbody tr:hover td { background: var(--blue-tint); }
-        td code { font-family: var(--f-mono); font-size: 11px; font-weight: 600; color: var(--ink-700); background: var(--brass-tint); padding: 1px 5px; }
+        td code { font-family: var(--f-mono); font-size: 11px; font-weight: 600; color: var(--ink-700); background: var(--brass-tint); padding: 1px 5px; text-transform: uppercase; }
         td .amt { font-family: var(--f-mono); font-weight: 700; font-variant-numeric: tabular-nums; }
-        .action-link { font-family: var(--f-cond); font-weight: 700; font-size: 11px; letter-spacing: 0.04em; text-decoration: none; color: var(--ink-700); border-bottom: 1px solid var(--brass); }
+        .action-link { font-family: var(--f-cond); font-weight: 700; font-size: 11px; letter-spacing: 0.06em; text-decoration: none; color: var(--ink-700); border-bottom: 1px solid var(--brass); text-transform: uppercase; }
 
-        /* ============================================================
-           EMPTY STATE
-           ============================================================ */
-        .empty-state { text-align: center; padding: 26px 12px; color: var(--ink-300); }
+        .empty-state { text-align: center; padding: 30px 12px; color: var(--ink-300); }
         .empty-state .mark { font-family: var(--f-mono); font-size: 20px; display: block; margin-bottom: 8px; color: var(--brass); }
-        .empty-state p { font-size: 11.5px; }
-        .empty-state a { color: var(--ink-700); font-weight: 600; text-decoration: none; border-bottom: 1px solid var(--brass); }
+        .empty-state p { font-family: var(--f-cond); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+        .empty-state a { color: var(--ink-700); font-weight: 700; text-decoration: none; border-bottom: 1px solid var(--brass); }
 
         /* ============================================================
-           FOOTER — official notice
+           FOOTER
            ============================================================ */
-        .page-footer {
-            padding: 16px 0 22px;
-            text-align: center;
-            border-top: 1px solid var(--line);
-            margin-top: 6px;
-        }
-        .page-footer .notice { font-family: var(--f-cond); font-size: 9.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-300); }
-        .page-footer .role-line { font-family: var(--f-mono); font-size: 9px; color: var(--ink-300); margin-top: 4px; }
+        .page-footer { padding: 16px 0 26px; text-align: center; border-top: 1px solid var(--line); width: 100%; }
+        .page-footer .notice { font-family: var(--f-cond); font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-300); }
+        .page-footer .role-line { font-family: var(--f-mono); font-size: 9px; color: var(--ink-300); margin-top: 4px; text-transform: uppercase; }
 
-        /* ============================================================
-           SIDEBAR OVERLAY (mobile)
-           ============================================================ */
-        .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(15,33,56,0.6); z-index: 99; }
-        .sidebar-overlay.active { display: block; }
-
-        /* ============================================================
-           RESPONSIVE
-           ============================================================ */
-        @media (max-width: 1180px) {
-            .middle-grid { grid-template-columns: 1fr 1fr; }
-            .middle-grid .panel:nth-child(3) { grid-column: 1 / -1; }
-            .statement-row { row-gap: 14px; }
-        }
-        @media (max-width: 960px) {
-            .sidebar { position: fixed; top: 0; left: 0; transform: translateX(-100%); z-index: 100; transition: transform 0.2s ease; }
-            .sidebar.open { transform: translateX(0); }
-            .menu-toggle { display: block; }
-            .content { padding: 16px 16px 0; }
-            .middle-grid { grid-template-columns: 1fr; }
-            .middle-grid .panel:nth-child(3) { grid-column: auto; }
-            .statement-item { border-left: none; padding: 10px 0 0; border-top: 1px solid var(--line); }
+        @media (max-width: 640px) {
+            .masthead { flex-direction: column; gap: 8px; padding: 14px 16px; }
+            .masthead .right-fixed { position: static; transform: none; margin-top: 4px; }
+            .stage { padding: 24px 14px 30px; }
+            .action-btn { width: 150px; padding: 18px 12px 14px; }
+            .statement-item { border-left: none; padding: 10px 0 0; border-top: 1px solid var(--line); flex: 1 1 100%; }
             .statement-item:first-child { border-top: none; }
-            .statement-row { flex-direction: column; }
-        }
-        @media (max-width: 600px) {
-            .masthead { padding: 12px 16px; }
-            .classification { display: none; }
-            .statement { padding: 16px 16px 12px; }
-            .statement-item.hero .value { font-size: 24px; }
         }
 
         @media (prefers-color-scheme: dark) {
             :root {
-                --paper: #131C24;
-                --panel: #1B2733;
-                --line: #2C3A45;
-                --line-strong: #3C4C58;
-                --ink-900: #ECEFF2;
-                --ink-700: #C9D2D9;
-                --ink-500: #93A2AC;
-                --ink-300: #6B7A85;
-                --brass-tint: #22303A;
-                --blue-tint: #1D2A38;
-                --green-tint: #17261D;
+                --paper: #131C24; --panel: #1B2733; --line: #2C3A45; --line-strong: #3C4C58;
+                --ink-900: #ECEFF2; --ink-700: #C9D2D9; --ink-500: #93A2AC; --ink-300: #6B7A85;
+                --brass-tint: #22303A; --blue-tint: #1D2A38; --green-tint: #17261D;
             }
             tbody tr:nth-child(even) td { background: #182129; }
+            .action-btn { border-color: var(--ink-900); }
         }
     </style>
 </head>
 <body>
-    <div class="app">
-        <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
-
-        <!-- Sidebar -->
-        <aside class="sidebar" id="sidebar">
-            <div class="sidebar-header">
-                <div class="brand-row">
-                    <span class="brand">VOUCH<em>MORPH</em></span>
-                </div>
-                <div class="sub">National Disbursement Registry</div>
-                <div class="org"><?php echo substr($orgName, 0, 26); ?></div>
+    <!-- Masthead -->
+    <div class="masthead">
+        <div class="center">
+            <div class="seal"><span>VM</span></div>
+            <div>
+                <h1><?php echo $orgName; ?> — National Disbursement</h1>
+                <div class="file-ref">FILE NO. <?php echo htmlspecialchars($fileRef); ?> · <?php echo strtoupper(date('d M Y')); ?></div>
             </div>
-            <nav class="sidebar-nav">
-                <div class="nav-group">Mission</div>
-                <a href="index.php" class="nav-item active"><span class="mark">§</span>Command</a>
-                <?php if ($config['show_actions']): ?>
-                <a href="imports/upload.php" class="nav-item"><span class="mark">§</span>Disburse</a>
-                <?php endif; ?>
-                <a href="batches/index.php" class="nav-item"><span class="mark">§</span>Batches <?php if ($stats['pending'] > 0): ?><span class="count"><?php echo $stats['pending']; ?></span><?php endif; ?></a>
-                <?php if ($config['show_beneficiaries']): ?>
-                <a href="beneficiaries/index.php" class="nav-item"><span class="mark">§</span>Beneficiaries</a>
-                <?php endif; ?>
-                <div class="nav-group">Approvals</div>
-                <a href="batches/index.php?filter=pending" class="nav-item"><span class="mark">§</span>Pending <?php if ($stats['pending'] > 0): ?><span class="count"><?php echo $stats['pending']; ?></span><?php endif; ?></a>
-                <div class="nav-group">Governance</div>
-                <a href="reports/audit_trail.php" class="nav-item"><span class="mark">§</span>Audit</a>
-                <a href="reports/index.php" class="nav-item"><span class="mark">§</span>Reports</a>
-                <div class="nav-group">System</div>
-                <a href="testgov.php" class="nav-item"><span class="mark">§</span>Diagnostics</a>
-            </nav>
-            <div class="sidebar-footer">
-                <div class="user-row">
-                    <div class="avatar"><?php echo strtoupper(substr($user['full_name'] ?? $user['email'], 0, 1)); ?></div>
-                    <div class="user-info">
-                        <div class="name"><?php echo substr($user['full_name'] ?? $user['email'], 0, 14); ?></div>
-                        <div class="meta"><?php echo $roleDisplay; ?></div>
-                    </div>
-                    <a href="logout.php" class="logout" title="Sign out">↗</a>
-                </div>
-            </div>
-        </aside>
-
-        <!-- Main -->
-        <main class="main">
-            <!-- Masthead -->
-            <div class="masthead">
-                <div class="left">
-                    <button class="menu-toggle" id="menuToggle" onclick="toggleSidebar()" aria-label="Toggle menu">≡</button>
-                    <div class="seal"><span>VM</span></div>
-                    <div class="titling">
-                        <h1><?php echo $orgName; ?> — National Disbursement</h1>
-                        <div class="file-ref">FILE NO. <?php echo htmlspecialchars($fileRef); ?> &nbsp;·&nbsp; <?php echo date('d M Y'); ?></div>
-                    </div>
-                </div>
-                <div class="right">
-                    <span class="classification">Official · Restricted</span>
-                    <span class="clock"><span class="status-dot"></span><?php echo date('H:i'); ?> UTC+2</span>
-                </div>
-            </div>
-
-            <!-- Content -->
-            <div class="content">
-
-                <!-- Statement of Account -->
-                <section class="statement doc-panel">
-                    <div class="statement-head">
-                        <span class="eyebrow"><span class="section-mark">§1</span>Statement of Account</span>
-                        <span class="period">Period ending <?php echo date('d M Y'); ?></span>
-                    </div>
-                    <div class="statement-row">
-                        <div class="statement-item hero">
-                            <div class="label">Total Disbursed</div>
-                            <div class="value"><?php echo formatCurrency($stats['disbursed']); ?></div>
-                            <div class="trend up">▲ 8.2% vs. prior period</div>
-                        </div>
-                        <div class="statement-item">
-                            <div class="label">Success Rate</div>
-                            <div class="value"><?php echo number_format($stats['success_rate'], 1); ?>%</div>
-                            <div class="trend up">▲ 0.02%</div>
-                        </div>
-                        <div class="statement-item">
-                            <div class="label">Awaiting Approval</div>
-                            <div class="value"><?php echo number_format($stats['pending']); ?></div>
-                            <div class="trend neutral">Held for review</div>
-                        </div>
-                        <div class="statement-item">
-                            <div class="label">Beneficiaries</div>
-                            <div class="value"><?php echo number_format($stats['beneficiaries']); ?></div>
-                            <div class="trend neutral">On register</div>
-                        </div>
-                        <div class="statement-item">
-                            <div class="label">Active Programs</div>
-                            <div class="value"><?php echo number_format($stats['programs']); ?></div>
-                            <div class="trend neutral">In force</div>
-                        </div>
-                        <div class="statement-item">
-                            <div class="label">Departments</div>
-                            <div class="value"><?php echo number_format($stats['departments']); ?></div>
-                            <div class="trend neutral">Reporting</div>
-                        </div>
-                    </div>
-                </section>
-
-                <!-- System strip -->
-                <div class="system-strip doc-panel">
-                    <span class="item"><span class="dot"></span>Database</span>
-                    <span class="item"><span class="dot"></span>Identity</span>
-                    <span class="item"><span class="dot"></span>Swap Engine</span>
-                    <span class="item"><span class="dot"></span>Banking Rails</span>
-                    <span class="item"><span class="dot"></span>Audit Log</span>
-                    <span class="item"><span class="dot"></span>Security</span>
-                </div>
-
-                <!-- Middle grid -->
-                <div class="middle-grid">
-                    <div class="panel doc-panel">
-                        <div class="panel-head">
-                            <span class="eyebrow"><span class="section-mark">§2</span>Schedule A — Pending Authorisation</span>
-                            <span class="count-chip"><?php echo $stats['pending']; ?></span>
-                        </div>
-                        <div class="panel-body">
-                            <?php if ($stats['pending'] > 0): ?>
-                            <div class="sched-row"><span class="ref">GOV-440</span><span class="amt">BWP 12,400.00</span><span class="stamp pending">Pending</span></div>
-                            <div class="sched-row"><span class="ref">GOV-439</span><span class="amt">BWP 8,200.00</span><span class="stamp pending">Pending</span></div>
-                            <div class="sched-row"><span class="ref">GOV-438</span><span class="amt">BWP 125,000.00</span><span class="stamp threshold">Over limit</span></div>
-                            <a href="batches/index.php?filter=pending" class="view-all">View schedule →</a>
-                            <?php else: ?>
-                            <div class="empty-state"><span class="mark">§</span><p>Nothing pending authorisation.</p></div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <div class="panel doc-panel">
-                        <div class="panel-head">
-                            <span class="eyebrow"><span class="section-mark">§3</span>Processing Status</span>
-                            <span class="count-chip">72%</span>
-                        </div>
-                        <div class="panel-body">
-                            <div class="pipeline-steps">
-                                <span class="step done">Draft</span>
-                                <span class="step done">Approved</span>
-                                <span class="step active">Executing</span>
-                                <span class="step">Complete</span>
-                            </div>
-                            <div class="pipeline-bar"><div class="fill"></div></div>
-                            <div class="pipeline-figures">
-                                <div><span class="n">12</span><span class="l">Draft</span></div>
-                                <div><span class="n">8</span><span class="l">Approved</span></div>
-                                <div><span class="n">18</span><span class="l">Executing</span></div>
-                                <div><span class="n">47</span><span class="l">Complete</span></div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="panel doc-panel">
-                        <div class="panel-head">
-                            <span class="eyebrow"><span class="section-mark">§4</span>Activity Log</span>
-                            <span class="live-flag">Live</span>
-                        </div>
-                        <div class="panel-body">
-                            <div class="log-row"><span class="t">15:34</span><span><strong>Approved</strong> — batch GOV-440</span></div>
-                            <div class="log-row"><span class="t">15:31</span><span><strong>Imported</strong> — 2,100 beneficiaries</span></div>
-                            <div class="log-row"><span class="t">15:29</span><span><strong>Verified</strong> — identity checks cleared</span></div>
-                            <div class="log-row"><span class="t">15:27</span><span><strong>Completed</strong> — treasury settlement</span></div>
-                            <div class="log-row"><span class="t">15:20</span><span><strong>Created</strong> — audit record</span></div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Register table -->
-                <div class="register-wrap panel doc-panel">
-                    <div class="panel-head">
-                        <span class="eyebrow"><span class="section-mark">§5</span>Register of Recent Batches</span>
-                        <?php if ($config['show_all_batches']): ?>
-                        <a href="batches/index.php" class="action-link">View full register →</a>
-                        <?php endif; ?>
-                    </div>
-                    <div class="table-scroll">
-                        <table>
-                            <thead><tr><th>Reference</th><th>Description</th><th>Program</th><th>Amount</th><th>Status</th><th>Created</th><th></th></tr></thead>
-                            <tbody>
-                                <?php if (!empty($recentBatches)): ?>
-                                    <?php foreach ($recentBatches as $batch):
-                                        $status = strtolower($batch['status'] ?? 'draft');
-                                        $statusDisplay = ucwords(str_replace('_', ' ', $batch['status'] ?? 'Draft'));
-                                    ?>
-                                    <tr>
-                                        <td><code><?php echo htmlspecialchars($batch['batch_reference'] ?? '#' . $batch['id']); ?></code></td>
-                                        <td><?php echo htmlspecialchars(substr($batch['batch_name'] ?? 'Batch #' . $batch['id'], 0, 24)); ?></td>
-                                        <td><?php echo htmlspecialchars($batch['program_name'] ?? '—'); ?></td>
-                                        <td><span class="amt"><?php echo formatCurrency($batch['total_amount'] ?? 0); ?></span></td>
-                                        <td><span class="stamp <?php echo $status; ?>"><?php echo htmlspecialchars($statusDisplay); ?></span></td>
-                                        <td><?php echo date('d M', strtotime($batch['created_at'] ?? 'now')); ?></td>
-                                        <td><a href="batches/view.php?id=<?php echo $batch['id']; ?>" class="action-link">Review</a></td>
-                                    </tr>
-                                    <?php endforeach; ?>
-                                <?php else: ?>
-                                    <tr><td colspan="7"><div class="empty-state"><span class="mark">§</span><p>No batches on record. <a href="imports/upload.php">Create the first entry →</a></p></div></td></tr>
-                                <?php endif; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <!-- Footer -->
-                <footer class="page-footer">
-                    <div class="notice">System-generated statement · Distribution restricted · ISO 27001 · © <?php echo date('Y'); ?> VouchMorph</div>
-                    <div class="role-line"><?php echo $roleDisplay; ?><?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?> · <?php echo htmlspecialchars($fileRef); ?></div>
-                </footer>
-            </div>
-        </main>
+        </div>
+        <div class="right-fixed">
+            <span class="role-pill"><?php echo $roleDisplay; ?></span>
+            <span><span class="status-dot"></span><?php echo date('H:i'); ?> UTC+2</span>
+        </div>
     </div>
 
+    <!-- Central stage -->
+    <div class="stage">
+        <div class="stage-inner">
+
+            <div class="welcome">
+                <div class="eyebrow"><span class="section-mark">§</span>Registry Access</div>
+                <h2>WELCOME, <?php echo strtoupper(substr($user['full_name'] ?? $user['email'], 0, 24)); ?></h2>
+                <p>SELECT A WORKING PAGE FOR YOUR ROLE<?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?></p>
+            </div>
+
+            <!-- Role-based launcher -->
+            <div class="launcher">
+                <div class="launcher-grid">
+                    <?php foreach ($actions as $action): ?>
+                    <a href="<?php echo htmlspecialchars($action['href']); ?>" class="action-btn">
+                        <?php if ($action['badge'] !== null): ?>
+                        <span class="badge"><?php echo (int)$action['badge']; ?></span>
+                        <?php endif; ?>
+                        <span class="mark"><?php echo htmlspecialchars($action['mark']); ?></span>
+                        <span class="label"><?php echo htmlspecialchars($action['label']); ?></span>
+                    </a>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+
+            <!-- Reveal controls — real data only appears once pressed -->
+            <div class="reveal-controls">
+                <button type="button" class="reveal-btn" id="btnStatement" onclick="togglePanel('statement')">VIEW STATEMENT OF ACCOUNT</button>
+                <button type="button" class="reveal-btn" id="btnRegister" onclick="togglePanel('register')">VIEW RECENT REGISTER</button>
+            </div>
+
+            <!-- Statement of Account (real DB figures) -->
+            <div class="reveal-panel doc-panel statement" id="panel-statement">
+                <div class="statement-head">
+                    <span class="eyebrow"><span class="section-mark">§</span>Statement of Account</span>
+                    <span class="period">PERIOD ENDING <?php echo strtoupper(date('d M Y')); ?></span>
+                </div>
+                <div class="statement-row">
+                    <div class="statement-item hero">
+                        <div class="label">Total Disbursed</div>
+                        <div class="value"><?php echo formatCurrency($stats['disbursed']); ?></div>
+                    </div>
+                    <div class="statement-item">
+                        <div class="label">Success Rate</div>
+                        <div class="value"><?php echo number_format($stats['success_rate'], 1); ?>%</div>
+                    </div>
+                    <div class="statement-item">
+                        <div class="label">Batches This Month</div>
+                        <div class="value"><?php echo number_format($stats['total_batches']); ?></div>
+                    </div>
+                    <div class="statement-item">
+                        <div class="label">Awaiting Approval</div>
+                        <div class="value"><?php echo number_format($stats['pending']); ?></div>
+                    </div>
+                    <div class="statement-item">
+                        <div class="label">Beneficiaries</div>
+                        <div class="value"><?php echo number_format($stats['beneficiaries']); ?></div>
+                    </div>
+                    <div class="statement-item">
+                        <div class="label">Active Programs</div>
+                        <div class="value"><?php echo number_format($stats['programs']); ?></div>
+                    </div>
+                    <div class="statement-item">
+                        <div class="label">Departments</div>
+                        <div class="value"><?php echo number_format($stats['departments']); ?></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Register of recent batches (real DB rows) -->
+            <div class="reveal-panel doc-panel register-wrap" id="panel-register">
+                <div class="panel-head">
+                    <span class="eyebrow"><span class="section-mark">§</span>Register of Recent Batches</span>
+                    <?php if ($config['show_all_batches']): ?>
+                    <a href="batches/index.php" class="action-link">VIEW FULL REGISTER →</a>
+                    <?php endif; ?>
+                </div>
+                <div class="table-scroll">
+                    <table>
+                        <thead><tr><th>Reference</th><th>Description</th><th>Program</th><th>Amount</th><th>Status</th><th>Created</th><th></th></tr></thead>
+                        <tbody>
+                            <?php if (!empty($recentBatches)): ?>
+                                <?php foreach ($recentBatches as $batch):
+                                    $status = strtolower($batch['status'] ?? 'draft');
+                                    $statusDisplay = strtoupper(str_replace('_', ' ', $batch['status'] ?? 'Draft'));
+                                ?>
+                                <tr>
+                                    <td><code><?php echo htmlspecialchars($batch['batch_reference'] ?? '#' . $batch['id']); ?></code></td>
+                                    <td><?php echo htmlspecialchars(substr($batch['batch_name'] ?? 'Batch #' . $batch['id'], 0, 24)); ?></td>
+                                    <td><?php echo htmlspecialchars($batch['program_name'] ?? '—'); ?></td>
+                                    <td><span class="amt"><?php echo formatCurrency($batch['total_amount'] ?? 0); ?></span></td>
+                                    <td><span class="stamp <?php echo $status; ?>"><?php echo htmlspecialchars($statusDisplay); ?></span></td>
+                                    <td><?php echo strtoupper(date('d M', strtotime($batch['created_at'] ?? 'now'))); ?></td>
+                                    <td><a href="batches/view.php?id=<?php echo $batch['id']; ?>" class="action-link">REVIEW</a></td>
+                                </tr>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <tr><td colspan="7"><div class="empty-state"><span class="mark">§</span><p>NO BATCHES ON RECORD.<?php if ($config['show_actions']): ?> <a href="imports/upload.php">CREATE THE FIRST ENTRY →</a><?php endif; ?></p></div></td></tr>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="page-footer">
+        <div class="notice">SYSTEM-GENERATED REGISTRY · DISTRIBUTION RESTRICTED · ISO 27001 · © <?php echo date('Y'); ?> VOUCHMORPH</div>
+        <div class="role-line"><?php echo $roleDisplay; ?><?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?> · <?php echo htmlspecialchars($fileRef); ?></div>
+    </footer>
+
     <script>
-        function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); document.getElementById('sidebarOverlay').classList.toggle('active'); }
-        function closeSidebar() { document.getElementById('sidebar').classList.remove('open'); document.getElementById('sidebarOverlay').classList.remove('active'); }
-        document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeSidebar(); });
-        window.addEventListener('resize', function() { if (window.innerWidth > 960) closeSidebar(); });
+        function togglePanel(name) {
+            var panel = document.getElementById('panel-' + name);
+            var btn = document.getElementById('btn' + name.charAt(0).toUpperCase() + name.slice(1));
+            var isOpen = panel.classList.contains('is-open');
+            panel.classList.toggle('is-open', !isOpen);
+            btn.classList.toggle('is-active', !isOpen);
+            btn.textContent = (!isOpen ? 'HIDE ' : 'VIEW ') + (name === 'statement' ? 'STATEMENT OF ACCOUNT' : 'RECENT REGISTER');
+        }
     </script>
 </body>
 </html>
