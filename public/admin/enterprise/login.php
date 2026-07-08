@@ -241,47 +241,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .stage { width: 100%; max-width: 404px; }
 
         /* ============================================================
-           BRAND / MASTHEAD
+           BRAND - Clean, just "Sovereign Disbursement Network"
            ============================================================ */
         .brand {
             text-align: center;
-            margin-bottom: 36px;
-        }
-        .brand-mark {
-            width: 48px;
-            height: 48px;
-            margin: 0 auto 16px;
-            background: var(--brass);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-family: var(--f-mono);
-            font-weight: 700;
-            font-size: 14px;
-            color: var(--ink-900);
-            letter-spacing: 0.1em;
-            border: 1px solid var(--brass);
+            margin-bottom: 40px;
         }
         .brand h1 {
             color: #fff;
             font-family: var(--f-cond);
             font-weight: 700;
-            font-size: 22px;
-            letter-spacing: 0.03em;
+            font-size: 20px;
+            letter-spacing: 0.08em;
             text-transform: uppercase;
+            border-top: 2px solid var(--brass);
+            border-bottom: 2px solid var(--brass);
+            padding: 14px 0;
+            display: inline-block;
         }
-        .brand h1 em {
-            font-style: normal;
-            color: var(--brass);
-        }
-        .brand p {
-            color: rgba(255,255,255,0.35);
-            font-size: 9px;
-            margin-top: 8px;
-            letter-spacing: 1.6px;
+        .brand .sub {
+            color: rgba(255,255,255,0.2);
+            font-size: 8px;
+            margin-top: 12px;
+            letter-spacing: 0.15em;
             text-transform: uppercase;
             font-weight: 600;
             font-family: var(--f-mono);
+            display: block;
         }
 
         /* ============================================================
@@ -465,19 +451,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         /* ============================================================
-           FOOTER
+           FOOTER - Updated to match dashboard style
            ============================================================ */
         .footer {
             text-align: center;
             margin-top: 30px;
-            color: rgba(255,255,255,0.25);
-            font-size: 9px;
-            letter-spacing: 0.05em;
+            color: rgba(255,255,255,0.2);
+            font-size: 8px;
+            letter-spacing: 0.06em;
             font-family: var(--f-mono);
             text-transform: uppercase;
+            line-height: 1.8;
         }
-        .footer strong {
-            color: rgba(255,255,255,0.4);
+        .footer .line1 {
+            color: rgba(255,255,255,0.3);
+        }
+        .footer .line2 {
+            color: rgba(255,255,255,0.15);
+            font-size: 7px;
+            letter-spacing: 0.08em;
         }
 
         /* ============================================================
@@ -486,7 +478,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         @media (max-width: 480px) {
             .stage { max-width: 100%; }
             .card { padding: 28px 20px 24px; }
-            .brand h1 { font-size: 18px; }
+            .brand h1 { font-size: 16px; padding: 10px 0; }
             .trust-row { flex-wrap: wrap; gap: 8px; justify-content: center; }
         }
 
@@ -524,10 +516,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </head>
 <body>
 <div class="stage">
+    <!-- Brand - Clean, just "Sovereign Disbursement Network" -->
     <div class="brand">
-        <div class="brand-mark">VM</div>
-        <h1>VouchMorph <em>Enterprise</em></h1>
-        <p>Sovereign Disbursement Network</p>
+        <h1>Sovereign Disbursement Network</h1>
+        <span class="sub">Secure · Multi-Asset · Identity-First</span>
     </div>
 
     <div class="card">
@@ -569,7 +561,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
     </div>
 
-    <div class="footer">Secure enterprise payment platform &middot; <strong>Government of Botswana</strong></div>
+    <!-- Updated Footer -->
+    <div class="footer">
+        <div class="line1">SECURE ENTERPRISE MULTI-ASSET PAYMENT · DISTRIBUTION RESTRICTED · ISO 27001 · © 2026 VOUCHMORPH</div>
+        <div class="line2">OWNER · VM/2026/0708-000</div>
+    </div>
 </div>
 </body>
 </html>
