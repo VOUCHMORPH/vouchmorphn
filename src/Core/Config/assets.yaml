@@ -89,7 +89,7 @@ VOUCHER:
   
   ui:
     icon: "🎫"
-    display_name: "Voucher"
+    display_name: "ATM Cashout Voucher"
     color: "#FF9800"
     description: "Prepaid voucher with number and PIN"
   
