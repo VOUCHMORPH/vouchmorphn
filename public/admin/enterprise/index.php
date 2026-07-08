@@ -119,7 +119,7 @@ if ($departmentId) {
 }
 
 $roleDisplay = strtoupper($userRole);
-$orgName = htmlspecialchars($user['organization_name'] ?? 'GOVERNMENT OF BOTSWANA');
+$orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
 $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats['pending'] + $stats['programs']), 3, '0', STR_PAD_LEFT);
 
 // ============================================================
