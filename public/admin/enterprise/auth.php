@@ -1,5 +1,16 @@
 <?php
 // auth.php - Enterprise authentication helper
+
+// ============================================================================
+// SESSION COOKIE HARDENING — MUST be set BEFORE session_start()
+// ============================================================================
+// These settings MUST be set before the session starts. Since this file
+// is included before any session_start() call, this is the right place.
+// ============================================================================
+ini_set('session.cookie_httponly', '1');
+ini_set('session.cookie_secure', '1');   // Requires HTTPS
+ini_set('session.cookie_samesite', 'Lax');
+
 // Import the DBConnection class at the top level
 require_once dirname(__DIR__, 3) . '/src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
