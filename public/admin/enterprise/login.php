@@ -1,6 +1,6 @@
 <?php
 // login.php - Enterprise Login
-require_once 'auth.php'; // auth.php handles session hardening BEFORE session_start()
+require_once 'auth.php'; // auth.php handles session hardening BEFORE session_start() 
 
 $pdo = getDBConnection();
 $error = '';
