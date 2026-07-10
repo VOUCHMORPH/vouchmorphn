@@ -192,12 +192,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VOUCHMORPH · SIGN IN</title>
-  <!-- Google Fonts – clean, sharp, DStv‑inspired -->
+  <!-- Google Fonts – clean, sharp, Vouchmorph‑inspired -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     /* ============================================================
-       DSTV‑INSPIRED VARIABLES – sharp, no rounded corners,
+       Vouchmorph‑INSPIRED VARIABLES – sharp, no rounded corners,
        centralized, same color palette (dark/brass/paper)
        ============================================================ */
     :root {
@@ -228,7 +228,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     body {
       font-family: var(--f-body);
-      /* DStv‑style dark gradient + subtle brass radial */
+      /* Vouchmorph‑style dark gradient + subtle brass radial */
       background:
         radial-gradient(1100px 500px at 15% -10%, rgba(138,109,59,.10), transparent 60%),
         linear-gradient(160deg, #060b16 0%, var(--ink-900) 55%, #10203a 100%);
@@ -247,16 +247,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
     /* ============================================================
-       MODAL SIZE – wider to match DStv window (max-width: 520px)
+       MODAL SIZE – wider to match Vouchmorph window (max-width: 520px)
        ============================================================ */
     .stage {
       width: 100%;
-      max-width: 520px;          /* DStv‑style modal width */
+      max-width: 520px;          /* Vouchmorph‑style modal width */
       padding: 0 16px;
     }
 
     /* ============================================================
-       BRAND – DSTV‑style sharp typography, centralized
+       BRAND – Vouchmorph‑style sharp typography, centralized
        ============================================================ */
     .brand {
       text-align: center;
@@ -286,16 +286,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     /* ============================================================
-       CARD – DStv‑modal proportions, sharp edges, more padding
+       CARD – Vouchmorph‑modal proportions, sharp edges, more padding
        ============================================================ */
     .card {
       background: var(--panel);
       border: 1px solid var(--line);
-      padding: 48px 44px 40px;   /* increased padding for DStv feel */
+      padding: 48px 44px 40px;   /* increased padding for Vouchmorph feel */
       position: relative;
       border-radius: 0;
     }
-    /* brass corner accents – sharp, like DStv window */
+    /* brass corner accents – sharp, like Vouchmorph window */
     .card::before {
       content: "";
       position: absolute;
@@ -336,7 +336,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     /* ============================================================
-       FORM FIELDS – DStv‑style sharp, no rounding
+       FORM FIELDS – Vouchmorph‑style sharp, no rounding
        ============================================================ */
     .field { margin-bottom: 24px; }
     .field label {
@@ -384,7 +384,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     /* ============================================================
-       BUTTON – DStv‑sharp, no rounding, larger
+       BUTTON – Vouchmorph‑sharp, no rounding, larger
        ============================================================ */
     .btn {
       width: 100%;
@@ -421,7 +421,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     /* ============================================================
-       ERROR – DStv‑style alert
+       ERROR – Vouchmorph‑style alert
        ============================================================ */
     .error {
       display: flex;
@@ -445,7 +445,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     /* ============================================================
-       TRUST ROW – sharp, DStv‑inspired
+       TRUST ROW – sharp, Vouchmorph‑inspired
        ============================================================ */
     .trust-row {
       display: flex;
@@ -472,7 +472,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     /* ============================================================
-       FOOTER – DStv‑style minimal, sharp
+       FOOTER – Vouchmorph‑style minimal, sharp
        ============================================================ */
     .footer {
       text-align: center;
@@ -503,7 +503,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       .trust-row { flex-wrap: wrap; gap: 8px; justify-content: center; }
     }
 
-    /* dark mode – keep DStv contrast */
+    /* dark mode – keep Vouchmorph contrast */
     @media (prefers-color-scheme: dark) {
       .card {
         background: #1B2733;
@@ -538,18 +538,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </head>
 <body>
 <div class="stage">
-  <!-- Brand – DStv‑style centralized, sharp -->
+  <!-- Brand – Vouchmorph‑style centralized, sharp -->
   <div class="brand">
     <h1>Sovereign Disbursement Network</h1>
     <span class="sub">Secure · Multi-Asset · Identity-First</span>
   </div>
 
-  <!-- Card – DStv‑inspired modal, sharp edges, same colors, wider -->
+  <!-- Card – Vouchmorph‑inspired modal, sharp edges, same colors, wider -->
   <div class="card">
     <h2>Sign in</h2>
     <p class="subtitle">Access your organization's command center</p>
 
-    <!-- error demo (optional) – matches DStv error style -->
+    <!-- error demo (optional) – matches Vouchmorph error style -->
     <div class="error" style="display: none;">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
       <span>Invalid email or password</span>
@@ -576,7 +576,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       </button>
     </form>
 
-    <!-- trust row – DStv‑style sharp, same brass accents -->
+    <!-- trust row – Vouchmorph‑style sharp, same brass accents -->
     <div class="trust-row">
       <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg>Secure</span>
       <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>2FA Ready</span>
@@ -584,7 +584,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
   </div>
 
-  <!-- Footer – DStv‑style minimal, sharp -->
+  <!-- Footer – Vouchmorph‑style minimal, sharp -->
   <div class="footer">
     <div class="line1">SECURE ENTERPRISE MULTI-ASSET PAYMENT · DISTRIBUTION RESTRICTED · ISO 27001 · © 2026 VOUCHMORPH</div>
     <div class="line2">OWNER · VM/2026/0708-000</div>
