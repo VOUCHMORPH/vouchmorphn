@@ -338,104 +338,263 @@ if (empty($availableCountries)) {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · ADMIN LOGIN</title>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'IBM Plex Mono', monospace; background: linear-gradient(135deg, #001B44 0%, #002B6A 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
-        .login-container { max-width: 420px; width: 100%; }
-        .login-header { text-align: center; margin-bottom: 30px; }
-        .login-header h1 { color: #FFDA63; font-size: 1.8rem; letter-spacing: 3px; font-weight: 700; margin-bottom: 10px; }
-        .login-header p { color: #A1B5D8; font-size: 0.9rem; letter-spacing: 1px; }
-        .login-card { background: #fff; border: 3px solid #001B44; border-radius: 0; padding: 40px 30px; box-shadow: 8px 8px 0 #FFDA63; }
-        .country-selector { margin-bottom: 25px; }
-        .country-selector label { display: block; font-size: 0.8rem; font-weight: 600; color: #001B44; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-        .country-selector select { width: 100%; padding: 12px; border: 2px solid #001B44; font-family: 'IBM Plex Mono', monospace; font-size: 0.9rem; background: #fff; cursor: pointer; }
-        .country-selector select:focus { outline: none; border-color: #FFDA63; }
-        .form-group { margin-bottom: 20px; }
-        .form-group label { display: block; font-size: 0.8rem; font-weight: 600; color: #001B44; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-        .form-group input { width: 100%; padding: 12px; border: 2px solid #001B44; font-family: 'IBM Plex Mono', monospace; font-size: 0.9rem; transition: border-color 0.2s; }
-        .form-group input:focus { outline: none; border-color: #FFDA63; }
-        .error-message { background: #ffebee; border: 2px solid #c62828; color: #c62828; padding: 12px; margin-bottom: 20px; font-size: 0.85rem; font-weight: 600; text-align: center; }
-        .login-btn { width: 100%; padding: 14px; background: #001B44; border: none; color: #fff; font-family: 'IBM Plex Mono', monospace; font-size: 1rem; font-weight: 600; text-transform: uppercase; letter-spacing: 2px; cursor: pointer; border: 2px solid #001B44; transition: all 0.2s; }
-        .login-btn:hover { background: #FFDA63; color: #001B44; border-color: #FFDA63; }
-        .login-footer { margin-top: 20px; text-align: center; color: #A1B5D8; font-size: 0.8rem; }
-        .system-badge { display: inline-block; padding: 4px 12px; background: rgba(255, 218, 99, 0.1); border: 1px solid #FFDA63; color: #FFDA63; font-size: 0.7rem; text-transform: uppercase; margin-top: 20px; }
-        .mfa-info { background: #e3f2fd; border: 2px solid #1976d2; color: #1976d2; padding: 12px; margin-bottom: 20px; font-size: 0.85rem; text-align: center; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VOUCHMORPH · ADMIN LOGIN</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    /* ============================================================
+       Vouchmorph‑INSPIRED, SHARP, CENTRALIZED – 
+       now with slightly larger base font sizes
+       ============================================================ */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'IBM Plex Mono', monospace;
+      background:
+        radial-gradient(1100px 500px at 15% -10%, rgba(255, 218, 99, .08), transparent 60%),
+        linear-gradient(160deg, #001B44 0%, #002B6A 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 32px;
+    }
+
+    /* ---- MODAL SIZE (wider, like Vouchmorph) ---- */
+    .login-container {
+      max-width: 520px;          /* Vouchmorph‑style width */
+      width: 100%;
+    }
+
+    /* ---- BRAND HEADER ---- */
+    .login-header {
+      text-align: center;
+      margin-bottom: 36px;
+    }
+    .login-header h1 {
+      color: #FFDA63;
+      font-size: 2.2rem;         /* increased */
+      letter-spacing: 4px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .login-header p {
+      color: #A1B5D8;
+      font-size: 1.0rem;         /* increased */
+      letter-spacing: 2px;
+    }
+
+    /* ---- CARD – sharp edges, brass accents ---- */
+    .login-card {
+      background: #fff;
+      border: 3px solid #001B44;
+      border-radius: 0;
+      padding: 48px 44px 40px;    /* more padding for Vouchmorph feel */
+      position: relative;
+      box-shadow: 8px 8px 0 #FFDA63;
+    }
+    /* corner accents – sharp */
+    .login-card::before {
+      content: "";
+      position: absolute;
+      top: -3px;
+      left: -3px;
+      width: 14px;
+      height: 14px;
+      border-top: 4px solid #FFDA63;
+      border-left: 4px solid #FFDA63;
+      pointer-events: none;
+    }
+    .login-card::after {
+      content: "";
+      position: absolute;
+      bottom: -3px;
+      right: -3px;
+      width: 14px;
+      height: 14px;
+      border-bottom: 4px solid #FFDA63;
+      border-right: 4px solid #FFDA63;
+      pointer-events: none;
+    }
+
+    /* ---- FORM ELEMENTS ---- */
+    .country-selector,
+    .form-group {
+      margin-bottom: 24px;
+    }
+    .country-selector label,
+    .form-group label {
+      display: block;
+      font-size: 0.85rem;        /* increased */
+      font-weight: 700;
+      color: #001B44;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 8px;
+    }
+    .country-selector select,
+    .form-group input {
+      width: 100%;
+      padding: 14px 16px;        /* more padding */
+      border: 2px solid #001B44;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 1.0rem;         /* increased */
+      background: #fff;
+      transition: border-color 0.2s;
+      border-radius: 0;          /* sharp */
+    }
+    .country-selector select:focus,
+    .form-group input:focus {
+      outline: none;
+      border-color: #FFDA63;
+    }
+
+    /* ---- ERROR & MFA INFO ---- */
+    .error-message {
+      background: #ffebee;
+      border: 2px solid #c62828;
+      color: #c62828;
+      padding: 14px 16px;
+      margin-bottom: 24px;
+      font-size: 0.95rem;        /* increased */
+      font-weight: 600;
+      text-align: center;
+      border-radius: 0;
+    }
+    .mfa-info {
+      background: #e3f2fd;
+      border: 2px solid #1976d2;
+      color: #1976d2;
+      padding: 14px 16px;
+      margin-bottom: 24px;
+      font-size: 0.95rem;        /* increased */
+      text-align: center;
+      border-radius: 0;
+    }
+
+    /* ---- BUTTON – Vouchmorph‑sharp ---- */
+    .login-btn {
+      width: 100%;
+      padding: 16px;             /* bigger */
+      background: #001B44;
+      border: 2px solid #001B44;
+      color: #fff;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 1.1rem;         /* increased */
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 2.5px;
+      cursor: pointer;
+      transition: all 0.2s;
+      border-radius: 0;          /* sharp */
+      margin-top: 4px;
+    }
+    .login-btn:hover {
+      background: #FFDA63;
+      color: #001B44;
+      border-color: #FFDA63;
+    }
+
+    /* ---- FOOTER ---- */
+    .login-footer {
+      margin-top: 28px;
+      text-align: center;
+      color: #A1B5D8;
+      font-size: 0.9rem;         /* increased */
+    }
+    .system-badge {
+      display: inline-block;
+      padding: 6px 16px;
+      background: rgba(255, 218, 99, 0.1);
+      border: 1px solid #FFDA63;
+      color: #FFDA63;
+      font-size: 0.8rem;         /* increased */
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    /* ---- RESPONSIVE ---- */
+    @media (max-width: 480px) {
+      .login-container { max-width: 100%; padding: 0 12px; }
+      .login-card { padding: 30px 20px 24px; }
+      .login-header h1 { font-size: 1.8rem; }
+      .login-header p { font-size: 0.9rem; }
+    }
+  </style>
 </head>
 <body>
-    <div class="login-container">
-        <div class="login-header">
-            <h1>VOUCHMORPH</h1>
-            <p>ADMINISTRATIVE ACCESS</p>
+<div class="login-container">
+  <!-- Brand – Vouchmorph‑style centralized, sharp -->
+  <div class="login-header">
+    <h1>VOUCHMORPH</h1>
+    <p>ADMINISTRATIVE ACCESS</p>
+  </div>
+
+  <!-- Card – Vouchmorph‑inspired modal, sharp edges, wider -->
+  <div class="login-card">
+    <?php if (isset($dbError)): ?>
+      <div class="error-message">
+        <strong>🔐 SYSTEM UNAVAILABLE</strong><br>
+        <?php echo htmlspecialchars($dbError); ?>
+      </div>
+    <?php endif; ?>
+
+    <?php if ($error): ?>
+      <div class="error-message"><?php echo htmlspecialchars($error); ?></div>
+    <?php endif; ?>
+
+    <?php if ($mfaRequired): ?>
+      <div class="mfa-info">
+        <strong>🔐 Two-Factor Authentication</strong><br>
+        Please enter the authentication code from your authenticator app.
+      </div>
+    <?php endif; ?>
+
+    <?php if (!isset($dbError)): ?>
+    <form method="POST" action="">
+      <input type="hidden" name="country" value="<?php echo htmlspecialchars($systemCountry); ?>">
+
+      <?php if ($mfaRequired): ?>
+        <div class="form-group">
+          <label>AUTHENTICATION CODE</label>
+          <input type="text" name="mfa_code" placeholder="000000" maxlength="6" autofocus required>
+        </div>
+      <?php else: ?>
+        <div class="country-selector">
+          <label>SYSTEM COUNTRY</label>
+          <select name="country" onchange="this.form.submit()">
+            <?php foreach ($availableCountries as $country): ?>
+              <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $systemCountry ? 'selected' : ''; ?>>
+                <?php echo htmlspecialchars($country); ?> · VOUCHMORPH
+              </option>
+            <?php endforeach; ?>
+          </select>
         </div>
 
-        <div class="login-card">
-            <?php if (isset($dbError)): ?>
-                <div class="error-message">
-                    <strong>🔐 SYSTEM UNAVAILABLE</strong><br>
-                    <?php echo htmlspecialchars($dbError); ?>
-                </div>
-            <?php endif; ?>
-
-            <?php if ($error): ?>
-                <div class="error-message"><?php echo htmlspecialchars($error); ?></div>
-            <?php endif; ?>
-
-            <?php if ($mfaRequired): ?>
-                <div class="mfa-info">
-                    <strong>🔐 Two-Factor Authentication</strong><br>
-                    Please enter the authentication code from your authenticator app.
-                </div>
-            <?php endif; ?>
-
-            <?php if (!isset($dbError)): ?>
-            <form method="POST" action="">
-                <input type="hidden" name="country" value="<?php echo htmlspecialchars($systemCountry); ?>">
-
-                <?php if ($mfaRequired): ?>
-                    <div class="form-group">
-                        <label>AUTHENTICATION CODE</label>
-                        <input type="text" name="mfa_code" placeholder="000000" maxlength="6" autofocus required>
-                    </div>
-                <?php else: ?>
-                    <div class="country-selector">
-                        <label>SYSTEM COUNTRY</label>
-                        <select name="country" onchange="this.form.submit()">
-                            <?php foreach ($availableCountries as $country): ?>
-                                <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $systemCountry ? 'selected' : ''; ?>>
-                                    <?php echo htmlspecialchars($country); ?> · VOUCHMORPH
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-
-                    <div class="form-group">
-                        <label>USERNAME / EMAIL</label>
-                        <input type="text" name="username" placeholder="Enter username or email" autofocus required>
-                    </div>
-
-                    <div class="form-group">
-                        <label>PASSWORD</label>
-                        <input type="password" name="password" placeholder="Enter your password" required>
-                    </div>
-                <?php endif; ?>
-
-                <button type="submit" class="login-btn">
-                    <?php echo $mfaRequired ? 'VERIFY CODE' : 'SIGN IN →'; ?> 
-                </button>
-            </form>
-            <?php endif; ?>
-
-            <div class="login-footer">
-                <div class="system-badge">
-                    <?php echo htmlspecialchars($systemCountry); ?> · <?php echo date('Y'); ?>
-                </div>
-            </div>
+        <div class="form-group">
+          <label>USERNAME / EMAIL</label>
+          <input type="text" name="username" placeholder="Enter username or email" autofocus required>
         </div>
+
+        <div class="form-group">
+          <label>PASSWORD</label>
+          <input type="password" name="password" placeholder="Enter your password" required>
+        </div>
+      <?php endif; ?>
+
+      <button type="submit" class="login-btn">
+        <?php echo $mfaRequired ? 'VERIFY CODE' : 'SIGN IN →'; ?>
+      </button>
+    </form>
+    <?php endif; ?>
+
+    <div class="login-footer">
+      <div class="system-badge">
+        <?php echo htmlspecialchars($systemCountry); ?> · <?php echo date('Y'); ?>
+      </div>
     </div>
+  </div>
+</div>
 </body>
 </html>
