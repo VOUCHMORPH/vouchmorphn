@@ -11,8 +11,10 @@ ini_set('display_startup_errors', 1);
 // FIXED IN THIS VERSION:
 //   1. REMOVED hardcoded CAZACOM database dependency - Cazacom is ONLY for SMS
 //   2. SMS now routes to the correct network based on phone number prefix
-//   3. All user data stored in YOUR database (swap), not Cazacom's
+//   3. All user data stored in YOUR database (swap) via Railway DATABASE_URL
 //   4. Cazacom API called ONLY for sending SMS OTP
+//   5. Proper duplicate user checking before sending OTP
+//   6. Enhanced error handling with user-friendly messages
 // ============================================================
 
 define('PROJECT_ROOT', dirname(__DIR__, 2));
@@ -39,15 +41,6 @@ if (!defined('SYSTEM_COUNTRY')) {
 if (!defined('SYSTEM_COUNTRY_CODE')) {
     $countryCode = $config['country_code'] ?? 'BW';
     define('SYSTEM_COUNTRY_CODE', $countryCode);
-}
-
-// ============================================================
-// FIX: ONLY use YOUR database (swap) - no Cazacom database!
-// Cazacom is just an SMS provider via API
-// ============================================================
-if (!isset($config['db']['swap']) || !is_array($config['db']['swap'])) {
-    error_log("REGISTER ERROR: Swap database configuration missing for {$systemCountry}");
-    die("System initialisation error: Swap database configuration missing.");
 }
 
 $requiredFiles = [
@@ -94,27 +87,14 @@ date_default_timezone_set($countryTimeZone);
 
 $minimumAdultAge = (int)($config['minimum_adult_age'] ?? getenv('VM_MINIMUM_ADULT_AGE') ?: 18);
 
-// ----------------------------------------
-// Database connection - ONLY YOUR database
-// ----------------------------------------
-$swapDbConfig = $config['db']['swap'];
-
-$dbDriver = $swapDbConfig['type'] ?? 'mysql';
-$isPostgres = ($dbDriver === 'pgsql');
-
-$swapDbConfig['options'] = [
-    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    PDO::ATTR_EMULATE_PREPARES => false,
-    PDO::ATTR_TIMEOUT => 30
-];
-
+// ============================================================
+// Database connection - ONLY YOUR database via Railway DATABASE_URL
+// ============================================================
 try {
-    $swapDb = \Core\Database\DBConnection::getConnection();
+    $swapDb = DBConnection::getConnection();
     if (!$swapDb) {
         throw new Exception("Failed to connect to database");
     }
-    // Set error mode (already set in DBConnection but just to be safe)
     $swapDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (Throwable $e) {
     error_log("REGISTER DB ERROR: " . $e->getMessage());
@@ -126,16 +106,13 @@ try {
 // ----------------------------------------
 try {
     $columns = [];
-    if ($isPostgres) {
-        $colsResult = $swapDb->query("SELECT column_name FROM information_schema.columns WHERE table_name = 'users'");
-        while ($row = $colsResult->fetch(PDO::FETCH_ASSOC)) {
-            $columns[] = $row['column_name'];
-        }
-    } else {
-        $colsResult = $swapDb->query("SHOW COLUMNS FROM users");
-        while ($row = $colsResult->fetch(PDO::FETCH_ASSOC)) {
-            $columns[] = $row['Field'];
-        }
+    $colsResult = $swapDb->query("
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'users'
+    ");
+    while ($row = $colsResult->fetch(PDO::FETCH_ASSOC)) {
+        $columns[] = $row['column_name'];
     }
 
     $idColumns = [
@@ -155,86 +132,47 @@ try {
         }
     }
 
-    if ($isPostgres) {
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_phone2 ON users(phone2)");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_phone3 ON users(phone3)");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_national_id ON users(national_id)");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_drivers_license ON users(drivers_license)");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_passport ON users(passport)");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)");
-    } else {
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_phone2 ON users(phone2)");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_phone3 ON users(phone3)");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_national_id ON users(national_id)");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_drivers_license ON users(drivers_license)");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_passport ON users(passport)");
-        $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)");
+    // Create indexes
+    $indexes = ['phone2', 'phone3', 'national_id', 'drivers_license', 'passport', 'email'];
+    foreach ($indexes as $index) {
+        try {
+            $swapDb->exec("CREATE INDEX IF NOT EXISTS idx_users_{$index} ON users({$index})");
+        } catch (Throwable $e) {
+            // Index might already exist
+        }
     }
 
-    if ($isPostgres) {
-        $swapDb->exec("
-            CREATE TABLE IF NOT EXISTS user_identifiers (
-                id SERIAL PRIMARY KEY,
-                user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                identifier_type VARCHAR(50) NOT NULL,
-                identifier_value VARCHAR(255) NOT NULL,
-                is_verified BOOLEAN DEFAULT FALSE,
-                verified_at TIMESTAMP NULL,
-                created_at TIMESTAMP DEFAULT NOW(),
-                UNIQUE(identifier_type, identifier_value)
-            )
-        ");
-    } else {
-        $swapDb->exec("
-            CREATE TABLE IF NOT EXISTS user_identifiers (
-                id INT(11) NOT NULL AUTO_INCREMENT,
-                user_id INT(11) NOT NULL,
-                identifier_type VARCHAR(50) NOT NULL,
-                identifier_value VARCHAR(255) NOT NULL,
-                is_verified TINYINT(1) DEFAULT 0,
-                verified_at DATETIME NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (id),
-                UNIQUE KEY uk_identifier (identifier_type, identifier_value),
-                KEY idx_user_id (user_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        ");
-    }
+    // Create user_identifiers table
+    $swapDb->exec("
+        CREATE TABLE IF NOT EXISTS user_identifiers (
+            id SERIAL PRIMARY KEY,
+            user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            identifier_type VARCHAR(50) NOT NULL,
+            identifier_value VARCHAR(255) NOT NULL,
+            is_verified BOOLEAN DEFAULT FALSE,
+            verified_at TIMESTAMP NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(identifier_type, identifier_value)
+        )
+    ");
 
-    if ($isPostgres) {
-        $swapDb->exec("
-            CREATE TABLE IF NOT EXISTS otp_logs (
-                otp_id SERIAL PRIMARY KEY,
-                identifier VARCHAR(100) NOT NULL,
-                identifier_type VARCHAR(20) NOT NULL,
-                code_hash VARCHAR(255) NOT NULL,
-                purpose VARCHAR(50) DEFAULT 'registration',
-                expires_at TIMESTAMP NOT NULL,
-                used_at TIMESTAMP NULL,
-                attempts INT DEFAULT 0,
-                ip_address VARCHAR(45),
-                user_agent TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ");
-    } else {
-        $swapDb->exec("
-            CREATE TABLE IF NOT EXISTS `otp_logs` (
-                `otp_id` int(11) NOT NULL AUTO_INCREMENT,
-                `identifier` varchar(100) NOT NULL,
-                `identifier_type` varchar(20) NOT NULL,
-                `code_hash` varchar(255) NOT NULL,
-                `purpose` varchar(50) DEFAULT 'registration',
-                `expires_at` datetime NOT NULL,
-                `used_at` datetime DEFAULT NULL,
-                `attempts` int(11) DEFAULT 0,
-                `ip_address` varchar(45) DEFAULT NULL,
-                `user_agent` text DEFAULT NULL,
-                `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (`otp_id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        ");
-    }
+    // Create otp_logs table
+    $swapDb->exec("
+        CREATE TABLE IF NOT EXISTS otp_logs (
+            otp_id SERIAL PRIMARY KEY,
+            identifier VARCHAR(100) NOT NULL,
+            identifier_type VARCHAR(20) NOT NULL,
+            code_hash VARCHAR(255) NOT NULL,
+            purpose VARCHAR(50) DEFAULT 'registration',
+            expires_at TIMESTAMP NOT NULL,
+            used_at TIMESTAMP NULL,
+            attempts INT DEFAULT 0,
+            ip_address VARCHAR(45),
+            user_agent TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ");
+
 } catch (Throwable $e) {
     error_log("Table creation warning: " . $e->getMessage());
 }
@@ -290,35 +228,34 @@ function sendEmailOTP(EmailGatewayClient $emailClient, string $to, string $otp, 
 }
 
 // ============================================================
-// FIX: REMOVED verifyIdentifierInSourceDB() - no Cazacom database!
-// All user data is stored in YOUR database only.
-// Cazacom is only for sending SMS, not for storing user data.
-// ============================================================
-
 // Check if user already exists in YOUR database
+// Checks ALL identifiers: phone, email, national_id, etc.
+// ============================================================
 function userExistsInDatabase($pdo, $identifierType, $identifierValue, $phoneNumber, $emailAddress, $phone2, $phone3) {
     $conditions = [];
     $params = [];
-
-    if ($identifierType === 'phone' && $phoneNumber) {
+    
+    // Map identifier types to database columns
+    $columnMap = [
+        'phone' => 'phone',
+        'email' => 'email',
+        'national_id' => 'national_id',
+        'drivers_license' => 'drivers_license',
+        'passport' => 'passport'
+    ];
+    
+    // Check the primary identifier
+    if (isset($columnMap[$identifierType]) && !empty($identifierValue)) {
+        $column = $columnMap[$identifierType];
+        $conditions[] = "{$column} = :primary";
+        $params[':primary'] = $identifierValue;
+    }
+    
+    // Check phone numbers (if we have them and it's not the primary)
+    if (!empty($phoneNumber) && $identifierType !== 'phone') {
         $conditions[] = "phone = :phone";
         $params[':phone'] = $phoneNumber;
-    } elseif ($identifierType === 'email' && $emailAddress) {
-        $conditions[] = "email = :email";
-        $params[':email'] = $emailAddress;
-    } else {
-        // For ID types, check the specific column
-        $columnMap = [
-            'national_id' => 'national_id',
-            'drivers_license' => 'drivers_license',
-            'passport' => 'passport'
-        ];
-        if (isset($columnMap[$identifierType]) && $identifierValue) {
-            $conditions[] = "{$columnMap[$identifierType]} = :identifier";
-            $params[':identifier'] = $identifierValue;
-        }
     }
-
     if (!empty($phone2)) {
         $conditions[] = "phone2 = :phone2";
         $params[':phone2'] = $phone2;
@@ -327,15 +264,21 @@ function userExistsInDatabase($pdo, $identifierType, $identifierValue, $phoneNum
         $conditions[] = "phone3 = :phone3";
         $params[':phone3'] = $phone3;
     }
-
+    
+    // Check email (if we have it and it's not the primary)
+    if (!empty($emailAddress) && $identifierType !== 'email') {
+        $conditions[] = "email = :email";
+        $params[':email'] = $emailAddress;
+    }
+    
     if (empty($conditions)) {
         return false;
     }
-
-    $query = "SELECT user_id FROM users WHERE " . implode(" OR ", $conditions) . " LIMIT 1";
+    
+    $query = "SELECT user_id, full_name, phone, email, national_id FROM users WHERE " . implode(" OR ", $conditions) . " LIMIT 1";
     $stmt = $pdo->prepare($query);
     $stmt->execute($params);
-    return (bool) $stmt->fetch();
+    return $stmt->fetch(PDO::FETCH_ASSOC);
 }
 
 // ----------------------------------------
@@ -356,6 +299,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $contactChannel    = $_POST['contact_channel'] ?? null;
         $contactValue      = trim($_POST['contact_value'] ?? '');
 
+        // Validate input
         if (empty($inputValue)) {
             echo json_encode(['success' => false, 'message' => 'Please provide your identifier.']);
             exit;
@@ -369,6 +313,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             echo json_encode(['success' => false, 'message' => 'PINs do not match.']);
             exit;
         }
+        
         $weakPins = ['000000','111111','222222','333333','444444','555555','666666','777777','888888','999999','123456','654321'];
         if (in_array($pin, $weakPins, true)) {
             echo json_encode(['success' => false, 'message' => 'That PIN is too easy to guess. Please choose a different one.']);
@@ -390,14 +335,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        if (!empty($phone2)) {
-            $phone2 = normalizePhone($phone2, $countryDialCode);
-        }
-        if (!empty($phone3)) {
-            $phone3 = normalizePhone($phone3, $countryDialCode);
-        }
-
-        // Determine the normalized values
+        // Normalize values
         $phoneNumber = null;
         $emailAddress = null;
         $identifierValue = null;
@@ -412,18 +350,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $identifierValue = $inputValue;
         }
 
+        // Normalize additional phones
+        if (!empty($phone2)) {
+            $phone2 = normalizePhone($phone2, $countryDialCode);
+        }
+        if (!empty($phone3)) {
+            $phone3 = normalizePhone($phone3, $countryDialCode);
+        }
+
         // ============================================================
-        // FIX: Check if user exists in YOUR database only
-        // No external database lookup!
+        // CRITICAL: Check if user already exists before sending OTP
+        // This prevents duplicate registrations
         // ============================================================
-        if (userExistsInDatabase($swapDb, $inputType, $identifierValue, $phoneNumber, $emailAddress, $phone2, $phone3)) {
-            echo json_encode(['success' => false, 'message' => 'This identifier is already registered. Please login.']);
+        $existingUser = userExistsInDatabase(
+            $swapDb, 
+            $inputType, 
+            $identifierValue, 
+            $phoneNumber, 
+            $emailAddress, 
+            $phone2, 
+            $phone3
+        );
+        
+        if ($existingUser) {
+            // User already exists - return helpful message with masked details
+            $maskedPhone = $existingUser['phone'] ? maskDestination($existingUser['phone'], 'phone') : null;
+            $maskedEmail = $existingUser['email'] ? maskDestination($existingUser['email'], 'email') : null;
+            
+            $message = "This account is already registered";
+            if ($maskedPhone) {
+                $message .= " with phone {$maskedPhone}";
+            }
+            if ($maskedEmail) {
+                $message .= " and email {$maskedEmail}";
+            }
+            $message .= ". Please login instead.";
+            
+            echo json_encode([
+                'success' => false, 
+                'message' => $message,
+                'exists' => true,
+                'login_url' => 'login.php'
+            ]);
             exit;
         }
 
-        // ----------------------------------------
+        // ============================================================
+        // User doesn't exist - proceed with registration
+        // ============================================================
+        
         // Determine OTP delivery channel
-        // ----------------------------------------
         $otpChannel = null;
         $otpDestination = null;
 
@@ -434,6 +410,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $otpChannel = 'email';
             $otpDestination = $identifierValue;
         } else {
+            // For ID types (national_id, drivers_license, passport)
             if (empty($contactChannel) || empty($contactValue)) {
                 echo json_encode([
                     'success' => false,
@@ -468,9 +445,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? 'unknown';
 
+        // Invalidate any existing OTPs for this destination
         $stmt = $swapDb->prepare("UPDATE otp_logs SET used_at = NOW() WHERE identifier = :identifier AND used_at IS NULL");
         $stmt->execute([':identifier' => $otpDestination]);
 
+        // Store OTP in database
         $stmt = $swapDb->prepare("
             INSERT INTO otp_logs
             (identifier, identifier_type, code_hash, purpose, expires_at, attempts, ip_address, user_agent, created_at)
@@ -487,6 +466,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ':user_agent' => $userAgent
         ]);
 
+        // Store in session for verification
         $_SESSION['otp_verification'][$otpDestination] = $otpPlain;
         $_SESSION['otp_verification_expires'][$otpDestination] = time() + 300;
 
@@ -505,7 +485,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ];
 
         // ============================================================
-        // FIX: Send OTP through CommunicationFactory (uses Cazacom API)
+        // Send OTP via CommunicationFactory (uses Cazacom API for SMS)
         // No database connection to Cazacom - just API call!
         // ============================================================
         $otpSent = false;
@@ -532,6 +512,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
+        // Return response
         if ($otpSent) {
             $masked = maskDestination($otpDestination, $otpChannel === 'sms' ? 'phone' : 'email');
             $channelLabel = $otpChannel === 'sms' ? 'SMS' : 'email';
@@ -542,9 +523,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
         } else {
             if (getenv('APP_ENV') === 'development') {
-                echo json_encode(['success' => true, 'message' => "DEV MODE: Your code is {$otpPlain}", 'show_otp' => true, 'otp' => $otpPlain]);
+                echo json_encode([
+                    'success' => true, 
+                    'message' => "DEV MODE: Your code is {$otpPlain}", 
+                    'show_otp' => true, 
+                    'otp' => $otpPlain
+                ]);
             } else {
-                echo json_encode(['success' => false, 'message' => 'Unable to send verification code right now. Please try again shortly.']);
+                echo json_encode([
+                    'success' => false, 
+                    'message' => 'Unable to send verification code right now. Please try again shortly.'
+                ]);
             }
         }
         exit;
@@ -716,6 +705,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #FFFFFF;
             margin-top: 0;
         }
+        .btn-login {
+            background: transparent;
+            border: 1px solid #00F0FF;
+            color: #00F0FF;
+            margin-top: 0.5rem;
+        }
+        .btn-login:hover {
+            background: rgba(0, 240, 255, 0.1);
+            transform: translateY(-2px);
+        }
         .message {
             margin-top: 1rem;
             padding: 0.75rem;
@@ -728,6 +727,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         .message.error { background: rgba(255, 48, 48, 0.1); border-left-color: #FF3030; color: #FF6060; }
         .message.success { background: rgba(0, 240, 255, 0.1); border-left-color: #00F0FF; color: #00F0FF; }
+        .message.warning { background: rgba(255, 165, 0, 0.1); border-left-color: #FFA500; color: #FFA500; }
         .otp-section { display: none; }
         .contact-channel-group { display: none; margin-top: 0.75rem; padding: 0.75rem; background: rgba(255,48,48,0.05); border: 1px dashed rgba(255,48,48,0.3); }
         .contact-channel-group.show { display: block; }
@@ -944,12 +944,15 @@ function showMessage(text, type = 'info') {
     const msgEl = document.getElementById('message');
     msgEl.textContent = text;
     msgEl.className = 'message ' + type;
+    // Clear any extra buttons
+    const extraBtns = msgEl.querySelectorAll('.btn-login');
+    extraBtns.forEach(btn => btn.remove());
     setTimeout(() => {
         if (document.getElementById('message').textContent === text) {
             msgEl.textContent = '';
             msgEl.className = 'message';
         }
-    }, 6000);
+    }, 8000);
 }
 
 function sendOTP() {
@@ -1018,10 +1021,10 @@ function sendOTP() {
 
     const btn = document.getElementById('sendOtpBtn');
     const originalText = btn.textContent;
-    btn.textContent = 'VERIFYING...';
+    btn.textContent = 'CHECKING...';
     btn.disabled = true;
 
-    showMessage('Verifying your details...', 'info');
+    showMessage('Checking if you already have an account...', 'info');
 
     fetch(window.location.href, {
         method: 'POST',
@@ -1034,12 +1037,12 @@ function sendOTP() {
         btn.disabled = false;
 
         if (data.success) {
+            // User doesn't exist - send OTP
             if (data.show_otp && data.otp) {
                 const otpDisplay = document.getElementById('otp-display');
                 otpDisplay.style.display = 'block';
                 otpDisplay.innerHTML = `Your verification code is: <strong>${data.otp}</strong><br><small>Please write this down</small>`;
             }
-
             showMessage(data.message, 'success');
             document.getElementById('register-step').style.display = 'none';
             const otpSection = document.getElementById('otp-section');
@@ -1047,7 +1050,22 @@ function sendOTP() {
             otpSection.classList.add('fade-in');
             document.getElementById('otp').focus();
             startResendTimer(60);
+        } else if (data.exists) {
+            // User already exists - show login link
+            const msgEl = document.getElementById('message');
+            msgEl.textContent = data.message;
+            msgEl.className = 'message warning';
+            
+            // Add login button
+            const loginBtn = document.createElement('button');
+            loginBtn.className = 'btn btn-login';
+            loginBtn.textContent = 'GO TO LOGIN →';
+            loginBtn.onclick = function() {
+                window.location.href = data.login_url || 'login.php';
+            };
+            msgEl.appendChild(loginBtn);
         } else {
+            // Other error
             showMessage(data.message, 'error');
         }
     })
