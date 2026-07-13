@@ -18,6 +18,8 @@
 //      the session, instead of being hardcoded to 'USER'.
 //   5. The client IP used for rate limiting now takes only the first hop
 //      of a comma-separated X-Forwarded-For chain.
+//   6. REMOVED hardcoded CAZACOM — SMS now routes to the correct network
+//      based on phone number prefix (Mascom, Orange, Cazacom, etc.)
 
 ob_start();
 error_reporting(E_ALL);
@@ -71,7 +73,7 @@ $localLength      = (int)($countryConfig['local_phone_length'] ?? 8);
 $phonePlaceholder = $countryConfig['phone_placeholder'] ?? str_repeat('0', $localLength);
 $countryName      = $countryConfig['name'] ?? $systemCountry;
 $phonePattern     = '[0-9]{' . $localLength . '}';
-$clientPartnerKey = 'CAZACOM';
+// REMOVED: $clientPartnerKey = 'CAZACOM'; // No longer hardcoded
 
 // --------------------------------------------------
 // DB Bootstrap
@@ -364,10 +366,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
                         $sent = false;
                         if ($otpChannel === 'sms') {
                             try {
-                                $comm = CommunicationFactory::create($clientPartnerKey);
+                                // ============================================================
+                                // FIX: Send OTP through the CORRECT network for the phone number
+                                // No longer hardcoded to CAZACOM - auto-detects network from prefix
+                                // ============================================================
+                                $comm = CommunicationFactory::createForPhone('sms', $otpDestination);
                                 $result = $comm->sendSMS($otpDestination, "Your VouchMorph login code: {$otpPlain}");
                                 $sent = (bool)($result['success'] ?? false);
                                 $mfaHint = maskPhone($otpDestination);
+                                
+                                // Log which network was used
+                                $providerName = $comm->getProviderName();
+                                error_log("[USER LOGIN] Login OTP sent via {$providerName} to {$otpDestination}");
                             } catch (Throwable $e) {
                                 error_log("[USER LOGIN] SMS OTP send failed: " . $e->getMessage());
                             }
