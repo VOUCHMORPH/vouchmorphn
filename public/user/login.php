@@ -34,6 +34,7 @@ require_once __DIR__ . '/../../src/Security/Monitoring/ApiRateLimiter.php';
 require_once __DIR__ . '/../../src/Core/Factories/CommunicationFactory.php';
 // FIX: real SMTP email gateway, replacing mail().
 require_once __DIR__ . '/../../src/Infrastructure/Email/Contracts/EmailProviderInterface.php';
+require_once __DIR__ . '/../../src/Infrastructure/SMS/Contracts/ProviderInterface.php';
 require_once __DIR__ . '/../../src/Infrastructure/Email/EmailGatewayClient.php';
 
 use Application\Utils\SessionManager;
