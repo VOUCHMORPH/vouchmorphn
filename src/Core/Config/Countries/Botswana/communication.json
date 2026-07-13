@@ -5,21 +5,29 @@
   },
   "telcos": {
     "cazacom": {
-      "name": "Cazacom",
-      "prefixes": ["70"],
-      "sms_enabled": true,
-      "enabled": true,
-      "api_key_env": "CAZACOM_API_KEY",
-      "base_url": "https://cazacom-production.up.railway.app",
-      "endpoint": "/api.php?path=sms/send",
-      "sender_id": "VOUCHMORPH",
-      "cost_per_sms": 0.10,
-      "timeout": 30,
-      "retry_attempts": 3,
-      "api_key_header": "X-API-Key",
-      "response_message_id_path": "message_id",
-      "response_status_path": "status"
-    },
+  "name": "Cazacom",
+  "prefixes": ["70"],
+  "sms_enabled": true,
+  "enabled": true,
+  "api_key_env": "CAZACOM_API_KEY",
+  "base_url": "https://cazacom-production.up.railway.app",
+  "endpoint": "/api.php?path=sms/send",
+  "sender_id": "VOUCHMORPH",
+  "cost_per_sms": 0.10,
+  "timeout": 30,
+  "retry_attempts": 3,
+  "api_key_header": "X-API-Key",
+
+  "payload_template": {
+    "recipient_number": "{to}",
+    "message": "{message}",
+    "sender": "{sender}",
+    "reference": "{message_id}"
+  },
+
+  "response_message_id_path": "message_id",
+  "response_status_path": "status"
+},
     "mascom": {
       "name": "Mascom",
       "prefixes": ["71", "72", "73", "74", "75"],
