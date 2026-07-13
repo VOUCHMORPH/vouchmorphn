@@ -45,7 +45,6 @@ class AdminAuth
                 $stmt->execute([':count' => $newCount, ':id' => $adminId]);
             }
         } catch (\Throwable $e) {
-            // Non-fatal — don't let lockout bookkeeping break the login flow
             error_log("[ADMIN AUTH] Failed to record login attempt: " . $e->getMessage());
         }
     }
@@ -103,7 +102,7 @@ class AdminAuth
                 return ['success' => false, 'message' => 'Invalid username or password.'];
             }
 
-            // --- ACCOUNT LOCKOUT CHECK (ADDED) ---
+            // --- ACCOUNT LOCKOUT CHECK ---
             if (!empty($admin['locked_until']) && strtotime($admin['locked_until']) > time()) {
                 $unlockAt = date('H:i:s', strtotime($admin['locked_until']));
                 error_log("[ADMIN AUTH] Account locked: {$username} until {$admin['locked_until']}");
@@ -116,7 +115,6 @@ class AdminAuth
             if (!password_verify($password, $admin['password_hash'])) {
                 error_log("[ADMIN AUTH] Password verification failed for: {$username}");
 
-                // --- INCREMENT FAILURE COUNTER (ADDED) ---
                 $this->recordFailedAttempt((int)$admin['admin_id'], (int)$admin['failed_login_attempts']);
 
                 return ['success' => false, 'message' => 'Invalid username or password.'];
@@ -124,7 +122,7 @@ class AdminAuth
 
             error_log("[ADMIN AUTH] Password verified successfully for: {$username}");
 
-            // --- RESET FAILURE COUNTER ON SUCCESS (ADDED) ---
+            // --- RESET FAILURE COUNTER ON SUCCESS ---
             $this->resetFailedAttempts((int)$admin['admin_id']);
 
             // Check if account is deleted
@@ -145,11 +143,16 @@ class AdminAuth
 
             error_log("[ADMIN AUTH] Country check passed for: {$username}");
 
-            // Update last login - NON-FATAL (wrapped in try-catch)
+            // Update last login - NON-FATAL
             try {
                 $ipAddress = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+                
+                // Clean IP: take first IP from comma-separated list
+                if (strpos($ipAddress, ',') !== false) {
+                    $ipParts = explode(',', $ipAddress);
+                    $ipAddress = trim($ipParts[0]);
+                }
 
-                // Check if columns exist first (safe approach)
                 $checkColumns = $this->db->query("
                     SELECT column_name 
                     FROM information_schema.columns 
@@ -174,7 +177,6 @@ class AdminAuth
                     error_log("[ADMIN AUTH] Last login columns missing, skipping update");
                 }
             } catch (\Throwable $e) {
-                // Non-fatal - don't fail the login if this fails
                 error_log("[ADMIN AUTH] Last login update skipped (non-fatal): " . $e->getMessage());
             }
 
@@ -201,6 +203,24 @@ class AdminAuth
             error_log("[ADMIN AUTH] Session admin_id: " . SessionManager::get('admin_id'));
             error_log("[ADMIN AUTH] Session logged_in: " . (SessionManager::get('admin_logged_in') ? 'true' : 'false'));
 
+            // ============================================================
+            // GET ROLE NAME FROM ROLES TABLE
+            // ============================================================
+            $roleName = null;
+            try {
+                $stmt = $this->db->prepare("
+                    SELECT role_name FROM roles WHERE role_id = :role_id
+                ");
+                $stmt->execute([':role_id' => $admin['role_id']]);
+                $role = $stmt->fetch(\PDO::FETCH_ASSOC);
+                if ($role) {
+                    $roleName = $role['role_name'];
+                    error_log("[ADMIN AUTH] Retrieved role name: {$roleName} for role_id: {$admin['role_id']}");
+                }
+            } catch (\Throwable $e) {
+                error_log("[ADMIN AUTH] Failed to retrieve role name: " . $e->getMessage());
+            }
+
             // Check if MFA is enabled
             $mfaEnabled = ($admin['mfa_enabled'] === 't' || $admin['mfa_enabled'] === true || $admin['mfa_enabled'] === 1);
 
@@ -211,15 +231,25 @@ class AdminAuth
                     'success' => true,
                     'mfa_required' => true,
                     'admin_id' => $admin['admin_id'],
+                    'role_id' => (int)$admin['role_id'],
+                    'role' => $roleName,           // FIXED: Added role name
+                    'role_name' => $roleName,      // FIXED: Added role name
                     'message' => 'MFA verification required.'
                 ];
             }
 
-            error_log("[ADMIN AUTH] Login successful: {$username} (Role: {$admin['role_id']})");
+            error_log("[ADMIN AUTH] Login successful: {$username} (Role ID: {$admin['role_id']}, Role Name: {$roleName})");
+            
+            // ============================================================
+            // FIXED: Return array now includes role, role_name, and role_id
+            // ============================================================
             return [
                 'success' => true,
                 'message' => 'Login successful.',
-                'admin_id' => $admin['admin_id']
+                'admin_id' => (int)$admin['admin_id'],
+                'role_id' => (int)$admin['role_id'],  // FIXED: Added role_id
+                'role' => $roleName,                   // FIXED: Added role
+                'role_name' => $roleName              // FIXED: Added role_name
             ];
 
         } catch (\Throwable $e) {
@@ -263,9 +293,8 @@ class AdminAuth
                 return ['success' => false, 'message' => 'Invalid authentication code.'];
             }
 
-            // ACTUAL TOTP VERIFICATION — this was missing before
             $google2fa = new Google2FA();
-            $valid = $google2fa->verifyKey($admin['mfa_secret'], $code, 1); // 1 = allow 1 window of clock drift
+            $valid = $google2fa->verifyKey($admin['mfa_secret'], $code, 1);
 
             if (!$valid) {
                 error_log("[ADMIN AUTH] MFA code rejected for {$admin['username']}");
