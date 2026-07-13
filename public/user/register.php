@@ -110,7 +110,11 @@ $swapDbConfig['options'] = [
 ];
 
 try {
-    $swapDb = DBConnection::getInstance($swapDbConfig);
+    $swapDb = \Core\Database\DBConnection::getConnection();
+    if (!$swapDb) {
+        throw new Exception("Failed to connect to database");
+    }
+    // Set error mode (already set in DBConnection but just to be safe)
     $swapDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (Throwable $e) {
     error_log("REGISTER DB ERROR: " . $e->getMessage());
