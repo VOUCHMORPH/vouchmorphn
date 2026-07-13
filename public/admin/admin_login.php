@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 ob_start();
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0); // Turn off display errors in production
 
 // ============================================================
 // ADMIN LOGIN - Using DBConnection + RoleManager (Single Source of Truth)
@@ -15,13 +15,16 @@ define('PROJECT_ROOT', dirname(__DIR__, 2));
 // Debug logging
 error_log("[ADMIN LOGIN] Starting login process");
 
+// Load Composer autoloader first
+require_once PROJECT_ROOT . '/vendor/autoload.php';
+
 // Load required classes
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
 require_once PROJECT_ROOT . '/src/Security/Monitoring/ApiRateLimiter.php';
 require_once PROJECT_ROOT . '/src/Domain/Services/AuditTrailService.php';
-require_once __DIR__ . '/roles.php'; // ADDED: RoleManager integration
+require_once __DIR__ . '/roles.php';
 
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
@@ -77,11 +80,11 @@ try {
     $auth = new AdminAuth($db);
     error_log("[ADMIN LOGIN] AdminAuth initialized");
     
-    // Initialize AuditTrailService
+    // Initialize AuditTrailService - pass null for logger (it will use fallback)
     $auditService = new AuditTrailService(
         $db,
         $config ?? [],
-        null,
+        null,  // Logger will use fallback
         $systemCountry
     );
     error_log("[ADMIN LOGIN] AuditTrailService initialized");
@@ -343,10 +346,6 @@ if (empty($availableCountries)) {
   <title>VOUCHMORPH · ADMIN LOGIN</title>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    /* ============================================================
-       Vouchmorph‑INSPIRED, SHARP, CENTRALIZED – 
-       now with slightly larger base font sizes
-       ============================================================ */
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
@@ -361,40 +360,36 @@ if (empty($availableCountries)) {
       padding: 32px;
     }
 
-    /* ---- MODAL SIZE (wider, like Vouchmorph) ---- */
     .login-container {
-      max-width: 520px;          /* Vouchmorph‑style width */
+      max-width: 520px;
       width: 100%;
     }
 
-    /* ---- BRAND HEADER ---- */
     .login-header {
       text-align: center;
       margin-bottom: 36px;
     }
     .login-header h1 {
       color: #FFDA63;
-      font-size: 2.2rem;         /* increased */
+      font-size: 2.2rem;
       letter-spacing: 4px;
       font-weight: 700;
       margin-bottom: 8px;
     }
     .login-header p {
       color: #A1B5D8;
-      font-size: 1.0rem;         /* increased */
+      font-size: 1.0rem;
       letter-spacing: 2px;
     }
 
-    /* ---- CARD – sharp edges, brass accents ---- */
     .login-card {
       background: #fff;
       border: 3px solid #001B44;
       border-radius: 0;
-      padding: 48px 44px 40px;    /* more padding for Vouchmorph feel */
+      padding: 48px 44px 40px;
       position: relative;
       box-shadow: 8px 8px 0 #FFDA63;
     }
-    /* corner accents – sharp */
     .login-card::before {
       content: "";
       position: absolute;
@@ -418,7 +413,6 @@ if (empty($availableCountries)) {
       pointer-events: none;
     }
 
-    /* ---- FORM ELEMENTS ---- */
     .country-selector,
     .form-group {
       margin-bottom: 24px;
@@ -426,7 +420,7 @@ if (empty($availableCountries)) {
     .country-selector label,
     .form-group label {
       display: block;
-      font-size: 0.85rem;        /* increased */
+      font-size: 0.85rem;
       font-weight: 700;
       color: #001B44;
       text-transform: uppercase;
@@ -436,13 +430,13 @@ if (empty($availableCountries)) {
     .country-selector select,
     .form-group input {
       width: 100%;
-      padding: 14px 16px;        /* more padding */
+      padding: 14px 16px;
       border: 2px solid #001B44;
       font-family: 'IBM Plex Mono', monospace;
-      font-size: 1.0rem;         /* increased */
+      font-size: 1.0rem;
       background: #fff;
       transition: border-color 0.2s;
-      border-radius: 0;          /* sharp */
+      border-radius: 0;
     }
     .country-selector select:focus,
     .form-group input:focus {
@@ -450,14 +444,13 @@ if (empty($availableCountries)) {
       border-color: #FFDA63;
     }
 
-    /* ---- ERROR & MFA INFO ---- */
     .error-message {
       background: #ffebee;
       border: 2px solid #c62828;
       color: #c62828;
       padding: 14px 16px;
       margin-bottom: 24px;
-      font-size: 0.95rem;        /* increased */
+      font-size: 0.95rem;
       font-weight: 600;
       text-align: center;
       border-radius: 0;
@@ -468,26 +461,25 @@ if (empty($availableCountries)) {
       color: #1976d2;
       padding: 14px 16px;
       margin-bottom: 24px;
-      font-size: 0.95rem;        /* increased */
+      font-size: 0.95rem;
       text-align: center;
       border-radius: 0;
     }
 
-    /* ---- BUTTON – Vouchmorph‑sharp ---- */
     .login-btn {
       width: 100%;
-      padding: 16px;             /* bigger */
+      padding: 16px;
       background: #001B44;
       border: 2px solid #001B44;
       color: #fff;
       font-family: 'IBM Plex Mono', monospace;
-      font-size: 1.1rem;         /* increased */
+      font-size: 1.1rem;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 2.5px;
       cursor: pointer;
       transition: all 0.2s;
-      border-radius: 0;          /* sharp */
+      border-radius: 0;
       margin-top: 4px;
     }
     .login-btn:hover {
@@ -496,12 +488,11 @@ if (empty($availableCountries)) {
       border-color: #FFDA63;
     }
 
-    /* ---- FOOTER ---- */
     .login-footer {
       margin-top: 28px;
       text-align: center;
       color: #A1B5D8;
-      font-size: 0.9rem;         /* increased */
+      font-size: 0.9rem;
     }
     .system-badge {
       display: inline-block;
@@ -509,12 +500,11 @@ if (empty($availableCountries)) {
       background: rgba(255, 218, 99, 0.1);
       border: 1px solid #FFDA63;
       color: #FFDA63;
-      font-size: 0.8rem;         /* increased */
+      font-size: 0.8rem;
       text-transform: uppercase;
       letter-spacing: 1px;
     }
 
-    /* ---- RESPONSIVE ---- */
     @media (max-width: 480px) {
       .login-container { max-width: 100%; padding: 0 12px; }
       .login-card { padding: 30px 20px 24px; }
@@ -525,13 +515,11 @@ if (empty($availableCountries)) {
 </head>
 <body>
 <div class="login-container">
-  <!-- Brand – Vouchmorph‑style centralized, sharp -->
   <div class="login-header">
     <h1>VOUCHMORPH</h1>
     <p>ADMINISTRATIVE ACCESS</p>
   </div>
 
-  <!-- Card – Vouchmorph‑inspired modal, sharp edges, wider -->
   <div class="login-card">
     <?php if (isset($dbError)): ?>
       <div class="error-message">
