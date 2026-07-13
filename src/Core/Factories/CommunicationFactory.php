@@ -12,6 +12,7 @@ class CommunicationFactory
 {
     private static $keyVault = null;
     private static $configCache = [];
+    private static $countryCodeMap = null;
     
     /**
      * Create communication provider (SMS, USSD, etc)
@@ -89,20 +90,37 @@ class CommunicationFactory
     {
         // Clean phone number
         $clean = preg_replace('/[^0-9]/', '', $phoneNumber);
+        
+        // Get country code to remove if present
+        $countryName = self::getActiveCountry();
+        $countryCode = self::getCountryCode($countryName);
+        
         // Remove country code if present
-        if (substr($clean, 0, 3) === '267') {
-            $clean = substr($clean, 3);
+        if ($countryCode && substr($clean, 0, strlen($countryCode)) === $countryCode) {
+            $clean = substr($clean, strlen($countryCode));
+        }
+        
+        // Also try with 0 prefix common in some countries
+        if (substr($clean, 0, 1) === '0') {
+            $clean = substr($clean, 1);
         }
         
         $config = self::loadCountryConfig();
         $telcos = $config['telcos'] ?? [];
         
         foreach ($telcos as $name => $telcoConfig) {
-            if (!$telcoConfig['enabled'] ?? true) {
+            // Skip disabled telcos
+            if (isset($telcoConfig['enabled']) && $telcoConfig['enabled'] === false) {
                 continue;
             }
+            
+            // Check if telco has SMS enabled
+            if (isset($telcoConfig['sms_enabled']) && $telcoConfig['sms_enabled'] === false) {
+                continue;
+            }
+            
             foreach ($telcoConfig['prefixes'] as $prefix) {
-                if (strpos($clean, $prefix) === 0) {
+                if (strpos($clean, (string)$prefix) === 0) {
                     return $name;
                 }
             }
@@ -116,20 +134,61 @@ class CommunicationFactory
      */
     private static function buildProviderConfig(array $telcoConfig, string $provider): array
     {
-        $providerKey = $provider . '_gateway';
+        // Determine which endpoint to use based on provider type
+        $endpointKey = $provider . '_endpoint';
+        $endpoint = $telcoConfig[$endpointKey] ?? $telcoConfig['endpoint'] ?? '/api.php?path=sms/send';
         
+        // Build the provider config for SmsGatewayClient
         return [
             'provider' => $telcoConfig['name'],
             'base_url' => $telcoConfig['base_url'] ?? null,
             'base_url_env' => $telcoConfig['base_url_env'] ?? strtoupper($telcoConfig['name']) . '_BASE_URL',
             'api_key_env' => $telcoConfig['api_key_env'] ?? strtoupper($telcoConfig['name']) . '_API_KEY',
-            'sms_endpoint' => $telcoConfig['sms_endpoint'] ?? '/api.php?path=sms/send',
-            'default_sender' => 'VOUCHMORPH',
-            'default_cost' => 0.1,
+            'api_key_ref' => $telcoConfig['api_key_env'] ?? strtoupper($telcoConfig['name']) . '_API_KEY',
+            'endpoints' => [
+                'send' => $endpoint,
+                'status' => $telcoConfig['status_endpoint'] ?? '/api.php?path=sms/status',
+                'health' => $telcoConfig['health_endpoint'] ?? '/api.php?path=health'
+            ],
+            'method' => 'POST',
+            'sender' => $telcoConfig['sender_id'] ?? 'VOUCHMORPH',
+            'default_sender' => $telcoConfig['sender_id'] ?? 'VOUCHMORPH',
+            'default_cost' => $telcoConfig['cost_per_sms'] ?? 0.1,
             'enabled' => $telcoConfig['sms_enabled'] ?? false,
-            'timeout' => 10,
-            'retry_attempts' => 3,
-            'api_key_header' => 'X-API-Key'
+            'timeout' => $telcoConfig['timeout'] ?? 30,
+            'retry_attempts' => $telcoConfig['retry_attempts'] ?? 3,
+            'api_key_header' => $telcoConfig['api_key_header'] ?? 'X-API-Key',
+            'ssl_verify' => $telcoConfig['ssl_verify'] ?? true,
+            'phone_format' => $telcoConfig['phone_format'] ?? [
+                'strip_prefix' => 0,
+                'add_prefix' => null,
+                'add_plus' => false
+            ],
+            'authentication' => [
+                'type' => 'header',
+                'key' => $telcoConfig['api_key_header'] ?? 'X-API-Key'
+            ],
+            'payload_template' => $telcoConfig['payload_template'] ?? [
+                'to' => '{to}',
+                'message' => '{message}',
+                'sender' => '{sender}',
+                'reference' => '{message_id}'
+            ],
+            'response_mappings' => [
+                'message_id' => $telcoConfig['response_message_id_path'] ?? 'message_id',
+                'status' => $telcoConfig['response_status_path'] ?? 'status'
+            ],
+            'status_mappings' => $telcoConfig['status_mappings'] ?? [
+                'sent' => 'sent',
+                'delivered' => 'delivered',
+                'failed' => 'failed',
+                'pending' => 'pending'
+            ],
+            'circuit_breaker' => [
+                'enabled' => true,
+                'failure_threshold' => 5,
+                'timeout_seconds' => 60
+            ]
         ];
     }
     
@@ -145,22 +204,34 @@ class CommunicationFactory
             return self::$configCache[$cacheKey];
         }
         
-        $possiblePaths = [
-            dirname(__DIR__, 4) . "/config/countries/" . strtolower($country) . "/communication.json",
+        // Primary path: src/Core/Config/Countries/{CountryName}/communication.json
+        $primaryPath = dirname(__DIR__, 2) . "/Core/Config/Countries/{$country}/communication.json";
+        
+        // Alternative paths for flexibility
+        $countryCode = self::getCountryCode($country);
+        $altPaths = [
+            dirname(__DIR__, 2) . "/Core/Config/Countries/{$countryCode}/communication.json",
             dirname(__DIR__, 3) . "/config/countries/" . strtolower($country) . "/communication.json",
+            dirname(__DIR__, 4) . "/config/countries/" . strtolower($country) . "/communication.json",
             __DIR__ . "/../../../config/countries/" . strtolower($country) . "/communication.json",
         ];
         
+        // Check primary path first
         $configFile = null;
-        foreach ($possiblePaths as $path) {
-            if (file_exists($path)) {
-                $configFile = $path;
-                break;
+        if (file_exists($primaryPath)) {
+            $configFile = $primaryPath;
+        } else {
+            // Try alternative paths
+            foreach ($altPaths as $path) {
+                if (file_exists($path)) {
+                    $configFile = $path;
+                    break;
+                }
             }
         }
         
         if (!$configFile) {
-            throw new Exception("Communication config not found for country: {$country}");
+            throw new Exception("Communication config not found for country: {$country} (looked in: {$primaryPath})");
         }
         
         $jsonContent = file_get_contents($configFile);
@@ -192,14 +263,80 @@ class CommunicationFactory
         $country = require $systemCountryPath;
         
         if (is_array($country)) {
-            $country = $country['country'] ?? $country[0] ?? null;
+            // SystemCountry.php returns $resolved with 'name' key
+            if (isset($country['name'])) {
+                return $country['name'];
+            }
+            // Fallback for other formats
+            if (isset($country['country'])) {
+                return $country['country'];
+            }
+            if (isset($country[0])) {
+                return $country[0];
+            }
         }
         
-        if (!$country) {
-            throw new Exception("Active country not configured");
+        if (is_string($country)) {
+            return $country;
         }
         
-        return $country;
+        throw new Exception("Active country not configured");
+    }
+    
+    /**
+     * Get country code from country name
+     */
+    private static function getCountryCode(string $countryName): ?string
+    {
+        if (self::$countryCodeMap === null) {
+            self::$countryCodeMap = [
+                'Botswana' => '267',
+                'Nigeria' => '234',
+                'Kenya' => '254',
+                'SouthAfrica' => '27',
+                'Uganda' => '256',
+                'Tanzania' => '255',
+                'Ghana' => '233',
+                'Zambia' => '260',
+                'Zimbabwe' => '263',
+                'Namibia' => '264',
+                'Cameroon' => '237',
+                'Senegal' => '221',
+                'CotedIvoire' => '225',
+                'Mali' => '223',
+                'Ethiopia' => '251',
+                'Algeria' => '213',
+                'Morocco' => '212',
+                'Egypt' => '20',
+                'Sudan' => '249',
+                'Libya' => '218',
+                'Tunisia' => '216',
+                'Rwanda' => '250',
+                'Burundi' => '257',
+                'Malawi' => '265',
+                'Lesotho' => '266',
+                'Mauritania' => '222',
+                'CentralAfricanRepublic' => '236',
+                'Congo' => '242',
+                'DRCongo' => '243',
+                'Niger' => '227',
+                'BurkinaFaso' => '226',
+                'Gambia' => '220',
+                'SierraLeone' => '232',
+                'Liberia' => '231',
+                'Guinea' => '224',
+                'Togo' => '228',
+                'Benin' => '229',
+                'Somalia' => '252',
+                'Djibouti' => '253',
+                'Eritrea' => '291',
+                'SaoTomeAndPrincipe' => '239',
+                'EquatorialGuinea' => '240',
+                'CapeVerde' => '238'
+            ];
+        }
+        
+        return self::$countryCodeMap[$countryName] ?? null;
     }
     
     /**
@@ -241,7 +378,9 @@ class CommunicationFactory
         
         $enabled = [];
         foreach ($telcos as $name => $telcoConfig) {
-            if ($telcoConfig['enabled'] ?? true) {
+            // Check if telco is enabled and SMS is enabled
+            $isEnabled = ($telcoConfig['enabled'] ?? true) && ($telcoConfig['sms_enabled'] ?? false);
+            if ($isEnabled) {
                 $enabled[$name] = $telcoConfig;
             }
         }
