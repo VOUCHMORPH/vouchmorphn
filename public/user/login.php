@@ -20,6 +20,8 @@
 //      of a comma-separated X-Forwarded-For chain.
 //   6. REMOVED hardcoded CAZACOM — SMS now routes to the correct network
 //      based on phone number prefix (Mascom, Orange, Cazacom, etc.)
+//   7. FIXED: SMS success logging now checks actual result before logging success
+//   8. FIXED: Better error messages when SMS fails
 
 ob_start();
 error_reporting(E_ALL);
@@ -375,14 +377,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
                                 // ============================================================
                                 $comm = CommunicationFactory::createForPhone('sms', $otpDestination);
                                 $result = $comm->send($otpDestination, "Your VouchMorph login code: {$otpPlain}");
+                                
+                                // ============================================================
+                                // FIX: Check the actual result before logging success
+                                // ============================================================
                                 $sent = (bool)($result['success'] ?? false);
                                 $mfaHint = maskPhone($otpDestination);
                                 
-                                // Log which network was used
-                                $providerName = $comm->getProviderName();
-                                error_log("[USER LOGIN] Login OTP sent via {$providerName} to {$otpDestination}");
+                                if ($sent) {
+                                    // Log which network was used
+                                    $providerName = $comm->getProviderName();
+                                    error_log("[USER LOGIN] Login OTP sent via {$providerName} to {$otpDestination}");
+                                } else {
+                                    $errorMsg = $result['error'] ?? 'Unknown error';
+                                    error_log("[USER LOGIN] SMS OTP send FAILED: {$errorMsg}");
+                                    // Store error for user display
+                                    $_SESSION['login_otp_error'] = "We couldn't send your verification code. Please try again.";
+                                }
                             } catch (Throwable $e) {
-                                error_log("[USER LOGIN] SMS OTP send failed: " . $e->getMessage());
+                                error_log("[USER LOGIN] SMS OTP send exception: " . $e->getMessage());
+                                $sent = false;
+                                $_SESSION['login_otp_error'] = "System error sending verification code. Please try again.";
                             }
                         } else {
                             try {
@@ -392,8 +407,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
                                 $result = $emailClient->sendEmail($otpDestination, $subject, $body);
                                 $sent = (bool)($result['success'] ?? false);
                                 $mfaHint = maskEmail($otpDestination);
+                                
+                                if (!$sent) {
+                                    $errorMsg = $result['error'] ?? 'Unknown email error';
+                                    error_log("[USER LOGIN] Email OTP send FAILED: {$errorMsg}");
+                                }
                             } catch (Throwable $e) {
                                 error_log("[USER LOGIN] Email OTP send failed: " . $e->getMessage());
+                                $sent = false;
                             }
                         }
 
