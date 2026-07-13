@@ -104,8 +104,14 @@ $adminId = null;
 $username = '';
 $loginResult = null;
 
-// Helper function to get single IP from forwarded headers
-function getClientIp() {
+// ============================================================
+// HELPER FUNCTIONS
+// ============================================================
+
+/**
+ * Get single IP from forwarded headers
+ */
+function getClientIp(): string {
     $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
     
     // Check for forwarded IPs but only take the first one
@@ -126,7 +132,66 @@ function getClientIp() {
     return $ip;
 }
 
-// Handle login POST
+/**
+ * Validate role exists in database - handles both role_name and role_id
+ */
+function validateRole($roleManager, $role): bool {
+    // Empty role is invalid
+    if (empty($role)) {
+        error_log("[ROLE VALIDATION] Empty role provided - treating as invalid");
+        return false;
+    }
+    
+    try {
+        // If role is numeric, check by role_id
+        if (is_numeric($role)) {
+            $roleInfo = $roleManager->getRoleById((int)$role);
+            if ($roleInfo) {
+                error_log("[ROLE VALIDATION] Validated role ID: {$role} -> {$roleInfo['role_name']}");
+                return true;
+            }
+            error_log("[ROLE VALIDATION] Role ID {$role} not found");
+            return false;
+        }
+        
+        // If role is string, check by role_name
+        $roleInfo = $roleManager->getRoleByName($role);
+        if ($roleInfo) {
+            error_log("[ROLE VALIDATION] Validated role name: {$role} -> ID: {$roleInfo['role_id']}");
+            return true;
+        }
+        error_log("[ROLE VALIDATION] Role name '{$role}' not found");
+        return false;
+        
+    } catch (Throwable $e) {
+        error_log("[ROLE VALIDATION] Error: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Get role info from database - handles both role_name and role_id
+ */
+function getRoleInfo($roleManager, $role): ?array {
+    if (empty($role)) {
+        return null;
+    }
+    
+    try {
+        if (is_numeric($role)) {
+            return $roleManager->getRoleById((int)$role);
+        }
+        return $roleManager->getRoleByName($role);
+    } catch (Throwable $e) {
+        error_log("[ROLE VALIDATION] Error getting role info: " . $e->getMessage());
+        return null;
+    }
+}
+
+// ============================================================
+// HANDLE LOGIN POST
+// ============================================================
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService) && isset($roleManager)) {
     $clientIp = getClientIp();
     $rateLimitKey = 'admin_login:' . $clientIp;
@@ -146,19 +211,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
     if ($rateLimited) {
         $error = 'Too many login attempts. Please try again in a few minutes.';
         
-        // Log rate limit event - FIXED: use entity_type instead of entity
         try {
             $auditService->recordLog(
-                'admin_login',          // entity_type
-                null,                   // entity_id
-                'RATE_LIMIT_EXCEEDED',  // action
-                'security',             // category
-                'WARNING',              // severity
-                json_encode(['ip' => $clientIp]), // old_value
-                null,                   // new_value
-                null,                   // performed_by_id
-                $clientIp,              // ip_address
-                $_SERVER['HTTP_USER_AGENT'] ?? null // user_agent
+                'admin_login',
+                null,
+                'RATE_LIMIT_EXCEEDED',
+                'security',
+                'WARNING',
+                json_encode(['ip' => $clientIp]),
+                null,
+                null,
+                $clientIp,
+                $_SERVER['HTTP_USER_AGENT'] ?? null
             );
         } catch (Throwable $e) {
             error_log("[ADMIN LOGIN] Failed to audit rate limit: " . $e->getMessage());
@@ -169,7 +233,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                 // MFA verification
                 $loginResult = $auth->verifyMfa($_POST['mfa_code'], $systemCountry);
                 if ($loginResult['success']) {
-                    // Log successful MFA - FIXED: use entity_type instead of entity
                     try {
                         $auditService->recordLog(
                             'admin_login',
@@ -192,7 +255,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                 } else {
                     $error = $loginResult['message'];
                     
-                    // Log failed MFA - FIXED: use entity_type instead of entity
                     try {
                         $auditService->recordLog(
                             'admin_login',
@@ -218,32 +280,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                 if (empty($username) || empty($password)) {
                     $error = 'Username and password are required';
                 } else {
+                    // ============================================================
+                    // STEP 1: Authenticate the user
+                    // ============================================================
                     $loginResult = $auth->login($username, $password, $systemCountry);
                     
                     if ($loginResult['success']) {
                         // ============================================================
-                        // ROLE VALIDATION - Check if role exists in database
+                        // STEP 2: ROLE VALIDATION - Check BEFORE setting session
                         // ============================================================
                         $userRole = $loginResult['role'] ?? '';
+                        $adminId = $loginResult['admin_id'] ?? null;
                         
-                        if (!$roleManager->validateRole($userRole)) {
-                            // Invalid role - security issue
+                        // Use the helper function to validate role
+                        $roleValid = validateRole($roleManager, $userRole);
+                        
+                        // Get role info for logging
+                        $roleInfo = getRoleInfo($roleManager, $userRole);
+                        $roleLevel = $roleInfo['role_level'] ?? 'N/A';
+                        
+                        error_log("[ADMIN LOGIN] Role validation result: " . ($roleValid ? 'VALID' : 'INVALID') . 
+                                 " - Role: {$userRole}, Admin ID: {$adminId}");
+                        
+                        if (!$roleValid) {
+                            // ============================================================
+                            // INVALID ROLE - Security incident
+                            // ============================================================
                             $error = 'Invalid account configuration. Please contact support.';
                             
-                            error_log("[SECURITY] Invalid role detected during login: " . $userRole . 
-                                     " for user: " . $username);
+                            error_log("[SECURITY] Invalid role detected during login: {$userRole} for user: {$username}");
+                            error_log("[SECURITY] Admin ID: {$adminId}, IP: {$clientIp}");
                             
-                            // Log the security incident - FIXED: use entity_type instead of entity
+                            // Log the security incident
                             try {
                                 $auditService->recordLog(
                                     'admin_login',
-                                    $loginResult['admin_id'] ?? null,
+                                    $adminId,
                                     'INVALID_ROLE_DETECTED',
                                     'security',
                                     'CRITICAL',
-                                    json_encode(['username' => $username, 'role' => $userRole]),
+                                    json_encode([
+                                        'username' => $username,
+                                        'role' => $userRole,
+                                        'role_type' => is_numeric($userRole) ? 'numeric' : 'string'
+                                    ]),
                                     null,
-                                    $loginResult['admin_id'] ?? null,
+                                    $adminId,
                                     $clientIp,
                                     $_SERVER['HTTP_USER_AGENT'] ?? null
                                 );
@@ -251,25 +333,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                                 error_log("[ADMIN LOGIN] Failed to audit invalid role: " . $e->getMessage());
                             }
                             
-                            // Log them out
+                            // ALWAYS destroy session if role is invalid
                             SessionManager::destroy();
                             
-                            // Show error without proceeding
+                            // Clear the login result
                             $loginResult['success'] = false;
+                            
+                            // Set error message
+                            $error = 'Access denied: Invalid account permissions. Please contact system administrator.';
+                            
                         } else {
                             // ============================================================
                             // ROLE VALID - Proceed with login
                             // ============================================================
                             
-                            // Get role details for logging
-                            $roleInfo = $roleManager->getRoleByName($userRole);
-                            $roleLevel = $roleInfo['role_level'] ?? 'N/A';
-                            
-                            // Log successful login - FIXED: use entity_type instead of entity
+                            // Log successful login with role info
                             try {
                                 $auditService->recordLog(
                                     'admin_login',
-                                    $loginResult['admin_id'] ?? null,
+                                    $adminId,
                                     'LOGIN_SUCCESS',
                                     'security',
                                     'INFO',
@@ -278,9 +360,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                                         'username' => $username,
                                         'role' => $userRole,
                                         'role_level' => $roleLevel,
-                                        'role_validated' => true
+                                        'role_validated' => true,
+                                        'role_id' => $roleInfo['role_id'] ?? null
                                     ]),
-                                    $loginResult['admin_id'] ?? null,
+                                    $adminId,
                                     $clientIp,
                                     $_SERVER['HTTP_USER_AGENT'] ?? null
                                 );
@@ -293,6 +376,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                                 $mfaRequired = true;
                                 $adminId = $loginResult['admin_id'];
                             } else {
+                                // Only set session AFTER all checks pass
+                                // (Session should have been set by AdminAuth, but we ensure it)
+                                if (!SessionManager::isLoggedIn()) {
+                                    SessionManager::set('admin_id', $adminId);
+                                    SessionManager::set('admin_username', $username);
+                                    SessionManager::set('admin_role', $userRole);
+                                    SessionManager::set('admin_country', $systemCountry);
+                                    SessionManager::set('logged_in', true);
+                                    
+                                    // Set the role info in session
+                                    if ($roleInfo) {
+                                        SessionManager::set('admin_role_id', $roleInfo['role_id'] ?? null);
+                                        SessionManager::set('admin_role_level', $roleInfo['role_level'] ?? null);
+                                    }
+                                }
+                                
                                 header('Location: admin_dashboard.php?country=' . $systemCountry);
                                 exit;
                             }
@@ -300,7 +399,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                     } else {
                         $error = $loginResult['message'];
                         
-                        // Log failed login - FIXED: use entity_type instead of entity
+                        // Log failed login
                         try {
                             $auditService->recordLog(
                                 'admin_login',
@@ -324,7 +423,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
             error_log("[ADMIN LOGIN] Exception: " . $e->getMessage());
             $error = "Authentication error occurred.";
             
-            // Log exception - FIXED: use entity_type instead of entity
             try {
                 $auditService->recordLog(
                     'admin_login',
