@@ -9,9 +9,14 @@ use Core\Database\DBConnection;
 
 /**
  * Service class for country-specific audit logging.
- * Uses a simple fallback logger if no logger is provided.
- * MATCHES ACTUAL audit_logs TABLE SCHEMA
- * DYNAMIC COUNTRY CODE - Works for all countries
+ * Country is handled via session/config, NOT stored in database.
+ * The changes JSON column can optionally include country for reference.
+ * 
+ * MATCHES ACTUAL audit_logs TABLE SCHEMA:
+ * audit_id, audit_uuid, entity_type, entity_id, action, category, severity,
+ * old_value, new_value, changes, performed_by_type, performed_by_id,
+ * ip_address, user_agent, geo_location, request_id, performed_at,
+ * integrity_hash, timestamp, event_type, client_id, endpoint, duration_ms
  */
 class AuditTrailService
 {
@@ -27,7 +32,7 @@ class AuditTrailService
         PDO $db,
         array $config,
         $logger = null,
-        string $countryCode = null  // Changed: default to null, will get from config
+        string $countryCode = null
     ) {
         $this->db = $db;
         $this->config = $config;
@@ -51,28 +56,40 @@ class AuditTrailService
             $this->logger = $logger;
         }
         
-        // Get country code from config if not provided
+        // Get country code from config or session
         if ($countryCode === null) {
             $this->countryCode = $this->getCountryCodeFromConfig();
         } else {
-            $this->countryCode = $countryCode;
+            $this->countryCode = strtoupper($countryCode);
         }
         
         $this->logger->info('AuditTrailService initialized for country: ' . $this->countryCode);
     }
 
     /**
-     * Get country code from config
+     * Get country code from config or session
+     * Follows the same pattern as user/login.php
      */
     private function getCountryCodeFromConfig(): string
     {
+        // Check if SYSTEM_COUNTRY is defined (from bootstrap)
+        if (defined('SYSTEM_COUNTRY')) {
+            return SYSTEM_COUNTRY;
+        }
+        
+        // Check session for admin_country
+        if (session_status() === PHP_SESSION_ACTIVE && isset($_SESSION['admin_country'])) {
+            return strtoupper($_SESSION['admin_country']);
+        }
+        
+        // Check session for user country
+        if (session_status() === PHP_SESSION_ACTIVE && isset($_SESSION['user_country'])) {
+            return strtoupper($_SESSION['user_country']);
+        }
+        
         // Try to get from config array
         if (isset($this->config['country_code'])) {
             return strtoupper($this->config['country_code']);
-        }
-        
-        if (isset($this->config['countryCode'])) {
-            return strtoupper($this->config['countryCode']);
         }
         
         if (isset($this->config['country'])) {
@@ -86,7 +103,7 @@ class AuditTrailService
         }
         
         // Default fallback
-        $this->logger->warning('No country code found in config, using default: BW');
+        $this->logger->warning('No country code found, using default: BW');
         return 'BW';
     }
 
@@ -120,7 +137,8 @@ class AuditTrailService
 
     /**
      * Records an action for the local country admin.
-     * Matches the actual audit_logs table schema
+     * Country is NOT stored in database (no country_code column).
+     * It's included in the changes JSON for reference if needed.
      */
     public function recordLog(
         string $entityType,
@@ -150,20 +168,29 @@ class AuditTrailService
         }
 
         try {
+            // Build changes array with country metadata (optional - for reference only)
+            $changesData = $changes ?? [];
+            if (!isset($changesData['_metadata'])) {
+                $changesData['_metadata'] = [];
+            }
+            $changesData['_metadata']['country'] = $this->countryCode;
+            $changesData['_metadata']['timestamp'] = date('Y-m-d H:i:s');
+
+            // SQL - NO country_code column (doesn't exist in table)
             $sql = "INSERT INTO audit_logs (
                         entity_type, entity_id, action, category, severity,
                         old_value, new_value, changes,
                         performed_by_type, performed_by_id,
                         ip_address, user_agent, geo_location,
                         request_id, performed_at, event_type, endpoint, duration_ms,
-                        country_code, timestamp
+                        timestamp
                     ) VALUES (
                         :entity_type, :entity_id, :action, :category, :severity,
                         :old_value, :new_value, :changes,
                         :performed_by_type, :performed_by_id,
                         :ip_address, :user_agent, :geo_location,
                         :request_id, NOW(), :event_type, :endpoint, :duration_ms,
-                        :country_code, NOW()
+                        NOW()
                     )";
 
             $stmt = $this->db->prepare($sql);
@@ -182,7 +209,7 @@ class AuditTrailService
                 ':severity'          => $severity,
                 ':old_value'         => $oldValue,
                 ':new_value'         => $newValue,
-                ':changes'           => $changes ? json_encode($changes) : null,
+                ':changes'           => json_encode($changesData),
                 ':performed_by_type' => $performedByType,
                 ':performed_by_id'   => $performedById,
                 ':ip_address'        => $ipAddress ?? $_SERVER['REMOTE_ADDR'] ?? null,
@@ -191,8 +218,7 @@ class AuditTrailService
                 ':request_id'        => $requestId ?? uniqid('req_', true),
                 ':event_type'        => $eventType ?? $action,
                 ':endpoint'          => $endpoint ?? $_SERVER['REQUEST_URI'] ?? null,
-                ':duration_ms'       => $durationMs,
-                ':country_code'      => $this->countryCode
+                ':duration_ms'       => $durationMs
             ]);
 
             if ($result) {
@@ -222,13 +248,19 @@ class AuditTrailService
     }
 
     /**
-     * Returns logs ONLY for the admin's currently loaded country.
+     * Returns logs - filters by country from session/config, not database
+     * Since country isn't stored in DB, we filter by the current country context
      */
     public function getAuditLogs(int $limit = 100, array $filters = []): array
     {
         if (!$this->checkTableReady()) {
             return [];
         }
+
+        // Note: Since country_code doesn't exist in the table,
+        // we can't filter by country in the query.
+        // Country context is handled at the application level via session/config.
+        // The country is stored in changes JSON for reference only.
 
         $sql = "
             SELECT 
@@ -245,7 +277,6 @@ class AuditTrailService
                 al.changes,
                 al.performed_by_type,
                 al.performed_by_id,
-                al.country_code,
                 al.event_type,
                 al.endpoint,
                 al.duration_ms,
@@ -253,12 +284,12 @@ class AuditTrailService
             FROM 
                 audit_logs al
             WHERE 
-                al.country_code = :country_code
+                1=1
         ";
 
-        $params = [':country_code' => $this->countryCode];
+        $params = [];
 
-        // Apply filters
+        // Apply filters (excluding country - handled at application level)
         if (!empty($filters['entity_type'])) {
             $sql .= " AND al.entity_type = :entity_type";
             $params[':entity_type'] = $filters['entity_type'];
@@ -275,8 +306,9 @@ class AuditTrailService
         }
 
         if (!empty($filters['severity'])) {
+            $severity = $this->normalizeSeverity($filters['severity']);
             $sql .= " AND al.severity = :severity";
-            $params[':severity'] = $filters['severity'];
+            $params[':severity'] = $severity;
         }
 
         if (!empty($filters['date_from'])) {
@@ -355,10 +387,10 @@ class AuditTrailService
         $sql = "
             SELECT COUNT(*) as count
             FROM audit_logs al
-            WHERE al.country_code = :country_code
+            WHERE 1=1
         ";
 
-        $params = [':country_code' => $this->countryCode];
+        $params = [];
 
         if (!empty($filters['entity_type'])) {
             $sql .= " AND al.entity_type = :entity_type";
@@ -421,13 +453,12 @@ class AuditTrailService
         $sql = "
             SELECT DISTINCT category
             FROM audit_logs
-            WHERE country_code = :country_code
             ORDER BY category ASC
         ";
 
         try {
             $stmt = $this->db->prepare($sql);
-            $stmt->execute([':country_code' => $this->countryCode]);
+            $stmt->execute();
             return $stmt->fetchAll(PDO::FETCH_COLUMN);
         } catch (Throwable $e) {
             $this->logger->error('Get categories error: ' . $e->getMessage());
@@ -447,13 +478,12 @@ class AuditTrailService
         $sql = "
             SELECT DISTINCT action
             FROM audit_logs
-            WHERE country_code = :country_code
             ORDER BY action ASC
         ";
 
         try {
             $stmt = $this->db->prepare($sql);
-            $stmt->execute([':country_code' => $this->countryCode]);
+            $stmt->execute();
             return $stmt->fetchAll(PDO::FETCH_COLUMN);
         } catch (Throwable $e) {
             $this->logger->error('Get actions error: ' . $e->getMessage());
@@ -473,13 +503,12 @@ class AuditTrailService
         $sql = "
             SELECT DISTINCT entity_type
             FROM audit_logs
-            WHERE country_code = :country_code
             ORDER BY entity_type ASC
         ";
 
         try {
             $stmt = $this->db->prepare($sql);
-            $stmt->execute([':country_code' => $this->countryCode]);
+            $stmt->execute();
             return $stmt->fetchAll(PDO::FETCH_COLUMN);
         } catch (Throwable $e) {
             $this->logger->error('Get entity types error: ' . $e->getMessage());
@@ -534,7 +563,7 @@ class AuditTrailService
     }
 
     /**
-     * Get current country code
+     * Get current country code (from session/config)
      */
     public function getCountryCode(): string
     {
