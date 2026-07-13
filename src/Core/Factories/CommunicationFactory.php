@@ -13,6 +13,16 @@ if (!class_exists('Security\Encryption\KeyVault')) {
     }
 }
 
+if (!class_exists('Infrastructure\SMS\SmsGatewayClient')) {
+    $smsPath = __DIR__ . '/../../Infrastructure/SMS/SmsGatewayClient.php';
+    if (file_exists($smsPath)) {
+        require_once $smsPath;
+        error_log("[CommunicationFactory] SmsGatewayClient manually loaded (autoloader bypass)");
+    } else {
+        error_log("[CommunicationFactory] CRITICAL: SmsGatewayClient not found at {$smsPath}");
+    }
+}
+
 use Infrastructure\SMS\SmsGatewayClient;
 use Infrastructure\SMS\Contracts\ProviderInterface;
 use Security\Encryption\KeyVault;
