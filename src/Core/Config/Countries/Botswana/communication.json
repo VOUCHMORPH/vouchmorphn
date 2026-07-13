@@ -1,63 +1,32 @@
 {
   "sms_gateway": {
-    "provider": "cazacom",
-    "base_url": "https://cazacom-production.up.railway.app",
-    "api_key_env": "CAZACOM_API_KEY",
-    "api_path": "/api.php",
-    "sms_endpoint": "?path=sms/send",
-    "default_sender": "VOUCHMORPH",
-    "default_cost": 0.1,
-    "enabled": true,
-    "timeout": 10,
-    "retry_attempts": 3,
-    "auth_type": "API_KEY",
-    "api_key_header": "X-API-Key",
-    "idempotency_enabled": true,
-    "webhook_endpoint": "/api/callback/sms-delivery.php",
-    "supports_status_callback": true
+    "provider": "multi_network",
+    "enabled": true
   },
-  "ussd_gateway": {
-    "provider": "cazacom",
-    "base_url": "https://cazacom-production.up.railway.app",
-    "api_key_env": "CAZACOM_API_KEY",
-    "ussd_endpoint": "/api.php?path=ussd",
-    "timeout": 15,
-    "enabled": false
-  },
-  "airtime_gateway": {
-    "provider": "cazacom",
-    "base_url": "https://cazacom-production.up.railway.app",
-    "api_key_env": "CAZACOM_API_KEY",
-    "airtime_endpoint": "/api.php?path=webhook/vouchmorph",
-    "timeout": 10,
-    "enabled": true,
-    "networks": {
-      "cazacom": {
-        "prefixes": ["70"],
-        "fee": 0.05
-      }
-    }
-  },
-  "templates": {
-    "withdrawal": "🔐 VouchMorph Withdrawal\nCode: {{code}}\nAmount: {{amount}} BWP\nValid for 24 hours.",
-    "confirmation": "✅ VouchMorph Transaction {{status}}\nAmount: {{amount}} BWP\nRef: {{reference}}",
-    "otp": "Your VouchMorph verification code is: {{otp}}",
-    "security_alert": "SECURITY ALERT: {{alert}} detected on your account."
-  },
-  "country_code": "267",
-  "local_number_length": 8,
   "telcos": {
     "cazacom": {
       "name": "Cazacom",
       "prefixes": ["70"],
       "sms_enabled": true,
-      "ussd_enabled": false,
-      "airtime_enabled": true,
-      "mobile_money_enabled": true,
-      "swap_enabled": true,
       "api_key_env": "CAZACOM_API_KEY",
-      "base_url": "https://cazacom-production.up.railway.app"
+      "base_url": "https://cazacom-production.up.railway.app",
+      "endpoint": "/api.php?path=sms/send"
+    },
+    "mascom": {
+      "name": "Mascom",
+      "prefixes": ["71", "72", "73", "74", "75"],
+      "sms_enabled": true,
+      "api_key_env": "MASCOM_API_KEY",
+      "base_url": "https://mascom-api.com",
+      "endpoint": "/sms/send"
+    },
+    "orange": {
+      "name": "Orange",
+      "prefixes": ["76", "77", "78"],
+      "sms_enabled": true,
+      "api_key_env": "ORANGE_API_KEY",
+      "base_url": "https://orange-api.com",
+      "endpoint": "/sms/send"
     }
-    
   }
 }
