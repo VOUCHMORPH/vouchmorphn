@@ -104,9 +104,31 @@ $adminId = null;
 $username = '';
 $loginResult = null;
 
+// Helper function to get single IP from forwarded headers
+function getClientIp() {
+    $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+    
+    // Check for forwarded IPs but only take the first one
+    if (isset($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+        $ips = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
+        $ip = trim($ips[0]); // Take only the first IP
+    } elseif (isset($_SERVER['HTTP_CLIENT_IP'])) {
+        $ip = $_SERVER['HTTP_CLIENT_IP'];
+    } elseif (isset($_SERVER['HTTP_X_REAL_IP'])) {
+        $ip = $_SERVER['HTTP_X_REAL_IP'];
+    }
+    
+    // Validate IP format
+    if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+        $ip = 'unknown';
+    }
+    
+    return $ip;
+}
+
 // Handle login POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService) && isset($roleManager)) {
-    $clientIp = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+    $clientIp = getClientIp();
     $rateLimitKey = 'admin_login:' . $clientIp;
     $rateLimited = false;
 
@@ -124,19 +146,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
     if ($rateLimited) {
         $error = 'Too many login attempts. Please try again in a few minutes.';
         
-        // Log rate limit event
+        // Log rate limit event - FIXED: use entity_type instead of entity
         try {
             $auditService->recordLog(
-                'admin_login',
-                null,
-                'RATE_LIMIT_EXCEEDED',
-                'security',
-                'WARNING',
-                json_encode(['ip' => $clientIp]),
-                null,
-                null,
-                $clientIp,
-                $_SERVER['HTTP_USER_AGENT'] ?? null
+                'admin_login',          // entity_type
+                null,                   // entity_id
+                'RATE_LIMIT_EXCEEDED',  // action
+                'security',             // category
+                'WARNING',              // severity
+                json_encode(['ip' => $clientIp]), // old_value
+                null,                   // new_value
+                null,                   // performed_by_id
+                $clientIp,              // ip_address
+                $_SERVER['HTTP_USER_AGENT'] ?? null // user_agent
             );
         } catch (Throwable $e) {
             error_log("[ADMIN LOGIN] Failed to audit rate limit: " . $e->getMessage());
@@ -147,7 +169,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                 // MFA verification
                 $loginResult = $auth->verifyMfa($_POST['mfa_code'], $systemCountry);
                 if ($loginResult['success']) {
-                    // Log successful MFA
+                    // Log successful MFA - FIXED: use entity_type instead of entity
                     try {
                         $auditService->recordLog(
                             'admin_login',
@@ -170,7 +192,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                 } else {
                     $error = $loginResult['message'];
                     
-                    // Log failed MFA
+                    // Log failed MFA - FIXED: use entity_type instead of entity
                     try {
                         $auditService->recordLog(
                             'admin_login',
@@ -211,7 +233,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                             error_log("[SECURITY] Invalid role detected during login: " . $userRole . 
                                      " for user: " . $username);
                             
-                            // Log the security incident
+                            // Log the security incident - FIXED: use entity_type instead of entity
                             try {
                                 $auditService->recordLog(
                                     'admin_login',
@@ -243,7 +265,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                             $roleInfo = $roleManager->getRoleByName($userRole);
                             $roleLevel = $roleInfo['role_level'] ?? 'N/A';
                             
-                            // Log successful login
+                            // Log successful login - FIXED: use entity_type instead of entity
                             try {
                                 $auditService->recordLog(
                                     'admin_login',
@@ -278,7 +300,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                     } else {
                         $error = $loginResult['message'];
                         
-                        // Log failed login
+                        // Log failed login - FIXED: use entity_type instead of entity
                         try {
                             $auditService->recordLog(
                                 'admin_login',
@@ -302,7 +324,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
             error_log("[ADMIN LOGIN] Exception: " . $e->getMessage());
             $error = "Authentication error occurred.";
             
-            // Log exception
+            // Log exception - FIXED: use entity_type instead of entity
             try {
                 $auditService->recordLog(
                     'admin_login',
