@@ -6,28 +6,47 @@ namespace Domain\Services;
 use PDO;
 use Throwable;
 use Core\Database\DBConnection;
-// FIXED: Use the actual Logger class
-use Application\Utils\Logger;
 
 /**
  * Service class for country-specific audit logging.
+ * Uses a simple fallback logger if no logger is provided.
  */
 class AuditTrailService
 {
     private PDO $db;
     private array $config;
-    private ?Logger $logger = null;
+    private $logger = null;  // Can be any logger with info() and error() methods
     private string $countryCode;
 
     public function __construct(
         PDO $db,
         array $config,
-        ?Logger $logger = null,
+        $logger = null,  // Accept any logger, or null for fallback
         string $countryCode = 'BW'
     ) {
         $this->db = $db;
         $this->config = $config;
-        $this->logger = $logger ?? new Logger();
+        
+        // If no logger provided, create a simple fallback logger
+        if ($logger === null) {
+            $this->logger = new class() {
+                public function info($msg): void {
+                    error_log("[INFO] " . json_encode($msg));
+                }
+                public function error($msg): void {
+                    error_log("[ERROR] " . json_encode($msg));
+                }
+                public function warning($msg): void {
+                    error_log("[WARNING] " . json_encode($msg));
+                }
+                public function debug($msg): void {
+                    error_log("[DEBUG] " . json_encode($msg));
+                }
+            };
+        } else {
+            $this->logger = $logger;
+        }
+        
         $this->countryCode = $countryCode;
 
         // Verify audit_logs table exists
@@ -35,7 +54,7 @@ class AuditTrailService
             $stmt = $this->db->prepare("SELECT 1 FROM audit_logs LIMIT 1");
             $stmt->execute();
         } catch (Throwable $e) {
-            error_log("[AuditTrailService] WARNING: audit_logs table may not exist: " . $e->getMessage());
+            $this->logger->warning('Audit table may not exist: ' . $e->getMessage());
             $this->createAuditTableIfMissing();
         }
     }
@@ -74,9 +93,9 @@ class AuditTrailService
 
         try {
             $this->db->exec($sql);
-            error_log("[AuditTrailService] audit_logs table created successfully");
+            $this->logger->info('audit_logs table created successfully');
         } catch (Throwable $e) {
-            error_log("[AuditTrailService] Failed to create audit_logs table: " . $e->getMessage());
+            $this->logger->error('Failed to create audit_logs table: ' . $e->getMessage());
         }
     }
 
@@ -125,7 +144,7 @@ class AuditTrailService
                 ':country_code' => $this->countryCode
             ]);
 
-            if ($result && $this->logger) {
+            if ($result) {
                 $this->logger->info([
                     'action' => $action,
                     'entity' => $entity,
@@ -138,17 +157,274 @@ class AuditTrailService
 
             return $result;
         } catch (Throwable $e) {
-            error_log("[AuditTrailService] Audit Log Failure: " . $e->getMessage());
-            if ($this->logger) {
-                $this->logger->error([
-                    'error' => $e->getMessage(),
-                    'entity' => $entity,
-                    'action' => $action
-                ]);
-            }
+            $this->logger->error([
+                'error' => $e->getMessage(),
+                'entity' => $entity,
+                'action' => $action
+            ]);
             return false;
         }
     }
 
-    // ... rest of the class remains the same ...
+    /**
+     * Returns logs ONLY for the admin's currently loaded country.
+     */
+    public function getAuditLogs(int $limit = 100, array $filters = []): array
+    {
+        $sql = "
+            SELECT 
+                al.audit_id AS id,
+                COALESCE(a.username, 'Admin ID: ' || al.performed_by) AS username,
+                al.action,
+                al.category,
+                al.severity,
+                al.performed_at AS timestamp,
+                al.ip_address,
+                al.old_value,
+                al.new_value,
+                al.entity,
+                al.entity_id,
+                al.country_code
+            FROM 
+                audit_logs al
+            LEFT JOIN 
+                admins a ON al.performed_by = a.admin_id
+            WHERE 
+                al.country_code = :country_code
+        ";
+
+        $params = [':country_code' => $this->countryCode];
+
+        // Apply filters
+        if (!empty($filters['entity'])) {
+            $sql .= " AND al.entity = :entity";
+            $params[':entity'] = $filters['entity'];
+        }
+
+        if (!empty($filters['action'])) {
+            $sql .= " AND al.action = :action";
+            $params[':action'] = $filters['action'];
+        }
+
+        if (!empty($filters['category'])) {
+            $sql .= " AND al.category = :category";
+            $params[':category'] = $filters['category'];
+        }
+
+        if (!empty($filters['severity'])) {
+            $sql .= " AND al.severity = :severity";
+            $params[':severity'] = $filters['severity'];
+        }
+
+        if (!empty($filters['date_from'])) {
+            $sql .= " AND al.performed_at >= :date_from";
+            $params[':date_from'] = $filters['date_from'];
+        }
+
+        if (!empty($filters['date_to'])) {
+            $sql .= " AND al.performed_at <= :date_to";
+            $params[':date_to'] = $filters['date_to'];
+        }
+
+        if (!empty($filters['search'])) {
+            $sql .= " AND (al.entity ILIKE :search OR al.action ILIKE :search OR al.category ILIKE :search)";
+            $params[':search'] = '%' . $filters['search'] . '%';
+        }
+
+        $sql .= " ORDER BY al.performed_at DESC LIMIT :limit";
+
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+
+            foreach ($params as $key => $value) {
+                if (is_int($value)) {
+                    $stmt->bindValue($key, $value, PDO::PARAM_INT);
+                } else {
+                    $stmt->bindValue($key, $value, PDO::PARAM_STR);
+                }
+            }
+
+            $stmt->execute();
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {
+            $this->logger->error('Audit view error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Get audit logs by entity
+     */
+    public function getLogsForEntity(string $entity, int $entityId, int $limit = 50): array
+    {
+        return $this->getAuditLogs($limit, [
+            'entity' => $entity,
+            'entity_id' => $entityId
+        ]);
+    }
+
+    /**
+     * Get recent audit logs by severity
+     */
+    public function getLogsBySeverity(string $severity, int $limit = 50): array
+    {
+        return $this->getAuditLogs($limit, ['severity' => $severity]);
+    }
+
+    /**
+     * Get audit logs by category
+     */
+    public function getLogsByCategory(string $category, int $limit = 50): array
+    {
+        return $this->getAuditLogs($limit, ['category' => $category]);
+    }
+
+    /**
+     * Get log count for dashboard
+     */
+    public function getLogCount(array $filters = []): int
+    {
+        $sql = "
+            SELECT COUNT(*) as count
+            FROM audit_logs al
+            WHERE al.country_code = :country_code
+        ";
+
+        $params = [':country_code' => $this->countryCode];
+
+        if (!empty($filters['entity'])) {
+            $sql .= " AND al.entity = :entity";
+            $params[':entity'] = $filters['entity'];
+        }
+
+        if (!empty($filters['action'])) {
+            $sql .= " AND al.action = :action";
+            $params[':action'] = $filters['action'];
+        }
+
+        if (!empty($filters['category'])) {
+            $sql .= " AND al.category = :category";
+            $params[':category'] = $filters['category'];
+        }
+
+        if (!empty($filters['severity'])) {
+            $sql .= " AND al.severity = :severity";
+            $params[':severity'] = $filters['severity'];
+        }
+
+        if (!empty($filters['date_from'])) {
+            $sql .= " AND al.performed_at >= :date_from";
+            $params[':date_from'] = $filters['date_from'];
+        }
+
+        if (!empty($filters['date_to'])) {
+            $sql .= " AND al.performed_at <= :date_to";
+            $params[':date_to'] = $filters['date_to'];
+        }
+
+        try {
+            $stmt = $this->db->prepare($sql);
+            foreach ($params as $key => $value) {
+                if (is_int($value)) {
+                    $stmt->bindValue($key, $value, PDO::PARAM_INT);
+                } else {
+                    $stmt->bindValue($key, $value, PDO::PARAM_STR);
+                }
+            }
+            $stmt->execute();
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            return (int)($result['count'] ?? 0);
+        } catch (Throwable $e) {
+            $this->logger->error('Log count error: ' . $e->getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Get unique categories for filtering
+     */
+    public function getCategories(): array
+    {
+        $sql = "
+            SELECT DISTINCT category
+            FROM audit_logs
+            WHERE country_code = :country_code
+            ORDER BY category ASC
+        ";
+
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([':country_code' => $this->countryCode]);
+            return $stmt->fetchAll(PDO::FETCH_COLUMN);
+        } catch (Throwable $e) {
+            $this->logger->error('Get categories error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Get unique actions for filtering
+     */
+    public function getActions(): array
+    {
+        $sql = "
+            SELECT DISTINCT action
+            FROM audit_logs
+            WHERE country_code = :country_code
+            ORDER BY action ASC
+        ";
+
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([':country_code' => $this->countryCode]);
+            return $stmt->fetchAll(PDO::FETCH_COLUMN);
+        } catch (Throwable $e) {
+            $this->logger->error('Get actions error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Log that someone viewed the audit trail
+     */
+    public function logAuditView(array $filters, int $performedBy, string $ip, string $userAgent): bool
+    {
+        return $this->recordLog(
+            'audit_trail',
+            null,
+            'VIEW_AUDIT_TRAIL',
+            'security',
+            'INFO',
+            null,
+            json_encode(['filters' => $filters]),
+            $performedBy,
+            $ip,
+            $userAgent
+        );
+    }
+
+    /**
+     * Clean up old audit logs (retention policy)
+     */
+    public function cleanOldLogs(int $daysToKeep = 90): int
+    {
+        $sql = "
+            DELETE FROM audit_logs
+            WHERE performed_at < NOW() - INTERVAL :days DAY
+            AND immutable = false
+        ";
+
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->bindValue(':days', $daysToKeep, PDO::PARAM_INT);
+            $stmt->execute();
+            $deleted = $stmt->rowCount();
+            $this->logger->info("Cleaned {$deleted} audit logs older than {$daysToKeep} days");
+            return $deleted;
+        } catch (Throwable $e) {
+            $this->logger->error('Clean old logs error: ' . $e->getMessage());
+            return 0;
+        }
+    }
 }
