@@ -1,6 +1,6 @@
 <?php
 
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
+require_once dirname(__DIR__, 3) . '/src/bootstrap.php';
 
 class Logger {
     public static function info($msg) { error_log("[INFO] ".json_encode($msg)); }
