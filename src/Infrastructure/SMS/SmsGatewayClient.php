@@ -216,25 +216,54 @@ class SmsGatewayClient implements ProviderInterface
     }
     
     /**
-     * Get API key from KeyVault
+     * Get API key from environment or KeyVault
+     * FIXED: Now checks environment variables directly with multiple variations
      * @throws RuntimeException
      */
     private function getApiKey(): string
     {
-        $apiKeyRef = $this->config['api_key_ref'];
+        $apiKeyRef = $this->config['api_key_ref'] ?? $this->config['api_key_env'] ?? 'CAZACOM_API_KEY';
         
-        try {
-            $apiKey = $this->keyVault->get($apiKeyRef);
+        // Try environment variables first (Railway)
+        $apiKey = getenv($apiKeyRef);
+        
+        if (!$apiKey) {
+            // Try common variations
+            $variations = [
+                strtoupper($apiKeyRef),
+                strtolower($apiKeyRef),
+                str_replace('_API_KEY', '', $apiKeyRef) . '_API_KEY',
+                strtoupper(str_replace('_API_KEY', '', $apiKeyRef)) . '_API_KEY',
+                str_replace('_API_KEY', '_KEY', $apiKeyRef),
+                strtoupper(str_replace('_API_KEY', '_KEY', $apiKeyRef)),
+            ];
             
-            if (empty($apiKey)) {
-                throw new RuntimeException("API key not found: {$apiKeyRef}");
+            foreach ($variations as $variant) {
+                $apiKey = getenv($variant);
+                if ($apiKey) {
+                    error_log("[SmsGatewayClient] Found API key using variation: {$variant}");
+                    break;
+                }
             }
-            
-            return $apiKey;
-            
-        } catch (Exception $e) {
-            throw new RuntimeException("Failed to retrieve API key: " . $e->getMessage());
         }
+        
+        // If still not found, try KeyVault as fallback
+        if (!$apiKey) {
+            try {
+                $apiKey = $this->keyVault->get($apiKeyRef);
+            } catch (Exception $e) {
+                // KeyVault lookup failed
+                error_log("[SmsGatewayClient] KeyVault lookup failed: " . $e->getMessage());
+            }
+        }
+        
+        if (empty($apiKey)) {
+            error_log("[SmsGatewayClient] API key not found. Looking for: {$apiKeyRef}");
+            error_log("[SmsGatewayClient] Available env keys: " . implode(', ', array_keys($_ENV)));
+            throw new RuntimeException("API key not found: {$apiKeyRef}");
+        }
+        
+        return $apiKey;
     }
     
     /**
