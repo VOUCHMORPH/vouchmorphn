@@ -22,6 +22,8 @@ ini_set('display_startup_errors', 1);
 //      the session's temp_registration array so verify-otp.php (not
 //      shown here — see the NOTE at the bottom of this file) can
 //      persist them onto the new user row.
+//   5. REMOVED hardcoded CAZACOM — SMS now routes to the correct network
+//      based on phone number prefix (Mascom, Orange, Cazacom, etc.)
 // ============================================================
 
 define('PROJECT_ROOT', dirname(__DIR__, 2));
@@ -269,7 +271,7 @@ try {
 // ----------------------------------------
 // Helper functions
 // ----------------------------------------
-$clientPartnerKey = 'CAZACOM';
+// REMOVED: $clientPartnerKey = 'CAZACOM'; // No longer hardcoded - network detection now used
 
 function normalizePhone(string $phoneInput, string $dialCode): string
 {
@@ -617,22 +619,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'pin_hash'          => password_hash($pin, PASSWORD_DEFAULT),
         ];
 
-        // Send OTP through exactly one channel — the one just decided above.
+        // ============================================================
+        // FIX: Send OTP through the CORRECT network for the phone number
+        // No longer hardcoded to CAZACOM - auto-detects network from prefix
+        // ============================================================
         $otpSent = false;
         if ($otpChannel === 'sms') {
             try {
-                $comm = CommunicationFactory::create($clientPartnerKey);
+                // Use createForPhone to auto-detect the correct network
+                $comm = CommunicationFactory::createForPhone('sms', $otpDestination);
                 $result = $comm->sendSMS($otpDestination, "Your {$countryName} VouchMorph verification code: {$otpPlain}");
                 $otpSent = (bool)($result['success'] ?? false);
+                
+                // Log which network was used
+                $providerName = $comm->getProviderName();
+                error_log("REGISTER: OTP sent via {$providerName} to {$otpDestination}");
+                
             } catch (Exception $e) {
-                error_log("SMS failed: " . $e->getMessage());
+                error_log("REGISTER: SMS failed for {$otpDestination}: " . $e->getMessage());
             }
         } elseif ($otpChannel === 'email') {
             try {
                 $emailClient = new EmailGatewayClient($config['email'] ?? []);
                 $otpSent = sendEmailOTP($emailClient, $otpDestination, $otpPlain, $countryName);
             } catch (Throwable $e) {
-                error_log("Email failed: " . $e->getMessage());
+                error_log("REGISTER: Email failed: " . $e->getMessage());
             }
         }
 
