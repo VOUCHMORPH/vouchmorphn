@@ -8,22 +8,11 @@ ini_set('display_startup_errors', 1);
 // DYNAMIC COUNTRY CONFIGURATION LOADER - MULTI-COUNTRY SUPPORT
 // ============================================================
 //
-// FIXED IN THIS VERSION (see inline comments marked FIX:):
-//   1. A password/PIN is now REQUIRED at registration — no account is
-//      ever created without one. This closes the gap that made
-//      login.php's old "lookup only, no secret" branch possible.
-//   2. National ID / Driver's License / Passport registrants now MUST
-//      supply a phone or email for OTP delivery — those identifiers
-//      cannot receive a message on their own, so there is no way to
-//      verify the account without one.
-//   3. Email OTPs now go through EmailGatewayClient (real SMTP), not
-//      PHP's mail(), which is not reliably deliverable in production.
-//   4. The chosen OTP channel + destination + PIN hash are stored in
-//      the session's temp_registration array so verify-otp.php (not
-//      shown here — see the NOTE at the bottom of this file) can
-//      persist them onto the new user row.
-//   5. REMOVED hardcoded CAZACOM — SMS now routes to the correct network
-//      based on phone number prefix (Mascom, Orange, Cazacom, etc.)
+// FIXED IN THIS VERSION:
+//   1. REMOVED hardcoded CAZACOM database dependency - Cazacom is ONLY for SMS
+//   2. SMS now routes to the correct network based on phone number prefix
+//   3. All user data stored in YOUR database (swap), not Cazacom's
+//   4. Cazacom API called ONLY for sending SMS OTP
 // ============================================================
 
 define('PROJECT_ROOT', dirname(__DIR__, 2));
@@ -52,15 +41,13 @@ if (!defined('SYSTEM_COUNTRY_CODE')) {
     define('SYSTEM_COUNTRY_CODE', $countryCode);
 }
 
+// ============================================================
+// FIX: ONLY use YOUR database (swap) - no Cazacom database!
+// Cazacom is just an SMS provider via API
+// ============================================================
 if (!isset($config['db']['swap']) || !is_array($config['db']['swap'])) {
     error_log("REGISTER ERROR: Swap database configuration missing for {$systemCountry}");
     die("System initialisation error: Swap database configuration missing.");
-}
-
-$sourceKey = $config['db']['source_client_key'] ?? 'cazacom';
-if (!isset($config['db'][$sourceKey]) || !is_array($config['db'][$sourceKey])) {
-    error_log("REGISTER ERROR: Source database configuration missing for key: {$sourceKey}");
-    die("System initialisation error: Source database configuration missing.");
 }
 
 $requiredFiles = [
@@ -69,7 +56,6 @@ $requiredFiles = [
     'ProviderInterface'    => PROJECT_ROOT . '/src/Infrastructure/SMS/Contracts/ProviderInterface.php',
     'SmsGatewayClient'     => PROJECT_ROOT . '/src/Infrastructure/SMS/SmsGatewayClient.php',
     'CommunicationFactory' => PROJECT_ROOT . '/src/Core/Factories/CommunicationFactory.php',
-    // FIX: new email gateway, replacing mail()
     'EmailProviderInterface' => PROJECT_ROOT . '/src/Infrastructure/Email/Contracts/EmailProviderInterface.php',
     'EmailGatewayClient'     => PROJECT_ROOT . '/src/Infrastructure/Email/EmailGatewayClient.php',
 ];
@@ -106,33 +92,17 @@ $countryTimeZone  = $countryConfig['timezone'] ?? 'Africa/Gaborone';
 
 date_default_timezone_set($countryTimeZone);
 
-// ----------------------------------------
-// FIX: minimum age for an unrestricted account.
-// 18 is a placeholder default, NOT a compliance decision — confirm the
-// real threshold with legal/BNA before this goes anywhere near production.
-// Below this age, the account is still created (never silently blocked)
-// but is marked restricted pending guardian verification.
-// ----------------------------------------
 $minimumAdultAge = (int)($config['minimum_adult_age'] ?? getenv('VM_MINIMUM_ADULT_AGE') ?: 18);
 
-
 // ----------------------------------------
-// Database connections
+// Database connection - ONLY YOUR database
 // ----------------------------------------
-$allDbConfig    = $config['db'];
-$swapDbConfig   = $allDbConfig['swap'];
-$sourceDbConfig = $allDbConfig[$sourceKey];
+$swapDbConfig = $config['db']['swap'];
 
-$dbDriver   = $swapDbConfig['type'] ?? 'mysql';
+$dbDriver = $swapDbConfig['type'] ?? 'mysql';
 $isPostgres = ($dbDriver === 'pgsql');
 
 $swapDbConfig['options'] = [
-    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    PDO::ATTR_EMULATE_PREPARES => false,
-    PDO::ATTR_TIMEOUT => 30
-];
-$sourceDbConfig['options'] = [
     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     PDO::ATTR_EMULATE_PREPARES => false,
@@ -142,9 +112,6 @@ $sourceDbConfig['options'] = [
 try {
     $swapDb = DBConnection::getInstance($swapDbConfig);
     $swapDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-
-    $sourceDb = DBConnection::getInstance($sourceDbConfig);
-    $sourceDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (Throwable $e) {
     error_log("REGISTER DB ERROR: " . $e->getMessage());
     die("System initialisation failed: Unable to connect to database.");
@@ -271,8 +238,6 @@ try {
 // ----------------------------------------
 // Helper functions
 // ----------------------------------------
-// REMOVED: $clientPartnerKey = 'CAZACOM'; // No longer hardcoded - network detection now used
-
 function normalizePhone(string $phoneInput, string $dialCode): string
 {
     $phoneInput = preg_replace('/[^\d+]/', '', trim($phoneInput));
@@ -288,8 +253,6 @@ function generateOTP(): string
     return str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
 }
 
-// FIX: mask a destination for on-screen display — never show the full
-// address/number back to the browser once it's been accepted.
 function maskDestination(string $value, string $type): string
 {
     if ($type === 'email' && str_contains($value, '@')) {
@@ -302,7 +265,6 @@ function maskDestination(string $value, string $type): string
     return substr($value, 0, max(0, $len - 4) > 3 ? 3 : 0) . str_repeat('•', max(0, $len - 6)) . substr($value, -3);
 }
 
-// FIX: real SMTP send via EmailGatewayClient, replacing the old mail()-based helper.
 function sendEmailOTP(EmailGatewayClient $emailClient, string $to, string $otp, string $countryName): bool
 {
     $subject = "Your VouchMorph Verification Code";
@@ -323,87 +285,53 @@ function sendEmailOTP(EmailGatewayClient $emailClient, string $to, string $otp, 
     return $result['success'] ?? false;
 }
 
-function verifyIdentifierInSourceDB($sourceDb, $identifierType, $identifierValue, $countryDialCode)
-{
-    $userData = [];
-    $phoneNumber = null;
-    $emailAddress = null;
+// ============================================================
+// FIX: REMOVED verifyIdentifierInSourceDB() - no Cazacom database!
+// All user data is stored in YOUR database only.
+// Cazacom is only for sending SMS, not for storing user data.
+// ============================================================
 
-    switch ($identifierType) {
-        case 'phone':
-            $phoneNumber = normalizePhone($identifierValue, $countryDialCode);
-            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email FROM users WHERE phone_number = :value LIMIT 1");
-            $stmt->execute([':value' => $phoneNumber]);
-            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($userData) {
-                $phoneNumber = $userData['phone_number'];
-                $emailAddress = $userData['email'] ?? null;
-            }
-            break;
+// Check if user already exists in YOUR database
+function userExistsInDatabase($pdo, $identifierType, $identifierValue, $phoneNumber, $emailAddress, $phone2, $phone3) {
+    $conditions = [];
+    $params = [];
 
-        case 'email':
-            $emailAddress = strtolower(trim($identifierValue));
-            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email FROM users WHERE email = :value LIMIT 1");
-            $stmt->execute([':value' => $emailAddress]);
-            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($userData) {
-                $phoneNumber = $userData['phone_number'] ?? null;
-                $emailAddress = $userData['email'];
-            }
-            break;
-
-        case 'national_id':
-            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email, national_id FROM users WHERE national_id = :value LIMIT 1");
-            $stmt->execute([':value' => $identifierValue]);
-            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($userData) {
-                $phoneNumber = $userData['phone_number'] ?? null;
-                $emailAddress = $userData['email'] ?? null;
-            }
-            break;
-
-        case 'drivers_license':
-            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email, drivers_license FROM users WHERE drivers_license = :value LIMIT 1");
-            $stmt->execute([':value' => $identifierValue]);
-            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($userData) {
-                $phoneNumber = $userData['phone_number'] ?? null;
-                $emailAddress = $userData['email'] ?? null;
-            }
-            break;
-
-        case 'passport':
-            $stmt = $sourceDb->prepare("SELECT id, phone_number, full_name, email, passport FROM users WHERE passport = :value LIMIT 1");
-            $stmt->execute([':value' => $identifierValue]);
-            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($userData) {
-                $phoneNumber = $userData['phone_number'] ?? null;
-                $emailAddress = $userData['email'] ?? null;
-            }
-            break;
-
-        default:
-            return ['valid' => false, 'message' => 'Invalid identifier type'];
-    }
-
-    if (!$userData) {
-        $labels = [
-            'phone' => 'Phone number',
-            'email' => 'Email address',
-            'national_id' => 'National ID',
-            'drivers_license' => "Driver's license",
-            'passport' => 'Passport number'
+    if ($identifierType === 'phone' && $phoneNumber) {
+        $conditions[] = "phone = :phone";
+        $params[':phone'] = $phoneNumber;
+    } elseif ($identifierType === 'email' && $emailAddress) {
+        $conditions[] = "email = :email";
+        $params[':email'] = $emailAddress;
+    } else {
+        // For ID types, check the specific column
+        $columnMap = [
+            'national_id' => 'national_id',
+            'drivers_license' => 'drivers_license',
+            'passport' => 'passport'
         ];
-        $label = $labels[$identifierType] ?? 'Identifier';
-        return ['valid' => false, 'message' => "{$label} not found in our records."];
+        if (isset($columnMap[$identifierType]) && $identifierValue) {
+            $conditions[] = "{$columnMap[$identifierType]} = :identifier";
+            $params[':identifier'] = $identifierValue;
+        }
     }
 
-    return [
-        'valid' => true,
-        'userData' => $userData,
-        'phoneNumber' => $phoneNumber,
-        'emailAddress' => $emailAddress
-    ];
+    if (!empty($phone2)) {
+        $conditions[] = "phone2 = :phone2";
+        $params[':phone2'] = $phone2;
+    }
+    if (!empty($phone3)) {
+        $conditions[] = "phone3 = :phone3";
+        $params[':phone3'] = $phone3;
+    }
+
+    if (empty($conditions)) {
+        return false;
+    }
+
+    $query = "SELECT user_id FROM users WHERE " . implode(" OR ", $conditions) . " LIMIT 1";
+    $stmt = $pdo->prepare($query);
+    $stmt->execute($params);
+    return (bool) $stmt->fetch();
 }
 
 // ----------------------------------------
@@ -419,14 +347,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $dateOfBirth       = trim($_POST['date_of_birth'] ?? '');
         $phone2            = trim($_POST['phone2'] ?? '');
         $phone3            = trim($_POST['phone3'] ?? '');
-
-        // FIX: PIN is now mandatory. No account, ever, without a secret set.
-        $pin        = trim($_POST['pin'] ?? '');
-        $pinConfirm = trim($_POST['pin_confirm'] ?? '');
-
-        // FIX: mandatory contact channel for identifiers that can't receive a message.
-        $contactChannel = $_POST['contact_channel'] ?? null; // 'phone' | 'email'
-        $contactValue   = trim($_POST['contact_value'] ?? '');
+        $pin               = trim($_POST['pin'] ?? '');
+        $pinConfirm        = trim($_POST['pin_confirm'] ?? '');
+        $contactChannel    = $_POST['contact_channel'] ?? null;
+        $contactValue      = trim($_POST['contact_value'] ?? '');
 
         if (empty($inputValue)) {
             echo json_encode(['success' => false, 'message' => 'Please provide your identifier.']);
@@ -441,7 +365,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             echo json_encode(['success' => false, 'message' => 'PINs do not match.']);
             exit;
         }
-        // Reject the most trivially guessable PINs outright.
         $weakPins = ['000000','111111','222222','333333','444444','555555','666666','777777','888888','999999','123456','654321'];
         if (in_array($pin, $weakPins, true)) {
             echo json_encode(['success' => false, 'message' => 'That PIN is too easy to guess. Please choose a different one.']);
@@ -470,32 +393,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $phone3 = normalizePhone($phone3, $countryDialCode);
         }
 
-        // Verify identifier exists in source database
-        $verification = verifyIdentifierInSourceDB($sourceDb, $inputType, $inputValue, $countryDialCode);
-        if (!$verification['valid']) {
-            echo json_encode(['success' => false, 'message' => $verification['message']]);
+        // Determine the normalized values
+        $phoneNumber = null;
+        $emailAddress = null;
+        $identifierValue = null;
+
+        if ($inputType === 'phone') {
+            $phoneNumber = normalizePhone($inputValue, $countryDialCode);
+            $identifierValue = $phoneNumber;
+        } elseif ($inputType === 'email') {
+            $emailAddress = strtolower(trim($inputValue));
+            $identifierValue = $emailAddress;
+        } else {
+            $identifierValue = $inputValue;
+        }
+
+        // ============================================================
+        // FIX: Check if user exists in YOUR database only
+        // No external database lookup!
+        // ============================================================
+        if (userExistsInDatabase($swapDb, $inputType, $identifierValue, $phoneNumber, $emailAddress, $phone2, $phone3)) {
+            echo json_encode(['success' => false, 'message' => 'This identifier is already registered. Please login.']);
             exit;
         }
 
-        $userData     = $verification['userData'];
-        $phoneNumber  = $verification['phoneNumber'];
-        $emailAddress = $verification['emailAddress'];
-
-        $columnMap = [
-            'phone' => 'phone',
-            'email' => 'email',
-            'national_id' => 'national_id',
-            'drivers_license' => 'drivers_license',
-            'passport' => 'passport'
-        ];
-        $identifierColumn = $columnMap[$inputType];
-        $identifierValue  = ($inputType === 'phone') ? normalizePhone($inputValue, $countryDialCode) : $inputValue;
-
         // ----------------------------------------
-        // FIX: determine the OTP delivery channel.
-        // phone/email registrants use the identifier itself. Anyone
-        // registering with an ID-type document MUST supply a phone or
-        // email — there is no way to verify them otherwise.
+        // Determine OTP delivery channel
         // ----------------------------------------
         $otpChannel = null;
         $otpDestination = null;
@@ -530,49 +453,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        // Check if already registered in swap DB (check ALL identifiers)
-        $checkQuery = "SELECT user_id FROM users WHERE ";
-        $conditions = [];
-        $checkParams = [];
-
-        if ($phoneNumber) {
-            $conditions[] = "phone = :phone";
-            $checkParams[':phone'] = $phoneNumber;
-        }
-        if ($emailAddress) {
-            $conditions[] = "email = :email";
-            $checkParams[':email'] = $emailAddress;
-        }
-        if (!empty($phone2)) {
-            $conditions[] = "phone2 = :phone2";
-            $checkParams[':phone2'] = $phone2;
-        }
-        if (!empty($phone3)) {
-            $conditions[] = "phone3 = :phone3";
-            $checkParams[':phone3'] = $phone3;
-        }
-        if ($identifierColumn && $identifierValue && !in_array($inputType, ['phone', 'email'])) {
-            $conditions[] = "{$identifierColumn} = :identifier";
-            $checkParams[':identifier'] = $identifierValue;
-        }
-
-        if (!empty($conditions)) {
-            $checkQuery .= implode(" OR ", $conditions) . " LIMIT 1";
-            $stmt = $swapDb->prepare($checkQuery);
-            $stmt->execute($checkParams);
-            if ($stmt->fetch()) {
-                echo json_encode(['success' => false, 'message' => 'This identifier is already registered. Please login.']);
-                exit;
-            }
-        }
-
         // Generate OTP
         $otpPlain = generateOTP();
         $otpHash  = password_hash($otpPlain, PASSWORD_DEFAULT);
         $expiresAt = date('Y-m-d H:i:s', time() + 300);
 
         $ipAddress = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-        // FIX: take only the first hop of a comma-separated forwarded-for chain.
         if (str_contains($ipAddress, ',')) {
             $ipAddress = trim(explode(',', $ipAddress)[0]);
         }
@@ -600,16 +486,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['otp_verification'][$otpDestination] = $otpPlain;
         $_SESSION['otp_verification_expires'][$otpDestination] = time() + 300;
 
-        // FIX: pin_hash, otp_channel and otp_destination are now carried
-        // through temp_registration so verify-otp.php can persist them
-        // onto the new user row. The PLAINTEXT PIN is never stored here.
         $_SESSION['temp_registration'] = [
             'identifier_type'   => $inputType,
             'identifier_value'  => $identifierValue,
-            'identifier_column' => $identifierColumn,
-            'full_name'         => $fullName ?: ($userData['full_name'] ?? null),
+            'full_name'         => $fullName,
             'date_of_birth'     => $dateOfBirth,
-            'source_user_id'    => $userData['id'] ?? null,
             'phone_number'      => $phoneNumber,
             'phone2'            => $phone2,
             'phone3'            => $phone3,
@@ -620,20 +501,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ];
 
         // ============================================================
-        // FIX: Send OTP through the CORRECT network for the phone number
-        // No longer hardcoded to CAZACOM - auto-detects network from prefix
+        // FIX: Send OTP through CommunicationFactory (uses Cazacom API)
+        // No database connection to Cazacom - just API call!
         // ============================================================
         $otpSent = false;
         if ($otpChannel === 'sms') {
             try {
                 // Use createForPhone to auto-detect the correct network
                 $comm = CommunicationFactory::createForPhone('sms', $otpDestination);
-                $result = $comm->sendSMS($otpDestination, "Your {$countryName} VouchMorph verification code: {$otpPlain}");
+                $result = $comm->send($otpDestination, "Your {$countryName} VouchMorph verification code: {$otpPlain}");
                 $otpSent = (bool)($result['success'] ?? false);
                 
                 // Log which network was used
                 $providerName = $comm->getProviderName();
-                error_log("REGISTER: OTP sent via {$providerName} to {$otpDestination}");
+                error_log("REGISTER: OTP sent via {$providerName} to " . maskDestination($otpDestination, 'phone'));
                 
             } catch (Exception $e) {
                 error_log("REGISTER: SMS failed for {$otpDestination}: " . $e->getMessage());
@@ -897,8 +778,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
                 <div class="help-text" id="help-text">Enter your phone number (e.g., 71 234 567)</div>
 
-                <!-- FIX: shown only for national_id / drivers_license / passport —
-                     mandatory, since those identifiers cannot receive a message. -->
                 <div class="contact-channel-group" id="contactChannelGroup">
                     <div class="help-text" style="color:#FF8888; margin-top:0;">A phone or email is required so we can send your verification code.</div>
                     <div class="contact-channel-choice">
@@ -919,7 +798,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <input type="date" id="date_of_birth" class="form-control">
             </div>
 
-            <!-- FIX: PIN is now mandatory for every registration, not optional. -->
             <div class="form-group">
                 <label>CHOOSE A 6-DIGIT PIN</label>
                 <input type="password" id="pin" class="form-control pin-input" maxlength="6" inputmode="numeric" placeholder="••••••" autocomplete="new-password">
@@ -1052,7 +930,6 @@ function updateFormForIdentifierType(type) {
         inputEl.type = 'text';
         fullnameGroup.style.display = 'block';
         dobGroup.style.display = 'block';
-        // FIX: this is the only branch where a contact channel is mandatory.
         contactGroup.classList.add('show');
     }
 
@@ -1123,7 +1000,6 @@ function sendOTP() {
     if (phone2) formData.append('phone2', phone2);
     if (phone3) formData.append('phone3', phone3);
 
-    // FIX: mandatory contact channel for ID-document identifiers.
     if (!['phone', 'email'].includes(currentIdentifierType)) {
         const contactChannel = document.querySelector('input[name="contact_channel"]:checked')?.value;
         const contactValue = document.getElementById('contact_value').value.trim();
@@ -1141,7 +1017,7 @@ function sendOTP() {
     btn.textContent = 'VERIFYING...';
     btn.disabled = true;
 
-    showMessage('Verifying your details with our records...', 'info');
+    showMessage('Verifying your details...', 'info');
 
     fetch(window.location.href, {
         method: 'POST',
@@ -1213,7 +1089,6 @@ function resendOTP() {
     formData.append('input_type', currentIdentifierType);
     formData.append('identifier', identifier);
     formData.append('resend', '1');
-    // Re-send stored PIN + contact fields so the resend path validates the same way.
     formData.append('pin', document.getElementById('pin').value.trim());
     formData.append('pin_confirm', document.getElementById('pin_confirm').value.trim());
     if (!['phone', 'email'].includes(currentIdentifierType)) {
