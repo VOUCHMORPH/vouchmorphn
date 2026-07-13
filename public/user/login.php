@@ -374,7 +374,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
                                 // No longer hardcoded to CAZACOM - auto-detects network from prefix
                                 // ============================================================
                                 $comm = CommunicationFactory::createForPhone('sms', $otpDestination);
-                                $result = $comm->sendSMS($otpDestination, "Your VouchMorph login code: {$otpPlain}");
+                                $result = $comm->send($otpDestination, "Your VouchMorph login code: {$otpPlain}");
                                 $sent = (bool)($result['success'] ?? false);
                                 $mfaHint = maskPhone($otpDestination);
                                 
