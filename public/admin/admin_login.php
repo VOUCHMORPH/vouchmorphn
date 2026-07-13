@@ -114,17 +114,15 @@ $loginResult = null;
 function getClientIp(): string {
     $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
     
-    // Check for forwarded IPs but only take the first one
     if (isset($_SERVER['HTTP_X_FORWARDED_FOR'])) {
         $ips = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
-        $ip = trim($ips[0]); // Take only the first IP
+        $ip = trim($ips[0]);
     } elseif (isset($_SERVER['HTTP_CLIENT_IP'])) {
         $ip = $_SERVER['HTTP_CLIENT_IP'];
     } elseif (isset($_SERVER['HTTP_X_REAL_IP'])) {
         $ip = $_SERVER['HTTP_X_REAL_IP'];
     }
     
-    // Validate IP format
     if (!filter_var($ip, FILTER_VALIDATE_IP)) {
         $ip = 'unknown';
     }
@@ -143,7 +141,6 @@ function validateRole($roleManager, $role): bool {
     }
     
     try {
-        // If role is numeric, check by role_id
         if (is_numeric($role)) {
             $roleInfo = $roleManager->getRoleById((int)$role);
             if ($roleInfo) {
@@ -154,7 +151,6 @@ function validateRole($roleManager, $role): bool {
             return false;
         }
         
-        // If role is string, check by role_name
         $roleInfo = $roleManager->getRoleByName($role);
         if ($roleInfo) {
             error_log("[ROLE VALIDATION] Validated role name: {$role} -> ID: {$roleInfo['role_id']}");
@@ -186,6 +182,40 @@ function getRoleInfo($roleManager, $role): ?array {
         error_log("[ROLE VALIDATION] Error getting role info: " . $e->getMessage());
         return null;
     }
+}
+
+/**
+ * Destroy session completely
+ */
+function destroySessionCompletely(): void {
+    // Clear all session variables
+    $_SESSION = [];
+    
+    // Destroy the session cookie
+    if (ini_get("session.use_cookies")) {
+        $params = session_get_cookie_params();
+        setcookie(
+            session_name(),
+            '',
+            time() - 42000,
+            $params["path"],
+            $params["domain"],
+            $params["secure"],
+            $params["httponly"]
+        );
+    }
+    
+    // Destroy the session
+    session_destroy();
+    
+    // Also clear the global session array
+    session_unset();
+    
+    // Start a new session to ensure clean state
+    session_start();
+    session_regenerate_id(true);
+    
+    error_log("[SESSION] Session destroyed completely");
 }
 
 // ============================================================
@@ -287,12 +317,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                     
                     if ($loginResult['success']) {
                         // ============================================================
-                        // STEP 2: ROLE VALIDATION - Check BEFORE setting session
+                        // STEP 2: ROLE VALIDATION - Check BEFORE session is fully committed
                         // ============================================================
-                        $userRole = $loginResult['role'] ?? '';
+                        
+                        // Get role from login result - try multiple possible keys
+                        $userRole = $loginResult['role'] ?? 
+                                   $loginResult['role_name'] ?? 
+                                   $loginResult['role_id'] ?? 
+                                   '';
+                        
                         $adminId = $loginResult['admin_id'] ?? null;
                         
-                        // Use the helper function to validate role
+                        // Log what we found for debugging
+                        error_log("[ADMIN LOGIN] Role from login result: " . json_encode([
+                            'role' => $loginResult['role'] ?? 'null',
+                            'role_name' => $loginResult['role_name'] ?? 'null',
+                            'role_id' => $loginResult['role_id'] ?? 'null',
+                            'userRole_final' => $userRole
+                        ]));
+                        
+                        // Validate the role
                         $roleValid = validateRole($roleManager, $userRole);
                         
                         // Get role info for logging
@@ -304,9 +348,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                         
                         if (!$roleValid) {
                             // ============================================================
-                            // INVALID ROLE - Security incident
+                            // INVALID ROLE - Security incident - DESTROY SESSION IMMEDIATELY
                             // ============================================================
-                            $error = 'Invalid account configuration. Please contact support.';
+                            $error = 'Access denied: Invalid account permissions. Please contact system administrator.';
                             
                             error_log("[SECURITY] Invalid role detected during login: {$userRole} for user: {$username}");
                             error_log("[SECURITY] Admin ID: {$adminId}, IP: {$clientIp}");
@@ -333,14 +377,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                                 error_log("[ADMIN LOGIN] Failed to audit invalid role: " . $e->getMessage());
                             }
                             
-                            // ALWAYS destroy session if role is invalid
-                            SessionManager::destroy();
+                            // ============================================================
+                            // CRITICAL: DESTROY SESSION COMPLETELY
+                            // ============================================================
+                            destroySessionCompletely();
                             
-                            // Clear the login result
+                            // Clear the login result to prevent further processing
                             $loginResult['success'] = false;
                             
-                            // Set error message
+                            // Ensure we don't proceed
                             $error = 'Access denied: Invalid account permissions. Please contact system administrator.';
+                            
+                            // IMPORTANT: Do NOT redirect or proceed - stay on login page
+                            // The error will be displayed and the user will need to re-authenticate
                             
                         } else {
                             // ============================================================
@@ -376,8 +425,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                                 $mfaRequired = true;
                                 $adminId = $loginResult['admin_id'];
                             } else {
-                                // Only set session AFTER all checks pass
-                                // (Session should have been set by AdminAuth, but we ensure it)
+                                // Session is already set by AdminAuth, but ensure it's complete
                                 if (!SessionManager::isLoggedIn()) {
                                     SessionManager::set('admin_id', $adminId);
                                     SessionManager::set('admin_username', $username);
@@ -385,7 +433,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
                                     SessionManager::set('admin_country', $systemCountry);
                                     SessionManager::set('logged_in', true);
                                     
-                                    // Set the role info in session
                                     if ($roleInfo) {
                                         SessionManager::set('admin_role_id', $roleInfo['role_id'] ?? null);
                                         SessionManager::set('admin_role_level', $roleInfo['role_level'] ?? null);
