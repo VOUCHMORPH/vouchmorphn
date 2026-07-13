@@ -10,24 +10,25 @@ use Core\Database\DBConnection;
 /**
  * Service class for country-specific audit logging.
  * Uses a simple fallback logger if no logger is provided.
+ * MATCHES ACTUAL audit_logs TABLE SCHEMA
  */
 class AuditTrailService
 {
     private PDO $db;
     private array $config;
-    private $logger = null;  // Can be any logger with info() and error() methods
+    private $logger = null;
     private string $countryCode;
+    private bool $tableReady = false;
 
     public function __construct(
         PDO $db,
         array $config,
-        $logger = null,  // Accept any logger, or null for fallback
+        $logger = null,
         string $countryCode = 'BW'
     ) {
         $this->db = $db;
         $this->config = $config;
         
-        // If no logger provided, create a simple fallback logger
         if ($logger === null) {
             $this->logger = new class() {
                 public function info($msg): void {
@@ -48,106 +49,106 @@ class AuditTrailService
         }
         
         $this->countryCode = $countryCode;
-
-        // Verify audit_logs table exists
-        try {
-            $stmt = $this->db->prepare("SELECT 1 FROM audit_logs LIMIT 1");
-            $stmt->execute();
-        } catch (Throwable $e) {
-            $this->logger->warning('Audit table may not exist: ' . $e->getMessage());
-            $this->createAuditTableIfMissing();
-        }
+        $this->tableReady = $this->checkTableReady();
     }
 
     /**
-     * Create audit_logs table if it doesn't exist
+     * Check if audit_logs table exists
      */
-    private function createAuditTableIfMissing(): void
+    private function checkTableReady(): bool
     {
-        $sql = "
-            CREATE TABLE IF NOT EXISTS audit_logs (
-                audit_id SERIAL PRIMARY KEY,
-                entity VARCHAR(255) NOT NULL,
-                entity_id INTEGER,
-                action VARCHAR(100) NOT NULL,
-                category VARCHAR(100) NOT NULL,
-                severity VARCHAR(20) DEFAULT 'INFO',
-                old_value TEXT,
-                new_value TEXT,
-                performed_by INTEGER,
-                ip_address VARCHAR(45),
-                user_agent TEXT,
-                geo_location VARCHAR(100),
-                performed_at TIMESTAMP DEFAULT NOW(),
-                immutable BOOLEAN DEFAULT TRUE,
-                country_code VARCHAR(10),
-                created_at TIMESTAMP DEFAULT NOW()
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_audit_logs_performed_at ON audit_logs(performed_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity, entity_id);
-            CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
-            CREATE INDEX IF NOT EXISTS idx_audit_logs_category ON audit_logs(category);
-            CREATE INDEX IF NOT EXISTS idx_audit_logs_country ON audit_logs(country_code);
-        ";
-
         try {
-            $this->db->exec($sql);
-            $this->logger->info('audit_logs table created successfully');
+            $stmt = $this->db->prepare("SELECT 1 FROM audit_logs LIMIT 1");
+            $stmt->execute();
+            return true;
         } catch (Throwable $e) {
-            $this->logger->error('Failed to create audit_logs table: ' . $e->getMessage());
+            $this->logger->warning('Audit table not ready: ' . $e->getMessage());
+            return false;
         }
     }
 
     /**
      * Records an action for the local country admin.
+     * Matches the actual audit_logs table schema:
+     * audit_id, audit_uuid, entity_type, entity_id, action, category, severity,
+     * old_value, new_value, changes, performed_by_type, performed_by_id,
+     * ip_address, user_agent, geo_location, request_id, performed_at,
+     * integrity_hash, timestamp, event_type, client_id, endpoint, duration_ms
      */
     public function recordLog(
-        string $entity,
+        string $entityType,
         ?int $entityId,
         string $action,
         string $category,
         string $severity = 'INFO',
         ?string $oldValue = null,
         ?string $newValue = null,
-        ?int $performedBy = null,
+        ?int $performedById = null,
         ?string $ipAddress = null,
         ?string $userAgent = null,
         ?string $geoLocation = null,
-        bool $immutable = true
+        ?array $changes = null,
+        ?string $requestId = null,
+        ?string $eventType = null,
+        ?string $endpoint = null,
+        ?int $durationMs = null
     ): bool {
-        $sql = "INSERT INTO audit_logs (
-                    entity, entity_id, action, category, severity, old_value, new_value,
-                    performed_by, ip_address, user_agent, geo_location, performed_at, immutable,
-                    country_code, created_at
-                ) VALUES (
-                    :entity, :entity_id, :action, :category, :severity, :old_value, :new_value,
-                    :performed_by, :ip_address, :user_agent, :geo_location, NOW(), :immutable,
-                    :country_code, NOW()
-                )";
+        // If table is not ready, log to error_log as fallback
+        if (!$this->tableReady) {
+            error_log("[AUDIT_FALLBACK] {$action} on {$entityType} (ID: {$entityId}) - {$category} - {$severity}");
+            return true;
+        }
 
         try {
+            $sql = "INSERT INTO audit_logs (
+                        entity_type, entity_id, action, category, severity,
+                        old_value, new_value, changes,
+                        performed_by_type, performed_by_id,
+                        ip_address, user_agent, geo_location,
+                        request_id, performed_at, event_type, endpoint, duration_ms,
+                        country_code, timestamp
+                    ) VALUES (
+                        :entity_type, :entity_id, :action, :category, :severity,
+                        :old_value, :new_value, :changes,
+                        :performed_by_type, :performed_by_id,
+                        :ip_address, :user_agent, :geo_location,
+                        :request_id, NOW(), :event_type, :endpoint, :duration_ms,
+                        :country_code, NOW()
+                    )";
+
             $stmt = $this->db->prepare($sql);
+            
+            // Determine performed_by_type
+            $performedByType = 'admin';
+            if ($performedById === null) {
+                $performedByType = 'system';
+            }
+
             $result = $stmt->execute([
-                ':entity'       => $entity,
-                ':entity_id'    => $entityId,
-                ':action'       => $action,
-                ':category'     => $category,
-                ':severity'     => $severity,
-                ':old_value'    => $oldValue,
-                ':new_value'    => $newValue,
-                ':performed_by' => $performedBy,
-                ':ip_address'   => $ipAddress ?? $_SERVER['REMOTE_ADDR'] ?? null,
-                ':user_agent'   => $userAgent ?? $_SERVER['HTTP_USER_AGENT'] ?? null,
-                ':geo_location' => $geoLocation,
-                ':immutable'    => $immutable ? 1 : 0,
-                ':country_code' => $this->countryCode
+                ':entity_type'       => $entityType,
+                ':entity_id'         => $entityId,
+                ':action'            => $action,
+                ':category'          => $category,
+                ':severity'          => $severity,
+                ':old_value'         => $oldValue,
+                ':new_value'         => $newValue,
+                ':changes'           => $changes ? json_encode($changes) : null,
+                ':performed_by_type' => $performedByType,
+                ':performed_by_id'   => $performedById,
+                ':ip_address'        => $ipAddress ?? $_SERVER['REMOTE_ADDR'] ?? null,
+                ':user_agent'        => $userAgent ?? $_SERVER['HTTP_USER_AGENT'] ?? null,
+                ':geo_location'      => $geoLocation,
+                ':request_id'        => $requestId ?? uniqid('req_', true),
+                ':event_type'        => $eventType ?? $action,
+                ':endpoint'          => $endpoint ?? $_SERVER['REQUEST_URI'] ?? null,
+                ':duration_ms'       => $durationMs,
+                ':country_code'      => $this->countryCode
             ]);
 
             if ($result) {
                 $this->logger->info([
                     'action' => $action,
-                    'entity' => $entity,
+                    'entity_type' => $entityType,
                     'entity_id' => $entityId,
                     'category' => $category,
                     'severity' => $severity,
@@ -156,25 +157,35 @@ class AuditTrailService
             }
 
             return $result;
+            
         } catch (Throwable $e) {
             $this->logger->error([
                 'error' => $e->getMessage(),
-                'entity' => $entity,
+                'entity_type' => $entityType,
                 'action' => $action
             ]);
+            
+            // Fallback to error_log
+            error_log("[AUDIT_FALLBACK] {$action} on {$entityType} (ID: {$entityId}) - DB Error: " . $e->getMessage());
             return false;
         }
     }
 
     /**
      * Returns logs ONLY for the admin's currently loaded country.
+     * Matches actual table schema
      */
     public function getAuditLogs(int $limit = 100, array $filters = []): array
     {
+        if (!$this->tableReady) {
+            return [];
+        }
+
         $sql = "
             SELECT 
                 al.audit_id AS id,
-                COALESCE(a.username, 'Admin ID: ' || al.performed_by) AS username,
+                al.entity_type,
+                al.entity_id,
                 al.action,
                 al.category,
                 al.severity,
@@ -182,13 +193,16 @@ class AuditTrailService
                 al.ip_address,
                 al.old_value,
                 al.new_value,
-                al.entity,
-                al.entity_id,
-                al.country_code
+                al.changes,
+                al.performed_by_type,
+                al.performed_by_id,
+                al.country_code,
+                al.event_type,
+                al.endpoint,
+                al.duration_ms,
+                al.request_id
             FROM 
                 audit_logs al
-            LEFT JOIN 
-                admins a ON al.performed_by = a.admin_id
             WHERE 
                 al.country_code = :country_code
         ";
@@ -196,9 +210,9 @@ class AuditTrailService
         $params = [':country_code' => $this->countryCode];
 
         // Apply filters
-        if (!empty($filters['entity'])) {
-            $sql .= " AND al.entity = :entity";
-            $params[':entity'] = $filters['entity'];
+        if (!empty($filters['entity_type'])) {
+            $sql .= " AND al.entity_type = :entity_type";
+            $params[':entity_type'] = $filters['entity_type'];
         }
 
         if (!empty($filters['action'])) {
@@ -227,7 +241,7 @@ class AuditTrailService
         }
 
         if (!empty($filters['search'])) {
-            $sql .= " AND (al.entity ILIKE :search OR al.action ILIKE :search OR al.category ILIKE :search)";
+            $sql .= " AND (al.entity_type ILIKE :search OR al.action ILIKE :search OR al.category ILIKE :search)";
             $params[':search'] = '%' . $filters['search'] . '%';
         }
 
@@ -254,12 +268,12 @@ class AuditTrailService
     }
 
     /**
-     * Get audit logs by entity
+     * Get audit logs by entity type
      */
-    public function getLogsForEntity(string $entity, int $entityId, int $limit = 50): array
+    public function getLogsForEntity(string $entityType, int $entityId, int $limit = 50): array
     {
         return $this->getAuditLogs($limit, [
-            'entity' => $entity,
+            'entity_type' => $entityType,
             'entity_id' => $entityId
         ]);
     }
@@ -285,6 +299,10 @@ class AuditTrailService
      */
     public function getLogCount(array $filters = []): int
     {
+        if (!$this->tableReady) {
+            return 0;
+        }
+
         $sql = "
             SELECT COUNT(*) as count
             FROM audit_logs al
@@ -293,9 +311,9 @@ class AuditTrailService
 
         $params = [':country_code' => $this->countryCode];
 
-        if (!empty($filters['entity'])) {
-            $sql .= " AND al.entity = :entity";
-            $params[':entity'] = $filters['entity'];
+        if (!empty($filters['entity_type'])) {
+            $sql .= " AND al.entity_type = :entity_type";
+            $params[':entity_type'] = $filters['entity_type'];
         }
 
         if (!empty($filters['action'])) {
@@ -346,6 +364,10 @@ class AuditTrailService
      */
     public function getCategories(): array
     {
+        if (!$this->tableReady) {
+            return [];
+        }
+
         $sql = "
             SELECT DISTINCT category
             FROM audit_logs
@@ -368,6 +390,10 @@ class AuditTrailService
      */
     public function getActions(): array
     {
+        if (!$this->tableReady) {
+            return [];
+        }
+
         $sql = "
             SELECT DISTINCT action
             FROM audit_logs
@@ -386,9 +412,35 @@ class AuditTrailService
     }
 
     /**
+     * Get unique entity types for filtering
+     */
+    public function getEntityTypes(): array
+    {
+        if (!$this->tableReady) {
+            return [];
+        }
+
+        $sql = "
+            SELECT DISTINCT entity_type
+            FROM audit_logs
+            WHERE country_code = :country_code
+            ORDER BY entity_type ASC
+        ";
+
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([':country_code' => $this->countryCode]);
+            return $stmt->fetchAll(PDO::FETCH_COLUMN);
+        } catch (Throwable $e) {
+            $this->logger->error('Get entity types error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
      * Log that someone viewed the audit trail
      */
-    public function logAuditView(array $filters, int $performedBy, string $ip, string $userAgent): bool
+    public function logAuditView(array $filters, int $performedById, string $ip, string $userAgent): bool
     {
         return $this->recordLog(
             'audit_trail',
@@ -398,7 +450,7 @@ class AuditTrailService
             'INFO',
             null,
             json_encode(['filters' => $filters]),
-            $performedBy,
+            $performedById,
             $ip,
             $userAgent
         );
@@ -409,10 +461,13 @@ class AuditTrailService
      */
     public function cleanOldLogs(int $daysToKeep = 90): int
     {
+        if (!$this->tableReady) {
+            return 0;
+        }
+
         $sql = "
             DELETE FROM audit_logs
             WHERE performed_at < NOW() - INTERVAL :days DAY
-            AND immutable = false
         ";
 
         try {
