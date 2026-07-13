@@ -27,6 +27,8 @@ ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 ini_set('log_errors', 1);
 
+require_once __DIR__ . '/../../vendor/autoload.php';
+
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
