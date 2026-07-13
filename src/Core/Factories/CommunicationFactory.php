@@ -3,6 +3,16 @@
 
 namespace Core\Factories;
 
+if (!class_exists('Security\Encryption\KeyVault')) {
+    $keyVaultPath = __DIR__ . '/../../Security/Encryption/KeyVault.php';
+    if (file_exists($keyVaultPath)) {
+        require_once $keyVaultPath;
+        error_log("[CommunicationFactory] KeyVault manually loaded (autoloader bypass)");
+    } else {
+        error_log("[CommunicationFactory] CRITICAL: KeyVault not found at {$keyVaultPath}");
+    }
+}
+
 use Infrastructure\SMS\SmsGatewayClient;
 use Infrastructure\SMS\Contracts\ProviderInterface;
 use Security\Encryption\KeyVault;
