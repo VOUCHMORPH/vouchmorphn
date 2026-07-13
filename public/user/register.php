@@ -105,6 +105,16 @@ $countryTimeZone  = $countryConfig['timezone'] ?? 'Africa/Gaborone';
 date_default_timezone_set($countryTimeZone);
 
 // ----------------------------------------
+// FIX: minimum age for an unrestricted account.
+// 18 is a placeholder default, NOT a compliance decision — confirm the
+// real threshold with legal/BNA before this goes anywhere near production.
+// Below this age, the account is still created (never silently blocked)
+// but is marked restricted pending guardian verification.
+// ----------------------------------------
+$minimumAdultAge = (int)($config['minimum_adult_age'] ?? getenv('VM_MINIMUM_ADULT_AGE') ?: 18);
+
+
+// ----------------------------------------
 // Database connections
 // ----------------------------------------
 $allDbConfig    = $config['db'];
