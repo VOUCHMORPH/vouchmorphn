@@ -478,7 +478,14 @@ class SessionManager
 
     public static function isAdminLoggedIn(): bool
     {
-        return self::isLoggedIn() && self::isAdmin();
+        self::start();
+        // New-style session
+        if (isset($_SESSION['_logged_in']) && $_SESSION['_logged_in'] === true
+            && (($_SESSION['_user_type'] ?? '') === 'admin')) {
+            return true;
+        }
+        // Legacy session written by AdminAuth (admin_logged_in / admin_id)
+        return isset($_SESSION['admin_logged_in']) && $_SESSION['admin_logged_in'] === true;
     }
 
     public static function isUserLoggedIn(): bool
@@ -488,21 +495,37 @@ class SessionManager
 
     public static function getAdminId(): ?int
     {
+        self::start();
+        if (isset($_SESSION['admin_id'])) {
+            return (int)$_SESSION['admin_id'];
+        }
         return self::userId();
     }
 
     public static function getAdminUsername(): ?string
     {
+        self::start();
+        if (isset($_SESSION['admin_username'])) {
+            return $_SESSION['admin_username'];
+        }
         return self::username();
     }
 
     public static function getAdminRoleId(): ?int
     {
+        self::start();
+        if (isset($_SESSION['admin_role_id'])) {
+            return (int)$_SESSION['admin_role_id'];
+        }
         return self::roleId();
     }
 
     public static function getAdminCountry(): ?string
     {
+        self::start();
+        if (isset($_SESSION['admin_country'])) {
+            return $_SESSION['admin_country'];
+        }
         return self::countryCode();
     }
 
