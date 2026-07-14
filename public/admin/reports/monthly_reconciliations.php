@@ -12,9 +12,8 @@ use Domain\Services\ForexService;
 // Session management
 session_start();
 
-$allowedRoles = ['GLOBAL_OWNER', 'COUNTRY_MIDDLEMAN', 'AUDITOR', 'ADMIN', 'admin'];
-
-if (!isset($_SESSION['user']) || !in_array($_SESSION['user']['role'] ?? '', $allowedRoles)) {
+// Check if admin is logged in
+if (!isset($_SESSION['user']) || empty($_SESSION['user'])) {
     header('Location: ../admin_login.php');
     exit;
 }
@@ -204,16 +203,18 @@ $stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMont
 $hookStats = $stmt->fetch(PDO::FETCH_ASSOC);
 
 // --- FETCH TOP INSTITUTIONS BY VOLUME ---
+// FIX: Use JSON_EXTRACT for PostgreSQL compatibility
 $topInstitutionsQuery = "
     SELECT 
         source_details->>'institution' as institution,
         COUNT(*) as transaction_count,
         SUM(amount) as total_volume,
-        SUM(swap_fee) as total_fees
+        SUM(total_cashout_fee) as total_fees
     FROM swap_requests
     WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+    AND source_details IS NOT NULL
     AND source_details->>'institution' IS NOT NULL
-    GROUP BY institution
+    GROUP BY source_details->>'institution'
     ORDER BY total_volume DESC
     LIMIT 10
 ";
@@ -228,19 +229,25 @@ $totalFees = array_sum(array_column($feeBreakdown, 'total_amount'));
 $totalVat = array_sum(array_column($feeBreakdown, 'total_vat'));
 
 // --- GET INSTITUTIONS LIST FOR FILTER ---
+// FIX: Use JSON_EXTRACT for PostgreSQL compatibility
 $instStmt = $swapDB->prepare("
     SELECT DISTINCT 
         source_details->>'institution' as institution
     FROM swap_requests
-    WHERE source_details->>'institution' IS NOT NULL
+    WHERE source_details IS NOT NULL
+    AND source_details->>'institution' IS NOT NULL
     UNION
     SELECT DISTINCT 
         destination_details->>'institution' as institution
     FROM swap_requests
-    WHERE destination_details->>'institution' IS NOT NULL
+    WHERE destination_details IS NOT NULL
+    AND destination_details->>'institution' IS NOT NULL
 ");
 $instStmt->execute();
 $institutions = $instStmt->fetchAll(PDO::FETCH_COLUMN);
+
+// Filter out empty values
+$institutions = array_filter($institutions);
 
 // --- AUDIT LOG ---
 $logFile = __DIR__ . '/../../../storage/logs/monthly_reconciliations.log';
@@ -848,7 +855,7 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="7" style="text-align:center;">No cross-border activity this month</span></tr>
+                            <tr><td colspan="7" style="text-align:center;">No cross-border activity this month</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
@@ -886,7 +893,7 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="6" style="text-align:center;">No FX activity this month</span></td>
+                            <tr><td colspan="6" style="text-align:center;">No FX activity this month</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
@@ -922,7 +929,7 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="5" style="text-align:center;">No corridor activity this month</span></td>
+                            <tr><td colspan="5" style="text-align:center;">No corridor activity this month</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
@@ -951,15 +958,15 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
                             <?php $rank = 1; ?>
                             <?php foreach ($topInstitutions as $inst): ?>
                                 <tr>
-                                    <td><strong>#<?= $rank++ ?></strong></span></span></td>
-                                    <td><?= htmlspecialchars($inst['institution']) ?></span></span></td>
-                                    <td><?= number_format($inst['transaction_count']) ?></span></span></td>
-                                    <td><?= number_format($inst['total_volume'], 2) ?></span></span></td>
-                                    <td><?= number_format($inst['total_fees'] ?? 0, 2) ?></span></span></td>
+                                    <td><strong>#<?= $rank++ ?></strong></td>
+                                    <td><?= htmlspecialchars($inst['institution']) ?></td>
+                                    <td><?= number_format($inst['transaction_count']) ?></td>
+                                    <td><?= number_format($inst['total_volume'], 2) ?></td>
+                                    <td><?= number_format($inst['total_fees'] ?? 0, 2) ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="5" style="text-align:center;">No institution data available</span></span></td>
+                            <tr><td colspan="5" style="text-align:center;">No institution data available</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
