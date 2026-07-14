@@ -95,26 +95,6 @@ $hasAccess = function($permission) use ($adminRoleId) {
     return in_array('all', $userPerms) || in_array($permission, $userPerms);
 };
 
-// Settlement outbox pending count
-$stmt = $db->prepare("SELECT COUNT(*) FROM settlement_outbox WHERE status = 'PENDING'");
-$stmt->execute();
-$metrics['pending_settlements_outbox'] = (int)$stmt->fetchColumn();
-
-// Active net positions
-$stmt = $db->prepare("SELECT COUNT(*) FROM net_positions WHERE amount > 0");
-$stmt->execute();
-$metrics['active_net_positions'] = (int)$stmt->fetchColumn();
-
-// Fee invoices outstanding
-$stmt = $db->prepare("SELECT COUNT(*) FROM fee_invoices WHERE status = 'SENT'");
-$stmt->execute();
-$metrics['outstanding_invoices'] = (int)$stmt->fetchColumn();
-
-// Regulatory reports pending
-$stmt = $db->prepare("SELECT COUNT(*) FROM regulatory_reports WHERE regulator_acknowledged = false");
-$stmt->execute();
-$metrics['pending_regulatory_reports'] = (int)$stmt->fetchColumn();
-
 // Get system metrics
 $metrics = [];
 try {
@@ -151,6 +131,26 @@ try {
     $totalVolumeRaw = (float)$stmt->fetchColumn();
     $metrics['total_volume'] = number_format($totalVolumeRaw, 2);
     
+    // Settlement outbox pending count
+    $stmt = $db->prepare("SELECT COUNT(*) FROM settlement_outbox WHERE status = 'PENDING'");
+    $stmt->execute();
+    $metrics['pending_settlements_outbox'] = (int)$stmt->fetchColumn();
+    
+    // Active net positions
+    $stmt = $db->prepare("SELECT COUNT(*) FROM net_positions WHERE amount > 0");
+    $stmt->execute();
+    $metrics['active_net_positions'] = (int)$stmt->fetchColumn();
+    
+    // Fee invoices outstanding
+    $stmt = $db->prepare("SELECT COUNT(*) FROM fee_invoices WHERE status = 'SENT'");
+    $stmt->execute();
+    $metrics['outstanding_invoices'] = (int)$stmt->fetchColumn();
+    
+    // Regulatory reports pending
+    $stmt = $db->prepare("SELECT COUNT(*) FROM regulatory_reports WHERE regulator_acknowledged = false");
+    $stmt->execute();
+    $metrics['pending_regulatory_reports'] = (int)$stmt->fetchColumn();
+    
 } catch (Throwable $e) {
     error_log("[ADMIN DASHBOARD] Metrics error: " . $e->getMessage());
     $metrics = [
@@ -160,7 +160,11 @@ try {
         'active_holds' => 0,
         'pending_settlements' => 0,
         'total_users' => 0,
-        'total_volume' => '0.00'
+        'total_volume' => '0.00',
+        'pending_settlements_outbox' => 0,
+        'active_net_positions' => 0,
+        'outstanding_invoices' => 0,
+        'pending_regulatory_reports' => 0
     ];
 }
 
@@ -644,7 +648,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>End-of-day net positions and settlement amounts</p>
                 <p style="margin-top: 15px;">
-                    <a href="reports/daily_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="daily_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
             <div class="card">
@@ -653,7 +657,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>7-year audit trail of all swap transactions</p>
                 <p style="margin-top: 15px;">
-                    <a href="reports/audit_trails.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="audit_trails.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
             <div class="card">
@@ -662,7 +666,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>AML/KYC compliance and fraud monitoring</p>
                 <p style="margin-top: 15px;">
-                    <a href="reports/suspicious.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="suspicious.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
             <div class="card">
@@ -671,7 +675,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>Monthly financial reconciliation report</p>
                 <p style="margin-top: 15px;">
-                    <a href="reports/monthly_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="monthly_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
         </div>
