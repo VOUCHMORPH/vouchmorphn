@@ -242,10 +242,11 @@ try {
         }
 
         // ============================================================
-        // FIX: Generate username if not provided or use phone as fallback
+        // FIX: Generate username if not provided
         // ============================================================
         $username = $tempData['username'] ?? null;
         $fullName = $tempData['full_name'] ?? null;
+        $phoneNumber = $tempData['phone_number'] ?? $identifier;
         
         // If no username, generate from full name or phone
         if (empty($username)) {
@@ -260,7 +261,7 @@ try {
                 }
             } else {
                 // Use phone as fallback
-                $username = 'user_' . preg_replace('/[^0-9]/', '', $tempData['phone_number'] ?? $identifier);
+                $username = 'user_' . preg_replace('/[^0-9]/', '', $phoneNumber);
                 // Ensure uniqueness
                 $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE username = :username");
                 $stmt->execute([':username' => $username]);
@@ -269,6 +270,23 @@ try {
                 }
             }
             error_log("VERIFY OTP: Generated username: {$username}");
+        }
+
+        // ============================================================
+        // FIX: Handle email - generate if not provided
+        // ============================================================
+        $email = $tempData['email'] ?? null;
+        
+        // If no email provided, generate one from phone or username
+        if (empty($email)) {
+            $email = $username . '@' . strtolower($countryName) . '.vouchmorphn.com';
+            // Make it unique
+            $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE email = :email");
+            $stmt->execute([':email' => $email]);
+            if ($stmt->fetchColumn() > 0) {
+                $email = $username . rand(100, 999) . '@' . strtolower($countryName) . '.vouchmorphn.com';
+            }
+            error_log("VERIFY OTP: Generated email: {$email}");
         }
 
         // Create the user
@@ -290,7 +308,7 @@ try {
             ':phone' => $tempData['phone_number'] ?? null,
             ':phone2' => $tempData['phone2'] ?? null,
             ':phone3' => $tempData['phone3'] ?? null,
-            ':email' => $tempData['email'] ?? null,
+            ':email' => $email,
             ':national_id' => ($tempData['identifier_type'] === 'national_id') ? $tempData['identifier_value'] : null,
             ':drivers_license' => ($tempData['identifier_type'] === 'drivers_license') ? $tempData['identifier_value'] : null,
             ':passport' => ($tempData['identifier_type'] === 'passport') ? $tempData['identifier_value'] : null,
