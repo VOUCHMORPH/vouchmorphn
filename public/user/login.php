@@ -22,6 +22,7 @@
 //      based on phone number prefix (Mascom, Orange, Cazacom, etc.)
 //   7. FIXED: SMS success logging now checks actual result before logging success
 //   8. FIXED: Better error messages when SMS fails
+//   9. FIXED: SessionManager::setUser() -> SessionManager::login() for compatibility
 
 ob_start();
 error_reporting(E_ALL);
@@ -212,8 +213,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'verif
 
         session_regenerate_id(true);
 
-        // FIX: role_id is now real, fetched from the users table, not hardcoded.
-        SessionManager::setUser([
+        // FIX: Use SessionManager::login() instead of setUser()
+        // role_id is now real, fetched from the users table, not hardcoded.
+        SessionManager::login([
             'user_id'         => $user['user_id'],
             'username'        => $user['username'] ?? '',
             'full_name'       => $user['full_name'] ?? $user['username'],
