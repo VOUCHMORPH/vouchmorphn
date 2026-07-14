@@ -222,6 +222,35 @@ $stmt = $swapDB->prepare($topInstitutionsQuery);
 $stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
 $topInstitutions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+// Add fee invoices summary
+$feeInvoicesStmt = $swapDB->prepare("
+    SELECT 
+        fee_type,
+        COUNT(*) as count,
+        SUM(total_amount) as total,
+        SUM(vat_amount) as total_vat,
+        currency,
+        status
+    FROM fee_invoices
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+    GROUP BY fee_type, currency, status
+");
+$feeInvoicesStmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$feeInvoices = $feeInvoicesStmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Add regulatory reports
+$regulatoryStmt = $swapDB->prepare("
+    SELECT 
+        report_type,
+        COUNT(*) as report_count,
+        SUM(CASE WHEN regulator_acknowledged THEN 1 ELSE 0 END) as acknowledged
+    FROM regulatory_reports
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+    GROUP BY report_type
+");
+$regulatoryStmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$regulatoryReports = $regulatoryStmt->fetchAll(PDO::FETCH_ASSOC);
+
 // --- CALCULATE TOTALS ---
 $totalFxVolume = array_sum(array_column($fxActivity, 'total_fx_volume'));
 $totalForexFees = array_sum(array_column($fxActivity, 'total_forex_fees'));
