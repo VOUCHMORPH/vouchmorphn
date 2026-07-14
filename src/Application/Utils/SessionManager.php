@@ -473,4 +473,83 @@ class SessionManager
         self::start();
         return $_SESSION['_last_activity'] ?? 0;
     }
+
+    // ==== BACKWARD-COMPATIBILITY ALIASES ====
+
+    public static function isAdminLoggedIn(): bool
+    {
+        return self::isLoggedIn() && self::isAdmin();
+    }
+
+    public static function isUserLoggedIn(): bool
+    {
+        return self::isLoggedIn() && self::isUser();
+    }
+
+    public static function getAdminId(): ?int
+    {
+        return self::userId();
+    }
+
+    public static function getAdminUsername(): ?string
+    {
+        return self::username();
+    }
+
+    public static function getAdminRoleId(): ?int
+    {
+        return self::roleId();
+    }
+
+    public static function getAdminCountry(): ?string
+    {
+        return self::countryCode();
+    }
+
+    public static function getAdmin(): ?array
+    {
+        return self::getUser();
+    }
+
+    public static function getUser(): ?array
+    {
+        $u = self::user();
+        if ($u === null) {
+            return null;
+        }
+        $u['user_id']  = $u['user_id']  ?? $u['id'] ?? null;
+        $u['admin_id'] = $u['admin_id'] ?? $u['id'] ?? null;
+        return $u;
+    }
+
+    public static function getUserId(): ?int
+    {
+        return self::userId();
+    }
+
+    public static function setUser(array $userData): void
+    {
+        self::loginUser($userData);
+    }
+
+    public static function setAdmin(array $adminData): void
+    {
+        self::loginAdmin($adminData);
+    }
+
+    public static function logoutAdmin(): void
+    {
+        self::logout();
+    }
+
+    public static function logoutUser(): void
+    {
+        self::logout();
+    }
+
+    public static function destroy(): void
+    {
+        self::logout();
+    }
+
 }
