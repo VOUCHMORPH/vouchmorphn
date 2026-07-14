@@ -263,21 +263,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
     $clientIp = getClientIp();
     $rateLimited = false;
 
+    // FIX: Rate limiter - skip if Redis not available
     try {
-        $ipLimiter = new ApiRateLimiter(15, 600);         // 15 attempts / 10 min per IP
-        $identifierLimiter = new ApiRateLimiter(6, 600);  // 6 attempts / 10 min per identifier
+        // Check if Redis class exists before using rate limiter
+        if (class_exists('Redis')) {
+            $ipLimiter = new ApiRateLimiter(15, 600);         // 15 attempts / 10 min per IP
+            $identifierLimiter = new ApiRateLimiter(6, 600);  // 6 attempts / 10 min per identifier
 
-        $ipOk = $ipLimiter->check('user_login_ip:' . $clientIp);
-        $identifierOk = $inputValueRaw !== ''
-            ? $identifierLimiter->check('user_login_id:' . strtolower($inputValueRaw))
-            : true;
+            $ipOk = $ipLimiter->check('user_login_ip:' . $clientIp);
+            $identifierOk = $inputValueRaw !== ''
+                ? $identifierLimiter->check('user_login_id:' . strtolower($inputValueRaw))
+                : true;
 
-        if (!$ipOk || !$identifierOk) {
-            $rateLimited = true;
-            error_log("[USER LOGIN] Rate limit exceeded - IP: {$clientIp}, Identifier: {$inputValueRaw}");
+            if (!$ipOk || !$identifierOk) {
+                $rateLimited = true;
+                error_log("[USER LOGIN] Rate limit exceeded - IP: {$clientIp}, Identifier: {$inputValueRaw}");
+            }
+        } else {
+            // Redis not available - log but continue without rate limiting
+            error_log("[USER LOGIN] Redis not available - rate limiting disabled");
         }
     } catch (\Throwable $e) {
-        error_log("[USER LOGIN] Rate limiter unavailable: " . $e->getMessage());
+        // Rate limiter failed - continue without it
+        error_log("[USER LOGIN] Rate limiter unavailable: " . $e->getMessage() . " - continuing without rate limiting");
     }
 
     if ($rateLimited) {
