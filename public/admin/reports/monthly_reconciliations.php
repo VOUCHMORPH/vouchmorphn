@@ -37,8 +37,8 @@ $summaryQuery = "
         COUNT(*) as total_swaps,
         COALESCE(SUM(amount), 0) as total_volume,
         COALESCE(AVG(amount), 0) as avg_amount,
-        MIN(amount) as min_amount,
-        MAX(amount) as max_amount,
+        COALESCE(MIN(amount), 0) as min_amount,
+        COALESCE(MAX(amount), 0) as max_amount,
         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
         SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
         SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
@@ -155,6 +155,19 @@ $stmt = $db->prepare($corridorQuery);
 $stmt->execute(array(':start' => $firstDay, ':end' => $lastDay));
 $corridors = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+// ============================================================
+// CALCULATE SAFE VALUES FOR DISPLAY
+// ============================================================
+$totalSwaps = isset($summary['total_swaps']) ? (int)$summary['total_swaps'] : 0;
+$totalVolume = isset($summary['total_volume']) ? (float)$summary['total_volume'] : 0;
+$avgAmount = isset($summary['avg_amount']) ? (float)$summary['avg_amount'] : 0;
+$minAmount = isset($summary['min_amount']) ? (float)$summary['min_amount'] : 0;
+$maxAmount = isset($summary['max_amount']) ? (float)$summary['max_amount'] : 0;
+$completed = isset($summary['completed']) ? (int)$summary['completed'] : 0;
+$failed = isset($summary['failed']) ? (int)$summary['failed'] : 0;
+$pending = isset($summary['pending']) ? (int)$summary['pending'] : 0;
+$cancelled = isset($summary['cancelled']) ? (int)$summary['cancelled'] : 0;
+
 // CSV Export
 if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     header('Content-Type: text/csv');
@@ -167,15 +180,15 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     fputcsv($output, array());
     
     fputcsv($output, array('SUMMARY'));
-    fputcsv($output, array('Total Swaps', $summary['total_swaps']));
-    fputcsv($output, array('Total Volume', number_format($summary['total_volume'], 2)));
-    fputcsv($output, array('Average', number_format($summary['avg_amount'], 2)));
-    fputcsv($output, array('Min', number_format($summary['min_amount'], 2)));
-    fputcsv($output, array('Max', number_format($summary['max_amount'], 2)));
-    fputcsv($output, array('Completed', $summary['completed']));
-    fputcsv($output, array('Failed', $summary['failed']));
-    fputcsv($output, array('Pending', $summary['pending']));
-    fputcsv($output, array('Cancelled', $summary['cancelled']));
+    fputcsv($output, array('Total Swaps', $totalSwaps));
+    fputcsv($output, array('Total Volume', number_format($totalVolume, 2)));
+    fputcsv($output, array('Average', number_format($avgAmount, 2)));
+    fputcsv($output, array('Min', number_format($minAmount, 2)));
+    fputcsv($output, array('Max', number_format($maxAmount, 2)));
+    fputcsv($output, array('Completed', $completed));
+    fputcsv($output, array('Failed', $failed));
+    fputcsv($output, array('Pending', $pending));
+    fputcsv($output, array('Cancelled', $cancelled));
     
     fclose($output);
     exit;
@@ -198,7 +211,7 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
         .header { background: #1a1a2e; color: white; padding: 20px 30px; border-radius: 12px; margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; }
         .header h1 { font-size: 24px; }
         .header p { opacity: 0.8; font-size: 14px; }
-        .month-nav { display: flex; gap: 15px; align-items: center; }
+        .month-nav { display: flex; gap: 15px; align-items: center; flex-wrap: wrap; }
         .month-nav .nav-btn { background: rgba(255,255,255,0.2); padding: 8px 20px; border-radius: 8px; text-decoration: none; color: white; }
         .month-nav .nav-btn:hover { background: rgba(255,255,255,0.3); }
         .month-badge { background: rgba(255,255,255,0.2); padding: 8px 20px; border-radius: 20px; font-size: 16px; font-weight: 600; }
@@ -227,11 +240,9 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
         .btn-success:hover { background: #1e7e34; }
         .btn-secondary { background: #6c757d; color: white; }
         .btn-secondary:hover { background: #545b62; }
-        .mt-20 { margin-top: 20px; }
-        .flex { display: flex; gap: 15px; flex-wrap: wrap; align-items: center; }
+        .flex { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
         @media (max-width: 768px) {
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
-            .month-nav { flex-wrap: wrap; }
         }
     </style>
 </head>
@@ -255,25 +266,26 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
         <div class="stats-grid">
             <div class="stat-card">
                 <h3>Total Swaps</h3>
-                <div class="value"><?php echo number_format($summary['total_swaps']); ?></div>
-                <div class="sub"><?php echo number_format($summary['completed']); ?> completed</div>
+                <div class="value"><?php echo number_format($totalSwaps); ?></div>
+                <div class="sub"><?php echo number_format($completed); ?> completed</div>
             </div>
             <div class="stat-card">
                 <h3>Total Volume</h3>
-                <div class="value"><?php echo number_format($summary['total_volume'], 2); ?></div>
-                <div class="sub">Avg: <?php echo number_format($summary['avg_amount'], 2); ?></div>
+                <div class="value"><?php echo number_format($totalVolume, 2); ?></div>
+                <div class="sub">Avg: <?php echo number_format($avgAmount, 2); ?></div>
             </div>
             <div class="stat-card">
                 <h3>Range</h3>
-                <div class="value" style="font-size: 20px;"><?php echo number_format($summary['min_amount'], 2); ?> - <?php echo number_format($summary['max_amount'], 2); ?></div>
+                <div class="value" style="font-size: 20px;"><?php echo number_format($minAmount, 2); ?> - <?php echo number_format($maxAmount, 2); ?></div>
                 <div class="sub">Min / Max</div>
             </div>
             <div class="stat-card">
                 <h3>Status</h3>
                 <div class="value" style="font-size: 18px;">
-                    <span class="badge badge-success">C: <?php echo number_format($summary['completed']); ?></span>
-                    <span class="badge badge-danger">F: <?php echo number_format($summary['failed']); ?></span>
-                    <span class="badge badge-warning">P: <?php echo number_format($summary['pending']); ?></span>
+                    <span class="badge badge-success">C: <?php echo number_format($completed); ?></span>
+                    <span class="badge badge-danger">F: <?php echo number_format($failed); ?></span>
+                    <span class="badge badge-warning">P: <?php echo number_format($pending); ?></span>
+                    <span class="badge badge-secondary">X: <?php echo number_format($cancelled); ?></span>
                 </div>
             </div>
         </div>
@@ -338,9 +350,9 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                             <?php foreach ($institutions as $inst): ?>
                                 <tr>
                                     <td><strong>#<?php echo $rank++; ?></strong></td>
-                                    <td><?php echo htmlspecialchars($inst['institution']); ?></td>
-                                    <td class="text-right"><?php echo number_format($inst['tx_count']); ?></td>
-                                    <td class="text-right"><?php echo number_format($inst['total_volume'], 2); ?></td>
+                                    <td><?php echo isset($inst['institution']) ? htmlspecialchars($inst['institution']) : 'Unknown'; ?></td>
+                                    <td class="text-right"><?php echo isset($inst['tx_count']) ? number_format($inst['tx_count']) : 0; ?></td>
+                                    <td class="text-right"><?php echo isset($inst['total_volume']) ? number_format((float)$inst['total_volume'], 2) : '0.00'; ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
@@ -370,10 +382,10 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                         <?php if (!empty($fees)): ?>
                             <?php foreach ($fees as $fee): ?>
                                 <tr>
-                                    <td><strong><?php echo htmlspecialchars($fee['fee_type']); ?></strong></td>
-                                    <td class="text-right"><?php echo number_format($fee['count']); ?></td>
-                                    <td class="text-right"><?php echo number_format($fee['total'], 2); ?></td>
-                                    <td class="text-right"><?php echo number_format($fee['vat'], 2); ?></td>
+                                    <td><strong><?php echo isset($fee['fee_type']) ? htmlspecialchars($fee['fee_type']) : 'N/A'; ?></strong></td>
+                                    <td class="text-right"><?php echo isset($fee['count']) ? number_format($fee['count']) : 0; ?></td>
+                                    <td class="text-right"><?php echo isset($fee['total']) ? number_format((float)$fee['total'], 2) : '0.00'; ?></td>
+                                    <td class="text-right"><?php echo isset($fee['vat']) ? number_format((float)$fee['vat'], 2) : '0.00'; ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
@@ -402,9 +414,9 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                         <?php if (!empty($settlements)): ?>
                             <?php foreach ($settlements as $s): ?>
                                 <tr>
-                                    <td><span class="badge badge-info"><?php echo htmlspecialchars($s['status']); ?></span></td>
-                                    <td class="text-right"><?php echo number_format($s['count']); ?></td>
-                                    <td class="text-right"><?php echo number_format($s['total'], 2); ?></td>
+                                    <td><span class="badge badge-info"><?php echo isset($s['status']) ? htmlspecialchars($s['status']) : 'N/A'; ?></span></td>
+                                    <td class="text-right"><?php echo isset($s['count']) ? number_format($s['count']) : 0; ?></td>
+                                    <td class="text-right"><?php echo isset($s['total']) ? number_format((float)$s['total'], 2) : '0.00'; ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
@@ -434,10 +446,10 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                         <?php if (!empty($corridors)): ?>
                             <?php foreach ($corridors as $c): ?>
                                 <tr>
-                                    <td><span class="badge badge-info"><?php echo htmlspecialchars($c['source_country']); ?></span></td>
-                                    <td><span class="badge badge-info"><?php echo htmlspecialchars($c['destination_country']); ?></span></td>
-                                    <td class="text-right"><?php echo number_format($c['count']); ?></td>
-                                    <td class="text-right"><?php echo number_format($c['volume'], 2); ?></td>
+                                    <td><span class="badge badge-info"><?php echo isset($c['source_country']) ? htmlspecialchars($c['source_country']) : 'N/A'; ?></span></td>
+                                    <td><span class="badge badge-info"><?php echo isset($c['destination_country']) ? htmlspecialchars($c['destination_country']) : 'N/A'; ?></span></td>
+                                    <td class="text-right"><?php echo isset($c['count']) ? number_format($c['count']) : 0; ?></td>
+                                    <td class="text-right"><?php echo isset($c['volume']) ? number_format((float)$c['volume'], 2) : '0.00'; ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
