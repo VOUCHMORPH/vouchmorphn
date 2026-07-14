@@ -131,48 +131,6 @@ try {
     ];
 }
 
-// --- FIX: Define date range variables for queries ---
-$dateFrom = $_GET['date_from'] ?? date('Y-m-d');
-$dateTo = $_GET['date_to'] ?? date('Y-m-d');
-
-// Add settlement outbox status - FIXED: Use $db instead of $swapDB
-try {
-    $settlementOutboxStmt = $db->prepare("
-        SELECT 
-            COUNT(*) as total_settlements,
-            SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) as pending,
-            SUM(CASE WHEN status = 'SENT' THEN 1 ELSE 0 END) as sent,
-            SUM(CASE WHEN status = 'ACKNOWLEDGED' THEN 1 ELSE 0 END) as acknowledged,
-            COALESCE(SUM(amount), 0) as total_amount
-        FROM settlement_outbox
-        WHERE DATE(created_at) BETWEEN :start_date AND :end_date
-    ");
-    $settlementOutboxStmt->execute([':start_date' => $dateFrom, ':end_date' => $dateTo]);
-    $settlementOutboxStats = $settlementOutboxStmt->fetch(PDO::FETCH_ASSOC);
-} catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Settlement outbox error: " . $e->getMessage());
-    $settlementOutboxStats = ['total_settlements' => 0, 'pending' => 0, 'sent' => 0, 'acknowledged' => 0, 'total_amount' => 0];
-}
-
-// Add net positions - FIXED: Use $db instead of $swapDB
-try {
-    $netPositionsStmt = $db->prepare("
-        SELECT 
-            debtor,
-            creditor,
-            SUM(amount) as net_amount,
-            currency_code
-        FROM net_positions
-        WHERE DATE(created_at) BETWEEN :start_date AND :end_date
-        GROUP BY debtor, creditor, currency_code
-    ");
-    $netPositionsStmt->execute([':start_date' => $dateFrom, ':end_date' => $dateTo]);
-    $netPositions = $netPositionsStmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Net positions error: " . $e->getMessage());
-    $netPositions = [];
-}
-
 // Get recent transactions
 $recentTransactions = [];
 try {
@@ -603,7 +561,7 @@ $view = $_GET['view'] ?? 'dashboard';
                             <?php foreach ($recentTransactions as $tx): ?>
                             <tr>
                                 <td><?php echo $tx['swap_id']; ?></td>
-                                <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format($tx['amount'], 2); ?></td>
+                                <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format((float)$tx['amount'], 2); ?></td>
                                 <td><span class="status status-<?php echo strtolower($tx['status']) === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status']); ?></span></td>
                                 <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'])); ?></td>
                             </tr>
@@ -726,10 +684,10 @@ $view = $_GET['view'] ?? 'dashboard';
                         <?php foreach ($allTransactions as $tx): ?>
                         <tr>
                             <td><?php echo $tx['swap_id']; ?></td>
-                            <td><?php echo $tx['user_id']; ?></td>
-                            <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format($tx['amount'], 2); ?></td>
-                            <td><span class="status status-<?php echo strtolower($tx['status']) === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status']); ?></span></td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'])); ?></td>
+                            <td><?php echo $tx['user_id'] ?? 'N/A'; ?></td>
+                            <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
+                            <td><span class="status status-<?php echo strtolower($tx['status'] ?? 'pending') === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status'] ?? 'pending'); ?></span></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'] ?? 'now')); ?></td>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -762,8 +720,8 @@ $view = $_GET['view'] ?? 'dashboard';
                             <td><?php echo htmlspecialchars($log['action_type'] ?? 'N/A'); ?></td>
                             <td><?php echo htmlspecialchars($log['entity_type'] ?? 'N/A'); ?></td>
                             <td><?php echo htmlspecialchars($log['status'] ?? 'N/A'); ?></td>
-                            <td><?php echo $log['assigned_admin_id']; ?></td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($log['created_at'])); ?></td>
+                            <td><?php echo $log['admin_id'] ?? $log['assigned_admin_id'] ?? 'N/A'; ?></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($log['created_at'] ?? 'now')); ?></td>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>
