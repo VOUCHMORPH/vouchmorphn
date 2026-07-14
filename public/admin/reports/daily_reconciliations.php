@@ -131,6 +131,34 @@ try {
     ];
 }
 
+// Add settlement outbox status
+$settlementOutboxStmt = $swapDB->prepare("
+    SELECT 
+        COUNT(*) as total_settlements,
+        SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) as pending,
+        SUM(CASE WHEN status = 'SENT' THEN 1 ELSE 0 END) as sent,
+        SUM(CASE WHEN status = 'ACKNOWLEDGED' THEN 1 ELSE 0 END) as acknowledged,
+        SUM(amount) as total_amount
+    FROM settlement_outbox
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+");
+$settlementOutboxStmt->execute([':start_date' => $dateFrom, ':end_date' => $dateTo]);
+$settlementOutboxStats = $settlementOutboxStmt->fetch(PDO::FETCH_ASSOC);
+
+// Add net positions
+$netPositionsStmt = $swapDB->prepare("
+    SELECT 
+        debtor,
+        creditor,
+        SUM(amount) as net_amount,
+        currency_code
+    FROM net_positions
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+    GROUP BY debtor, creditor, currency_code
+");
+$netPositionsStmt->execute([':start_date' => $dateFrom, ':end_date' => $dateTo]);
+$netPositions = $netPositionsStmt->fetchAll(PDO::FETCH_ASSOC);
+
 // Get recent transactions
 $recentTransactions = [];
 try {
