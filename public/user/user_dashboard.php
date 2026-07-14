@@ -1,17 +1,17 @@
 <?php
-// public/user/dashboard.php - ENHANCED VERSION
+// public/user/dashboard.php - SWAP SERVICE DASHBOARD
+// This is a swap service dashboard, NOT a wallet dashboard.
+// Balances are fetched from source institutions on demand.
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
-require_once __DIR__ . '/../../src/Core/Config/InstitutionRegistry.php';
 
 use Application\Utils\SessionManager;
 use Core\Config\AssetTypeRegistry;
 use Core\Database\DBConnection;
 use Core\Config\LoadCountry;
-use Core\Config\InstitutionRegistry;
 
 SessionManager::start();
 
@@ -48,7 +48,7 @@ $countryName = $config['country'] ?? 'Botswana';
 $currencySymbol = $config['currency_symbol'] ?? 'BWP';
 $currency = $config['currency'] ?? 'BWP';
 
-// Load participants
+// Load participants from YAML
 function parseParticipantsYaml($path) {
     $participants = [];
     if (!file_exists($path)) return $participants;
@@ -101,7 +101,7 @@ $participants = parseParticipantsYaml($countryFolder . '/participants.yaml');
 // Supported asset types
 $supportedAssetTypes = ['ACCOUNT', 'WALLET'];
 
-// Get user's hooked sources
+// Get user's hooked sources (saved sources)
 $hookedSources = [];
 try {
     $stmt = $db->prepare("
@@ -115,7 +115,7 @@ try {
     error_log("Failed to fetch hooked sources: " . $e->getMessage());
 }
 
-// Get user identifiers
+// Get user identifiers (for receiving money)
 $userIdentifiers = [];
 try {
     $stmt = $db->prepare("
@@ -129,8 +129,9 @@ try {
     $userIdentifiers = [];
 }
 
-$validIdentifiers = [];
+// Also get from users table
 $typeIcons = ['phone' => '📱', 'phone2' => '📱', 'phone3' => '📱', 'email' => '✉️', 'national_id' => '🆔', 'drivers_license' => '🚗', 'passport' => '📖'];
+$validIdentifiers = [];
 
 foreach (['phone', 'phone2', 'phone3', 'email', 'national_id', 'drivers_license', 'passport'] as $type) {
     if (!empty($user[$type])) {
@@ -165,7 +166,7 @@ if (empty($primaryIdentifier) && !empty($validIdentifiers)) {
     $primaryIdentifier = $validIdentifiers[0]['value'];
 }
 
-// Get recent swaps
+// Get recent swaps (swap ledger - NOT wallet transactions)
 $recentSwaps = [];
 try {
     $stmt = $db->prepare("
@@ -208,11 +209,6 @@ foreach ($participants as $code => $p) {
     ];
 }
 
-// API endpoints
-$apiUrl = '/api/v1/swap/execute.php';
-$previewUrl = '/api/v1/swap/preview.php';
-$balanceUrl = '/api/v1/source/balance.php';
-$apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
 $identifiersJson = json_encode($validIdentifiers);
 $hookedSourcesJson = json_encode($hookedSources);
 ?>
@@ -221,7 +217,7 @@ $hookedSourcesJson = json_encode($hookedSources);
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VouchMorph | <?= htmlspecialchars($countryName) ?></title>
+<title>VouchMorph Swap | <?= htmlspecialchars($countryName) ?></title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -237,7 +233,6 @@ $hookedSourcesJson = json_encode($hookedSources);
     --fs-label: clamp(0.7rem, 0.65rem + 0.15vw, 0.9rem);
     --fs-h1: clamp(1.3rem, 1rem + 1.2vw, 2.4rem);
     --fs-h2: clamp(1.1rem, 0.95rem + 0.6vw, 1.6rem);
-    --fs-amount: clamp(2rem, 1.4rem + 2.4vw, 4.5rem);
     --space-unit: clamp(0.9rem, 0.75rem + 0.5vw, 1.6rem);
     --tap-min: 48px;
     --clip: clamp(10px, 0.8vw, 20px);
@@ -317,7 +312,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 
 .home { padding: calc(var(--space-unit) * 1.5) 0 calc(var(--space-unit) * 3); }
 
-/* Balance display - only shown when requested */
+/* Balance display - shown ONLY on request */
 .balance-display {
     background: var(--ink);
     color: var(--paper);
@@ -337,6 +332,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
     font-size: var(--fs-h1);
     font-weight: 700;
     margin-top: 0.2em;
+}
+.balance-display .source-info {
+    font-size: var(--fs-label);
+    opacity: 0.5;
+    margin-top: 0.3em;
 }
 
 /* Buttons */
@@ -396,7 +396,6 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .btn-icon { font-size: 1.2em; }
 
 /* Grid */
-.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-unit); }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-unit); }
 .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-unit); }
 
@@ -420,7 +419,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
     font-weight: 700;
 }
 
-/* Main swap buttons */
+/* Main swap buttons - TWO BUTTONS: Swap From and Swap To */
 .swap-actions {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -448,7 +447,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
     margin-top: 0.2em;
 }
 .swap-btn.swap-from { border-color: var(--cobalt); }
+.swap-btn.swap-from:hover { border-color: var(--cobalt); background: #f0f3ff; }
 .swap-btn.swap-to { border-color: var(--forest); }
+.swap-btn.swap-to:hover { border-color: var(--forest); background: #f0fff4; }
 
 /* Quick action buttons */
 .action-grid {
@@ -490,7 +491,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .activity-item .status.pending_cashout { color: var(--amber); }
 .activity-item .status.pending_identity { color: var(--cobalt); }
 
-/* Identifier */
+/* Identifier items */
 .identifier-item {
     display: flex;
     align-items: center;
@@ -507,6 +508,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
+
+/* Badges */
 .badge {
     display: inline-block;
     padding: 0.15em 0.7em;
@@ -586,6 +589,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .form-control:focus { outline: none; border-color: var(--cobalt); }
 .form-control::placeholder { color: #bbb; }
 .form-control option { padding: 0.5em; }
+select.form-control { appearance: auto; }
 
 /* Step indicator */
 .step-indicator {
@@ -646,7 +650,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .asset-pill:hover { border-color: var(--ink); }
 .asset-pill.active { background: var(--cobalt); border-color: var(--cobalt); color: var(--paper); }
 
-/* Source items */
+/* Source items for multi-source */
 .source-item {
     display: flex;
     align-items: center;
@@ -656,6 +660,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
     border: 2px solid var(--line);
     cursor: pointer;
     transition: all 0.2s;
+    margin-bottom: 0.5em;
 }
 .source-item:hover { border-color: var(--ink); }
 .source-item.selected { border-color: var(--cobalt); background: #f0f3ff; }
@@ -664,27 +669,17 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .source-item .source-name { font-weight: 600; }
 .source-item .source-detail { font-size: var(--fs-label); opacity: 0.5; }
 .source-item .source-balance { font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
-.source-item .source-check { color: var(--cobalt); }
-
-/* Multi-source */
-.multi-source-list {
-    max-height: 300px;
-    overflow-y: auto;
-}
-.multi-source-amount {
+.source-item .source-check { color: var(--cobalt); font-size: 1.2em; }
+.source-item .source-amount {
     display: flex;
     gap: 0.5em;
     align-items: center;
 }
-.multi-source-amount input {
-    width: 120px;
+.source-item .source-amount input {
+    width: 100px;
     padding: 0.4em 0.8em;
     border: 2px solid var(--line);
     font-size: var(--fs-body);
-}
-.multi-source-amount .source-total {
-    font-weight: 600;
-    font-family: 'Space Grotesk', sans-serif;
 }
 
 /* Message */
@@ -749,7 +744,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .flex-wrap { flex-wrap: wrap; }
 .items-center { align-items: center; }
 
-/* Identity swap cards */
+/* Identity card */
 .identity-card {
     padding: var(--space-unit);
     border: 2px solid var(--line);
@@ -764,7 +759,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 }
 
 @media (max-width: 768px) {
-    .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
+    .grid-3, .grid-2 { grid-template-columns: 1fr; }
     .swap-actions { grid-template-columns: 1fr; }
     .action-grid { grid-template-columns: repeat(2, 1fr); }
     .modal { margin: 0; max-height: 100vh; border-radius: 0; }
@@ -787,14 +782,14 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 
 <div class="shell">
 <div class="home">
-    <!-- Balance Display - only shown when requested -->
+    <!-- Balance Display - ONLY shown when requested -->
     <div id="balanceDisplay" class="balance-display">
-        <div class="label">Available Balance</div>
+        <div class="label" id="balanceLabel">Available Balance</div>
         <div class="amount" id="balanceAmount"><?= $currencySymbol ?> 0.00</div>
-        <div style="font-size:var(--fs-label);opacity:0.5;margin-top:0.3em;" id="balanceSource">—</div>
+        <div class="source-info" id="balanceSource">—</div>
     </div>
 
-    <!-- Swap Actions: Swap From → Swap To -->
+    <!-- TWO MAIN SWAP BUTTONS: Swap From → Swap To -->
     <div class="swap-actions">
         <div class="swap-btn swap-from" onclick="openModal('swap_from')">
             <span class="icon">📤</span>
@@ -878,14 +873,14 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
     </div>
     <?php endif; ?>
 
-    <!-- Recent Activity -->
+    <!-- Recent Activity (Swap Ledger) -->
     <div class="card mb-16">
         <div class="flex-between mb-16">
-            <div class="card-title" style="margin-bottom:0;">Recent Activity</div>
+            <div class="card-title" style="margin-bottom:0;">Recent Swaps</div>
             <span class="text-muted" style="font-size:0.7rem;">Last 10</span>
         </div>
         <?php if (empty($recentSwaps)): ?>
-            <div class="text-center text-muted" style="padding:1.5em 0;">No transactions yet.</div>
+            <div class="text-center text-muted" style="padding:1.5em 0;">No swaps yet.</div>
         <?php else: ?>
             <?php foreach ($recentSwaps as $swap): ?>
                 <div class="activity-item">
@@ -952,22 +947,20 @@ const userIdentifiers = <?= $identifiersJson ?>;
 const supportedAssetTypes = <?= json_encode($supportedAssetTypes) ?>;
 const currencySymbol = '<?= $currencySymbol ?>';
 const currency = '<?= $currency ?>';
-const apiUrl = '<?= $apiUrl ?>';
-const previewUrl = '<?= $previewUrl ?>';
-const balanceUrl = '<?= $balanceUrl ?>';
-const apiKey = '<?= $apiKey ?>';
+const apiUrl = '/api/v1/swap/execute.php';
+const previewUrl = '/api/v1/swap/preview.php';
+const balanceUrl = '/api/v1/source/balance.php';
 
 const assetLabel = { ACCOUNT: 'Account', WALLET: 'Wallet' };
-const typeIcons = { ACCOUNT: '🏦', WALLET: '📱', CARD: '💳' };
+const typeIcons = { ACCOUNT: '🏦', WALLET: '📱' };
 
-let currentMode = null; // 'swap_from', 'swap_to', 'identity_swap', 'multi_source'
+let currentMode = null;
 let currentStep = 0;
 let selSource = null;
 let selDestination = null;
-let selAssetType = null;
-let selSourceAssetType = null;
-let selDestAssetType = null;
-let selectedSources = [];
+let selSourceAsset = null;
+let selDestAsset = null;
+let selectedMultiSources = [];
 let pendingPayload = null;
 let identitySwapRef = null;
 
@@ -980,10 +973,9 @@ function openModal(mode) {
     currentStep = 0;
     selSource = null;
     selDestination = null;
-    selAssetType = null;
-    selSourceAssetType = null;
-    selDestAssetType = null;
-    selectedSources = [];
+    selSourceAsset = null;
+    selDestAsset = null;
+    selectedMultiSources = [];
     pendingPayload = null;
     identitySwapRef = null;
     
@@ -999,18 +991,14 @@ function openModal(mode) {
     document.getElementById('modalTitle').textContent = titles[mode] || 'Swap';
     document.getElementById('modal').classList.add('active');
     
-    if (mode === 'hooked_sources') {
-        renderHookedSources();
-    } else if (mode === 'identities') {
-        renderIdentities();
-    } else if (mode === 'identity_swap') {
-        renderIdentitySwap();
-    } else if (mode === 'multi_source') {
-        renderMultiSource();
-    } else if (mode === 'swap_from') {
-        renderSwapFrom();
-    } else if (mode === 'swap_to') {
-        renderSwapTo();
+    switch(mode) {
+        case 'hooked_sources': renderHookedSources(); break;
+        case 'identities': renderIdentities(); break;
+        case 'identity_swap': renderIdentitySwap(); break;
+        case 'multi_source': renderMultiSource(); break;
+        case 'swap_from': renderSwapFrom(); break;
+        case 'swap_to': renderSwapTo(); break;
+        default: renderSwapFrom();
     }
 }
 
@@ -1039,12 +1027,11 @@ function renderSwapFrom() {
         <p class="text-muted" style="margin-bottom:1em;">Choose where the money comes from.</p>
     `;
     
-    // Source options: hooked sources + participants
+    // Source selection
     html += `<div class="form-group"><label>Source</label>`;
     html += `<select class="form-control" id="sourceSelect" onchange="updateSourceDetails(this.value)">`;
     html += `<option value="">Select source...</option>`;
     
-    // Group: Hooked sources
     if (hookedSources.length > 0) {
         html += `<optgroup label="🔌 Your Connected Sources">`;
         hookedSources.forEach(s => {
@@ -1054,16 +1041,14 @@ function renderSwapFrom() {
         html += `</optgroup>`;
     }
     
-    // Group: Participants (for manual entry)
     html += `<optgroup label="🏦 Institutions">`;
     Object.entries(participants).forEach(([code, p]) => {
         html += `<option value="inst_${code}">${p.name} (${code})</option>`;
     });
     html += `</optgroup>`;
-    
     html += `</select></div>`;
     
-    // Asset type selection
+    // Asset type
     html += `
         <div class="form-group" id="sourceAssetGroup" style="display:none;">
             <label>Asset Type</label>
@@ -1077,9 +1062,9 @@ function renderSwapFrom() {
         </div>
     `;
     
-    // Manual identifier input (for non-hooked sources)
+    // Source identifier (for manual entry)
     html += `
-        <div class="form-group" id="sourceIdentifierGroup" style="display:none;">
+        <div class="form-group" id="sourceIdGroup" style="display:none;">
             <label>Source Identifier</label>
             <input type="text" class="form-control" id="sourceIdentifier" placeholder="Phone, email, national ID, or account number">
         </div>
@@ -1087,9 +1072,6 @@ function renderSwapFrom() {
             <button class="btn btn-secondary btn-sm" onclick="checkSourceBalance()">💰 Check Balance</button>
             <span id="sourceBalanceResult" style="margin-left:0.5em;font-weight:600;"></span>
         </div>
-    `;
-    
-    html += `
         <div id="step0Message" class="message"></div>
         <button class="btn btn-primary btn-block" onclick="goToSwapFromAmount()" disabled id="step0Next">
             Next →
@@ -1098,7 +1080,6 @@ function renderSwapFrom() {
     
     body.innerHTML = html;
     
-    // Enable next when selection is made
     setTimeout(() => {
         document.getElementById('sourceSelect')?.addEventListener('change', checkSwapFromStep0);
         checkSwapFromStep0();
@@ -1107,15 +1088,14 @@ function renderSwapFrom() {
 
 function updateSourceDetails(value) {
     const assetGroup = document.getElementById('sourceAssetGroup');
-    const idGroup = document.getElementById('sourceIdentifierGroup');
+    const idGroup = document.getElementById('sourceIdGroup');
     const balanceGroup = document.getElementById('sourceBalanceGroup');
-    const sourceBalanceResult = document.getElementById('sourceBalanceResult');
-    const assetPills = document.querySelectorAll('#sourceAssetPills .asset-pill');
+    const result = document.getElementById('sourceBalanceResult');
+    const pills = document.querySelectorAll('#sourceAssetPills .asset-pill');
     
-    // Reset
-    selSourceAssetType = null;
-    assetPills.forEach(el => el.classList.remove('active'));
-    if (sourceBalanceResult) sourceBalanceResult.textContent = '';
+    selSourceAsset = null;
+    pills.forEach(el => el.classList.remove('active'));
+    if (result) result.textContent = '';
     
     if (value.startsWith('hooked_')) {
         const ref = value.replace('hooked_', '');
@@ -1124,13 +1104,11 @@ function updateSourceDetails(value) {
             assetGroup.style.display = 'block';
             idGroup.style.display = 'none';
             balanceGroup.style.display = 'block';
-            // Pre-select asset type
-            const assetType = source.asset_type || 'ACCOUNT';
-            selSourceAssetType = assetType;
-            assetPills.forEach(el => {
+            selSourceAsset = source.asset_type || 'ACCOUNT';
+            pills.forEach(el => {
                 const label = el.textContent.trim();
                 const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-                if (match && match[0] === assetType) el.classList.add('active');
+                if (match && match[0] === selSourceAsset) el.classList.add('active');
             });
         }
     } else if (value.startsWith('inst_')) {
@@ -1140,13 +1118,11 @@ function updateSourceDetails(value) {
             assetGroup.style.display = 'block';
             idGroup.style.display = 'block';
             balanceGroup.style.display = 'block';
-            // Pre-select first asset type from participant
-            const assetType = (p.asset_types && p.asset_types.length > 0) ? p.asset_types[0] : 'ACCOUNT';
-            selSourceAssetType = assetType;
-            assetPills.forEach(el => {
+            selSourceAsset = (p.asset_types && p.asset_types.length > 0) ? p.asset_types[0] : 'ACCOUNT';
+            pills.forEach(el => {
                 const label = el.textContent.trim();
                 const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-                if (match && match[0] === assetType) el.classList.add('active');
+                if (match && match[0] === selSourceAsset) el.classList.add('active');
             });
         }
     } else {
@@ -1154,20 +1130,15 @@ function updateSourceDetails(value) {
         idGroup.style.display = 'none';
         balanceGroup.style.display = 'none';
     }
-    
     checkSwapFromStep0();
 }
 
 function selectSourceAsset(asset) {
-    selSourceAssetType = asset;
+    selSourceAsset = asset;
     document.querySelectorAll('#sourceAssetPills .asset-pill').forEach(el => {
         const label = el.textContent.trim();
         const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-        if (match && match[0] === asset) {
-            el.classList.add('active');
-        } else {
-            el.classList.remove('active');
-        }
+        el.classList.toggle('active', match && match[0] === asset);
     });
     checkSwapFromStep0();
 }
@@ -1177,20 +1148,15 @@ function checkSwapFromStep0() {
     const btn = document.getElementById('step0Next');
     const msg = document.getElementById('step0Message');
     
-    if (!source) {
-        if (btn) btn.disabled = true;
-        return;
-    }
+    if (!source) { if (btn) btn.disabled = true; return; }
     
-    // For hooked sources, asset type is pre-selected
     if (source.startsWith('hooked_')) {
         if (btn) btn.disabled = false;
         return;
     }
     
-    // For institutions, need asset type and identifier
     if (source.startsWith('inst_')) {
-        const hasAsset = selSourceAssetType !== null;
+        const hasAsset = selSourceAsset !== null;
         const identifier = document.getElementById('sourceIdentifier')?.value.trim();
         if (hasAsset && identifier) {
             if (btn) btn.disabled = false;
@@ -1204,7 +1170,6 @@ function checkSwapFromStep0() {
         }
         return;
     }
-    
     if (btn) btn.disabled = true;
 }
 
@@ -1214,6 +1179,7 @@ function checkSourceBalance() {
     if (!result) return;
     
     result.textContent = '⏳ Checking...';
+    result.style.color = 'var(--ink)';
     
     let payload = {};
     
@@ -1225,23 +1191,25 @@ function checkSourceBalance() {
                 source_reference: ref,
                 institution: hooked.institution,
                 identifier: hooked.identifier,
-                asset_type: selSourceAssetType || hooked.asset_type || 'ACCOUNT'
+                asset_type: selSourceAsset || hooked.asset_type || 'ACCOUNT'
             };
         }
     } else if (source.startsWith('inst_')) {
         const code = source.replace('inst_', '');
         const identifier = document.getElementById('sourceIdentifier')?.value.trim();
         if (!identifier) {
-            result.textContent = '⚠️ Please enter identifier first';
+            result.textContent = '⚠️ Enter identifier first';
+            result.style.color = 'var(--red)';
             return;
         }
         payload = {
             institution: code,
             identifier: identifier,
-            asset_type: selSourceAssetType || 'ACCOUNT'
+            asset_type: selSourceAsset || 'ACCOUNT'
         };
     } else {
         result.textContent = '⚠️ Select a source first';
+        result.style.color = 'var(--red)';
         return;
     }
     
@@ -1281,7 +1249,7 @@ function goToSwapFromAmount() {
                 source_reference: ref,
                 institution: hooked.institution,
                 identifier: hooked.identifier,
-                asset_type: selSourceAssetType || hooked.asset_type || 'ACCOUNT',
+                asset_type: selSourceAsset || hooked.asset_type || 'ACCOUNT',
                 access_token: hooked.access_token
             };
         }
@@ -1293,12 +1261,11 @@ function goToSwapFromAmount() {
             type: 'manual',
             institution: code,
             identifier: identifier,
-            asset_type: selSourceAssetType || 'ACCOUNT'
+            asset_type: selSourceAsset || 'ACCOUNT'
         };
     }
     
     if (!sourceData.institution) return;
-    
     selSource = sourceData;
     currentStep = 1;
     renderSwapFromAmount();
@@ -1352,17 +1319,18 @@ function goToSwapFromConfirm() {
     const msg = document.getElementById('step1Message');
     
     if (amount <= 0) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Please enter a valid amount.'; }
+        if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter a valid amount.'; }
         return;
     }
     if (!pin || pin.length < 4) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Please enter your PIN.'; }
+        if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter your PIN.'; }
         return;
     }
     if (msg) { msg.className = 'message'; msg.textContent = ''; }
     
+    // Build payload for SwapService
     pendingPayload = {
-        swap_type: 'SWAP',
+        swap_type: 'STANDARD',
         from_institution: selSource.institution,
         source_institution: selSource.institution,
         source_identifier: selSource.identifier,
@@ -1408,7 +1376,7 @@ function renderSwapFromConfirm() {
                 <div class="preview-row"><span class="label">Asset</span><span class="value">${assetLabel[selSource?.asset_type] || selSource?.asset_type || '—'}</span></div>
                 <div class="preview-row"><span class="label">Amount</span><span class="value">${currencySymbol} ${amount.toFixed(2)}</span></div>
                 <div class="preview-row" style="border-bottom:none;padding-top:0.8em;">
-                    <span class="label">Total to Send</span>
+                    <span class="label">Total</span>
                     <span class="value highlight">${currencySymbol} ${amount.toFixed(2)}</span>
                 </div>
             </div>
@@ -1418,13 +1386,13 @@ function renderSwapFromConfirm() {
         </div>
         <div class="flex gap-16">
             <button class="btn btn-secondary" onclick="currentStep=1;renderSwapFromAmount()">← Back</button>
-            <button class="btn btn-success" id="confirmBtn" onclick="executeSwapFrom()" disabled>Confirm & Send</button>
+            <button class="btn btn-success" id="confirmBtn" onclick="executeSwap()" disabled>Confirm & Send</button>
         </div>
     `;
     
     body.innerHTML = html;
     
-    // Get preview
+    // Get fee preview
     fetch(previewUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1453,64 +1421,6 @@ function renderSwapFromConfirm() {
     });
 }
 
-async function executeSwapFrom() {
-    const btn = document.getElementById('confirmBtn');
-    btn.disabled = true;
-    btn.textContent = '⏳ Processing...';
-    
-    const status = document.getElementById('previewStatus');
-    if (status) status.innerHTML = '⏳ Processing transaction...';
-    
-    try {
-        // If we haven't set destination, add a default destination
-        if (!pendingPayload.to_institution) {
-            // Use first participant as destination
-            const destCode = Object.keys(participants)[0] || 'ZURUBANK';
-            pendingPayload.to_institution = destCode;
-            pendingPayload.destination_institution = destCode;
-            pendingPayload.destination_asset_type = 'ACCOUNT';
-        }
-        
-        const resp = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(pendingPayload)
-        });
-        const result = await resp.json();
-        
-        if (result.status === 'success' || result.status === 'pending_cashout') {
-            document.getElementById('modalBody').innerHTML = `
-                <div class="text-center" style="padding:1.5em 0;">
-                    <div style="font-size:3em;color:var(--forest);">✅</div>
-                    <h3 style="margin:0.5em 0 0.3em;">Success!</h3>
-                    <p class="text-muted">Transaction completed successfully</p>
-                    <p style="font-size:0.7rem;opacity:0.5;">Ref: ${result.reference || result.swap_reference || 'N/A'}</p>
-                    ${result.atm_code ? `<div style="margin:0.5em 0;padding:0.5em;background:var(--panel);border:2px solid var(--ink);"><div style="font-size:0.6rem;opacity:0.5;">ATM CODE</div><div style="font-family:'Space Grotesk',monospace;font-size:1.6rem;letter-spacing:0.1em;">${result.atm_code}</div></div>` : ''}
-                    <button class="btn btn-primary btn-block mt-16" onclick="closeModal();location.reload();">Done</button>
-                </div>
-            `;
-        } else {
-            document.getElementById('modalBody').innerHTML = `
-                <div class="text-center" style="padding:1.5em 0;">
-                    <div style="font-size:3em;color:var(--red);">❌</div>
-                    <h3 style="margin:0.5em 0 0.3em;">Failed</h3>
-                    <p style="color:var(--red);">${result.message || result.error || 'Transaction failed.'}</p>
-                    <button class="btn btn-secondary btn-block mt-16" onclick="currentStep=1;renderSwapFromAmount()">← Back</button>
-                </div>
-            `;
-        }
-    } catch (err) {
-        document.getElementById('modalBody').innerHTML = `
-            <div class="text-center" style="padding:1.5em 0;">
-                <div style="font-size:3em;color:var(--red);">❌</div>
-                <h3 style="margin:0.5em 0 0.3em;">Error</h3>
-                <p style="color:var(--red);">${err.message || 'Network error'}</p>
-                <button class="btn btn-secondary btn-block mt-16" onclick="currentStep=1;renderSwapFromAmount()">← Back</button>
-            </div>
-        `;
-    }
-}
-
 // ============================================================================
 // SWAP TO - DESTINATION SELECTION
 // ============================================================================
@@ -1532,12 +1442,11 @@ function renderSwapTo() {
         <p class="text-muted" style="margin-bottom:1em;">Choose where the money goes.</p>
     `;
     
-    // Destination options: participants + user identifiers
+    // Destination selection
     html += `<div class="form-group"><label>Destination</label>`;
     html += `<select class="form-control" id="destSelect" onchange="updateDestDetails(this.value)">`;
     html += `<option value="">Select destination...</option>`;
     
-    // Group: User identifiers (for receiving)
     if (userIdentifiers.length > 0) {
         html += `<optgroup label="👤 Your Identifiers">`;
         userIdentifiers.forEach(id => {
@@ -1546,16 +1455,14 @@ function renderSwapTo() {
         html += `</optgroup>`;
     }
     
-    // Group: Participants
     html += `<optgroup label="🏦 Institutions">`;
     Object.entries(participants).forEach(([code, p]) => {
         html += `<option value="inst_${code}">${p.name} (${code})</option>`;
     });
     html += `</optgroup>`;
-    
     html += `</select></div>`;
     
-    // Destination details
+    // Destination asset type
     html += `
         <div class="form-group" id="destAssetGroup" style="display:none;">
             <label>Destination Asset Type</label>
@@ -1567,7 +1474,11 @@ function renderSwapTo() {
     html += `
             </div>
         </div>
-        <div class="form-group" id="destIdentifierGroup" style="display:none;">
+    `;
+    
+    // Destination identifier
+    html += `
+        <div class="form-group" id="destIdGroup" style="display:none;">
             <label>Destination Identifier</label>
             <input type="text" class="form-control" id="destIdentifier" placeholder="Phone, email, national ID, or account number">
         </div>
@@ -1575,9 +1486,6 @@ function renderSwapTo() {
             <button class="btn btn-secondary btn-sm" onclick="checkDestBalance()">💰 Check Balance</button>
             <span id="destBalanceResult" style="margin-left:0.5em;font-weight:600;"></span>
         </div>
-    `;
-    
-    html += `
         <div id="step0Message" class="message"></div>
         <button class="btn btn-primary btn-block" onclick="goToSwapToAmount()" disabled id="step0Next">
             Next →
@@ -1594,14 +1502,14 @@ function renderSwapTo() {
 
 function updateDestDetails(value) {
     const assetGroup = document.getElementById('destAssetGroup');
-    const idGroup = document.getElementById('destIdentifierGroup');
+    const idGroup = document.getElementById('destIdGroup');
     const balanceGroup = document.getElementById('destBalanceGroup');
-    const destBalanceResult = document.getElementById('destBalanceResult');
-    const assetPills = document.querySelectorAll('#destAssetPills .asset-pill');
+    const result = document.getElementById('destBalanceResult');
+    const pills = document.querySelectorAll('#destAssetPills .asset-pill');
     
-    selDestAssetType = null;
-    assetPills.forEach(el => el.classList.remove('active'));
-    if (destBalanceResult) destBalanceResult.textContent = '';
+    selDestAsset = null;
+    pills.forEach(el => el.classList.remove('active'));
+    if (result) result.textContent = '';
     
     if (value.startsWith('id_')) {
         const identifier = value.replace('id_', '');
@@ -1610,14 +1518,11 @@ function updateDestDetails(value) {
             assetGroup.style.display = 'block';
             idGroup.style.display = 'none';
             balanceGroup.style.display = 'none';
-            // Pre-select asset type based on identity type
-            let assetType = 'ACCOUNT';
-            if (id.type === 'phone' || id.type === 'email') assetType = 'WALLET';
-            selDestAssetType = assetType;
-            assetPills.forEach(el => {
+            selDestAsset = (id.type === 'phone' || id.type === 'email') ? 'WALLET' : 'ACCOUNT';
+            pills.forEach(el => {
                 const label = el.textContent.trim();
                 const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-                if (match && match[0] === assetType) el.classList.add('active');
+                if (match && match[0] === selDestAsset) el.classList.add('active');
             });
         }
     } else if (value.startsWith('inst_')) {
@@ -1627,12 +1532,11 @@ function updateDestDetails(value) {
             assetGroup.style.display = 'block';
             idGroup.style.display = 'block';
             balanceGroup.style.display = 'block';
-            const assetType = (p.asset_types && p.asset_types.length > 0) ? p.asset_types[0] : 'ACCOUNT';
-            selDestAssetType = assetType;
-            assetPills.forEach(el => {
+            selDestAsset = (p.asset_types && p.asset_types.length > 0) ? p.asset_types[0] : 'ACCOUNT';
+            pills.forEach(el => {
                 const label = el.textContent.trim();
                 const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-                if (match && match[0] === assetType) el.classList.add('active');
+                if (match && match[0] === selDestAsset) el.classList.add('active');
             });
         }
     } else {
@@ -1640,20 +1544,15 @@ function updateDestDetails(value) {
         idGroup.style.display = 'none';
         balanceGroup.style.display = 'none';
     }
-    
     checkSwapToStep0();
 }
 
 function selectDestAsset(asset) {
-    selDestAssetType = asset;
+    selDestAsset = asset;
     document.querySelectorAll('#destAssetPills .asset-pill').forEach(el => {
         const label = el.textContent.trim();
         const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-        if (match && match[0] === asset) {
-            el.classList.add('active');
-        } else {
-            el.classList.remove('active');
-        }
+        el.classList.toggle('active', match && match[0] === asset);
     });
     checkSwapToStep0();
 }
@@ -1663,10 +1562,7 @@ function checkSwapToStep0() {
     const btn = document.getElementById('step0Next');
     const msg = document.getElementById('step0Message');
     
-    if (!dest) {
-        if (btn) btn.disabled = true;
-        return;
-    }
+    if (!dest) { if (btn) btn.disabled = true; return; }
     
     if (dest.startsWith('id_')) {
         if (btn) btn.disabled = false;
@@ -1674,7 +1570,7 @@ function checkSwapToStep0() {
     }
     
     if (dest.startsWith('inst_')) {
-        const hasAsset = selDestAssetType !== null;
+        const hasAsset = selDestAsset !== null;
         const identifier = document.getElementById('destIdentifier')?.value.trim();
         if (hasAsset && identifier) {
             if (btn) btn.disabled = false;
@@ -1683,12 +1579,11 @@ function checkSwapToStep0() {
             if (btn) btn.disabled = true;
             if (msg) {
                 msg.className = 'message show warning';
-                msg.textContent = !hasAsset ? 'Please select an asset type.' : 'Please enter the destination identifier.';
+                msg.textContent = !hasAsset ? 'Select an asset type.' : 'Enter the destination identifier.';
             }
         }
         return;
     }
-    
     if (btn) btn.disabled = true;
 }
 
@@ -1698,6 +1593,7 @@ function checkDestBalance() {
     if (!result) return;
     
     result.textContent = '⏳ Checking...';
+    result.style.color = 'var(--ink)';
     
     let payload = {};
     
@@ -1705,16 +1601,18 @@ function checkDestBalance() {
         const code = dest.replace('inst_', '');
         const identifier = document.getElementById('destIdentifier')?.value.trim();
         if (!identifier) {
-            result.textContent = '⚠️ Please enter identifier first';
+            result.textContent = '⚠️ Enter identifier first';
+            result.style.color = 'var(--red)';
             return;
         }
         payload = {
             institution: code,
             identifier: identifier,
-            asset_type: selDestAssetType || 'ACCOUNT'
+            asset_type: selDestAsset || 'ACCOUNT'
         };
     } else {
-        result.textContent = '⚠️ Select a destination first';
+        result.textContent = '⚠️ Select a destination';
+        result.style.color = 'var(--red)';
         return;
     }
     
@@ -1753,7 +1651,7 @@ function goToSwapToAmount() {
                 type: 'identity',
                 identifier: identifier,
                 identity_type: id.type,
-                asset_type: selDestAssetType || 'WALLET'
+                asset_type: selDestAsset || 'WALLET'
             };
         }
     } else if (dest.startsWith('inst_')) {
@@ -1764,12 +1662,11 @@ function goToSwapToAmount() {
             type: 'institution',
             institution: code,
             identifier: identifier,
-            asset_type: selDestAssetType || 'ACCOUNT'
+            asset_type: selDestAsset || 'ACCOUNT'
         };
     }
     
     if (!destData.identifier) return;
-    
     selDestination = destData;
     currentStep = 1;
     renderSwapToAmount();
@@ -1823,19 +1720,22 @@ function goToSwapToConfirm() {
     const msg = document.getElementById('step1Message');
     
     if (amount <= 0) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Please enter a valid amount.'; }
+        if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter a valid amount.'; }
         return;
     }
     if (!pin || pin.length < 4) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Please enter your PIN.'; }
+        if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter your PIN.'; }
         return;
     }
     if (msg) { msg.className = 'message'; msg.textContent = ''; }
     
+    // Use first participant as source if not specified
+    const sourceInst = Object.keys(participants)[0] || 'ZURUBANK';
+    
     pendingPayload = {
-        swap_type: 'SWAP',
-        from_institution: Object.keys(participants)[0] || 'ZURUBANK',
-        source_institution: Object.keys(participants)[0] || 'ZURUBANK',
+        swap_type: 'STANDARD',
+        from_institution: sourceInst,
+        source_institution: sourceInst,
         source_identifier: userIdentifiers[0]?.value || '',
         to_institution: selDestination.institution || 'ZURUBANK',
         destination_institution: selDestination.institution || 'ZURUBANK',
@@ -1877,7 +1777,7 @@ function renderSwapToConfirm() {
                 <div class="preview-row"><span class="label">Asset</span><span class="value">${assetLabel[selDestination?.asset_type] || selDestination?.asset_type || '—'}</span></div>
                 <div class="preview-row"><span class="label">Amount</span><span class="value">${currencySymbol} ${amount.toFixed(2)}</span></div>
                 <div class="preview-row" style="border-bottom:none;padding-top:0.8em;">
-                    <span class="label">Total to Send</span>
+                    <span class="label">Total</span>
                     <span class="value highlight">${currencySymbol} ${amount.toFixed(2)}</span>
                 </div>
             </div>
@@ -1887,7 +1787,7 @@ function renderSwapToConfirm() {
         </div>
         <div class="flex gap-16">
             <button class="btn btn-secondary" onclick="currentStep=1;renderSwapToAmount()">← Back</button>
-            <button class="btn btn-success" id="confirmBtn" onclick="executeSwapTo()" disabled>Confirm & Send</button>
+            <button class="btn btn-success" id="confirmBtn" onclick="executeSwap()" disabled>Confirm & Send</button>
         </div>
     `;
     
@@ -1921,7 +1821,11 @@ function renderSwapToConfirm() {
     });
 }
 
-async function executeSwapTo() {
+// ============================================================================
+// EXECUTE SWAP (shared)
+// ============================================================================
+
+async function executeSwap() {
     const btn = document.getElementById('confirmBtn');
     btn.disabled = true;
     btn.textContent = '⏳ Processing...';
@@ -1937,13 +1841,15 @@ async function executeSwapTo() {
         });
         const result = await resp.json();
         
-        if (result.status === 'success' || result.status === 'pending_cashout') {
+        if (result.status === 'success' || result.status === 'pending_cashout' || result.success) {
             document.getElementById('modalBody').innerHTML = `
                 <div class="text-center" style="padding:1.5em 0;">
                     <div style="font-size:3em;color:var(--forest);">✅</div>
                     <h3 style="margin:0.5em 0 0.3em;">Success!</h3>
-                    <p class="text-muted">Transaction completed successfully</p>
+                    <p class="text-muted">Swap completed successfully</p>
                     <p style="font-size:0.7rem;opacity:0.5;">Ref: ${result.reference || result.swap_reference || 'N/A'}</p>
+                    ${result.atm_code ? `<div style="margin:0.5em 0;padding:0.5em;background:var(--panel);border:2px solid var(--ink);"><div style="font-size:0.6rem;opacity:0.5;">ATM CODE</div><div style="font-family:monospace;font-size:1.6rem;letter-spacing:0.1em;">${result.atm_code}</div></div>` : ''}
+                    ${result.voucher_number ? `<div style="margin:0.5em 0;padding:0.5em;background:var(--panel);border:2px solid var(--ink);"><div style="font-size:0.6rem;opacity:0.5;">VOUCHER</div><div style="font-family:monospace;font-size:1.6rem;letter-spacing:0.1em;">${result.voucher_number}</div></div>` : ''}
                     <button class="btn btn-primary btn-block mt-16" onclick="closeModal();location.reload();">Done</button>
                 </div>
             `;
@@ -1952,8 +1858,8 @@ async function executeSwapTo() {
                 <div class="text-center" style="padding:1.5em 0;">
                     <div style="font-size:3em;color:var(--red);">❌</div>
                     <h3 style="margin:0.5em 0 0.3em;">Failed</h3>
-                    <p style="color:var(--red);">${result.message || result.error || 'Transaction failed.'}</p>
-                    <button class="btn btn-secondary btn-block mt-16" onclick="currentStep=1;renderSwapToAmount()">← Back</button>
+                    <p style="color:var(--red);">${result.message || result.error || 'Swap failed.'}</p>
+                    <button class="btn btn-secondary btn-block mt-16" onclick="currentStep=1;currentMode==='swap_from'?renderSwapFromAmount():renderSwapToAmount()">← Back</button>
                 </div>
             `;
         }
@@ -1963,7 +1869,7 @@ async function executeSwapTo() {
                 <div style="font-size:3em;color:var(--red);">❌</div>
                 <h3 style="margin:0.5em 0 0.3em;">Error</h3>
                 <p style="color:var(--red);">${err.message || 'Network error'}</p>
-                <button class="btn btn-secondary btn-block mt-16" onclick="currentStep=1;renderSwapToAmount()">← Back</button>
+                <button class="btn btn-secondary btn-block mt-16" onclick="closeModal()">Close</button>
             </div>
         `;
     }
@@ -1987,7 +1893,7 @@ function renderIdentitySwap() {
             <span>2. Recipient</span>
             <span>3. Confirm</span>
         </div>
-        <p class="text-muted" style="margin-bottom:1em;">Send money to someone's identity. They'll claim it.</p>
+        <p class="text-muted" style="margin-bottom:1em;">Send money to someone's identity. They'll claim it within 24 hours.</p>
     `;
     
     // Source selection
@@ -2000,13 +1906,11 @@ function renderIdentitySwap() {
             html += `<option value="hooked_${s.source_reference}">${s.institution} - ${s.identifier}</option>`;
         });
     }
-    
     Object.entries(participants).forEach(([code, p]) => {
         html += `<option value="inst_${code}">${p.name} (${code})</option>`;
     });
     html += `</select></div>`;
     
-    // Source identifier for manual entry
     html += `
         <div class="form-group" id="identitySourceIdGroup" style="display:none;">
             <label>Your Source Identifier</label>
@@ -2022,7 +1926,7 @@ function renderIdentitySwap() {
         </div>
         <div class="form-group">
             <label>Recipient Identity Value</label>
-            <input type="text" class="form-control" id="identityValue" placeholder="e.g. 123456789, 0712345678, or email@example.com">
+            <input type="text" class="form-control" id="identityValue" placeholder="e.g. 123456789, 0712345678, email@example.com">
         </div>
         <div class="form-group">
             <label>Amount (${currencySymbol})</label>
@@ -2040,14 +1944,9 @@ function renderIdentitySwap() {
     
     body.innerHTML = html;
     
-    // Show/hide source identifier field
     document.getElementById('identitySourceSelect')?.addEventListener('change', function() {
-        const idGroup = document.getElementById('identitySourceIdGroup');
-        if (this.value && !this.value.startsWith('hooked_')) {
-            idGroup.style.display = 'block';
-        } else {
-            idGroup.style.display = 'none';
-        }
+        document.getElementById('identitySourceIdGroup').style.display = 
+            this.value && !this.value.startsWith('hooked_') ? 'block' : 'none';
     });
 }
 
@@ -2060,28 +1959,13 @@ function initiateIdentitySwap() {
     const sourceId = document.getElementById('identitySourceId')?.value.trim();
     const msg = document.getElementById('identityMsg');
     
-    if (!source) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Please select a source.'; }
-        return;
-    }
-    if (!identityValue) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Please enter the recipient identity.'; }
-        return;
-    }
-    if (amount <= 0) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Please enter a valid amount.'; }
-        return;
-    }
-    if (!pin || pin.length < 4) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Please enter your PIN.'; }
-        return;
-    }
+    if (!source) { if (msg) { msg.className = 'message show error'; msg.textContent = 'Select a source.'; } return; }
+    if (!identityValue) { if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter the recipient identity.'; } return; }
+    if (amount <= 0) { if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter a valid amount.'; } return; }
+    if (!pin || pin.length < 4) { if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter your PIN.'; } return; }
     if (msg) { msg.className = 'message'; msg.textContent = ''; }
     
-    let sourceInstitution = '';
-    let sourceIdentifier = '';
-    let assetType = 'ACCOUNT';
-    let isHooked = false;
+    let sourceInstitution = '', sourceIdentifier = '', assetType = 'ACCOUNT', isHooked = false;
     
     if (source.startsWith('hooked_')) {
         const ref = source.replace('hooked_', '');
@@ -2096,13 +1980,13 @@ function initiateIdentitySwap() {
         sourceInstitution = source.replace('inst_', '');
         sourceIdentifier = sourceId || '';
         if (!sourceIdentifier) {
-            if (msg) { msg.className = 'message show error'; msg.textContent = 'Please enter your source identifier.'; }
+            if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter your source identifier.'; }
             return;
         }
     }
     
     if (!sourceInstitution || !sourceIdentifier) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Please fill in all source details.'; }
+        if (msg) { msg.className = 'message show error'; msg.textContent = 'Fill in all source details.'; }
         return;
     }
     
@@ -2123,7 +2007,6 @@ function initiateIdentitySwap() {
     };
     
     if (isHooked) {
-        // Find the hooked source
         const ref = source.replace('hooked_', '');
         const hooked = hookedSources.find(s => s.source_reference === ref);
         if (hooked) {
@@ -2133,8 +2016,7 @@ function initiateIdentitySwap() {
         }
     }
     
-    // Show loading
-    const btn = document.querySelector('#modalBody button');
+    const btn = document.querySelector('#modalBody .btn-primary');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Initiating...'; }
     if (msg) { msg.className = 'message show info'; msg.textContent = 'Initiating identity swap...'; }
     
@@ -2159,7 +2041,7 @@ function initiateIdentitySwap() {
                         <div class="preview-row"><span class="label">Expires</span><span class="value">${result.expires_at || '24 hours'}</span></div>
                     </div>
                     <p style="font-size:0.8rem;opacity:0.5;margin-top:0.5em;">
-                        Recipient can claim at: <strong>https://vouchmorphn.com/claim</strong>
+                        Recipient can claim at: <strong>/claim.php?ref=${result.swap_reference}</strong>
                     </p>
                     <button class="btn btn-primary btn-block mt-16" onclick="closeModal();location.reload();">Done</button>
                 </div>
@@ -2188,7 +2070,6 @@ function initiateIdentitySwap() {
 }
 
 function claimIdentity(swapRef) {
-    // This would open a claim modal or redirect to claim page
     window.location.href = `claim.php?ref=${swapRef}`;
 }
 
@@ -2215,15 +2096,12 @@ function renderMultiSource() {
     
     // Available sources
     html += `<div class="form-group"><label>Available Sources</label>`;
-    html += `<div class="multi-source-list">`;
     
-    const allSources = [...hookedSources];
-    
-    if (allSources.length === 0) {
-        html += `<div class="text-muted" style="padding:1em 0;">No hooked sources available. Please connect a source first.</div>`;
+    if (hookedSources.length === 0) {
+        html += `<div class="text-muted" style="padding:1em 0;">No hooked sources available. Connect a source first.</div>`;
     } else {
-        allSources.forEach((s, idx) => {
-            const isSelected = selectedSources.some(sl => sl.source_reference === s.source_reference);
+        hookedSources.forEach((s) => {
+            const isSelected = selectedMultiSources.some(sl => sl.source_reference === s.source_reference);
             html += `
                 <div class="source-item ${isSelected ? 'selected' : ''}" onclick="toggleMultiSource('${s.source_reference}')">
                     <span class="source-icon">${typeIcons[s.asset_type] || '🏦'}</span>
@@ -2231,7 +2109,7 @@ function renderMultiSource() {
                         <div class="source-name">${s.institution}</div>
                         <div class="source-detail">${s.identifier}</div>
                     </div>
-                    <div class="multi-source-amount">
+                    <div class="source-amount">
                         <input type="number" class="form-control" id="ms_amount_${s.source_reference}" 
                                placeholder="Amount" step="0.01" min="0.01" 
                                ${!isSelected ? 'disabled' : ''}
@@ -2243,8 +2121,7 @@ function renderMultiSource() {
             `;
         });
     }
-    
-    html += `</div></div>`;
+    html += `</div>`;
     
     // Total
     html += `
@@ -2258,7 +2135,7 @@ function renderMultiSource() {
     html += `
         <div class="form-group">
             <label>Destination</label>
-            <select class="form-control" id="multiDestSelect">
+            <select class="form-control" id="multiDestSelect" onchange="checkMultiSourceReady()">
                 <option value="">Select destination...</option>
     `;
     if (userIdentifiers.length > 0) {
@@ -2294,34 +2171,27 @@ function renderMultiSource() {
     
     body.innerHTML = html;
     
-    // Show/hide destination identifier field
     document.getElementById('multiDestSelect')?.addEventListener('change', function() {
-        const idGroup = document.getElementById('multiDestIdGroup');
-        if (this.value && this.value.startsWith('inst_')) {
-            idGroup.style.display = 'block';
-        } else {
-            idGroup.style.display = 'none';
-        }
+        document.getElementById('multiDestIdGroup').style.display = 
+            this.value && this.value.startsWith('inst_') ? 'block' : 'none';
         checkMultiSourceReady();
     });
-    
-    // Check if ready
+    document.getElementById('multiDestId')?.addEventListener('input', checkMultiSourceReady);
     document.querySelectorAll('#multiDestAssetPills .asset-pill').forEach(el => {
         el.addEventListener('click', checkMultiSourceReady);
     });
-    document.getElementById('multiDestId')?.addEventListener('input', checkMultiSourceReady);
 }
 
-let multiDestAssetType = 'ACCOUNT';
+let multiDestAsset = 'ACCOUNT';
 
 function toggleMultiSource(ref) {
-    const idx = selectedSources.findIndex(s => s.source_reference === ref);
+    const idx = selectedMultiSources.findIndex(s => s.source_reference === ref);
     if (idx >= 0) {
-        selectedSources.splice(idx, 1);
+        selectedMultiSources.splice(idx, 1);
     } else {
         const source = hookedSources.find(s => s.source_reference === ref);
         if (source) {
-            selectedSources.push({
+            selectedMultiSources.push({
                 source_reference: ref,
                 institution: source.institution,
                 identifier: source.identifier,
@@ -2331,12 +2201,11 @@ function toggleMultiSource(ref) {
         }
     }
     
-    // Update UI
     document.querySelectorAll('.source-item').forEach(el => {
         const input = el.querySelector('input');
         const refAttr = input?.id?.replace('ms_amount_', '');
         if (refAttr) {
-            const isSelected = selectedSources.some(s => s.source_reference === refAttr);
+            const isSelected = selectedMultiSources.some(s => s.source_reference === refAttr);
             el.classList.toggle('selected', isSelected);
             input.disabled = !isSelected;
             if (!isSelected) input.value = '';
@@ -2350,7 +2219,7 @@ function toggleMultiSource(ref) {
 
 function updateMultiSourceTotal() {
     let total = 0;
-    selectedSources.forEach(s => {
+    selectedMultiSources.forEach(s => {
         const input = document.getElementById(`ms_amount_${s.source_reference}`);
         const amount = parseFloat(input?.value) || 0;
         s.amount = amount;
@@ -2364,7 +2233,8 @@ function checkMultiSourceBalance(ref) {
     const source = hookedSources.find(s => s.source_reference === ref);
     if (!source) return;
     
-    const btn = document.querySelector(`#ms_amount_${ref}`)?.closest('.multi-source-amount')?.querySelector('button');
+    const input = document.getElementById(`ms_amount_${ref}`);
+    const btn = input?.closest('.source-amount')?.querySelector('button');
     if (btn) btn.textContent = '⏳';
     
     fetch(balanceUrl, {
@@ -2395,15 +2265,11 @@ function checkMultiSourceBalance(ref) {
 }
 
 function selectMultiDestAsset(asset) {
-    multiDestAssetType = asset;
+    multiDestAsset = asset;
     document.querySelectorAll('#multiDestAssetPills .asset-pill').forEach(el => {
         const label = el.textContent.trim();
         const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-        if (match && match[0] === asset) {
-            el.classList.add('active');
-        } else {
-            el.classList.remove('active');
-        }
+        el.classList.toggle('active', match && match[0] === asset);
     });
     checkMultiSourceReady();
 }
@@ -2413,48 +2279,36 @@ function checkMultiSourceReady() {
     const btn = document.getElementById('multiExecuteBtn');
     const msg = document.getElementById('multiMsg');
     
-    // Check sources
-    const hasSources = selectedSources.length >= 2;
-    let allHaveAmount = true;
-    let total = 0;
-    selectedSources.forEach(s => {
+    const hasSources = selectedMultiSources.length >= 2;
+    let allHaveAmount = true, total = 0;
+    selectedMultiSources.forEach(s => {
         const input = document.getElementById(`ms_amount_${s.source_reference}`);
         const amount = parseFloat(input?.value) || 0;
         if (amount <= 0) allHaveAmount = false;
         total += amount;
     });
     
-    // Check destination
     let destValid = false;
     if (dest) {
-        if (dest.startsWith('id_')) {
-            destValid = true;
-        } else if (dest.startsWith('inst_')) {
+        if (dest.startsWith('id_')) destValid = true;
+        else if (dest.startsWith('inst_')) {
             const id = document.getElementById('multiDestId')?.value.trim();
             destValid = !!id;
         }
     }
     
-    const ready = hasSources && allHaveAmount && total > 0 && destValid && multiDestAssetType;
+    const ready = hasSources && allHaveAmount && total > 0 && destValid && multiDestAsset;
     
     if (btn) btn.disabled = !ready;
     if (msg && !ready) {
         let reason = '';
         if (!hasSources) reason = 'Select at least 2 sources.';
         else if (!allHaveAmount) reason = 'Enter amounts for all selected sources.';
-        else if (total <= 0) reason = 'Total amount must be greater than 0.';
-        else if (!destValid) reason = 'Please select a destination and fill in all details.';
-        if (reason) {
-            msg.className = 'message show warning';
-            msg.textContent = reason;
-        } else {
-            msg.className = 'message';
-            msg.textContent = '';
-        }
-    } else if (msg) {
-        msg.className = 'message';
-        msg.textContent = '';
-    }
+        else if (total <= 0) reason = 'Total amount must be > 0.';
+        else if (!destValid) reason = 'Select a destination and fill in details.';
+        if (reason) { msg.className = 'message show warning'; msg.textContent = reason; }
+        else { msg.className = 'message'; msg.textContent = ''; }
+    } else if (msg) { msg.className = 'message'; msg.textContent = ''; }
 }
 
 function executeMultiSourceSwap() {
@@ -2464,28 +2318,23 @@ function executeMultiSourceSwap() {
     
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Processing...'; }
     
-    // Build destination
-    let destInstitution = '';
-    let destIdentifier = '';
-    let destType = multiDestAssetType || 'ACCOUNT';
+    let destInstitution = '', destIdentifier = '', destType = multiDestAsset || 'ACCOUNT';
     
     if (dest.startsWith('id_')) {
         destIdentifier = dest.replace('id_', '');
-        const id = userIdentifiers.find(i => i.value === destIdentifier);
-        destInstitution = 'IDENTITY'; // Will be resolved by backend
+        destInstitution = 'IDENTITY';
     } else if (dest.startsWith('inst_')) {
         destInstitution = dest.replace('inst_', '');
         destIdentifier = document.getElementById('multiDestId')?.value.trim() || '';
     }
     
     if (!destInstitution || !destIdentifier) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Please fill in destination details.'; }
+        if (msg) { msg.className = 'message show error'; msg.textContent = 'Fill in destination details.'; }
         if (btn) { btn.disabled = false; btn.textContent = 'Execute Multi-Source Swap →'; }
         return;
     }
     
-    // Build sources array
-    const sources = selectedSources.map(s => ({
+    const sources = selectedMultiSources.map(s => ({
         source_reference: s.source_reference,
         institution: s.institution,
         identifier: s.identifier,
@@ -2493,7 +2342,7 @@ function executeMultiSourceSwap() {
         amount: s.amount
     }));
     
-    const total = selectedSources.reduce((sum, s) => sum + s.amount, 0);
+    const total = selectedMultiSources.reduce((sum, s) => sum + s.amount, 0);
     
     const payload = {
         swap_type: 'MULTI_SOURCE',
@@ -2518,17 +2367,17 @@ function executeMultiSourceSwap() {
     })
     .then(res => res.json())
     .then(result => {
-        if (result.status === 'success' || result.status === 'pending_cashout') {
+        if (result.status === 'success' || result.status === 'pending_cashout' || result.success) {
             document.getElementById('modalBody').innerHTML = `
                 <div class="text-center" style="padding:1.5em 0;">
                     <div style="font-size:3em;color:var(--forest);">✅</div>
                     <h3 style="margin:0.5em 0 0.3em;">Multi-Source Swap Complete!</h3>
-                    <p class="text-muted">Combined ${selectedSources.length} sources successfully</p>
+                    <p class="text-muted">Combined ${selectedMultiSources.length} sources successfully</p>
                     <div class="preview-box" style="text-align:left;">
                         <div class="preview-row"><span class="label">Reference</span><span class="value">${result.reference || result.swap_reference || 'N/A'}</span></div>
-                        <div class="preview-row"><span class="label">Total Amount</span><span class="value">${currencySymbol} ${total.toFixed(2)}</span></div>
+                        <div class="preview-row"><span class="label">Total</span><span class="value">${currencySymbol} ${total.toFixed(2)}</span></div>
                         <div class="preview-row"><span class="label">Destination</span><span class="value">${destInstitution}</span></div>
-                        <div class="preview-row"><span class="label">Sources</span><span class="value">${selectedSources.length}</span></div>
+                        <div class="preview-row"><span class="label">Sources</span><span class="value">${selectedMultiSources.length}</span></div>
                     </div>
                     <button class="btn btn-primary btn-block mt-16" onclick="closeModal();location.reload();">Done</button>
                 </div>
@@ -2574,7 +2423,7 @@ function renderHookedSources() {
             <div class="text-center" style="padding:2em 0;">
                 <div style="font-size:2.4em;margin-bottom:0.5em;">🔌</div>
                 <p class="text-muted">No sources connected yet.</p>
-                <p style="font-size:0.8rem;opacity:0.5;">Go to your bank's app or portal to connect a source.</p>
+                <p style="font-size:0.8rem;opacity:0.5;">Connect a source via your bank's OAuth flow.</p>
             </div>
         `;
     } else {
@@ -2597,17 +2446,14 @@ function renderHookedSources() {
     }
     
     html += `
-        <div class="text-center text-muted" style="font-size:0.7rem;padding:1em 0;">
-            To add more sources, contact support or use your bank's OAuth flow.
-        </div>
-        <button class="btn btn-secondary btn-block" onclick="closeModal()">Close</button>
+        <button class="btn btn-secondary btn-block mt-16" onclick="closeModal()">Close</button>
     `;
     
     body.innerHTML = html;
 }
 
 function revokeSource(ref) {
-    if (!confirm('Are you sure you want to revoke this source?')) return;
+    if (!confirm('Revoke this source?')) return;
     
     fetch('/api/v1/source/revoke.php', {
         method: 'POST',
@@ -2616,15 +2462,10 @@ function revokeSource(ref) {
     })
     .then(res => res.json())
     .then(data => {
-        if (data.success) {
-            renderHookedSources();
-        } else {
-            alert(data.message || 'Failed to revoke source');
-        }
+        if (data.success) renderHookedSources();
+        else alert(data.message || 'Failed to revoke');
     })
-    .catch(err => {
-        alert('Error revoking source: ' + err.message);
-    });
+    .catch(err => alert('Error: ' + err.message));
 }
 
 // ============================================================================
@@ -2668,17 +2509,12 @@ function renderIdentities() {
 }
 
 // ============================================================================
-// CLOSE MODAL ON ESCAPE
+// KEYBOARD SHORTCUTS
 // ============================================================================
 
 document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closeModal();
 });
-
-// Display balance on page load if requested
-function showBalance() {
-    document.getElementById('balanceDisplay').classList.toggle('visible');
-}
 </script>
 </body>
 </html>
