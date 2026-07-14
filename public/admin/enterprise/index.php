@@ -13,7 +13,7 @@
  * this screen searches for that record by phone/email first, and only
  * creates a new one if nothing matches.
  */
-require_once '../../auth.php';
+require_once 'auth.php';
 $user = requireEnterpriseAuth();
 $pdo = getDBConnection();
 $orgId = getOrganizationId();
