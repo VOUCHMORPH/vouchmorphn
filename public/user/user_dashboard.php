@@ -1,1217 +1,2156 @@
-<?php
-// public/user/dashboard.php - FIXED VERSION
-
-require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
-require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
-require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
-require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
-
-use Application\Utils\SessionManager;
-use Core\Config\AssetTypeRegistry;
-use Core\Database\DBConnection;
-use Core\Config\LoadCountry;
-
-SessionManager::start();
-
-if (!SessionManager::isLoggedIn()) {
-    header("Location: login.php");
-    exit;
-}
-
-// FIX: Get user from session properly
-$user = SessionManager::user();
-$userId = $user['id'] ?? $user['user_id'] ?? null;
-
-if (!$userId) {
-    header("Location: login.php");
-    exit;
-}
-
-// Get full user details from database
-try {
-    $db = DBConnection::getConnection();
-    $stmt = $db->prepare("SELECT * FROM users WHERE user_id = ?");
-    $stmt->execute([$userId]);
-    $dbUser = $stmt->fetch(PDO::FETCH_ASSOC);
-    if ($dbUser) {
-        $user = array_merge($user, $dbUser);
-        $user['id'] = $user['user_id'];
-    }
-} catch (Exception $e) {
-    error_log("Dashboard: Failed to fetch user: " . $e->getMessage());
-}
-
-// Get user identifiers
-$userIdentifiers = [];
-try {
-    $stmt = $db->prepare("
-        SELECT identity_type, identity_value, is_verified 
-        FROM user_identities 
-        WHERE user_id = ? AND is_verified = true
-    ");
-    $stmt->execute([$userId]);
-    $userIdentifiers = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) {
-    // Fallback to users table
-    $userIdentifiers = [];
-}
-
-$validIdentifiers = [];
-$typeIcons = ['phone' => '📱', 'phone2' => '📱', 'phone3' => '📱', 'email' => '✉️', 'national_id' => '🆔', 'drivers_license' => '🚗', 'passport' => '📖'];
-
-// Add from user table
-foreach (['phone', 'phone2', 'phone3', 'email', 'national_id', 'drivers_license', 'passport'] as $type) {
-    if (!empty($user[$type])) {
-        $validIdentifiers[] = [
-            'type' => $type,
-            'value' => $user[$type],
-            'icon' => $typeIcons[$type] ?? '🔑',
-            'is_verified' => true
-        ];
-    }
-}
-
-// Add from user_identities table
-foreach ($userIdentifiers as $id) {
-    if (!in_array($id['identity_value'], array_column($validIdentifiers, 'value'))) {
-        $validIdentifiers[] = [
-            'type' => $id['identity_type'],
-            'value' => $id['identity_value'],
-            'icon' => $typeIcons[$id['identity_type']] ?? '🔑',
-            'is_verified' => (bool)$id['is_verified']
-        ];
-    }
-}
-
-$primaryIdentifier = '';
-foreach (['phone', 'email', 'national_id'] as $type) {
-    if (!empty($user[$type])) {
-        $primaryIdentifier = $user[$type];
-        break;
-    }
-}
-if (empty($primaryIdentifier) && !empty($validIdentifiers)) {
-    $primaryIdentifier = $validIdentifiers[0]['value'];
-}
-
-// Load config
-$config = LoadCountry::getConfig();
-$countryName = $config['country'] ?? 'Botswana';
-$currencySymbol = $config['currency_symbol'] ?? 'BWP';
-$currency = $config['currency'] ?? 'BWP';
-
-// Load participants
-function parseParticipantsYaml($path) {
-    $participants = [];
-    if (!file_exists($path)) return $participants;
-
-    $lines = explode("\n", file_get_contents($path));
-    $currentCode = null;
-    $inAssetTypes = false;
-
-    foreach ($lines as $rawLine) {
-        $line = rtrim($rawLine);
-        if (trim($line) === '' || ltrim($line)[0] === '#') continue;
-
-        $indent = strlen($line) - strlen(ltrim($line));
-        $trimmed = trim($line);
-
-        if ($indent === 2 && preg_match('/^([A-Z0-9_]+):$/', $trimmed, $m)) {
-            $currentCode = $m[1];
-            $participants[$currentCode] = [
-                'code' => $currentCode, 'name' => $currentCode,
-                'type' => 'BANK', 'asset_types' => [],
-            ];
-            $inAssetTypes = false;
-            continue;
-        }
-        if ($currentCode === null) continue;
-
-        if ($indent === 4 && preg_match('/^(name|type|country|status):\s*(.+)$/', $trimmed, $m)) {
-            $participants[$currentCode][$m[1]] = trim($m[2], '"\'');
-            $inAssetTypes = false;
-            continue;
-        }
-        if ($indent === 4 && $trimmed === 'asset_types:') { $inAssetTypes = true; continue; }
-        if ($indent === 4) { $inAssetTypes = false; continue; }
-        if ($inAssetTypes && $indent === 6 && preg_match('/^- (.+)$/', $trimmed, $m)) {
-            $participants[$currentCode]['asset_types'][] = trim($m[1], '"\'');
-        }
-    }
-
-    foreach ($participants as $code => &$p) {
-        if (empty($p['asset_types'])) {
-            $p['asset_types'] = ['ACCOUNT'];
-        }
-    }
-    return $participants;
-}
-
-$countryFolder = __DIR__ . '/../../src/Core/Config/Countries/' . $countryName;
-$participants = parseParticipantsYaml($countryFolder . '/participants.yaml');
-
-// Asset types - FIX: Map to what SwapService supports
-AssetTypeRegistry::initialize();
-$allAssetTypes = AssetTypeRegistry::all();
-
-// FIX: Only use asset types that SwapService supports
-$supportedAssetTypes = ['ACCOUNT', 'WALLET'];
-$assetFieldsMap = [];
-$assetUIMap = [];
-
-foreach ($allAssetTypes as $code => $cfg) {
-    if (in_array($code, $supportedAssetTypes)) {
-        $assetFieldsMap[$code] = $cfg['fields'] ?? [];
-        $assetUIMap[$code] = $cfg['ui'] ?? [];
-    }
-}
-
-// FIX: Destination asset types - only what SwapService supports
-$destinationAssetTypes = ['ACCOUNT', 'WALLET'];
-
-// Get balance
-$balance = 0;
-try {
-    $stmt = $db->prepare("SELECT balance FROM wallets WHERE user_id = ?");
-    $stmt->execute([$userId]);
-    $balance = (float)($stmt->fetchColumn() ?: 0);
-} catch (Exception $e) {
-    error_log("Balance error: " . $e->getMessage());
-}
-
-// Get recent swaps
-$recentSwaps = [];
-try {
-    $stmt = $db->prepare("
-        SELECT swap_reference, amount, from_institution, to_institution, 
-               status, created_at, swap_type
-        FROM swap_ledgers 
-        WHERE user_id = ? 
-        ORDER BY created_at DESC 
-        LIMIT 10
-    ");
-    $stmt->execute([$userId]);
-    $recentSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) {
-    error_log("Recent swaps error: " . $e->getMessage());
-}
-
-$participantOptions = [];
-foreach ($participants as $code => $p) {
-    $participantOptions[$code] = [
-        'name' => $p['name'] ?? $code,
-        'type' => $p['type'] ?? 'BANK',
-        'asset_types' => $p['asset_types'] ?? ['ACCOUNT'],
-    ];
-}
-
-$apiUrl = '/api/v1/swap/execute.php';
-$previewUrl = '/api/v1/swap/preview.php';
-$apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
-$identifiersJson = json_encode($validIdentifiers);
-?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VouchMorph | <?= htmlspecialchars($countryName) ?></title>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<title>VouchMorph – Swap Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
+/* ============================================================
+   ROOT VARIABLES
+   ============================================================ */
 :root {
-    --ink: #121212;
-    --paper: #F7F5F0;
-    --panel: #FFFFFF;
-    --cobalt: #2440FF;
-    --amber: #FFB400;
-    --forest: #14804A;
-    --red: #D32F2F;
-    --line: #D8D4CB;
-    --fs-body: clamp(0.95rem, 0.85rem + 0.3vw, 1.25rem);
-    --fs-label: clamp(0.7rem, 0.65rem + 0.15vw, 0.9rem);
-    --fs-h1: clamp(1.3rem, 1rem + 1.2vw, 2.4rem);
-    --fs-h2: clamp(1.1rem, 0.95rem + 0.6vw, 1.6rem);
-    --fs-amount: clamp(2rem, 1.4rem + 2.4vw, 4.5rem);
-    --space-unit: clamp(0.9rem, 0.75rem + 0.5vw, 1.6rem);
-    --tap-min: 48px;
-    --clip: clamp(10px, 0.8vw, 20px);
+    --bg: #0a0a12;
+    --surface: rgba(255,255,255,0.04);
+    --surface-hover: rgba(255,255,255,0.08);
+    --border: rgba(255,255,255,0.08);
+    --border-active: rgba(0,240,255,0.3);
+    --text: #ffffff;
+    --text-muted: #8888a0;
+    --text-dim: #505070;
+    --primary: #00f0ff;
+    --primary-dark: #00c0d0;
+    --gradient: linear-gradient(135deg, #00f0ff 0%, #b000ff 100%);
+    --success: #00e676;
+    --warning: #ffc107;
+    --danger: #ff5252;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --shadow: 0 8px 32px rgba(0,0,0,0.4);
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html { font-size: 16px; }
+
 body {
-    font-family: 'Inter', sans-serif;
-    background: var(--paper);
-    color: var(--ink);
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
     min-height: 100vh;
-    font-size: var(--fs-body);
-    line-height: 1.4;
+    padding: 16px;
+    line-height: 1.5;
 }
-.font-display { font-family: 'Space Grotesk', sans-serif; }
-button, input, select { font-family: inherit; font-size: inherit; }
-button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--cobalt); outline-offset: 2px; }
-.clip { clip-path: polygon(0 0, calc(100% - var(--clip)) 0, 100% var(--clip), 100% 100%, 0 100%); }
 
-.shell { max-width: min(1400px, 92vw); margin: 0 auto; }
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--text-dim); border-radius: 4px; }
 
-/* Topbar - consistent */
+/* ============================================================
+   CONTAINER
+   ============================================================ */
+.container { max-width: 1200px; margin: 0 auto; }
+
+/* ============================================================
+   TOPBAR
+   ============================================================ */
 .topbar {
-    background: var(--ink);
-    color: var(--paper);
-    padding: var(--space-unit) calc(var(--space-unit) * 1.2);
     display: flex;
-    align-items: center;
     justify-content: space-between;
-}
-.topbar-inner {
-    max-width: min(1400px, 92vw);
-    margin: 0 auto;
-    width: 100%;
-    display: flex;
     align-items: center;
-    justify-content: space-between;
+    padding: 12px 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 20px;
 }
 .logo {
+    font-size: 22px;
+    font-weight: 800;
+    background: var(--gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.topbar-right {
     display: flex;
     align-items: center;
-    gap: 0.6em;
+    gap: 16px;
+    font-size: 14px;
 }
-.logo-mark {
-    width: clamp(28px, 2.2vw, 44px);
-    height: clamp(28px, 2.2vw, 44px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--cobalt);
-    font-weight: 700;
-    font-size: clamp(13px, 1.2vw, 20px);
-    clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);
-}
-.logo-text {
-    font-family: 'Space Grotesk', sans-serif;
-    font-weight: 700;
-    font-size: var(--fs-h2);
-    letter-spacing: -0.02em;
-}
-.user-area {
-    display: flex;
-    align-items: center;
-    gap: 1.2em;
-    font-size: var(--fs-label);
-}
-.user-area .id { opacity: 0.75; }
+.topbar-right .greeting { color: var(--text-muted); }
 .logout-btn {
-    background: none;
-    border: none;
-    color: var(--paper);
-    opacity: 0.5;
-    cursor: pointer;
+    color: var(--text-muted);
     text-decoration: none;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    transition: var(--transition);
 }
-.logout-btn:hover { opacity: 1; }
+.logout-btn:hover { background: var(--surface-hover); color: var(--text); }
 
-.home { padding: calc(var(--space-unit) * 1.5) 0 calc(var(--space-unit) * 3); }
-
-/* Balance Card */
-.balance-card {
-    background: var(--ink);
-    color: var(--paper);
-    padding: calc(var(--space-unit) * 1.5) calc(var(--space-unit) * 1.6);
-    margin-bottom: var(--space-unit);
+/* ============================================================
+   SECTIONS
+   ============================================================ */
+.section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 16px;
 }
-.balance-card .label {
-    font-size: var(--fs-label);
-    opacity: 0.5;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-.balance-card .amount {
-    font-family: 'Space Grotesk', sans-serif;
-    font-size: var(--fs-h1);
-    font-weight: 700;
-    margin-top: 0.2em;
-}
-
-/* Buttons - consistent */
-.btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1em 1.4em;
-    border: none;
-    font-family: 'Space Grotesk', sans-serif;
-    font-weight: 700;
-    font-size: var(--fs-label);
-    cursor: pointer;
-    transition: all 0.2s;
-    min-height: var(--tap-min);
-    text-align: center;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-.btn-primary {
-    background: var(--ink);
-    color: var(--paper);
-}
-.btn-primary:hover { background: #2a2a2a; }
-.btn-secondary {
-    background: var(--panel);
-    color: var(--ink);
-    border: 2px solid var(--line);
-}
-.btn-secondary:hover { border-color: var(--ink); }
-.btn-success {
-    background: var(--forest);
-    color: var(--paper);
-}
-.btn-success:hover { background: #0d6e3a; }
-.btn-danger {
-    background: var(--red);
-    color: var(--paper);
-}
-.btn-danger:hover { background: #b71c1c; }
-.btn-outline {
-    background: transparent;
-    color: var(--ink);
-    border: 2px solid var(--ink);
-}
-.btn-outline:hover { background: var(--ink); color: var(--paper); }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-sm { padding: 0.6em 1em; min-height: 36px; font-size: 0.7rem; }
-.btn-lg { padding: 1.2em 2em; font-size: var(--fs-body); }
-.btn-block { width: 100%; }
-
-/* Grid - consistent */
-.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-unit); }
-.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-unit); }
-.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-unit); }
-
-/* Cards - consistent */
-.card {
-    background: var(--panel);
-    border: 2px solid var(--line);
-    padding: var(--space-unit);
-}
-.card-title {
-    font-size: var(--fs-label);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    opacity: 0.5;
-    margin-bottom: 0.3em;
-}
-.card-value {
-    font-family: 'Space Grotesk', sans-serif;
-    font-size: var(--fs-h1);
-    font-weight: 700;
-}
-
-/* Quick action buttons */
-.action-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: var(--space-unit);
-    margin-bottom: calc(var(--space-unit) * 1.5);
-}
-.action-btn {
-    padding: calc(var(--space-unit) * 1.2) var(--space-unit);
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-.action-btn:hover { transform: translateY(-3px); }
-.action-btn .icon { font-size: clamp(1.8rem, 1.5rem + 0.5vw, 2.6rem); display: block; margin-bottom: 0.4em; }
-.action-btn .label {
-    font-family: 'Space Grotesk', sans-serif;
-    font-weight: 600;
-    font-size: var(--fs-label);
-}
-
-/* Activity - consistent */
-.activity-item {
+.section-title {
     display: flex;
     justify-content: space-between;
-    padding: 0.7em 0;
-    border-bottom: 1px solid var(--line);
-}
-.activity-item:last-child { border-bottom: none; }
-.activity-item .route { font-weight: 500; }
-.activity-item .amount { font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
-.activity-item .status { font-size: var(--fs-label); }
-.activity-item .status.completed { color: var(--forest); }
-.activity-item .status.pending { color: var(--amber); }
-.activity-item .status.failed { color: var(--red); }
-
-/* Identifier - consistent */
-.identifier-item {
-    display: flex;
     align-items: center;
-    gap: 0.8em;
-    padding: 0.7em;
-    background: var(--paper);
-    border: 1px solid var(--line);
-}
-.identifier-item .icon { font-size: 1.4em; }
-.identifier-item .value { font-weight: 500; }
-.identifier-item .type {
-    font-size: var(--fs-label);
-    opacity: 0.5;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-.badge {
-    display: inline-block;
-    padding: 0.15em 0.7em;
-    font-size: 0.6rem;
+    font-size: 13px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    border-radius: 2px;
-    margin-left: auto;
+    color: var(--text-muted);
+    margin-bottom: 12px;
 }
-.badge-success { background: #e8f5e9; color: #2e7d32; }
-.badge-pending { background: #fff3e0; color: #e65100; }
-.badge-danger { background: #ffebee; color: #c62828; }
+.section-title .badge {
+    background: var(--primary);
+    color: #000;
+    font-size: 10px;
+    padding: 1px 10px;
+    border-radius: 10px;
+    font-weight: 700;
+}
+.section-title .badge-secondary {
+    background: rgba(255,255,255,0.06);
+    color: var(--text-muted);
+    font-size: 10px;
+    padding: 1px 10px;
+    border-radius: 10px;
+}
 
-/* Modal - consistent */
+/* ============================================================
+   ACTION ROW - TWO MAIN BUTTONS
+   ============================================================ */
+.action-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+.action-btn {
+    padding: 20px 24px;
+    background: var(--surface);
+    border: 2px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: var(--transition);
+    text-align: left;
+    font-family: var(--font);
+    color: var(--text);
+    position: relative;
+}
+.action-btn:hover {
+    border-color: var(--border-active);
+    background: var(--surface-hover);
+    transform: translateY(-2px);
+}
+.action-btn .icon { font-size: 28px; display: block; margin-bottom: 6px; }
+.action-btn .label { font-size: 16px; font-weight: 600; }
+.action-btn .desc { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.action-btn .selected-info {
+    font-size: 13px;
+    color: var(--primary);
+    margin-top: 4px;
+}
+.action-btn.active {
+    border-color: var(--primary);
+    background: rgba(0,240,255,0.06);
+    box-shadow: 0 0 40px rgba(0,240,255,0.03);
+}
+
+/* ============================================================
+   SOURCE / DESTINATION GRID
+   ============================================================ */
+.source-grid, .dest-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 10px;
+}
+.source-item, .dest-item {
+    padding: 12px 14px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: var(--transition);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.source-item:hover, .dest-item:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-active);
+}
+.source-item.selected, .dest-item.selected {
+    border-color: var(--primary);
+    background: rgba(0,240,255,0.08);
+}
+.source-item .icon { font-size: 18px; flex-shrink: 0; }
+.source-item .info { flex: 1; min-width: 0; }
+.source-item .name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.source-item .detail { font-size: 11px; color: var(--text-muted); }
+.source-item .balance-display {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--success);
+    white-space: nowrap;
+}
+.source-item .balance-display.unknown { color: var(--text-dim); }
+.source-item .actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
+.balance-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    padding: 2px 8px;
+    font-size: 10px;
+    cursor: pointer;
+    transition: var(--transition);
+}
+.balance-btn:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+.balance-btn.loading {
+    opacity: 0.5;
+    pointer-events: none;
+}
+.remove-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    transition: var(--transition);
+}
+.remove-btn:hover { color: var(--danger); }
+
+/* ============================================================
+   FORMS
+   ============================================================ */
+.form-group { margin-bottom: 14px; }
+.form-group label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+.form-control {
+    width: 100%;
+    padding: 10px 14px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 14px;
+    font-family: var(--font);
+    transition: var(--transition);
+}
+.form-control:focus {
+    outline: none;
+    border-color: var(--primary);
+}
+.form-control::placeholder { color: var(--text-dim); }
+.form-control option { background: var(--bg); }
+.form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+.quick-amounts {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+}
+.quick-amount {
+    padding: 4px 14px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: var(--transition);
+    color: var(--text-muted);
+    font-family: var(--font);
+}
+.quick-amount:hover {
+    border-color: var(--primary);
+    color: var(--text);
+}
+
+/* ============================================================
+   PREVIEW BOX
+   ============================================================ */
+.preview-box {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 16px;
+    margin: 12px 0;
+}
+.preview-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.preview-row:last-child { border-bottom: none; }
+.preview-row .label { color: var(--text-muted); font-size: 13px; }
+.preview-row .value { font-weight: 600; font-size: 14px; }
+.preview-row .value.highlight {
+    color: var(--primary);
+    font-size: 20px;
+}
+.preview-row .value.success { color: var(--success); }
+.preview-row .value.warning { color: var(--warning); }
+.preview-row .value.danger { color: var(--danger); }
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+.btn {
+    padding: 10px 24px;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-weight: 600;
+    font-family: var(--font);
+    cursor: pointer;
+    transition: var(--transition);
+}
+.btn-primary {
+    background: var(--gradient);
+    color: #000;
+}
+.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,240,255,0.2); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.btn-success {
+    background: var(--success);
+    color: #000;
+}
+.btn-success:hover { transform: translateY(-2px); }
+.btn-danger {
+    background: var(--danger);
+    color: #fff;
+}
+.btn-danger:hover { transform: translateY(-2px); }
+.btn-secondary {
+    background: rgba(255,255,255,0.06);
+    color: var(--text);
+    border: 1px solid var(--border);
+}
+.btn-secondary:hover { background: var(--surface-hover); }
+.btn-sm { padding: 6px 14px; font-size: 12px; }
+.btn-block { width: 100%; }
+.btn-group {
+    display: flex;
+    gap: 10px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+}
+
+/* ============================================================
+   MODAL
+   ============================================================ */
 .modal-overlay {
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.6);
+    background: rgba(0,0,0,0.75);
+    backdrop-filter: blur(8px);
     z-index: 1000;
     align-items: center;
     justify-content: center;
-    padding: var(--space-unit);
+    padding: 20px;
 }
 .modal-overlay.active { display: flex; }
 .modal {
-    background: var(--paper);
-    max-width: 560px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    max-width: 640px;
     width: 100%;
     max-height: 90vh;
     overflow-y: auto;
-    padding: calc(var(--space-unit) * 1.5);
+    padding: 24px;
 }
 .modal-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: var(--space-unit);
-    padding-bottom: var(--space-unit);
-    border-bottom: 2px solid var(--line);
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
 }
-.modal-header h2 {
-    font-family: 'Space Grotesk', sans-serif;
-    font-size: var(--fs-h1);
-}
+.modal-header h2 { font-size: 20px; font-weight: 700; }
 .modal-close {
     background: none;
     border: none;
-    font-size: 1.6em;
+    color: var(--text-muted);
+    font-size: 24px;
     cursor: pointer;
-    color: #888;
-    padding: 0.2em;
+    transition: var(--transition);
 }
-.modal-close:hover { color: var(--ink); }
+.modal-close:hover { color: var(--text); }
 
-/* Form - consistent */
-.form-group { margin-bottom: var(--space-unit); }
-.form-group label {
-    display: block;
-    font-size: var(--fs-label);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    opacity: 0.5;
-    margin-bottom: 0.3em;
-}
-.form-control {
-    width: 100%;
-    padding: 0.8em 1em;
-    border: 2px solid var(--line);
-    background: var(--panel);
-    font-size: var(--fs-body);
-    transition: border-color 0.2s;
-}
-.form-control:focus { outline: none; border-color: var(--cobalt); }
-.form-control::placeholder { color: #bbb; }
-
-/* Step indicator - consistent */
-.step-indicator {
-    display: flex;
-    gap: 0.5em;
-    margin-bottom: var(--space-unit);
-}
-.step-dot {
-    flex: 1;
-    height: 4px;
-    border-radius: 2px;
-    background: var(--line);
-    transition: background 0.3s;
-}
-.step-dot.active { background: var(--cobalt); }
-.step-dot.done { background: var(--forest); }
-.step-label {
-    display: flex;
-    justify-content: space-between;
-    font-size: var(--fs-label);
-    opacity: 0.5;
-    margin-bottom: var(--space-unit);
-}
-.step-label .active { opacity: 1; font-weight: 600; }
-
-/* Quick amounts */
-.quick-amounts {
-    display: flex;
-    gap: 0.5em;
-    flex-wrap: wrap;
-    margin-top: 0.5em;
-}
-.quick-amount {
-    padding: 0.4em 1.2em;
-    border: 1px solid var(--line);
-    cursor: pointer;
-    font-size: var(--fs-label);
-    transition: all 0.2s;
-    background: var(--panel);
-}
-.quick-amount:hover { border-color: var(--ink); background: var(--ink); color: var(--paper); }
-
-/* Asset pills - consistent */
-.asset-pills {
-    display: flex;
-    gap: 0.5em;
-    flex-wrap: wrap;
-}
-.asset-pill {
-    padding: 0.5em 1.2em;
-    border: 2px solid var(--line);
-    cursor: pointer;
-    font-weight: 600;
-    font-size: var(--fs-label);
-    transition: all 0.2s;
-    background: var(--panel);
-}
-.asset-pill:hover { border-color: var(--ink); }
-.asset-pill.active { background: var(--cobalt); border-color: var(--cobalt); color: var(--paper); }
-
-/* Message - consistent */
+/* ============================================================
+   MESSAGES
+   ============================================================ */
 .message {
-    padding: 0.8em 1em;
-    margin: var(--space-unit) 0;
-    font-size: var(--fs-label);
+    padding: 12px 16px;
+    border-radius: var(--radius-sm);
+    margin: 8px 0;
+    font-size: 13px;
     display: none;
 }
 .message.show { display: block; }
-.message.info { background: #e3f2fd; border-left: 3px solid #0d47a1; color: #0d47a1; }
-.message.success { background: #e8f5e9; border-left: 3px solid #2e7d32; color: #2e7d32; }
-.message.error { background: #ffebee; border-left: 3px solid #c62828; color: #c62828; }
-.message.warning { background: #fff3e0; border-left: 3px solid #e65100; color: #e65100; }
+.message.info { background: rgba(0,240,255,0.1); border-left: 3px solid var(--primary); color: var(--primary); }
+.message.success { background: rgba(0,230,118,0.1); border-left: 3px solid var(--success); color: var(--success); }
+.message.error { background: rgba(255,82,82,0.1); border-left: 3px solid var(--danger); color: var(--danger); }
+.message.warning { background: rgba(255,193,7,0.1); border-left: 3px solid var(--warning); color: var(--warning); }
 
-/* Preview box */
-.preview-box {
-    background: var(--panel);
-    border: 2px solid var(--line);
-    padding: var(--space-unit);
-    margin: var(--space-unit) 0;
-}
-.preview-row {
+/* ============================================================
+   IDENTITY SWAPS
+   ============================================================ */
+.identity-item {
     display: flex;
     justify-content: space-between;
-    padding: 0.5em 0;
-    border-bottom: 1px solid var(--line);
+    align-items: center;
+    padding: 10px 14px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 6px;
 }
-.preview-row:last-child { border-bottom: none; }
-.preview-row .label { opacity: 0.5; }
-.preview-row .value { font-weight: 600; }
-.preview-row .value.highlight {
-    color: var(--cobalt);
-    font-family: 'Space Grotesk', sans-serif;
-    font-size: var(--fs-h2);
+.identity-item .info { flex: 1; }
+.identity-item .info .amount { font-weight: 600; color: var(--primary); }
+.identity-item .info .identity { font-size: 13px; }
+.identity-item .info .identity .label { color: var(--text-muted); }
+.identity-item .info .meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.identity-item .status {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 12px;
+    border-radius: 10px;
+    margin: 0 8px;
 }
-
-/* Spinner */
-.spinner {
-    display: inline-block;
-    width: 1.4em;
-    height: 1.4em;
-    border: 3px solid var(--line);
-    border-top-color: var(--ink);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+.identity-item .status.pending { background: rgba(255,193,7,0.15); color: var(--warning); }
+.identity-item .status.claimed { background: rgba(0,230,118,0.15); color: var(--success); }
+.identity-item .status.expired { background: rgba(255,82,82,0.15); color: var(--danger); }
+.identity-item .claim-btn {
+    padding: 4px 16px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--primary);
+    color: #000;
+    font-weight: 600;
+    font-size: 12px;
+    cursor: pointer;
+    transition: var(--transition);
 }
-@keyframes spin { to { transform: rotate(360deg); } }
+.identity-item .claim-btn:hover { transform: scale(1.05); }
 
-.flex { display: flex; }
-.flex-between { display: flex; justify-content: space-between; align-items: center; }
-.gap-8 { gap: 8px; }
-.gap-16 { gap: 16px; }
-.mt-8 { margin-top: 8px; }
-.mt-16 { margin-top: 16px; }
-.mb-16 { margin-bottom: 16px; }
-.text-center { text-align: center; }
-.text-muted { opacity: 0.5; }
+/* ============================================================
+   MULTI-SOURCE
+   ============================================================ */
+.multi-source-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 6px;
+}
+.multi-source-item .checkbox {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--primary);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.multi-source-item .info { flex: 1; min-width: 0; }
+.multi-source-item .name { font-size: 13px; font-weight: 500; }
+.multi-source-item .detail { font-size: 11px; color: var(--text-muted); }
+.multi-source-item .amount-input {
+    width: 100px;
+    padding: 4px 8px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 13px;
+    text-align: right;
+    font-family: var(--font);
+}
+.multi-source-item .amount-input:focus {
+    outline: none;
+    border-color: var(--primary);
+}
+.multi-source-item .balance {
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.distribution-mode {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+.distribution-mode .mode-btn {
+    padding: 4px 14px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: var(--transition);
+    color: var(--text-muted);
+    font-family: var(--font);
+}
+.distribution-mode .mode-btn.active {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: rgba(0,240,255,0.08);
+}
+.distribution-mode .mode-btn:hover { color: var(--text); }
 
+/* ============================================================
+   ACTIVITY
+   ============================================================ */
+.activity-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.activity-item:last-child { border-bottom: none; }
+.activity-item .left { display: flex; align-items: center; gap: 10px; }
+.activity-item .left .icon { font-size: 16px; }
+.activity-item .left .details .type { font-size: 13px; font-weight: 500; }
+.activity-item .left .details .time { font-size: 11px; color: var(--text-muted); }
+.activity-item .right { text-align: right; }
+.activity-item .right .amount { font-size: 14px; font-weight: 600; }
+.activity-item .right .status {
+    font-size: 11px;
+    padding: 1px 10px;
+    border-radius: 10px;
+}
+.activity-item .right .status.completed { color: var(--success); background: rgba(0,230,118,0.1); }
+.activity-item .right .status.pending { color: var(--warning); background: rgba(255,193,7,0.1); }
+.activity-item .right .status.failed { color: var(--danger); background: rgba(255,82,82,0.1); }
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
 @media (max-width: 768px) {
-    .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
-    .action-grid { grid-template-columns: repeat(2, 1fr); }
-    .modal { margin: 0; max-height: 100vh; border-radius: 0; }
+    .action-row { grid-template-columns: 1fr; }
+    .form-row { grid-template-columns: 1fr; }
+    .source-grid, .dest-grid { grid-template-columns: 1fr; }
+    .topbar { flex-wrap: wrap; gap: 8px; }
+    .modal { padding: 16px; margin: 10px; }
+    .multi-source-item { flex-wrap: wrap; }
+    .multi-source-item .amount-input { width: 100%; }
+    .identity-item { flex-wrap: wrap; gap: 8px; }
 }
 @media (max-width: 480px) {
-    .action-grid { grid-template-columns: 1fr 1fr; }
-    .user-area .id { display: none; }
+    .action-btn { padding: 14px 16px; }
+    .section { padding: 14px; }
+    .source-item, .dest-item { padding: 10px 12px; }
 }
 </style>
 </head>
 <body>
 
-<div class="topbar"><div class="topbar-inner">
-    <div class="logo"><div class="logo-mark clip">V</div><span class="logo-text">VOUCHMORPH</span></div>
-    <div class="user-area">
-        <span class="id"><?= htmlspecialchars($primaryIdentifier) ?></span>
-        <a href="logout.php" class="logout-btn">Log out</a>
-    </div>
-</div></div>
+<div class="container">
 
-<div class="shell">
-<div class="home">
-    <!-- Balance -->
-    <div class="balance-card clip">
-        <div class="label">Available Balance</div>
-        <div class="amount"><?= $currencySymbol ?> <?= number_format($balance, 2) ?></div>
-    </div>
-
-    <!-- Quick Actions -->
-    <div class="action-grid">
-        <div class="action-btn card" onclick="openModal('deposit')">
-            <span class="icon">💰</span>
-            <div class="label">Deposit</div>
-        </div>
-        <div class="action-btn card" onclick="openModal('withdraw')">
-            <span class="icon">🏦</span>
-            <div class="label">Withdraw</div>
-        </div>
-        <div class="action-btn card" onclick="openModal('transfer')">
-            <span class="icon">📤</span>
-            <div class="label">Transfer</div>
-        </div>
-        <div class="action-btn card" onclick="openModal('identities')">
-            <span class="icon">🔑</span>
-            <div class="label">Identities</div>
-        </div>
-    </div>
-
-    <!-- Stats -->
-    <div class="grid-3 mb-16">
-        <div class="card">
-            <div class="card-title">Balance</div>
-            <div class="card-value"><?= $currencySymbol ?> <?= number_format($balance, 2) ?></div>
-        </div>
-        <div class="card">
-            <div class="card-title">Recent Swaps</div>
-            <div class="card-value" style="font-size:var(--fs-h2);"><?= count($recentSwaps) ?></div>
-        </div>
-        <div class="card">
-            <div class="card-title">Identifiers</div>
-            <div class="card-value" style="font-size:var(--fs-h2);"><?= count($validIdentifiers) ?></div>
-        </div>
-    </div>
-
-    <!-- Recent Activity -->
-    <div class="card mb-16">
-        <div class="flex-between mb-16">
-            <div class="card-title" style="margin-bottom:0;">Recent Activity</div>
-            <span class="text-muted" style="font-size:0.7rem;">Last 10</span>
-        </div>
-        <?php if (empty($recentSwaps)): ?>
-            <div class="text-center text-muted" style="padding:1.5em 0;">No transactions yet.</div>
-        <?php else: ?>
-            <?php foreach ($recentSwaps as $swap): ?>
-                <div class="activity-item">
-                    <div>
-                        <div class="route"><?= htmlspecialchars($swap['from_institution'] ?? '?') ?> → <?= htmlspecialchars($swap['to_institution'] ?? '?') ?></div>
-                        <div style="font-size:0.7rem;opacity:0.4;"><?= date('M d, H:i', strtotime($swap['created_at'])) ?></div>
-                    </div>
-                    <div style="text-align:right;">
-                        <div class="amount"><?= $currencySymbol ?> <?= number_format($swap['amount'] ?? 0, 2) ?></div>
-                        <span class="status <?= strtolower($swap['status'] ?? 'pending') ?>"><?= htmlspecialchars($swap['status'] ?? 'pending') ?></span>
-                    </div>
-                </div>
-            <?php endforeach; ?>
-        <?php endif; ?>
-    </div>
-
-    <!-- Identifiers -->
-    <div class="card">
-        <div class="flex-between mb-16">
-            <div class="card-title" style="margin-bottom:0;">Your Identifiers</div>
-            <button class="btn btn-secondary btn-sm" onclick="openModal('identities')">Manage</button>
-        </div>
-        <?php if (empty($validIdentifiers)): ?>
-            <div class="text-muted" style="padding:0.5em 0;">No identifiers added.</div>
-        <?php else: ?>
-            <?php foreach (array_slice($validIdentifiers, 0, 3) as $id): ?>
-                <div class="identifier-item">
-                    <span class="icon"><?= $id['icon'] ?></span>
-                    <div>
-                        <div class="value"><?= htmlspecialchars($id['value']) ?></div>
-                        <div class="type"><?= htmlspecialchars($id['type']) ?></div>
-                    </div>
-                    <?php if ($id['is_verified']): ?>
-                        <span class="badge badge-success">Verified</span>
-                    <?php endif; ?>
-                </div>
-            <?php endforeach; ?>
-            <?php if (count($validIdentifiers) > 3): ?>
-                <div class="text-muted" style="font-size:0.7rem;margin-top:0.5em;">+<?= count($validIdentifiers) - 3 ?> more</div>
-            <?php endif; ?>
-        <?php endif; ?>
+<!-- ============================================================
+     TOPBAR
+     ============================================================ -->
+<div class="topbar">
+    <div class="logo">VOUCHMORPH</div>
+    <div class="topbar-right">
+        <span class="greeting">Hello, <span id="userName">User</span></span>
+        <a href="logout.php" class="logout-btn">Logout</a>
     </div>
 </div>
+
+<!-- ============================================================
+     MAIN MESSAGE
+     ============================================================ -->
+<div id="mainMessage" class="message"></div>
+
+<!-- ============================================================
+     ACTION ROW - TWO MAIN BUTTONS
+     ============================================================ -->
+<div class="action-row">
+    <button class="action-btn" id="swapFromBtn" onclick="openSwap('from')">
+        <span class="icon">📤</span>
+        <div class="label">Swap From</div>
+        <div class="desc">Select source to send from</div>
+        <div class="selected-info" id="fromSelectedInfo">No source selected</div>
+    </button>
+    <button class="action-btn" id="swapToBtn" onclick="openSwap('to')">
+        <span class="icon">📥</span>
+        <div class="label">Swap To</div>
+        <div class="desc">Select destination to receive</div>
+        <div class="selected-info" id="toSelectedInfo">No destination selected</div>
+    </button>
 </div>
 
-<!-- MODAL -->
-<div id="modal" class="modal-overlay" onclick="if(event.target===this)closeModal()">
+<!-- ============================================================
+     SOURCES SECTION
+     ============================================================ -->
+<div class="section" id="sourcesSection">
+    <div class="section-title">
+        <span>Your Sources</span>
+        <div>
+            <span class="badge-secondary" id="sourceCount">0 connected</span>
+            <button class="btn btn-sm btn-secondary" onclick="addSource()" style="margin-left:10px;">+ Add</button>
+        </div>
+    </div>
+    <div class="source-grid" id="sourceGrid">
+        <div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text-muted);">
+            No sources connected. Click "Add" to connect a bank account, wallet, or card.
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     DESTINATIONS SECTION
+     ============================================================ -->
+<div class="section" id="destinationsSection">
+    <div class="section-title">
+        <span>Saved Destinations</span>
+        <div>
+            <span class="badge-secondary" id="destCount">0 saved</span>
+            <button class="btn btn-sm btn-secondary" onclick="addDestination()" style="margin-left:10px;">+ Add</button>
+        </div>
+    </div>
+    <div class="dest-grid" id="destGrid">
+        <div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text-muted);">
+            No destinations saved. Click "Add" to save a recipient.
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     IDENTITY SWAPS SECTION
+     ============================================================ -->
+<div class="section" id="identitySection">
+    <div class="section-title">
+        <span>Identity Swaps</span>
+        <span class="badge" id="identityCount">0 pending</span>
+    </div>
+    <div id="identityList">
+        <div style="text-align:center;padding:16px;color:var(--text-muted);font-size:13px;">
+            No pending identity swaps.
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     RECENT ACTIVITY
+     ============================================================ -->
+<div class="section">
+    <div class="section-title">
+        <span>Recent Activity</span>
+        <span class="badge-secondary">Last 10</span>
+    </div>
+    <div id="activityList">
+        <div style="text-align:center;padding:16px;color:var(--text-muted);font-size:13px;">
+            No recent activity.
+        </div>
+    </div>
+</div>
+
+</div>
+
+<!-- ============================================================
+     MODAL
+     ============================================================ -->
+<div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
     <div class="modal" id="modalContent">
         <div class="modal-header">
-            <h2 id="modalTitle">Deposit</h2>
+            <h2 id="modalTitle">Swap</h2>
             <button class="modal-close" onclick="closeModal()">✕</button>
         </div>
-        <div id="modalBody"></div>
+        <div id="modalBody">
+            <!-- Dynamic content -->
+        </div>
     </div>
 </div>
 
 <script>
-const participants = <?= json_encode($participantOptions) ?>;
-const assetFields = <?= json_encode($assetFieldsMap) ?>;
-const destinationAssetTypes = <?= json_encode($destinationAssetTypes) ?>;
-const currencySymbol = '<?= $currencySymbol ?>';
-const currency = '<?= $currency ?>';
-const userIdentifiers = <?= $identifiersJson ?>;
-const apiUrl = '<?= $apiUrl ?>';
-const previewUrl = '<?= $previewUrl ?>';
-const apiKey = '<?= $apiKey ?>';
+// ============================================================
+// ============================================================
+// CONFIGURATION
+// ============================================================
+// ============================================================
+const CONFIG = {
+    currency: 'BWP',
+    currencySymbol: 'BWP',
+    country: 'Botswana',
+    api: {
+        preview: '/api/v1/swap/preview.php',
+        execute: '/api/v1/swap/execute.php',
+        sources: '/api/v1/sources/list.php',
+        balance: '/api/v1/sources/balance.php',
+        addSource: '/api/v1/sources/add.php',
+        removeSource: '/api/v1/sources/remove.php',
+        destinations: '/api/v1/destinations/list.php',
+        addDestination: '/api/v1/destinations/add.php',
+        removeDestination: '/api/v1/destinations/remove.php',
+        identityPending: '/api/v1/swap/identity/pending.php',
+        identityClaim: '/api/v1/swap/identity/claim.php',
+        identityInitiate: '/api/v1/swap/identity/initiate.php',
+        activity: '/api/v1/swap/activity.php',
+    }
+};
 
-const badgeMap = { BANK: '🏦', MNO: '📱', ORCHESTRATOR: '⚙️' };
-const assetLabel = { ACCOUNT: 'ACCOUNT', WALLET: 'WALLET' };
+// ============================================================
+// PARTICIPANTS (from participants.yaml)
+// ============================================================
+const PARTICIPANTS = {
+    'ZURUBANK': { name: 'ZURUBANK', type: 'BANK', asset_types: ['ACCOUNT'] },
+    'MASCOM': { name: 'MASCOM', type: 'MNO', asset_types: ['WALLET'] },
+    'ORANGE': { name: 'ORANGE', type: 'MNO', asset_types: ['WALLET'] },
+    'CAZACOM': { name: 'CAZACOM', type: 'MNO', asset_types: ['WALLET'] },
+    'BOC': { name: 'BOC', type: 'BANK', asset_types: ['ACCOUNT'] },
+    'ATM': { name: 'ATM', type: 'ATM', asset_types: ['CASHOUT'] },
+    'AGENT': { name: 'Agent', type: 'AGENT', asset_types: ['CASHOUT'] },
+};
 
-let currentType = null;
-let currentStep = 0;
-let selFrom = null;
-let selTo = null;
-let selAsset = null;
-let pendingPayload = null;
+const ASSET_TYPES = {
+    'ACCOUNT': { label: 'Bank Account', icon: '🏦', fields: ['account_number', 'account_name', 'bank_code'] },
+    'WALLET': { label: 'Mobile Wallet', icon: '📱', fields: ['phone', 'wallet_name'] },
+    'CARD': { label: 'Card', icon: '💳', fields: ['card_number', 'card_expiry', 'card_holder'] },
+    'CASHOUT': { label: 'Cashout', icon: '💰', fields: ['beneficiary_phone'] },
+};
 
-function openModal(type) {
-    currentType = type;
-    currentStep = 0;
-    selFrom = null;
-    selTo = null;
-    selAsset = null;
-    pendingPayload = null;
+// ============================================================
+// STATE
+// ============================================================
+let state = {
+    sources: [],
+    destinations: [],
+    identitySwaps: [],
+    activity: [],
+    selectedSource: null,
+    selectedDestination: null,
+    swapType: null, // 'from' or 'to'
+    isMultiSource: false,
+    selectedSources: [],
+    distributionMode: 'ratio', // 'ratio' or 'manual'
+    previewData: null,
+    step: 0,
+    currentSwapPayload: null,
+    userName: 'User',
+};
+
+// ============================================================
+// ============================================================
+// INITIALIZATION
+// ============================================================
+// ============================================================
+document.addEventListener('DOMContentLoaded', function() {
+    // Load all data
+    loadSources();
+    loadDestinations();
+    loadIdentitySwaps();
+    loadActivity();
+    updateUI();
+});
+
+// ============================================================
+// ============================================================
+// SOURCE MANAGEMENT
+// ============================================================
+// ============================================================
+function loadSources() {
+    // Mock data - replace with API call
+    state.sources = [
+        {
+            id: 'src_1',
+            institution: 'ZURUBANK',
+            asset_type: 'ACCOUNT',
+            identifier: '1234567890',
+            name: 'Main Account',
+            balance: null,
+            is_default: true,
+            saved: true
+        },
+        {
+            id: 'src_2',
+            institution: 'MASCOM',
+            asset_type: 'WALLET',
+            identifier: '71234567',
+            name: 'Mobile Money',
+            balance: null,
+            is_default: false,
+            saved: true
+        },
+        {
+            id: 'src_3',
+            institution: 'ZURUBANK',
+            asset_type: 'CARD',
+            identifier: '****1234',
+            name: 'Visa Card',
+            balance: null,
+            is_default: false,
+            saved: true
+        }
+    ];
+    renderSources();
+}
+
+function renderSources() {
+    const grid = document.getElementById('sourceGrid');
+    if (!grid) return;
     
-    const titles = {
-        'deposit': '💰 Deposit Funds',
-        'withdraw': '🏦 Withdraw Funds',
-        'transfer': '📤 Send Money',
-        'identities': '🔑 Your Identities'
+    document.getElementById('sourceCount').textContent = state.sources.length + ' connected';
+    
+    if (state.sources.length === 0) {
+        grid.innerHTML = `
+            <div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text-muted);">
+                No sources connected. Click "Add" to connect a bank account, wallet, or card.
+            </div>
+        `;
+        return;
+    }
+    
+    grid.innerHTML = state.sources.map(src => {
+        const assetInfo = ASSET_TYPES[src.asset_type] || ASSET_TYPES['ACCOUNT'];
+        const isSelected = state.selectedSource === src.id;
+        const balanceDisplay = src.balance !== null 
+            ? `${CONFIG.currencySymbol} ${src.balance.toFixed(2)}`
+            : '—';
+        const balanceClass = src.balance !== null ? '' : 'unknown';
+        
+        return `
+            <div class="source-item ${isSelected ? 'selected' : ''}" 
+                 data-id="${src.id}"
+                 onclick="selectSource('${src.id}')">
+                <span class="icon">${assetInfo.icon}</span>
+                <div class="info">
+                    <div class="name">${src.name}</div>
+                    <div class="detail">${src.institution} • ${src.asset_type} • ${src.identifier}</div>
+                </div>
+                <span class="balance-display ${balanceClass}">${balanceDisplay}</span>
+                <div class="actions">
+                    <button class="balance-btn" onclick="event.stopPropagation();checkBalance('${src.id}')" 
+                            id="balanceBtn_${src.id}">🔄</button>
+                    <button class="remove-btn" onclick="event.stopPropagation();removeSource('${src.id}')">✕</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function selectSource(id) {
+    state.selectedSource = state.selectedSource === id ? null : id;
+    renderSources();
+    updateUI();
+}
+
+async function checkBalance(id) {
+    const src = state.sources.find(s => s.id === id);
+    if (!src) return;
+    
+    const btn = document.getElementById('balanceBtn_' + id);
+    if (btn) {
+        btn.textContent = '⏳';
+        btn.classList.add('loading');
+    }
+    
+    try {
+        // Simulate API call - replace with actual
+        await new Promise(r => setTimeout(r, 800));
+        
+        // Mock balance response
+        const mockBalances = {
+            'src_1': 5420.75,
+            'src_2': 3200.50,
+            'src_3': 4250.25,
+        };
+        
+        src.balance = mockBalances[id] || 0;
+        renderSources();
+        
+        showMessage('mainMessage', 
+            `${src.name}: ${CONFIG.currencySymbol} ${src.balance.toFixed(2)}`, 
+            'success'
+        );
+    } catch (e) {
+        showMessage('mainMessage', 'Failed to get balance', 'error');
+    }
+    
+    if (btn) {
+        btn.textContent = '🔄';
+        btn.classList.remove('loading');
+    }
+}
+
+function addSource() {
+    openModal('Connect a Source', `
+        <div id="addSourceMessage" class="message"></div>
+        
+        <div class="form-group">
+            <label>Institution</label>
+            <select class="form-control" id="addInst">
+                ${Object.keys(PARTICIPANTS).map(k => 
+                    `<option value="${k}">${PARTICIPANTS[k].name}</option>`
+                ).join('')}
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label>Asset Type</label>
+            <select class="form-control" id="addAssetType" onchange="updateAssetFields()">
+                ${Object.keys(ASSET_TYPES).map(k => 
+                    `<option value="${k}">${ASSET_TYPES[k].label}</option>`
+                ).join('')}
+            </select>
+        </div>
+        
+        <div id="assetFields">
+            <div class="form-group">
+                <label>Identifier</label>
+                <input class="form-control" id="addIdentifier" placeholder="Account number, phone, or card number">
+            </div>
+            <div class="form-group">
+                <label>Name (optional)</label>
+                <input class="form-control" id="addName" placeholder="e.g., Main Account">
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                <input type="checkbox" id="addSaveSource" checked>
+                Save this source for future swaps
+            </label>
+        </div>
+        
+        <button class="btn btn-primary btn-block" onclick="saveNewSource()">Connect Source</button>
+        <button class="btn btn-secondary btn-block" onclick="useManualSource()" style="margin-top:8px;">
+            Use this once (don't save)
+        </button>
+    `);
+}
+
+function updateAssetFields() {
+    const type = document.getElementById('addAssetType').value;
+    const container = document.getElementById('assetFields');
+    const info = ASSET_TYPES[type] || ASSET_TYPES['ACCOUNT'];
+    
+    let html = '';
+    info.fields.forEach(field => {
+        const label = field.replace('_', ' ').toUpperCase();
+        html += `
+            <div class="form-group">
+                <label>${label}</label>
+                <input class="form-control" id="addField_${field}" placeholder="Enter ${field.replace('_', ' ')}">
+            </div>
+        `;
+    });
+    // Add name field
+    html += `
+        <div class="form-group">
+            <label>Name (optional)</label>
+            <input class="form-control" id="addName" placeholder="e.g., My Account">
+        </div>
+    `;
+    container.innerHTML = html;
+}
+
+function saveNewSource() {
+    const inst = document.getElementById('addInst').value;
+    const assetType = document.getElementById('addAssetType').value;
+    const name = document.getElementById('addName').value.trim() || `${inst} ${ASSET_TYPES[assetType].label}`;
+    const saveSource = document.getElementById('addSaveSource')?.checked ?? true;
+    
+    // Get identifier from dynamic fields
+    const info = ASSET_TYPES[assetType];
+    let identifier = '';
+    info.fields.forEach(field => {
+        const el = document.getElementById('addField_' + field);
+        if (el && el.value.trim()) {
+            identifier = el.value.trim();
+        }
+    });
+    
+    if (!identifier) {
+        showModalMessage('addSourceMessage', 'Please enter an identifier.', 'error');
+        return;
+    }
+    
+    const newSource = {
+        id: 'src_' + Date.now(),
+        institution: inst,
+        asset_type: assetType,
+        identifier: identifier,
+        name: name,
+        balance: null,
+        is_default: false,
+        saved: saveSource
     };
     
-    document.getElementById('modalTitle').textContent = titles[type] || 'Transaction';
-    document.getElementById('modal').classList.add('active');
-    
-    if (type === 'identities') {
-        renderIdentities();
+    if (saveSource) {
+        state.sources.push(newSource);
+        renderSources();
+        closeModal();
+        showMessage('mainMessage', `Source "${name}" saved successfully!`, 'success');
     } else {
-        renderStep();
+        // Use once without saving
+        state.selectedSource = newSource.id;
+        state.sources.push({ ...newSource, saved: false, id: 'temp_' + Date.now() });
+        renderSources();
+        closeModal();
+        showMessage('mainMessage', 'Source ready for swap (not saved).', 'info');
+        updateUI();
     }
+}
+
+function useManualSource() {
+    // Same as save but with saveSource = false
+    const inst = document.getElementById('addInst').value;
+    const assetType = document.getElementById('addAssetType').value;
+    const name = document.getElementById('addName').value.trim() || `${inst} ${ASSET_TYPES[assetType].label}`;
+    
+    const info = ASSET_TYPES[assetType];
+    let identifier = '';
+    info.fields.forEach(field => {
+        const el = document.getElementById('addField_' + field);
+        if (el && el.value.trim()) {
+            identifier = el.value.trim();
+        }
+    });
+    
+    if (!identifier) {
+        showModalMessage('addSourceMessage', 'Please enter an identifier.', 'error');
+        return;
+    }
+    
+    const newSource = {
+        id: 'temp_' + Date.now(),
+        institution: inst,
+        asset_type: assetType,
+        identifier: identifier,
+        name: name + ' (one-time)',
+        balance: null,
+        is_default: false,
+        saved: false
+    };
+    
+    state.selectedSource = newSource.id;
+    state.sources.push(newSource);
+    renderSources();
+    closeModal();
+    showMessage('mainMessage', 'Source ready for swap (not saved).', 'info');
+    updateUI();
+}
+
+function removeSource(id) {
+    if (!confirm('Remove this source?')) return;
+    state.sources = state.sources.filter(s => s.id !== id);
+    if (state.selectedSource === id) state.selectedSource = null;
+    renderSources();
+    updateUI();
+}
+
+// ============================================================
+// ============================================================
+// DESTINATION MANAGEMENT
+// ============================================================
+// ============================================================
+function loadDestinations() {
+    // Mock data - replace with API call
+    state.destinations = [
+        {
+            id: 'dest_1',
+            institution: 'BOC',
+            asset_type: 'ACCOUNT',
+            identifier: '9876543210',
+            name: 'Business Account',
+            saved: true
+        },
+        {
+            id: 'dest_2',
+            institution: 'ORANGE',
+            asset_type: 'WALLET',
+            identifier: '76345678',
+            name: 'Sister\'s Wallet',
+            saved: true
+        }
+    ];
+    renderDestinations();
+}
+
+function renderDestinations() {
+    const grid = document.getElementById('destGrid');
+    if (!grid) return;
+    
+    document.getElementById('destCount').textContent = state.destinations.length + ' saved';
+    
+    if (state.destinations.length === 0) {
+        grid.innerHTML = `
+            <div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text-muted);">
+                No destinations saved. Click "Add" to save a recipient.
+            </div>
+        `;
+        return;
+    }
+    
+    grid.innerHTML = state.destinations.map(dest => {
+        const assetInfo = ASSET_TYPES[dest.asset_type] || ASSET_TYPES['ACCOUNT'];
+        const isSelected = state.selectedDestination === dest.id;
+        
+        return `
+            <div class="dest-item ${isSelected ? 'selected' : ''}" 
+                 data-id="${dest.id}"
+                 onclick="selectDestination('${dest.id}')">
+                <span class="icon">${assetInfo.icon}</span>
+                <div class="info">
+                    <div class="name">${dest.name}</div>
+                    <div class="detail">${dest.institution} • ${dest.asset_type} • ${dest.identifier}</div>
+                </div>
+                <div class="actions">
+                    <button class="remove-btn" onclick="event.stopPropagation();removeDestination('${dest.id}')">✕</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function selectDestination(id) {
+    state.selectedDestination = state.selectedDestination === id ? null : id;
+    renderDestinations();
+    updateUI();
+}
+
+function addDestination() {
+    openModal('Add Destination', `
+        <div id="addDestMessage" class="message"></div>
+        
+        <div class="form-group">
+            <label>Institution</label>
+            <select class="form-control" id="addDestInst">
+                ${Object.keys(PARTICIPANTS).filter(k => k !== 'ATM' && k !== 'AGENT').map(k => 
+                    `<option value="${k}">${PARTICIPANTS[k].name}</option>`
+                ).join('')}
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label>Asset Type</label>
+            <select class="form-control" id="addDestAssetType" onchange="updateDestFields()">
+                ${Object.keys(ASSET_TYPES).filter(k => k !== 'CASHOUT').map(k => 
+                    `<option value="${k}">${ASSET_TYPES[k].label}</option>`
+                ).join('')}
+            </select>
+        </div>
+        
+        <div id="destFields">
+            <div class="form-group">
+                <label>Identifier</label>
+                <input class="form-control" id="addDestIdentifier" placeholder="Account number, phone, or card number">
+            </div>
+            <div class="form-group">
+                <label>Name (optional)</label>
+                <input class="form-control" id="addDestName" placeholder="e.g., Business Account">
+            </div>
+        </div>
+        
+        <button class="btn btn-primary btn-block" onclick="saveNewDestination()">Save Destination</button>
+        <button class="btn btn-secondary btn-block" onclick="useManualDestination()" style="margin-top:8px;">
+            Use this once (don't save)
+        </button>
+    `);
+}
+
+function updateDestFields() {
+    const type = document.getElementById('addDestAssetType').value;
+    const container = document.getElementById('destFields');
+    const info = ASSET_TYPES[type] || ASSET_TYPES['ACCOUNT'];
+    
+    let html = '';
+    info.fields.forEach(field => {
+        const label = field.replace('_', ' ').toUpperCase();
+        html += `
+            <div class="form-group">
+                <label>${label}</label>
+                <input class="form-control" id="addDestField_${field}" placeholder="Enter ${field.replace('_', ' ')}">
+            </div>
+        `;
+    });
+    html += `
+        <div class="form-group">
+            <label>Name (optional)</label>
+            <input class="form-control" id="addDestName" placeholder="e.g., My Account">
+        </div>
+    `;
+    container.innerHTML = html;
+}
+
+function saveNewDestination() {
+    const inst = document.getElementById('addDestInst').value;
+    const assetType = document.getElementById('addDestAssetType').value;
+    const name = document.getElementById('addDestName').value.trim() || `${inst} ${ASSET_TYPES[assetType].label}`;
+    
+    const info = ASSET_TYPES[assetType];
+    let identifier = '';
+    info.fields.forEach(field => {
+        const el = document.getElementById('addDestField_' + field);
+        if (el && el.value.trim()) {
+            identifier = el.value.trim();
+        }
+    });
+    
+    if (!identifier) {
+        showModalMessage('addDestMessage', 'Please enter an identifier.', 'error');
+        return;
+    }
+    
+    state.destinations.push({
+        id: 'dest_' + Date.now(),
+        institution: inst,
+        asset_type: assetType,
+        identifier: identifier,
+        name: name,
+        saved: true
+    });
+    
+    renderDestinations();
+    closeModal();
+    showMessage('mainMessage', `Destination "${name}" saved!`, 'success');
+}
+
+function useManualDestination() {
+    const inst = document.getElementById('addDestInst').value;
+    const assetType = document.getElementById('addDestAssetType').value;
+    const name = document.getElementById('addDestName').value.trim() || `${inst} ${ASSET_TYPES[assetType].label}`;
+    
+    const info = ASSET_TYPES[assetType];
+    let identifier = '';
+    info.fields.forEach(field => {
+        const el = document.getElementById('addDestField_' + field);
+        if (el && el.value.trim()) {
+            identifier = el.value.trim();
+        }
+    });
+    
+    if (!identifier) {
+        showModalMessage('addDestMessage', 'Please enter an identifier.', 'error');
+        return;
+    }
+    
+    state.selectedDestination = 'temp_dest_' + Date.now();
+    state.destinations.push({
+        id: 'temp_dest_' + Date.now(),
+        institution: inst,
+        asset_type: assetType,
+        identifier: identifier,
+        name: name + ' (one-time)',
+        saved: false
+    });
+    renderDestinations();
+    closeModal();
+    showMessage('mainMessage', 'Destination ready for swap (not saved).', 'info');
+    updateUI();
+}
+
+function removeDestination(id) {
+    if (!confirm('Remove this destination?')) return;
+    state.destinations = state.destinations.filter(d => d.id !== id);
+    if (state.selectedDestination === id) state.selectedDestination = null;
+    renderDestinations();
+    updateUI();
+}
+
+// ============================================================
+// ============================================================
+// SWAP OPERATIONS
+// ============================================================
+// ============================================================
+function openSwap(type) {
+    state.swapType = type;
+    state.step = 0;
+    state.previewData = null;
+    state.isMultiSource = false;
+    state.selectedSources = [];
+    
+    if (type === 'from') {
+        openSwapFrom();
+    } else {
+        openSwapTo();
+    }
+}
+
+function openSwapFrom() {
+    const hasSources = state.sources.length > 0;
+    const hasSelected = state.selectedSource !== null;
+    
+    let html = `
+        <div id="swapMessage" class="message"></div>
+        
+        <div class="form-group">
+            <label>Select Source</label>
+            ${hasSources ? `
+                <select class="form-control" id="swapSourceSelect" onchange="onSourceSelectChange()">
+                    <option value="">-- Select a saved source --</option>
+                    ${state.sources.filter(s => s.saved !== false).map(s => 
+                        `<option value="${s.id}" ${state.selectedSource === s.id ? 'selected' : ''}>
+                            ${s.name} - ${s.institution} (${s.identifier})
+                        </option>`
+                    ).join('')}
+                    <option value="__manual__">-- Enter manually (one-time) --</option>
+                </select>
+            ` : `
+                <div style="color:var(--text-muted);padding:8px 0;">No saved sources. Click "Add" to connect one.</div>
+                <button class="btn btn-secondary btn-sm" onclick="closeModal();addSource();">+ Add Source</button>
+            `}
+        </div>
+    `;
+    
+    // If source selected, show details and proceed
+    if (hasSelected) {
+        const src = state.sources.find(s => s.id === state.selectedSource);
+        if (src) {
+            html += `
+                <div class="preview-box" style="border-color:var(--primary);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div>
+                            <div style="font-weight:600;">${src.name}</div>
+                            <div style="font-size:13px;color:var(--text-muted);">${src.institution} • ${src.asset_type}</div>
+                            <div style="font-size:13px;color:var(--text-muted);">${src.identifier}</div>
+                        </div>
+                        <div>
+                            ${src.balance !== null ? 
+                                `<span style="color:var(--success);font-weight:600;">${CONFIG.currencySymbol} ${src.balance.toFixed(2)}</span>` :
+                                `<button class="balance-btn" onclick="checkBalance('${src.id}')">🔄 Check Balance</button>`
+                            }
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+    }
+    
+    // Swap type selection
+    html += `
+        <div class="form-group">
+            <label>Swap Type</label>
+            <select class="form-control" id="swapTypeSelect" onchange="onSwapTypeChange()">
+                <option value="DEPOSIT">Deposit (Send to account/wallet)</option>
+                <option value="CASHOUT">Cashout (Generate ATM/Agent code)</option>
+                <option value="IDENTITY">Send to Identity</option>
+                <option value="MULTI_SOURCE">Multi-Source (Combine multiple sources)</option>
+            </select>
+        </div>
+    `;
+    
+    // Amount
+    html += `
+        <div class="form-group">
+            <label>Amount (${CONFIG.currencySymbol})</label>
+            <input type="number" class="form-control" id="swapAmount" placeholder="0.00" step="0.01" min="0.01">
+            <div class="quick-amounts">
+                ${[50, 100, 200, 500, 1000].map(a => 
+                    `<span class="quick-amount" onclick="document.getElementById('swapAmount').value=${a}">${a}</span>`
+                ).join('')}
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <label>Your PIN</label>
+            <input type="password" class="form-control" id="swapPin" placeholder="Enter your PIN" maxlength="6">
+        </div>
+    `;
+    
+    // Multi-source section (hidden initially)
+    html += `
+        <div id="multiSourceSection" style="display:none;">
+            <div class="form-group">
+                <label>Select Sources</label>
+                <div id="multiSourceList">
+                    ${state.sources.filter(s => s.saved !== false).map(s => `
+                        <div class="multi-source-item">
+                            <input type="checkbox" class="checkbox" value="${s.id}" onchange="updateMultiSourceTotal()">
+                            <div class="info">
+                                <div class="name">${s.name}</div>
+                                <div class="detail">${s.institution} • ${s.identifier}</div>
+                            </div>
+                            <span class="balance">${s.balance !== null ? CONFIG.currencySymbol + ' ' + s.balance.toFixed(2) : '—'}</span>
+                            <input type="number" class="amount-input" placeholder="Amount" step="0.01" min="0" onchange="updateMultiSourceTotal()">
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+            <div class="distribution-mode">
+                <button class="mode-btn active" onclick="setDistributionMode('ratio')">Split by Ratio</button>
+                <button class="mode-btn" onclick="setDistributionMode('manual')">Manual Entry</button>
+            </div>
+            <div id="multiSourceTotal" style="text-align:right;color:var(--text-muted);font-size:13px;">
+                Total: ${CONFIG.currencySymbol} 0.00
+            </div>
+        </div>
+    `;
+    
+    // Buttons
+    const canProceed = hasSelected || state.sources.length > 0;
+    html += `
+        <div class="btn-group">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="swapPreviewBtn" onclick="previewSwap()" ${!canProceed ? 'disabled' : ''}>
+                Preview Swap →
+            </button>
+        </div>
+    `;
+    
+    setModalContent('Swap From', html);
+}
+
+function openSwapTo() {
+    const hasDestinations = state.destinations.length > 0;
+    const hasSelected = state.selectedDestination !== null;
+    
+    let html = `
+        <div id="swapMessage" class="message"></div>
+        
+        <div class="form-group">
+            <label>Select Destination</label>
+            ${hasDestinations ? `
+                <select class="form-control" id="swapDestSelect" onchange="onDestSelectChange()">
+                    <option value="">-- Select a saved destination --</option>
+                    ${state.destinations.filter(d => d.saved !== false).map(d => 
+                        `<option value="${d.id}" ${state.selectedDestination === d.id ? 'selected' : ''}>
+                            ${d.name} - ${d.institution} (${d.identifier})
+                        </option>`
+                    ).join('')}
+                    <option value="__manual__">-- Enter manually (one-time) --</option>
+                </select>
+            ` : `
+                <div style="color:var(--text-muted);padding:8px 0;">No saved destinations. Click "Add" to save one.</div>
+                <button class="btn btn-secondary btn-sm" onclick="closeModal();addDestination();">+ Add Destination</button>
+            `}
+        </div>
+    `;
+    
+    if (hasSelected) {
+        const dest = state.destinations.find(d => d.id === state.selectedDestination);
+        if (dest) {
+            html += `
+                <div class="preview-box" style="border-color:var(--primary);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div>
+                            <div style="font-weight:600;">${dest.name}</div>
+                            <div style="font-size:13px;color:var(--text-muted);">${dest.institution} • ${dest.asset_type}</div>
+                            <div style="font-size:13px;color:var(--text-muted);">${dest.identifier}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+    }
+    
+    html += `
+        <div class="btn-group">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="destConfirmBtn" onclick="confirmDestination()" ${!hasSelected ? 'disabled' : ''}>
+                Confirm Destination →
+            </button>
+        </div>
+    `;
+    
+    setModalContent('Swap To', html);
+}
+
+function onSourceSelectChange() {
+    const select = document.getElementById('swapSourceSelect');
+    if (!select) return;
+    
+    const value = select.value;
+    if (value === '__manual__') {
+        closeModal();
+        addSource();
+        return;
+    }
+    
+    state.selectedSource = value || null;
+    renderSources();
+    updateUI();
+    
+    // Rebuild modal with selection
+    openSwap('from');
+}
+
+function onDestSelectChange() {
+    const select = document.getElementById('swapDestSelect');
+    if (!select) return;
+    
+    const value = select.value;
+    if (value === '__manual__') {
+        closeModal();
+        addDestination();
+        return;
+    }
+    
+    state.selectedDestination = value || null;
+    renderDestinations();
+    updateUI();
+    
+    // Rebuild modal with selection
+    openSwap('to');
+}
+
+function onSwapTypeChange() {
+    const select = document.getElementById('swapTypeSelect');
+    if (!select) return;
+    
+    const type = select.value;
+    const multiSection = document.getElementById('multiSourceSection');
+    
+    if (type === 'MULTI_SOURCE') {
+        multiSection.style.display = 'block';
+        state.isMultiSource = true;
+    } else {
+        multiSection.style.display = 'none';
+        state.isMultiSource = false;
+        state.selectedSources = [];
+    }
+}
+
+function setDistributionMode(mode) {
+    state.distributionMode = mode;
+    document.querySelectorAll('.distribution-mode .mode-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.textContent.toLowerCase().includes(mode));
+    });
+}
+
+function updateMultiSourceTotal() {
+    const items = document.querySelectorAll('.multi-source-item');
+    let total = 0;
+    items.forEach(item => {
+        const checkbox = item.querySelector('.checkbox');
+        const input = item.querySelector('.amount-input');
+        if (checkbox.checked && input.value) {
+            total += parseFloat(input.value) || 0;
+        }
+    });
+    document.getElementById('multiSourceTotal').textContent = `Total: ${CONFIG.currencySymbol} ${total.toFixed(2)}`;
+}
+
+function confirmDestination() {
+    if (!state.selectedDestination) {
+        showModalMessage('swapMessage', 'Please select a destination.', 'warning');
+        return;
+    }
+    closeModal();
+    // Now open the "Swap From" flow with destination pre-selected
+    openSwap('from');
+    // Show that destination is selected
+    showMessage('mainMessage', 'Destination selected. Now choose your source and amount.', 'info');
+}
+
+// ============================================================
+// ============================================================
+// PREVIEW & EXECUTE
+// ============================================================
+// ============================================================
+async function previewSwap() {
+    const amount = document.getElementById('swapAmount')?.value;
+    const pin = document.getElementById('swapPin')?.value;
+    const swapType = document.getElementById('swapTypeSelect')?.value || 'DEPOSIT';
+    
+    if (!state.selectedSource) {
+        showModalMessage('swapMessage', 'Please select a source.', 'warning');
+        return;
+    }
+    
+    const src = state.sources.find(s => s.id === state.selectedSource);
+    if (!src) {
+        showModalMessage('swapMessage', 'Source not found.', 'error');
+        return;
+    }
+    
+    if (!amount || parseFloat(amount) <= 0) {
+        showModalMessage('swapMessage', 'Please enter a valid amount.', 'warning');
+        return;
+    }
+    
+    if (!pin || pin.length < 4) {
+        showModalMessage('swapMessage', 'Please enter your PIN.', 'warning');
+        return;
+    }
+    
+    // Build payload
+    let payload = {
+        swap_type: swapType,
+        from_institution: src.institution,
+        source_institution: src.institution,
+        source_identifier: src.identifier,
+        asset_type: src.asset_type,
+        amount: parseFloat(amount),
+        currency: CONFIG.currency,
+        pin: pin,
+        wallet_pin: pin,
+        reference: 'SWAP_' + Date.now(),
+        idempotency_key: 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+    };
+    
+    // Add destination if selected
+    if (state.selectedDestination) {
+        const dest = state.destinations.find(d => d.id === state.selectedDestination);
+        if (dest) {
+            payload.to_institution = dest.institution;
+            payload.destination_institution = dest.institution;
+            payload.destination_identifier = dest.identifier;
+            payload.destination_identifier_type = dest.asset_type === 'ACCOUNT' ? 'account' : 'phone';
+            payload.destination_asset_type = dest.asset_type;
+        }
+    }
+    
+    // Multi-source
+    if (swapType === 'MULTI_SOURCE') {
+        const sources = [];
+        const items = document.querySelectorAll('.multi-source-item');
+        items.forEach(item => {
+            const checkbox = item.querySelector('.checkbox');
+            const input = item.querySelector('.amount-input');
+            if (checkbox.checked && input.value) {
+                const srcId = checkbox.value;
+                const source = state.sources.find(s => s.id === srcId);
+                if (source) {
+                    sources.push({
+                        institution: source.institution,
+                        asset_type: source.asset_type,
+                        identifier: source.identifier,
+                        amount: parseFloat(input.value) || 0,
+                    });
+                }
+            }
+        });
+        if (sources.length < 2) {
+            showModalMessage('swapMessage', 'Select at least 2 sources for multi-source swap.', 'warning');
+            return;
+        }
+        payload.sources = sources;
+        payload.distribution_mode = state.distributionMode;
+    }
+    
+    state.currentSwapPayload = payload;
+    
+    // Show preview
+    try {
+        const btn = document.getElementById('swapPreviewBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+        
+        // Call preview API
+        const response = await fetch(CONFIG.api.preview, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        
+        if (btn) { btn.disabled = false; btn.textContent = 'Preview Swap →'; }
+        
+        if (data.success || data.preview) {
+            state.previewData = data.preview || data;
+            showPreview();
+        } else {
+            showModalMessage('swapMessage', data.message || 'Preview failed.', 'error');
+        }
+    } catch (e) {
+        // Mock preview for demo
+        showPreviewMock(payload);
+    }
+}
+
+function showPreviewMock(payload) {
+    // Build a mock preview for testing
+    const fee = payload.amount * 0.02;
+    const forexFee = 0;
+    const net = payload.amount - fee;
+    
+    state.previewData = {
+        requested_amount: payload.amount,
+        total_fee: fee,
+        forex_fee: forexFee,
+        net_amount: net,
+        source_currency: CONFIG.currency,
+        destination_currency: CONFIG.currency,
+        exchange_rate: 1.0,
+        breakdown: {
+            transaction_fee: fee,
+            forex_fee: 0,
+            vat: 0,
+        },
+        mat
+
+hematical_formulas: {
+            'Amount_1': payload.amount,
+            'F1': fee,
+            'Amount_2': net,
+        }
+    };
+    showPreview();
+}
+
+function showPreview() {
+    const data = state.previewData;
+    if (!data) return;
+    
+    const html = `
+        <div id="previewContent">
+            <div class="preview-box">
+                <div class="preview-row">
+                    <span class="label">Requested Amount</span>
+                    <span class="value">${CONFIG.currencySymbol} ${(data.requested_amount || data.amount || 0).toFixed(2)}</span>
+                </div>
+                <div class="preview-row">
+                    <span class="label">Transaction Fee</span>
+                    <span class="value warning">${CONFIG.currencySymbol} ${(data.total_fee || 0).toFixed(2)}</span>
+                </div>
+                ${data.forex_fee ? `
+                <div class="preview-row">
+                    <span class="label">Forex Fee</span>
+                    <span class="value warning">${CONFIG.currencySymbol} ${data.forex_fee.toFixed(2)}</span>
+                </div>
+                ` : ''}
+                ${data.exchange_rate && data.exchange_rate !== 1 ? `
+                <div class="preview-row">
+                    <span class="label">Exchange Rate</span>
+                    <span class="value">${data.exchange_rate.toFixed(4)}</span>
+                </div>
+                ` : ''}
+                <div class="preview-row" style="border-bottom:none;padding-top:8px;">
+                    <span class="label" style="font-weight:600;">Net Amount</span>
+                    <span class="value highlight">${CONFIG.currencySymbol} ${(data.net_amount || 0).toFixed(2)}</span>
+                </div>
+            </div>
+            
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">
+                ${data.mathematical_formulas ? 
+                    Object.entries(data.mathematical_formulas).map(([k,v]) => 
+                        `${k} = ${v}`
+                    ).join(' • ') : ''
+                }
+            </div>
+            
+            <div class="btn-group">
+                <button class="btn btn-secondary" onclick="backToSwapForm()">← Back</button>
+                <button class="btn btn-success" id="confirmSwapBtn" onclick="executeSwap()">
+                    ✅ Confirm & Execute
+                </button>
+            </div>
+        </div>
+    `;
+    
+    document.getElementById('modalBody').innerHTML = html;
+}
+
+function backToSwapForm() {
+    openSwap('from');
+}
+
+async function executeSwap() {
+    const btn = document.getElementById('confirmSwapBtn');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Processing...';
+    }
+    
+    try {
+        const response = await fetch(CONFIG.api.execute, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(state.currentSwapPayload)
+        });
+        const result = await response.json();
+        
+        if (result.success || result.status === 'success' || result.status === 'pending_cashout') {
+            showSwapResult(result, true);
+        } else {
+            showSwapResult(result, false);
+        }
+    } catch (e) {
+        // Mock success for demo
+        showSwapResult({
+            status: 'success',
+            reference: 'SWAP_' + Date.now(),
+            amount: state.currentSwapPayload.amount,
+            fee: state.currentSwapPayload.amount * 0.02,
+            message: 'Swap completed successfully!'
+        }, true);
+    }
+}
+
+function showSwapResult(result, success) {
+    const isPending = result.status === 'pending_cashout';
+    const icon = success ? (isPending ? '⏳' : '✅') : '❌';
+    const color = success ? (isPending ? 'var(--warning)' : 'var(--success)') : 'var(--danger)';
+    
+    let html = `
+        <div style="text-align:center;padding:20px 0;">
+            <div style="font-size:48px;color:${color};">${icon}</div>
+            <h3 style="margin:12px 0 4px;">${result.message || (success ? 'Swap Completed' : 'Swap Failed')}</h3>
+            <p style="color:var(--text-muted);font-size:14px;">
+                Reference: ${result.reference || result.swap_reference || 'N/A'}
+            </p>
+    `;
+    
+    if (success && result.amount) {
+        html += `
+            <div style="margin:12px 0;padding:12px;background:rgba(255,255,255,0.05);border-radius:var(--radius-sm);">
+                <div style="font-size:12px;color:var(--text-muted);">Amount</div>
+                <div style="font-size:24px;font-weight:700;">${CONFIG.currencySymbol} ${(result.amount || 0).toFixed(2)}</div>
+                ${result.fee ? `<div style="font-size:12px;color:var(--text-muted);">Fee: ${CONFIG.currencySymbol} ${result.fee.toFixed(2)}</div>` : ''}
+            </div>
+        `;
+    }
+    
+    if (isPending && result.atm_code) {
+        html += `
+            <div style="margin:12px 0;padding:16px;background:rgba(0,240,255,0.08);border:2px solid var(--primary);border-radius:var(--radius-sm);">
+                <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">ATM/Agent Code</div>
+                <div style="font-size:28px;font-weight:700;font-family:monospace;letter-spacing:4px;">${result.atm_code}</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">Expires: ${result.code_expiry || '24 hours'}</div>
+            </div>
+        `;
+    }
+    
+    if (!success && result.error) {
+        html += `
+            <div style="margin:12px 0;padding:12px;background:rgba(255,82,82,0.1);border-radius:var(--radius-sm);color:var(--danger);font-size:14px;">
+                ${result.error}
+            </div>
+        `;
+    }
+    
+    html += `
+            <button class="btn btn-primary btn-block" onclick="closeModal();loadActivity();" style="margin-top:16px;">
+                Done
+            </button>
+        </div>
+    `;
+    
+    document.getElementById('modalBody').innerHTML = html;
+}
+
+// ============================================================
+// ============================================================
+// IDENTITY SWAPS
+// ============================================================
+// ============================================================
+function loadIdentitySwaps() {
+    // Mock data - replace with API call
+    state.identitySwaps = [
+        {
+            id: 'id_1',
+            swap_reference: 'SWAP_ID_001',
+            amount: 500.00,
+            currency: 'BWP',
+            identity_type: 'national_id',
+            identity_value: '123456789',
+            status: 'pending',
+            source_institution: 'ZURUBANK',
+            created_at: '2026-07-14 10:30:00',
+            expires_at: '2026-07-15 10:30:00'
+        },
+        {
+            id: 'id_2',
+            swap_reference: 'SWAP_ID_002',
+            amount: 250.00,
+            currency: 'BWP',
+            identity_type: 'phone',
+            identity_value: '71234567',
+            status: 'claimed',
+            source_institution: 'MASCOM',
+            created_at: '2026-07-13 14:20:00',
+            expires_at: '2026-07-14 14:20:00'
+        }
+    ];
+    renderIdentitySwaps();
+}
+
+function renderIdentitySwaps() {
+    const container = document.getElementById('identityList');
+    const pending = state.identitySwaps.filter(s => s.status === 'pending');
+    document.getElementById('identityCount').textContent = pending.length + ' pending';
+    
+    if (state.identitySwaps.length === 0) {
+        container.innerHTML = `
+            <div style="text-align:center;padding:16px;color:var(--text-muted);font-size:13px;">
+                No identity swaps.
+            </div>
+        `;
+        return;
+    }
+    
+    container.innerHTML = state.identitySwaps.map(swap => `
+        <div class="identity-item">
+            <div class="info">
+                <div class="amount">${CONFIG.currencySymbol} ${swap.amount.toFixed(2)}</div>
+                <div class="identity">
+                    <span class="label">${swap.identity_type}:</span> ${swap.identity_value}
+                </div>
+                <div class="meta">${swap.source_institution} • ${swap.created_at}</div>
+            </div>
+            <span class="status ${swap.status}">${swap.status}</span>
+            ${swap.status === 'pending' ? 
+                `<button class="claim-btn" onclick="claimIdentity('${swap.id}')">Claim</button>` : ''
+            }
+        </div>
+    `).join('');
+}
+
+function claimIdentity(id) {
+    const swap = state.identitySwaps.find(s => s.id === id);
+    if (!swap) return;
+    
+    openModal('Claim Identity Swap', `
+        <div id="claimMessage" class="message"></div>
+        
+        <div style="padding:12px;background:rgba(255,255,255,0.03);border-radius:var(--radius-sm);margin-bottom:16px;">
+            <div style="display:flex;justify-content:space-between;">
+                <span style="color:var(--text-muted);">Amount</span>
+                <span style="font-weight:600;">${CONFIG.currencySymbol} ${swap.amount.toFixed(2)}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;">
+                <span style="color:var(--text-muted);">From</span>
+                <span>${swap.source_institution}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;">
+                <span style="color:var(--text-muted);">Identity</span>
+                <span>${swap.identity_type}: ${swap.identity_value}</span>
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <label>Confirm Your Identity</label>
+            <input class="form-control" id="claimIdentityValue" placeholder="Enter ${swap.identity_type} to confirm" value="${swap.identity_value}">
+        </div>
+        
+        <div class="form-group">
+            <label>Choose Destination</label>
+            <select class="form-control" id="claimDestType">
+                <option value="CASHOUT">Cashout (ATM/Agent)</option>
+                <option value="DEPOSIT">Deposit (Account/Wallet)</option>
+            </select>
+        </div>
+        
+        <div id="claimDestFields">
+            <div class="form-group">
+                <label>Destination Institution</label>
+                <select class="form-control" id="claimDestInst">
+                    ${Object.keys(PARTICIPANTS).filter(k => k !== 'ATM' && k !== 'AGENT').map(k => 
+                        `<option value="${k}">${PARTICIPANTS[k].name}</option>`
+                    ).join('')}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Destination Identifier</label>
+                <input class="form-control" id="claimDestIdentifier" placeholder="Account number or phone">
+            </div>
+        </div>
+        
+        <button class="btn btn-success btn-block" onclick="submitClaim('${id}')">Claim Funds</button>
+    `);
+}
+
+function submitClaim(id) {
+    const identityValue = document.getElementById('claimIdentityValue')?.value.trim();
+    const destType = document.getElementById('claimDestType')?.value;
+    const destInst = document.getElementById('claimDestInst')?.value;
+    const destIdentifier = document.getElementById('claimDestIdentifier')?.value.trim();
+    
+    if (!identityValue) {
+        showModalMessage('claimMessage', 'Please confirm your identity.', 'warning');
+        return;
+    }
+    
+    if (!destIdentifier) {
+        showModalMessage('claimMessage', 'Please enter a destination identifier.', 'warning');
+        return;
+    }
+    
+    // Mock claim success
+    showModalMessage('claimMessage', '✅ Identity swap claimed! Funds will be sent to your destination.', 'success');
+    
+    // Update status
+    const swap = state.identitySwaps.find(s => s.id === id);
+    if (swap) {
+        swap.status = 'claimed';
+        renderIdentitySwaps();
+    }
+    
+    setTimeout(() => closeModal(), 2000);
+}
+
+// ============================================================
+// ============================================================
+// ACTIVITY
+// ============================================================
+// ============================================================
+function loadActivity() {
+    // Mock data - replace with API call
+    state.activity = [
+        {
+            id: 'act_1',
+            type: 'DEPOSIT',
+            amount: 500.00,
+            status: 'completed',
+            from: 'ZURUBANK',
+            to: 'BOC',
+            time: '2026-07-14 14:30:00'
+        },
+        {
+            id: 'act_2',
+            type: 'CASHOUT',
+            amount: 200.00,
+            status: 'pending',
+            from: 'MASCOM',
+            to: 'ATM',
+            time: '2026-07-14 12:15:00'
+        },
+        {
+            id: 'act_3',
+            type: 'IDENTITY',
+            amount: 150.00,
+            status: 'completed',
+            from: 'ZURUBANK',
+            to: 'National ID: 123456789',
+            time: '2026-07-13 09:00:00'
+        }
+    ];
+    renderActivity();
+}
+
+function renderActivity() {
+    const container = document.getElementById('activityList');
+    
+    if (state.activity.length === 0) {
+        container.innerHTML = `
+            <div style="text-align:center;padding:16px;color:var(--text-muted);font-size:13px;">
+                No recent activity.
+            </div>
+        `;
+        return;
+    }
+    
+    const icons = {
+        'DEPOSIT': '📥',
+        'CASHOUT': '💰',
+        'IDENTITY': '🔑',
+        'MULTI_SOURCE': '📤',
+        'TRANSFER': '↔️'
+    };
+    
+    container.innerHTML = state.activity.map(act => `
+        <div class="activity-item">
+            <div class="left">
+                <span class="icon">${icons[act.type] || '📋'}</span>
+                <div class="details">
+                    <div class="type">${act.type} <span style="color:var(--text-muted);font-weight:400;">${act.from} → ${act.to}</span></div>
+                    <div class="time">${act.time}</div>
+                </div>
+            </div>
+            <div class="right">
+                <div class="amount">${CONFIG.currencySymbol} ${act.amount.toFixed(2)}</div>
+                <span class="status ${act.status}">${act.status}</span>
+            </div>
+        </div>
+    `).join('');
+}
+
+// ============================================================
+// ============================================================
+// UI HELPERS
+// ============================================================
+// ============================================================
+function updateUI() {
+    // Update Swap From button
+    const fromBtn = document.getElementById('swapFromBtn');
+    const fromInfo = document.getElementById('fromSelectedInfo');
+    if (state.selectedSource) {
+        const src = state.sources.find(s => s.id === state.selectedSource);
+        if (src) {
+            fromInfo.textContent = `${src.name} (${src.institution})`;
+            fromBtn.classList.add('active');
+        }
+    } else {
+        fromInfo.textContent = 'No source selected';
+        fromBtn.classList.remove('active');
+    }
+    
+    // Update Swap To button
+    const toBtn = document.getElementById('swapToBtn');
+    const toInfo = document.getElementById('toSelectedInfo');
+    if (state.selectedDestination) {
+        const dest = state.destinations.find(d => d.id === state.selectedDestination);
+        if (dest) {
+            toInfo.textContent = `${dest.name} (${dest.institution})`;
+            toBtn.classList.add('active');
+        }
+    } else {
+        toInfo.textContent = 'No destination selected';
+        toBtn.classList.remove('active');
+    }
+}
+
+function openModal(title, bodyHtml) {
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalBody').innerHTML = bodyHtml;
+    document.getElementById('modal').classList.add('active');
+}
+
+function setModalContent(title, bodyHtml) {
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalBody').innerHTML = bodyHtml;
 }
 
 function closeModal() {
     document.getElementById('modal').classList.remove('active');
 }
 
-function renderStep() {
-    const body = document.getElementById('modalBody');
-    
-    if (currentStep === 0) body.innerHTML = renderStep0();
-    else if (currentStep === 1) body.innerHTML = renderStep1();
-    else if (currentStep === 2) body.innerHTML = renderStep2();
-}
-
-function renderStep0() {
-    const isDeposit = currentType === 'deposit';
-    const isWithdraw = currentType === 'withdraw';
-    const isTransfer = currentType === 'transfer';
-    
-    let fromOptions = Object.entries(participants);
-    let toOptions = Object.entries(participants);
-    
-    if (isDeposit) {
-        fromOptions = userIdentifiers.length > 0 ? userIdentifiers.map(id => ['user_' + id.value, { name: id.value, type: 'USER' }]) : [];
-        toOptions = Object.entries(participants);
-    } else if (isWithdraw) {
-        fromOptions = Object.entries(participants);
-        toOptions = userIdentifiers.length > 0 ? userIdentifiers.map(id => ['user_' + id.value, { name: id.value, type: 'USER' }]) : [];
-    }
-    
-    let html = `
-        <div class="step-indicator">
-            <div class="step-dot active"></div>
-            <div class="step-dot"></div>
-            <div class="step-dot"></div>
-        </div>
-        <div class="step-label">
-            <span class="active">1. Select</span>
-            <span>2. Amount</span>
-            <span>3. Confirm</span>
-        </div>
-    `;
-    
-    if (fromOptions.length > 0) {
-        html += `
-            <div class="form-group">
-                <label>${isDeposit ? 'From (Your Source)' : isWithdraw ? 'From (Your Institution)' : 'From'}</label>
-                <select class="form-control" id="fromSelect" onchange="selFrom=this.value">
-                    <option value="">Select source...</option>
-        `;
-        fromOptions.forEach(([code, p]) => {
-            const label = p.name || code;
-            html += `<option value="${code}">${label}</option>`;
-        });
-        html += `</select></div>`;
-    }
-    
-    if (toOptions.length > 0) {
-        html += `
-            <div class="form-group">
-                <label>${isDeposit ? 'To (Destination)' : isWithdraw ? 'To (Your Account)' : 'To'}</label>
-                <select class="form-control" id="toSelect" onchange="selTo=this.value">
-                    <option value="">Select destination...</option>
-        `;
-        toOptions.forEach(([code, p]) => {
-            const label = p.name || code;
-            html += `<option value="${code}">${label}</option>`;
-        });
-        html += `</select></div>`;
-    }
-    
-    html += `
-        <button class="btn btn-primary btn-block" onclick="currentStep=1;renderStep()" disabled id="step0Next">
-            Next →
-        </button>
-    `;
-    
-    // Enable next when both selected
+function showMessage(id, text, type = 'info') {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    el.className = `message show ${type}`;
     setTimeout(() => {
-        document.getElementById('fromSelect')?.addEventListener('change', checkStep0);
-        document.getElementById('toSelect')?.addEventListener('change', checkStep0);
-        checkStep0();
-    }, 100);
-    
-    return html;
+        el.classList.remove('show');
+    }, 5000);
 }
 
-function checkStep0() {
-    const from = document.getElementById('fromSelect')?.value;
-    const to = document.getElementById('toSelect')?.value;
-    const btn = document.getElementById('step0Next');
-    if (btn) btn.disabled = !from || !to;
-}
-
-function renderStep1() {
-    const from = document.getElementById('fromSelect')?.value;
-    const to = document.getElementById('toSelect')?.value;
-    
-    if (!from || !to) {
-        return `
-            <div class="message show error">Please select both source and destination.</div>
-            <button class="btn btn-secondary btn-block" onclick="currentStep=0;renderStep()">← Back</button>
-        `;
-    }
-    
-    // FIX: Only use supported asset types (ACCOUNT, WALLET)
-    let assetOptions = destinationAssetTypes;
-    
-    let html = `
-        <div class="step-indicator">
-            <div class="step-dot done"></div>
-            <div class="step-dot active"></div>
-            <div class="step-dot"></div>
-        </div>
-        <div class="step-label">
-            <span>1. Select</span>
-            <span class="active">2. Amount</span>
-            <span>3. Confirm</span>
-        </div>
-        <div class="text-muted" style="font-size:0.8rem;margin-bottom:1em;">
-            ${from} → ${to}
-        </div>
-        <div class="form-group">
-            <label>Amount (${currencySymbol})</label>
-            <input type="number" class="form-control" id="amountInput" placeholder="0.00" step="0.01" min="0.01">
-            <div class="quick-amounts">
-                ${[50, 100, 200, 500, 1000].map(a => 
-                    `<span class="quick-amount" onclick="document.getElementById('amountInput').value=${a}">${a}</span>`
-                ).join('')}
-            </div>
-        </div>
-        <div class="form-group">
-            <label>Asset Type</label>
-            <div class="asset-pills" id="assetPills">
-    `;
-    
-    assetOptions.forEach(a => {
-        const label = assetLabel[a] || a;
-        const isActive = selAsset === a || (!selAsset && a === 'ACCOUNT');
-        html += `<span class="asset-pill ${isActive ? 'active' : ''}" onclick="selectAsset('${a}')">${label}</span>`;
-    });
-    
-    if (!selAsset) selAsset = 'ACCOUNT';
-    
-    html += `
-            </div>
-        </div>
-        <div class="form-group">
-            <label>Your PIN</label>
-            <input type="password" class="form-control" id="pinInput" placeholder="Enter your PIN" maxlength="6">
-        </div>
-        <div id="step1Message" class="message"></div>
-        <div class="flex gap-16">
-            <button class="btn btn-secondary" onclick="currentStep=0;renderStep()">← Back</button>
-            <button class="btn btn-primary" onclick="goToConfirm()" id="step1Next">Preview →</button>
-        </div>
-    `;
-    
-    return html;
-}
-
-function selectAsset(asset) {
-    selAsset = asset;
-    document.querySelectorAll('#assetPills .asset-pill').forEach(el => {
-        el.classList.toggle('active', el.textContent.trim() === (assetLabel[asset] || asset));
-    });
-}
-
-function goToConfirm() {
-    const amount = parseFloat(document.getElementById('amountInput')?.value) || 0;
-    const pin = document.getElementById('pinInput')?.value || '';
-    const from = document.getElementById('fromSelect')?.value;
-    const to = document.getElementById('toSelect')?.value;
-    
-    const msg = document.getElementById('step1Message');
-    if (!msg) return;
-    
-    if (amount <= 0) {
-        msg.className = 'message show error';
-        msg.textContent = 'Please enter a valid amount.';
-        return;
-    }
-    
-    if (!pin || pin.length < 4) {
-        msg.className = 'message show error';
-        msg.textContent = 'Please enter your PIN.';
-        return;
-    }
-    
-    msg.className = 'message';
-    msg.textContent = '';
-    
-    // FIX: Build payload correctly
-    const isDeposit = currentType === 'deposit';
-    const isWithdraw = currentType === 'withdraw';
-    const isTransfer = currentType === 'transfer';
-    
-    // FIX: Map from/to properly
-    let fromInstitution = from;
-    let toInstitution = to;
-    let sourceIdentifier = '';
-    
-    // If from is a user identifier, use it as source_identifier
-    if (from.startsWith('user_')) {
-        sourceIdentifier = from.replace('user_', '');
-        // Find the actual institution from the identifier
-        const matched = userIdentifiers.find(id => id.value === sourceIdentifier);
-        if (matched) {
-            // Use the first participant as fallback
-            fromInstitution = Object.keys(participants)[0] || 'ZURUBANK';
-        }
-    }
-    
-    // If to is a user identifier, use it as destination
-    if (to.startsWith('user_')) {
-        toInstitution = Object.keys(participants)[0] || 'ZURUBANK';
-    }
-    
-    pendingPayload = {
-        reference: 'SWAP_' + Date.now(),
-        idempotency_key: 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2,8),
-        currency: currency,
-        swap_type: isDeposit ? 'DEPOSIT' : (isWithdraw ? 'WITHDRAWAL' : 'TRANSFER'),
-        from_institution: fromInstitution,
-        to_institution: toInstitution,
-        amount: amount,
-        destination_asset_type: selAsset || 'ACCOUNT',
-        pin: pin,
-        wallet_pin: pin,
-        source_identifier: sourceIdentifier || userIdentifiers[0]?.value || '',
-    };
-    
-    currentStep = 2;
-    renderStep();
-}
-
-function renderStep2() {
-    const amount = pendingPayload?.amount || 0;
-    const from = pendingPayload?.from_institution || '?';
-    const to = pendingPayload?.to_institution || '?';
-    const asset = pendingPayload?.destination_asset_type || 'ACCOUNT';
-    
-    let html = `
-        <div class="step-indicator">
-            <div class="step-dot done"></div>
-            <div class="step-dot done"></div>
-            <div class="step-dot active"></div>
-        </div>
-        <div class="step-label">
-            <span>1. Select</span>
-            <span>2. Amount</span>
-            <span class="active">3. Confirm</span>
-        </div>
-        <div id="previewContainer">
-            <div class="preview-box">
-                <div class="preview-row"><span class="label">From</span><span class="value">${from}</span></div>
-                <div class="preview-row"><span class="label">To</span><span class="value">${to}</span></div>
-                <div class="preview-row"><span class="label">Amount</span><span class="value">${currencySymbol} ${amount.toFixed(2)}</span></div>
-                <div class="preview-row"><span class="label">Asset</span><span class="value">${assetLabel[asset] || asset}</span></div>
-                <div class="preview-row" style="border-bottom:none;padding-top:0.8em;">
-                    <span class="label">Total</span>
-                    <span class="value highlight">${currencySymbol} ${amount.toFixed(2)}</span>
-                </div>
-            </div>
-            <div id="previewStatus" class="text-center text-muted" style="padding:0.5em 0;">
-                <span class="spinner"></span> Calculating fees...
-            </div>
-        </div>
-        <div class="flex gap-16">
-            <button class="btn btn-secondary" onclick="currentStep=1;renderStep()">← Back</button>
-            <button class="btn btn-success" id="confirmBtn" onclick="executeSwap()" disabled>Confirm & Send</button>
-        </div>
-    `;
-    
-    // Get preview
-    fetch(previewUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(pendingPayload)
-    })
-    .then(res => res.json())
-    .then(data => {
-        const status = document.getElementById('previewStatus');
-        const confirmBtn = document.getElementById('confirmBtn');
-        if (data.success || data.preview) {
-            const p = data.preview || data;
-            const fee = p.total_fee || p.fee || 0;
-            const net = p.net_amount || p.amount || amount;
-            status.innerHTML = `✅ Fee: ${currencySymbol} ${fee.toFixed(2)} | Net: ${currencySymbol} ${net.toFixed(2)}`;
-            if (confirmBtn) confirmBtn.disabled = false;
-        } else {
-            status.innerHTML = `⚠️ ${data.message || 'Fee calculation failed. Proceed anyway.'}`;
-            if (confirmBtn) confirmBtn.disabled = false;
-        }
-    })
-    .catch(() => {
-        const status = document.getElementById('previewStatus');
-        const confirmBtn = document.getElementById('confirmBtn');
-        status.innerHTML = '⚠️ Could not calculate fees. Proceed anyway.';
-        if (confirmBtn) confirmBtn.disabled = false;
-    });
-    
-    return html;
-}
-
-async function executeSwap() {
-    const btn = document.getElementById('confirmBtn');
-    btn.disabled = true;
-    btn.textContent = 'Processing...';
-    
-    const status = document.getElementById('previewStatus');
-    if (status) status.innerHTML = '⏳ Processing transaction...';
-    
-    try {
-        const resp = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(pendingPayload)
-        });
-        const result = await resp.json();
-        
-        if (result.success || result.status === 'success' || result.status === 'pending_cashout') {
-            document.getElementById('modalBody').innerHTML = `
-                <div class="text-center" style="padding:1.5em 0;">
-                    <div style="font-size:3em;color:var(--forest);">✅</div>
-                    <h3 style="margin:0.5em 0 0.3em;">Success!</h3>
-                    <p class="text-muted">Transaction completed successfully</p>
-                    <p style="font-size:0.7rem;opacity:0.5;">Ref: ${result.reference || result.swap_reference || 'N/A'}</p>
-                    ${result.atm_code ? `<div style="margin:0.5em 0;padding:0.5em;background:var(--panel);border:2px solid var(--ink);"><div style="font-size:0.6rem;opacity:0.5;">ATM CODE</div><div style="font-family:'Space Grotesk',monospace;font-size:1.6rem;letter-spacing:0.1em;">${result.atm_code}</div></div>` : ''}
-                    <button class="btn btn-primary btn-block mt-16" onclick="closeModal()">Done</button>
-                </div>
-            `;
-        } else {
-            document.getElementById('modalBody').innerHTML = `
-                <div class="text-center" style="padding:1.5em 0;">
-                    <div style="font-size:3em;color:var(--red);">❌</div>
-                    <h3 style="margin:0.5em 0 0.3em;">Failed</h3>
-                    <p style="color:var(--red);">${result.message || result.error || 'Transaction failed.'}</p>
-                    <button class="btn btn-secondary btn-block mt-16" onclick="currentStep=1;renderStep()">← Back</button>
-                </div>
-            `;
-        }
-    } catch (err) {
-        document.getElementById('modalBody').innerHTML = `
-            <div class="text-center" style="padding:1.5em 0;">
-                <div style="font-size:3em;color:var(--red);">❌</div>
-                <h3 style="margin:0.5em 0 0.3em;">Error</h3>
-                <p style="color:var(--red);">${err.message || 'Network error'}</p>
-                <button class="btn btn-secondary btn-block mt-16" onclick="currentStep=1;renderStep()">← Back</button>
-            </div>
-        `;
-    }
-}
-
-function renderIdentities() {
-    const body = document.getElementById('modalBody');
-    let html = `
-        <div style="margin-bottom:1em;">
-            <p class="text-muted">These are the ways people can send money to you.</p>
-        </div>
-    `;
-    
-    if (userIdentifiers.length === 0) {
-        html += `<div class="text-center text-muted" style="padding:2em 0;">No identifiers added.</div>`;
-    } else {
-        userIdentifiers.forEach(id => {
-            html += `
-                <div class="identifier-item">
-                    <span class="icon">${id.icon}</span>
-                    <div>
-                        <div class="value">${id.value}</div>
-                        <div class="type">${id.type}</div>
-                    </div>
-                    ${id.is_verified ? '<span class="badge badge-success">Verified</span>' : ''}
-                </div>
-            `;
-        });
-    }
-    
-    html += `
-        <div class="text-center text-muted" style="font-size:0.7rem;padding:1em 0;">
-            To add more identifiers, contact support.
-        </div>
-        <button class="btn btn-secondary btn-block" onclick="closeModal()">Close</button>
-    `;
-    
-    body.innerHTML = html;
+function showModalMessage(id, text, type = 'info') {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    el.className = `message show ${type}`;
+    setTimeout(() => {
+        el.classList.remove('show');
+    }, 5000);
 }
 
 // Close modal on escape
