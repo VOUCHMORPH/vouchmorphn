@@ -321,23 +321,9 @@ try {
         $userId = $db->lastInsertId();
         error_log("VERIFY OTP: User created with ID: {$userId}");
 
-        // Create wallet for the user
-        $stmt = $db->prepare("
-            INSERT INTO wallets (user_id, balance, credit_balance, saccus_ewallet_balance, created_at)
-            VALUES (:user_id, 0, 0, 0, NOW())
-        ");
-        $stmt->execute([':user_id' => $userId]);
-
-        // Create mobile money account
-        $stmt = $db->prepare("
-            INSERT INTO mobile_money_accounts (user_id, balance, credit_balance, created_at)
-            VALUES (:user_id, 0, 0, NOW())
-        ");
-        $stmt->execute([':user_id' => $userId]);
-
         // Commit transaction
         $db->commit();
-        error_log("VERIFY OTP: Transaction committed");
+        error_log("VERIFY OTP: Transaction committed successfully");
 
         // Store user in session
         $stmt = $db->prepare("
