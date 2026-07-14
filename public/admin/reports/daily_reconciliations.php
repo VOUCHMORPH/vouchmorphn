@@ -19,7 +19,7 @@ use Application\Admin\Auth\AdminAuth;
 
 // Check if admin is logged in
 if (!SessionManager::isAdminLoggedIn()) {
-    header('Location: /admin_login.php');
+    header('Location: /admin/admin_login.php');
     exit();
 }
 
