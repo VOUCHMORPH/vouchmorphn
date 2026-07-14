@@ -193,29 +193,19 @@ try {
     try {
         error_log("VERIFY OTP: Creating user...");
 
-        // Check if user already exists (double-check)
+        // Check if user already exists based on phone only
         $stmt = $db->prepare("
             SELECT user_id FROM users 
-            WHERE phone = :phone OR email = :email 
-               OR phone2 = :phone2 OR phone3 = :phone3
-               OR national_id = :national_id 
-               OR drivers_license = :drivers_license 
-               OR passport = :passport
+            WHERE phone = :phone
             LIMIT 1
         ");
         $stmt->execute([
-            ':phone' => $tempData['phone_number'] ?? null,
-            ':email' => $tempData['email'] ?? null,
-            ':phone2' => $tempData['phone2'] ?? null,
-            ':phone3' => $tempData['phone3'] ?? null,
-            ':national_id' => ($tempData['identifier_type'] === 'national_id') ? $tempData['identifier_value'] : null,
-            ':drivers_license' => ($tempData['identifier_type'] === 'drivers_license') ? $tempData['identifier_value'] : null,
-            ':passport' => ($tempData['identifier_type'] === 'passport') ? $tempData['identifier_value'] : null
+            ':phone' => $tempData['phone_number'] ?? null
         ]);
         
         if ($stmt->fetch()) {
             $db->rollBack();
-            error_log("VERIFY OTP: User already exists");
+            error_log("VERIFY OTP: User already exists with phone: " . ($tempData['phone_number'] ?? 'null'));
             echo json_encode(['success' => false, 'message' => 'User already exists. Please login.']);
             exit;
         }
