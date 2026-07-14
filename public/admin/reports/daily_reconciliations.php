@@ -1,748 +1,1075 @@
 <?php
 declare(strict_types=1);
 
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+// --- SYSTEM & SESSION SETUP ---
+require_once __DIR__ . '/../../../vendor/autoload.php';
+require_once __DIR__ . '/../../../src/bootstrap.php';
+
+use Domain\Services\FeeService;
+use Domain\Services\Settlement\HybridSettlementStrategy;
+use Domain\Services\ForexService;
+
+// Session management
 session_start();
 
-// Define project root
-define('PROJECT_ROOT', dirname(__DIR__, 3));
-
-// Load required classes FIRST
-require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
-require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
-require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
-
-use Core\Database\DBConnection;
-use Application\Utils\SessionManager;
-use Application\Admin\Auth\AdminAuth;
-
 // Check if admin is logged in
-if (!SessionManager::isAdminLoggedIn()) {
-    header('Location: /admin/admin_login.php');
-    exit();
+if (!isset($_SESSION['user']) || empty($_SESSION['user'])) {
+    header('Location: ../admin_login.php');
+    exit;
 }
 
-// Load configuration for country data only (not database)
-$configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
-if (file_exists($configPath)) {
-    require_once $configPath;
-    try {
-        $config = \Core\Config\LoadCountry::getConfig();
-        if (!is_array($config)) {
-            $config = [];
+$user = $_SESSION['user'];
+$countryCode = $user['country_code'] ?? 'BW';
+
+// --- LOAD COUNTRY CONFIGURATION ---
+$countryConfigPath = __DIR__ . "/../../../config/countries/" . strtolower($countryCode) . "/config.php";
+$countryConfig = file_exists($countryConfigPath) ? require $countryConfigPath : [];
+
+// --- DATABASE CONNECTION ---
+$dbConfig = require __DIR__ . '/../../../config/database.php';
+$swapDB = new PDO(
+    "pgsql:host={$dbConfig['host']};dbname={$dbConfig['dbname']}",
+    $dbConfig['user'],
+    $dbConfig['password'],
+    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+);
+
+// --- LOAD FEES CONFIGURATION ---
+$feesConfigPath = __DIR__ . "/../../../config/countries/" . strtolower($countryCode) . "/fees.json";
+$feesConfig = file_exists($feesConfigPath) ? json_decode(file_get_contents($feesConfigPath), true) : [];
+
+// --- INITIALIZE SERVICES ---
+$feeService = new FeeService($feesConfig, 'BWP');
+$settlement = new HybridSettlementStrategy($swapDB);
+$forexService = new ForexService($swapDB, $countryConfig, [], $feeService);
+
+// --- DATE RANGE (Current Month or Selected) ---
+$year = $_GET['year'] ?? date('Y');
+$month = $_GET['month'] ?? date('m');
+$firstDayOfMonth = date('Y-m-01', strtotime("{$year}-{$month}-01"));
+$lastDayOfMonth = date('Y-m-t', strtotime("{$year}-{$month}-01"));
+$institutionFilter = $_GET['institution'] ?? null;
+$currencyFilter = $_GET['currency'] ?? null;
+
+// --- FETCH MONTHLY LEDGER RECONCILIATIONS ---
+$reconciliationsQuery = "
+    SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as total_transactions,
+        COALESCE(SUM(amount), 0) as total_amount,
+        status
+    FROM swap_requests
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+    GROUP BY DATE(created_at), status
+    ORDER BY date DESC, status
+";
+
+$stmt = $swapDB->prepare($reconciliationsQuery);
+$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$rawReconciliations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Group reconciliations by date
+$reconciliations = [];
+foreach ($rawReconciliations as $row) {
+    $date = $row['date'];
+    if (!isset($reconciliations[$date])) {
+        $reconciliations[$date] = [
+            'date' => $date,
+            'total_transactions' => 0,
+            'total_amount' => 0,
+            'status' => []
+        ];
+    }
+    $reconciliations[$date]['total_transactions'] += $row['total_transactions'];
+    $reconciliations[$date]['total_amount'] += $row['total_amount'];
+    $reconciliations[$date]['status'][$row['status']] = $row['total_transactions'];
+}
+
+// --- FETCH MONTHLY SWAPS SUMMARY ---
+$swapsQuery = "
+    SELECT 
+        COUNT(*) AS total_swaps,
+        COALESCE(SUM(amount), 0) AS total_amount,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_swaps,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS successful_swaps,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_swaps,
+        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_swaps
+    FROM swap_requests
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+";
+$stmt = $swapDB->prepare($swapsQuery);
+$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$swapsSummary = $stmt->fetch(PDO::FETCH_ASSOC);
+
+// --- FETCH MONTHLY FEE BREAKDOWN ---
+$feeQuery = "
+    SELECT 
+        sfc.fee_type,
+        COUNT(*) as count,
+        SUM(sfc.total_amount) as total_amount,
+        SUM(sfc.vat_amount) as total_vat,
+        sfc.currency
+    FROM swap_fee_collections sfc
+    JOIN swap_requests sr ON sfc.swap_reference = sr.swap_uuid
+    WHERE DATE(sr.created_at) BETWEEN :start_date AND :end_date
+    GROUP BY sfc.fee_type, sfc.currency
+    ORDER BY total_amount DESC
+";
+$stmt = $swapDB->prepare($feeQuery);
+$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$feeBreakdown = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// --- FETCH MONTHLY CROSS-BORDER ACTIVITY ---
+$crossBorderQuery = "
+    SELECT 
+        source_country,
+        destination_country,
+        COUNT(*) as transaction_count,
+        SUM(source_amount) as total_source_amount,
+        SUM(converted_amount) as total_destination_amount,
+        SUM(corridor_fee) as total_corridor_fees,
+        source_currency,
+        destination_currency,
+        AVG(exchange_rate) as avg_exchange_rate
+    FROM cross_border_ledger
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+    GROUP BY source_country, destination_country, source_currency, destination_currency
+    ORDER BY transaction_count DESC
+";
+$stmt = $swapDB->prepare($crossBorderQuery);
+$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$crossBorderActivity = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// --- FETCH MONTHLY CASHOUT RETRY STATISTICS ---
+$retryQuery = "
+    SELECT 
+        COUNT(*) as total_retries,
+        SUM(CASE WHEN free_retry_used THEN 1 ELSE 0 END) as free_retries_used,
+        SUM(CASE WHEN free_retry_used = FALSE THEN 1 ELSE 0 END) as paid_retries,
+        AVG(retry_count) as avg_retry_count
+    FROM cashout_retry_tracking
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+";
+$stmt = $swapDB->prepare($retryQuery);
+$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$retryStats = $stmt->fetch(PDO::FETCH_ASSOC);
+
+// --- FETCH MONTHLY CORRIDOR ACTIVITY ---
+$corridorQuery = "
+    SELECT 
+        source_country,
+        destination_country,
+        COUNT(*) as settlement_count,
+        SUM(source_amount) as total_settled,
+        SUM(corridor_fee) as total_fees
+    FROM corridor_settlement_ledger
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+    GROUP BY source_country, destination_country
+    ORDER BY settlement_count DESC
+";
+$stmt = $swapDB->prepare($corridorQuery);
+$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$corridorActivity = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// --- FETCH MONTHLY FX ACTIVITY ---
+$fxQuery = "
+    SELECT 
+        source_currency,
+        destination_currency,
+        COUNT(*) as fx_transactions,
+        SUM(amount) as total_fx_volume,
+        SUM(forex_fee_amount) as total_forex_fees,
+        AVG(exchange_rate) as avg_rate
+    FROM swap_requests
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+    AND source_currency != destination_currency
+    GROUP BY source_currency, destination_currency
+";
+$stmt = $swapDB->prepare($fxQuery);
+$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$fxActivity = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// --- FETCH MONTHLY HOOK STATISTICS ---
+$hookQuery = "
+    SELECT 
+        COUNT(*) as total_hooks,
+        COUNT(DISTINCT user_identifier) as unique_users,
+        SUM(CASE WHEN is_active THEN 1 ELSE 0 END) as active_hooks
+    FROM user_hooks
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+";
+$stmt = $swapDB->prepare($hookQuery);
+$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$hookStats = $stmt->fetch(PDO::FETCH_ASSOC);
+
+// --- FETCH TOP INSTITUTIONS BY VOLUME ---
+$topInstitutionsQuery = "
+    SELECT 
+        source_details->>'institution' as institution,
+        COUNT(*) as transaction_count,
+        SUM(amount) as total_volume,
+        SUM(total_cashout_fee) as total_fees
+    FROM swap_requests
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+    AND source_details IS NOT NULL
+    AND source_details->>'institution' IS NOT NULL
+    GROUP BY source_details->>'institution'
+    ORDER BY total_volume DESC
+    LIMIT 10
+";
+$stmt = $swapDB->prepare($topInstitutionsQuery);
+$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$topInstitutions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Add fee invoices summary
+$feeInvoicesStmt = $swapDB->prepare("
+    SELECT 
+        fee_type,
+        COUNT(*) as count,
+        SUM(total_amount) as total,
+        SUM(vat_amount) as total_vat,
+        currency,
+        status
+    FROM fee_invoices
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+    GROUP BY fee_type, currency, status
+");
+$feeInvoicesStmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$feeInvoices = $feeInvoicesStmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Add regulatory reports
+$regulatoryStmt = $swapDB->prepare("
+    SELECT 
+        report_type,
+        COUNT(*) as report_count,
+        SUM(CASE WHEN regulator_acknowledged THEN 1 ELSE 0 END) as acknowledged
+    FROM regulatory_reports
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+    GROUP BY report_type
+");
+$regulatoryStmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$regulatoryReports = $regulatoryStmt->fetchAll(PDO::FETCH_ASSOC);
+
+// --- CALCULATE TOTALS ---
+$totalFxVolume = array_sum(array_column($fxActivity, 'total_fx_volume'));
+$totalForexFees = array_sum(array_column($fxActivity, 'total_forex_fees'));
+$totalFees = array_sum(array_column($feeBreakdown, 'total_amount'));
+$totalVat = array_sum(array_column($feeBreakdown, 'total_vat'));
+
+// --- GET INSTITUTIONS LIST FOR FILTER ---
+$instStmt = $swapDB->prepare("
+    SELECT DISTINCT 
+        source_details->>'institution' as institution
+    FROM swap_requests
+    WHERE source_details IS NOT NULL
+    AND source_details->>'institution' IS NOT NULL
+    UNION
+    SELECT DISTINCT 
+        destination_details->>'institution' as institution
+    FROM swap_requests
+    WHERE destination_details IS NOT NULL
+    AND destination_details->>'institution' IS NOT NULL
+");
+$instStmt->execute();
+$institutions = $instStmt->fetchAll(PDO::FETCH_COLUMN);
+
+// Filter out empty values
+$institutions = array_filter($institutions);
+
+// --- AUDIT LOG ---
+$logFile = __DIR__ . '/../../../storage/logs/monthly_reconciliations.log';
+if (!is_dir(dirname($logFile))) {
+    mkdir(dirname($logFile), 0755, true);
+}
+file_put_contents($logFile, "[" . date('Y-m-d H:i:s') . "] Monthly reconciliations run for {$firstDayOfMonth} to {$lastDayOfMonth} by {$user['username'] ?? 'unknown'}\n", FILE_APPEND);
+
+// --- CSV EXPORT ---
+if (isset($_GET['export']) && $_GET['export'] === 'csv') {
+    header('Content-Type: text/csv');
+    header('Content-Disposition: attachment; filename="monthly_reconciliation_' . $year . '_' . $month . '.csv"');
+    $output = fopen('php://output', 'w');
+    
+    // Header
+    fputcsv($output, ['VOUCHMORPH MONTHLY RECONCILIATION REPORT']);
+    fputcsv($output, ['Month', date('F Y', strtotime("{$year}-{$month}-01"))]);
+    fputcsv($output, ['Generated At', date('Y-m-d H:i:s')]);
+    fputcsv($output, []);
+    
+    // Summary
+    fputcsv($output, ['SUMMARY']);
+    $swapsTotal = $swapsSummary['total_swaps'] ?? 0;
+    $swapsSuccessful = $swapsSummary['successful_swaps'] ?? 0;
+    $swapsFailed = $swapsSummary['failed_swaps'] ?? 0;
+    $swapsPending = $swapsSummary['pending_swaps'] ?? 0;
+    $swapsCancelled = $swapsSummary['cancelled_swaps'] ?? 0;
+    $swapsTotalAmount = $swapsSummary['total_amount'] ?? 0;
+    
+    fputcsv($output, ['Total Swaps', $swapsTotal]);
+    fputcsv($output, ['Successful Swaps', $swapsSuccessful]);
+    fputcsv($output, ['Failed Swaps', $swapsFailed]);
+    fputcsv($output, ['Pending Swaps', $swapsPending]);
+    fputcsv($output, ['Cancelled Swaps', $swapsCancelled]);
+    fputcsv($output, ['Total Volume', number_format($swapsTotalAmount, 2)]);
+    fputcsv($output, ['Total Fees Collected', number_format($totalFees, 2)]);
+    fputcsv($output, ['Total VAT', number_format($totalVat, 2)]);
+    fputcsv($output, ['Total FX Volume', number_format($totalFxVolume, 2)]);
+    fputcsv($output, ['Total Forex Fees', number_format($totalForexFees, 2)]);
+    fputcsv($output, ['Total Retries', $retryStats['total_retries'] ?? 0]);
+    fputcsv($output, ['Free Retries Used', $retryStats['free_retries_used'] ?? 0]);
+    fputcsv($output, []);
+    
+    // Daily Breakdown
+    fputcsv($output, ['DAILY BREAKDOWN']);
+    fputcsv($output, ['Date', 'Total Transactions', 'Total Amount', 'Status Breakdown']);
+    foreach ($reconciliations as $row) {
+        $statusStr = '';
+        foreach ($row['status'] as $status => $count) {
+            $statusStr .= "$status: $count, ";
         }
-    } catch (Throwable $e) {
-        error_log("[ADMIN DASHBOARD] Config error: " . $e->getMessage());
-        $config = [];
+        fputcsv($output, [
+            $row['date'],
+            $row['total_transactions'],
+            number_format($row['total_amount'], 2),
+            rtrim($statusStr, ', ')
+        ]);
     }
-} else {
-    $config = [];
-}
-
-// Get admin info from session
-$adminId = SessionManager::getAdminId();
-$adminUsername = SessionManager::getAdminUsername();
-$adminFullName = SessionManager::get('admin_full_name');
-$adminRoleId = SessionManager::getAdminRoleId();
-$adminCountry = SessionManager::getAdminCountry();
-
-// Get role name based on role_id
-$roleNames = [
-    999 => 'Super Admin',
-    3 => 'Regulator',
-    4 => 'Compliance Officer',
-    5 => 'Auditor'
-];
-$roleName = $roleNames[$adminRoleId] ?? 'Administrator';
-
-// Initialize database connection using DBConnection (Single Source of Truth)
-try {
-    $db = DBConnection::getConnection();
+    fputcsv($output, []);
     
-    if (!$db) {
-        throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
+    // Fee Breakdown
+    fputcsv($output, ['FEE BREAKDOWN']);
+    fputcsv($output, ['Fee Type', 'Count', 'Total Amount', 'VAT', 'Currency']);
+    foreach ($feeBreakdown as $fee) {
+        fputcsv($output, [
+            $fee['fee_type'],
+            $fee['count'],
+            number_format($fee['total_amount'], 2),
+            number_format($fee['total_vat'], 2),
+            $fee['currency']
+        ]);
+    }
+    fputcsv($output, []);
+    
+    // Cross Border Activity
+    fputcsv($output, ['CROSS-BORDER ACTIVITY']);
+    fputcsv($output, ['From', 'To', 'Transactions', 'Volume (Source)', 'Volume (Dest)', 'Corridor Fees', 'Avg Rate']);
+    foreach ($crossBorderActivity as $cb) {
+        fputcsv($output, [
+            $cb['source_country'],
+            $cb['destination_country'],
+            $cb['transaction_count'],
+            number_format($cb['total_source_amount'], 2),
+            number_format($cb['total_destination_amount'], 2),
+            number_format($cb['total_corridor_fees'] ?? 0, 2),
+            number_format($cb['avg_exchange_rate'], 4)
+        ]);
+    }
+    fputcsv($output, []);
+    
+    // FX Activity
+    fputcsv($output, ['FX ACTIVITY']);
+    fputcsv($output, ['From', 'To', 'Transactions', 'Volume', 'Forex Fees', 'Avg Rate']);
+    foreach ($fxActivity as $fx) {
+        fputcsv($output, [
+            $fx['source_currency'],
+            $fx['destination_currency'],
+            $fx['fx_transactions'],
+            number_format($fx['total_fx_volume'], 2),
+            number_format($fx['total_forex_fees'], 2),
+            number_format($fx['avg_rate'], 4)
+        ]);
+    }
+    fputcsv($output, []);
+    
+    // Top Institutions
+    fputcsv($output, ['TOP INSTITUTIONS BY VOLUME']);
+    fputcsv($output, ['Institution', 'Transactions', 'Total Volume', 'Total Fees']);
+    foreach ($topInstitutions as $inst) {
+        fputcsv($output, [
+            $inst['institution'],
+            $inst['transaction_count'],
+            number_format($inst['total_volume'], 2),
+            number_format($inst['total_fees'] ?? 0, 2)
+        ]);
     }
     
-    // Test connection
-    $stmt = $db->query("SELECT 1");
-    $stmt->fetch();
-    error_log("[ADMIN DASHBOARD] Database connected successfully via DBConnection");
-    
-} catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] DB Error: " . $e->getMessage());
-    die("Database connection failed. Please check configuration.");
+    fclose($output);
+    exit;
 }
 
-// Get country code for display
-$countryCode = $adminCountry ?: ($config['country_code'] ?? 'BW');
-$countryName = $config['country'] ?? 'Botswana';
-$currencySymbol = $config['currency_symbol'] ?? 'BWP';
+// --- MONTH NAVIGATION ---
+$prevMonth = date('Y-m', strtotime("-1 month", strtotime("{$year}-{$month}-01")));
+$nextMonth = date('Y-m', strtotime("+1 month", strtotime("{$year}-{$month}-01")));
+$monthName = date('F Y', strtotime("{$year}-{$month}-01"));
 
-// Load participants from config
-$participants = $config['participants'] ?? [];
-
-// Get system metrics
-$metrics = [];
-try {
-    // Get today's transaction count
-    $stmt = $db->prepare("SELECT COUNT(*) FROM swap_requests WHERE DATE(created_at) = CURRENT_DATE");
-    $stmt->execute();
-    $metrics['today_transactions'] = (int)$stmt->fetchColumn();
-    
-    // Get today's volume
-    $stmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM swap_requests WHERE DATE(created_at) = CURRENT_DATE");
-    $stmt->execute();
-    $volumeRaw = (float)$stmt->fetchColumn();
-    $metrics['today_volume_raw'] = $volumeRaw;
-    $metrics['today_volume'] = number_format($volumeRaw, 2);
-    
-    // Get active holds
-    $stmt = $db->prepare("SELECT COUNT(*) FROM hold_transactions WHERE status = 'ACTIVE'");
-    $stmt->execute();
-    $metrics['active_holds'] = (int)$stmt->fetchColumn();
-    
-    // Get pending settlements
-    $stmt = $db->prepare("SELECT COUNT(*) FROM settlement_queue WHERE status = 'PENDING'");
-    $stmt->execute();
-    $metrics['pending_settlements'] = (int)$stmt->fetchColumn();
-    
-    // Get total users
-    $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL");
-    $stmt->execute();
-    $metrics['total_users'] = (int)$stmt->fetchColumn();
-    
-    // Get total swap volume (all time)
-    $stmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM swap_requests");
-    $stmt->execute();
-    $totalVolumeRaw = (float)$stmt->fetchColumn();
-    $metrics['total_volume'] = number_format($totalVolumeRaw, 2);
-    
-} catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Metrics error: " . $e->getMessage());
-    $metrics = [
-        'today_transactions' => 0,
-        'today_volume' => '0.00',
-        'today_volume_raw' => 0,
-        'active_holds' => 0,
-        'pending_settlements' => 0,
-        'total_users' => 0,
-        'total_volume' => '0.00'
-    ];
-}
-
-// Get recent transactions
-$recentTransactions = [];
-try {
-    $stmt = $db->prepare("
-        SELECT swap_id, user_id, amount, status, created_at 
-        FROM swap_requests 
-        ORDER BY created_at DESC 
-        LIMIT 10
-    ");
-    $stmt->execute();
-    $recentTransactions = $stmt->fetchAll();
-} catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Recent transactions error: " . $e->getMessage());
-}
-
-// Get current view
-$view = $_GET['view'] ?? 'dashboard';
+// Safe values for display
+$swapsTotal = $swapsSummary['total_swaps'] ?? 0;
+$swapsSuccessful = $swapsSummary['successful_swaps'] ?? 0;
+$swapsFailed = $swapsSummary['failed_swaps'] ?? 0;
+$swapsPending = $swapsSummary['pending_swaps'] ?? 0;
+$swapsCancelled = $swapsSummary['cancelled_swaps'] ?? 0;
+$swapsTotalAmount = $swapsSummary['total_amount'] ?? 0;
+$retryTotal = $retryStats['total_retries'] ?? 0;
+$retryFree = $retryStats['free_retries_used'] ?? 0;
+$hookActive = $hookStats['active_hooks'] ?? 0;
+$hookUsers = $hookStats['unique_users'] ?? 0;
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · ADMIN DASHBOARD · <?php echo htmlspecialchars($countryCode); ?></title>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <title>Monthly Reconciliations - VouchMorph</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-
+        
         body {
-            font-family: 'IBM Plex Mono', monospace;
-            background: #f7f9fc;
-            color: #001B44;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f0f2f5;
+            color: #333;
         }
-
-        .admin-header {
-            background: #001B44;
-            border-bottom: 5px solid #FFDA63;
-            padding: 15px 30px;
+        
+        .dashboard-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .dashboard-header {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: white;
+            padding: 20px 30px;
+            border-radius: 12px;
+            margin-bottom: 25px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            color: #fff;
             flex-wrap: wrap;
             gap: 15px;
         }
-
-        .header-left {
+        
+        .dashboard-header h1 {
+            font-size: 24px;
+            font-weight: 600;
+        }
+        
+        .dashboard-header p {
+            opacity: 0.8;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+        
+        .month-nav {
             display: flex;
+            gap: 15px;
             align-items: center;
-            gap: 30px;
-            flex-wrap: wrap;
         }
-
-        .logo {
-            font-size: 1.2rem;
-            font-weight: 700;
-            letter-spacing: 2px;
-        }
-
-        .logo span {
-            color: #FFDA63;
-            margin-left: 10px;
-            font-size: 0.8rem;
-        }
-
-        .country-badge {
-            padding: 5px 15px;
-            background: rgba(255, 218, 99, 0.2);
-            border: 1px solid #FFDA63;
-            color: #FFDA63;
-            font-size: 0.8rem;
-            text-transform: uppercase;
-        }
-
-        .user-info {
-            display: flex;
-            align-items: center;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-
-        .user-details {
-            text-align: right;
-        }
-
-        .user-name {
-            font-weight: 600;
-            color: #FFDA63;
-        }
-
-        .user-role {
-            font-size: 0.7rem;
-            color: #A1B5D8;
-            text-transform: uppercase;
-        }
-
-        .logout-btn {
-            padding: 8px 16px;
-            background: transparent;
-            border: 2px solid #FFDA63;
-            color: #FFDA63;
+        
+        .month-nav .nav-btn {
+            background: rgba(255,255,255,0.2);
+            padding: 8px 20px;
+            border-radius: 8px;
             text-decoration: none;
-            font-size: 0.8rem;
+            color: white;
+            transition: background 0.3s;
+        }
+        
+        .month-nav .nav-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        
+        .month-badge {
+            background: rgba(255,255,255,0.2);
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-size: 16px;
             font-weight: 600;
-            transition: all 0.2s;
         }
-
-        .logout-btn:hover {
-            background: #FFDA63;
-            color: #001B44;
-        }
-
-        .admin-nav {
-            background: #fff;
-            border-bottom: 2px solid #001B44;
-            padding: 0 30px;
-            display: flex;
-            gap: 30px;
-            flex-wrap: wrap;
-        }
-
-        .nav-item {
-            padding: 15px 0;
-            color: #666;
-            text-decoration: none;
-            font-size: 0.8rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            border-bottom: 3px solid transparent;
-            transition: all 0.2s;
-        }
-
-        .nav-item:hover {
-            color: #001B44;
-        }
-
-        .nav-item.active {
-            color: #001B44;
-            border-bottom-color: #FFDA63;
-        }
-
-        .admin-content {
-            flex: 1;
-            padding: 30px;
-        }
-
-        .content-header {
-            margin-bottom: 30px;
-        }
-
-        .content-header h1 {
-            font-size: 1.5rem;
-            font-weight: 600;
-            color: #001B44;
-            margin-bottom: 5px;
-        }
-
-        .content-header .timestamp {
-            color: #666;
-            font-size: 0.8rem;
-        }
-
-        .metrics-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-
-        .metric-card {
-            background: #fff;
-            border: 2px solid #001B44;
+        
+        .filter-bar {
+            background: white;
             padding: 20px;
-            box-shadow: 4px 4px 0 #A1B5D8;
+            border-radius: 12px;
+            margin-bottom: 25px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            align-items: flex-end;
+        }
+        
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .filter-group label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #666;
+            text-transform: uppercase;
+        }
+        
+        .filter-group select {
+            padding: 10px 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            min-width: 180px;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: #007bff;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #0056b3;
+        }
+        
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #1e7e34;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            text-align: center;
             transition: transform 0.2s;
         }
-
-        .metric-card:hover {
+        
+        .stat-card:hover {
             transform: translateY(-2px);
         }
-
-        .metric-label {
-            font-size: 0.7rem;
-            text-transform: uppercase;
+        
+        .stat-card h3 {
+            font-size: 14px;
             color: #666;
-            letter-spacing: 1px;
             margin-bottom: 10px;
         }
-
-        .metric-value {
-            font-size: 2rem;
-            font-weight: 600;
-            color: #001B44;
-            line-height: 1.2;
-            word-break: break-word;
+        
+        .stat-card .value {
+            font-size: 28px;
+            font-weight: bold;
+            color: #1a1a2e;
         }
-
-        .grid-2 {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 20px;
-            margin-bottom: 30px;
+        
+        .stat-card .trend {
+            font-size: 12px;
+            margin-top: 5px;
         }
-
-        .card {
-            background: #fff;
-            border: 2px solid #001B44;
-            padding: 20px;
+        
+        .trend-up { color: #28a745; }
+        .trend-down { color: #dc3545; }
+        .trend-neutral { color: #ffc107; }
+        
+        .section {
+            background: white;
+            border-radius: 12px;
+            margin-bottom: 25px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-
-        .card-header {
+        
+        .section-header {
+            background: #f8f9fa;
+            padding: 15px 20px;
+            border-bottom: 1px solid #e9ecef;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #001B44;
-            flex-wrap: wrap;
-            gap: 10px;
+            cursor: pointer;
         }
-
-        .card-title {
-            font-size: 1rem;
+        
+        .section-header h2 {
+            font-size: 18px;
             font-weight: 600;
-            text-transform: uppercase;
         }
-
-        .card-badge {
-            padding: 3px 10px;
-            background: #001B44;
-            color: #fff;
-            font-size: 0.7rem;
+        
+        .section-header span {
+            transition: transform 0.2s;
         }
-
-        .table-responsive {
+        
+        .section-content {
+            padding: 20px;
             overflow-x: auto;
         }
-
+        
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.85rem;
+            font-size: 14px;
         }
-
-        th {
-            background: #001B44;
-            color: #fff;
-            padding: 12px;
-            font-weight: 600;
+        
+        th, td {
+            padding: 12px 15px;
             text-align: left;
+            border-bottom: 1px solid #e9ecef;
         }
-
-        td {
-            padding: 12px;
-            border-bottom: 1px solid #ddd;
-        }
-
-        tr:hover {
-            background: #f5f5f5;
-        }
-
-        .status {
-            display: inline-block;
-            padding: 3px 10px;
-            font-size: 0.7rem;
+        
+        th {
+            background: #f8f9fa;
             font-weight: 600;
-            text-transform: uppercase;
-            border: 1px solid;
+            color: #495057;
         }
-
-        .status-success {
-            background: #d4edda;
-            color: #155724;
-            border-color: #c3e6cb;
+        
+        tr:hover {
+            background: #f8f9fa;
         }
-
-        .status-pending {
-            background: #fff3cd;
-            color: #856404;
-            border-color: #ffeeba;
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
         }
-
-        .admin-footer {
-            background: #001B44;
-            color: #A1B5D8;
-            padding: 20px 30px;
-            font-size: 0.7rem;
+        
+        .status-completed { background: #d4edda; color: #155724; }
+        .status-failed { background: #f8d7da; color: #721c24; }
+        .status-pending { background: #fff3cd; color: #856404; }
+        .status-cancelled { background: #e2e3e5; color: #383d41; }
+        
+        .export-buttons {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .summary-card {
+            background: white;
+            padding: 15px;
+            border-radius: 12px;
             text-align: center;
-            border-top: 3px solid #FFDA63;
+            border-left: 4px solid;
         }
-
+        
         @media (max-width: 768px) {
-            .grid-2 {
-                grid-template-columns: 1fr;
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
             }
-            .admin-nav {
-                padding: 0 15px;
-                gap: 15px;
+            .summary-cards {
+                grid-template-columns: repeat(2, 1fr);
             }
-            .admin-content {
-                padding: 20px;
+            .filter-bar {
+                flex-direction: column;
             }
-            .admin-header {
-                padding: 15px;
-            }
-            .header-left {
-                gap: 15px;
-            }
-            .metric-value {
-                font-size: 1.5rem;
+            .filter-group select {
+                width: 100%;
             }
         }
     </style>
 </head>
 <body>
-    <header class="admin-header">
-        <div class="header-left">
-            <div class="logo">VOUCHMORPH <span>ADMIN</span></div>
-            <div class="country-badge"><?php echo htmlspecialchars($countryCode); ?> · <?php echo htmlspecialchars($countryName); ?></div>
-        </div>
-        <div class="user-info">
-            <div class="user-details">
-                <div class="user-name"><?php echo htmlspecialchars($adminFullName ?: $adminUsername); ?></div>
-                <div class="user-role"><?php echo htmlspecialchars($roleName); ?></div>
+    <div class="dashboard-container">
+        <div class="dashboard-header">
+            <div>
+                <h1>📆 Monthly Reconciliations Report</h1>
+                <p>VouchMorph Settlement & Transaction Reconciliation - Monthly Overview</p>
             </div>
-            <a href="admin_logout.php" class="logout-btn">LOGOUT</a>
+            <div class="month-nav">
+                <a href="?year=<?php echo explode('-', $prevMonth)[0]; ?>&month=<?php echo explode('-', $prevMonth)[1]; ?>" class="nav-btn">← Previous Month</a>
+                <div class="month-badge"><?php echo $monthName; ?></div>
+                <a href="?year=<?php echo explode('-', $nextMonth)[0]; ?>&month=<?php echo explode('-', $nextMonth)[1]; ?>" class="nav-btn">Next Month →</a>
+                <a href="?year=<?php echo date('Y'); ?>&month=<?php echo date('m'); ?>" class="nav-btn">Current Month</a>
+            </div>
         </div>
-    </header>
-
-    <nav class="admin-nav">
-        <a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">DASHBOARD</a>
-        <a href="?view=transactions" class="nav-item <?php echo $view === 'transactions' ? 'active' : ''; ?>">TRANSACTIONS</a>
-        <a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">AUDIT LOGS</a>
-        <a href="?view=reports" class="nav-item <?php echo $view === 'reports' ? 'active' : ''; ?>">REPORTS</a>
         
-        <?php if ($adminRoleId === 999): ?>
-            <a href="admin_management.php" class="nav-item">ADMINISTRATORS</a>
-            <a href="?view=config" class="nav-item <?php echo $view === 'config' ? 'active' : ''; ?>">CONFIGURATION</a>
-        <?php endif; ?>
-    </nav>
-
-    <main class="admin-content">
-        <?php if ($view === 'dashboard'): ?>
-        <div class="content-header">
-            <h1>EXECUTIVE DASHBOARD</h1>
-            <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?> · <?php echo htmlspecialchars($countryName); ?> Time</div>
-        </div>
-
-        <div class="metrics-grid">
-            <div class="metric-card">
-                <div class="metric-label">TODAY'S TRANSACTIONS</div>
-                <div class="metric-value"><?php echo number_format($metrics['today_transactions']); ?></div>
+        <!-- Filter Bar -->
+        <div class="filter-bar">
+            <div class="filter-group">
+                <label>Institution</label>
+                <select id="institution">
+                    <option value="">All Institutions</option>
+                    <?php foreach ($institutions as $inst): ?>
+                        <option value="<?php echo htmlspecialchars($inst); ?>" <?php echo ($institutionFilter == $inst) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($inst); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
             </div>
-            <div class="metric-card">
-                <div class="metric-label">TODAY'S VOLUME (<?php echo htmlspecialchars($currencySymbol); ?>)</div>
-                <div class="metric-value"><?php echo $metrics['today_volume']; ?></div>
+            <div class="filter-group">
+                <label>Currency</label>
+                <select id="currency">
+                    <option value="">All Currencies</option>
+                    <option value="BWP" <?php echo ($currencyFilter == 'BWP') ? 'selected' : ''; ?>>BWP - Pula</option>
+                    <option value="ZAR" <?php echo ($currencyFilter == 'ZAR') ? 'selected' : ''; ?>>ZAR - Rand</option>
+                    <option value="USD" <?php echo ($currencyFilter == 'USD') ? 'selected' : ''; ?>>USD - Dollar</option>
+                    <option value="EUR" <?php echo ($currencyFilter == 'EUR') ? 'selected' : ''; ?>>EUR - Euro</option>
+                    <option value="NGN" <?php echo ($currencyFilter == 'NGN') ? 'selected' : ''; ?>>NGN - Naira</option>
+                    <option value="KES" <?php echo ($currencyFilter == 'KES') ? 'selected' : ''; ?>>KES - Shilling</option>
+                </select>
             </div>
-            <div class="metric-card">
-                <div class="metric-label">ACTIVE HOLDS</div>
-                <div class="metric-value"><?php echo number_format($metrics['active_holds']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">PENDING SETTLEMENTS</div>
-                <div class="metric-value"><?php echo number_format($metrics['pending_settlements']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">TOTAL USERS</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_users']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">TOTAL VOLUME (<?php echo htmlspecialchars($currencySymbol); ?>)</div>
-                <div class="metric-value"><?php echo $metrics['total_volume']; ?></div>
+            <div class="filter-group">
+                <button class="btn btn-primary" onclick="applyFilters()">Apply Filters</button>
+                <button class="btn btn-success" onclick="exportCSV()">Export CSV</button>
             </div>
         </div>
-
-        <div class="grid-2">
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">PARTICIPANTS</span>
-                    <span class="card-badge"><?php echo count($participants); ?> ACTIVE</span>
-                </div>
-                <div class="table-responsive">
-                    <table>
-                        <thead>
-                            <tr><th>Provider</th><th>Type</th><th>Status</th></tr>
-                        </thead>
-                        <tbody>
-                            <?php 
-                            $count = 0;
-                            foreach ($participants as $code => $p): 
-                                if ($count++ >= 10) break;
-                                $type = $p['type'] ?? $p['category'] ?? 'Unknown';
-                                $status = $p['status'] ?? 'ACTIVE';
-                            ?>
-                            <tr>
-                                <td><?php echo htmlspecialchars($code); ?></td>
-                                <td><?php echo htmlspecialchars($type); ?></td>
-                                <td><span class="status status-success"><?php echo htmlspecialchars($status); ?></span></td>
-                            </tr>
-                            <?php endforeach; ?>
-                            <?php if (count($participants) === 0): ?>
-                                <tr><td colspan="3" style="text-align: center;">No participants configured</td></tr>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
+        
+        <!-- Statistics Cards -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Total Swaps</h3>
+                <div class="value"><?php echo number_format($swapsTotal); ?></div>
+                <div class="trend trend-up">↑ <?php echo number_format($swapsSuccessful); ?> successful</div>
             </div>
-
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">RECENT TRANSACTIONS</span>
-                    <span class="card-badge">LAST 10</span>
-                </div>
-                <div class="table-responsive">
-                    <table>
-                        <thead>
-                            <tr><th>ID</th><th>Amount</th><th>Status</th><th>Date</th></tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($recentTransactions as $tx): ?>
-                            <tr>
-                                <td><?php echo $tx['swap_id']; ?></td>
-                                <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format((float)$tx['amount'], 2); ?></td>
-                                <td><span class="status status-<?php echo strtolower($tx['status']) === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status']); ?></span></td>
-                                <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'])); ?></td>
-                            </tr>
-                            <?php endforeach; ?>
-                            <?php if (empty($recentTransactions)): ?>
-                                <tr><td colspan="4" style="text-align: center;">No transactions yet</td></tr>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
+            <div class="stat-card">
+                <h3>Total Volume</h3>
+                <div class="value"><?php echo number_format($swapsTotalAmount, 2); ?></div>
+                <div class="trend">Across all currencies</div>
+            </div>
+            <div class="stat-card">
+                <h3>Fees Collected</h3>
+                <div class="value"><?php echo number_format($totalFees, 2); ?></div>
+                <div class="trend">+ <?php echo number_format($totalVat, 2); ?> VAT</div>
+            </div>
+            <div class="stat-card">
+                <h3>Cashout Retries</h3>
+                <div class="value"><?php echo number_format($retryTotal); ?></div>
+                <div class="trend"><?php echo number_format($retryFree); ?> free retries</div>
+            </div>
+            <div class="stat-card">
+                <h3>FX Volume</h3>
+                <div class="value"><?php echo number_format($totalFxVolume, 2); ?></div>
+                <div class="trend">Fees: <?php echo number_format($totalForexFees, 2); ?></div>
+            </div>
+            <div class="stat-card">
+                <h3>Active Hooks</h3>
+                <div class="value"><?php echo number_format($hookActive); ?></div>
+                <div class="trend"><?php echo number_format($hookUsers); ?> users</div>
             </div>
         </div>
-
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">SYSTEM HEALTH</span>
-                <span class="card-badge">LIVE</span>
+        
+        <!-- Monthly Summary Cards -->
+        <div class="summary-cards">
+            <div class="summary-card" style="border-left-color: #28a745;">
+                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($swapsSuccessful); ?></div>
+                <div style="font-size: 12px; color: #666;">Successful Swaps</div>
             </div>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-                <div><strong>Country:</strong> <?php echo htmlspecialchars($countryName); ?> (<?php echo htmlspecialchars($countryCode); ?>)</div>
-                <div><strong>Environment:</strong> <?php echo htmlspecialchars(getenv('APP_ENV') ?: 'production'); ?></div>
-                <div><strong>Database:</strong> <span style="color: green;">✓ Connected</span></div>
-                <div><strong>PHP Version:</strong> <?php echo phpversion(); ?></div>
-                <div><strong>Server Time:</strong> <?php echo date('Y-m-d H:i:s'); ?></div>
-                <div><strong>Admin Role:</strong> <?php echo htmlspecialchars($roleName); ?></div>
+            <div class="summary-card" style="border-left-color: #dc3545;">
+                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($swapsFailed); ?></div>
+                <div style="font-size: 12px; color: #666;">Failed Swaps</div>
             </div>
-        </div>
-
-        <?php elseif ($view === 'reports'): ?>
-        <div class="content-header">
-            <h1>REGULATORY REPORTS</h1>
-            <div class="timestamp">Bank of Botswana Compliance Reports</div>
-        </div>
-        <div class="grid-2">
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Daily Settlement Report</span>
-                </div>
-                <p>End-of-day net positions and settlement amounts</p>
-                <p style="margin-top: 15px;">
-                    <a href="reports/daily_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
-                </p>
+            <div class="summary-card" style="border-left-color: #ffc107;">
+                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($swapsPending); ?></div>
+                <div style="font-size: 12px; color: #666;">Pending Swaps</div>
             </div>
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Transaction Audit Log</span>
-                </div>
-                <p>7-year audit trail of all swap transactions</p>
-                <p style="margin-top: 15px;">
-                    <a href="reports/audit_trails.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
-                </p>
-            </div>
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Suspicious Activity Report</span>
-                </div>
-                <p>AML/KYC compliance and fraud monitoring</p>
-                <p style="margin-top: 15px;">
-                    <a href="reports/suspicious.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
-                </p>
-            </div>
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Monthly Reconciliation</span>
-                </div>
-                <p>Monthly financial reconciliation report</p>
-                <p style="margin-top: 15px;">
-                    <a href="reports/monthly_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
-                </p>
+            <div class="summary-card" style="border-left-color: #6c757d;">
+                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($swapsCancelled); ?></div>
+                <div style="font-size: 12px; color: #666;">Cancelled Swaps</div>
             </div>
         </div>
-
-        <?php elseif ($view === 'config' && $adminRoleId === 999): ?>
-        <div class="content-header">
-            <h1>SYSTEM CONFIGURATION</h1>
-            <div class="timestamp">Configuration Management</div>
-        </div>
-        <div class="grid-2">
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Country Configuration</span>
-                </div>
-                <p>Current Country: <strong><?php echo htmlspecialchars($countryName); ?></strong></p>
-                <p>Currency: <strong><?php echo htmlspecialchars($currencySymbol); ?></strong></p>
-                <p>Timezone: <strong>Africa/Gaborone</strong></p>
-                <p style="margin-top: 15px;">
-                    <a href="../../src/Core/Config/Countries/<?php echo $countryCode; ?>/config.php" style="color: #001B44;">Edit Config →</a>
-                </p>
+        
+        <!-- Daily Breakdown Section -->
+        <div class="section">
+            <div class="section-header" onclick="toggleSection('dailyBreakdown')">
+                <h2>📆 Daily Breakdown (<?php echo $monthName; ?>)</h2>
+                <span>▼</span>
             </div>
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Database Status</span>
-                </div>
-                <p>Connection: <span style="color: green;">Active</span></p>
-                <p>Type: PostgreSQL</p>
-                <p>Driver: PDO_pgsql</p>
-            </div>
-        </div>
-
-        <?php elseif ($view === 'transactions'): ?>
-        <div class="content-header">
-            <h1>TRANSACTION MANAGEMENT</h1>
-            <div class="timestamp">Monitor and Review Transactions</div>
-        </div>
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">All Transactions</span>
-                <span class="card-badge">SWAP REQUESTS</span>
-            </div>
-            <div class="table-responsive">
-                <?php
-                $txStmt = $db->query("SELECT * FROM swap_requests ORDER BY created_at DESC LIMIT 50");
-                $allTransactions = $txStmt->fetchAll();
-                ?>
+            <div class="section-content" id="dailyBreakdown">
                 <table>
                     <thead>
-                        <tr><th>ID</th><th>User</th><th>Amount</th><th>Status</th><th>Created At</th></tr>
+                        <tr>
+                            <th>Date</th>
+                            <th>Total Transactions</th>
+                            <th>Total Amount</th>
+                            <th>Status Breakdown</th>
+                        </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($allTransactions as $tx): ?>
-                        <tr>
-                            <td><?php echo $tx['swap_id']; ?></td>
-                            <td><?php echo $tx['user_id'] ?? 'N/A'; ?></td>
-                            <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
-                            <td><span class="status status-<?php echo strtolower($tx['status'] ?? 'pending') === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status'] ?? 'pending'); ?></span></td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'] ?? 'now')); ?></td>
-                        </tr>
-                        <?php endforeach; ?>
+                        <?php if (!empty($reconciliations)): ?>
+                            <?php foreach ($reconciliations as $row): ?>
+                                <tr>
+                                    <td><strong><?php echo date('D, M j, Y', strtotime($row['date'])); ?></strong></td>
+                                    <td><?php echo number_format($row['total_transactions']); ?></td>
+                                    <td><?php echo number_format($row['total_amount'], 2); ?></td>
+                                    <td>
+                                        <?php foreach ($row['status'] as $status => $count): ?>
+                                            <span class="status-badge status-<?php echo $status; ?>"><?php echo ucfirst($status); ?>: <?php echo $count; ?></span>
+                                        <?php endforeach; ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <tr><td colspan="4" style="text-align:center;">No data available</td></tr>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
         </div>
-
-        <?php elseif ($view === 'audit'): ?>
-        <div class="content-header">
-            <h1>AUDIT LOGS</h1>
-            <div class="timestamp">System Audit Trail</div>
-        </div>
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">Recent Activities</span>
-                <span class="card-badge">ADMIN ACTIONS</span>
+        
+        <!-- Fee Breakdown Section -->
+        <div class="section">
+            <div class="section-header" onclick="toggleSection('feeBreakdown')">
+                <h2>💰 Fee Breakdown (<?php echo $monthName; ?>)</h2>
+                <span>▼</span>
             </div>
-            <div class="table-responsive">
-                <?php
-                $auditStmt = $db->query("SELECT * FROM admin_actions ORDER BY created_at DESC LIMIT 50");
-                $auditLogs = $auditStmt->fetchAll();
-                ?>
+            <div class="section-content" id="feeBreakdown">
                 <table>
                     <thead>
-                        <tr><th>Action</th><th>Entity</th><th>Status</th><th>Admin</th><th>Date</th></tr>
+                        <tr>
+                            <th>Fee Type</th>
+                            <th>Count</th>
+                            <th>Total Amount</th>
+                            <th>VAT</th>
+                            <th>Currency</th>
+                        </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($auditLogs as $log): ?>
-                        <tr>
-                            <td><?php echo htmlspecialchars($log['action_type'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($log['entity_type'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($log['status'] ?? 'N/A'); ?></td>
-                            <td><?php echo $log['admin_id'] ?? $log['assigned_admin_id'] ?? 'N/A'; ?></td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($log['created_at'] ?? 'now')); ?></td>
-                        </tr>
-                        <?php endforeach; ?>
+                        <?php if (!empty($feeBreakdown)): ?>
+                            <?php foreach ($feeBreakdown as $fee): ?>
+                                <tr>
+                                    <td><?php echo htmlspecialchars($fee['fee_type']); ?></td>
+                                    <td><?php echo number_format($fee['count']); ?></td>
+                                    <td><strong><?php echo number_format($fee['total_amount'], 2); ?></strong></td>
+                                    <td><?php echo number_format($fee['total_vat'], 2); ?></td>
+                                    <td><?php echo htmlspecialchars($fee['currency']); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <tr><td colspan="5" style="text-align:center;">No fee data available</td></tr>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
         </div>
-
-        <?php else: ?>
-        <div class="content-header">
-            <h1><?php echo ucfirst($view); ?></h1>
-            <div class="timestamp">Module under development</div>
+        
+        <!-- Cross-Border Activity Section -->
+        <div class="section">
+            <div class="section-header" onclick="toggleSection('crossBorder')">
+                <h2>🌍 Cross-Border Activity (<?php echo $monthName; ?>)</h2>
+                <span>▼</span>
+            </div>
+            <div class="section-content" id="crossBorder">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>From</th>
+                            <th>To</th>
+                            <th>Transactions</th>
+                            <th>Volume (Source)</th>
+                            <th>Volume (Dest)</th>
+                            <th>Corridor Fees</th>
+                            <th>Avg Rate</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!empty($crossBorderActivity)): ?>
+                            <?php foreach ($crossBorderActivity as $cb): ?>
+                                <tr>
+                                    <td><span class="status-badge"><?php echo htmlspecialchars($cb['source_country']); ?></span></td>
+                                    <td><span class="status-badge"><?php echo htmlspecialchars($cb['destination_country']); ?></span></td>
+                                    <td><?php echo number_format($cb['transaction_count']); ?></td>
+                                    <td><?php echo number_format($cb['total_source_amount'], 2); ?> <?php echo htmlspecialchars($cb['source_currency']); ?></td>
+                                    <td><?php echo number_format($cb['total_destination_amount'], 2); ?> <?php echo htmlspecialchars($cb['destination_currency']); ?></td>
+                                    <td><?php echo number_format($cb['total_corridor_fees'] ?? 0, 2); ?></td>
+                                    <td><?php echo number_format($cb['avg_exchange_rate'], 4); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <tr><td colspan="7" style="text-align:center;">No cross-border activity this month</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
-        <div class="card">
-            <p>This module is currently being developed. Please check back later.</p>
+        
+        <!-- FX Activity Section -->
+        <div class="section">
+            <div class="section-header" onclick="toggleSection('fxActivity')">
+                <h2>💱 FX Activity (<?php echo $monthName; ?>)</h2>
+                <span>▼</span>
+            </div>
+            <div class="section-content" id="fxActivity">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>From</th>
+                            <th>To</th>
+                            <th>Transactions</th>
+                            <th>Volume</th>
+                            <th>Forex Fees</th>
+                            <th>Avg Rate</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!empty($fxActivity)): ?>
+                            <?php foreach ($fxActivity as $fx): ?>
+                                <tr>
+                                    <td><?php echo htmlspecialchars($fx['source_currency']); ?></td>
+                                    <td><?php echo htmlspecialchars($fx['destination_currency']); ?></td>
+                                    <td><?php echo number_format($fx['fx_transactions']); ?></td>
+                                    <td><?php echo number_format($fx['total_fx_volume'], 2); ?></td>
+                                    <td><strong><?php echo number_format($fx['total_forex_fees'], 2); ?></strong></td>
+                                    <td><?php echo number_format($fx['avg_rate'], 4); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <tr><td colspan="6" style="text-align:center;">No FX activity this month</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
-        <?php endif; ?>
-    </main>
-
-    <footer class="admin-footer">
-        <p>VOUCHMORPH · <?php echo htmlspecialchars($countryName); ?> · <?php echo date('Y'); ?></p>
-        <p style="margin-top: 5px;">Bank of Botswana Regulatory Sandbox Participant</p>
-    </footer>
+        
+        <!-- Corridor Activity Section -->
+        <div class="section">
+            <div class="section-header" onclick="toggleSection('corridorActivity')">
+                <h2>🔄 Corridor Settlement Activity</h2>
+                <span>▼</span>
+            </div>
+            <div class="section-content" id="corridorActivity">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Source Country</th>
+                            <th>Destination Country</th>
+                            <th>Settlements</th>
+                            <th>Total Settled</th>
+                            <th>Corridor Fees</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!empty($corridorActivity)): ?>
+                            <?php foreach ($corridorActivity as $corridor): ?>
+                                <tr>
+                                    <td><?php echo htmlspecialchars($corridor['source_country']); ?></td>
+                                    <td><?php echo htmlspecialchars($corridor['destination_country']); ?></td>
+                                    <td><?php echo number_format($corridor['settlement_count']); ?></td>
+                                    <td><?php echo number_format($corridor['total_settled'], 2); ?></td>
+                                    <td><?php echo number_format($corridor['total_fees'], 2); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <tr><td colspan="5" style="text-align:center;">No corridor activity this month</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Top Institutions Section -->
+        <div class="section">
+            <div class="section-header" onclick="toggleSection('topInstitutions')">
+                <h2>🏦 Top Institutions by Volume (<?php echo $monthName; ?>)</h2>
+                <span>▼</span>
+            </div>
+            <div class="section-content" id="topInstitutions">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Institution</th>
+                            <th>Transactions</th>
+                            <th>Total Volume</th>
+                            <th>Total Fees</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!empty($topInstitutions)): ?>
+                            <?php $rank = 1; ?>
+                            <?php foreach ($topInstitutions as $inst): ?>
+                                <tr>
+                                    <td><strong>#<?php echo $rank++; ?></strong></td>
+                                    <td><?php echo htmlspecialchars($inst['institution']); ?></td>
+                                    <td><?php echo number_format($inst['transaction_count']); ?></td>
+                                    <td><?php echo number_format($inst['total_volume'], 2); ?></td>
+                                    <td><?php echo number_format($inst['total_fees'] ?? 0, 2); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <tr><td colspan="5" style="text-align:center;">No institution data available</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function applyFilters() {
+            const institution = document.getElementById('institution').value;
+            const currency = document.getElementById('currency').value;
+            const urlParams = new URLSearchParams(window.location.search);
+            
+            if (institution) urlParams.set('institution', institution);
+            else urlParams.delete('institution');
+            
+            if (currency) urlParams.set('currency', currency);
+            else urlParams.delete('currency');
+            
+            // Preserve year and month
+            const year = new URLSearchParams(window.location.search).get('year');
+            const month = new URLSearchParams(window.location.search).get('month');
+            if (year) urlParams.set('year', year);
+            if (month) urlParams.set('month', month);
+            
+            window.location.href = '?' + urlParams.toString();
+        }
+        
+        function exportCSV() {
+            const institution = document.getElementById('institution').value;
+            const currency = document.getElementById('currency').value;
+            const urlParams = new URLSearchParams(window.location.search);
+            
+            urlParams.set('export', 'csv');
+            if (institution) urlParams.set('institution', institution);
+            if (currency) urlParams.set('currency', currency);
+            
+            window.location.href = '?' + urlParams.toString();
+        }
+        
+        function toggleSection(sectionId) {
+            const section = document.getElementById(sectionId);
+            const header = section.previousElementSibling;
+            const arrow = header.querySelector('span');
+            
+            if (section.style.display === 'none') {
+                section.style.display = 'block';
+                arrow.textContent = '▼';
+            } else {
+                section.style.display = 'none';
+                arrow.textContent = '▶';
+            }
+        }
+        
+        // Initialize all sections as visible
+        document.querySelectorAll('.section-content').forEach(function(section) {
+            section.style.display = 'block';
+        });
+    </script>
 </body>
 </html>
