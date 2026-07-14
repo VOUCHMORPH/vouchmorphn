@@ -8,6 +8,7 @@ require_once __DIR__ . '/../../../src/bootstrap.php';
 use Domain\Services\FeeService;
 use Domain\Services\Settlement\HybridSettlementStrategy;
 use Domain\Services\ForexService;
+use Core\Database\DBConnection;
 
 // Session management
 session_start();
@@ -25,14 +26,17 @@ $countryCode = $user['country_code'] ?? 'BW';
 $countryConfigPath = __DIR__ . "/../../../config/countries/" . strtolower($countryCode) . "/config.php";
 $countryConfig = file_exists($countryConfigPath) ? require $countryConfigPath : [];
 
-// --- DATABASE CONNECTION ---
-$dbConfig = require __DIR__ . '/../../../config/database.php';
-$swapDB = new PDO(
-    "pgsql:host={$dbConfig['host']};dbname={$dbConfig['dbname']}",
-    $dbConfig['user'],
-    $dbConfig['password'],
-    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-);
+// --- DATABASE CONNECTION - USE SINGLE SOURCE OF TRUTH ---
+try {
+    $swapDB = DBConnection::getConnection();
+    if (!$swapDB) {
+        throw new Exception("Database connection failed");
+    }
+    error_log("[MONTHLY RECONCILIATION] Database connected successfully");
+} catch (Exception $e) {
+    error_log("[MONTHLY RECONCILIATION] DB Error: " . $e->getMessage());
+    die("Database connection failed. Please check configuration.");
+}
 
 // --- LOAD FEES CONFIGURATION ---
 $feesConfigPath = __DIR__ . "/../../../config/countries/" . strtolower($countryCode) . "/fees.json";
@@ -203,7 +207,6 @@ $stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMont
 $hookStats = $stmt->fetch(PDO::FETCH_ASSOC);
 
 // --- FETCH TOP INSTITUTIONS BY VOLUME ---
-// FIX: Use JSON_EXTRACT for PostgreSQL compatibility
 $topInstitutionsQuery = "
     SELECT 
         source_details->>'institution' as institution,
@@ -258,7 +261,6 @@ $totalFees = array_sum(array_column($feeBreakdown, 'total_amount'));
 $totalVat = array_sum(array_column($feeBreakdown, 'total_vat'));
 
 // --- GET INSTITUTIONS LIST FOR FILTER ---
-// FIX: Use JSON_EXTRACT for PostgreSQL compatibility
 $instStmt = $swapDB->prepare("
     SELECT DISTINCT 
         source_details->>'institution' as institution
@@ -299,12 +301,19 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     
     // Summary
     fputcsv($output, ['SUMMARY']);
-    fputcsv($output, ['Total Swaps', $swapsSummary['total_swaps'] ?? 0]);
-    fputcsv($output, ['Successful Swaps', $swapsSummary['successful_swaps'] ?? 0]);
-    fputcsv($output, ['Failed Swaps', $swapsSummary['failed_swaps'] ?? 0]);
-    fputcsv($output, ['Pending Swaps', $swapsSummary['pending_swaps'] ?? 0]);
-    fputcsv($output, ['Cancelled Swaps', $swapsSummary['cancelled_swaps'] ?? 0]);
-    fputcsv($output, ['Total Volume', number_format($swapsSummary['total_amount'] ?? 0, 2)]);
+    $swapsTotal = $swapsSummary['total_swaps'] ?? 0;
+    $swapsSuccessful = $swapsSummary['successful_swaps'] ?? 0;
+    $swapsFailed = $swapsSummary['failed_swaps'] ?? 0;
+    $swapsPending = $swapsSummary['pending_swaps'] ?? 0;
+    $swapsCancelled = $swapsSummary['cancelled_swaps'] ?? 0;
+    $swapsTotalAmount = $swapsSummary['total_amount'] ?? 0;
+    
+    fputcsv($output, ['Total Swaps', $swapsTotal]);
+    fputcsv($output, ['Successful Swaps', $swapsSuccessful]);
+    fputcsv($output, ['Failed Swaps', $swapsFailed]);
+    fputcsv($output, ['Pending Swaps', $swapsPending]);
+    fputcsv($output, ['Cancelled Swaps', $swapsCancelled]);
+    fputcsv($output, ['Total Volume', number_format($swapsTotalAmount, 2)]);
     fputcsv($output, ['Total Fees Collected', number_format($totalFees, 2)]);
     fputcsv($output, ['Total VAT', number_format($totalVat, 2)]);
     fputcsv($output, ['Total FX Volume', number_format($totalFxVolume, 2)]);
@@ -395,8 +404,19 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
 $prevMonth = date('Y-m', strtotime("-1 month", strtotime("{$year}-{$month}-01")));
 $nextMonth = date('Y-m', strtotime("+1 month", strtotime("{$year}-{$month}-01")));
 $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
-?>
 
+// Safe values for display
+$swapsTotal = $swapsSummary['total_swaps'] ?? 0;
+$swapsSuccessful = $swapsSummary['successful_swaps'] ?? 0;
+$swapsFailed = $swapsSummary['failed_swaps'] ?? 0;
+$swapsPending = $swapsSummary['pending_swaps'] ?? 0;
+$swapsCancelled = $swapsSummary['cancelled_swaps'] ?? 0;
+$swapsTotalAmount = $swapsSummary['total_amount'] ?? 0;
+$retryTotal = $retryStats['total_retries'] ?? 0;
+$retryFree = $retryStats['free_retries_used'] ?? 0;
+$hookActive = $hookStats['active_hooks'] ?? 0;
+$hookUsers = $hookStats['unique_users'] ?? 0;
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -404,276 +424,56 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Monthly Reconciliations - VouchMorph</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f0f2f5;
-            color: #333;
-        }
-        
-        .dashboard-container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        
-        .dashboard-header {
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            color: white;
-            padding: 20px 30px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 15px;
-        }
-        
-        .dashboard-header h1 {
-            font-size: 24px;
-            font-weight: 600;
-        }
-        
-        .dashboard-header p {
-            opacity: 0.8;
-            font-size: 14px;
-            margin-top: 5px;
-        }
-        
-        .month-nav {
-            display: flex;
-            gap: 15px;
-            align-items: center;
-        }
-        
-        .month-nav .nav-btn {
-            background: rgba(255,255,255,0.2);
-            padding: 8px 20px;
-            border-radius: 8px;
-            text-decoration: none;
-            color: white;
-            transition: background 0.3s;
-        }
-        
-        .month-nav .nav-btn:hover {
-            background: rgba(255,255,255,0.3);
-        }
-        
-        .month-badge {
-            background: rgba(255,255,255,0.2);
-            padding: 8px 20px;
-            border-radius: 20px;
-            font-size: 16px;
-            font-weight: 600;
-        }
-        
-        .filter-bar {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            display: flex;
-            gap: 15px;
-            flex-wrap: wrap;
-            align-items: flex-end;
-        }
-        
-        .filter-group {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-        
-        .filter-group label {
-            font-size: 12px;
-            font-weight: 600;
-            color: #666;
-            text-transform: uppercase;
-        }
-        
-        .filter-group select {
-            padding: 10px 15px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            font-size: 14px;
-            min-width: 180px;
-        }
-        
-        .btn {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.3s;
-        }
-        
-        .btn-primary {
-            background: #007bff;
-            color: white;
-        }
-        
-        .btn-primary:hover {
-            background: #0056b3;
-        }
-        
-        .btn-success {
-            background: #28a745;
-            color: white;
-        }
-        
-        .btn-success:hover {
-            background: #1e7e34;
-        }
-        
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-bottom: 25px;
-        }
-        
-        .stat-card {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            text-align: center;
-            transition: transform 0.2s;
-        }
-        
-        .stat-card:hover {
-            transform: translateY(-2px);
-        }
-        
-        .stat-card h3 {
-            font-size: 14px;
-            color: #666;
-            margin-bottom: 10px;
-        }
-        
-        .stat-card .value {
-            font-size: 28px;
-            font-weight: bold;
-            color: #1a1a2e;
-        }
-        
-        .stat-card .trend {
-            font-size: 12px;
-            margin-top: 5px;
-        }
-        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; color: #333; }
+        .dashboard-container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        .dashboard-header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: white; padding: 20px 30px; border-radius: 12px; margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; }
+        .dashboard-header h1 { font-size: 24px; font-weight: 600; }
+        .dashboard-header p { opacity: 0.8; font-size: 14px; margin-top: 5px; }
+        .month-nav { display: flex; gap: 15px; align-items: center; }
+        .month-nav .nav-btn { background: rgba(255,255,255,0.2); padding: 8px 20px; border-radius: 8px; text-decoration: none; color: white; transition: background 0.3s; }
+        .month-nav .nav-btn:hover { background: rgba(255,255,255,0.3); }
+        .month-badge { background: rgba(255,255,255,0.2); padding: 8px 20px; border-radius: 20px; font-size: 16px; font-weight: 600; }
+        .filter-bar { background: white; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end; }
+        .filter-group { display: flex; flex-direction: column; gap: 5px; }
+        .filter-group label { font-size: 12px; font-weight: 600; color: #666; text-transform: uppercase; }
+        .filter-group select { padding: 10px 15px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; min-width: 180px; }
+        .btn { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-primary:hover { background: #0056b3; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-success:hover { background: #1e7e34; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 25px; }
+        .stat-card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; transition: transform 0.2s; }
+        .stat-card:hover { transform: translateY(-2px); }
+        .stat-card h3 { font-size: 14px; color: #666; margin-bottom: 10px; }
+        .stat-card .value { font-size: 28px; font-weight: bold; color: #1a1a2e; }
+        .stat-card .trend { font-size: 12px; margin-top: 5px; }
         .trend-up { color: #28a745; }
         .trend-down { color: #dc3545; }
         .trend-neutral { color: #ffc107; }
-        
-        .section {
-            background: white;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            overflow: hidden;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        
-        .section-header {
-            background: #f8f9fa;
-            padding: 15px 20px;
-            border-bottom: 1px solid #e9ecef;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            cursor: pointer;
-        }
-        
-        .section-header h2 {
-            font-size: 18px;
-            font-weight: 600;
-        }
-        
-        .section-header span {
-            transition: transform 0.2s;
-        }
-        
-        .section-content {
-            padding: 20px;
-            overflow-x: auto;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-        }
-        
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #e9ecef;
-        }
-        
-        th {
-            background: #f8f9fa;
-            font-weight: 600;
-            color: #495057;
-        }
-        
-        tr:hover {
-            background: #f8f9fa;
-        }
-        
-        .status-badge {
-            display: inline-block;
-            padding: 4px 10px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-        
+        .section { background: white; border-radius: 12px; margin-bottom: 25px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .section-header { background: #f8f9fa; padding: 15px 20px; border-bottom: 1px solid #e9ecef; display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+        .section-header h2 { font-size: 18px; font-weight: 600; }
+        .section-header span { transition: transform 0.2s; }
+        .section-content { padding: 20px; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; }
+        th { background: #f8f9fa; font-weight: 600; color: #495057; }
+        tr:hover { background: #f8f9fa; }
+        .status-badge { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
         .status-completed { background: #d4edda; color: #155724; }
         .status-failed { background: #f8d7da; color: #721c24; }
         .status-pending { background: #fff3cd; color: #856404; }
         .status-cancelled { background: #e2e3e5; color: #383d41; }
-        
-        .export-buttons {
-            display: flex;
-            gap: 10px;
-        }
-        
-        .summary-cards {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-        
-        .summary-card {
-            background: white;
-            padding: 15px;
-            border-radius: 12px;
-            text-align: center;
-            border-left: 4px solid;
-        }
-        
+        .export-buttons { display: flex; gap: 10px; }
+        .summary-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; }
+        .summary-card { background: white; padding: 15px; border-radius: 12px; text-align: center; border-left: 4px solid; }
         @media (max-width: 768px) {
-            .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            .summary-cards {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            .filter-bar {
-                flex-direction: column;
-            }
-            .filter-group select {
-                width: 100%;
-            }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .summary-cards { grid-template-columns: repeat(2, 1fr); }
+            .filter-bar { flex-direction: column; }
+            .filter-group select { width: 100%; }
         }
     </style>
 </head>
@@ -685,10 +485,10 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
                 <p>VouchMorph Settlement & Transaction Reconciliation - Monthly Overview</p>
             </div>
             <div class="month-nav">
-                <a href="?year=<?= explode('-', $prevMonth)[0] ?>&month=<?= explode('-', $prevMonth)[1] ?>" class="nav-btn">← Previous Month</a>
-                <div class="month-badge"><?= $monthName ?></div>
-                <a href="?year=<?= explode('-', $nextMonth)[0] ?>&month=<?= explode('-', $nextMonth)[1] ?>" class="nav-btn">Next Month →</a>
-                <a href="?year=<?= date('Y') ?>&month=<?= date('m') ?>" class="nav-btn">Current Month</a>
+                <a href="?year=<?php echo explode('-', $prevMonth)[0]; ?>&month=<?php echo explode('-', $prevMonth)[1]; ?>" class="nav-btn">← Previous Month</a>
+                <div class="month-badge"><?php echo $monthName; ?></div>
+                <a href="?year=<?php echo explode('-', $nextMonth)[0]; ?>&month=<?php echo explode('-', $nextMonth)[1]; ?>" class="nav-btn">Next Month →</a>
+                <a href="?year=<?php echo date('Y'); ?>&month=<?php echo date('m'); ?>" class="nav-btn">Current Month</a>
             </div>
         </div>
         
@@ -699,8 +499,8 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
                 <select id="institution">
                     <option value="">All Institutions</option>
                     <?php foreach ($institutions as $inst): ?>
-                        <option value="<?= htmlspecialchars($inst) ?>" <?= ($institutionFilter == $inst) ? 'selected' : '' ?>>
-                            <?= htmlspecialchars($inst) ?>
+                        <option value="<?php echo htmlspecialchars($inst); ?>" <?php echo ($institutionFilter == $inst) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($inst); ?>
                         </option>
                     <?php endforeach; ?>
                 </select>
@@ -709,12 +509,12 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
                 <label>Currency</label>
                 <select id="currency">
                     <option value="">All Currencies</option>
-                    <option value="BWP" <?= ($currencyFilter == 'BWP') ? 'selected' : '' ?>>BWP - Pula</option>
-                    <option value="ZAR" <?= ($currencyFilter == 'ZAR') ? 'selected' : '' ?>>ZAR - Rand</option>
-                    <option value="USD" <?= ($currencyFilter == 'USD') ? 'selected' : '' ?>>USD - Dollar</option>
-                    <option value="EUR" <?= ($currencyFilter == 'EUR') ? 'selected' : '' ?>>EUR - Euro</option>
-                    <option value="NGN" <?= ($currencyFilter == 'NGN') ? 'selected' : '' ?>>NGN - Naira</option>
-                    <option value="KES" <?= ($currencyFilter == 'KES') ? 'selected' : '' ?>>KES - Shilling</option>
+                    <option value="BWP" <?php echo ($currencyFilter == 'BWP') ? 'selected' : ''; ?>>BWP - Pula</option>
+                    <option value="ZAR" <?php echo ($currencyFilter == 'ZAR') ? 'selected' : ''; ?>>ZAR - Rand</option>
+                    <option value="USD" <?php echo ($currencyFilter == 'USD') ? 'selected' : ''; ?>>USD - Dollar</option>
+                    <option value="EUR" <?php echo ($currencyFilter == 'EUR') ? 'selected' : ''; ?>>EUR - Euro</option>
+                    <option value="NGN" <?php echo ($currencyFilter == 'NGN') ? 'selected' : ''; ?>>NGN - Naira</option>
+                    <option value="KES" <?php echo ($currencyFilter == 'KES') ? 'selected' : ''; ?>>KES - Shilling</option>
                 </select>
             </div>
             <div class="filter-group">
@@ -727,52 +527,52 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
         <div class="stats-grid">
             <div class="stat-card">
                 <h3>Total Swaps</h3>
-                <div class="value"><?= number_format($swapsSummary['total_swaps'] ?? 0) ?></div>
-                <div class="trend trend-up">↑ <?= number_format($swapsSummary['successful_swaps'] ?? 0) ?> successful</div>
+                <div class="value"><?php echo number_format($swapsTotal); ?></div>
+                <div class="trend trend-up">↑ <?php echo number_format($swapsSuccessful); ?> successful</div>
             </div>
             <div class="stat-card">
                 <h3>Total Volume</h3>
-                <div class="value"><?= number_format($swapsSummary['total_amount'] ?? 0, 2) ?></div>
+                <div class="value"><?php echo number_format($swapsTotalAmount, 2); ?></div>
                 <div class="trend">Across all currencies</div>
             </div>
             <div class="stat-card">
                 <h3>Fees Collected</h3>
-                <div class="value"><?= number_format($totalFees, 2) ?></div>
-                <div class="trend">+ <?= number_format($totalVat, 2) ?> VAT</div>
+                <div class="value"><?php echo number_format($totalFees, 2); ?></div>
+                <div class="trend">+ <?php echo number_format($totalVat, 2); ?> VAT</div>
             </div>
             <div class="stat-card">
                 <h3>Cashout Retries</h3>
-                <div class="value"><?= number_format($retryStats['total_retries'] ?? 0) ?></div>
-                <div class="trend"><?= number_format($retryStats['free_retries_used'] ?? 0) ?> free retries</div>
+                <div class="value"><?php echo number_format($retryTotal); ?></div>
+                <div class="trend"><?php echo number_format($retryFree); ?> free retries</div>
             </div>
             <div class="stat-card">
                 <h3>FX Volume</h3>
-                <div class="value"><?= number_format($totalFxVolume, 2) ?></div>
-                <div class="trend">Fees: <?= number_format($totalForexFees, 2) ?></div>
+                <div class="value"><?php echo number_format($totalFxVolume, 2); ?></div>
+                <div class="trend">Fees: <?php echo number_format($totalForexFees, 2); ?></div>
             </div>
             <div class="stat-card">
                 <h3>Active Hooks</h3>
-                <div class="value"><?= number_format($hookStats['active_hooks'] ?? 0) ?></div>
-                <div class="trend"><?= number_format($hookStats['unique_users'] ?? 0) ?> users</div>
+                <div class="value"><?php echo number_format($hookActive); ?></div>
+                <div class="trend"><?php echo number_format($hookUsers); ?> users</div>
             </div>
         </div>
         
         <!-- Monthly Summary Cards -->
         <div class="summary-cards">
             <div class="summary-card" style="border-left-color: #28a745;">
-                <div style="font-size: 24px; font-weight: bold;"><?= number_format($swapsSummary['successful_swaps'] ?? 0) ?></div>
+                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($swapsSuccessful); ?></div>
                 <div style="font-size: 12px; color: #666;">Successful Swaps</div>
             </div>
             <div class="summary-card" style="border-left-color: #dc3545;">
-                <div style="font-size: 24px; font-weight: bold;"><?= number_format($swapsSummary['failed_swaps'] ?? 0) ?></div>
+                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($swapsFailed); ?></div>
                 <div style="font-size: 12px; color: #666;">Failed Swaps</div>
             </div>
             <div class="summary-card" style="border-left-color: #ffc107;">
-                <div style="font-size: 24px; font-weight: bold;"><?= number_format($swapsSummary['pending_swaps'] ?? 0) ?></div>
+                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($swapsPending); ?></div>
                 <div style="font-size: 12px; color: #666;">Pending Swaps</div>
             </div>
             <div class="summary-card" style="border-left-color: #6c757d;">
-                <div style="font-size: 24px; font-weight: bold;"><?= number_format($swapsSummary['cancelled_swaps'] ?? 0) ?></div>
+                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($swapsCancelled); ?></div>
                 <div style="font-size: 12px; color: #666;">Cancelled Swaps</div>
             </div>
         </div>
@@ -780,29 +580,24 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
         <!-- Daily Breakdown Section -->
         <div class="section">
             <div class="section-header" onclick="toggleSection('dailyBreakdown')">
-                <h2>📆 Daily Breakdown (<?= $monthName ?>)</h2>
+                <h2>📆 Daily Breakdown (<?php echo $monthName; ?>)</h2>
                 <span>▼</span>
             </div>
             <div class="section-content" id="dailyBreakdown">
                 <table>
                     <thead>
-                        <tr>
-                            <th>Date</th>
-                            <th>Total Transactions</th>
-                            <th>Total Amount</th>
-                            <th>Status Breakdown</th>
-                        </tr>
+                        <tr><th>Date</th><th>Total Transactions</th><th>Total Amount</th><th>Status Breakdown</th></tr>
                     </thead>
                     <tbody>
                         <?php if (!empty($reconciliations)): ?>
                             <?php foreach ($reconciliations as $row): ?>
                                 <tr>
-                                    <td><strong><?= date('D, M j, Y', strtotime($row['date'])) ?></strong></td>
-                                    <td><?= number_format($row['total_transactions']) ?></td>
-                                    <td><?= number_format($row['total_amount'], 2) ?></td>
+                                    <td><strong><?php echo date('D, M j, Y', strtotime($row['date'])); ?></strong></td>
+                                    <td><?php echo number_format($row['total_transactions']); ?></td>
+                                    <td><?php echo number_format($row['total_amount'], 2); ?></td>
                                     <td>
                                         <?php foreach ($row['status'] as $status => $count): ?>
-                                            <span class="status-badge status-<?= $status ?>"><?= ucfirst($status) ?>: <?= $count ?></span>
+                                            <span class="status-badge status-<?php echo $status; ?>"><?php echo ucfirst($status); ?>: <?php echo $count; ?></span>
                                         <?php endforeach; ?>
                                     </td>
                                 </tr>
@@ -818,29 +613,23 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
         <!-- Fee Breakdown Section -->
         <div class="section">
             <div class="section-header" onclick="toggleSection('feeBreakdown')">
-                <h2>💰 Fee Breakdown (<?= $monthName ?>)</h2>
+                <h2>💰 Fee Breakdown (<?php echo $monthName; ?>)</h2>
                 <span>▼</span>
             </div>
             <div class="section-content" id="feeBreakdown">
                 <table>
                     <thead>
-                        <tr>
-                            <th>Fee Type</th>
-                            <th>Count</th>
-                            <th>Total Amount</th>
-                            <th>VAT</th>
-                            <th>Currency</th>
-                        </tr>
+                        <tr><th>Fee Type</th><th>Count</th><th>Total Amount</th><th>VAT</th><th>Currency</th></tr>
                     </thead>
                     <tbody>
                         <?php if (!empty($feeBreakdown)): ?>
                             <?php foreach ($feeBreakdown as $fee): ?>
                                 <tr>
-                                    <td><?= htmlspecialchars($fee['fee_type']) ?></td>
-                                    <td><?= number_format($fee['count']) ?></td>
-                                    <td><strong><?= number_format($fee['total_amount'], 2) ?></strong></td>
-                                    <td><?= number_format($fee['total_vat'], 2) ?></td>
-                                    <td><?= htmlspecialchars($fee['currency']) ?></td>
+                                    <td><?php echo htmlspecialchars($fee['fee_type']); ?></td>
+                                    <td><?php echo number_format($fee['count']); ?></td>
+                                    <td><strong><?php echo number_format($fee['total_amount'], 2); ?></strong></td>
+                                    <td><?php echo number_format($fee['total_vat'], 2); ?></td>
+                                    <td><?php echo htmlspecialchars($fee['currency']); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
@@ -854,33 +643,25 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
         <!-- Cross-Border Activity Section -->
         <div class="section">
             <div class="section-header" onclick="toggleSection('crossBorder')">
-                <h2>🌍 Cross-Border Activity (<?= $monthName ?>)</h2>
+                <h2>🌍 Cross-Border Activity (<?php echo $monthName; ?>)</h2>
                 <span>▼</span>
             </div>
             <div class="section-content" id="crossBorder">
                 <table>
                     <thead>
-                        <tr>
-                            <th>From</th>
-                            <th>To</th>
-                            <th>Transactions</th>
-                            <th>Volume (Source)</th>
-                            <th>Volume (Dest)</th>
-                            <th>Corridor Fees</th>
-                            <th>Avg Rate</th>
-                        </tr>
+                        <tr><th>From</th><th>To</th><th>Transactions</th><th>Volume (Source)</th><th>Volume (Dest)</th><th>Corridor Fees</th><th>Avg Rate</th></tr>
                     </thead>
                     <tbody>
                         <?php if (!empty($crossBorderActivity)): ?>
                             <?php foreach ($crossBorderActivity as $cb): ?>
                                 <tr>
-                                    <td><span class="status-badge"><?= htmlspecialchars($cb['source_country']) ?></span></td>
-                                    <td><span class="status-badge"><?= htmlspecialchars($cb['destination_country']) ?></span></td>
-                                    <td><?= number_format($cb['transaction_count']) ?></td>
-                                    <td><?= number_format($cb['total_source_amount'], 2) ?> <?= htmlspecialchars($cb['source_currency']) ?></td>
-                                    <td><?= number_format($cb['total_destination_amount'], 2) ?> <?= htmlspecialchars($cb['destination_currency']) ?></td>
-                                    <td><?= number_format($cb['total_corridor_fees'] ?? 0, 2) ?></td>
-                                    <td><?= number_format($cb['avg_exchange_rate'], 4) ?></td>
+                                    <td><span class="status-badge"><?php echo htmlspecialchars($cb['source_country']); ?></span></td>
+                                    <td><span class="status-badge"><?php echo htmlspecialchars($cb['destination_country']); ?></span></td>
+                                    <td><?php echo number_format($cb['transaction_count']); ?></td>
+                                    <td><?php echo number_format($cb['total_source_amount'], 2); ?> <?php echo htmlspecialchars($cb['source_currency']); ?></td>
+                                    <td><?php echo number_format($cb['total_destination_amount'], 2); ?> <?php echo htmlspecialchars($cb['destination_currency']); ?></td>
+                                    <td><?php echo number_format($cb['total_corridor_fees'] ?? 0, 2); ?></td>
+                                    <td><?php echo number_format($cb['avg_exchange_rate'], 4); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
@@ -894,31 +675,24 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
         <!-- FX Activity Section -->
         <div class="section">
             <div class="section-header" onclick="toggleSection('fxActivity')">
-                <h2>💱 FX Activity (<?= $monthName ?>)</h2>
+                <h2>💱 FX Activity (<?php echo $monthName; ?>)</h2>
                 <span>▼</span>
             </div>
             <div class="section-content" id="fxActivity">
                 <table>
                     <thead>
-                        <tr>
-                            <th>From</th>
-                            <th>To</th>
-                            <th>Transactions</th>
-                            <th>Volume</th>
-                            <th>Forex Fees</th>
-                            <th>Avg Rate</th>
-                        </tr>
+                        <tr><th>From</th><th>To</th><th>Transactions</th><th>Volume</th><th>Forex Fees</th><th>Avg Rate</th></tr>
                     </thead>
                     <tbody>
                         <?php if (!empty($fxActivity)): ?>
                             <?php foreach ($fxActivity as $fx): ?>
                                 <tr>
-                                    <td><?= htmlspecialchars($fx['source_currency']) ?></td>
-                                    <td><?= htmlspecialchars($fx['destination_currency']) ?></td>
-                                    <td><?= number_format($fx['fx_transactions']) ?></td>
-                                    <td><?= number_format($fx['total_fx_volume'], 2) ?></td>
-                                    <td><strong><?= number_format($fx['total_forex_fees'], 2) ?></strong></td>
-                                    <td><?= number_format($fx['avg_rate'], 4) ?></td>
+                                    <td><?php echo htmlspecialchars($fx['source_currency']); ?></td>
+                                    <td><?php echo htmlspecialchars($fx['destination_currency']); ?></td>
+                                    <td><?php echo number_format($fx['fx_transactions']); ?></td>
+                                    <td><?php echo number_format($fx['total_fx_volume'], 2); ?></td>
+                                    <td><strong><?php echo number_format($fx['total_forex_fees'], 2); ?></strong></td>
+                                    <td><?php echo number_format($fx['avg_rate'], 4); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
@@ -938,23 +712,17 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
             <div class="section-content" id="corridorActivity">
                 <table>
                     <thead>
-                        <tr>
-                            <th>Source Country</th>
-                            <th>Destination Country</th>
-                            <th>Settlements</th>
-                            <th>Total Settled</th>
-                            <th>Corridor Fees</th>
-                        </tr>
+                        <tr><th>Source Country</th><th>Destination Country</th><th>Settlements</th><th>Total Settled</th><th>Corridor Fees</th></tr>
                     </thead>
                     <tbody>
                         <?php if (!empty($corridorActivity)): ?>
                             <?php foreach ($corridorActivity as $corridor): ?>
                                 <tr>
-                                    <td><?= htmlspecialchars($corridor['source_country']) ?></td>
-                                    <td><?= htmlspecialchars($corridor['destination_country']) ?></td>
-                                    <td><?= number_format($corridor['settlement_count']) ?></td>
-                                    <td><?= number_format($corridor['total_settled'], 2) ?></td>
-                                    <td><?= number_format($corridor['total_fees'], 2) ?></td>
+                                    <td><?php echo htmlspecialchars($corridor['source_country']); ?></td>
+                                    <td><?php echo htmlspecialchars($corridor['destination_country']); ?></td>
+                                    <td><?php echo number_format($corridor['settlement_count']); ?></td>
+                                    <td><?php echo number_format($corridor['total_settled'], 2); ?></td>
+                                    <td><?php echo number_format($corridor['total_fees'], 2); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
@@ -968,30 +736,24 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
         <!-- Top Institutions Section -->
         <div class="section">
             <div class="section-header" onclick="toggleSection('topInstitutions')">
-                <h2>🏦 Top Institutions by Volume (<?= $monthName ?>)</h2>
+                <h2>🏦 Top Institutions by Volume (<?php echo $monthName; ?>)</h2>
                 <span>▼</span>
             </div>
             <div class="section-content" id="topInstitutions">
                 <table>
                     <thead>
-                        <tr>
-                            <th>Rank</th>
-                            <th>Institution</th>
-                            <th>Transactions</th>
-                            <th>Total Volume</th>
-                            <th>Total Fees</th>
-                        </tr>
+                        <tr><th>Rank</th><th>Institution</th><th>Transactions</th><th>Total Volume</th><th>Total Fees</th></tr>
                     </thead>
                     <tbody>
                         <?php if (!empty($topInstitutions)): ?>
                             <?php $rank = 1; ?>
                             <?php foreach ($topInstitutions as $inst): ?>
                                 <tr>
-                                    <td><strong>#<?= $rank++ ?></strong></td>
-                                    <td><?= htmlspecialchars($inst['institution']) ?></td>
-                                    <td><?= number_format($inst['transaction_count']) ?></td>
-                                    <td><?= number_format($inst['total_volume'], 2) ?></td>
-                                    <td><?= number_format($inst['total_fees'] ?? 0, 2) ?></td>
+                                    <td><strong>#<?php echo $rank++; ?></strong></td>
+                                    <td><?php echo htmlspecialchars($inst['institution']); ?></td>
+                                    <td><?php echo number_format($inst['transaction_count']); ?></td>
+                                    <td><?php echo number_format($inst['total_volume'], 2); ?></td>
+                                    <td><?php echo number_format($inst['total_fees'] ?? 0, 2); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
@@ -1005,9 +767,9 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
     
     <script>
         function applyFilters() {
-            const institution = document.getElementById('institution').value;
-            const currency = document.getElementById('currency').value;
-            const urlParams = new URLSearchParams(window.location.search);
+            var institution = document.getElementById('institution').value;
+            var currency = document.getElementById('currency').value;
+            var urlParams = new URLSearchParams(window.location.search);
             
             if (institution) urlParams.set('institution', institution);
             else urlParams.delete('institution');
@@ -1015,9 +777,8 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
             if (currency) urlParams.set('currency', currency);
             else urlParams.delete('currency');
             
-            // Preserve year and month
-            const year = new URLSearchParams(window.location.search).get('year');
-            const month = new URLSearchParams(window.location.search).get('month');
+            var year = new URLSearchParams(window.location.search).get('year');
+            var month = new URLSearchParams(window.location.search).get('month');
             if (year) urlParams.set('year', year);
             if (month) urlParams.set('month', month);
             
@@ -1025,9 +786,9 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
         }
         
         function exportCSV() {
-            const institution = document.getElementById('institution').value;
-            const currency = document.getElementById('currency').value;
-            const urlParams = new URLSearchParams(window.location.search);
+            var institution = document.getElementById('institution').value;
+            var currency = document.getElementById('currency').value;
+            var urlParams = new URLSearchParams(window.location.search);
             
             urlParams.set('export', 'csv');
             if (institution) urlParams.set('institution', institution);
@@ -1037,9 +798,9 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
         }
         
         function toggleSection(sectionId) {
-            const section = document.getElementById(sectionId);
-            const header = section.previousElementSibling;
-            const arrow = header.querySelector('span');
+            var section = document.getElementById(sectionId);
+            var header = section.previousElementSibling;
+            var arrow = header.querySelector('span');
             
             if (section.style.display === 'none') {
                 section.style.display = 'block';
@@ -1051,9 +812,10 @@ $monthName = date('F Y', strtotime("{$year}-{$month}-01"));
         }
         
         // Initialize all sections as visible
-        document.querySelectorAll('.section-content').forEach(section => {
-            section.style.display = 'block';
-        });
+        var sections = document.querySelectorAll('.section-content');
+        for (var i = 0; i < sections.length; i++) {
+            sections[i].style.display = 'block';
+        }
     </script>
 </body>
 </html>
