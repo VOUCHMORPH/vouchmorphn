@@ -1,936 +1,294 @@
-<?php
-// public/user/dashboard.php - SWAP SERVICE DASHBOARD
-// This is a swap service dashboard, NOT a wallet dashboard.
-// Balances are fetched from source institutions on demand.
-
-require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
-require_once __DIR__ . '/../../src/Core/Config/AssetTypeRegistry.php';
-require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
-require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
-
-use Application\Utils\SessionManager;
-use Core\Config\AssetTypeRegistry;
-use Core\Database\DBConnection;
-use Core\Config\LoadCountry;
-
-SessionManager::start();
-
-if (!SessionManager::isLoggedIn()) {
-    header("Location: login.php");
-    exit;
-}
-
-$user = SessionManager::user();
-$userId = $user['id'] ?? $user['user_id'] ?? null;
-
-if (!$userId) {
-    header("Location: login.php");
-    exit;
-}
-
-// Get full user details
-try {
-    $db = DBConnection::getConnection();
-    $stmt = $db->prepare("SELECT * FROM users WHERE user_id = ?");
-    $stmt->execute([$userId]);
-    $dbUser = $stmt->fetch(PDO::FETCH_ASSOC);
-    if ($dbUser) {
-        $user = array_merge($user, $dbUser);
-        $user['id'] = $user['user_id'];
-    }
-} catch (Exception $e) {
-    error_log("Dashboard: Failed to fetch user: " . $e->getMessage());
-}
-
-// Load config
-$config = LoadCountry::getConfig();
-$countryName = $config['country'] ?? 'Botswana';
-$currencySymbol = $config['currency_symbol'] ?? 'BWP';
-$currency = $config['currency'] ?? 'BWP';
-
-// Load participants from YAML
-function parseParticipantsYaml($path) {
-    $participants = [];
-    if (!file_exists($path)) return $participants;
-
-    $lines = explode("\n", file_get_contents($path));
-    $currentCode = null;
-    $inAssetTypes = false;
-
-    foreach ($lines as $rawLine) {
-        $line = rtrim($rawLine);
-        if (trim($line) === '' || ltrim($line)[0] === '#') continue;
-
-        $indent = strlen($line) - strlen(ltrim($line));
-        $trimmed = trim($line);
-
-        if ($indent === 2 && preg_match('/^([A-Z0-9_]+):$/', $trimmed, $m)) {
-            $currentCode = $m[1];
-            $participants[$currentCode] = [
-                'code' => $currentCode, 'name' => $currentCode,
-                'type' => 'BANK', 'asset_types' => [],
-            ];
-            $inAssetTypes = false;
-            continue;
-        }
-        if ($currentCode === null) continue;
-
-        if ($indent === 4 && preg_match('/^(name|type|country|status):\s*(.+)$/', $trimmed, $m)) {
-            $participants[$currentCode][$m[1]] = trim($m[2], '"\'');
-            $inAssetTypes = false;
-            continue;
-        }
-        if ($indent === 4 && $trimmed === 'asset_types:') { $inAssetTypes = true; continue; }
-        if ($indent === 4) { $inAssetTypes = false; continue; }
-        if ($inAssetTypes && $indent === 6 && preg_match('/^- (.+)$/', $trimmed, $m)) {
-            $participants[$currentCode]['asset_types'][] = trim($m[1], '"\'');
-        }
-    }
-
-    foreach ($participants as $code => &$p) {
-        if (empty($p['asset_types'])) {
-            $p['asset_types'] = ['ACCOUNT'];
-        }
-    }
-    return $participants;
-}
-
-$countryFolder = __DIR__ . '/../../src/Core/Config/Countries/' . $countryName;
-$participants = parseParticipantsYaml($countryFolder . '/participants.yaml');
-
-// Supported asset types
-$supportedAssetTypes = ['ACCOUNT', 'WALLET'];
-
-// Get user's hooked sources (saved sources)
-$hookedSources = [];
-try {
-    $stmt = $db->prepare("
-        SELECT * FROM user_authorized_sources 
-        WHERE user_id = ? AND status = 'active'
-        ORDER BY institution, identifier
-    ");
-    $stmt->execute([$userId]);
-    $hookedSources = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) {
-    error_log("Failed to fetch hooked sources: " . $e->getMessage());
-}
-
-// Get user identifiers (for receiving money)
-$userIdentifiers = [];
-try {
-    $stmt = $db->prepare("
-        SELECT identity_type, identity_value, is_verified 
-        FROM user_identities 
-        WHERE user_id = ? AND is_verified = true
-    ");
-    $stmt->execute([$userId]);
-    $userIdentifiers = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) {
-    $userIdentifiers = [];
-}
-
-// Also get from users table
-$typeIcons = ['phone' => '📱', 'phone2' => '📱', 'phone3' => '📱', 'email' => '✉️', 'national_id' => '🆔', 'drivers_license' => '🚗', 'passport' => '📖'];
-$validIdentifiers = [];
-
-foreach (['phone', 'phone2', 'phone3', 'email', 'national_id', 'drivers_license', 'passport'] as $type) {
-    if (!empty($user[$type])) {
-        $validIdentifiers[] = [
-            'type' => $type,
-            'value' => $user[$type],
-            'icon' => $typeIcons[$type] ?? '🔑',
-            'is_verified' => true
-        ];
-    }
-}
-
-foreach ($userIdentifiers as $id) {
-    if (!in_array($id['identity_value'], array_column($validIdentifiers, 'value'))) {
-        $validIdentifiers[] = [
-            'type' => $id['identity_type'],
-            'value' => $id['identity_value'],
-            'icon' => $typeIcons[$id['identity_type']] ?? '🔑',
-            'is_verified' => (bool)$id['is_verified']
-        ];
-    }
-}
-
-$primaryIdentifier = '';
-foreach (['phone', 'email', 'national_id'] as $type) {
-    if (!empty($user[$type])) {
-        $primaryIdentifier = $user[$type];
-        break;
-    }
-}
-if (empty($primaryIdentifier) && !empty($validIdentifiers)) {
-    $primaryIdentifier = $validIdentifiers[0]['value'];
-}
-
-// Get recent swaps (swap ledger - NOT wallet transactions)
-$recentSwaps = [];
-try {
-    $stmt = $db->prepare("
-        SELECT swap_reference, amount, from_institution, to_institution, 
-               status, created_at, swap_type, reference
-        FROM swap_ledgers 
-        WHERE user_id = ? 
-        ORDER BY created_at DESC 
-        LIMIT 10
-    ");
-    $stmt->execute([$userId]);
-    $recentSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) {
-    error_log("Recent swaps error: " . $e->getMessage());
-}
-
-// Get identity swaps (pending and completed)
-$identitySwaps = [];
-try {
-    $stmt = $db->prepare("
-        SELECT * FROM identity_swap_holds 
-        WHERE (source_identifier = ? OR identity_value = ?)
-        ORDER BY created_at DESC 
-        LIMIT 10
-    ");
-    $stmt->execute([$primaryIdentifier, $primaryIdentifier]);
-    $identitySwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) {
-    // Table may not exist yet
-    $identitySwaps = [];
-}
-
-// Prepare participant options
-$participantOptions = [];
-foreach ($participants as $code => $p) {
-    $participantOptions[$code] = [
-        'name' => $p['name'] ?? $code,
-        'type' => $p['type'] ?? 'BANK',
-        'asset_types' => $p['asset_types'] ?? ['ACCOUNT'],
-    ];
-}
-
-$identifiersJson = json_encode($validIdentifiers);
-$hookedSourcesJson = json_encode($hookedSources);
-?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VouchMorph Swap | <?= htmlspecialchars($countryName) ?></title>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<title>VouchMorph – Swap</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
-    --ink: #121212;
-    --paper: #F7F5F0;
-    --panel: #FFFFFF;
-    --cobalt: #2440FF;
-    --amber: #FFB400;
-    --forest: #14804A;
-    --red: #D32F2F;
-    --line: #D8D4CB;
-    --fs-body: clamp(0.95rem, 0.85rem + 0.3vw, 1.25rem);
-    --fs-label: clamp(0.7rem, 0.65rem + 0.15vw, 0.9rem);
-    --fs-h1: clamp(1.3rem, 1rem + 1.2vw, 2.4rem);
-    --fs-h2: clamp(1.1rem, 0.95rem + 0.6vw, 1.6rem);
-    --space-unit: clamp(0.9rem, 0.75rem + 0.5vw, 1.6rem);
-    --tap-min: 48px;
-    --clip: clamp(10px, 0.8vw, 20px);
+    --bg: #0a0a12;
+    --surface: rgba(255,255,255,0.04);
+    --surface-hover: rgba(255,255,255,0.08);
+    --border: rgba(255,255,255,0.08);
+    --border-active: rgba(0,240,255,0.3);
+    --text: #ffffff;
+    --text-muted: #8888a0;
+    --text-dim: #505070;
+    --primary: #00f0ff;
+    --primary-dark: #00c0d0;
+    --gradient: linear-gradient(135deg, #00f0ff 0%, #b000ff 100%);
+    --success: #00e676;
+    --warning: #ffc107;
+    --danger: #ff5252;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html { font-size: 16px; }
-body {
-    font-family: 'Inter', sans-serif;
-    background: var(--paper);
-    color: var(--ink);
-    min-height: 100vh;
-    font-size: var(--fs-body);
-    line-height: 1.4;
-}
-.font-display { font-family: 'Space Grotesk', sans-serif; }
-button, input, select { font-family: inherit; font-size: inherit; }
-button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--cobalt); outline-offset: 2px; }
-.clip { clip-path: polygon(0 0, calc(100% - var(--clip)) 0, 100% var(--clip), 100% 100%, 0 100%); }
+body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; padding: 16px; line-height: 1.5; }
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--text-dim); border-radius: 4px; }
 
-.shell { max-width: min(1400px, 92vw); margin: 0 auto; }
+.container { max-width: 560px; margin: 0 auto; }
 
-/* Topbar */
-.topbar {
-    background: var(--ink);
-    color: var(--paper);
-    padding: var(--space-unit) calc(var(--space-unit) * 1.2);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-.topbar-inner {
-    max-width: min(1400px, 92vw);
-    margin: 0 auto;
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-.logo {
-    display: flex;
-    align-items: center;
-    gap: 0.6em;
-}
-.logo-mark {
-    width: clamp(28px, 2.2vw, 44px);
-    height: clamp(28px, 2.2vw, 44px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--cobalt);
-    font-weight: 700;
-    font-size: clamp(13px, 1.2vw, 20px);
-    clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);
-}
-.logo-text {
-    font-family: 'Space Grotesk', sans-serif;
-    font-weight: 700;
-    font-size: var(--fs-h2);
-    letter-spacing: -0.02em;
-}
-.user-area {
-    display: flex;
-    align-items: center;
-    gap: 1.2em;
-    font-size: var(--fs-label);
-}
-.user-area .id { opacity: 0.75; }
-.logout-btn {
-    background: none;
-    border: none;
-    color: var(--paper);
-    opacity: 0.5;
-    cursor: pointer;
-    text-decoration: none;
-}
-.logout-btn:hover { opacity: 1; }
+.topbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 20px; }
+.logo { font-size: 22px; font-weight: 800; background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.topbar-right { display: flex; align-items: center; gap: 16px; font-size: 14px; }
+.topbar-right .greeting { color: var(--text-muted); }
+.logout-btn { color: var(--text-muted); text-decoration: none; padding: 6px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); transition: var(--transition); }
+.logout-btn:hover { background: var(--surface-hover); color: var(--text); }
 
-.home { padding: calc(var(--space-unit) * 1.5) 0 calc(var(--space-unit) * 3); }
-
-/* Balance display - shown ONLY on request */
-.balance-display {
-    background: var(--ink);
-    color: var(--paper);
-    padding: calc(var(--space-unit) * 1.5) calc(var(--space-unit) * 1.6);
-    margin-bottom: var(--space-unit);
-    display: none;
-}
-.balance-display.visible { display: block; }
-.balance-display .label {
-    font-size: var(--fs-label);
-    opacity: 0.5;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-.balance-display .amount {
-    font-family: 'Space Grotesk', sans-serif;
-    font-size: var(--fs-h1);
-    font-weight: 700;
-    margin-top: 0.2em;
-}
-.balance-display .source-info {
-    font-size: var(--fs-label);
-    opacity: 0.5;
-    margin-top: 0.3em;
-}
-
-/* Buttons */
-.btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1em 1.4em;
-    border: none;
-    font-family: 'Space Grotesk', sans-serif;
-    font-weight: 700;
-    font-size: var(--fs-label);
-    cursor: pointer;
-    transition: all 0.2s;
-    min-height: var(--tap-min);
-    text-align: center;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    gap: 8px;
-}
-.btn-primary {
-    background: var(--ink);
-    color: var(--paper);
-}
-.btn-primary:hover { background: #2a2a2a; }
-.btn-secondary {
-    background: var(--panel);
-    color: var(--ink);
-    border: 2px solid var(--line);
-}
-.btn-secondary:hover { border-color: var(--ink); }
-.btn-success {
-    background: var(--forest);
-    color: var(--paper);
-}
-.btn-success:hover { background: #0d6e3a; }
-.btn-danger {
-    background: var(--red);
-    color: var(--paper);
-}
-.btn-danger:hover { background: #b71c1c; }
-.btn-outline {
-    background: transparent;
-    color: var(--ink);
-    border: 2px solid var(--ink);
-}
-.btn-outline:hover { background: var(--ink); color: var(--paper); }
-.btn-amber {
-    background: var(--amber);
-    color: var(--ink);
-}
-.btn-amber:hover { background: #e6a200; }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-sm { padding: 0.6em 1em; min-height: 36px; font-size: 0.7rem; }
-.btn-lg { padding: 1.2em 2em; font-size: var(--fs-body); }
-.btn-block { width: 100%; }
-.btn-icon { font-size: 1.2em; }
-
-/* Grid */
-.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-unit); }
-.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-unit); }
-
-/* Cards */
-.card {
-    background: var(--panel);
-    border: 2px solid var(--line);
-    padding: var(--space-unit);
-}
-.card-title {
-    font-size: var(--fs-label);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    opacity: 0.5;
-    margin-bottom: 0.3em;
-}
-.card-value {
-    font-family: 'Space Grotesk', sans-serif;
-    font-size: var(--fs-h1);
-    font-weight: 700;
-}
-
-/* Main swap buttons - TWO BUTTONS: Swap From and Swap To */
-.swap-actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-unit);
-    margin-bottom: calc(var(--space-unit) * 1.5);
-}
-.swap-btn {
-    padding: calc(var(--space-unit) * 1.5);
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.2s;
-    background: var(--panel);
-    border: 3px solid var(--line);
-}
-.swap-btn:hover { transform: translateY(-3px); border-color: var(--ink); }
-.swap-btn .icon { font-size: clamp(2.4rem, 2rem + 0.8vw, 3.2rem); display: block; margin-bottom: 0.4em; }
-.swap-btn .label {
-    font-family: 'Space Grotesk', sans-serif;
-    font-weight: 700;
-    font-size: var(--fs-h2);
-}
-.swap-btn .sub-label {
-    font-size: var(--fs-label);
-    opacity: 0.5;
-    margin-top: 0.2em;
-}
-.swap-btn.swap-from { border-color: var(--cobalt); }
-.swap-btn.swap-from:hover { border-color: var(--cobalt); background: #f0f3ff; }
-.swap-btn.swap-to { border-color: var(--forest); }
-.swap-btn.swap-to:hover { border-color: var(--forest); background: #f0fff4; }
-
-/* Quick action buttons */
-.action-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: var(--space-unit);
-    margin-bottom: calc(var(--space-unit) * 1.5);
-}
-.action-btn {
-    padding: calc(var(--space-unit) * 1.2) var(--space-unit);
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.2s;
-    background: var(--panel);
-    border: 2px solid var(--line);
-}
-.action-btn:hover { transform: translateY(-3px); border-color: var(--ink); }
-.action-btn .icon { font-size: clamp(1.8rem, 1.5rem + 0.5vw, 2.6rem); display: block; margin-bottom: 0.4em; }
-.action-btn .label {
-    font-family: 'Space Grotesk', sans-serif;
-    font-weight: 600;
-    font-size: var(--fs-label);
-}
-
-/* Activity */
-.activity-item {
-    display: flex;
-    justify-content: space-between;
-    padding: 0.7em 0;
-    border-bottom: 1px solid var(--line);
-}
-.activity-item:last-child { border-bottom: none; }
-.activity-item .route { font-weight: 500; }
-.activity-item .amount { font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
-.activity-item .status { font-size: var(--fs-label); }
-.activity-item .status.completed { color: var(--forest); }
-.activity-item .status.pending { color: var(--amber); }
-.activity-item .status.failed { color: var(--red); }
-.activity-item .status.pending_cashout { color: var(--amber); }
-.activity-item .status.pending_identity { color: var(--cobalt); }
-
-/* Identifier items */
-.identifier-item {
-    display: flex;
-    align-items: center;
-    gap: 0.8em;
-    padding: 0.7em;
-    background: var(--paper);
-    border: 1px solid var(--line);
-}
-.identifier-item .icon { font-size: 1.4em; }
-.identifier-item .value { font-weight: 500; }
-.identifier-item .type {
-    font-size: var(--fs-label);
-    opacity: 0.5;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-
-/* Badges */
-.badge {
-    display: inline-block;
-    padding: 0.15em 0.7em;
-    font-size: 0.6rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    border-radius: 2px;
-    margin-left: auto;
-}
-.badge-success { background: #e8f5e9; color: #2e7d32; }
-.badge-pending { background: #fff3e0; color: #e65100; }
-.badge-danger { background: #ffebee; color: #c62828; }
-.badge-info { background: #e3f2fd; color: #0d47a1; }
-
-/* Modal */
-.modal-overlay {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.6);
-    z-index: 1000;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-unit);
-}
-.modal-overlay.active { display: flex; }
-.modal {
-    background: var(--paper);
-    max-width: 640px;
-    width: 100%;
-    max-height: 90vh;
-    overflow-y: auto;
-    padding: calc(var(--space-unit) * 1.5);
-}
-.modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: var(--space-unit);
-    padding-bottom: var(--space-unit);
-    border-bottom: 2px solid var(--line);
-}
-.modal-header h2 {
-    font-family: 'Space Grotesk', sans-serif;
-    font-size: var(--fs-h1);
-}
-.modal-close {
-    background: none;
-    border: none;
-    font-size: 1.6em;
-    cursor: pointer;
-    color: #888;
-    padding: 0.2em;
-}
-.modal-close:hover { color: var(--ink); }
-
-/* Form */
-.form-group { margin-bottom: var(--space-unit); }
-.form-group label {
-    display: block;
-    font-size: var(--fs-label);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    opacity: 0.5;
-    margin-bottom: 0.3em;
-}
-.form-control {
-    width: 100%;
-    padding: 0.8em 1em;
-    border: 2px solid var(--line);
-    background: var(--panel);
-    font-size: var(--fs-body);
-    transition: border-color 0.2s;
-}
-.form-control:focus { outline: none; border-color: var(--cobalt); }
-.form-control::placeholder { color: #bbb; }
-.form-control option { padding: 0.5em; }
-select.form-control { appearance: auto; }
-
-/* Step indicator */
-.step-indicator {
-    display: flex;
-    gap: 0.5em;
-    margin-bottom: var(--space-unit);
-}
-.step-dot {
-    flex: 1;
-    height: 4px;
-    border-radius: 2px;
-    background: var(--line);
-    transition: background 0.3s;
-}
-.step-dot.active { background: var(--cobalt); }
-.step-dot.done { background: var(--forest); }
-.step-label {
-    display: flex;
-    justify-content: space-between;
-    font-size: var(--fs-label);
-    opacity: 0.5;
-    margin-bottom: var(--space-unit);
-}
-.step-label .active { opacity: 1; font-weight: 600; }
-
-/* Quick amounts */
-.quick-amounts {
-    display: flex;
-    gap: 0.5em;
-    flex-wrap: wrap;
-    margin-top: 0.5em;
-}
-.quick-amount {
-    padding: 0.4em 1.2em;
-    border: 1px solid var(--line);
-    cursor: pointer;
-    font-size: var(--fs-label);
-    transition: all 0.2s;
-    background: var(--panel);
-}
-.quick-amount:hover { border-color: var(--ink); background: var(--ink); color: var(--paper); }
-
-/* Asset pills */
-.asset-pills {
-    display: flex;
-    gap: 0.5em;
-    flex-wrap: wrap;
-}
-.asset-pill {
-    padding: 0.5em 1.2em;
-    border: 2px solid var(--line);
-    cursor: pointer;
-    font-weight: 600;
-    font-size: var(--fs-label);
-    transition: all 0.2s;
-    background: var(--panel);
-}
-.asset-pill:hover { border-color: var(--ink); }
-.asset-pill.active { background: var(--cobalt); border-color: var(--cobalt); color: var(--paper); }
-
-/* Source items for multi-source */
-.source-item {
-    display: flex;
-    align-items: center;
-    gap: 0.8em;
-    padding: 0.7em 1em;
-    background: var(--panel);
-    border: 2px solid var(--line);
-    cursor: pointer;
-    transition: all 0.2s;
-    margin-bottom: 0.5em;
-}
-.source-item:hover { border-color: var(--ink); }
-.source-item.selected { border-color: var(--cobalt); background: #f0f3ff; }
-.source-item .source-icon { font-size: 1.4em; }
-.source-item .source-info { flex: 1; }
-.source-item .source-name { font-weight: 600; }
-.source-item .source-detail { font-size: var(--fs-label); opacity: 0.5; }
-.source-item .source-balance { font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
-.source-item .source-check { color: var(--cobalt); font-size: 1.2em; }
-.source-item .source-amount {
-    display: flex;
-    gap: 0.5em;
-    align-items: center;
-}
-.source-item .source-amount input {
-    width: 100px;
-    padding: 0.4em 0.8em;
-    border: 2px solid var(--line);
-    font-size: var(--fs-body);
-}
-
-/* Message */
-.message {
-    padding: 0.8em 1em;
-    margin: var(--space-unit) 0;
-    font-size: var(--fs-label);
-    display: none;
-}
+.message { padding: 12px 16px; border-radius: var(--radius-sm); margin: 0 0 16px; font-size: 13px; display: none; }
 .message.show { display: block; }
-.message.info { background: #e3f2fd; border-left: 3px solid #0d47a1; color: #0d47a1; }
-.message.success { background: #e8f5e9; border-left: 3px solid #2e7d32; color: #2e7d32; }
-.message.error { background: #ffebee; border-left: 3px solid #c62828; color: #c62828; }
-.message.warning { background: #fff3e0; border-left: 3px solid #e65100; color: #e65100; }
+.message.info { background: rgba(0,240,255,0.1); border-left: 3px solid var(--primary); color: var(--primary); }
+.message.success { background: rgba(0,230,118,0.1); border-left: 3px solid var(--success); color: var(--success); }
+.message.error { background: rgba(255,82,82,0.1); border-left: 3px solid var(--danger); color: var(--danger); }
+.message.warning { background: rgba(255,193,7,0.1); border-left: 3px solid var(--warning); color: var(--warning); }
 
-/* Preview box */
-.preview-box {
-    background: var(--panel);
-    border: 2px solid var(--line);
-    padding: var(--space-unit);
-    margin: var(--space-unit) 0;
-}
-.preview-row {
-    display: flex;
-    justify-content: space-between;
-    padding: 0.5em 0;
-    border-bottom: 1px solid var(--line);
-}
-.preview-row:last-child { border-bottom: none; }
-.preview-row .label { opacity: 0.5; }
-.preview-row .value { font-weight: 600; }
-.preview-row .value.highlight {
-    color: var(--cobalt);
-    font-family: 'Space Grotesk', sans-serif;
-    font-size: var(--fs-h2);
-}
-.preview-row .value.success-text { color: var(--forest); }
-.preview-row .value.fee-text { color: var(--amber); }
+/* ---- Single vertical flow card ---- */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
+.section { margin-bottom: 4px; }
+.section-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 12px; }
+.section-title .n { width: 20px; height: 20px; border-radius: 50%; background: var(--gradient); color: #000; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 
-/* Spinner */
-.spinner {
-    display: inline-block;
-    width: 1.4em;
-    height: 1.4em;
-    border: 3px solid var(--line);
-    border-top-color: var(--ink);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+.swap-divider { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 20px 0; color: var(--text-dim); }
+.swap-divider::before, .swap-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.swap-divider .icon { font-size: 16px; }
+
+.field-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 4px; }
+
+/* Dropdown-first controls: institution / asset type / swap type / delivery method
+   all use plain selects now instead of button grids, to keep the layout calm. */
+.field-group { margin-bottom: 12px; }
+.field-group:last-child { margin-bottom: 0; }
+.field-group label { display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 4px; }
+.field-group input, .field-group select {
+    width: 100%; padding: 11px 14px; background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text); font-size: 14px; font-family: var(--font); transition: var(--transition);
+    appearance: none; -webkit-appearance: none;
 }
+.field-group select {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0l5 6 5-6z' fill='%238888a0'/></svg>");
+    background-repeat: no-repeat; background-position: right 14px center; padding-right: 34px; cursor: pointer;
+}
+.field-group input:focus, .field-group select:focus { outline: none; border-color: var(--primary); }
+.field-group input.invalid { border-color: var(--danger); }
+.field-group .help { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+.field-group input::placeholder { color: var(--text-dim); }
+.field-group select option { background: var(--bg); }
+
+.amount-field { position: relative; }
+.amount-field input { padding-right: 64px; font-size: 18px; font-weight: 600; }
+.amount-field .currency-suffix { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 12px; font-weight: 600; pointer-events: none; }
+
+.asset-fields { margin: 4px 0 12px; padding: 14px; background: rgba(255,255,255,0.02); border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.04); }
+
+.identity-field { margin: 4px 0 12px; padding: 14px; background: rgba(0,240,255,0.04); border: 1px dashed var(--primary); border-radius: var(--radius-sm); }
+.identity-field .hint { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+
+/* ---- Centered primary actions (the two buttons the user asked for) ---- */
+.cta-row { display: flex; justify-content: center; margin-top: 24px; }
+.btn { padding: 14px 40px; border: none; border-radius: 999px; font-size: 14px; font-weight: 700; font-family: var(--font); cursor: pointer; transition: var(--transition); }
+.btn-primary { background: var(--gradient); color: #000; }
+.btn-primary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,240,255,0.25); }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+.btn-success { background: var(--success); color: #000; }
+.btn-success:hover:not(:disabled) { transform: translateY(-2px); }
+.btn-success:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+.btn-secondary { background: rgba(255,255,255,0.06); color: var(--text); border: 1px solid var(--border); padding: 14px 32px; border-radius: 999px; font-size: 14px; font-weight: 600; font-family: var(--font); cursor: pointer; transition: var(--transition); }
+.btn-secondary:hover { background: var(--surface-hover); }
+.btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid rgba(255,82,82,0.3); padding: 6px 14px; border-radius: 999px; font-size: 11px; cursor: pointer; }
+.btn-danger-outline:hover { background: rgba(255,82,82,0.08); }
+/* "Small press words" — lightweight text-pill shortcuts, not full buttons */
+.quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 12px; }
+.quick-link {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--primary);
+    background: rgba(0,240,255,0.06); border: 1px solid rgba(0,240,255,0.15); padding: 5px 12px; border-radius: 999px;
+    cursor: pointer; transition: var(--transition); font-family: var(--font); user-select: none;
+}
+.quick-link:hover { background: rgba(0,240,255,0.12); border-color: var(--border-active); }
+.quick-link.muted { color: var(--text-muted); background: rgba(255,255,255,0.04); border-color: var(--border); }
+.quick-link.muted:hover { color: var(--text); }
+.quick-link.danger { color: var(--danger); background: rgba(255,82,82,0.06); border-color: rgba(255,82,82,0.15); }
+
+.source-row { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 10px; background: rgba(255,255,255,0.02); }
+.source-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.source-row-head .idx { font-size: 12px; color: var(--text-muted); font-weight: 600; }
+.multi-total { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 12px; }
+.multi-total .amt { color: var(--text); font-weight: 700; }
+
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(0,0,0,0.3); border-top-color: #000; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; vertical-align: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.flex { display: flex; }
-.flex-between { display: flex; justify-content: space-between; align-items: center; }
-.gap-8 { gap: 8px; }
-.gap-16 { gap: 16px; }
-.mt-8 { margin-top: 8px; }
-.mt-16 { margin-top: 16px; }
-.mb-16 { margin-bottom: 16px; }
-.text-center { text-align: center; }
-.text-muted { opacity: 0.5; }
-.w-full { width: 100%; }
-.flex-wrap { flex-wrap: wrap; }
-.items-center { align-items: center; }
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); backdrop-filter: blur(8px); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
+.modal-overlay.active { display: flex; }
+.modal { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 24px; }
+.modal-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.modal-header h2 { font-size: 20px; font-weight: 700; }
+.modal-close { background: none; border: none; color: var(--text-muted); font-size: 24px; cursor: pointer; transition: var(--transition); }
+.modal-close:hover { color: var(--text); }
+.preview-box { background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; margin: 12px 0; }
+.preview-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.04); gap: 12px; }
+.preview-row:last-child { border-bottom: none; }
+.preview-row .label { color: var(--text-muted); font-size: 13px; }
+.preview-row .value { font-weight: 600; font-size: 14px; text-align: right; }
+.preview-row .value.highlight { color: var(--primary); font-size: 20px; }
+.result-box { text-align: center; padding: 12px 0; }
+.result-box .icon { font-size: 48px; }
+.result-box .title { font-size: 18px; font-weight: 700; margin: 8px 0 4px; }
+.result-box .ref { font-size: 13px; color: var(--text-muted); }
+.result-box .amount-display { margin: 12px 0; padding: 12px; background: rgba(255,255,255,0.04); border-radius: var(--radius-sm); }
+.result-box .amount-display .amt { font-size: 28px; font-weight: 700; }
+.result-box .atm-code { margin: 12px 0; padding: 16px; background: rgba(0,240,255,0.08); border: 2px solid var(--primary); border-radius: var(--radius-sm); }
+.result-box .atm-code .code { font-size: 28px; font-weight: 700; font-family: monospace; letter-spacing: 4px; }
+.raw-json { text-align: left; font-size: 11px; background: rgba(0,0,0,0.3); border-radius: var(--radius-sm); padding: 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; color: var(--text-muted); margin-top: 12px; max-height: 200px; overflow-y: auto; }
+details.raw-json-wrap summary { cursor: pointer; font-size: 11px; color: var(--text-dim); margin-top: 8px; }
+.modal .cta-row { gap: 12px; }
 
-/* Identity card */
-.identity-card {
-    padding: var(--space-unit);
-    border: 2px solid var(--line);
-    margin-bottom: var(--space-unit);
-}
-.identity-card.pending { border-color: var(--amber); }
-.identity-card.completed { border-color: var(--forest); }
-.identity-card .identity-detail {
-    display: flex;
-    gap: 0.5em;
-    font-size: var(--fs-label);
-}
-
-@media (max-width: 768px) {
-    .grid-3, .grid-2 { grid-template-columns: 1fr; }
-    .swap-actions { grid-template-columns: 1fr; }
-    .action-grid { grid-template-columns: repeat(2, 1fr); }
-    .modal { margin: 0; max-height: 100vh; border-radius: 0; }
-}
-@media (max-width: 480px) {
-    .action-grid { grid-template-columns: 1fr 1fr; }
-    .user-area .id { display: none; }
-}
+@media (max-width: 480px) { .card { padding: 18px; } .btn, .btn-secondary { padding: 12px 24px; } }
 </style>
 </head>
 <body>
-
-<div class="topbar"><div class="topbar-inner">
-    <div class="logo"><div class="logo-mark clip">V</div><span class="logo-text">VOUCHMORPH</span></div>
-    <div class="user-area">
-        <span class="id"><?= htmlspecialchars($primaryIdentifier) ?></span>
-        <a href="logout.php" class="logout-btn">Log out</a>
+<div class="container">
+<div class="topbar">
+    <div class="logo">VOUCHMORPH</div>
+    <div class="topbar-right">
+        <span class="greeting">Hello, <span id="userName">User</span></span>
+        <span class="quick-link muted" onclick="openProfileModal()">👤 My Profile</span>
+        <a href="logout.php" class="logout-btn">Logout</a>
     </div>
-</div></div>
+</div>
 
-<div class="shell">
-<div class="home">
-    <!-- Balance Display - ONLY shown when requested -->
-    <div id="balanceDisplay" class="balance-display">
-        <div class="label" id="balanceLabel">Available Balance</div>
-        <div class="amount" id="balanceAmount"><?= $currencySymbol ?> 0.00</div>
-        <div class="source-info" id="balanceSource">—</div>
-    </div>
+<div id="mainMessage" class="message"></div>
 
-    <!-- TWO MAIN SWAP BUTTONS: Swap From → Swap To -->
-    <div class="swap-actions">
-        <div class="swap-btn swap-from" onclick="openModal('swap_from')">
-            <span class="icon">📤</span>
-            <div class="label">Swap From</div>
-            <div class="sub-label">Select source &amp; amount</div>
-        </div>
-        <div class="swap-btn swap-to" onclick="openModal('swap_to')">
-            <span class="icon">📥</span>
-            <div class="label">Swap To</div>
-            <div class="sub-label">Select destination</div>
-        </div>
-    </div>
+<div class="card">
+    <!-- ============================================================ -->
+    <!-- STEP 1: FROM (source) -->
+    <!-- ============================================================ -->
+    <div class="section" id="fromSection">
+        <div class="section-title"><span class="n">1</span> From</div>
 
-    <!-- Quick Actions -->
-    <div class="action-grid">
-        <div class="action-btn" onclick="openModal('identity_swap')">
-            <span class="icon">🔑</span>
-            <div class="label">Identity Swap</div>
+        <div class="field-group">
+            <label>Institution</label>
+            <select id="fromInstSelect" onchange="selectFromInst(this.value)">
+                <option value="">Select institution</option>
+            </select>
         </div>
-        <div class="action-btn" onclick="openModal('multi_source')">
-            <span class="icon">🔗</span>
-            <div class="label">Multi-Source</div>
+
+        <div class="field-group" id="fromAssetGroup" style="display:none;">
+            <label>Asset Type</label>
+            <select id="fromAssetSelect" onchange="selectFromAsset(this.value)"></select>
         </div>
-        <div class="action-btn" onclick="openModal('hooked_sources')">
-            <span class="icon">🔌</span>
-            <div class="label">My Sources</div>
-        </div>
-        <div class="action-btn" onclick="openModal('identities')">
-            <span class="icon">🆔</span>
-            <div class="label">Identities</div>
+
+        <div class="asset-fields" id="fromFields"></div>
+
+        <div class="field-group amount-field">
+            <label>Amount</label>
+            <input type="number" id="fromAmount" placeholder="0.00" step="0.01" min="0.01">
+            <span class="currency-suffix" id="fromCurrencyLabel">BWP</span>
+            <div class="help" id="fromLimitsHelp"></div>
         </div>
     </div>
 
-    <!-- Stats -->
-    <div class="grid-3 mb-16">
-        <div class="card">
-            <div class="card-title">Connected Sources</div>
-            <div class="card-value" style="font-size:var(--fs-h2);"><?= count($hookedSources) ?></div>
-        </div>
-        <div class="card">
-            <div class="card-title">Recent Swaps</div>
-            <div class="card-value" style="font-size:var(--fs-h2);"><?= count($recentSwaps) ?></div>
-        </div>
-        <div class="card">
-            <div class="card-title">Identifiers</div>
-            <div class="card-value" style="font-size:var(--fs-h2);"><?= count($validIdentifiers) ?></div>
-        </div>
-    </div>
+    <div class="swap-divider"><span class="icon">⇅</span></div>
 
-    <!-- Identity Swaps Section -->
-    <?php if (!empty($identitySwaps)): ?>
-    <div class="card mb-16">
-        <div class="flex-between mb-16">
-            <div class="card-title" style="margin-bottom:0;">Identity Swaps</div>
-            <span class="text-muted" style="font-size:0.7rem;">Pending &amp; Completed</span>
+    <!-- ============================================================ -->
+    <!-- STEP 2: TO (destination) -->
+    <!-- ============================================================ -->
+    <div class="section" id="toSection">
+        <div class="section-title"><span class="n">2</span> To</div>
+
+        <div class="field-group">
+            <label>Swap Type</label>
+            <select id="swapTypeSelect" onchange="setSwapType(this.value)">
+                <option value="DEPOSIT">Deposit</option>
+                <option value="CASHOUT">Cashout</option>
+                <option value="IDENTITY">Send to Identity</option>
+                <option value="MULTI_SOURCE">Multi-Source</option>
+            </select>
         </div>
-        <?php foreach (array_slice($identitySwaps, 0, 5) as $iswap): ?>
-            <div class="identity-card <?= strtolower($iswap['status'] ?? 'pending') ?>">
-                <div class="flex-between">
-                    <div>
-                        <div><strong><?= htmlspecialchars($iswap['identity_type'] ?? '') ?></strong>: <?= htmlspecialchars($iswap['identity_value'] ?? '') ?></div>
-                        <div class="identity-detail">
-                            <span><?= $currencySymbol ?> <?= number_format($iswap['amount'] ?? 0, 2) ?></span>
-                            <span>·</span>
-                            <span><?= htmlspecialchars($iswap['source_institution'] ?? '') ?></span>
-                            <span>·</span>
-                            <span><?= date('M d, H:i', strtotime($iswap['created_at'] ?? 'now')) ?></span>
-                        </div>
-                    </div>
-                    <div>
-                        <span class="badge <?= ($iswap['status'] ?? 'pending') === 'completed' ? 'badge-success' : (($iswap['status'] ?? 'pending') === 'pending' ? 'badge-pending' : 'badge-danger') ?>">
-                            <?= htmlspecialchars($iswap['status'] ?? 'pending') ?>
-                        </span>
-                        <?php if (($iswap['status'] ?? '') === 'pending' && ($iswap['identity_value'] ?? '') === $primaryIdentifier): ?>
-                            <button class="btn btn-sm btn-primary" onclick="claimIdentity('<?= $iswap['swap_reference'] ?>')">Claim</button>
-                        <?php endif; ?>
-                    </div>
-                </div>
+
+        <div class="quick-actions">
+            <span class="quick-link" onclick="quickSetSwapType('IDENTITY')">🔑 Swap to Identity</span>
+            <span class="quick-link" onclick="quickSetSwapType('MULTI_SOURCE')">🧩 Multi-Source</span>
+        </div>
+
+        <!-- DEPOSIT / MULTI_SOURCE destination -->
+        <div id="toInstSection">
+            <div class="field-group">
+                <label>Institution</label>
+                <select id="toInstSelect" onchange="selectToInst(this.value)">
+                    <option value="">Select institution</option>
+                </select>
             </div>
-        <?php endforeach; ?>
-    </div>
-    <?php endif; ?>
-
-    <!-- Recent Activity (Swap Ledger) -->
-    <div class="card mb-16">
-        <div class="flex-between mb-16">
-            <div class="card-title" style="margin-bottom:0;">Recent Swaps</div>
-            <span class="text-muted" style="font-size:0.7rem;">Last 10</span>
         </div>
-        <?php if (empty($recentSwaps)): ?>
-            <div class="text-center text-muted" style="padding:1.5em 0;">No swaps yet.</div>
-        <?php else: ?>
-            <?php foreach ($recentSwaps as $swap): ?>
-                <div class="activity-item">
-                    <div>
-                        <div class="route"><?= htmlspecialchars($swap['from_institution'] ?? '?') ?> → <?= htmlspecialchars($swap['to_institution'] ?? '?') ?></div>
-                        <div style="font-size:0.7rem;opacity:0.4;"><?= date('M d, H:i', strtotime($swap['created_at'])) ?></div>
-                    </div>
-                    <div style="text-align:right;">
-                        <div class="amount"><?= $currencySymbol ?> <?= number_format($swap['amount'] ?? 0, 2) ?></div>
-                        <span class="status <?= strtolower($swap['status'] ?? 'pending') ?>"><?= htmlspecialchars($swap['status'] ?? 'pending') ?></span>
-                    </div>
-                </div>
-            <?php endforeach; ?>
-        <?php endif; ?>
+        <div class="field-group" id="toAssetSection" style="display:none;">
+            <label>Asset Type</label>
+            <select id="toAssetSelect" onchange="selectToAsset(this.value)"></select>
+        </div>
+        <div class="asset-fields" id="toFields" style="display:none;"></div>
+
+        <!-- CASHOUT -->
+        <div id="cashoutFields" style="display:none;">
+            <div class="field-group">
+                <label>Delivery Method</label>
+                <select id="deliveryMethodSelect" onchange="setDeliveryMethod(this.value)">
+                    <option value="ATM">🏧 ATM</option>
+                    <option value="AGENT">🧑‍💼 Agent</option>
+                </select>
+            </div>
+            <div class="field-group">
+                <label>Beneficiary Phone (optional)</label>
+                <input id="beneficiaryPhone" placeholder="+267XXXXXXXX" oninput="state.beneficiaryPhone=this.value; refreshUI();">
+                <div class="help">Cashout code will be sent by SMS if provided</div>
+            </div>
+        </div>
+
+        <!-- IDENTITY -->
+        <div class="identity-field" id="identityFields" style="display:none;">
+            <div class="field-group">
+                <label>Identity Type</label>
+                <select id="identityType" onchange="state.toIdentityType=this.value">
+                    <option value="national_id">National ID</option>
+                    <option value="phone">Phone Number</option>
+                    <option value="email">Email</option>
+                </select>
+            </div>
+            <div class="field-group">
+                <label>Identity Value</label>
+                <input id="identityValue" placeholder="Enter the identity value" oninput="state.toIdentityValue=this.value.trim(); refreshUI();">
+            </div>
+            <div class="field-group">
+                <label>SMS Notification (optional)</label>
+                <input id="identitySms" placeholder="Phone to send SMS notification" oninput="state.toIdentitySms=this.value">
+            </div>
+            <div class="hint">The recipient will be notified and can claim the funds within 24 hours</div>
+        </div>
+
+        <!-- MULTI_SOURCE -->
+        <div id="multiSourceFields" style="display:none;">
+            <label class="field-label">Sources (minimum 2)</label>
+            <div id="multiSourceList"></div>
+            <span class="quick-link" onclick="addMultiSourceRow()">➕ Add another source</span>
+            <div class="multi-total">Total requested: <span class="amt" id="multiTotal">BWP 0.00</span></div>
+            <div class="help" style="margin-top:6px;text-align:center;">Each source needs its own PIN — funds are only pulled once its balance and PIN are verified.</div>
+        </div>
     </div>
 
-    <!-- Identifiers -->
-    <div class="card">
-        <div class="flex-between mb-16">
-            <div class="card-title" style="margin-bottom:0;">Your Identifiers</div>
-            <button class="btn btn-secondary btn-sm" onclick="openModal('identities')">Manage</button>
-        </div>
-        <?php if (empty($validIdentifiers)): ?>
-            <div class="text-muted" style="padding:0.5em 0;">No identifiers added.</div>
-        <?php else: ?>
-            <?php foreach (array_slice($validIdentifiers, 0, 3) as $id): ?>
-                <div class="identifier-item">
-                    <span class="icon"><?= $id['icon'] ?></span>
-                    <div>
-                        <div class="value"><?= htmlspecialchars($id['value']) ?></div>
-                        <div class="type"><?= htmlspecialchars($id['type']) ?></div>
-                    </div>
-                    <?php if ($id['is_verified']): ?>
-                        <span class="badge badge-success">Verified</span>
-                    <?php endif; ?>
-                </div>
-            <?php endforeach; ?>
-            <?php if (count($validIdentifiers) > 3): ?>
-                <div class="text-muted" style="font-size:0.7rem;margin-top:0.5em;">+<?= count($validIdentifiers) - 3 ?> more</div>
-            <?php endif; ?>
-        <?php endif; ?>
+    <!-- The one centered primary action -->
+    <div class="cta-row">
+        <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()" disabled>Review Swap →</button>
     </div>
 </div>
 </div>
 
-<!-- MODAL -->
-<div id="modal" class="modal-overlay" onclick="if(event.target===this)closeModal()">
+<div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
     <div class="modal" id="modalContent">
         <div class="modal-header">
-            <h2 id="modalTitle">Swap</h2>
+            <h2 id="modalTitle">Swap Preview</h2>
             <button class="modal-close" onclick="closeModal()">✕</button>
         </div>
         <div id="modalBody"></div>
@@ -938,1583 +296,786 @@ select.form-control { appearance: auto; }
 </div>
 
 <script>
-// ============================================================================
-// DATA FROM PHP
-// ============================================================================
-const participants = <?= json_encode($participantOptions) ?>;
-const hookedSources = <?= $hookedSourcesJson ?>;
-const userIdentifiers = <?= $identifiersJson ?>;
-const supportedAssetTypes = <?= json_encode($supportedAssetTypes) ?>;
-const currencySymbol = '<?= $currencySymbol ?>';
-const currency = '<?= $currency ?>';
-const apiUrl = '/api/v1/swap/execute.php';
-const previewUrl = '/api/v1/swap/preview.php';
-const balanceUrl = '/api/v1/source/balance.php';
+// ============================================================
+// CONFIGURATION
+// dashboard.php should render these three values server-side.
+// execute.php/preview.php check X-API-Key / Authorization and
+// X-Country-Code headers — these are real, not invented. If your
+// environment doesn't require a key, leave VOUCHMORPH_API_KEY unset
+// and no header is sent.
+// ============================================================
+const CONFIG = {
+    API_KEY: window.VOUCHMORPH_API_KEY || null,
+    COUNTRY_CODE: window.VOUCHMORPH_COUNTRY || 'Botswana',
+    CURRENCY: window.VOUCHMORPH_CURRENCY || 'BWP',
+    PREVIEW_ENDPOINT: '/api/v1/swap/preview.php',
+    EXECUTE_ENDPOINT: '/api/v1/swap/execute.php',
+};
 
-const assetLabel = { ACCOUNT: 'Account', WALLET: 'Wallet' };
-const typeIcons = { ACCOUNT: '🏦', WALLET: '📱' };
-
-let currentMode = null;
-let currentStep = 0;
-let selSource = null;
-let selDestination = null;
-let selSourceAsset = null;
-let selDestAsset = null;
-let selectedMultiSources = [];
-let pendingPayload = null;
-let identitySwapRef = null;
-
-// ============================================================================
-// MODAL CONTROL
-// ============================================================================
-
-function openModal(mode) {
-    currentMode = mode;
-    currentStep = 0;
-    selSource = null;
-    selDestination = null;
-    selSourceAsset = null;
-    selDestAsset = null;
-    selectedMultiSources = [];
-    pendingPayload = null;
-    identitySwapRef = null;
-    
-    const titles = {
-        'swap_from': '📤 Swap From',
-        'swap_to': '📥 Swap To',
-        'identity_swap': '🔑 Identity Swap',
-        'multi_source': '🔗 Multi-Source Swap',
-        'hooked_sources': '🔌 My Connected Sources',
-        'identities': '🆔 Your Identities'
-    };
-    
-    document.getElementById('modalTitle').textContent = titles[mode] || 'Swap';
-    document.getElementById('modal').classList.add('active');
-    
-    switch(mode) {
-        case 'hooked_sources': renderHookedSources(); break;
-        case 'identities': renderIdentities(); break;
-        case 'identity_swap': renderIdentitySwap(); break;
-        case 'multi_source': renderMultiSource(); break;
-        case 'swap_from': renderSwapFrom(); break;
-        case 'swap_to': renderSwapTo(); break;
-        default: renderSwapFrom();
-    }
-}
-
-function closeModal() {
-    document.getElementById('modal').classList.remove('active');
-}
-
-// ============================================================================
-// SWAP FROM - SOURCE SELECTION
-// ============================================================================
-
-function renderSwapFrom() {
-    const body = document.getElementById('modalBody');
-    
-    let html = `
-        <div class="step-indicator">
-            <div class="step-dot active"></div>
-            <div class="step-dot"></div>
-            <div class="step-dot"></div>
-        </div>
-        <div class="step-label">
-            <span class="active">1. Select Source</span>
-            <span>2. Amount</span>
-            <span>3. Confirm</span>
-        </div>
-        <p class="text-muted" style="margin-bottom:1em;">Choose where the money comes from.</p>
-    `;
-    
-    // Source selection
-    html += `<div class="form-group"><label>Source</label>`;
-    html += `<select class="form-control" id="sourceSelect" onchange="updateSourceDetails(this.value)">`;
-    html += `<option value="">Select source...</option>`;
-    
-    if (hookedSources.length > 0) {
-        html += `<optgroup label="🔌 Your Connected Sources">`;
-        hookedSources.forEach(s => {
-            const label = `${s.institution} - ${s.identifier}`;
-            html += `<option value="hooked_${s.source_reference}">${label}</option>`;
-        });
-        html += `</optgroup>`;
-    }
-    
-    html += `<optgroup label="🏦 Institutions">`;
-    Object.entries(participants).forEach(([code, p]) => {
-        html += `<option value="inst_${code}">${p.name} (${code})</option>`;
-    });
-    html += `</optgroup>`;
-    html += `</select></div>`;
-    
-    // Asset type
-    html += `
-        <div class="form-group" id="sourceAssetGroup" style="display:none;">
-            <label>Asset Type</label>
-            <div class="asset-pills" id="sourceAssetPills">
-    `;
-    supportedAssetTypes.forEach(a => {
-        html += `<span class="asset-pill" onclick="selectSourceAsset('${a}')">${assetLabel[a] || a}</span>`;
-    });
-    html += `
-            </div>
-        </div>
-    `;
-    
-    // Source identifier (for manual entry)
-    html += `
-        <div class="form-group" id="sourceIdGroup" style="display:none;">
-            <label>Source Identifier</label>
-            <input type="text" class="form-control" id="sourceIdentifier" placeholder="Phone, email, national ID, or account number">
-        </div>
-        <div id="sourceBalanceGroup" style="display:none;" class="mt-8">
-            <button class="btn btn-secondary btn-sm" onclick="checkSourceBalance()">💰 Check Balance</button>
-            <span id="sourceBalanceResult" style="margin-left:0.5em;font-weight:600;"></span>
-        </div>
-        <div id="step0Message" class="message"></div>
-        <button class="btn btn-primary btn-block" onclick="goToSwapFromAmount()" disabled id="step0Next">
-            Next →
-        </button>
-    `;
-    
-    body.innerHTML = html;
-    
-    setTimeout(() => {
-        document.getElementById('sourceSelect')?.addEventListener('change', checkSwapFromStep0);
-        checkSwapFromStep0();
-    }, 100);
-}
-
-function updateSourceDetails(value) {
-    const assetGroup = document.getElementById('sourceAssetGroup');
-    const idGroup = document.getElementById('sourceIdGroup');
-    const balanceGroup = document.getElementById('sourceBalanceGroup');
-    const result = document.getElementById('sourceBalanceResult');
-    const pills = document.querySelectorAll('#sourceAssetPills .asset-pill');
-    
-    selSourceAsset = null;
-    pills.forEach(el => el.classList.remove('active'));
-    if (result) result.textContent = '';
-    
-    if (value.startsWith('hooked_')) {
-        const ref = value.replace('hooked_', '');
-        const source = hookedSources.find(s => s.source_reference === ref);
-        if (source) {
-            assetGroup.style.display = 'block';
-            idGroup.style.display = 'none';
-            balanceGroup.style.display = 'block';
-            selSourceAsset = source.asset_type || 'ACCOUNT';
-            pills.forEach(el => {
-                const label = el.textContent.trim();
-                const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-                if (match && match[0] === selSourceAsset) el.classList.add('active');
-            });
-        }
-    } else if (value.startsWith('inst_')) {
-        const code = value.replace('inst_', '');
-        const p = participants[code];
-        if (p) {
-            assetGroup.style.display = 'block';
-            idGroup.style.display = 'block';
-            balanceGroup.style.display = 'block';
-            selSourceAsset = (p.asset_types && p.asset_types.length > 0) ? p.asset_types[0] : 'ACCOUNT';
-            pills.forEach(el => {
-                const label = el.textContent.trim();
-                const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-                if (match && match[0] === selSourceAsset) el.classList.add('active');
-            });
-        }
-    } else {
-        assetGroup.style.display = 'none';
-        idGroup.style.display = 'none';
-        balanceGroup.style.display = 'none';
-    }
-    checkSwapFromStep0();
-}
-
-function selectSourceAsset(asset) {
-    selSourceAsset = asset;
-    document.querySelectorAll('#sourceAssetPills .asset-pill').forEach(el => {
-        const label = el.textContent.trim();
-        const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-        el.classList.toggle('active', match && match[0] === asset);
-    });
-    checkSwapFromStep0();
-}
-
-function checkSwapFromStep0() {
-    const source = document.getElementById('sourceSelect')?.value;
-    const btn = document.getElementById('step0Next');
-    const msg = document.getElementById('step0Message');
-    
-    if (!source) { if (btn) btn.disabled = true; return; }
-    
-    if (source.startsWith('hooked_')) {
-        if (btn) btn.disabled = false;
-        return;
-    }
-    
-    if (source.startsWith('inst_')) {
-        const hasAsset = selSourceAsset !== null;
-        const identifier = document.getElementById('sourceIdentifier')?.value.trim();
-        if (hasAsset && identifier) {
-            if (btn) btn.disabled = false;
-            if (msg) { msg.className = 'message'; msg.textContent = ''; }
-        } else {
-            if (btn) btn.disabled = true;
-            if (msg) {
-                msg.className = 'message show warning';
-                msg.textContent = !hasAsset ? 'Please select an asset type.' : 'Please enter your source identifier.';
-            }
-        }
-        return;
-    }
-    if (btn) btn.disabled = true;
-}
-
-function checkSourceBalance() {
-    const source = document.getElementById('sourceSelect')?.value;
-    const result = document.getElementById('sourceBalanceResult');
-    if (!result) return;
-    
-    result.textContent = '⏳ Checking...';
-    result.style.color = 'var(--ink)';
-    
-    let payload = {};
-    
-    if (source.startsWith('hooked_')) {
-        const ref = source.replace('hooked_', '');
-        const hooked = hookedSources.find(s => s.source_reference === ref);
-        if (hooked) {
-            payload = {
-                source_reference: ref,
-                institution: hooked.institution,
-                identifier: hooked.identifier,
-                asset_type: selSourceAsset || hooked.asset_type || 'ACCOUNT'
-            };
-        }
-    } else if (source.startsWith('inst_')) {
-        const code = source.replace('inst_', '');
-        const identifier = document.getElementById('sourceIdentifier')?.value.trim();
-        if (!identifier) {
-            result.textContent = '⚠️ Enter identifier first';
-            result.style.color = 'var(--red)';
-            return;
-        }
-        payload = {
-            institution: code,
-            identifier: identifier,
-            asset_type: selSourceAsset || 'ACCOUNT'
-        };
-    } else {
-        result.textContent = '⚠️ Select a source first';
-        result.style.color = 'var(--red)';
-        return;
-    }
-    
-    fetch(balanceUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    })
-    .then(res => res.json())
-    .then(data => {
-        if (data.success && data.balance !== undefined) {
-            result.textContent = `${currencySymbol} ${Number(data.balance).toFixed(2)}`;
-            result.style.color = 'var(--forest)';
-        } else {
-            result.textContent = `⚠️ ${data.message || 'Could not fetch balance'}`;
-            result.style.color = 'var(--red)';
-        }
-    })
-    .catch(err => {
-        result.textContent = '⚠️ Error checking balance';
-        result.style.color = 'var(--red)';
+if (window.VOUCHMORPH_USER_NAME) {
+    document.addEventListener('DOMContentLoaded', () => {
+        document.getElementById('userName').textContent = window.VOUCHMORPH_USER_NAME;
     });
 }
 
-function goToSwapFromAmount() {
-    const source = document.getElementById('sourceSelect')?.value;
-    if (!source) return;
-    
-    let sourceData = {};
-    
-    if (source.startsWith('hooked_')) {
-        const ref = source.replace('hooked_', '');
-        const hooked = hookedSources.find(s => s.source_reference === ref);
-        if (hooked) {
-            sourceData = {
-                type: 'hooked',
-                source_reference: ref,
-                institution: hooked.institution,
-                identifier: hooked.identifier,
-                asset_type: selSourceAsset || hooked.asset_type || 'ACCOUNT',
-                access_token: hooked.access_token
-            };
-        }
-    } else if (source.startsWith('inst_')) {
-        const code = source.replace('inst_', '');
-        const identifier = document.getElementById('sourceIdentifier')?.value.trim();
-        if (!identifier) return;
-        sourceData = {
-            type: 'manual',
-            institution: code,
-            identifier: identifier,
-            asset_type: selSourceAsset || 'ACCOUNT'
-        };
-    }
-    
-    if (!sourceData.institution) return;
-    selSource = sourceData;
-    currentStep = 1;
-    renderSwapFromAmount();
-}
+// ============================================================
+// DATA — copied verbatim from participants.yaml / assets.yaml
+// (Botswana country config). Mirror any backend change here, or
+// wire this dashboard to fetch those YAML files as JSON instead.
+// ============================================================
+const PARTICIPANTS = {
+    ZURUBANK:    { name: 'Zuru Bank', type: 'BANK', asset_types: ['ACCOUNT', 'VOUCHER'], limits: { min_amount: 10, max_amount: 500000, currency: 'BWP' } },
+    SACCUSSALIS: { name: 'Saccussalis', type: 'BANK', asset_types: ['ACCOUNT', 'VOUCHER', 'BANK-WALLET'], limits: { min_amount: 10, max_amount: 500000, currency: 'BWP' } },
+    CAZACOM:     { name: 'CazaCom', type: 'MNO', asset_types: ['MNO-WALLET', 'VOUCHER'], limits: { min_amount: 1, max_amount: 100000, currency: 'BWP' } },
+    VOUCHMORPH:  { name: 'VouchMorph', type: 'ORCHESTRATOR', asset_types: ['CARD', 'VOUCHER'], limits: { min_amount: 1, max_amount: 1000000, currency: 'BWP' } },
+};
 
-function renderSwapFromAmount() {
-    const body = document.getElementById('modalBody');
-    
-    let html = `
-        <div class="step-indicator">
-            <div class="step-dot done"></div>
-            <div class="step-dot active"></div>
-            <div class="step-dot"></div>
-        </div>
-        <div class="step-label">
-            <span>1. Select Source</span>
-            <span class="active">2. Amount</span>
-            <span>3. Confirm</span>
-        </div>
-        <div class="flex-between text-muted" style="font-size:0.8rem;margin-bottom:1em;">
-            <span>${selSource.institution}</span>
-            <span>${selSource.identifier}</span>
-            <span>${assetLabel[selSource.asset_type] || selSource.asset_type}</span>
-        </div>
-        <div class="form-group">
-            <label>Amount to Send (${currencySymbol})</label>
-            <input type="number" class="form-control" id="amountInput" placeholder="0.00" step="0.01" min="0.01">
-            <div class="quick-amounts">
-                ${[50, 100, 200, 500, 1000].map(a => 
-                    `<span class="quick-amount" onclick="document.getElementById('amountInput').value=${a}">${a}</span>`
-                ).join('')}
-            </div>
-        </div>
-        <div class="form-group">
-            <label>Your PIN</label>
-            <input type="password" class="form-control" id="pinInput" placeholder="Enter your PIN" maxlength="6">
-        </div>
-        <div id="step1Message" class="message"></div>
-        <div class="flex gap-16">
-            <button class="btn btn-secondary" onclick="currentStep=0;renderSwapFrom()">← Back</button>
-            <button class="btn btn-primary" onclick="goToSwapFromConfirm()">Preview →</button>
-        </div>
-    `;
-    
-    body.innerHTML = html;
-}
+const ASSETS = {
+    ACCOUNT: {
+        icon: '🏦', label: 'Bank Account',
+        fields: [
+            { name: 'account_number', label: 'Account Number', type: 'text', required: true, pattern: '^[0-9]{8,16}$', placeholder: 'Enter account number', help_text: '8-16 digit account number' },
+        ],
+    },
+    ATM: {
+        icon: '🏧', label: 'ATM Cashout',
+        fields: [
+            { name: 'atm_code', label: 'ATM Code', type: 'text', required: true, pattern: '^[0-9]{6}$', placeholder: 'Enter ATM code', help_text: '6-digit ATM code' },
+            { name: 'atm_pin', label: 'ATM PIN', type: 'password', required: true, vault_field: 'pin', min_length: 4, max_length: 6, placeholder: 'Enter ATM PIN', help_text: '4-6 digit ATM PIN' },
+        ],
+    },
+    VOUCHER: {
+        icon: '🎫', label: 'ATM Cashout Voucher',
+        fields: [
+            { name: 'voucher_number', label: 'Voucher Number', type: 'text', required: true, pattern: '^[A-Z0-9]{8,16}$', placeholder: 'Enter voucher number', help_text: '8-16 character voucher number' },
+            { name: 'voucher_pin', label: 'Voucher PIN', type: 'password', required: true, vault_field: 'pin', min_length: 4, max_length: 6, placeholder: 'Enter voucher PIN', help_text: '4-6 digit voucher PIN' },
+            { name: 'amount', label: 'Voucher Amount', type: 'number', required: true, min: 1, placeholder: '0.00', help_text: 'Amount on the voucher' },
+            { name: 'phone', label: 'Phone Number', type: 'tel', required: false, pattern: '^\\+?[0-9]{10,15}$', placeholder: '+267XXXXXXXX', help_text: 'Phone number associated with the voucher' },
+        ],
+    },
+    'MNO-WALLET': {
+        icon: '📱', label: 'Mobile Wallet',
+        fields: [
+            { name: 'phone_number', label: 'Phone Number', type: 'tel', required: true, pattern: '^\\+?[0-9]{10,15}$', placeholder: '+267XXXXXXXX', help_text: 'Phone number (country code optional)' },
+            { name: 'wallet_pin', label: 'Wallet PIN', type: 'password', required: true, vault_field: 'pin', min_length: 4, max_length: 6, placeholder: 'Enter wallet PIN', help_text: '4-6 digit wallet PIN' },
+        ],
+    },
+    'BANK-WALLET': {
+        icon: '👛', label: 'Bank Wallet',
+        fields: [
+            { name: 'wallet_account', label: 'Wallet Account', type: 'text', required: true, placeholder: 'Enter wallet account', help_text: 'Wallet account identifier' },
+            { name: 'wallet_pin', label: 'Wallet PIN', type: 'password', required: true, vault_field: 'pin', min_length: 4, max_length: 6, placeholder: 'Enter wallet PIN', help_text: '4-6 digit wallet PIN' },
+        ],
+    },
+    CARD: {
+        icon: '💳', label: 'Payment Card',
+        fields: [
+            { name: 'card_number', label: 'Card Number', type: 'text', required: true, pattern: '^[0-9]{16}$', placeholder: '1234-5678-9012-3456', help_text: '16-digit card number' },
+            { name: 'card_pin', label: 'Card PIN', type: 'password', required: true, vault_field: 'pin', min_length: 4, max_length: 6, placeholder: 'Enter card PIN', help_text: '4-6 digit card PIN' },
+            { name: 'cvv', label: 'CVV', type: 'password', required: true, min_length: 3, max_length: 4, placeholder: '123', help_text: '3-4 digit CVV' },
+            { name: 'expiry_month', label: 'Expiry Month', type: 'number', required: true, min: 1, max: 12, placeholder: 'MM', help_text: 'Expiry month (1-12)' },
+            { name: 'expiry_year', label: 'Expiry Year', type: 'number', required: true, min: 2024, max: 2034, placeholder: 'YYYY', help_text: 'Expiry year' },
+        ],
+    },
+    'POSTAL-ORDER': {
+        icon: '✉️', label: 'Postal Order',
+        fields: [
+            { name: 'order_number', label: 'Order Number', type: 'text', required: true, pattern: '^[A-Z0-9]{10,20}$', placeholder: 'Enter order number', help_text: '10-20 character order number' },
+            { name: 'order_pin', label: 'Order PIN', type: 'password', required: true, vault_field: 'pin', min_length: 4, max_length: 8, placeholder: 'Enter order PIN', help_text: '4-8 digit order PIN' },
+            { name: 'postal_code', label: 'Postal Code', type: 'text', required: false, placeholder: 'Enter postal code', help_text: 'Postal code for the order' },
+        ],
+    },
+    CHEQUE: {
+        icon: '📝', label: 'Cheque',
+        fields: [
+            { name: 'cheque_number', label: 'Cheque Number', type: 'text', required: true, pattern: '^[0-9]{6,10}$', placeholder: 'Enter cheque number', help_text: '6-10 digit cheque number' },
+            { name: 'bank_code', label: 'Bank Code', type: 'text', required: true, pattern: '^[A-Z0-9]{4,8}$', placeholder: 'Enter bank code', help_text: '4-8 character bank code' },
+            { name: 'branch_code', label: 'Branch Code', type: 'text', required: false, pattern: '^[A-Z0-9]{4,6}$', placeholder: 'Enter branch code', help_text: 'Branch code (optional)' },
+        ],
+    },
+    CRYPTO: {
+        icon: '₿', label: 'Cryptocurrency',
+        fields: [
+            { name: 'wallet_address', label: 'Wallet Address', type: 'text', required: true, pattern: '^[a-zA-Z0-9]{26,42}$', placeholder: 'Enter wallet address', help_text: '26-42 character wallet address' },
+            { name: 'network', label: 'Network', type: 'select', required: true, options: ['Bitcoin', 'Ethereum', 'Solana', 'USDC', 'USDT'], placeholder: 'Select network', help_text: 'Cryptocurrency network' },
+        ],
+    },
+};
 
-function goToSwapFromConfirm() {
-    const amount = parseFloat(document.getElementById('amountInput')?.value) || 0;
-    const pin = document.getElementById('pinInput')?.value || '';
-    const msg = document.getElementById('step1Message');
-    
-    if (amount <= 0) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter a valid amount.'; }
-        return;
-    }
-    if (!pin || pin.length < 4) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter your PIN.'; }
-        return;
-    }
-    if (msg) { msg.className = 'message'; msg.textContent = ''; }
-    
-    // Build payload for SwapService
-    pendingPayload = {
-        swap_type: 'STANDARD',
-        from_institution: selSource.institution,
-        source_institution: selSource.institution,
-        source_identifier: selSource.identifier,
-        asset_type: selSource.asset_type || 'ACCOUNT',
-        amount: amount,
-        currency: currency,
-        pin: pin,
-        wallet_pin: pin,
-        reference: 'SWAP_' + Date.now(),
-        idempotency_key: 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2,8)
-    };
-    
-    if (selSource.type === 'hooked') {
-        pendingPayload.source_reference = selSource.source_reference;
-        pendingPayload._is_hooked = true;
-        pendingPayload.access_token = selSource.access_token;
-    }
-    
-    currentStep = 2;
-    renderSwapFromConfirm();
-}
+// ============================================================
+// STATE
+// ============================================================
+let state = {
+    fromInst: null, fromAsset: null, fromFields: {}, fromAmount: 0,
+    swapType: 'DEPOSIT',
+    toInst: null, toAsset: null, toFields: {},
+    deliveryMethod: 'ATM', beneficiaryPhone: '',
+    toIdentityType: 'national_id', toIdentityValue: '', toIdentitySms: '',
+    multiSources: [],
+    lastPreview: null,
+    swapPayload: null,
+};
 
-function renderSwapFromConfirm() {
-    const body = document.getElementById('modalBody');
-    const amount = pendingPayload?.amount || 0;
-    const from = pendingPayload?.from_institution || '?';
-    
-    let html = `
-        <div class="step-indicator">
-            <div class="step-dot done"></div>
-            <div class="step-dot done"></div>
-            <div class="step-dot active"></div>
-        </div>
-        <div class="step-label">
-            <span>1. Select Source</span>
-            <span>2. Amount</span>
-            <span class="active">3. Confirm</span>
-        </div>
-        <div id="previewContainer">
-            <div class="preview-box">
-                <div class="preview-row"><span class="label">From</span><span class="value">${from}</span></div>
-                <div class="preview-row"><span class="label">Source</span><span class="value">${selSource?.identifier || '—'}</span></div>
-                <div class="preview-row"><span class="label">Asset</span><span class="value">${assetLabel[selSource?.asset_type] || selSource?.asset_type || '—'}</span></div>
-                <div class="preview-row"><span class="label">Amount</span><span class="value">${currencySymbol} ${amount.toFixed(2)}</span></div>
-                <div class="preview-row" style="border-bottom:none;padding-top:0.8em;">
-                    <span class="label">Total</span>
-                    <span class="value highlight">${currencySymbol} ${amount.toFixed(2)}</span>
-                </div>
-            </div>
-            <div id="previewStatus" class="text-center text-muted" style="padding:0.5em 0;">
-                <span class="spinner"></span> Calculating fees...
-            </div>
-        </div>
-        <div class="flex gap-16">
-            <button class="btn btn-secondary" onclick="currentStep=1;renderSwapFromAmount()">← Back</button>
-            <button class="btn btn-success" id="confirmBtn" onclick="executeSwap()" disabled>Confirm & Send</button>
-        </div>
-    `;
-    
-    body.innerHTML = html;
-    
-    // Get fee preview
-    fetch(previewUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(pendingPayload)
-    })
-    .then(res => res.json())
-    .then(data => {
-        const status = document.getElementById('previewStatus');
-        const confirmBtn = document.getElementById('confirmBtn');
-        if (data.success || data.preview) {
-            const p = data.preview || data;
-            const fee = p.total_fee || p.fee || 0;
-            const net = p.net_amount || p.amount || amount;
-            status.innerHTML = `✅ Fee: ${currencySymbol} ${fee.toFixed(2)} | Net: ${currencySymbol} ${net.toFixed(2)}`;
-            if (confirmBtn) confirmBtn.disabled = false;
-        } else {
-            status.innerHTML = `⚠️ ${data.message || 'Fee calculation failed. Proceed anyway.'}`;
-            if (confirmBtn) confirmBtn.disabled = false;
-        }
-    })
-    .catch(() => {
-        const status = document.getElementById('previewStatus');
-        const confirmBtn = document.getElementById('confirmBtn');
-        status.innerHTML = '⚠️ Could not calculate fees. Proceed anyway.';
-        if (confirmBtn) confirmBtn.disabled = false;
+// Identities the user adds via "My Profile", for quickly filling in the
+// "Swap to Identity" flow. NOTE: there's no identities endpoint in the
+// backend files you've shared (no user_identities HTTP wrapper), so this
+// list only lives in this browser tab for this session — nothing is saved
+// to your VouchMorph account yet. Point me at the real add/list endpoints
+// and this becomes a real "saved identities" feature.
+let savedIdentities = [];
+
+// ============================================================
+// INIT
+// ============================================================
+document.addEventListener('DOMContentLoaded', function() {
+    const fromSelect = document.getElementById('fromInstSelect');
+    const toSelect = document.getElementById('toInstSelect');
+    Object.keys(PARTICIPANTS).forEach(code => {
+        fromSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${PARTICIPANTS[code].name}</option>`);
+        toSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${PARTICIPANTS[code].name}</option>`);
     });
-}
-
-// ============================================================================
-// SWAP TO - DESTINATION SELECTION
-// ============================================================================
-
-function renderSwapTo() {
-    const body = document.getElementById('modalBody');
-    
-    let html = `
-        <div class="step-indicator">
-            <div class="step-dot active"></div>
-            <div class="step-dot"></div>
-            <div class="step-dot"></div>
-        </div>
-        <div class="step-label">
-            <span class="active">1. Select Destination</span>
-            <span>2. Amount</span>
-            <span>3. Confirm</span>
-        </div>
-        <p class="text-muted" style="margin-bottom:1em;">Choose where the money goes.</p>
-    `;
-    
-    // Destination selection
-    html += `<div class="form-group"><label>Destination</label>`;
-    html += `<select class="form-control" id="destSelect" onchange="updateDestDetails(this.value)">`;
-    html += `<option value="">Select destination...</option>`;
-    
-    if (userIdentifiers.length > 0) {
-        html += `<optgroup label="👤 Your Identifiers">`;
-        userIdentifiers.forEach(id => {
-            html += `<option value="id_${id.value}">${id.value} (${id.type})</option>`;
-        });
-        html += `</optgroup>`;
-    }
-    
-    html += `<optgroup label="🏦 Institutions">`;
-    Object.entries(participants).forEach(([code, p]) => {
-        html += `<option value="inst_${code}">${p.name} (${code})</option>`;
+    document.getElementById('fromAmount').addEventListener('input', function() {
+        state.fromAmount = parseFloat(this.value) || 0;
+        refreshUI();
     });
-    html += `</optgroup>`;
-    html += `</select></div>`;
-    
-    // Destination asset type
-    html += `
-        <div class="form-group" id="destAssetGroup" style="display:none;">
-            <label>Destination Asset Type</label>
-            <div class="asset-pills" id="destAssetPills">
-    `;
-    supportedAssetTypes.forEach(a => {
-        html += `<span class="asset-pill" onclick="selectDestAsset('${a}')">${assetLabel[a] || a}</span>`;
-    });
-    html += `
-            </div>
-        </div>
-    `;
-    
-    // Destination identifier
-    html += `
-        <div class="form-group" id="destIdGroup" style="display:none;">
-            <label>Destination Identifier</label>
-            <input type="text" class="form-control" id="destIdentifier" placeholder="Phone, email, national ID, or account number">
-        </div>
-        <div id="destBalanceGroup" style="display:none;" class="mt-8">
-            <button class="btn btn-secondary btn-sm" onclick="checkDestBalance()">💰 Check Balance</button>
-            <span id="destBalanceResult" style="margin-left:0.5em;font-weight:600;"></span>
-        </div>
-        <div id="step0Message" class="message"></div>
-        <button class="btn btn-primary btn-block" onclick="goToSwapToAmount()" disabled id="step0Next">
-            Next →
-        </button>
-    `;
-    
-    body.innerHTML = html;
-    
-    setTimeout(() => {
-        document.getElementById('destSelect')?.addEventListener('change', checkSwapToStep0);
-        checkSwapToStep0();
-    }, 100);
+    refreshUI();
+});
+
+// ============================================================
+// API HELPERS
+// ============================================================
+function buildHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    if (CONFIG.COUNTRY_CODE) headers['X-Country-Code'] = CONFIG.COUNTRY_CODE;
+    if (CONFIG.API_KEY) headers['X-API-Key'] = CONFIG.API_KEY;
+    return headers;
 }
-
-function updateDestDetails(value) {
-    const assetGroup = document.getElementById('destAssetGroup');
-    const idGroup = document.getElementById('destIdGroup');
-    const balanceGroup = document.getElementById('destBalanceGroup');
-    const result = document.getElementById('destBalanceResult');
-    const pills = document.querySelectorAll('#destAssetPills .asset-pill');
-    
-    selDestAsset = null;
-    pills.forEach(el => el.classList.remove('active'));
-    if (result) result.textContent = '';
-    
-    if (value.startsWith('id_')) {
-        const identifier = value.replace('id_', '');
-        const id = userIdentifiers.find(i => i.value === identifier);
-        if (id) {
-            assetGroup.style.display = 'block';
-            idGroup.style.display = 'none';
-            balanceGroup.style.display = 'none';
-            selDestAsset = (id.type === 'phone' || id.type === 'email') ? 'WALLET' : 'ACCOUNT';
-            pills.forEach(el => {
-                const label = el.textContent.trim();
-                const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-                if (match && match[0] === selDestAsset) el.classList.add('active');
-            });
-        }
-    } else if (value.startsWith('inst_')) {
-        const code = value.replace('inst_', '');
-        const p = participants[code];
-        if (p) {
-            assetGroup.style.display = 'block';
-            idGroup.style.display = 'block';
-            balanceGroup.style.display = 'block';
-            selDestAsset = (p.asset_types && p.asset_types.length > 0) ? p.asset_types[0] : 'ACCOUNT';
-            pills.forEach(el => {
-                const label = el.textContent.trim();
-                const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-                if (match && match[0] === selDestAsset) el.classList.add('active');
-            });
-        }
-    } else {
-        assetGroup.style.display = 'none';
-        idGroup.style.display = 'none';
-        balanceGroup.style.display = 'none';
-    }
-    checkSwapToStep0();
-}
-
-function selectDestAsset(asset) {
-    selDestAsset = asset;
-    document.querySelectorAll('#destAssetPills .asset-pill').forEach(el => {
-        const label = el.textContent.trim();
-        const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-        el.classList.toggle('active', match && match[0] === asset);
-    });
-    checkSwapToStep0();
-}
-
-function checkSwapToStep0() {
-    const dest = document.getElementById('destSelect')?.value;
-    const btn = document.getElementById('step0Next');
-    const msg = document.getElementById('step0Message');
-    
-    if (!dest) { if (btn) btn.disabled = true; return; }
-    
-    if (dest.startsWith('id_')) {
-        if (btn) btn.disabled = false;
-        return;
-    }
-    
-    if (dest.startsWith('inst_')) {
-        const hasAsset = selDestAsset !== null;
-        const identifier = document.getElementById('destIdentifier')?.value.trim();
-        if (hasAsset && identifier) {
-            if (btn) btn.disabled = false;
-            if (msg) { msg.className = 'message'; msg.textContent = ''; }
-        } else {
-            if (btn) btn.disabled = true;
-            if (msg) {
-                msg.className = 'message show warning';
-                msg.textContent = !hasAsset ? 'Select an asset type.' : 'Enter the destination identifier.';
-            }
-        }
-        return;
-    }
-    if (btn) btn.disabled = true;
-}
-
-function checkDestBalance() {
-    const dest = document.getElementById('destSelect')?.value;
-    const result = document.getElementById('destBalanceResult');
-    if (!result) return;
-    
-    result.textContent = '⏳ Checking...';
-    result.style.color = 'var(--ink)';
-    
-    let payload = {};
-    
-    if (dest.startsWith('inst_')) {
-        const code = dest.replace('inst_', '');
-        const identifier = document.getElementById('destIdentifier')?.value.trim();
-        if (!identifier) {
-            result.textContent = '⚠️ Enter identifier first';
-            result.style.color = 'var(--red)';
-            return;
-        }
-        payload = {
-            institution: code,
-            identifier: identifier,
-            asset_type: selDestAsset || 'ACCOUNT'
-        };
-    } else {
-        result.textContent = '⚠️ Select a destination';
-        result.style.color = 'var(--red)';
-        return;
-    }
-    
-    fetch(balanceUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    })
-    .then(res => res.json())
-    .then(data => {
-        if (data.success && data.balance !== undefined) {
-            result.textContent = `${currencySymbol} ${Number(data.balance).toFixed(2)}`;
-            result.style.color = 'var(--forest)';
-        } else {
-            result.textContent = `⚠️ ${data.message || 'Could not fetch balance'}`;
-            result.style.color = 'var(--red)';
-        }
-    })
-    .catch(err => {
-        result.textContent = '⚠️ Error checking balance';
-        result.style.color = 'var(--red)';
-    });
-}
-
-function goToSwapToAmount() {
-    const dest = document.getElementById('destSelect')?.value;
-    if (!dest) return;
-    
-    let destData = {};
-    
-    if (dest.startsWith('id_')) {
-        const identifier = dest.replace('id_', '');
-        const id = userIdentifiers.find(i => i.value === identifier);
-        if (id) {
-            destData = {
-                type: 'identity',
-                identifier: identifier,
-                identity_type: id.type,
-                asset_type: selDestAsset || 'WALLET'
-            };
-        }
-    } else if (dest.startsWith('inst_')) {
-        const code = dest.replace('inst_', '');
-        const identifier = document.getElementById('destIdentifier')?.value.trim();
-        if (!identifier) return;
-        destData = {
-            type: 'institution',
-            institution: code,
-            identifier: identifier,
-            asset_type: selDestAsset || 'ACCOUNT'
-        };
-    }
-    
-    if (!destData.identifier) return;
-    selDestination = destData;
-    currentStep = 1;
-    renderSwapToAmount();
-}
-
-function renderSwapToAmount() {
-    const body = document.getElementById('modalBody');
-    
-    let html = `
-        <div class="step-indicator">
-            <div class="step-dot done"></div>
-            <div class="step-dot active"></div>
-            <div class="step-dot"></div>
-        </div>
-        <div class="step-label">
-            <span>1. Select Destination</span>
-            <span class="active">2. Amount</span>
-            <span>3. Confirm</span>
-        </div>
-        <div class="flex-between text-muted" style="font-size:0.8rem;margin-bottom:1em;">
-            <span>${selDestination.institution || 'Identity'}</span>
-            <span>${selDestination.identifier}</span>
-            <span>${assetLabel[selDestination.asset_type] || selDestination.asset_type}</span>
-        </div>
-        <div class="form-group">
-            <label>Amount to Send (${currencySymbol})</label>
-            <input type="number" class="form-control" id="amountInput" placeholder="0.00" step="0.01" min="0.01">
-            <div class="quick-amounts">
-                ${[50, 100, 200, 500, 1000].map(a => 
-                    `<span class="quick-amount" onclick="document.getElementById('amountInput').value=${a}">${a}</span>`
-                ).join('')}
-            </div>
-        </div>
-        <div class="form-group">
-            <label>Your PIN</label>
-            <input type="password" class="form-control" id="pinInput" placeholder="Enter your PIN" maxlength="6">
-        </div>
-        <div id="step1Message" class="message"></div>
-        <div class="flex gap-16">
-            <button class="btn btn-secondary" onclick="currentStep=0;renderSwapTo()">← Back</button>
-            <button class="btn btn-primary" onclick="goToSwapToConfirm()">Preview →</button>
-        </div>
-    `;
-    
-    body.innerHTML = html;
-}
-
-function goToSwapToConfirm() {
-    const amount = parseFloat(document.getElementById('amountInput')?.value) || 0;
-    const pin = document.getElementById('pinInput')?.value || '';
-    const msg = document.getElementById('step1Message');
-    
-    if (amount <= 0) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter a valid amount.'; }
-        return;
-    }
-    if (!pin || pin.length < 4) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter your PIN.'; }
-        return;
-    }
-    if (msg) { msg.className = 'message'; msg.textContent = ''; }
-    
-    // Use first participant as source if not specified
-    const sourceInst = Object.keys(participants)[0] || 'ZURUBANK';
-    
-    pendingPayload = {
-        swap_type: 'STANDARD',
-        from_institution: sourceInst,
-        source_institution: sourceInst,
-        source_identifier: userIdentifiers[0]?.value || '',
-        to_institution: selDestination.institution || 'ZURUBANK',
-        destination_institution: selDestination.institution || 'ZURUBANK',
-        destination_identifier: selDestination.identifier,
-        destination_asset_type: selDestination.asset_type || 'ACCOUNT',
-        asset_type: selDestination.asset_type || 'ACCOUNT',
-        amount: amount,
-        currency: currency,
-        pin: pin,
-        wallet_pin: pin,
-        reference: 'SWAP_' + Date.now(),
-        idempotency_key: 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2,8)
-    };
-    
-    currentStep = 2;
-    renderSwapToConfirm();
-}
-
-function renderSwapToConfirm() {
-    const body = document.getElementById('modalBody');
-    const amount = pendingPayload?.amount || 0;
-    const to = pendingPayload?.to_institution || '?';
-    
-    let html = `
-        <div class="step-indicator">
-            <div class="step-dot done"></div>
-            <div class="step-dot done"></div>
-            <div class="step-dot active"></div>
-        </div>
-        <div class="step-label">
-            <span>1. Select Destination</span>
-            <span>2. Amount</span>
-            <span class="active">3. Confirm</span>
-        </div>
-        <div id="previewContainer">
-            <div class="preview-box">
-                <div class="preview-row"><span class="label">To</span><span class="value">${to}</span></div>
-                <div class="preview-row"><span class="label">Destination</span><span class="value">${selDestination?.identifier || '—'}</span></div>
-                <div class="preview-row"><span class="label">Asset</span><span class="value">${assetLabel[selDestination?.asset_type] || selDestination?.asset_type || '—'}</span></div>
-                <div class="preview-row"><span class="label">Amount</span><span class="value">${currencySymbol} ${amount.toFixed(2)}</span></div>
-                <div class="preview-row" style="border-bottom:none;padding-top:0.8em;">
-                    <span class="label">Total</span>
-                    <span class="value highlight">${currencySymbol} ${amount.toFixed(2)}</span>
-                </div>
-            </div>
-            <div id="previewStatus" class="text-center text-muted" style="padding:0.5em 0;">
-                <span class="spinner"></span> Calculating fees...
-            </div>
-        </div>
-        <div class="flex gap-16">
-            <button class="btn btn-secondary" onclick="currentStep=1;renderSwapToAmount()">← Back</button>
-            <button class="btn btn-success" id="confirmBtn" onclick="executeSwap()" disabled>Confirm & Send</button>
-        </div>
-    `;
-    
-    body.innerHTML = html;
-    
-    fetch(previewUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(pendingPayload)
-    })
-    .then(res => res.json())
-    .then(data => {
-        const status = document.getElementById('previewStatus');
-        const confirmBtn = document.getElementById('confirmBtn');
-        if (data.success || data.preview) {
-            const p = data.preview || data;
-            const fee = p.total_fee || p.fee || 0;
-            const net = p.net_amount || p.amount || amount;
-            status.innerHTML = `✅ Fee: ${currencySymbol} ${fee.toFixed(2)} | Net: ${currencySymbol} ${net.toFixed(2)}`;
-            if (confirmBtn) confirmBtn.disabled = false;
-        } else {
-            status.innerHTML = `⚠️ ${data.message || 'Fee calculation failed. Proceed anyway.'}`;
-            if (confirmBtn) confirmBtn.disabled = false;
-        }
-    })
-    .catch(() => {
-        const status = document.getElementById('previewStatus');
-        const confirmBtn = document.getElementById('confirmBtn');
-        status.innerHTML = '⚠️ Could not calculate fees. Proceed anyway.';
-        if (confirmBtn) confirmBtn.disabled = false;
-    });
-}
-
-// ============================================================================
-// EXECUTE SWAP (shared)
-// ============================================================================
-
-async function executeSwap() {
-    const btn = document.getElementById('confirmBtn');
-    btn.disabled = true;
-    btn.textContent = '⏳ Processing...';
-    
-    const status = document.getElementById('previewStatus');
-    if (status) status.innerHTML = '⏳ Processing transaction...';
-    
+async function callApi(endpoint, payload) {
+    let response, body;
     try {
-        const resp = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(pendingPayload)
-        });
-        const result = await resp.json();
-        
-        if (result.status === 'success' || result.status === 'pending_cashout' || result.success) {
-            document.getElementById('modalBody').innerHTML = `
-                <div class="text-center" style="padding:1.5em 0;">
-                    <div style="font-size:3em;color:var(--forest);">✅</div>
-                    <h3 style="margin:0.5em 0 0.3em;">Success!</h3>
-                    <p class="text-muted">Swap completed successfully</p>
-                    <p style="font-size:0.7rem;opacity:0.5;">Ref: ${result.reference || result.swap_reference || 'N/A'}</p>
-                    ${result.atm_code ? `<div style="margin:0.5em 0;padding:0.5em;background:var(--panel);border:2px solid var(--ink);"><div style="font-size:0.6rem;opacity:0.5;">ATM CODE</div><div style="font-family:monospace;font-size:1.6rem;letter-spacing:0.1em;">${result.atm_code}</div></div>` : ''}
-                    ${result.voucher_number ? `<div style="margin:0.5em 0;padding:0.5em;background:var(--panel);border:2px solid var(--ink);"><div style="font-size:0.6rem;opacity:0.5;">VOUCHER</div><div style="font-family:monospace;font-size:1.6rem;letter-spacing:0.1em;">${result.voucher_number}</div></div>` : ''}
-                    <button class="btn btn-primary btn-block mt-16" onclick="closeModal();location.reload();">Done</button>
-                </div>
-            `;
-        } else {
-            document.getElementById('modalBody').innerHTML = `
-                <div class="text-center" style="padding:1.5em 0;">
-                    <div style="font-size:3em;color:var(--red);">❌</div>
-                    <h3 style="margin:0.5em 0 0.3em;">Failed</h3>
-                    <p style="color:var(--red);">${result.message || result.error || 'Swap failed.'}</p>
-                    <button class="btn btn-secondary btn-block mt-16" onclick="currentStep=1;currentMode==='swap_from'?renderSwapFromAmount():renderSwapToAmount()">← Back</button>
-                </div>
-            `;
-        }
-    } catch (err) {
-        document.getElementById('modalBody').innerHTML = `
-            <div class="text-center" style="padding:1.5em 0;">
-                <div style="font-size:3em;color:var(--red);">❌</div>
-                <h3 style="margin:0.5em 0 0.3em;">Error</h3>
-                <p style="color:var(--red);">${err.message || 'Network error'}</p>
-                <button class="btn btn-secondary btn-block mt-16" onclick="closeModal()">Close</button>
-            </div>
-        `;
+        response = await fetch(endpoint, { method: 'POST', headers: buildHeaders(), body: JSON.stringify(payload) });
+    } catch (networkErr) {
+        return { ok: false, error: 'Network error: could not reach ' + endpoint + ' (' + networkErr.message + ')' };
     }
+    try {
+        body = await response.json();
+    } catch (parseErr) {
+        return { ok: false, error: 'Server returned a non-JSON response (HTTP ' + response.status + ')' };
+    }
+    if (!response.ok || body.success === false) {
+        return { ok: false, error: body.error || ('HTTP ' + response.status), body };
+    }
+    return { ok: true, body };
 }
 
-// ============================================================================
-// IDENTITY SWAP
-// ============================================================================
+// ============================================================
+// FROM (SOURCE)
+// ============================================================
+function selectFromInst(code) {
+    state.fromInst = code || null;
+    state.fromAsset = null;
+    state.fromFields = {};
+    const assetGroup = document.getElementById('fromAssetGroup');
+    if (!code) { assetGroup.style.display = 'none'; document.getElementById('fromFields').innerHTML = ''; refreshUI(); return; }
+    const inst = PARTICIPANTS[code];
+    const sel = document.getElementById('fromAssetSelect');
+    sel.innerHTML = '<option value="">Select asset type</option>' + inst.asset_types.map(t => `<option value="${t}">${ASSETS[t]?.icon || ''} ${ASSETS[t]?.label || t}</option>`).join('');
+    assetGroup.style.display = 'block';
+    document.getElementById('fromCurrencyLabel').textContent = inst.limits?.currency || CONFIG.CURRENCY;
+    document.getElementById('fromLimitsHelp').textContent = inst.limits
+        ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
+    if (inst.asset_types.length === 1) { sel.value = inst.asset_types[0]; selectFromAsset(inst.asset_types[0]); }
+    else { document.getElementById('fromFields').innerHTML = ''; refreshUI(); }
+}
+function selectFromAsset(type) {
+    state.fromAsset = type || null;
+    state.fromFields = {};
+    if (!type) { document.getElementById('fromFields').innerHTML = ''; refreshUI(); return; }
+    renderDynamicFields('fromFields', type, 'fromField_', updateFromField, true);
+    refreshUI();
+}
+function updateFromField(name, value) { state.fromFields[name] = value; refreshUI(); }
+function setAmount(val) { document.getElementById('fromAmount').value = val; state.fromAmount = val; refreshUI(); }
 
-function renderIdentitySwap() {
-    const body = document.getElementById('modalBody');
-    
-    let html = `
-        <div class="step-indicator">
-            <div class="step-dot active"></div>
-            <div class="step-dot"></div>
-            <div class="step-dot"></div>
+// ============================================================
+// SHARED: dynamic asset field rendering
+// includePin: destination operations never need PIN (SwapService PIN POLICY)
+//
+// assets.yaml's VOUCHER type declares its own "amount" field ("Voucher
+// Amount"). Every place this dashboard renders dynamic asset fields
+// already has its own dedicated amount input in context (the "Amount"
+// box in the From section, or the per-row "Amount to pull from this
+// source" in Multi-Source) — so the asset's own amount field is never
+// rendered as a second box. Its value is synthesized from that
+// contextual amount when the payload is built (see buildPayload()).
+// ============================================================
+function assetHasAmountField(assetType) {
+    return (ASSETS[assetType]?.fields || []).some(f => f.name === 'amount');
+}
+function renderDynamicFields(containerId, assetType, prefix, onChange, includePin) {
+    const container = document.getElementById(containerId);
+    const fields = (ASSETS[assetType]?.fields || []).filter(f => includePin || f.vault_field !== 'pin').filter(f => f.name !== 'amount');
+    if (fields.length === 0) { container.innerHTML = ''; return; }
+    container.innerHTML = fields.map(f => {
+        const attrs = [];
+        if (f.pattern) attrs.push(`pattern="${f.pattern}"`);
+        if (f.min_length) attrs.push(`minlength="${f.min_length}"`);
+        if (f.max_length) attrs.push(`maxlength="${f.max_length}"`);
+        if (f.min !== undefined) attrs.push(`min="${f.min}"`);
+        if (f.max !== undefined) attrs.push(`max="${f.max}"`);
+        if (f.required) attrs.push('required');
+        if (f.type === 'select') {
+            return `<div class="field-group">
+                <label>${f.label} ${f.required ? '*' : ''}</label>
+                <select id="${prefix}${f.name}" onchange="window['${onChange.name}']('${f.name}', this.value)">
+                    <option value="">${f.placeholder || 'Select'}</option>
+                    ${(f.options || []).map(o => `<option value="${o}">${o}</option>`).join('')}
+                </select>
+                ${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}
+            </div>`;
+        }
+        return `<div class="field-group">
+            <label>${f.label} ${f.required ? '*' : ''}</label>
+            <input type="${f.type}" id="${prefix}${f.name}" placeholder="${f.placeholder || ''}" ${attrs.join(' ')}
+                   oninput="window['${onChange.name}']('${f.name}', this.value); validateDynamicField(this, ${JSON.stringify(f).replace(/"/g, '&quot;')})">
+            ${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}
+        </div>`;
+    }).join('');
+}
+function validateDynamicField(input, field) {
+    let valid = true;
+    if (field.pattern && input.value) valid = new RegExp(field.pattern).test(input.value);
+    input.classList.toggle('invalid', !valid && input.value.length > 0);
+}
+function fieldsValidForAsset(assetType, values, includePin) {
+    // 'amount' is never rendered here (see renderDynamicFields) — its own
+    // dedicated amount input elsewhere in the UI is what gets validated.
+    const fields = (ASSETS[assetType]?.fields || []).filter(f => includePin || f.vault_field !== 'pin').filter(f => f.name !== 'amount');
+    return fields.every(f => {
+        const val = values[f.name];
+        if (f.required && (!val || String(val).trim().length === 0)) return false;
+        if (val && f.pattern && !new RegExp(f.pattern).test(val)) return false;
+        return true;
+    });
+}
+function extractPinFromFields(assetType, values) {
+    const pinField = (ASSETS[assetType]?.fields || []).find(f => f.vault_field === 'pin');
+    return pinField ? (values[pinField.name] || '') : '';
+}
+function amountWithinLimits(instCode, amount) {
+    const limits = PARTICIPANTS[instCode]?.limits;
+    if (!limits) return true;
+    return amount >= limits.min_amount && amount <= limits.max_amount;
+}
+
+// ============================================================
+// TO (DESTINATION)
+// ============================================================
+function selectToInst(code) {
+    state.toInst = code || null;
+    state.toAsset = null;
+    state.toFields = {};
+    if (state.swapType === 'DEPOSIT' || state.swapType === 'MULTI_SOURCE') {
+        const sel = document.getElementById('toAssetSelect');
+        const group = document.getElementById('toAssetSection');
+        if (!code) { group.style.display = 'none'; document.getElementById('toFields').style.display = 'none'; refreshUI(); return; }
+        const inst = PARTICIPANTS[code];
+        sel.innerHTML = '<option value="">Select asset type</option>' + inst.asset_types.map(t => `<option value="${t}">${ASSETS[t]?.icon || ''} ${ASSETS[t]?.label || t}</option>`).join('');
+        group.style.display = 'block';
+        if (inst.asset_types.length === 1) { sel.value = inst.asset_types[0]; selectToAsset(inst.asset_types[0]); }
+        else { document.getElementById('toFields').style.display = 'none'; refreshUI(); }
+    } else {
+        refreshUI();
+    }
+}
+function selectToAsset(type) {
+    state.toAsset = type || null;
+    state.toFields = {};
+    const box = document.getElementById('toFields');
+    if (!type) { box.style.display = 'none'; box.innerHTML = ''; refreshUI(); return; }
+    box.style.display = 'block';
+    renderDynamicFields('toFields', type, 'toField_', updateToField, false);
+    refreshUI();
+}
+function updateToField(name, value) { state.toFields[name] = value; refreshUI(); }
+function setDeliveryMethod(method) { state.deliveryMethod = method; refreshUI(); }
+
+// ============================================================
+// SWAP TYPE SWITCHING
+// ============================================================
+function setSwapType(type) {
+    state.swapType = type;
+    const isIdentity = type === 'IDENTITY';
+    const isMulti = type === 'MULTI_SOURCE';
+    const isDeposit = type === 'DEPOSIT';
+    const isCashout = type === 'CASHOUT';
+
+    document.getElementById('identityFields').style.display = isIdentity ? 'block' : 'none';
+    document.getElementById('multiSourceFields').style.display = isMulti ? 'block' : 'none';
+    document.getElementById('cashoutFields').style.display = isCashout ? 'block' : 'none';
+    document.getElementById('toInstSection').style.display = (isDeposit || isCashout || isMulti) ? 'block' : 'none';
+    document.getElementById('toAssetSection').style.display = (isDeposit || isMulti) && state.toAsset ? 'block' : 'none';
+    document.getElementById('toFields').style.display = (isDeposit || isMulti) && state.toAsset ? 'block' : 'none';
+    document.getElementById('fromSection').style.display = isMulti ? 'none' : 'block';
+    document.querySelector('.swap-divider').style.display = isMulti ? 'none' : 'flex';
+
+    if (isMulti && state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
+    refreshUI();
+}
+// Small-press-word shortcut: sets the dropdown then reuses its exact logic,
+// so "🔑 Swap to Identity" / "🧩 Multi-Source" behave identically to picking
+// the option from #swapTypeSelect by hand.
+function quickSetSwapType(type) {
+    document.getElementById('swapTypeSelect').value = type;
+    setSwapType(type);
+    const target = type === 'IDENTITY' ? document.getElementById('identityFields') : document.getElementById('multiSourceFields');
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+// ============================================================
+// MULTI-SOURCE ROWS (manual entry — no "list linked sources" endpoint
+// exists in the codebase you shared, so each source is entered by
+// hand: institution, asset type, its identifier field(s), PIN, amount.)
+// ============================================================
+let multiSourceSeq = 0;
+function addMultiSourceRow() {
+    state.multiSources.push({ id: ++multiSourceSeq, institution: null, assetType: null, fields: {}, amount: 0 });
+    renderMultiSourceRows();
+}
+function removeMultiSourceRow(id) {
+    state.multiSources = state.multiSources.filter(s => s.id !== id);
+    renderMultiSourceRows();
+}
+function renderMultiSourceRows() {
+    const container = document.getElementById('multiSourceList');
+    container.innerHTML = state.multiSources.map((src, idx) => `
+        <div class="source-row">
+            <div class="source-row-head">
+                <span class="idx">Source ${idx + 1}</span>
+                ${state.multiSources.length > 2 ? `<button class="btn-danger-outline" onclick="removeMultiSourceRow(${src.id})">Remove</button>` : ''}
+            </div>
+            <div class="field-group">
+                <label>Institution</label>
+                <select onchange="setMultiSourceInst(${src.id}, this.value)">
+                    <option value="">Select institution</option>
+                    ${Object.keys(PARTICIPANTS).map(code => `<option value="${code}" ${src.institution === code ? 'selected' : ''}>${PARTICIPANTS[code].name}</option>`).join('')}
+                </select>
+            </div>
+            ${src.institution ? `
+            <div class="field-group">
+                <label>Asset Type</label>
+                <select onchange="setMultiSourceAsset(${src.id}, this.value)">
+                    <option value="">Select asset type</option>
+                    ${PARTICIPANTS[src.institution].asset_types.map(t => `<option value="${t}" ${src.assetType === t ? 'selected' : ''}>${ASSETS[t]?.label || t}</option>`).join('')}
+                </select>
+            </div>` : ''}
+            ${src.assetType ? (ASSETS[src.assetType]?.fields || []).filter(f => f.name !== 'amount').map(f => `
+                <div class="field-group">
+                    <label>${f.label} ${f.required ? '*' : ''}</label>
+                    <input type="${f.type === 'select' ? 'text' : f.type}" value="${src.fields[f.name] || ''}"
+                           placeholder="${f.placeholder || ''}"
+                           oninput="setMultiSourceField(${src.id}, '${f.name}', this.value)">
+                </div>
+            `).join('') : ''}
+            <div class="field-group">
+                <label>Amount to pull from this source</label>
+                <input type="number" min="0.01" step="0.01" value="${src.amount || ''}" placeholder="0.00"
+                       oninput="setMultiSourceAmount(${src.id}, this.value)">
+            </div>
         </div>
-        <div class="step-label">
-            <span class="active">1. Sender Info</span>
-            <span>2. Recipient</span>
-            <span>3. Confirm</span>
+    `).join('');
+    updateMultiTotal();
+    refreshUI();
+}
+function setMultiSourceInst(id, code) {
+    const src = state.multiSources.find(s => s.id === id);
+    src.institution = code || null; src.assetType = null; src.fields = {};
+    renderMultiSourceRows();
+}
+function setMultiSourceAsset(id, type) {
+    const src = state.multiSources.find(s => s.id === id);
+    src.assetType = type || null; src.fields = {};
+    renderMultiSourceRows();
+}
+function setMultiSourceField(id, name, value) {
+    state.multiSources.find(s => s.id === id).fields[name] = value;
+    refreshUI();
+}
+function setMultiSourceAmount(id, value) {
+    state.multiSources.find(s => s.id === id).amount = parseFloat(value) || 0;
+    updateMultiTotal();
+    refreshUI();
+}
+function updateMultiTotal() {
+    const total = state.multiSources.reduce((sum, s) => sum + (s.amount || 0), 0);
+    document.getElementById('multiTotal').textContent = `${CONFIG.CURRENCY} ${total.toFixed(2)}`;
+}
+function multiSourcesValid() {
+    if (state.multiSources.length < 2) return false;
+    return state.multiSources.every(s => {
+        if (!s.institution || !s.assetType || !(s.amount > 0)) return false;
+        const pin = extractPinFromFields(s.assetType, s.fields);
+        const needsPin = ASSETS[s.assetType]?.fields?.some(f => f.vault_field === 'pin');
+        if (needsPin && pin.length < 4) return false;
+        return fieldsValidForAsset(s.assetType, s.fields, true);
+    });
+}
+
+// ============================================================
+// VALIDATION → single "Review Swap" button
+// ============================================================
+function refreshUI() {
+    const btn = document.getElementById('reviewBtn');
+    btn.disabled = !isSwapReady();
+}
+function isSwapReady() {
+    if (state.swapType === 'MULTI_SOURCE') {
+        return multiSourcesValid() && state.toInst && state.toAsset && fieldsValidForAsset(state.toAsset, state.toFields, false);
+    }
+    const hasSource = state.fromInst && state.fromAsset;
+    if (!hasSource) return false;
+    if (!(state.fromAmount > 0) || !amountWithinLimits(state.fromInst, state.fromAmount)) return false;
+    if (!fieldsValidForAsset(state.fromAsset, state.fromFields, true)) return false;
+
+    if (state.swapType === 'IDENTITY') return !!state.toIdentityValue;
+    if (state.swapType === 'CASHOUT') return !!state.toInst;
+    // DEPOSIT
+    return !!(state.toInst && state.toAsset && fieldsValidForAsset(state.toAsset, state.toFields, false));
+}
+
+// ============================================================
+// BUILD PAYLOAD — field names match SwapService::executeAtomicSwap()
+// ============================================================
+function buildPayload() {
+    const reference = 'SWAP_' + Date.now();
+    const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+
+    if (state.swapType === 'MULTI_SOURCE') {
+        const sources = state.multiSources.map(s => {
+            const pin = extractPinFromFields(s.assetType, s.fields);
+            const identifierField = (ASSETS[s.assetType]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+            // The "amount" field, if this asset type declares one (VOUCHER), is never
+            // shown as a separate box here — it always mirrors this row's own
+            // "Amount to pull from this source" input.
+            const assetFields = { ...s.fields };
+            if (assetHasAmountField(s.assetType)) assetFields.amount = s.amount;
+            return {
+                institution: s.institution, asset_type: s.assetType,
+                identifier: identifierField ? s.fields[identifierField.name] : null,
+                amount: s.amount, wallet_pin: pin || undefined, pin: pin || undefined, asset_fields: assetFields,
+            };
+        });
+        const totalAmount = sources.reduce((sum, s) => sum + s.amount, 0);
+        const destFields = { ...state.toFields };
+        if (assetHasAmountField(state.toAsset)) destFields.amount = totalAmount;
+        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        const payload = {
+            swap_type: 'MULTI_SOURCE', reference, idempotency_key: idempotencyKey,
+            amount: totalAmount, currency: CONFIG.CURRENCY, contribution_strategy: 'USER_SPECIFIED',
+            sources, to_institution: state.toInst, destination_institution: state.toInst,
+            destination_asset_type: state.toAsset, asset_type: state.toAsset,
+            destination_asset_fields: destFields,
+        };
+        // Same namespacing rule as the single-swap branch above: each source in
+        // `sources[]` already keeps its own fields nested under asset_fields, so
+        // flat destination_<field> keys here can't collide with any of them.
+        for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
+        if (destIdField) payload.destination_identifier = state.toFields[destIdField.name];
+        return payload;
+    }
+
+    const pin = extractPinFromFields(state.fromAsset, state.fromFields);
+    // Same rule as above: the source asset's own "amount" field (if it has one)
+    // mirrors the single "Amount" input above — never a second box.
+    const sourceAssetFields = { ...state.fromFields };
+    if (assetHasAmountField(state.fromAsset)) sourceAssetFields.amount = state.fromAmount;
+    const payload = {
+        swap_type: state.swapType, reference, idempotency_key: idempotencyKey,
+        from_institution: state.fromInst, source_institution: state.fromInst,
+        asset_type: state.fromAsset, amount: state.fromAmount,
+        currency: PARTICIPANTS[state.fromInst]?.limits?.currency || CONFIG.CURRENCY,
+        wallet_pin: pin || undefined, pin: pin || undefined, asset_fields: sourceAssetFields,
+        ...sourceAssetFields,
+    };
+    payload.amount = state.fromAmount; // guard: never let a merged asset field override the swap amount
+    const idField = (ASSETS[state.fromAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    if (idField) payload.source_identifier = state.fromFields[idField.name];
+
+    if (state.swapType === 'IDENTITY') {
+        payload.identity_type = state.toIdentityType;
+        payload.identity_value = state.toIdentityValue;
+        if (state.toIdentitySms) payload.notification_phone = state.toIdentitySms;
+    } else if (state.swapType === 'CASHOUT') {
+        payload.to_institution = state.toInst;
+        payload.destination_institution = state.toInst;
+        payload.delivery_method = state.deliveryMethod;
+        if (state.beneficiaryPhone) { payload.beneficiary_phone = state.beneficiaryPhone; payload.client_phone = state.beneficiaryPhone; }
+    } else {
+        payload.to_institution = state.toInst;
+        payload.destination_institution = state.toInst;
+        payload.destination_asset_type = state.toAsset;
+        const destFields = { ...state.toFields };
+        if (assetHasAmountField(state.toAsset)) destFields.amount = state.fromAmount; // mirrors the swap amount, not a separate box
+        payload.destination_asset_fields = destFields;
+        // NOTE: flat top-level fields (voucher_number, phone, etc.) are namespaced
+        // "destination_<field>" — mirrors the existing destination_institution /
+        // destination_asset_type / destination_identifier convention — so a
+        // same-named source field (e.g. both sides VOUCHER's "voucher_number")
+        // is never silently clobbered when merged onto one flat payload object.
+        for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
+        payload.amount = state.fromAmount; // guard: destination's own 'amount' field must never override the swap amount
+        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        if (destIdField) payload.destination_identifier = state.toFields[destIdField.name];
+    }
+    return payload;
+}
+
+// ============================================================
+// PREVIEW
+// ============================================================
+async function previewSwap() {
+    if (!isSwapReady()) {
+        if (state.swapType === 'MULTI_SOURCE') {
+            showMessage('Fill in every source (institution, asset type, identifier, PIN, amount — at least 2) and the destination.', 'warning');
+        } else if (!state.fromInst || !state.fromAsset) {
+            showMessage('Please select a source institution and asset.', 'warning');
+        } else if (!amountWithinLimits(state.fromInst, state.fromAmount)) {
+            const l = PARTICIPANTS[state.fromInst].limits;
+            showMessage(`Amount must be between ${l.min_amount} and ${l.max_amount} ${l.currency}.`, 'warning');
+        } else {
+            showMessage('Please fill in all required fields.', 'warning');
+        }
+        return;
+    }
+
+    const payload = buildPayload();
+    state.swapPayload = payload;
+
+    const btn = document.getElementById('reviewBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Working…';
+
+    const result = await callApi(CONFIG.PREVIEW_ENDPOINT, payload);
+
+    btn.disabled = false;
+    btn.innerHTML = original;
+    refreshUI();
+
+    if (!result.ok) { showMessage('Preview failed: ' + result.error, 'error'); return; }
+    state.lastPreview = result.body.preview;
+    showPreviewModal(result.body.preview, payload);
+}
+
+function showPreviewModal(preview, payload) {
+    const p = preview || {};
+    let html = `<div class="preview-box">
+        <div class="preview-row"><span class="label">Swap Type</span><span class="value">${p.swap_type || payload.swap_type}</span></div>
+        <div class="preview-row"><span class="label">Source</span><span class="value">${p.source_institution || payload.from_institution || '—'}</span></div>
+        ${p.destination_institution ? `<div class="preview-row"><span class="label">Destination</span><span class="value">${p.destination_institution}</span></div>` : ''}
+        <div class="preview-row"><span class="label">Amount Requested</span><span class="value">${p.summary?.amount_requested_formatted || (payload.amount + ' ' + payload.currency)}</span></div>
+        <div class="preview-row"><span class="label">Fee</span><span class="value" style="color:var(--warning);">${p.summary?.total_fee_formatted ?? p.total_fee ?? '—'}</span></div>
+        ${p.forex_applied ? `<div class="preview-row"><span class="label">Exchange Rate</span><span class="value">${p.summary?.exchange_rate_formatted || p.exchange_rate}</span></div>` : ''}
+        <div class="preview-row" style="border-bottom:none;padding-top:8px;">
+            <span class="label" style="font-weight:600;">Net Amount</span>
+            <span class="value highlight">${p.summary?.net_amount_formatted ?? p.net_amount ?? '—'}</span>
         </div>
-        <p class="text-muted" style="margin-bottom:1em;">Send money to someone's identity. They'll claim it within 24 hours.</p>
-    `;
-    
-    // Source selection
-    html += `<div class="form-group"><label>Your Source</label>`;
-    html += `<select class="form-control" id="identitySourceSelect">`;
-    html += `<option value="">Select source...</option>`;
-    
-    if (hookedSources.length > 0) {
-        hookedSources.forEach(s => {
-            html += `<option value="hooked_${s.source_reference}">${s.institution} - ${s.identifier}</option>`;
+    </div>`;
+
+    if (p.is_multi_source && p.multi_source) {
+        const ms = p.multi_source;
+        html += `<div class="preview-box">
+            <div class="preview-row"><span class="label">Strategy</span><span class="value">${ms.strategy}</span></div>
+            <div class="preview-row"><span class="label">Sources</span><span class="value">${ms.source_count}</span></div>
+            <div class="preview-row"><span class="label">Coverage</span><span class="value">${ms.summary?.coverage_percentage ?? '—'}%</span></div>
+        </div>`;
+        (ms.sources || []).forEach(s => {
+            html += `<div class="preview-row"><span class="label">${s.institution} (${s.asset_type})</span><span class="value">${s.contribution_amount} — ${s.has_sufficient_balance ? 'OK' : '⚠ insufficient balance'}</span></div>`;
         });
     }
-    Object.entries(participants).forEach(([code, p]) => {
-        html += `<option value="inst_${code}">${p.name} (${code})</option>`;
-    });
-    html += `</select></div>`;
-    
-    html += `
-        <div class="form-group" id="identitySourceIdGroup" style="display:none;">
-            <label>Your Source Identifier</label>
-            <input type="text" class="form-control" id="identitySourceId" placeholder="Phone, email, or national ID">
-        </div>
-        <div class="form-group">
+
+    html += `<details class="raw-json-wrap"><summary>Raw preview response</summary><div class="raw-json">${escapeHtml(JSON.stringify(preview, null, 2))}</div></details>`;
+    html += `<div class="cta-row">
+        <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-success" id="executeBtn" onclick="executeSwap()">✅ Confirm & Execute</button>
+    </div>`;
+
+    openModal('Swap Preview', html);
+}
+
+// ============================================================
+// EXECUTE
+// ============================================================
+async function executeSwap() {
+    if (!state.swapPayload) return;
+    const btn = document.getElementById('executeBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Processing…';
+
+    const result = await callApi(CONFIG.EXECUTE_ENDPOINT, state.swapPayload);
+
+    if (!result.ok) {
+        document.getElementById('modalBody').innerHTML = `
+            <div class="result-box">
+                <div class="icon">❌</div>
+                <div class="title">Swap Failed</div>
+                <div class="ref">${escapeHtml(result.error)}</div>
+                <div class="cta-row"><button class="btn-secondary" onclick="closeModal()">Close</button></div>
+            </div>`;
+        return;
+    }
+    showResultModal(result.body);
+}
+
+function showResultModal(response) {
+    const data = response.data || {};
+    const swapType = state.swapPayload.swap_type;
+    const reference = response.swap_reference || data.reference || data.swap_reference || '—';
+    let inner = '';
+
+    if (swapType === 'CASHOUT') {
+        inner = `
+            <div class="icon">💰</div>
+            <div class="title">Cashout Code Generated</div>
+            <div class="ref">Reference: ${escapeHtml(reference)}</div>
+            ${data.atm_code || data.voucher_number ? `
+            <div class="atm-code">
+                <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">Code</div>
+                <div class="code">${escapeHtml(data.atm_code || data.voucher_number || data.swap_code || '')}</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">Expires: ${escapeHtml(data.code_expiry || 'see reference')}</div>
+            </div>` : ''}
+            <div class="amount-display">
+                <div style="font-size:12px;color:var(--text-muted);">Amount</div>
+                <div class="amt">${data.amount ?? state.swapPayload.amount} ${state.swapPayload.currency || CONFIG.CURRENCY}</div>
+            </div>`;
+    } else if (swapType === 'IDENTITY') {
+        inner = `
+            <div class="icon">🔑</div>
+            <div class="title">Identity Swap Initiated</div>
+            <div class="ref">Reference: ${escapeHtml(reference)}</div>
+            <div style="margin:12px 0;padding:12px;background:rgba(0,240,255,0.04);border-radius:var(--radius-sm);">
+                <div style="font-size:12px;color:var(--text-muted);">Identity</div>
+                <div style="font-size:16px;font-weight:600;">${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</div>
+            </div>
+            <div class="amount-display">
+                <div style="font-size:12px;color:var(--text-muted);">Amount Held</div>
+                <div class="amt">${data.amount ?? state.swapPayload.amount} ${data.currency || CONFIG.CURRENCY}</div>
+            </div>
+            <div style="font-size:13px;color:var(--text-muted);margin:8px 0;">⏳ Waiting for recipient to claim (expires ${escapeHtml(data.expires_at || 'in 24h')})</div>`;
+    } else if (swapType === 'MULTI_SOURCE') {
+        inner = `
+            <div class="icon">📤</div>
+            <div class="title">Multi-Source Swap Submitted</div>
+            <div class="ref">Reference: ${escapeHtml(reference)}</div>
+            <div style="font-size:13px;color:var(--text-muted);margin:8px 0;">Status: ${escapeHtml(response.status || data.status || 'submitted')}</div>`;
+    } else {
+        inner = `
+            <div class="icon">✅</div>
+            <div class="title">Swap Completed</div>
+            <div class="ref">Reference: ${escapeHtml(reference)}</div>
+            <div class="amount-display">
+                <div style="font-size:12px;color:var(--text-muted);">Amount</div>
+                <div class="amt">${data.amount ?? state.swapPayload.amount} ${CONFIG.CURRENCY}</div>
+                ${data.fee !== undefined ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">Fee: ${data.fee}</div>` : ''}
+            </div>`;
+    }
+
+    document.getElementById('modalBody').innerHTML = `
+        <div class="result-box">
+            ${inner}
+            <details class="raw-json-wrap"><summary>Raw response</summary><div class="raw-json">${escapeHtml(JSON.stringify(response, null, 2))}</div></details>
+            <div class="cta-row"><button class="btn btn-primary" onclick="closeModal(); location.reload();">Done</button></div>
+        </div>`;
+}
+
+// ============================================================
+// MY PROFILE — saved identities for the "Swap to Identity" flow.
+// There is no add/list identities HTTP endpoint in the backend files
+// you've shared, so this list lives only in this browser tab for this
+// session — nothing here is saved to your VouchMorph account. Point me
+// at the real endpoint and "Use" here becomes a real saved-identity pick.
+// ============================================================
+const IDENTITY_TYPE_LABELS = { national_id: 'National ID', phone: 'Phone Number', email: 'Email' };
+function openProfileModal() {
+    openModal('My Profile', renderProfileModal());
+}
+function renderProfileModal() {
+    const rows = savedIdentities.length
+        ? savedIdentities.map((id, i) => `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
+                <div>
+                    <div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div>
+                    <div style="font-size:14px;font-weight:600;">${escapeHtml(id.value)}</div>
+                </div>
+                <div class="quick-actions" style="margin:0;">
+                    <span class="quick-link" onclick="useSavedIdentity(${i})">✓ Use</span>
+                    <span class="quick-link danger" onclick="removeSavedIdentity(${i})">✕ Remove</span>
+                </div>
+            </div>`).join('')
+        : `<div class="hint">No saved identities yet — add a phone number, national ID, or email below for quick reuse in the "Swap to Identity" flow.</div>`;
+    return `
+        <div style="margin-bottom:12px;">${rows}</div>
+        <div class="field-group">
             <label>Identity Type</label>
-            <select class="form-control" id="identityTypeSelect">
+            <select id="newIdentityType">
                 <option value="national_id">National ID</option>
-                <option value="phone">Phone</option>
+                <option value="phone">Phone Number</option>
                 <option value="email">Email</option>
             </select>
         </div>
-        <div class="form-group">
-            <label>Recipient Identity Value</label>
-            <input type="text" class="form-control" id="identityValue" placeholder="e.g. 123456789, 0712345678, email@example.com">
+        <div class="field-group">
+            <label>Identity Value</label>
+            <input id="newIdentityValue" placeholder="Enter the identity value">
         </div>
-        <div class="form-group">
-            <label>Amount (${currencySymbol})</label>
-            <input type="number" class="form-control" id="identityAmount" placeholder="0.00" step="0.01" min="0.01">
-        </div>
-        <div class="form-group">
-            <label>Your PIN</label>
-            <input type="password" class="form-control" id="identityPin" placeholder="Enter your PIN" maxlength="6">
-        </div>
-        <div id="identityMsg" class="message"></div>
-        <button class="btn btn-primary btn-block" onclick="initiateIdentitySwap()">
-            Send to Identity →
-        </button>
-    `;
-    
-    body.innerHTML = html;
-    
-    document.getElementById('identitySourceSelect')?.addEventListener('change', function() {
-        document.getElementById('identitySourceIdGroup').style.display = 
-            this.value && !this.value.startsWith('hooked_') ? 'block' : 'none';
-    });
+        <div class="cta-row"><button class="btn btn-primary" onclick="addSavedIdentity()">+ Add Identity</button></div>
+        <div class="hint" style="margin-top:8px;">Saved here for this session only — not yet synced to your VouchMorph account (no identities endpoint has been wired up).</div>`;
+}
+function addSavedIdentity() {
+    const type = document.getElementById('newIdentityType').value;
+    const value = document.getElementById('newIdentityValue').value.trim();
+    if (!value) { showMessage('Enter an identity value first', 'error'); return; }
+    savedIdentities.push({ type, value });
+    document.getElementById('modalBody').innerHTML = renderProfileModal();
+}
+function removeSavedIdentity(idx) {
+    savedIdentities.splice(idx, 1);
+    document.getElementById('modalBody').innerHTML = renderProfileModal();
+}
+function useSavedIdentity(idx) {
+    const id = savedIdentities[idx];
+    if (!id) return;
+    closeModal();
+    quickSetSwapType('IDENTITY');
+    state.toIdentityType = id.type;
+    state.toIdentityValue = id.value;
+    document.getElementById('identityType').value = id.type;
+    document.getElementById('identityValue').value = id.value;
+    refreshUI();
+    showMessage(`Using saved ${IDENTITY_TYPE_LABELS[id.type] || id.type}: ${id.value}`, 'success');
 }
 
-function initiateIdentitySwap() {
-    const source = document.getElementById('identitySourceSelect')?.value;
-    const identityType = document.getElementById('identityTypeSelect')?.value;
-    const identityValue = document.getElementById('identityValue')?.value.trim();
-    const amount = parseFloat(document.getElementById('identityAmount')?.value) || 0;
-    const pin = document.getElementById('identityPin')?.value || '';
-    const sourceId = document.getElementById('identitySourceId')?.value.trim();
-    const msg = document.getElementById('identityMsg');
-    
-    if (!source) { if (msg) { msg.className = 'message show error'; msg.textContent = 'Select a source.'; } return; }
-    if (!identityValue) { if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter the recipient identity.'; } return; }
-    if (amount <= 0) { if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter a valid amount.'; } return; }
-    if (!pin || pin.length < 4) { if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter your PIN.'; } return; }
-    if (msg) { msg.className = 'message'; msg.textContent = ''; }
-    
-    let sourceInstitution = '', sourceIdentifier = '', assetType = 'ACCOUNT', isHooked = false;
-    
-    if (source.startsWith('hooked_')) {
-        const ref = source.replace('hooked_', '');
-        const hooked = hookedSources.find(s => s.source_reference === ref);
-        if (hooked) {
-            sourceInstitution = hooked.institution;
-            sourceIdentifier = hooked.identifier;
-            assetType = hooked.asset_type || 'ACCOUNT';
-            isHooked = true;
-        }
-    } else if (source.startsWith('inst_')) {
-        sourceInstitution = source.replace('inst_', '');
-        sourceIdentifier = sourceId || '';
-        if (!sourceIdentifier) {
-            if (msg) { msg.className = 'message show error'; msg.textContent = 'Enter your source identifier.'; }
-            return;
-        }
-    }
-    
-    if (!sourceInstitution || !sourceIdentifier) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Fill in all source details.'; }
-        return;
-    }
-    
-    const payload = {
-        swap_type: 'IDENTITY',
-        from_institution: sourceInstitution,
-        source_institution: sourceInstitution,
-        source_identifier: sourceIdentifier,
-        asset_type: assetType,
-        amount: amount,
-        currency: currency,
-        pin: pin,
-        wallet_pin: pin,
-        identity_type: identityType,
-        identity_value: identityValue,
-        reference: 'IDENTITY_' + Date.now(),
-        idempotency_key: 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2,8)
-    };
-    
-    if (isHooked) {
-        const ref = source.replace('hooked_', '');
-        const hooked = hookedSources.find(s => s.source_reference === ref);
-        if (hooked) {
-            payload.source_reference = ref;
-            payload._is_hooked = true;
-            payload.access_token = hooked.access_token;
-        }
-    }
-    
-    const btn = document.querySelector('#modalBody .btn-primary');
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Initiating...'; }
-    if (msg) { msg.className = 'message show info'; msg.textContent = 'Initiating identity swap...'; }
-    
-    fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    })
-    .then(res => res.json())
-    .then(result => {
-        if (result.status === 'pending_identity_confirmation') {
-            identitySwapRef = result.swap_reference;
-            document.getElementById('modalBody').innerHTML = `
-                <div class="text-center" style="padding:1.5em 0;">
-                    <div style="font-size:3em;color:var(--amber);">⏳</div>
-                    <h3 style="margin:0.5em 0 0.3em;">Identity Swap Initiated</h3>
-                    <p class="text-muted">The recipient must claim this swap within 24 hours.</p>
-                    <div class="preview-box" style="text-align:left;">
-                        <div class="preview-row"><span class="label">Reference</span><span class="value">${result.swap_reference}</span></div>
-                        <div class="preview-row"><span class="label">Recipient</span><span class="value">${identityType}: ${identityValue}</span></div>
-                        <div class="preview-row"><span class="label">Amount</span><span class="value">${currencySymbol} ${amount.toFixed(2)}</span></div>
-                        <div class="preview-row"><span class="label">Expires</span><span class="value">${result.expires_at || '24 hours'}</span></div>
-                    </div>
-                    <p style="font-size:0.8rem;opacity:0.5;margin-top:0.5em;">
-                        Recipient can claim at: <strong>/claim.php?ref=${result.swap_reference}</strong>
-                    </p>
-                    <button class="btn btn-primary btn-block mt-16" onclick="closeModal();location.reload();">Done</button>
-                </div>
-            `;
-        } else {
-            document.getElementById('modalBody').innerHTML = `
-                <div class="text-center" style="padding:1.5em 0;">
-                    <div style="font-size:3em;color:var(--red);">❌</div>
-                    <h3 style="margin:0.5em 0 0.3em;">Failed</h3>
-                    <p style="color:var(--red);">${result.message || result.error || 'Failed to initiate identity swap.'}</p>
-                    <button class="btn btn-secondary btn-block mt-16" onclick="renderIdentitySwap()">← Try Again</button>
-                </div>
-            `;
-        }
-    })
-    .catch(err => {
-        document.getElementById('modalBody').innerHTML = `
-            <div class="text-center" style="padding:1.5em 0;">
-                <div style="font-size:3em;color:var(--red);">❌</div>
-                <h3 style="margin:0.5em 0 0.3em;">Error</h3>
-                <p style="color:var(--red);">${err.message || 'Network error'}</p>
-                <button class="btn btn-secondary btn-block mt-16" onclick="renderIdentitySwap()">← Try Again</button>
-            </div>
-        `;
-    });
+// ============================================================
+// MODAL / MESSAGE HELPERS
+// ============================================================
+function openModal(title, bodyHtml) {
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalBody').innerHTML = bodyHtml;
+    document.getElementById('modal').classList.add('active');
 }
-
-function claimIdentity(swapRef) {
-    window.location.href = `claim.php?ref=${swapRef}`;
+function closeModal() { document.getElementById('modal').classList.remove('active'); }
+function showMessage(text, type = 'info') {
+    const el = document.getElementById('mainMessage');
+    el.textContent = text;
+    el.className = `message show ${type}`;
+    clearTimeout(showMessage._t);
+    showMessage._t = setTimeout(() => el.classList.remove('show'), 6000);
 }
-
-// ============================================================================
-// MULTI-SOURCE SWAP
-// ============================================================================
-
-function renderMultiSource() {
-    const body = document.getElementById('modalBody');
-    
-    let html = `
-        <div class="step-indicator">
-            <div class="step-dot active"></div>
-            <div class="step-dot"></div>
-            <div class="step-dot"></div>
-        </div>
-        <div class="step-label">
-            <span class="active">1. Select Sources</span>
-            <span>2. Destination</span>
-            <span>3. Confirm</span>
-        </div>
-        <p class="text-muted" style="margin-bottom:1em;">Combine money from multiple sources to send as one.</p>
-    `;
-    
-    // Available sources
-    html += `<div class="form-group"><label>Available Sources</label>`;
-    
-    if (hookedSources.length === 0) {
-        html += `<div class="text-muted" style="padding:1em 0;">No hooked sources available. Connect a source first.</div>`;
-    } else {
-        hookedSources.forEach((s) => {
-            const isSelected = selectedMultiSources.some(sl => sl.source_reference === s.source_reference);
-            html += `
-                <div class="source-item ${isSelected ? 'selected' : ''}" onclick="toggleMultiSource('${s.source_reference}')">
-                    <span class="source-icon">${typeIcons[s.asset_type] || '🏦'}</span>
-                    <div class="source-info">
-                        <div class="source-name">${s.institution}</div>
-                        <div class="source-detail">${s.identifier}</div>
-                    </div>
-                    <div class="source-amount">
-                        <input type="number" class="form-control" id="ms_amount_${s.source_reference}" 
-                               placeholder="Amount" step="0.01" min="0.01" 
-                               ${!isSelected ? 'disabled' : ''}
-                               onchange="updateMultiSourceTotal()">
-                        <button class="btn btn-sm btn-secondary" onclick="checkMultiSourceBalance('${s.source_reference}')">💰</button>
-                    </div>
-                    <span class="source-check">${isSelected ? '✅' : '☐'}</span>
-                </div>
-            `;
-        });
-    }
-    html += `</div>`;
-    
-    // Total
-    html += `
-        <div class="flex-between" style="padding:0.5em 0;border-top:2px solid var(--line);">
-            <span class="text-muted">Total Amount</span>
-            <span class="source-total" id="multiSourceTotal">${currencySymbol} 0.00</span>
-        </div>
-    `;
-    
-    // Destination
-    html += `
-        <div class="form-group">
-            <label>Destination</label>
-            <select class="form-control" id="multiDestSelect" onchange="checkMultiSourceReady()">
-                <option value="">Select destination...</option>
-    `;
-    if (userIdentifiers.length > 0) {
-        userIdentifiers.forEach(id => {
-            html += `<option value="id_${id.value}">${id.value} (${id.type})</option>`;
-        });
-    }
-    Object.entries(participants).forEach(([code, p]) => {
-        html += `<option value="inst_${code}">${p.name} (${code})</option>`;
-    });
-    html += `</select></div>`;
-    
-    html += `
-        <div class="form-group" id="multiDestIdGroup" style="display:none;">
-            <label>Destination Identifier</label>
-            <input type="text" class="form-control" id="multiDestId" placeholder="Account number, phone, or email">
-        </div>
-        <div class="form-group">
-            <label>Destination Asset Type</label>
-            <div class="asset-pills" id="multiDestAssetPills">
-    `;
-    supportedAssetTypes.forEach(a => {
-        html += `<span class="asset-pill" onclick="selectMultiDestAsset('${a}')">${assetLabel[a] || a}</span>`;
-    });
-    html += `
-            </div>
-        </div>
-        <div id="multiMsg" class="message"></div>
-        <button class="btn btn-primary btn-block" onclick="executeMultiSourceSwap()" id="multiExecuteBtn" disabled>
-            Execute Multi-Source Swap →
-        </button>
-    `;
-    
-    body.innerHTML = html;
-    
-    document.getElementById('multiDestSelect')?.addEventListener('change', function() {
-        document.getElementById('multiDestIdGroup').style.display = 
-            this.value && this.value.startsWith('inst_') ? 'block' : 'none';
-        checkMultiSourceReady();
-    });
-    document.getElementById('multiDestId')?.addEventListener('input', checkMultiSourceReady);
-    document.querySelectorAll('#multiDestAssetPills .asset-pill').forEach(el => {
-        el.addEventListener('click', checkMultiSourceReady);
-    });
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str == null ? '' : String(str);
+    return div.innerHTML;
 }
-
-let multiDestAsset = 'ACCOUNT';
-
-function toggleMultiSource(ref) {
-    const idx = selectedMultiSources.findIndex(s => s.source_reference === ref);
-    if (idx >= 0) {
-        selectedMultiSources.splice(idx, 1);
-    } else {
-        const source = hookedSources.find(s => s.source_reference === ref);
-        if (source) {
-            selectedMultiSources.push({
-                source_reference: ref,
-                institution: source.institution,
-                identifier: source.identifier,
-                asset_type: source.asset_type || 'ACCOUNT',
-                amount: 0
-            });
-        }
-    }
-    
-    document.querySelectorAll('.source-item').forEach(el => {
-        const input = el.querySelector('input');
-        const refAttr = input?.id?.replace('ms_amount_', '');
-        if (refAttr) {
-            const isSelected = selectedMultiSources.some(s => s.source_reference === refAttr);
-            el.classList.toggle('selected', isSelected);
-            input.disabled = !isSelected;
-            if (!isSelected) input.value = '';
-            el.querySelector('.source-check').textContent = isSelected ? '✅' : '☐';
-        }
-    });
-    
-    updateMultiSourceTotal();
-    checkMultiSourceReady();
-}
-
-function updateMultiSourceTotal() {
-    let total = 0;
-    selectedMultiSources.forEach(s => {
-        const input = document.getElementById(`ms_amount_${s.source_reference}`);
-        const amount = parseFloat(input?.value) || 0;
-        s.amount = amount;
-        total += amount;
-    });
-    document.getElementById('multiSourceTotal').textContent = `${currencySymbol} ${total.toFixed(2)}`;
-    checkMultiSourceReady();
-}
-
-function checkMultiSourceBalance(ref) {
-    const source = hookedSources.find(s => s.source_reference === ref);
-    if (!source) return;
-    
-    const input = document.getElementById(`ms_amount_${ref}`);
-    const btn = input?.closest('.source-amount')?.querySelector('button');
-    if (btn) btn.textContent = '⏳';
-    
-    fetch(balanceUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            source_reference: ref,
-            institution: source.institution,
-            identifier: source.identifier,
-            asset_type: source.asset_type || 'ACCOUNT'
-        })
-    })
-    .then(res => res.json())
-    .then(data => {
-        if (btn) {
-            if (data.success && data.balance !== undefined) {
-                btn.textContent = `${currencySymbol} ${Number(data.balance).toFixed(2)}`;
-                btn.style.color = 'var(--forest)';
-            } else {
-                btn.textContent = '⚠️';
-                btn.style.color = 'var(--red)';
-            }
-        }
-    })
-    .catch(() => {
-        if (btn) { btn.textContent = '❌'; btn.style.color = 'var(--red)'; }
-    });
-}
-
-function selectMultiDestAsset(asset) {
-    multiDestAsset = asset;
-    document.querySelectorAll('#multiDestAssetPills .asset-pill').forEach(el => {
-        const label = el.textContent.trim();
-        const match = Object.entries(assetLabel).find(([k,v]) => v === label);
-        el.classList.toggle('active', match && match[0] === asset);
-    });
-    checkMultiSourceReady();
-}
-
-function checkMultiSourceReady() {
-    const dest = document.getElementById('multiDestSelect')?.value;
-    const btn = document.getElementById('multiExecuteBtn');
-    const msg = document.getElementById('multiMsg');
-    
-    const hasSources = selectedMultiSources.length >= 2;
-    let allHaveAmount = true, total = 0;
-    selectedMultiSources.forEach(s => {
-        const input = document.getElementById(`ms_amount_${s.source_reference}`);
-        const amount = parseFloat(input?.value) || 0;
-        if (amount <= 0) allHaveAmount = false;
-        total += amount;
-    });
-    
-    let destValid = false;
-    if (dest) {
-        if (dest.startsWith('id_')) destValid = true;
-        else if (dest.startsWith('inst_')) {
-            const id = document.getElementById('multiDestId')?.value.trim();
-            destValid = !!id;
-        }
-    }
-    
-    const ready = hasSources && allHaveAmount && total > 0 && destValid && multiDestAsset;
-    
-    if (btn) btn.disabled = !ready;
-    if (msg && !ready) {
-        let reason = '';
-        if (!hasSources) reason = 'Select at least 2 sources.';
-        else if (!allHaveAmount) reason = 'Enter amounts for all selected sources.';
-        else if (total <= 0) reason = 'Total amount must be > 0.';
-        else if (!destValid) reason = 'Select a destination and fill in details.';
-        if (reason) { msg.className = 'message show warning'; msg.textContent = reason; }
-        else { msg.className = 'message'; msg.textContent = ''; }
-    } else if (msg) { msg.className = 'message'; msg.textContent = ''; }
-}
-
-function executeMultiSourceSwap() {
-    const dest = document.getElementById('multiDestSelect')?.value;
-    const msg = document.getElementById('multiMsg');
-    const btn = document.getElementById('multiExecuteBtn');
-    
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Processing...'; }
-    
-    let destInstitution = '', destIdentifier = '', destType = multiDestAsset || 'ACCOUNT';
-    
-    if (dest.startsWith('id_')) {
-        destIdentifier = dest.replace('id_', '');
-        destInstitution = 'IDENTITY';
-    } else if (dest.startsWith('inst_')) {
-        destInstitution = dest.replace('inst_', '');
-        destIdentifier = document.getElementById('multiDestId')?.value.trim() || '';
-    }
-    
-    if (!destInstitution || !destIdentifier) {
-        if (msg) { msg.className = 'message show error'; msg.textContent = 'Fill in destination details.'; }
-        if (btn) { btn.disabled = false; btn.textContent = 'Execute Multi-Source Swap →'; }
-        return;
-    }
-    
-    const sources = selectedMultiSources.map(s => ({
-        source_reference: s.source_reference,
-        institution: s.institution,
-        identifier: s.identifier,
-        asset_type: s.asset_type || 'ACCOUNT',
-        amount: s.amount
-    }));
-    
-    const total = selectedMultiSources.reduce((sum, s) => sum + s.amount, 0);
-    
-    const payload = {
-        swap_type: 'MULTI_SOURCE',
-        sources: sources,
-        to_institution: destInstitution,
-        destination_institution: destInstitution,
-        destination_identifier: destIdentifier,
-        destination_asset_type: destType,
-        asset_type: destType,
-        amount: total,
-        currency: currency,
-        reference: 'MULTI_' + Date.now(),
-        idempotency_key: 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2,8)
-    };
-    
-    if (msg) { msg.className = 'message show info'; msg.textContent = 'Processing multi-source swap...'; }
-    
-    fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    })
-    .then(res => res.json())
-    .then(result => {
-        if (result.status === 'success' || result.status === 'pending_cashout' || result.success) {
-            document.getElementById('modalBody').innerHTML = `
-                <div class="text-center" style="padding:1.5em 0;">
-                    <div style="font-size:3em;color:var(--forest);">✅</div>
-                    <h3 style="margin:0.5em 0 0.3em;">Multi-Source Swap Complete!</h3>
-                    <p class="text-muted">Combined ${selectedMultiSources.length} sources successfully</p>
-                    <div class="preview-box" style="text-align:left;">
-                        <div class="preview-row"><span class="label">Reference</span><span class="value">${result.reference || result.swap_reference || 'N/A'}</span></div>
-                        <div class="preview-row"><span class="label">Total</span><span class="value">${currencySymbol} ${total.toFixed(2)}</span></div>
-                        <div class="preview-row"><span class="label">Destination</span><span class="value">${destInstitution}</span></div>
-                        <div class="preview-row"><span class="label">Sources</span><span class="value">${selectedMultiSources.length}</span></div>
-                    </div>
-                    <button class="btn btn-primary btn-block mt-16" onclick="closeModal();location.reload();">Done</button>
-                </div>
-            `;
-        } else {
-            document.getElementById('modalBody').innerHTML = `
-                <div class="text-center" style="padding:1.5em 0;">
-                    <div style="font-size:3em;color:var(--red);">❌</div>
-                    <h3 style="margin:0.5em 0 0.3em;">Failed</h3>
-                    <p style="color:var(--red);">${result.message || result.error || 'Multi-source swap failed.'}</p>
-                    <button class="btn btn-secondary btn-block mt-16" onclick="renderMultiSource()">← Try Again</button>
-                </div>
-            `;
-        }
-    })
-    .catch(err => {
-        document.getElementById('modalBody').innerHTML = `
-            <div class="text-center" style="padding:1.5em 0;">
-                <div style="font-size:3em;color:var(--red);">❌</div>
-                <h3 style="margin:0.5em 0 0.3em;">Error</h3>
-                <p style="color:var(--red);">${err.message || 'Network error'}</p>
-                <button class="btn btn-secondary btn-block mt-16" onclick="renderMultiSource()">← Try Again</button>
-            </div>
-        `;
-    });
-}
-
-// ============================================================================
-// HOOKED SOURCES
-// ============================================================================
-
-function renderHookedSources() {
-    const body = document.getElementById('modalBody');
-    
-    let html = `
-        <div style="margin-bottom:1em;">
-            <p class="text-muted">Your connected sources. These are saved accounts/wallets you can swap from.</p>
-        </div>
-    `;
-    
-    if (hookedSources.length === 0) {
-        html += `
-            <div class="text-center" style="padding:2em 0;">
-                <div style="font-size:2.4em;margin-bottom:0.5em;">🔌</div>
-                <p class="text-muted">No sources connected yet.</p>
-                <p style="font-size:0.8rem;opacity:0.5;">Connect a source via your bank's OAuth flow.</p>
-            </div>
-        `;
-    } else {
-        hookedSources.forEach(s => {
-            const isExpired = s.token_expires_at && new Date(s.token_expires_at) < new Date();
-            html += `
-                <div class="identifier-item">
-                    <span class="icon">${typeIcons[s.asset_type] || '🏦'}</span>
-                    <div>
-                        <div class="value">${s.institution}</div>
-                        <div class="type">${s.identifier} · ${assetLabel[s.asset_type] || s.asset_type}</div>
-                    </div>
-                    <span class="badge ${isExpired ? 'badge-danger' : 'badge-success'}">
-                        ${isExpired ? '⚠️ Expired' : '✅ Active'}
-                    </span>
-                    <button class="btn btn-sm btn-danger" onclick="revokeSource('${s.source_reference}')">Revoke</button>
-                </div>
-            `;
-        });
-    }
-    
-    html += `
-        <button class="btn btn-secondary btn-block mt-16" onclick="closeModal()">Close</button>
-    `;
-    
-    body.innerHTML = html;
-}
-
-function revokeSource(ref) {
-    if (!confirm('Revoke this source?')) return;
-    
-    fetch('/api/v1/source/revoke.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_reference: ref })
-    })
-    .then(res => res.json())
-    .then(data => {
-        if (data.success) renderHookedSources();
-        else alert(data.message || 'Failed to revoke');
-    })
-    .catch(err => alert('Error: ' + err.message));
-}
-
-// ============================================================================
-// IDENTITIES
-// ============================================================================
-
-function renderIdentities() {
-    const body = document.getElementById('modalBody');
-    
-    let html = `
-        <div style="margin-bottom:1em;">
-            <p class="text-muted">These are the ways people can send money to you.</p>
-        </div>
-    `;
-    
-    if (userIdentifiers.length === 0) {
-        html += `<div class="text-center text-muted" style="padding:2em 0;">No identifiers added.</div>`;
-    } else {
-        userIdentifiers.forEach(id => {
-            html += `
-                <div class="identifier-item">
-                    <span class="icon">${typeIcons[id.identity_type] || '🔑'}</span>
-                    <div>
-                        <div class="value">${id.identity_value}</div>
-                        <div class="type">${id.identity_type}</div>
-                    </div>
-                    ${id.is_verified ? '<span class="badge badge-success">Verified</span>' : ''}
-                </div>
-            `;
-        });
-    }
-    
-    html += `
-        <div class="text-center text-muted" style="font-size:0.7rem;padding:1em 0;">
-            To add more identifiers, contact support.
-        </div>
-        <button class="btn btn-secondary btn-block" onclick="closeModal()">Close</button>
-    `;
-    
-    body.innerHTML = html;
-}
-
-// ============================================================================
-// KEYBOARD SHORTCUTS
-// ============================================================================
-
-document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') closeModal();
-});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 </script>
 </body>
 </html>
