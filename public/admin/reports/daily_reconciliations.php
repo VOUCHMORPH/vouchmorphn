@@ -6,7 +6,7 @@ ini_set('display_errors', 1);
 session_start();
 
 // Define project root
-define('PROJECT_ROOT', dirname(__DIR__, 2));
+define('PROJECT_ROOT', dirname(__DIR__, 3));
 
 // Load required classes FIRST
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
