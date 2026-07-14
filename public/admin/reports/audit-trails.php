@@ -102,6 +102,20 @@ try {
     $actions = [];
 }
 
+// Add API logs
+$apiLogStmt = $db->prepare("
+    SELECT 
+        COUNT(*) as total_calls,
+        SUM(CASE WHEN success THEN 1 ELSE 0 END) as successful,
+        AVG(duration_ms) as avg_duration,
+        message_type
+    FROM api_message_logs
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+    GROUP BY message_type
+");
+$apiLogStmt->execute([':start_date' => $startDate, ':end_date' => $endDate]);
+$apiLogs = $apiLogStmt->fetchAll(PDO::FETCH_ASSOC);
+
 // ============================================================
 // CSV EXPORT
 // ============================================================
