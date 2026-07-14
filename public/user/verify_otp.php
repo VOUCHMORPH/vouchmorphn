@@ -33,18 +33,33 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 header('Content-Type: application/json; charset=utf-8');
 
 // ============================================================
-// Load country configuration
+// Load country configuration - FIXED: Use proper config loading
 // ============================================================
 try {
     $config = \Core\Config\LoadCountry::getConfig();
 } catch (Throwable $e) {
-    echo json_encode(['success' => false, 'message' => 'Configuration error: ' . $e->getMessage()]);
+    error_log("VERIFY OTP: Config error: " . $e->getMessage());
+    echo json_encode(['success' => false, 'message' => 'System configuration error. Please try again.']);
     exit;
 }
 
 $systemCountry = $config['country'] ?? getenv('VM_COUNTRY') ?? 'BW';
 $countryConfig = $config['country_settings'][$systemCountry] ?? [];
 $countryName = $countryConfig['name'] ?? $systemCountry;
+$countryDialCode = $countryConfig['dial_code'] ?? '+267';
+
+// ============================================================
+// Helper: Normalize phone number (matches register.php)
+// ============================================================
+function normalizePhone(string $phoneInput, string $dialCode): string
+{
+    $phoneInput = preg_replace('/[^\d+]/', '', trim($phoneInput));
+    if ($phoneInput === '') return '';
+    if (str_starts_with($phoneInput, '+')) {
+        return '+' . preg_replace('/[^0-9]/', '', substr($phoneInput, 1));
+    }
+    return $dialCode . ltrim($phoneInput, '0');
+}
 
 // ============================================================
 // Database connection
@@ -65,15 +80,29 @@ try {
 // Get and validate input
 // ============================================================
 $inputType = $_POST['input_type'] ?? 'phone';
-$identifier = trim($_POST['identifier'] ?? '');
+$rawIdentifier = trim($_POST['identifier'] ?? '');
 $otp = trim($_POST['otp'] ?? '');
 
+error_log("VERIFY OTP: Input - Type: {$inputType}, Raw Identifier: {$rawIdentifier}, OTP: {$otp}");
+
+// ============================================================
+// FIX: Normalize the identifier to match what's stored in session
+// ============================================================
+if ($inputType === 'phone') {
+    $identifier = normalizePhone($rawIdentifier, $countryDialCode);
+    error_log("VERIFY OTP: Normalized phone: {$identifier}");
+} else {
+    $identifier = $rawIdentifier;
+}
+
 if (empty($identifier)) {
+    error_log("VERIFY OTP: Empty identifier after normalization");
     echo json_encode(['success' => false, 'message' => 'Identifier is required']);
     exit;
 }
 
 if (empty($otp) || strlen($otp) !== 6 || !preg_match('/^\d{6}$/', $otp)) {
+    error_log("VERIFY OTP: Invalid OTP format: {$otp}");
     echo json_encode(['success' => false, 'message' => 'Please enter a valid 6-digit verification code']);
     exit;
 }
@@ -82,20 +111,23 @@ if (empty($otp) || strlen($otp) !== 6 || !preg_match('/^\d{6}$/', $otp)) {
 // Check if temp registration data exists in session
 // ============================================================
 if (!isset($_SESSION['temp_registration'])) {
+    error_log("VERIFY OTP: No temp registration in session");
     echo json_encode(['success' => false, 'message' => 'Registration session expired. Please try again.']);
     exit;
 }
 
 $tempData = $_SESSION['temp_registration'];
+error_log("VERIFY OTP: Temp data identifier: " . ($tempData['identifier_value'] ?? 'NULL'));
 
-// Verify the identifier matches
+// Verify the identifier matches (both are now normalized)
 if ($tempData['identifier_value'] !== $identifier) {
+    error_log("VERIFY OTP: Identifier mismatch - Expected: {$tempData['identifier_value']}, Got: {$identifier}");
     echo json_encode(['success' => false, 'message' => 'Identifier mismatch. Please try again.']);
     exit;
 }
 
 // ============================================================
-// Verify OTP from database
+// Verify OTP from database - FIXED: Use 'verification' not 'registration'
 // ============================================================
 try {
     // Get the OTP record from database
@@ -111,32 +143,41 @@ try {
     $stmt->execute([':identifier' => $tempData['otp_destination']]);
     $otpRecord = $stmt->fetch(PDO::FETCH_ASSOC);
 
+    error_log("VERIFY OTP: OTP Record found: " . ($otpRecord ? 'YES' : 'NO'));
+
     if (!$otpRecord) {
+        error_log("VERIFY OTP: No OTP record found for: " . $tempData['otp_destination']);
         echo json_encode(['success' => false, 'message' => 'Verification code not found. Please request a new code.']);
         exit;
     }
 
     // Check if expired
     if (strtotime($otpRecord['expires_at']) < time()) {
+        error_log("VERIFY OTP: OTP expired - Expires: {$otpRecord['expires_at']}, Now: " . date('Y-m-d H:i:s'));
         echo json_encode(['success' => false, 'message' => 'Verification code has expired. Please request a new code.']);
         exit;
     }
 
     // Check attempts
     if ($otpRecord['attempts'] >= 5) {
+        error_log("VERIFY OTP: Too many attempts - Attempts: {$otpRecord['attempts']}");
         echo json_encode(['success' => false, 'message' => 'Too many failed attempts. Please request a new code.']);
         exit;
     }
 
     // Verify the OTP
+    error_log("VERIFY OTP: Verifying OTP...");
     if (!password_verify($otp, $otpRecord['code_hash'])) {
         // Increment attempts
         $stmt = $db->prepare("UPDATE otp_logs SET attempts = attempts + 1 WHERE otp_id = :otp_id");
         $stmt->execute([':otp_id' => $otpRecord['otp_id']]);
         
+        error_log("VERIFY OTP: OTP verification FAILED");
         echo json_encode(['success' => false, 'message' => 'Invalid verification code. Please try again.']);
         exit;
     }
+
+    error_log("VERIFY OTP: OTP verification SUCCESS");
 
     // ============================================================
     // OTP is valid - Mark as used and create the user
@@ -150,6 +191,8 @@ try {
     $db->beginTransaction();
 
     try {
+        error_log("VERIFY OTP: Creating user...");
+
         // Check if user already exists (double-check)
         $stmt = $db->prepare("
             SELECT user_id FROM users 
@@ -172,6 +215,7 @@ try {
         
         if ($stmt->fetch()) {
             $db->rollBack();
+            error_log("VERIFY OTP: User already exists");
             echo json_encode(['success' => false, 'message' => 'User already exists. Please login.']);
             exit;
         }
@@ -205,6 +249,7 @@ try {
         ]);
 
         $userId = $db->lastInsertId();
+        error_log("VERIFY OTP: User created with ID: {$userId}");
 
         // Create wallet for the user
         $stmt = $db->prepare("
@@ -222,6 +267,7 @@ try {
 
         // Commit transaction
         $db->commit();
+        error_log("VERIFY OTP: Transaction committed");
 
         // Store user in session
         $stmt = $db->prepare("
@@ -255,11 +301,13 @@ try {
 
     } catch (Throwable $e) {
         $db->rollBack();
-        error_log("REGISTER USER CREATION ERROR: " . $e->getMessage());
+        error_log("VERIFY OTP USER CREATION ERROR: " . $e->getMessage());
+        error_log("VERIFY OTP USER CREATION ERROR Trace: " . $e->getTraceAsString());
         echo json_encode(['success' => false, 'message' => 'Failed to create account: ' . $e->getMessage()]);
     }
 
 } catch (Throwable $e) {
     error_log("VERIFY OTP ERROR: " . $e->getMessage());
+    error_log("VERIFY OTP ERROR Trace: " . $e->getTraceAsString());
     echo json_encode(['success' => false, 'message' => 'System error: ' . $e->getMessage()]);
 }
