@@ -220,6 +220,27 @@ try {
             exit;
         }
 
+        // ============================================================
+        // FIX: Handle date_of_birth properly - fallback to NULL or default
+        // ============================================================
+        $dateOfBirth = $tempData['date_of_birth'] ?? null;
+        
+        // If date_of_birth is provided, validate it
+        if ($dateOfBirth !== null && $dateOfBirth !== '') {
+            // Try to parse the date, if invalid, set to null
+            $timestamp = strtotime($dateOfBirth);
+            if ($timestamp !== false) {
+                $dateOfBirth = date('Y-m-d', $timestamp);
+            } else {
+                $dateOfBirth = null;
+                error_log("VERIFY OTP: Invalid date_of_birth format, setting to NULL");
+            }
+        } else {
+            // If no date_of_birth provided, use NULL
+            $dateOfBirth = null;
+            error_log("VERIFY OTP: No date_of_birth provided, using NULL");
+        }
+
         // Create the user
         $stmt = $db->prepare("
             INSERT INTO users (
@@ -244,7 +265,7 @@ try {
             ':drivers_license' => ($tempData['identifier_type'] === 'drivers_license') ? $tempData['identifier_value'] : null,
             ':passport' => ($tempData['identifier_type'] === 'passport') ? $tempData['identifier_value'] : null,
             ':full_name' => $tempData['full_name'] ?? null,
-            ':date_of_birth' => $tempData['date_of_birth'] ?? null,
+            ':date_of_birth' => $dateOfBirth, // This will be NULL if not provided
             ':pin_hash' => $tempData['pin_hash']
         ]);
 
