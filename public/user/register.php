@@ -15,6 +15,8 @@ ini_set('display_startup_errors', 1);
 //   4. Cazacom API called ONLY for sending SMS OTP
 //   5. Proper duplicate user checking before sending OTP
 //   6. Enhanced error handling with user-friendly messages
+//   7. FIXED: otp_logs check constraints - identifier_type uses 'phone' not 'sms'
+//   8. FIXED: otp_logs purpose uses 'verification' instead of 'registration'
 // ============================================================
 
 define('PROJECT_ROOT', dirname(__DIR__, 2));
@@ -156,20 +158,24 @@ try {
         )
     ");
 
-    // Create otp_logs table
+    // Create otp_logs table - FIXED: Added proper check constraints
     $swapDb->exec("
         CREATE TABLE IF NOT EXISTS otp_logs (
             otp_id SERIAL PRIMARY KEY,
             identifier VARCHAR(100) NOT NULL,
             identifier_type VARCHAR(20) NOT NULL,
             code_hash VARCHAR(255) NOT NULL,
-            purpose VARCHAR(50) DEFAULT 'registration',
+            purpose VARCHAR(50) DEFAULT 'verification',
             expires_at TIMESTAMP NOT NULL,
             used_at TIMESTAMP NULL,
             attempts INT DEFAULT 0,
             ip_address VARCHAR(45),
             user_agent TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT otp_logs_identifier_type_check 
+                CHECK (identifier_type IN ('phone', 'email', 'sms')),
+            CONSTRAINT otp_logs_purpose_check 
+                CHECK (purpose IN ('verification', 'registration', 'login', 'password_reset', 'withdrawal'))
         )
     ");
 
@@ -449,7 +455,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $swapDb->prepare("UPDATE otp_logs SET used_at = NOW() WHERE identifier = :identifier AND used_at IS NULL");
         $stmt->execute([':identifier' => $otpDestination]);
 
-        // Store OTP in database
+        // ============================================================
+        // FIXED: Store OTP in database with correct values for check constraints
+        // - identifier_type: 'phone' for SMS (not 'sms')
+        // - purpose: 'verification' (not 'registration')
+        // ============================================================
+        $dbIdentifierType = ($otpChannel === 'sms') ? 'phone' : $otpChannel;
+        
         $stmt = $swapDb->prepare("
             INSERT INTO otp_logs
             (identifier, identifier_type, code_hash, purpose, expires_at, attempts, ip_address, user_agent, created_at)
@@ -458,9 +470,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ");
         $stmt->execute([
             ':identifier' => $otpDestination,
-            ':identifier_type' => $otpChannel,
+            ':identifier_type' => $dbIdentifierType,  // 'phone' for SMS, 'email' for email
             ':code_hash' => $otpHash,
-            ':purpose' => 'registration',
+            ':purpose' => 'verification',  // Changed from 'registration' to 'verification'
             ':expires_at' => $expiresAt,
             ':ip_address' => $ipAddress,
             ':user_agent' => $userAgent
