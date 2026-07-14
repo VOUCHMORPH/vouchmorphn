@@ -648,7 +648,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>End-of-day net positions and settlement amounts</p>
                 <p style="margin-top: 15px;">
-                    <a href="daily_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="reports/daily_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
             <div class="card">
@@ -657,7 +657,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>7-year audit trail of all swap transactions</p>
                 <p style="margin-top: 15px;">
-                    <a href="audit_trails.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="reports/audit_trails.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
             <div class="card">
@@ -666,7 +666,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>AML/KYC compliance and fraud monitoring</p>
                 <p style="margin-top: 15px;">
-                    <a href="suspicious.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="reports/suspicious.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
             <div class="card">
@@ -675,7 +675,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>Monthly financial reconciliation report</p>
                 <p style="margin-top: 15px;">
-                    <a href="monthly_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="reports/monthly_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
         </div>
