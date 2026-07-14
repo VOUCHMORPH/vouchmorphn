@@ -241,17 +241,47 @@ try {
             error_log("VERIFY OTP: No date_of_birth provided, using NULL");
         }
 
+        // ============================================================
+        // FIX: Generate username if not provided or use phone as fallback
+        // ============================================================
+        $username = $tempData['username'] ?? null;
+        $fullName = $tempData['full_name'] ?? null;
+        
+        // If no username, generate from full name or phone
+        if (empty($username)) {
+            if (!empty($fullName)) {
+                // Generate username from full name (remove spaces, lowercase)
+                $username = strtolower(preg_replace('/\s+/', '', $fullName));
+                // Add random numbers if too common
+                $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE username = :username");
+                $stmt->execute([':username' => $username]);
+                if ($stmt->fetchColumn() > 0) {
+                    $username .= rand(100, 999);
+                }
+            } else {
+                // Use phone as fallback
+                $username = 'user_' . preg_replace('/[^0-9]/', '', $tempData['phone_number'] ?? $identifier);
+                // Ensure uniqueness
+                $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE username = :username");
+                $stmt->execute([':username' => $username]);
+                if ($stmt->fetchColumn() > 0) {
+                    $username .= rand(100, 999);
+                }
+            }
+            error_log("VERIFY OTP: Generated username: {$username}");
+        }
+
         // Create the user
         $stmt = $db->prepare("
             INSERT INTO users (
                 phone, phone2, phone3, email, 
                 national_id, drivers_license, passport,
-                full_name, date_of_birth, 
+                full_name, username, date_of_birth, 
                 password_hash, created_at, verified
             ) VALUES (
                 :phone, :phone2, :phone3, :email,
                 :national_id, :drivers_license, :passport,
-                :full_name, :date_of_birth,
+                :full_name, :username, :date_of_birth,
                 :pin_hash, NOW(), true
             )
         ");
@@ -264,8 +294,9 @@ try {
             ':national_id' => ($tempData['identifier_type'] === 'national_id') ? $tempData['identifier_value'] : null,
             ':drivers_license' => ($tempData['identifier_type'] === 'drivers_license') ? $tempData['identifier_value'] : null,
             ':passport' => ($tempData['identifier_type'] === 'passport') ? $tempData['identifier_value'] : null,
-            ':full_name' => $tempData['full_name'] ?? null,
-            ':date_of_birth' => $dateOfBirth, // This will be NULL if not provided
+            ':full_name' => $fullName,
+            ':username' => $username,
+            ':date_of_birth' => $dateOfBirth,
             ':pin_hash' => $tempData['pin_hash']
         ]);
 
@@ -292,7 +323,7 @@ try {
 
         // Store user in session
         $stmt = $db->prepare("
-            SELECT user_id, phone, email, full_name, created_at 
+            SELECT user_id, phone, email, full_name, username, created_at 
             FROM users WHERE user_id = :user_id
         ");
         $stmt->execute([':user_id' => $userId]);
@@ -303,7 +334,7 @@ try {
             'phone' => $user['phone'],
             'email' => $user['email'],
             'full_name' => $user['full_name'] ?? '',
-            'username' => $user['full_name'] ?? '',
+            'username' => $user['username'] ?? '',
             'created_at' => $user['created_at']
         ]);
 
