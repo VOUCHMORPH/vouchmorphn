@@ -20,7 +20,7 @@ if (!isset($_SESSION['user']) || empty($_SESSION['user'])) {
 }
 
 $user = $_SESSION['user'];
-$countryCode = $user['country_code'] ?? 'BW';
+$countryCode = isset($user['country_code']) ? $user['country_code'] : 'BW';
 
 // --- LOAD COUNTRY CONFIGURATION ---
 $countryConfigPath = __DIR__ . "/../../../config/countries/" . strtolower($countryCode) . "/config.php";
@@ -45,15 +45,15 @@ $feesConfig = file_exists($feesConfigPath) ? json_decode(file_get_contents($fees
 // --- INITIALIZE SERVICES ---
 $feeService = new FeeService($feesConfig, 'BWP');
 $settlement = new HybridSettlementStrategy($swapDB);
-$forexService = new ForexService($swapDB, $countryConfig, [], $feeService);
+$forexService = new ForexService($swapDB, $countryConfig, array(), $feeService);
 
 // --- DATE RANGE (Current Month or Selected) ---
-$year = $_GET['year'] ?? date('Y');
-$month = $_GET['month'] ?? date('m');
-$firstDayOfMonth = date('Y-m-01', strtotime("{$year}-{$month}-01"));
-$lastDayOfMonth = date('Y-m-t', strtotime("{$year}-{$month}-01"));
-$institutionFilter = $_GET['institution'] ?? null;
-$currencyFilter = $_GET['currency'] ?? null;
+$year = isset($_GET['year']) ? $_GET['year'] : date('Y');
+$month = isset($_GET['month']) ? $_GET['month'] : date('m');
+$firstDayOfMonth = date('Y-m-01', strtotime($year . '-' . $month . '-01'));
+$lastDayOfMonth = date('Y-m-t', strtotime($year . '-' . $month . '-01'));
+$institutionFilter = isset($_GET['institution']) ? $_GET['institution'] : null;
+$currencyFilter = isset($_GET['currency']) ? $_GET['currency'] : null;
 
 // --- FETCH MONTHLY LEDGER RECONCILIATIONS ---
 $reconciliationsQuery = "
@@ -69,20 +69,20 @@ $reconciliationsQuery = "
 ";
 
 $stmt = $swapDB->prepare($reconciliationsQuery);
-$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $rawReconciliations = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Group reconciliations by date
-$reconciliations = [];
+$reconciliations = array();
 foreach ($rawReconciliations as $row) {
     $date = $row['date'];
     if (!isset($reconciliations[$date])) {
-        $reconciliations[$date] = [
+        $reconciliations[$date] = array(
             'date' => $date,
             'total_transactions' => 0,
             'total_amount' => 0,
-            'status' => []
-        ];
+            'status' => array()
+        );
     }
     $reconciliations[$date]['total_transactions'] += $row['total_transactions'];
     $reconciliations[$date]['total_amount'] += $row['total_amount'];
@@ -102,7 +102,7 @@ $swapsQuery = "
     WHERE DATE(created_at) BETWEEN :start_date AND :end_date
 ";
 $stmt = $swapDB->prepare($swapsQuery);
-$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $swapsSummary = $stmt->fetch(PDO::FETCH_ASSOC);
 
 // --- FETCH MONTHLY FEE BREAKDOWN ---
@@ -120,7 +120,7 @@ $feeQuery = "
     ORDER BY total_amount DESC
 ";
 $stmt = $swapDB->prepare($feeQuery);
-$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $feeBreakdown = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // --- FETCH MONTHLY CROSS-BORDER ACTIVITY ---
@@ -141,7 +141,7 @@ $crossBorderQuery = "
     ORDER BY transaction_count DESC
 ";
 $stmt = $swapDB->prepare($crossBorderQuery);
-$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $crossBorderActivity = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // --- FETCH MONTHLY CASHOUT RETRY STATISTICS ---
@@ -155,7 +155,7 @@ $retryQuery = "
     WHERE DATE(created_at) BETWEEN :start_date AND :end_date
 ";
 $stmt = $swapDB->prepare($retryQuery);
-$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $retryStats = $stmt->fetch(PDO::FETCH_ASSOC);
 
 // --- FETCH MONTHLY CORRIDOR ACTIVITY ---
@@ -172,7 +172,7 @@ $corridorQuery = "
     ORDER BY settlement_count DESC
 ";
 $stmt = $swapDB->prepare($corridorQuery);
-$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $corridorActivity = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // --- FETCH MONTHLY FX ACTIVITY ---
@@ -190,7 +190,7 @@ $fxQuery = "
     GROUP BY source_currency, destination_currency
 ";
 $stmt = $swapDB->prepare($fxQuery);
-$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $fxActivity = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // --- FETCH MONTHLY HOOK STATISTICS ---
@@ -203,7 +203,7 @@ $hookQuery = "
     WHERE DATE(created_at) BETWEEN :start_date AND :end_date
 ";
 $stmt = $swapDB->prepare($hookQuery);
-$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $hookStats = $stmt->fetch(PDO::FETCH_ASSOC);
 
 // --- FETCH TOP INSTITUTIONS BY VOLUME ---
@@ -222,7 +222,7 @@ $topInstitutionsQuery = "
     LIMIT 10
 ";
 $stmt = $swapDB->prepare($topInstitutionsQuery);
-$stmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $topInstitutions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Add fee invoices summary
@@ -238,7 +238,7 @@ $feeInvoicesStmt = $swapDB->prepare("
     WHERE DATE(created_at) BETWEEN :start_date AND :end_date
     GROUP BY fee_type, currency, status
 ");
-$feeInvoicesStmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$feeInvoicesStmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $feeInvoices = $feeInvoicesStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Add regulatory reports
@@ -251,7 +251,7 @@ $regulatoryStmt = $swapDB->prepare("
     WHERE DATE(created_at) BETWEEN :start_date AND :end_date
     GROUP BY report_type
 ");
-$regulatoryStmt->execute([':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth]);
+$regulatoryStmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $regulatoryReports = $regulatoryStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // --- CALCULATE TOTALS ---
@@ -280,12 +280,15 @@ $institutions = $instStmt->fetchAll(PDO::FETCH_COLUMN);
 // Filter out empty values
 $institutions = array_filter($institutions);
 
+// Get username for logging
+$username = isset($user['username']) ? $user['username'] : 'unknown';
+
 // --- AUDIT LOG ---
 $logFile = __DIR__ . '/../../../storage/logs/monthly_reconciliations.log';
 if (!is_dir(dirname($logFile))) {
     mkdir(dirname($logFile), 0755, true);
 }
-file_put_contents($logFile, "[" . date('Y-m-d H:i:s') . "] Monthly reconciliations run for {$firstDayOfMonth} to {$lastDayOfMonth} by {$user['username'] ?? 'unknown'}\n", FILE_APPEND);
+file_put_contents($logFile, "[" . date('Y-m-d H:i:s') . "] Monthly reconciliations run for {$firstDayOfMonth} to {$lastDayOfMonth} by {$username}\n", FILE_APPEND);
 
 // --- CSV EXPORT ---
 if (isset($_GET['export']) && $_GET['export'] === 'csv') {
@@ -294,106 +297,110 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     $output = fopen('php://output', 'w');
     
     // Header
-    fputcsv($output, ['VOUCHMORPH MONTHLY RECONCILIATION REPORT']);
-    fputcsv($output, ['Month', date('F Y', strtotime("{$year}-{$month}-01"))]);
-    fputcsv($output, ['Generated At', date('Y-m-d H:i:s')]);
-    fputcsv($output, []);
+    fputcsv($output, array('VOUCHMORPH MONTHLY RECONCILIATION REPORT'));
+    fputcsv($output, array('Month', date('F Y', strtotime($year . '-' . $month . '-01'))));
+    fputcsv($output, array('Generated At', date('Y-m-d H:i:s')));
+    fputcsv($output, array());
     
     // Summary
-    fputcsv($output, ['SUMMARY']);
-    $swapsTotal = $swapsSummary['total_swaps'] ?? 0;
-    $swapsSuccessful = $swapsSummary['successful_swaps'] ?? 0;
-    $swapsFailed = $swapsSummary['failed_swaps'] ?? 0;
-    $swapsPending = $swapsSummary['pending_swaps'] ?? 0;
-    $swapsCancelled = $swapsSummary['cancelled_swaps'] ?? 0;
-    $swapsTotalAmount = $swapsSummary['total_amount'] ?? 0;
+    fputcsv($output, array('SUMMARY'));
+    $swapsTotal = isset($swapsSummary['total_swaps']) ? $swapsSummary['total_swaps'] : 0;
+    $swapsSuccessful = isset($swapsSummary['successful_swaps']) ? $swapsSummary['successful_swaps'] : 0;
+    $swapsFailed = isset($swapsSummary['failed_swaps']) ? $swapsSummary['failed_swaps'] : 0;
+    $swapsPending = isset($swapsSummary['pending_swaps']) ? $swapsSummary['pending_swaps'] : 0;
+    $swapsCancelled = isset($swapsSummary['cancelled_swaps']) ? $swapsSummary['cancelled_swaps'] : 0;
+    $swapsTotalAmount = isset($swapsSummary['total_amount']) ? $swapsSummary['total_amount'] : 0;
     
-    fputcsv($output, ['Total Swaps', $swapsTotal]);
-    fputcsv($output, ['Successful Swaps', $swapsSuccessful]);
-    fputcsv($output, ['Failed Swaps', $swapsFailed]);
-    fputcsv($output, ['Pending Swaps', $swapsPending]);
-    fputcsv($output, ['Cancelled Swaps', $swapsCancelled]);
-    fputcsv($output, ['Total Volume', number_format($swapsTotalAmount, 2)]);
-    fputcsv($output, ['Total Fees Collected', number_format($totalFees, 2)]);
-    fputcsv($output, ['Total VAT', number_format($totalVat, 2)]);
-    fputcsv($output, ['Total FX Volume', number_format($totalFxVolume, 2)]);
-    fputcsv($output, ['Total Forex Fees', number_format($totalForexFees, 2)]);
-    fputcsv($output, ['Total Retries', $retryStats['total_retries'] ?? 0]);
-    fputcsv($output, ['Free Retries Used', $retryStats['free_retries_used'] ?? 0]);
-    fputcsv($output, []);
+    fputcsv($output, array('Total Swaps', $swapsTotal));
+    fputcsv($output, array('Successful Swaps', $swapsSuccessful));
+    fputcsv($output, array('Failed Swaps', $swapsFailed));
+    fputcsv($output, array('Pending Swaps', $swapsPending));
+    fputcsv($output, array('Cancelled Swaps', $swapsCancelled));
+    fputcsv($output, array('Total Volume', number_format($swapsTotalAmount, 2)));
+    fputcsv($output, array('Total Fees Collected', number_format($totalFees, 2)));
+    fputcsv($output, array('Total VAT', number_format($totalVat, 2)));
+    fputcsv($output, array('Total FX Volume', number_format($totalFxVolume, 2)));
+    fputcsv($output, array('Total Forex Fees', number_format($totalForexFees, 2)));
+    $retryTotal = isset($retryStats['total_retries']) ? $retryStats['total_retries'] : 0;
+    $retryFree = isset($retryStats['free_retries_used']) ? $retryStats['free_retries_used'] : 0;
+    fputcsv($output, array('Total Retries', $retryTotal));
+    fputcsv($output, array('Free Retries Used', $retryFree));
+    fputcsv($output, array());
     
     // Daily Breakdown
-    fputcsv($output, ['DAILY BREAKDOWN']);
-    fputcsv($output, ['Date', 'Total Transactions', 'Total Amount', 'Status Breakdown']);
+    fputcsv($output, array('DAILY BREAKDOWN'));
+    fputcsv($output, array('Date', 'Total Transactions', 'Total Amount', 'Status Breakdown'));
     foreach ($reconciliations as $row) {
         $statusStr = '';
         foreach ($row['status'] as $status => $count) {
-            $statusStr .= "$status: $count, ";
+            $statusStr .= $status . ': ' . $count . ', ';
         }
-        fputcsv($output, [
+        fputcsv($output, array(
             $row['date'],
             $row['total_transactions'],
             number_format($row['total_amount'], 2),
             rtrim($statusStr, ', ')
-        ]);
+        ));
     }
-    fputcsv($output, []);
+    fputcsv($output, array());
     
     // Fee Breakdown
-    fputcsv($output, ['FEE BREAKDOWN']);
-    fputcsv($output, ['Fee Type', 'Count', 'Total Amount', 'VAT', 'Currency']);
+    fputcsv($output, array('FEE BREAKDOWN'));
+    fputcsv($output, array('Fee Type', 'Count', 'Total Amount', 'VAT', 'Currency'));
     foreach ($feeBreakdown as $fee) {
-        fputcsv($output, [
+        fputcsv($output, array(
             $fee['fee_type'],
             $fee['count'],
             number_format($fee['total_amount'], 2),
             number_format($fee['total_vat'], 2),
             $fee['currency']
-        ]);
+        ));
     }
-    fputcsv($output, []);
+    fputcsv($output, array());
     
     // Cross Border Activity
-    fputcsv($output, ['CROSS-BORDER ACTIVITY']);
-    fputcsv($output, ['From', 'To', 'Transactions', 'Volume (Source)', 'Volume (Dest)', 'Corridor Fees', 'Avg Rate']);
+    fputcsv($output, array('CROSS-BORDER ACTIVITY'));
+    fputcsv($output, array('From', 'To', 'Transactions', 'Volume (Source)', 'Volume (Dest)', 'Corridor Fees', 'Avg Rate'));
     foreach ($crossBorderActivity as $cb) {
-        fputcsv($output, [
+        $corridorFee = isset($cb['total_corridor_fees']) ? $cb['total_corridor_fees'] : 0;
+        fputcsv($output, array(
             $cb['source_country'],
             $cb['destination_country'],
             $cb['transaction_count'],
             number_format($cb['total_source_amount'], 2),
             number_format($cb['total_destination_amount'], 2),
-            number_format($cb['total_corridor_fees'] ?? 0, 2),
+            number_format($corridorFee, 2),
             number_format($cb['avg_exchange_rate'], 4)
-        ]);
+        ));
     }
-    fputcsv($output, []);
+    fputcsv($output, array());
     
     // FX Activity
-    fputcsv($output, ['FX ACTIVITY']);
-    fputcsv($output, ['From', 'To', 'Transactions', 'Volume', 'Forex Fees', 'Avg Rate']);
+    fputcsv($output, array('FX ACTIVITY'));
+    fputcsv($output, array('From', 'To', 'Transactions', 'Volume', 'Forex Fees', 'Avg Rate'));
     foreach ($fxActivity as $fx) {
-        fputcsv($output, [
+        fputcsv($output, array(
             $fx['source_currency'],
             $fx['destination_currency'],
             $fx['fx_transactions'],
             number_format($fx['total_fx_volume'], 2),
             number_format($fx['total_forex_fees'], 2),
             number_format($fx['avg_rate'], 4)
-        ]);
+        ));
     }
-    fputcsv($output, []);
+    fputcsv($output, array());
     
     // Top Institutions
-    fputcsv($output, ['TOP INSTITUTIONS BY VOLUME']);
-    fputcsv($output, ['Institution', 'Transactions', 'Total Volume', 'Total Fees']);
+    fputcsv($output, array('TOP INSTITUTIONS BY VOLUME'));
+    fputcsv($output, array('Institution', 'Transactions', 'Total Volume', 'Total Fees'));
     foreach ($topInstitutions as $inst) {
-        fputcsv($output, [
+        $totalFees = isset($inst['total_fees']) ? $inst['total_fees'] : 0;
+        fputcsv($output, array(
             $inst['institution'],
             $inst['transaction_count'],
             number_format($inst['total_volume'], 2),
-            number_format($inst['total_fees'] ?? 0, 2)
-        ]);
+            number_format($totalFees, 2)
+        ));
     }
     
     fclose($output);
@@ -401,21 +408,21 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
 }
 
 // --- MONTH NAVIGATION ---
-$prevMonth = date('Y-m', strtotime("-1 month", strtotime("{$year}-{$month}-01")));
-$nextMonth = date('Y-m', strtotime("+1 month", strtotime("{$year}-{$month}-01")));
-$monthName = date('F Y', strtotime("{$year}-{$month}-01"));
+$prevMonth = date('Y-m', strtotime("-1 month", strtotime($year . '-' . $month . '-01')));
+$nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . '-01')));
+$monthName = date('F Y', strtotime($year . '-' . $month . '-01'));
 
 // Safe values for display
-$swapsTotal = $swapsSummary['total_swaps'] ?? 0;
-$swapsSuccessful = $swapsSummary['successful_swaps'] ?? 0;
-$swapsFailed = $swapsSummary['failed_swaps'] ?? 0;
-$swapsPending = $swapsSummary['pending_swaps'] ?? 0;
-$swapsCancelled = $swapsSummary['cancelled_swaps'] ?? 0;
-$swapsTotalAmount = $swapsSummary['total_amount'] ?? 0;
-$retryTotal = $retryStats['total_retries'] ?? 0;
-$retryFree = $retryStats['free_retries_used'] ?? 0;
-$hookActive = $hookStats['active_hooks'] ?? 0;
-$hookUsers = $hookStats['unique_users'] ?? 0;
+$swapsTotal = isset($swapsSummary['total_swaps']) ? $swapsSummary['total_swaps'] : 0;
+$swapsSuccessful = isset($swapsSummary['successful_swaps']) ? $swapsSummary['successful_swaps'] : 0;
+$swapsFailed = isset($swapsSummary['failed_swaps']) ? $swapsSummary['failed_swaps'] : 0;
+$swapsPending = isset($swapsSummary['pending_swaps']) ? $swapsSummary['pending_swaps'] : 0;
+$swapsCancelled = isset($swapsSummary['cancelled_swaps']) ? $swapsSummary['cancelled_swaps'] : 0;
+$swapsTotalAmount = isset($swapsSummary['total_amount']) ? $swapsSummary['total_amount'] : 0;
+$retryTotal = isset($retryStats['total_retries']) ? $retryStats['total_retries'] : 0;
+$retryFree = isset($retryStats['free_retries_used']) ? $retryStats['free_retries_used'] : 0;
+$hookActive = isset($hookStats['active_hooks']) ? $hookStats['active_hooks'] : 0;
+$hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -660,7 +667,7 @@ $hookUsers = $hookStats['unique_users'] ?? 0;
                                     <td><?php echo number_format($cb['transaction_count']); ?></td>
                                     <td><?php echo number_format($cb['total_source_amount'], 2); ?> <?php echo htmlspecialchars($cb['source_currency']); ?></td>
                                     <td><?php echo number_format($cb['total_destination_amount'], 2); ?> <?php echo htmlspecialchars($cb['destination_currency']); ?></td>
-                                    <td><?php echo number_format($cb['total_corridor_fees'] ?? 0, 2); ?></td>
+                                    <td><?php echo number_format(isset($cb['total_corridor_fees']) ? $cb['total_corridor_fees'] : 0, 2); ?></td>
                                     <td><?php echo number_format($cb['avg_exchange_rate'], 4); ?></td>
                                 </tr>
                             <?php endforeach; ?>
@@ -753,7 +760,7 @@ $hookUsers = $hookStats['unique_users'] ?? 0;
                                     <td><?php echo htmlspecialchars($inst['institution']); ?></td>
                                     <td><?php echo number_format($inst['transaction_count']); ?></td>
                                     <td><?php echo number_format($inst['total_volume'], 2); ?></td>
-                                    <td><?php echo number_format($inst['total_fees'] ?? 0, 2); ?></td>
+                                    <td><?php echo number_format(isset($inst['total_fees']) ? $inst['total_fees'] : 0, 2); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
