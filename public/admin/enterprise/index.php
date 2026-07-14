@@ -1,637 +1,294 @@
 <?php
-// index.php - VOUCHMORPH NATIONAL DISBURSEMENT REGISTRY
-require_once 'auth.php';
+/**
+ * enterprise/settings/users.php
+ *
+ * The "system admin creates login profiles" screen -- IT Manager Enterprise,
+ * IT Officer Enterprise, and Owner can create/deactivate organization_users
+ * accounts here. Enforces the hierarchy from earlier in this conversation:
+ * IT Manager can add/remove anyone; IT Officer is restricted to lower-tier
+ * operational roles; IT Support gets no add/delete power at all.
+ *
+ * A person must have a base `users` record (their global VouchMorph
+ * identity, phone+PIN login) before being granted an organization role --
+ * this screen searches for that record by phone/email first, and only
+ * creates a new one if nothing matches.
+ */
+require_once '../auth.php';
 $user = requireEnterpriseAuth();
-
 $pdo = getDBConnection();
 $orgId = getOrganizationId();
 $userRole = $user['role'] ?? 'viewer';
-$departmentId = $user['department_id'] ?? null;
 
-// ============================================================
-// ROLE-BASED DATA FETCHING
-// ============================================================
-
-$roleFilter = '';
-$roleParams = [':org_id' => $orgId];
-
-if (!in_array($userRole, ['owner', 'auditor'])) {
-    $roleFilter = ' AND department_id = :dept_id ';
-    $roleParams[':dept_id'] = $departmentId;
+// Roles this screen is allowed to touch at all
+$canManage = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise']);
+if (!$canManage) {
+    header('HTTP/1.1 403 Forbidden');
+    die('Only an Owner, IT Manager, or IT Officer can manage user accounts.');
 }
 
-try {
-    $stmt = $pdo->prepare("
-        SELECT 
-            COUNT(*) as total,
-            COALESCE(SUM(total_amount), 0) as amount,
-            COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN total_amount ELSE 0 END), 0) as completed_amount
-        FROM import_batches 
-        WHERE organization_id = :org_id 
-        " . $roleFilter . "
-        AND created_at >= DATE_TRUNC('month', CURRENT_DATE)
-    ");
-    $stmt->execute($roleParams);
-    $currentMonth = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['total' => 0, 'amount' => 0, 'completed_amount' => 0];
+// What roles THIS user is allowed to assign to someone else, per the
+// hierarchy: IT Manager/Owner = everyone. IT Officer = operational roles
+// only, not approver/senior_approver/department_head/owner/it_manager.
+$assignableRoles = in_array($userRole, ['owner', 'it_manager_enterprise'])
+    ? ['owner', 'department_head', 'program_officer', 'approver', 'senior_approver',
+       'beneficiary_registrar', 'auditor', 'viewer',
+       'it_manager_enterprise', 'it_officer_enterprise', 'it_support']
+    : ['program_officer', 'beneficiary_registrar', 'viewer', 'it_support']; // IT Officer's ceiling
 
-    $stmt = $pdo->prepare("
-        SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as amount 
-        FROM import_batches 
-        WHERE organization_id = :org_id 
-        " . $roleFilter . "
-        AND status = 'READY_FOR_APPROVAL'
-    ");
-    $stmt->execute($roleParams);
-    $pendingApproval = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['count' => 0, 'amount' => 0];
+$error = '';
+$success = '';
+$csrfToken = generateCsrfToken();
 
-    $stmt = $pdo->prepare("
-        SELECT * FROM import_batches 
-        WHERE organization_id = :org_id 
-        " . $roleFilter . "
-        ORDER BY created_at DESC LIMIT 6
-    ");
-    $stmt->execute($roleParams);
-    $recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    requireCsrfToken($_POST['csrf_token'] ?? null);
+    $action = $_POST['action'] ?? '';
 
-    $stmt = $pdo->prepare("
-        SELECT COUNT(*) as total 
-        FROM organization_beneficiaries 
-        WHERE organization_id = :org_id 
-        " . $roleFilter . "
-        AND is_active = true
-    ");
-    $stmt->execute($roleParams);
-    $beneficiaryCount = $stmt->fetchColumn() ?: 0;
+    if ($action === 'create_user') {
+        $phone = trim($_POST['phone'] ?? '');
+        $email = trim($_POST['email'] ?? '');
+        $fullName = trim($_POST['full_name'] ?? '');
+        $roleToAssign = $_POST['role'] ?? '';
+        $deptId = $_POST['department_id'] ?: null;
 
-    $stmt = $pdo->prepare("
-        SELECT 
-            COUNT(*) as total,
-            COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END), 0) as completed
-        FROM import_batches 
-        WHERE organization_id = :org_id 
-        " . $roleFilter . "
-        AND created_at >= DATE_TRUNC('month', CURRENT_DATE)
-    ");
-    $stmt->execute($roleParams);
-    $successData = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['total' => 0, 'completed' => 0];
-    $successRate = $successData['total'] > 0 ? round(($successData['completed'] / $successData['total']) * 100, 2) : 0;
+        if (!in_array($roleToAssign, $assignableRoles)) {
+            $error = 'You are not permitted to assign that role.';
+        } elseif (empty($phone) || empty($fullName)) {
+            $error = 'Phone number and full name are required.';
+        } else {
+            try {
+                $pdo->beginTransaction();
 
-    $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM disbursement_programs WHERE organization_id = :org_id AND status = 'ACTIVE'");
-    $stmt->execute([':org_id' => $orgId]);
-    $programCount = $stmt->fetchColumn() ?: 0;
+                // Does a global users record already exist for this phone?
+                $stmt = $pdo->prepare("SELECT user_id FROM users WHERE phone = :phone OR (email = :email AND :email != '')");
+                $stmt->execute([':phone' => $phone, ':email' => $email]);
+                $existingUser = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM departments WHERE organization_id = :org_id");
-    $stmt->execute([':org_id' => $orgId]);
-    $departmentCount = $stmt->fetchColumn() ?: 0;
+                if ($existingUser) {
+                    $targetUserId = $existingUser['user_id'];
+                } else {
+                    // Create a base identity with a random PIN -- they'll
+                    // need to reset it via forgot.php on first login, since
+                    // we don't want to email/SMS a real PIN in plaintext.
+                    $tempPin = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+                    $stmt = $pdo->prepare("
+                        INSERT INTO users (username, email, phone, password_hash, full_name, verified, created_at, updated_at)
+                        VALUES (:username, :email, :phone, :hash, :name, true, NOW(), NOW())
+                        RETURNING user_id
+                    ");
+                    $stmt->execute([
+                        ':username' => $phone,
+                        ':email' => $email ?: null,
+                        ':phone' => $phone,
+                        ':hash' => password_hash($tempPin, PASSWORD_DEFAULT),
+                        ':name' => $fullName,
+                    ]);
+                    $targetUserId = $stmt->fetchColumn();
+                    $success = "New account created. Temporary PIN: {$tempPin} -- share this securely, it will not be shown again.";
+                }
 
-    $stats = [
-        'disbursed' => $currentMonth['amount'],
-        'total_batches' => $currentMonth['total'],
-        'success_rate' => $successRate,
-        'pending' => $pendingApproval['count'],
-        'pending_amount' => $pendingApproval['amount'],
-        'beneficiaries' => $beneficiaryCount,
-        'successful_payments' => $successData['completed'],
-        'programs' => $programCount,
-        'departments' => $departmentCount
-    ];
+                // Already an org member?
+                $stmt = $pdo->prepare("SELECT id FROM organization_users WHERE organization_id = :org_id AND user_id = :user_id");
+                $stmt->execute([':org_id' => $orgId, ':user_id' => $targetUserId]);
+                if ($stmt->fetch()) {
+                    $pdo->rollBack();
+                    $error = 'This person is already a member of your organization. Edit their existing role instead of creating a new one.';
+                } else {
+                    $stmt = $pdo->prepare("
+                        INSERT INTO organization_users (organization_id, user_id, role, department_id, is_active, invited_by, invited_at, created_at, updated_at)
+                        VALUES (:org_id, :user_id, :role, :dept_id, true, :invited_by, NOW(), NOW(), NOW())
+                    ");
+                    $stmt->execute([
+                        ':org_id' => $orgId,
+                        ':user_id' => $targetUserId,
+                        ':role' => $roleToAssign,
+                        ':dept_id' => $deptId,
+                        ':invited_by' => $user['id'] ?? $user['user_id'] ?? null,
+                    ]);
 
-} catch (PDOException $e) {
-    error_log("Dashboard error: " . $e->getMessage());
-    $stats = ['disbursed' => 0, 'total_batches' => 0, 'success_rate' => 0, 'pending' => 0, 'pending_amount' => 0, 'beneficiaries' => 0, 'successful_payments' => 0, 'programs' => 0, 'departments' => 0];
-    $recentBatches = [];
+                    try {
+                        $auditStmt = $pdo->prepare("
+                            INSERT INTO organization_audit_logs (organization_id, user_id, action, entity_type, entity_id, new_values, ip_address, user_agent, created_at)
+                            VALUES (:org_id, :actor_id, 'USER_CREATED', 'organization_users', :entity_id, :new_values, :ip, :ua, NOW())
+                        ");
+                        $auditStmt->execute([
+                            ':org_id' => $orgId,
+                            ':actor_id' => $user['id'] ?? $user['user_id'] ?? null,
+                            ':entity_id' => $targetUserId,
+                            ':new_values' => json_encode(['role' => $roleToAssign, 'department_id' => $deptId, 'full_name' => $fullName]),
+                            ':ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+                            ':ua' => $_SERVER['HTTP_USER_AGENT'] ?? null,
+                        ]);
+                    } catch (PDOException $e) {
+                        error_log("[users.php] Audit log failed: " . $e->getMessage());
+                    }
+
+                    $pdo->commit();
+                    if (!$success) $success = 'User added to your organization.';
+                }
+            } catch (PDOException $e) {
+                $pdo->rollBack();
+                error_log("[users.php] create_user failed: " . $e->getMessage());
+                $error = 'Could not create this user. Please check the details and try again.';
+            }
+        }
+    } elseif ($action === 'deactivate_user') {
+        $targetOrgUserId = (int)($_POST['org_user_id'] ?? 0);
+
+        // Fetch target's current role to enforce the hierarchy ceiling
+        $stmt = $pdo->prepare("SELECT role FROM organization_users WHERE id = :id AND organization_id = :org_id");
+        $stmt->execute([':id' => $targetOrgUserId, ':org_id' => $orgId]);
+        $target = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$target) {
+            $error = 'User not found.';
+        } elseif (!in_array($target['role'], $assignableRoles)) {
+            // IT Officer trying to deactivate an approver/owner/etc: denied.
+            $error = 'You do not have permission to remove a user with that role.';
+        } else {
+            $stmt = $pdo->prepare("UPDATE organization_users SET is_active = false, updated_at = NOW() WHERE id = :id");
+            $stmt->execute([':id' => $targetOrgUserId]);
+
+            try {
+                $auditStmt = $pdo->prepare("
+                    INSERT INTO organization_audit_logs (organization_id, user_id, action, entity_type, entity_id, old_values, created_at)
+                    VALUES (:org_id, :actor_id, 'USER_DEACTIVATED', 'organization_users', :entity_id, :old_values, NOW())
+                ");
+                $auditStmt->execute([
+                    ':org_id' => $orgId,
+                    ':actor_id' => $user['id'] ?? $user['user_id'] ?? null,
+                    ':entity_id' => $targetOrgUserId,
+                    ':old_values' => json_encode(['role' => $target['role']]),
+                ]);
+            } catch (PDOException $e) {
+                error_log("[users.php] Audit log failed: " . $e->getMessage());
+            }
+            $success = 'User deactivated.';
+        }
+    }
 }
 
-$config = [
-    'show_actions' => in_array($userRole, ['owner', 'program_officer', 'department_head']),
-    'show_beneficiaries' => in_array($userRole, ['owner', 'auditor', 'program_officer', 'beneficiary_registrar', 'department_head', 'viewer']),
-    'show_all_batches' => !in_array($userRole, ['beneficiary_registrar']),
-    'show_governance' => in_array($userRole, ['owner', 'auditor', 'department_head']),
-    'show_settings' => in_array($userRole, ['owner']),
-];
+$stmt = $pdo->prepare("
+    SELECT ou.id, ou.role, ou.is_active, ou.department_id, ou.created_at,
+           u.full_name, u.phone, u.email, d.name as department_name
+    FROM organization_users ou
+    JOIN users u ON ou.user_id = u.user_id
+    LEFT JOIN departments d ON ou.department_id = d.id
+    WHERE ou.organization_id = :org_id
+    ORDER BY ou.is_active DESC, ou.role, u.full_name
+");
+$stmt->execute([':org_id' => $orgId]);
+$orgUsers = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-$departmentName = '';
-if ($departmentId) {
-    $stmt = $pdo->prepare("SELECT name FROM departments WHERE id = :id AND organization_id = :org_id");
-    $stmt->execute([':id' => $departmentId, ':org_id' => $orgId]);
-    $dept = $stmt->fetch(PDO::FETCH_ASSOC);
-    $departmentName = $dept['name'] ?? '';
-}
-
-$roleDisplay = strtoupper($userRole);
-$orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
-$fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats['pending'] + $stats['programs']), 3, '0', STR_PAD_LEFT);
-
-// ============================================================
-// ROLE-BASED ACTION BUTTONS
-// ============================================================
-$actions = [];
-if ($config['show_actions']) {
-    $actions[] = ['label' => 'DISBURSE FUNDS', 'href' => 'imports/upload.php', 'mark' => '§1', 'badge' => null];
-}
-if ($config['show_all_batches']) {
-    $actions[] = ['label' => 'BATCHES', 'href' => 'batches/index.php', 'mark' => '§2', 'badge' => $stats['total_batches'] > 0 ? $stats['total_batches'] : null];
-}
-$actions[] = ['label' => 'PENDING APPROVALS', 'href' => 'batches/index.php?filter=pending', 'mark' => '§3', 'badge' => $stats['pending'] > 0 ? $stats['pending'] : null];
-if ($config['show_beneficiaries']) {
-    $actions[] = ['label' => 'BENEFICIARIES', 'href' => 'beneficiaries/index.php', 'mark' => '§4', 'badge' => $stats['beneficiaries'] > 0 ? $stats['beneficiaries'] : null];
-}
-if ($config['show_governance']) {
-    $actions[] = ['label' => 'AUDIT TRAIL', 'href' => 'reports/audit_trail.php', 'mark' => '§5', 'badge' => null];
-}
-$actions[] = ['label' => 'REPORTS', 'href' => 'reports/index.php', 'mark' => '§6', 'badge' => null];
-
-function formatCurrency($amount) {
-    return 'BWP ' . number_format($amount, 2);
-}
+$stmt = $pdo->prepare("SELECT id, name FROM departments WHERE organization_id = :org_id ORDER BY name");
+$stmt->execute([':org_id' => $orgId]);
+$departments = $stmt->fetchAll(PDO::FETCH_ASSOC);
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · MULTI-ASSET DISBURSEMENT REGISTRY</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --paper:        #EEF1EF;
-            --panel:        #FFFFFF;
-            --ink-900:      #0F2138;
-            --ink-700:      #1D3557;
-            --ink-500:      #4A5A6E;
-            --ink-300:      #8A96A3;
-            --line:         #D3DAD6;
-            --line-strong:  #AEB8B2;
-            --brass:        #8A6D3B;
-            --brass-tint:   #F4EFE3;
-            --seal-red:     #7A2118;
-            --amber:        #8A5A0B;
-            --ledger-green: #24513A;
-            --green-tint:   #E5EEE7;
-            --blue-tint:    #E7EEF4;
-
-            --f-body: 'IBM Plex Sans', sans-serif;
-            --f-cond: 'IBM Plex Sans Condensed', sans-serif;
-            --f-mono: 'IBM Plex Mono', monospace;
-        }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        html, body { height: 100%; }
-
-        body {
-            font-family: var(--f-body);
-            background: var(--paper);
-            color: var(--ink-900);
-            font-size: 13px;
-            line-height: 1.45;
-            -webkit-font-smoothing: antialiased;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: var(--line-strong); }
-        a { color: inherit; }
-        button { font-family: inherit; cursor: pointer; }
-
-        .doc-panel { position: relative; background: var(--panel); border: 1px solid var(--line); }
-        .doc-panel::before, .doc-panel::after { content: ""; position: absolute; width: 9px; height: 9px; pointer-events: none; }
-        .doc-panel::before { top: -1px; left: -1px; border-top: 2px solid var(--brass); border-left: 2px solid var(--brass); }
-        .doc-panel::after  { bottom: -1px; right: -1px; border-bottom: 2px solid var(--brass); border-right: 2px solid var(--brass); }
-
-        .stamp {
-            display: inline-block; padding: 2px 8px; border: 1.5px solid currentColor;
-            transform: rotate(-2.5deg); font-family: var(--f-mono); font-size: 9px; font-weight: 600;
-            letter-spacing: 0.09em; text-transform: uppercase; white-space: nowrap;
-        }
-        .stamp.completed  { color: var(--ledger-green); }
-        .stamp.processing { color: var(--ink-700); }
-        .stamp.pending     { color: var(--amber); }
-        .stamp.failed      { color: var(--seal-red); }
-        .stamp.draft       { color: var(--ink-300); }
-
-        .eyebrow { font-family: var(--f-cond); font-weight: 700; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-500); }
-        .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
-
-        /* ============================================================
-           MASTHEAD - PERFECTLY CENTERED TITLE, USER MENU ON RIGHT
-           ============================================================ */
-        .masthead {
-            background: var(--ink-900);
-            color: white;
-            padding: 14px 32px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            position: relative;
-            border-bottom: 3px solid var(--brass);
-            min-height: 80px;
-        }
-        .masthead .center {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-            flex: 1;
-        }
-        .masthead h1 {
-            font-size: 19px;
-            font-weight: 700;
-            letter-spacing: 0.03em;
-            text-transform: uppercase;
-            text-align: center;
-        }
-        .masthead .file-ref {
-            font-family: var(--f-mono);
-            font-size: 11px;
-            color: rgba(255,255,255,0.35);
-            margin-top: 2px;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            text-align: center;
-        }
-
-        /* User menu - positioned absolutely on the right */
-        .masthead .user-menu {
-            position: absolute;
-            right: 32px;
-            top: 50%;
-            transform: translateY(-50%);
-            display: flex;
-            align-items: center;
-            gap: 14px;
-        }
-        .masthead .user-menu .role-pill {
-            font-family: var(--f-cond);
-            font-size: 10px;
-            font-weight: 700;
-            letter-spacing: 0.08em;
-            color: var(--brass);
-            border: 1px solid var(--brass);
-            padding: 2px 10px;
-            text-transform: uppercase;
-        }
-        .masthead .user-menu .status-dot {
-            display: inline-block;
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: #5FAE7E;
-            margin-right: 4px;
-        }
-        .masthead .user-menu .time {
-            font-family: var(--f-mono);
-            font-size: 10px;
-            color: rgba(255,255,255,0.4);
-        }
-        .masthead .user-menu .menu-divider {
-            width: 1px;
-            height: 20px;
-            background: rgba(255,255,255,0.08);
-        }
-        .masthead .user-menu .menu-link {
-            color: rgba(255,255,255,0.4);
-            text-decoration: none;
-            font-family: var(--f-cond);
-            font-size: 10px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            transition: var(--transition);
-            padding: 4px 8px;
-            border: 1px solid transparent;
-        }
-        .masthead .user-menu .menu-link:hover {
-            color: var(--brass);
-            border-color: var(--brass);
-        }
-        .masthead .user-menu .menu-link.logout-link {
-            color: rgba(255,255,255,0.25);
-        }
-        .masthead .user-menu .menu-link.logout-link:hover {
-            color: var(--seal-red);
-            border-color: var(--seal-red);
-        }
-        .masthead .user-menu .menu-link .icon {
-            margin-right: 4px;
-        }
-
-        /* ============================================================
-           VOUCHMORPH™ WATERMARK - ROTATED 90° ON LEFT SIDE
-           ============================================================ */
-        .vouchmorph-watermark {
-            position: fixed;
-            left: 8px;
-            top: 50%;
-            transform: translateY(-50%) rotate(-90deg);
-            font-family: var(--f-mono);
-            font-size: 11px;
-            letter-spacing: 0.25em;
-            color: rgba(138, 109, 59, 0.12);
-            font-weight: 700;
-            text-transform: uppercase;
-            user-select: none;
-            pointer-events: none;
-            white-space: nowrap;
-            z-index: 0;
-        }
-        .vouchmorph-watermark .tm {
-            font-size: 8px;
-            vertical-align: super;
-            letter-spacing: 0;
-        }
-
-        /* ============================================================
-           CENTRAL LAYOUT
-           ============================================================ */
-        .stage {
-            flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center;
-            padding: 140px 20px 60px;
-            position: relative;
-            z-index: 1;
-        }
-        .stage-inner { width: 100%; max-width: 980px; display: flex; flex-direction: column; align-items: center; gap: 34px; }
-
-        .welcome { text-align: center; margin-bottom: 12px; }
-        .welcome .eyebrow { justify-content: center; }
-        .welcome h2 { font-size: 20px; font-weight: 700; letter-spacing: 0.01em; text-transform: uppercase; margin-top: 6px; }
-        .welcome p { font-family: var(--f-cond); font-size: 11px; color: var(--ink-500); margin-top: 4px; letter-spacing: 0.02em; text-transform: uppercase; }
-
-        /* ============================================================
-           ACTION LAUNCHER
-           ============================================================ */
-        .launcher { width: 100%; }
-        .launcher-grid {
-            display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; margin-top: 28px;
-        }
-        .action-btn {
-            position: relative;
-            width: 190px;
-            padding: 22px 16px 16px;
-            background: var(--panel);
-            border: 1.5px solid var(--ink-900);
-            text-decoration: none;
-            color: var(--ink-900);
-            display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px;
-            transition: background 0.12s ease, transform 0.12s ease;
-        }
-        .action-btn:hover { background: var(--brass-tint); transform: translateY(-2px); }
-        .action-btn .mark { font-family: var(--f-mono); font-size: 10px; color: var(--brass); font-weight: 700; letter-spacing: 0.08em; }
-        .action-btn .label { font-family: var(--f-cond); font-weight: 700; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; }
-        .action-btn .badge {
-            position: absolute; top: -9px; right: -9px;
-            background: var(--seal-red); color: white; font-family: var(--f-mono); font-weight: 700;
-            font-size: 10px; min-width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
-            padding: 0 5px; border: 1.5px solid var(--paper);
-        }
-
-        .reveal-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 6px; }
-        .reveal-btn {
-            font-family: var(--f-cond); font-weight: 700; font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase;
-            background: var(--ink-900); color: white; border: none; padding: 11px 22px;
-        }
-        .reveal-btn:hover { background: var(--brass); color: var(--ink-900); }
-        .reveal-btn.is-active { background: var(--brass); color: var(--ink-900); }
-
-        .reveal-panel {
-            width: 100%;
-            display: none;
-            animation: fadeIn 0.15s ease;
-        }
-        .reveal-panel.is-open { display: block; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
-
-        .statement { padding: 20px 24px 16px; }
-        .statement-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; flex-wrap: wrap; gap: 6px; }
-        .statement-head .period { font-family: var(--f-mono); font-size: 10px; color: var(--ink-300); text-transform: uppercase; }
-        .statement-row { display: flex; align-items: flex-end; gap: 0; flex-wrap: wrap; justify-content: center; }
-        .statement-item { padding: 0 22px; border-left: 1px solid var(--line); text-align: center; }
-        .statement-item:first-child { border-left: none; padding-left: 0; }
-        .statement-item .label { font-family: var(--f-cond); font-size: 10px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-500); }
-        .statement-item .value { font-family: var(--f-mono); font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
-        .statement-item.hero .value { font-size: 28px; border-bottom: 4px double var(--ink-900); padding-bottom: 8px; display: inline-block; }
-        .statement-item:not(.hero) .value { font-size: 18px; color: var(--ink-700); }
-
-        .register-wrap { width: 100%; }
-        .panel-head {
-            padding: 9px 16px; background: var(--brass-tint); border-bottom: 1px solid var(--line);
-            display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;
-        }
-        .panel-head .eyebrow { color: var(--ink-700); }
-        .table-scroll { max-height: 340px; overflow-y: auto; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; }
-        th, td { padding: 10px 16px; text-align: left; border-bottom: 1px solid var(--line); }
-        th {
-            background: var(--brass-tint); font-family: var(--f-cond); font-weight: 700; font-size: 10px;
-            color: var(--ink-500); text-transform: uppercase; letter-spacing: 0.07em;
-            border-bottom: 2px solid var(--line-strong); position: sticky; top: 0;
-        }
-        tbody tr:nth-child(even) td { background: #F8FAF8; }
-        tbody tr:hover td { background: var(--blue-tint); }
-        td code { font-family: var(--f-mono); font-size: 11px; font-weight: 600; color: var(--ink-700); background: var(--brass-tint); padding: 1px 5px; text-transform: uppercase; }
-        td .amt { font-family: var(--f-mono); font-weight: 700; font-variant-numeric: tabular-nums; }
-        .action-link { font-family: var(--f-cond); font-weight: 700; font-size: 11px; letter-spacing: 0.06em; text-decoration: none; color: var(--ink-700); border-bottom: 1px solid var(--brass); text-transform: uppercase; }
-
-        .empty-state { text-align: center; padding: 30px 12px; color: var(--ink-300); }
-        .empty-state .mark { font-family: var(--f-mono); font-size: 20px; display: block; margin-bottom: 8px; color: var(--brass); }
-        .empty-state p { font-family: var(--f-cond); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
-        .empty-state a { color: var(--ink-700); font-weight: 700; text-decoration: none; border-bottom: 1px solid var(--brass); }
-
-        .page-footer { padding: 16px 0 26px; text-align: center; border-top: 1px solid var(--line); width: 100%; }
-        .page-footer .notice { font-family: var(--f-cond); font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-300); }
-        .page-footer .role-line { font-family: var(--f-mono); font-size: 9px; color: var(--ink-300); margin-top: 4px; text-transform: uppercase; }
-
-        @media (max-width: 992px) {
-            .masthead { padding: 12px 16px; flex-direction: column; min-height: auto; gap: 6px; }
-            .masthead .user-menu {
-                position: static;
-                transform: none;
-                justify-content: center;
-                flex-wrap: wrap;
-            }
-            .vouchmorph-watermark { display: none; }
-            .stage { padding: 80px 16px 40px; }
-        }
-
-        @media (max-width: 640px) {
-            .masthead h1 { font-size: 14px; }
-            .masthead .file-ref { font-size: 9px; }
-            .masthead .user-menu { gap: 8px; }
-            .masthead .user-menu .role-pill { font-size: 8px; padding: 1px 6px; }
-            .masthead .user-menu .time { font-size: 8px; }
-            .masthead .user-menu .menu-link { font-size: 8px; padding: 2px 6px; }
-            .stage { padding: 60px 14px 30px; }
-            .action-btn { width: 150px; padding: 18px 12px 14px; }
-            .statement-item { border-left: none; padding: 10px 0 0; border-top: 1px solid var(--line); flex: 1 1 100%; }
-            .statement-item:first-child { border-top: none; }
-            .vouchmorph-watermark { display: none; }
-        }
-
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --paper: #131C24; --panel: #1B2733; --line: #2C3A45; --line-strong: #3C4C58;
-                --ink-900: #ECEFF2; --ink-700: #C9D2D9; --ink-500: #93A2AC; --ink-300: #6B7A85;
-                --brass-tint: #22303A; --blue-tint: #1D2A38; --green-tint: #17261D;
-            }
-            tbody tr:nth-child(even) td { background: #182129; }
-            .action-btn { border-color: var(--ink-900); }
-            .vouchmorph-watermark {
-                color: rgba(201, 151, 42, 0.08);
-            }
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Manage Users — VouchMorph Enterprise</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Inter',sans-serif; background:#f1f5f9; color:#0f172a; padding:32px; }
+.wrap { max-width:1100px; margin:0 auto; }
+h1 { font-size:22px; font-weight:700; margin-bottom:6px; }
+.sub { color:#64748b; font-size:13.5px; margin-bottom:24px; }
+.card { background:#fff; border:1px solid #e2e8f0; border-radius:14px; padding:22px; margin-bottom:24px; }
+.card h3 { font-size:15px; font-weight:700; margin-bottom:16px; }
+.field-row { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
+label { display:block; font-size:12px; font-weight:600; color:#475569; margin-bottom:5px; text-transform:uppercase; letter-spacing:.4px; }
+input, select { width:100%; padding:9px 12px; border:1px solid #cbd5e1; border-radius:8px; font-size:13.5px; }
+.btn { background:#0f172a; color:#fff; border:none; padding:11px 24px; border-radius:30px; font-weight:600; font-size:13.5px; cursor:pointer; }
+.btn-danger { background:#fee2e2; color:#991b1b; border:none; padding:6px 14px; border-radius:20px; font-weight:600; font-size:11.5px; cursor:pointer; }
+.error { background:#fef2f2; color:#dc2626; padding:12px 16px; border-radius:10px; margin-bottom:20px; font-size:13.5px; }
+.success { background:#f0fdf4; color:#166534; padding:12px 16px; border-radius:10px; margin-bottom:20px; font-size:13.5px; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th,td { padding:11px 14px; text-align:left; border-bottom:1px solid #e2e8f0; }
+th { background:#f8fafc; font-weight:700; font-size:10.5px; text-transform:uppercase; color:#64748b; letter-spacing:.5px; }
+.role-pill { font-size:11px; font-weight:700; padding:3px 10px; border-radius:20px; background:#f1f5f9; text-transform:uppercase; }
+.inactive { opacity:.5; }
+.hierarchy-note { background:#eff6ff; border-left:3px solid #3b82f6; padding:12px 16px; border-radius:8px; font-size:12.5px; color:#1e3a8a; margin-bottom:20px; }
+</style>
 </head>
 <body>
-    <!-- VouchMorph™ Watermark -->
-    <div class="vouchmorph-watermark">VouchMorph<span class="tm">™</span></div>
+<div class="wrap">
+    <h1>Manage Users</h1>
+    <p class="sub">Signed in as <?php echo htmlspecialchars(strtoupper($userRole)); ?> — you can assign: <?php echo htmlspecialchars(implode(', ', $assignableRoles)); ?></p>
 
-    <!-- Masthead -->
-    <div class="masthead">
-        <div class="center">
-            <h1><?php echo $orgName; ?> — National Disbursement</h1>
-            <div class="file-ref">FILE NO. <?php echo htmlspecialchars($fileRef); ?> · <?php echo strtoupper(date('d M Y')); ?></div>
-        </div>
-        <div class="user-menu">
-            <span class="role-pill"><?php echo $roleDisplay; ?></span>
-            <span class="time"><span class="status-dot"></span><?php echo date('H:i'); ?> UTC+2</span>
-            <span class="menu-divider"></span>
-            <?php if ($config['show_settings']): ?>
-            <a href="settings/index.php" class="menu-link">
-                <span class="icon">⚙</span> Settings
-            </a>
-            <?php endif; ?>
-            <a href="logout.php" class="menu-link logout-link">
-                <span class="icon">↗</span> Sign Out
-            </a>
-        </div>
+    <?php if ($error): ?><div class="error">⚠️ <?php echo htmlspecialchars($error); ?></div><?php endif; ?>
+    <?php if ($success): ?><div class="success">✓ <?php echo htmlspecialchars($success); ?></div><?php endif; ?>
+
+    <div class="hierarchy-note">
+        <strong>Hierarchy in effect:</strong> IT Manager Enterprise and Owner can add or remove anyone.
+        IT Officer Enterprise can only add/remove Program Officers, Beneficiary Registrars, Viewers, and IT Support —
+        not Approvers, Senior Approvers, Department Heads, Owners, or other IT Managers.
     </div>
 
-    <!-- Central stage -->
-    <div class="stage">
-        <div class="stage-inner">
-
-            <div class="welcome">
-                <div class="eyebrow"><span class="section-mark">§</span>Registry Access</div>
-                <h2>WELCOME, <?php echo strtoupper(substr($user['full_name'] ?? $user['email'], 0, 24)); ?></h2>
-                <p>SELECT A WORKING PAGE FOR YOUR ROLE<?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?></p>
+    <div class="card">
+        <h3>Add a user</h3>
+        <form method="POST">
+            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
+            <input type="hidden" name="action" value="create_user">
+            <div class="field-row">
+                <div><label>Full Name</label><input type="text" name="full_name" required></div>
+                <div><label>Phone Number</label><input type="text" name="phone" required placeholder="71234567"></div>
             </div>
+            <div class="field-row">
+                <div><label>Email (optional)</label><input type="email" name="email"></div>
+                <div>
+                    <label>Role</label>
+                    <select name="role" required>
+                        <?php foreach ($assignableRoles as $r): ?>
+                        <option value="<?php echo htmlspecialchars($r); ?>"><?php echo htmlspecialchars(ucwords(str_replace('_', ' ', $r))); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+            </div>
+            <div class="field-row" style="grid-template-columns:1fr;">
+                <div>
+                    <label>Department (leave blank for organization-wide roles like Owner/Auditor)</label>
+                    <select name="department_id">
+                        <option value="">— None —</option>
+                        <?php foreach ($departments as $d): ?>
+                        <option value="<?php echo $d['id']; ?>"><?php echo htmlspecialchars($d['name']); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+            </div>
+            <button type="submit" class="btn">Create Login</button>
+        </form>
+    </div>
 
-            <!-- Role-based launcher -->
-            <div class="launcher">
-                <div class="launcher-grid">
-                    <?php foreach ($actions as $action): ?>
-                    <a href="<?php echo htmlspecialchars($action['href']); ?>" class="action-btn">
-                        <?php if ($action['badge'] !== null): ?>
-                        <span class="badge"><?php echo (int)$action['badge']; ?></span>
+    <div class="card">
+        <h3>Current users (<?php echo count($orgUsers); ?>)</h3>
+        <table>
+            <thead><tr><th>Name</th><th>Contact</th><th>Role</th><th>Department</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+                <?php foreach ($orgUsers as $ou): ?>
+                <tr class="<?php echo $ou['is_active'] ? '' : 'inactive'; ?>">
+                    <td><?php echo htmlspecialchars($ou['full_name']); ?></td>
+                    <td><?php echo htmlspecialchars($ou['phone']); ?><?php if ($ou['email']): ?><br><small><?php echo htmlspecialchars($ou['email']); ?></small><?php endif; ?></td>
+                    <td><span class="role-pill"><?php echo htmlspecialchars(str_replace('_', ' ', $ou['role'])); ?></span></td>
+                    <td><?php echo htmlspecialchars($ou['department_name'] ?? '—'); ?></td>
+                    <td><?php echo $ou['is_active'] ? 'Active' : 'Inactive'; ?></td>
+                    <td>
+                        <?php if ($ou['is_active'] && in_array($ou['role'], $assignableRoles)): ?>
+                        <form method="POST" style="display:inline;" onsubmit="return confirm('Deactivate this user?');">
+                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
+                            <input type="hidden" name="action" value="deactivate_user">
+                            <input type="hidden" name="org_user_id" value="<?php echo $ou['id']; ?>">
+                            <button type="submit" class="btn-danger">Deactivate</button>
+                        </form>
                         <?php endif; ?>
-                        <span class="mark"><?php echo htmlspecialchars($action['mark']); ?></span>
-                        <span class="label"><?php echo htmlspecialchars($action['label']); ?></span>
-                    </a>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-
-            <!-- Reveal controls -->
-            <div class="reveal-controls">
-                <button type="button" class="reveal-btn" id="btnStatement" onclick="togglePanel('statement')">VIEW STATEMENT OF ACCOUNT</button>
-                <button type="button" class="reveal-btn" id="btnRegister" onclick="togglePanel('register')">VIEW RECENT REGISTER</button>
-            </div>
-
-            <!-- Statement of Account -->
-            <div class="reveal-panel doc-panel statement" id="panel-statement">
-                <div class="statement-head">
-                    <span class="eyebrow"><span class="section-mark">§</span>Statement of Account</span>
-                    <span class="period">PERIOD ENDING <?php echo strtoupper(date('d M Y')); ?></span>
-                </div>
-                <div class="statement-row">
-                    <div class="statement-item hero">
-                        <div class="label">Total Disbursed</div>
-                        <div class="value"><?php echo formatCurrency($stats['disbursed']); ?></div>
-                    </div>
-                    <div class="statement-item">
-                        <div class="label">Success Rate</div>
-                        <div class="value"><?php echo number_format($stats['success_rate'], 1); ?>%</div>
-                    </div>
-                    <div class="statement-item">
-                        <div class="label">Batches This Month</div>
-                        <div class="value"><?php echo number_format($stats['total_batches']); ?></div>
-                    </div>
-                    <div class="statement-item">
-                        <div class="label">Awaiting Approval</div>
-                        <div class="value"><?php echo number_format($stats['pending']); ?></div>
-                    </div>
-                    <div class="statement-item">
-                        <div class="label">Beneficiaries</div>
-                        <div class="value"><?php echo number_format($stats['beneficiaries']); ?></div>
-                    </div>
-                    <div class="statement-item">
-                        <div class="label">Active Programs</div>
-                        <div class="value"><?php echo number_format($stats['programs']); ?></div>
-                    </div>
-                    <div class="statement-item">
-                        <div class="label">Departments</div>
-                        <div class="value"><?php echo number_format($stats['departments']); ?></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Register of recent batches -->
-            <div class="reveal-panel doc-panel register-wrap" id="panel-register">
-                <div class="panel-head">
-                    <span class="eyebrow"><span class="section-mark">§</span>Register of Recent Batches</span>
-                    <?php if ($config['show_all_batches']): ?>
-                    <a href="batches/index.php" class="action-link">VIEW FULL REGISTER →</a>
-                    <?php endif; ?>
-                </div>
-                <div class="table-scroll">
-                    <table>
-                        <thead><tr><th>Reference</th><th>Description</th><th>Program</th><th>Amount</th><th>Status</th><th>Created</th><th></th></tr></thead>
-                        <tbody>
-                            <?php if (!empty($recentBatches)): ?>
-                                <?php foreach ($recentBatches as $batch):
-                                    $status = strtolower($batch['status'] ?? 'draft');
-                                    $statusDisplay = strtoupper(str_replace('_', ' ', $batch['status'] ?? 'Draft'));
-                                ?>
-                                <tr>
-                                    <td><code><?php echo htmlspecialchars($batch['batch_reference'] ?? '#' . $batch['id']); ?></code></td>
-                                    <td><?php echo htmlspecialchars(substr($batch['batch_name'] ?? 'Batch #' . $batch['id'], 0, 24)); ?></td>
-                                    <td><?php echo htmlspecialchars($batch['program_name'] ?? '—'); ?></td>
-                                    <td><span class="amt"><?php echo formatCurrency($batch['total_amount'] ?? 0); ?></span></td>
-                                    <td><span class="stamp <?php echo $status; ?>"><?php echo htmlspecialchars($statusDisplay); ?></span></td>
-                                    <td><?php echo strtoupper(date('d M', strtotime($batch['created_at'] ?? 'now'))); ?></td>
-                                    <td><a href="batches/view.php?id=<?php echo $batch['id']; ?>" class="action-link">REVIEW</a></td>
-                                </tr>
-                                <?php endforeach; ?>
-                            <?php else: ?>
-                                <tr><td colspan="7"><div class="empty-state"><span class="mark">§</span><p>NO BATCHES ON RECORD.<?php if ($config['show_actions']): ?> <a href="imports/upload.php">CREATE THE FIRST ENTRY →</a><?php endif; ?></p></div></td></tr>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-        </div>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
     </div>
-
-    <!-- Footer -->
-    <footer class="page-footer">
-        <div class="notice">SECURE ENTERPRISE MULTI ASSET PAYMENT · DISTRIBUTION RESTRICTED · ISO 27001 · © <?php echo date('Y'); ?> VOUCHMORPH</div>
-        <div class="role-line"><?php echo $roleDisplay; ?><?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?> · <?php echo htmlspecialchars($fileRef); ?></div>
-    </footer>
-
-    <script>
-        function togglePanel(name) {
-            var panel = document.getElementById('panel-' + name);
-            var btn = document.getElementById('btn' + name.charAt(0).toUpperCase() + name.slice(1));
-            var isOpen = panel.classList.contains('is-open');
-            panel.classList.toggle('is-open', !isOpen);
-            btn.classList.toggle('is-active', !isOpen);
-            btn.textContent = (!isOpen ? 'HIDE ' : 'VIEW ') + (name === 'statement' ? 'STATEMENT OF ACCOUNT' : 'RECENT REGISTER');
-        }
-    </script>
+</div>
 </body>
 </html>
