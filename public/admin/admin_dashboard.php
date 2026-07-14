@@ -95,6 +95,26 @@ $hasAccess = function($permission) use ($adminRoleId) {
     return in_array('all', $userPerms) || in_array($permission, $userPerms);
 };
 
+// Settlement outbox pending count
+$stmt = $db->prepare("SELECT COUNT(*) FROM settlement_outbox WHERE status = 'PENDING'");
+$stmt->execute();
+$metrics['pending_settlements_outbox'] = (int)$stmt->fetchColumn();
+
+// Active net positions
+$stmt = $db->prepare("SELECT COUNT(*) FROM net_positions WHERE amount > 0");
+$stmt->execute();
+$metrics['active_net_positions'] = (int)$stmt->fetchColumn();
+
+// Fee invoices outstanding
+$stmt = $db->prepare("SELECT COUNT(*) FROM fee_invoices WHERE status = 'SENT'");
+$stmt->execute();
+$metrics['outstanding_invoices'] = (int)$stmt->fetchColumn();
+
+// Regulatory reports pending
+$stmt = $db->prepare("SELECT COUNT(*) FROM regulatory_reports WHERE regulator_acknowledged = false");
+$stmt->execute();
+$metrics['pending_regulatory_reports'] = (int)$stmt->fetchColumn();
+
 // Get system metrics
 $metrics = [];
 try {
