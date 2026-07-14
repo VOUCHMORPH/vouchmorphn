@@ -624,7 +624,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>End-of-day net positions and settlement amounts</p>
                 <p style="margin-top: 15px;">
-                    <a href="reports/daily.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="reports/daily_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
             <div class="card">
@@ -651,7 +651,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>Monthly financial reconciliation report</p>
                 <p style="margin-top: 15px;">
-                    <a href="reports/monthly.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="reports/monthly_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
         </div>
