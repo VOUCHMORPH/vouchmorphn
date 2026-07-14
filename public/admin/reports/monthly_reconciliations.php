@@ -24,9 +24,9 @@ $countryCode = isset($user['country_code']) ? $user['country_code'] : 'BW';
 
 // --- LOAD COUNTRY CONFIGURATION ---
 $countryConfigPath = __DIR__ . "/../../../config/countries/" . strtolower($countryCode) . "/config.php";
-$countryConfig = file_exists($countryConfigPath) ? require $countryConfigPath : [];
+$countryConfig = file_exists($countryConfigPath) ? require $countryConfigPath : array();
 
-// --- DATABASE CONNECTION - USE SINGLE SOURCE OF TRUTH ---
+// --- DATABASE CONNECTION ---
 try {
     $swapDB = DBConnection::getConnection();
     if (!$swapDB) {
@@ -40,14 +40,14 @@ try {
 
 // --- LOAD FEES CONFIGURATION ---
 $feesConfigPath = __DIR__ . "/../../../config/countries/" . strtolower($countryCode) . "/fees.json";
-$feesConfig = file_exists($feesConfigPath) ? json_decode(file_get_contents($feesConfigPath), true) : [];
+$feesConfig = file_exists($feesConfigPath) ? json_decode(file_get_contents($feesConfigPath), true) : array();
 
 // --- INITIALIZE SERVICES ---
 $feeService = new FeeService($feesConfig, 'BWP');
 $settlement = new HybridSettlementStrategy($swapDB);
 $forexService = new ForexService($swapDB, $countryConfig, array(), $feeService);
 
-// --- DATE RANGE (Current Month or Selected) ---
+// --- DATE RANGE ---
 $year = isset($_GET['year']) ? $_GET['year'] : date('Y');
 $month = isset($_GET['month']) ? $_GET['month'] : date('m');
 $firstDayOfMonth = date('Y-m-01', strtotime($year . '-' . $month . '-01'));
@@ -55,42 +55,8 @@ $lastDayOfMonth = date('Y-m-t', strtotime($year . '-' . $month . '-01'));
 $institutionFilter = isset($_GET['institution']) ? $_GET['institution'] : null;
 $currencyFilter = isset($_GET['currency']) ? $_GET['currency'] : null;
 
-// --- FETCH MONTHLY LEDGER RECONCILIATIONS ---
-$reconciliationsQuery = "
-    SELECT 
-        DATE(created_at) as date,
-        COUNT(*) as total_transactions,
-        COALESCE(SUM(amount), 0) as total_amount,
-        status
-    FROM swap_requests
-    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
-    GROUP BY DATE(created_at), status
-    ORDER BY date DESC, status
-";
-
-$stmt = $swapDB->prepare($reconciliationsQuery);
-$stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
-$rawReconciliations = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-// Group reconciliations by date
-$reconciliations = array();
-foreach ($rawReconciliations as $row) {
-    $date = $row['date'];
-    if (!isset($reconciliations[$date])) {
-        $reconciliations[$date] = array(
-            'date' => $date,
-            'total_transactions' => 0,
-            'total_amount' => 0,
-            'status' => array()
-        );
-    }
-    $reconciliations[$date]['total_transactions'] += $row['total_transactions'];
-    $reconciliations[$date]['total_amount'] += $row['total_amount'];
-    $reconciliations[$date]['status'][$row['status']] = $row['total_transactions'];
-}
-
-// --- FETCH MONTHLY SWAPS SUMMARY ---
-$swapsQuery = "
+// --- FETCH MONTHLY SUMMARY ---
+$summaryQuery = "
     SELECT 
         COUNT(*) AS total_swaps,
         COALESCE(SUM(amount), 0) AS total_amount,
@@ -101,17 +67,50 @@ $swapsQuery = "
     FROM swap_requests
     WHERE DATE(created_at) BETWEEN :start_date AND :end_date
 ";
-$stmt = $swapDB->prepare($swapsQuery);
+$stmt = $swapDB->prepare($summaryQuery);
 $stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $swapsSummary = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// --- FETCH MONTHLY FEE BREAKDOWN ---
+// --- FETCH DAILY BREAKDOWN ---
+$dailyQuery = "
+    SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as total_transactions,
+        COALESCE(SUM(amount), 0) as total_amount,
+        status
+    FROM swap_requests
+    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
+    GROUP BY DATE(created_at), status
+    ORDER BY date DESC, status
+";
+$stmt = $swapDB->prepare($dailyQuery);
+$stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
+$rawDaily = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Group by date
+$dailyBreakdown = array();
+foreach ($rawDaily as $row) {
+    $date = $row['date'];
+    if (!isset($dailyBreakdown[$date])) {
+        $dailyBreakdown[$date] = array(
+            'date' => $date,
+            'total_transactions' => 0,
+            'total_amount' => 0,
+            'status' => array()
+        );
+    }
+    $dailyBreakdown[$date]['total_transactions'] += $row['total_transactions'];
+    $dailyBreakdown[$date]['total_amount'] += $row['total_amount'];
+    $dailyBreakdown[$date]['status'][$row['status']] = $row['total_transactions'];
+}
+
+// --- FETCH FEE BREAKDOWN ---
 $feeQuery = "
     SELECT 
         sfc.fee_type,
         COUNT(*) as count,
-        SUM(sfc.total_amount) as total_amount,
-        SUM(sfc.vat_amount) as total_vat,
+        COALESCE(SUM(sfc.total_amount), 0) as total_amount,
+        COALESCE(SUM(sfc.vat_amount), 0) as total_vat,
         sfc.currency
     FROM swap_fee_collections sfc
     JOIN swap_requests sr ON sfc.swap_reference = sr.swap_uuid
@@ -123,18 +122,18 @@ $stmt = $swapDB->prepare($feeQuery);
 $stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $feeBreakdown = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// --- FETCH MONTHLY CROSS-BORDER ACTIVITY ---
+// --- FETCH CROSS-BORDER ACTIVITY ---
 $crossBorderQuery = "
     SELECT 
         source_country,
         destination_country,
         COUNT(*) as transaction_count,
-        SUM(source_amount) as total_source_amount,
-        SUM(converted_amount) as total_destination_amount,
-        SUM(corridor_fee) as total_corridor_fees,
+        COALESCE(SUM(source_amount), 0) as total_source_amount,
+        COALESCE(SUM(converted_amount), 0) as total_destination_amount,
+        COALESCE(SUM(corridor_fee), 0) as total_corridor_fees,
         source_currency,
         destination_currency,
-        AVG(exchange_rate) as avg_exchange_rate
+        COALESCE(AVG(exchange_rate), 0) as avg_exchange_rate
     FROM cross_border_ledger
     WHERE DATE(created_at) BETWEEN :start_date AND :end_date
     GROUP BY source_country, destination_country, source_currency, destination_currency
@@ -144,13 +143,13 @@ $stmt = $swapDB->prepare($crossBorderQuery);
 $stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $crossBorderActivity = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// --- FETCH MONTHLY CASHOUT RETRY STATISTICS ---
+// --- FETCH RETRY STATISTICS ---
 $retryQuery = "
     SELECT 
         COUNT(*) as total_retries,
         SUM(CASE WHEN free_retry_used THEN 1 ELSE 0 END) as free_retries_used,
         SUM(CASE WHEN free_retry_used = FALSE THEN 1 ELSE 0 END) as paid_retries,
-        AVG(retry_count) as avg_retry_count
+        COALESCE(AVG(retry_count), 0) as avg_retry_count
     FROM cashout_retry_tracking
     WHERE DATE(created_at) BETWEEN :start_date AND :end_date
 ";
@@ -158,14 +157,14 @@ $stmt = $swapDB->prepare($retryQuery);
 $stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $retryStats = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// --- FETCH MONTHLY CORRIDOR ACTIVITY ---
+// --- FETCH CORRIDOR ACTIVITY ---
 $corridorQuery = "
     SELECT 
         source_country,
         destination_country,
         COUNT(*) as settlement_count,
-        SUM(source_amount) as total_settled,
-        SUM(corridor_fee) as total_fees
+        COALESCE(SUM(source_amount), 0) as total_settled,
+        COALESCE(SUM(corridor_fee), 0) as total_fees
     FROM corridor_settlement_ledger
     WHERE DATE(created_at) BETWEEN :start_date AND :end_date
     GROUP BY source_country, destination_country
@@ -175,15 +174,15 @@ $stmt = $swapDB->prepare($corridorQuery);
 $stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $corridorActivity = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// --- FETCH MONTHLY FX ACTIVITY ---
+// --- FETCH FX ACTIVITY ---
 $fxQuery = "
     SELECT 
         source_currency,
         destination_currency,
         COUNT(*) as fx_transactions,
-        SUM(amount) as total_fx_volume,
-        SUM(forex_fee_amount) as total_forex_fees,
-        AVG(exchange_rate) as avg_rate
+        COALESCE(SUM(amount), 0) as total_fx_volume,
+        COALESCE(SUM(forex_fee_amount), 0) as total_forex_fees,
+        COALESCE(AVG(exchange_rate), 0) as avg_rate
     FROM swap_requests
     WHERE DATE(created_at) BETWEEN :start_date AND :end_date
     AND source_currency != destination_currency
@@ -193,7 +192,7 @@ $stmt = $swapDB->prepare($fxQuery);
 $stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $fxActivity = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// --- FETCH MONTHLY HOOK STATISTICS ---
+// --- FETCH HOOK STATISTICS ---
 $hookQuery = "
     SELECT 
         COUNT(*) as total_hooks,
@@ -206,13 +205,13 @@ $stmt = $swapDB->prepare($hookQuery);
 $stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $hookStats = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// --- FETCH TOP INSTITUTIONS BY VOLUME ---
+// --- FETCH TOP INSTITUTIONS ---
 $topInstitutionsQuery = "
     SELECT 
         source_details->>'institution' as institution,
         COUNT(*) as transaction_count,
-        SUM(amount) as total_volume,
-        SUM(total_cashout_fee) as total_fees
+        COALESCE(SUM(amount), 0) as total_volume,
+        COALESCE(SUM(total_cashout_fee), 0) as total_fees
     FROM swap_requests
     WHERE DATE(created_at) BETWEEN :start_date AND :end_date
     AND source_details IS NOT NULL
@@ -225,65 +224,48 @@ $stmt = $swapDB->prepare($topInstitutionsQuery);
 $stmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
 $topInstitutions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Add fee invoices summary
-$feeInvoicesStmt = $swapDB->prepare("
-    SELECT 
-        fee_type,
-        COUNT(*) as count,
-        SUM(total_amount) as total,
-        SUM(vat_amount) as total_vat,
-        currency,
-        status
-    FROM fee_invoices
-    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
-    GROUP BY fee_type, currency, status
-");
-$feeInvoicesStmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
-$feeInvoices = $feeInvoicesStmt->fetchAll(PDO::FETCH_ASSOC);
-
-// Add regulatory reports
-$regulatoryStmt = $swapDB->prepare("
-    SELECT 
-        report_type,
-        COUNT(*) as report_count,
-        SUM(CASE WHEN regulator_acknowledged THEN 1 ELSE 0 END) as acknowledged
-    FROM regulatory_reports
-    WHERE DATE(created_at) BETWEEN :start_date AND :end_date
-    GROUP BY report_type
-");
-$regulatoryStmt->execute(array(':start_date' => $firstDayOfMonth, ':end_date' => $lastDayOfMonth));
-$regulatoryReports = $regulatoryStmt->fetchAll(PDO::FETCH_ASSOC);
-
 // --- CALCULATE TOTALS ---
-$totalFxVolume = array_sum(array_column($fxActivity, 'total_fx_volume'));
-$totalForexFees = array_sum(array_column($fxActivity, 'total_forex_fees'));
-$totalFees = array_sum(array_column($feeBreakdown, 'total_amount'));
-$totalVat = array_sum(array_column($feeBreakdown, 'total_vat'));
+$totalFxVolume = 0;
+$totalForexFees = 0;
+foreach ($fxActivity as $fx) {
+    $totalFxVolume += $fx['total_fx_volume'];
+    $totalForexFees += $fx['total_forex_fees'];
+}
 
-// --- GET INSTITUTIONS LIST FOR FILTER ---
-$instStmt = $swapDB->prepare("
-    SELECT DISTINCT 
-        source_details->>'institution' as institution
-    FROM swap_requests
-    WHERE source_details IS NOT NULL
-    AND source_details->>'institution' IS NOT NULL
-    UNION
-    SELECT DISTINCT 
-        destination_details->>'institution' as institution
-    FROM swap_requests
-    WHERE destination_details IS NOT NULL
-    AND destination_details->>'institution' IS NOT NULL
-");
-$instStmt->execute();
-$institutions = $instStmt->fetchAll(PDO::FETCH_COLUMN);
+$totalFees = 0;
+$totalVat = 0;
+foreach ($feeBreakdown as $fee) {
+    $totalFees += $fee['total_amount'];
+    $totalVat += $fee['total_vat'];
+}
 
-// Filter out empty values
-$institutions = array_filter($institutions);
-
-// Get username for logging
-$username = isset($user['username']) ? $user['username'] : 'unknown';
+// --- GET INSTITUTIONS LIST ---
+$institutions = array();
+try {
+    $instStmt = $swapDB->query("
+        SELECT DISTINCT source_details 
+        FROM swap_requests 
+        WHERE source_details IS NOT NULL 
+        AND source_details != '{}'
+        LIMIT 100
+    ");
+    $results = $instStmt->fetchAll(PDO::FETCH_COLUMN);
+    foreach ($results as $json) {
+        if ($json) {
+            $data = json_decode($json, true);
+            if ($data && isset($data['institution'])) {
+                $institutions[] = $data['institution'];
+            }
+        }
+    }
+    $institutions = array_unique(array_filter($institutions));
+} catch (Exception $e) {
+    error_log("[MONTHLY RECONCILIATION] Institutions error: " . $e->getMessage());
+    $institutions = array();
+}
 
 // --- AUDIT LOG ---
+$username = isset($user['username']) ? $user['username'] : 'unknown';
 $logFile = __DIR__ . '/../../../storage/logs/monthly_reconciliations.log';
 if (!is_dir(dirname($logFile))) {
     mkdir(dirname($logFile), 0755, true);
@@ -296,7 +278,6 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     header('Content-Disposition: attachment; filename="monthly_reconciliation_' . $year . '_' . $month . '.csv"');
     $output = fopen('php://output', 'w');
     
-    // Header
     fputcsv($output, array('VOUCHMORPH MONTHLY RECONCILIATION REPORT'));
     fputcsv($output, array('Month', date('F Y', strtotime($year . '-' . $month . '-01'))));
     fputcsv($output, array('Generated At', date('Y-m-d H:i:s')));
@@ -304,104 +285,15 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     
     // Summary
     fputcsv($output, array('SUMMARY'));
-    $swapsTotal = isset($swapsSummary['total_swaps']) ? $swapsSummary['total_swaps'] : 0;
-    $swapsSuccessful = isset($swapsSummary['successful_swaps']) ? $swapsSummary['successful_swaps'] : 0;
-    $swapsFailed = isset($swapsSummary['failed_swaps']) ? $swapsSummary['failed_swaps'] : 0;
-    $swapsPending = isset($swapsSummary['pending_swaps']) ? $swapsSummary['pending_swaps'] : 0;
-    $swapsCancelled = isset($swapsSummary['cancelled_swaps']) ? $swapsSummary['cancelled_swaps'] : 0;
-    $swapsTotalAmount = isset($swapsSummary['total_amount']) ? $swapsSummary['total_amount'] : 0;
-    
-    fputcsv($output, array('Total Swaps', $swapsTotal));
-    fputcsv($output, array('Successful Swaps', $swapsSuccessful));
-    fputcsv($output, array('Failed Swaps', $swapsFailed));
-    fputcsv($output, array('Pending Swaps', $swapsPending));
-    fputcsv($output, array('Cancelled Swaps', $swapsCancelled));
-    fputcsv($output, array('Total Volume', number_format($swapsTotalAmount, 2)));
-    fputcsv($output, array('Total Fees Collected', number_format($totalFees, 2)));
+    fputcsv($output, array('Total Swaps', isset($swapsSummary['total_swaps']) ? $swapsSummary['total_swaps'] : 0));
+    fputcsv($output, array('Successful', isset($swapsSummary['successful_swaps']) ? $swapsSummary['successful_swaps'] : 0));
+    fputcsv($output, array('Failed', isset($swapsSummary['failed_swaps']) ? $swapsSummary['failed_swaps'] : 0));
+    fputcsv($output, array('Pending', isset($swapsSummary['pending_swaps']) ? $swapsSummary['pending_swaps'] : 0));
+    fputcsv($output, array('Cancelled', isset($swapsSummary['cancelled_swaps']) ? $swapsSummary['cancelled_swaps'] : 0));
+    fputcsv($output, array('Total Volume', number_format(isset($swapsSummary['total_amount']) ? $swapsSummary['total_amount'] : 0, 2)));
+    fputcsv($output, array('Total Fees', number_format($totalFees, 2)));
     fputcsv($output, array('Total VAT', number_format($totalVat, 2)));
-    fputcsv($output, array('Total FX Volume', number_format($totalFxVolume, 2)));
-    fputcsv($output, array('Total Forex Fees', number_format($totalForexFees, 2)));
-    $retryTotal = isset($retryStats['total_retries']) ? $retryStats['total_retries'] : 0;
-    $retryFree = isset($retryStats['free_retries_used']) ? $retryStats['free_retries_used'] : 0;
-    fputcsv($output, array('Total Retries', $retryTotal));
-    fputcsv($output, array('Free Retries Used', $retryFree));
     fputcsv($output, array());
-    
-    // Daily Breakdown
-    fputcsv($output, array('DAILY BREAKDOWN'));
-    fputcsv($output, array('Date', 'Total Transactions', 'Total Amount', 'Status Breakdown'));
-    foreach ($reconciliations as $row) {
-        $statusStr = '';
-        foreach ($row['status'] as $status => $count) {
-            $statusStr .= $status . ': ' . $count . ', ';
-        }
-        fputcsv($output, array(
-            $row['date'],
-            $row['total_transactions'],
-            number_format($row['total_amount'], 2),
-            rtrim($statusStr, ', ')
-        ));
-    }
-    fputcsv($output, array());
-    
-    // Fee Breakdown
-    fputcsv($output, array('FEE BREAKDOWN'));
-    fputcsv($output, array('Fee Type', 'Count', 'Total Amount', 'VAT', 'Currency'));
-    foreach ($feeBreakdown as $fee) {
-        fputcsv($output, array(
-            $fee['fee_type'],
-            $fee['count'],
-            number_format($fee['total_amount'], 2),
-            number_format($fee['total_vat'], 2),
-            $fee['currency']
-        ));
-    }
-    fputcsv($output, array());
-    
-    // Cross Border Activity
-    fputcsv($output, array('CROSS-BORDER ACTIVITY'));
-    fputcsv($output, array('From', 'To', 'Transactions', 'Volume (Source)', 'Volume (Dest)', 'Corridor Fees', 'Avg Rate'));
-    foreach ($crossBorderActivity as $cb) {
-        $corridorFee = isset($cb['total_corridor_fees']) ? $cb['total_corridor_fees'] : 0;
-        fputcsv($output, array(
-            $cb['source_country'],
-            $cb['destination_country'],
-            $cb['transaction_count'],
-            number_format($cb['total_source_amount'], 2),
-            number_format($cb['total_destination_amount'], 2),
-            number_format($corridorFee, 2),
-            number_format($cb['avg_exchange_rate'], 4)
-        ));
-    }
-    fputcsv($output, array());
-    
-    // FX Activity
-    fputcsv($output, array('FX ACTIVITY'));
-    fputcsv($output, array('From', 'To', 'Transactions', 'Volume', 'Forex Fees', 'Avg Rate'));
-    foreach ($fxActivity as $fx) {
-        fputcsv($output, array(
-            $fx['source_currency'],
-            $fx['destination_currency'],
-            $fx['fx_transactions'],
-            number_format($fx['total_fx_volume'], 2),
-            number_format($fx['total_forex_fees'], 2),
-            number_format($fx['avg_rate'], 4)
-        ));
-    }
-    fputcsv($output, array());
-    
-    // Top Institutions
-    fputcsv($output, array('TOP INSTITUTIONS BY VOLUME'));
-    fputcsv($output, array('Institution', 'Transactions', 'Total Volume', 'Total Fees'));
-    foreach ($topInstitutions as $inst) {
-        $totalFees = isset($inst['total_fees']) ? $inst['total_fees'] : 0;
-        fputcsv($output, array(
-            $inst['institution'],
-            $inst['transaction_count'],
-            number_format($inst['total_volume'], 2),
-            number_format($totalFees, 2)
-        ));
-    }
     
     fclose($output);
     exit;
@@ -412,13 +304,13 @@ $prevMonth = date('Y-m', strtotime("-1 month", strtotime($year . '-' . $month . 
 $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . '-01')));
 $monthName = date('F Y', strtotime($year . '-' . $month . '-01'));
 
-// Safe values for display
-$swapsTotal = isset($swapsSummary['total_swaps']) ? $swapsSummary['total_swaps'] : 0;
-$swapsSuccessful = isset($swapsSummary['successful_swaps']) ? $swapsSummary['successful_swaps'] : 0;
-$swapsFailed = isset($swapsSummary['failed_swaps']) ? $swapsSummary['failed_swaps'] : 0;
-$swapsPending = isset($swapsSummary['pending_swaps']) ? $swapsSummary['pending_swaps'] : 0;
-$swapsCancelled = isset($swapsSummary['cancelled_swaps']) ? $swapsSummary['cancelled_swaps'] : 0;
-$swapsTotalAmount = isset($swapsSummary['total_amount']) ? $swapsSummary['total_amount'] : 0;
+// Safe values
+$totalSwaps = isset($swapsSummary['total_swaps']) ? $swapsSummary['total_swaps'] : 0;
+$successfulSwaps = isset($swapsSummary['successful_swaps']) ? $swapsSummary['successful_swaps'] : 0;
+$failedSwaps = isset($swapsSummary['failed_swaps']) ? $swapsSummary['failed_swaps'] : 0;
+$pendingSwaps = isset($swapsSummary['pending_swaps']) ? $swapsSummary['pending_swaps'] : 0;
+$cancelledSwaps = isset($swapsSummary['cancelled_swaps']) ? $swapsSummary['cancelled_swaps'] : 0;
+$totalAmount = isset($swapsSummary['total_amount']) ? $swapsSummary['total_amount'] : 0;
 $retryTotal = isset($retryStats['total_retries']) ? $retryStats['total_retries'] : 0;
 $retryFree = isset($retryStats['free_retries_used']) ? $retryStats['free_retries_used'] : 0;
 $hookActive = isset($hookStats['active_hooks']) ? $hookStats['active_hooks'] : 0;
@@ -433,10 +325,10 @@ $hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; color: #333; }
-        .dashboard-container { max-width: 1400px; margin: 0 auto; padding: 20px; }
-        .dashboard-header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: white; padding: 20px 30px; border-radius: 12px; margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; }
-        .dashboard-header h1 { font-size: 24px; font-weight: 600; }
-        .dashboard-header p { opacity: 0.8; font-size: 14px; margin-top: 5px; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        .header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: white; padding: 20px 30px; border-radius: 12px; margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; }
+        .header h1 { font-size: 24px; font-weight: 600; }
+        .header p { opacity: 0.8; font-size: 14px; }
         .month-nav { display: flex; gap: 15px; align-items: center; }
         .month-nav .nav-btn { background: rgba(255,255,255,0.2); padding: 8px 20px; border-radius: 8px; text-decoration: none; color: white; transition: background 0.3s; }
         .month-nav .nav-btn:hover { background: rgba(255,255,255,0.3); }
@@ -451,18 +343,15 @@ $hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
         .btn-success { background: #28a745; color: white; }
         .btn-success:hover { background: #1e7e34; }
         .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 25px; }
-        .stat-card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; transition: transform 0.2s; }
-        .stat-card:hover { transform: translateY(-2px); }
+        .stat-card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
         .stat-card h3 { font-size: 14px; color: #666; margin-bottom: 10px; }
         .stat-card .value { font-size: 28px; font-weight: bold; color: #1a1a2e; }
         .stat-card .trend { font-size: 12px; margin-top: 5px; }
         .trend-up { color: #28a745; }
         .trend-down { color: #dc3545; }
-        .trend-neutral { color: #ffc107; }
         .section { background: white; border-radius: 12px; margin-bottom: 25px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .section-header { background: #f8f9fa; padding: 15px 20px; border-bottom: 1px solid #e9ecef; display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
         .section-header h2 { font-size: 18px; font-weight: 600; }
-        .section-header span { transition: transform 0.2s; }
         .section-content { padding: 20px; overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; font-size: 14px; }
         th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; }
@@ -473,7 +362,6 @@ $hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
         .status-failed { background: #f8d7da; color: #721c24; }
         .status-pending { background: #fff3cd; color: #856404; }
         .status-cancelled { background: #e2e3e5; color: #383d41; }
-        .export-buttons { display: flex; gap: 10px; }
         .summary-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; }
         .summary-card { background: white; padding: 15px; border-radius: 12px; text-align: center; border-left: 4px solid; }
         @media (max-width: 768px) {
@@ -485,17 +373,17 @@ $hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
     </style>
 </head>
 <body>
-    <div class="dashboard-container">
-        <div class="dashboard-header">
+    <div class="container">
+        <div class="header">
             <div>
                 <h1>📆 Monthly Reconciliations Report</h1>
-                <p>VouchMorph Settlement & Transaction Reconciliation - Monthly Overview</p>
+                <p><?php echo htmlspecialchars($countryCode); ?> - Settlement & Transaction Reconciliation</p>
             </div>
             <div class="month-nav">
-                <a href="?year=<?php echo explode('-', $prevMonth)[0]; ?>&month=<?php echo explode('-', $prevMonth)[1]; ?>" class="nav-btn">← Previous Month</a>
+                <a href="?year=<?php echo explode('-', $prevMonth)[0]; ?>&month=<?php echo explode('-', $prevMonth)[1]; ?>" class="nav-btn">← Previous</a>
                 <div class="month-badge"><?php echo $monthName; ?></div>
-                <a href="?year=<?php echo explode('-', $nextMonth)[0]; ?>&month=<?php echo explode('-', $nextMonth)[1]; ?>" class="nav-btn">Next Month →</a>
-                <a href="?year=<?php echo date('Y'); ?>&month=<?php echo date('m'); ?>" class="nav-btn">Current Month</a>
+                <a href="?year=<?php echo explode('-', $nextMonth)[0]; ?>&month=<?php echo explode('-', $nextMonth)[1]; ?>" class="nav-btn">Next →</a>
+                <a href="?year=<?php echo date('Y'); ?>&month=<?php echo date('m'); ?>" class="nav-btn">Current</a>
             </div>
         </div>
         
@@ -504,7 +392,7 @@ $hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
             <div class="filter-group">
                 <label>Institution</label>
                 <select id="institution">
-                    <option value="">All Institutions</option>
+                    <option value="">All</option>
                     <?php foreach ($institutions as $inst): ?>
                         <option value="<?php echo htmlspecialchars($inst); ?>" <?php echo ($institutionFilter == $inst) ? 'selected' : ''; ?>>
                             <?php echo htmlspecialchars($inst); ?>
@@ -515,32 +403,30 @@ $hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
             <div class="filter-group">
                 <label>Currency</label>
                 <select id="currency">
-                    <option value="">All Currencies</option>
-                    <option value="BWP" <?php echo ($currencyFilter == 'BWP') ? 'selected' : ''; ?>>BWP - Pula</option>
-                    <option value="ZAR" <?php echo ($currencyFilter == 'ZAR') ? 'selected' : ''; ?>>ZAR - Rand</option>
-                    <option value="USD" <?php echo ($currencyFilter == 'USD') ? 'selected' : ''; ?>>USD - Dollar</option>
-                    <option value="EUR" <?php echo ($currencyFilter == 'EUR') ? 'selected' : ''; ?>>EUR - Euro</option>
-                    <option value="NGN" <?php echo ($currencyFilter == 'NGN') ? 'selected' : ''; ?>>NGN - Naira</option>
-                    <option value="KES" <?php echo ($currencyFilter == 'KES') ? 'selected' : ''; ?>>KES - Shilling</option>
+                    <option value="">All</option>
+                    <option value="BWP" <?php echo ($currencyFilter == 'BWP') ? 'selected' : ''; ?>>BWP</option>
+                    <option value="ZAR" <?php echo ($currencyFilter == 'ZAR') ? 'selected' : ''; ?>>ZAR</option>
+                    <option value="USD" <?php echo ($currencyFilter == 'USD') ? 'selected' : ''; ?>>USD</option>
+                    <option value="EUR" <?php echo ($currencyFilter == 'EUR') ? 'selected' : ''; ?>>EUR</option>
                 </select>
             </div>
             <div class="filter-group">
-                <button class="btn btn-primary" onclick="applyFilters()">Apply Filters</button>
-                <button class="btn btn-success" onclick="exportCSV()">Export CSV</button>
+                <button class="btn btn-primary" onclick="applyFilters()">Apply</button>
+                <a href="?<?php echo http_build_query(array_merge($_GET, array('export' => 'csv'))); ?>" class="btn btn-success">📥 CSV</a>
             </div>
         </div>
         
-        <!-- Statistics Cards -->
+        <!-- Statistics -->
         <div class="stats-grid">
             <div class="stat-card">
                 <h3>Total Swaps</h3>
-                <div class="value"><?php echo number_format($swapsTotal); ?></div>
-                <div class="trend trend-up">↑ <?php echo number_format($swapsSuccessful); ?> successful</div>
+                <div class="value"><?php echo number_format($totalSwaps); ?></div>
+                <div class="trend trend-up">↑ <?php echo number_format($successfulSwaps); ?> successful</div>
             </div>
             <div class="stat-card">
                 <h3>Total Volume</h3>
-                <div class="value"><?php echo number_format($swapsTotalAmount, 2); ?></div>
-                <div class="trend">Across all currencies</div>
+                <div class="value"><?php echo number_format($totalAmount, 2); ?></div>
+                <div class="trend">All currencies</div>
             </div>
             <div class="stat-card">
                 <h3>Fees Collected</h3>
@@ -548,9 +434,9 @@ $hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
                 <div class="trend">+ <?php echo number_format($totalVat, 2); ?> VAT</div>
             </div>
             <div class="stat-card">
-                <h3>Cashout Retries</h3>
+                <h3>Retries</h3>
                 <div class="value"><?php echo number_format($retryTotal); ?></div>
-                <div class="trend"><?php echo number_format($retryFree); ?> free retries</div>
+                <div class="trend"><?php echo number_format($retryFree); ?> free</div>
             </div>
             <div class="stat-card">
                 <h3>FX Volume</h3>
@@ -564,42 +450,42 @@ $hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
             </div>
         </div>
         
-        <!-- Monthly Summary Cards -->
+        <!-- Summary Cards -->
         <div class="summary-cards">
             <div class="summary-card" style="border-left-color: #28a745;">
-                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($swapsSuccessful); ?></div>
-                <div style="font-size: 12px; color: #666;">Successful Swaps</div>
+                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($successfulSwaps); ?></div>
+                <div style="font-size: 12px; color: #666;">Successful</div>
             </div>
             <div class="summary-card" style="border-left-color: #dc3545;">
-                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($swapsFailed); ?></div>
-                <div style="font-size: 12px; color: #666;">Failed Swaps</div>
+                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($failedSwaps); ?></div>
+                <div style="font-size: 12px; color: #666;">Failed</div>
             </div>
             <div class="summary-card" style="border-left-color: #ffc107;">
-                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($swapsPending); ?></div>
-                <div style="font-size: 12px; color: #666;">Pending Swaps</div>
+                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($pendingSwaps); ?></div>
+                <div style="font-size: 12px; color: #666;">Pending</div>
             </div>
             <div class="summary-card" style="border-left-color: #6c757d;">
-                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($swapsCancelled); ?></div>
-                <div style="font-size: 12px; color: #666;">Cancelled Swaps</div>
+                <div style="font-size: 24px; font-weight: bold;"><?php echo number_format($cancelledSwaps); ?></div>
+                <div style="font-size: 12px; color: #666;">Cancelled</div>
             </div>
         </div>
         
-        <!-- Daily Breakdown Section -->
+        <!-- Daily Breakdown -->
         <div class="section">
             <div class="section-header" onclick="toggleSection('dailyBreakdown')">
-                <h2>📆 Daily Breakdown (<?php echo $monthName; ?>)</h2>
+                <h2>📆 Daily Breakdown</h2>
                 <span>▼</span>
             </div>
             <div class="section-content" id="dailyBreakdown">
                 <table>
                     <thead>
-                        <tr><th>Date</th><th>Total Transactions</th><th>Total Amount</th><th>Status Breakdown</th></tr>
+                        <tr><th>Date</th><th>Transactions</th><th>Amount</th><th>Status</th></tr>
                     </thead>
                     <tbody>
-                        <?php if (!empty($reconciliations)): ?>
-                            <?php foreach ($reconciliations as $row): ?>
+                        <?php if (!empty($dailyBreakdown)): ?>
+                            <?php foreach ($dailyBreakdown as $row): ?>
                                 <tr>
-                                    <td><strong><?php echo date('D, M j, Y', strtotime($row['date'])); ?></strong></td>
+                                    <td><strong><?php echo date('D, M j', strtotime($row['date'])); ?></strong></td>
                                     <td><?php echo number_format($row['total_transactions']); ?></td>
                                     <td><?php echo number_format($row['total_amount'], 2); ?></td>
                                     <td>
@@ -610,23 +496,23 @@ $hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="4" style="text-align:center;">No data available</td></tr>
+                            <tr><td colspan="4" style="text-align:center;">No data</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
             </div>
         </div>
         
-        <!-- Fee Breakdown Section -->
+        <!-- Fee Breakdown -->
         <div class="section">
             <div class="section-header" onclick="toggleSection('feeBreakdown')">
-                <h2>💰 Fee Breakdown (<?php echo $monthName; ?>)</h2>
+                <h2>💰 Fee Breakdown</h2>
                 <span>▼</span>
             </div>
             <div class="section-content" id="feeBreakdown">
                 <table>
                     <thead>
-                        <tr><th>Fee Type</th><th>Count</th><th>Total Amount</th><th>VAT</th><th>Currency</th></tr>
+                        <tr><th>Type</th><th>Count</th><th>Amount</th><th>VAT</th><th>Currency</th></tr>
                     </thead>
                     <tbody>
                         <?php if (!empty($feeBreakdown)): ?>
@@ -640,116 +526,23 @@ $hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="5" style="text-align:center;">No fee data available</td></tr>
+                            <tr><td colspan="5" style="text-align:center;">No fee data</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
             </div>
         </div>
         
-        <!-- Cross-Border Activity Section -->
-        <div class="section">
-            <div class="section-header" onclick="toggleSection('crossBorder')">
-                <h2>🌍 Cross-Border Activity (<?php echo $monthName; ?>)</h2>
-                <span>▼</span>
-            </div>
-            <div class="section-content" id="crossBorder">
-                <table>
-                    <thead>
-                        <tr><th>From</th><th>To</th><th>Transactions</th><th>Volume (Source)</th><th>Volume (Dest)</th><th>Corridor Fees</th><th>Avg Rate</th></tr>
-                    </thead>
-                    <tbody>
-                        <?php if (!empty($crossBorderActivity)): ?>
-                            <?php foreach ($crossBorderActivity as $cb): ?>
-                                <tr>
-                                    <td><span class="status-badge"><?php echo htmlspecialchars($cb['source_country']); ?></span></td>
-                                    <td><span class="status-badge"><?php echo htmlspecialchars($cb['destination_country']); ?></span></td>
-                                    <td><?php echo number_format($cb['transaction_count']); ?></td>
-                                    <td><?php echo number_format($cb['total_source_amount'], 2); ?> <?php echo htmlspecialchars($cb['source_currency']); ?></td>
-                                    <td><?php echo number_format($cb['total_destination_amount'], 2); ?> <?php echo htmlspecialchars($cb['destination_currency']); ?></td>
-                                    <td><?php echo number_format(isset($cb['total_corridor_fees']) ? $cb['total_corridor_fees'] : 0, 2); ?></td>
-                                    <td><?php echo number_format($cb['avg_exchange_rate'], 4); ?></td>
-                                </tr>
-                            <?php endforeach; ?>
-                        <?php else: ?>
-                            <tr><td colspan="7" style="text-align:center;">No cross-border activity this month</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        
-        <!-- FX Activity Section -->
-        <div class="section">
-            <div class="section-header" onclick="toggleSection('fxActivity')">
-                <h2>💱 FX Activity (<?php echo $monthName; ?>)</h2>
-                <span>▼</span>
-            </div>
-            <div class="section-content" id="fxActivity">
-                <table>
-                    <thead>
-                        <tr><th>From</th><th>To</th><th>Transactions</th><th>Volume</th><th>Forex Fees</th><th>Avg Rate</th></tr>
-                    </thead>
-                    <tbody>
-                        <?php if (!empty($fxActivity)): ?>
-                            <?php foreach ($fxActivity as $fx): ?>
-                                <tr>
-                                    <td><?php echo htmlspecialchars($fx['source_currency']); ?></td>
-                                    <td><?php echo htmlspecialchars($fx['destination_currency']); ?></td>
-                                    <td><?php echo number_format($fx['fx_transactions']); ?></td>
-                                    <td><?php echo number_format($fx['total_fx_volume'], 2); ?></td>
-                                    <td><strong><?php echo number_format($fx['total_forex_fees'], 2); ?></strong></td>
-                                    <td><?php echo number_format($fx['avg_rate'], 4); ?></td>
-                                </tr>
-                            <?php endforeach; ?>
-                        <?php else: ?>
-                            <tr><td colspan="6" style="text-align:center;">No FX activity this month</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        
-        <!-- Corridor Activity Section -->
-        <div class="section">
-            <div class="section-header" onclick="toggleSection('corridorActivity')">
-                <h2>🔄 Corridor Settlement Activity</h2>
-                <span>▼</span>
-            </div>
-            <div class="section-content" id="corridorActivity">
-                <table>
-                    <thead>
-                        <tr><th>Source Country</th><th>Destination Country</th><th>Settlements</th><th>Total Settled</th><th>Corridor Fees</th></tr>
-                    </thead>
-                    <tbody>
-                        <?php if (!empty($corridorActivity)): ?>
-                            <?php foreach ($corridorActivity as $corridor): ?>
-                                <tr>
-                                    <td><?php echo htmlspecialchars($corridor['source_country']); ?></td>
-                                    <td><?php echo htmlspecialchars($corridor['destination_country']); ?></td>
-                                    <td><?php echo number_format($corridor['settlement_count']); ?></td>
-                                    <td><?php echo number_format($corridor['total_settled'], 2); ?></td>
-                                    <td><?php echo number_format($corridor['total_fees'], 2); ?></td>
-                                </tr>
-                            <?php endforeach; ?>
-                        <?php else: ?>
-                            <tr><td colspan="5" style="text-align:center;">No corridor activity this month</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        
-        <!-- Top Institutions Section -->
+        <!-- Top Institutions -->
         <div class="section">
             <div class="section-header" onclick="toggleSection('topInstitutions')">
-                <h2>🏦 Top Institutions by Volume (<?php echo $monthName; ?>)</h2>
+                <h2>🏦 Top Institutions</h2>
                 <span>▼</span>
             </div>
             <div class="section-content" id="topInstitutions">
                 <table>
                     <thead>
-                        <tr><th>Rank</th><th>Institution</th><th>Transactions</th><th>Total Volume</th><th>Total Fees</th></tr>
+                        <tr><th>#</th><th>Institution</th><th>Transactions</th><th>Volume</th><th>Fees</th></tr>
                     </thead>
                     <tbody>
                         <?php if (!empty($topInstitutions)): ?>
@@ -760,11 +553,11 @@ $hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
                                     <td><?php echo htmlspecialchars($inst['institution']); ?></td>
                                     <td><?php echo number_format($inst['transaction_count']); ?></td>
                                     <td><?php echo number_format($inst['total_volume'], 2); ?></td>
-                                    <td><?php echo number_format(isset($inst['total_fees']) ? $inst['total_fees'] : 0, 2); ?></td>
+                                    <td><?php echo number_format($inst['total_fees'], 2); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="5" style="text-align:center;">No institution data available</td></tr>
+                            <tr><td colspan="5" style="text-align:center;">No data</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
@@ -776,32 +569,19 @@ $hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
         function applyFilters() {
             var institution = document.getElementById('institution').value;
             var currency = document.getElementById('currency').value;
-            var urlParams = new URLSearchParams(window.location.search);
+            var params = new URLSearchParams(window.location.search);
             
-            if (institution) urlParams.set('institution', institution);
-            else urlParams.delete('institution');
-            
-            if (currency) urlParams.set('currency', currency);
-            else urlParams.delete('currency');
+            if (institution) params.set('institution', institution);
+            else params.delete('institution');
+            if (currency) params.set('currency', currency);
+            else params.delete('currency');
             
             var year = new URLSearchParams(window.location.search).get('year');
             var month = new URLSearchParams(window.location.search).get('month');
-            if (year) urlParams.set('year', year);
-            if (month) urlParams.set('month', month);
+            if (year) params.set('year', year);
+            if (month) params.set('month', month);
             
-            window.location.href = '?' + urlParams.toString();
-        }
-        
-        function exportCSV() {
-            var institution = document.getElementById('institution').value;
-            var currency = document.getElementById('currency').value;
-            var urlParams = new URLSearchParams(window.location.search);
-            
-            urlParams.set('export', 'csv');
-            if (institution) urlParams.set('institution', institution);
-            if (currency) urlParams.set('currency', currency);
-            
-            window.location.href = '?' + urlParams.toString();
+            window.location.href = '?' + params.toString();
         }
         
         function toggleSection(sectionId) {
@@ -818,7 +598,6 @@ $hookUsers = isset($hookStats['unique_users']) ? $hookStats['unique_users'] : 0;
             }
         }
         
-        // Initialize all sections as visible
         var sections = document.querySelectorAll('.section-content');
         for (var i = 0; i < sections.length; i++) {
             sections[i].style.display = 'block';
