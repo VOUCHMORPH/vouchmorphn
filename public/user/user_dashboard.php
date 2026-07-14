@@ -15,8 +15,33 @@ if (!SessionManager::isLoggedIn()) {
     exit;
 }
 
-$user = SessionManager::getUser();
-$userId = $user['user_id'] ?? null;
+// FIX: Use SessionManager::user() instead of getUser()
+$user = SessionManager::user();
+$userId = $user['id'] ?? null;  // FIX: Use 'id' not 'user_id'
+
+// If user is null or no id, redirect to login
+if (!$userId) {
+    header("Location: login.php");
+    exit;
+}
+
+// Get user details from database to ensure all fields are available
+require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
+use Core\Database\DBConnection;
+
+try {
+    $db = DBConnection::getConnection();
+    $stmt = $db->prepare("SELECT * FROM users WHERE user_id = ?");
+    $stmt->execute([$userId]);
+    $dbUser = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($dbUser) {
+        // Merge session user with database user to get all fields
+        $user = array_merge($user, $dbUser);
+        $user['user_id'] = $user['id']; // Ensure user_id is set
+    }
+} catch (Exception $e) {
+    error_log("Dashboard: Failed to fetch user details: " . $e->getMessage());
+}
 
 $userIdentifiers = [
     'phone' => $user['phone'] ?? null,
@@ -41,10 +66,7 @@ foreach ($userIdentifiers as $type => $value) {
     }
 }
 
-require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
-
-use Core\Database\DBConnection;
 use Core\Config\LoadCountry;
 
 $config = LoadCountry::getConfig();
@@ -172,6 +194,7 @@ foreach ($participants as $code => $p) {
     ];
 }
 $identifiersJson = json_encode($validIdentifiers);
+// The rest of the HTML stays exactly the same...
 ?>
 <!DOCTYPE html>
 <html lang="en">
