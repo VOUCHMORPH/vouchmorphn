@@ -1,5 +1,5 @@
 <?php
-// user/verify_otp.php - OTP Verification Handler (SIMPLIFIED - Phone only)
+// user/verify_otp.php - OTP Verification Handler
 
 ob_start();
 error_reporting(E_ALL);
@@ -33,7 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 header('Content-Type: application/json; charset=utf-8');
 
 // ============================================================
-// Load country configuration
+// Load country configuration - FIXED: Use proper config loading
 // ============================================================
 try {
     $config = \Core\Config\LoadCountry::getConfig();
@@ -86,7 +86,7 @@ $otp = trim($_POST['otp'] ?? '');
 error_log("VERIFY OTP: Input - Type: {$inputType}, Raw Identifier: {$rawIdentifier}, OTP: {$otp}");
 
 // ============================================================
-// Normalize the identifier to match what's stored in session
+// FIX: Normalize the identifier to match what's stored in session
 // ============================================================
 if ($inputType === 'phone') {
     $identifier = normalizePhone($rawIdentifier, $countryDialCode);
@@ -127,7 +127,7 @@ if ($tempData['identifier_value'] !== $identifier) {
 }
 
 // ============================================================
-// Verify OTP from database
+// Verify OTP from database - FIXED: Use 'verification' not 'registration'
 // ============================================================
 try {
     // Get the OTP record from database
@@ -193,31 +193,41 @@ try {
     try {
         error_log("VERIFY OTP: Creating user...");
 
-        // ============================================================
-        // SIMPLIFIED: Only check phone number for existing user
-        // ============================================================
-        $phoneNumber = $tempData['phone_number'] ?? $identifier;
+        // Check if user already exists (double-check)
+        $stmt = $db->prepare("
+            SELECT user_id FROM users 
+            WHERE phone = :phone OR email = :email 
+               OR phone2 = :phone2 OR phone3 = :phone3
+               OR national_id = :national_id 
+               OR drivers_license = :drivers_license 
+               OR passport = :passport
+            LIMIT 1
+        ");
+        $stmt->execute([
+            ':phone' => $tempData['phone_number'] ?? null,
+            ':email' => $tempData['email'] ?? null,
+            ':phone2' => $tempData['phone2'] ?? null,
+            ':phone3' => $tempData['phone3'] ?? null,
+            ':national_id' => ($tempData['identifier_type'] === 'national_id') ? $tempData['identifier_value'] : null,
+            ':drivers_license' => ($tempData['identifier_type'] === 'drivers_license') ? $tempData['identifier_value'] : null,
+            ':passport' => ($tempData['identifier_type'] === 'passport') ? $tempData['identifier_value'] : null
+        ]);
         
-        // Check if user exists by phone only
-        $stmt = $db->prepare("SELECT user_id FROM users WHERE phone = :phone LIMIT 1");
-        $stmt->execute([':phone' => $phoneNumber]);
-        $existingUser = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($existingUser) {
+        if ($stmt->fetch()) {
             $db->rollBack();
-            error_log("VERIFY OTP: User already exists with phone: {$phoneNumber}");
+            error_log("VERIFY OTP: User already exists");
             echo json_encode(['success' => false, 'message' => 'User already exists. Please login.']);
             exit;
         }
 
-        error_log("VERIFY OTP: Phone number is available: {$phoneNumber}");
-
         // ============================================================
-        // Handle date_of_birth properly
+        // FIX: Handle date_of_birth properly - fallback to NULL or default
         // ============================================================
         $dateOfBirth = $tempData['date_of_birth'] ?? null;
         
+        // If date_of_birth is provided, validate it
         if ($dateOfBirth !== null && $dateOfBirth !== '') {
+            // Try to parse the date, if invalid, set to null
             $timestamp = strtotime($dateOfBirth);
             if ($timestamp !== false) {
                 $dateOfBirth = date('Y-m-d', $timestamp);
@@ -226,27 +236,33 @@ try {
                 error_log("VERIFY OTP: Invalid date_of_birth format, setting to NULL");
             }
         } else {
+            // If no date_of_birth provided, use NULL
             $dateOfBirth = null;
             error_log("VERIFY OTP: No date_of_birth provided, using NULL");
         }
 
         // ============================================================
-        // Generate username if not provided
+        // FIX: Generate username if not provided
         // ============================================================
         $username = $tempData['username'] ?? null;
         $fullName = $tempData['full_name'] ?? null;
+        $phoneNumber = $tempData['phone_number'] ?? $identifier;
         
+        // If no username, generate from full name or phone
         if (empty($username)) {
             if (!empty($fullName)) {
+                // Generate username from full name (remove spaces, lowercase)
                 $username = strtolower(preg_replace('/\s+/', '', $fullName));
-                // Check if username exists
+                // Add random numbers if too common
                 $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE username = :username");
                 $stmt->execute([':username' => $username]);
                 if ($stmt->fetchColumn() > 0) {
                     $username .= rand(100, 999);
                 }
             } else {
+                // Use phone as fallback
                 $username = 'user_' . preg_replace('/[^0-9]/', '', $phoneNumber);
+                // Ensure uniqueness
                 $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE username = :username");
                 $stmt->execute([':username' => $username]);
                 if ($stmt->fetchColumn() > 0) {
@@ -257,12 +273,14 @@ try {
         }
 
         // ============================================================
-        // Handle email - generate if not provided
+        // FIX: Handle email - generate if not provided
         // ============================================================
         $email = $tempData['email'] ?? null;
         
+        // If no email provided, generate one from phone or username
         if (empty($email)) {
             $email = $username . '@' . strtolower($countryName) . '.vouchmorphn.com';
+            // Make it unique
             $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE email = :email");
             $stmt->execute([':email' => $email]);
             if ($stmt->fetchColumn() > 0) {
@@ -272,34 +290,52 @@ try {
         }
 
         // ============================================================
-        // Create the user
+        // Create the user with correct column names matching your table
         // ============================================================
         $stmt = $db->prepare("
             INSERT INTO users (
-                phone, phone2, phone3, email, 
-                national_id, drivers_license, passport,
-                full_name, username, date_of_birth, 
-                password_hash, created_at, verified, status
+                username,
+                email,
+                phone,
+                password_hash,
+                verified,
+                created_at,
+                national_id,
+                drivers_license,
+                passport,
+                date_of_birth,
+                full_name,
+                phone2,
+                phone3
             ) VALUES (
-                :phone, :phone2, :phone3, :email,
-                :national_id, :drivers_license, :passport,
-                :full_name, :username, :date_of_birth,
-                :pin_hash, NOW(), true, 'active'
+                :username,
+                :email,
+                :phone,
+                :password_hash,
+                true,
+                NOW(),
+                :national_id,
+                :drivers_license,
+                :passport,
+                :date_of_birth,
+                :full_name,
+                :phone2,
+                :phone3
             )
         ");
         
         $stmt->execute([
-            ':phone' => $phoneNumber,
-            ':phone2' => $tempData['phone2'] ?? null,
-            ':phone3' => $tempData['phone3'] ?? null,
+            ':username' => $username,
             ':email' => $email,
+            ':phone' => $tempData['phone_number'] ?? null,
+            ':password_hash' => $tempData['pin_hash'],
             ':national_id' => ($tempData['identifier_type'] === 'national_id') ? $tempData['identifier_value'] : null,
             ':drivers_license' => ($tempData['identifier_type'] === 'drivers_license') ? $tempData['identifier_value'] : null,
             ':passport' => ($tempData['identifier_type'] === 'passport') ? $tempData['identifier_value'] : null,
-            ':full_name' => $fullName,
-            ':username' => $username,
             ':date_of_birth' => $dateOfBirth,
-            ':pin_hash' => $tempData['pin_hash']
+            ':full_name' => $fullName,
+            ':phone2' => $tempData['phone2'] ?? null,
+            ':phone3' => $tempData['phone3'] ?? null
         ]);
 
         $userId = $db->lastInsertId();
@@ -309,11 +345,9 @@ try {
         $db->commit();
         error_log("VERIFY OTP: Transaction committed successfully");
 
-        // ============================================================
         // Store user in session
-        // ============================================================
         $stmt = $db->prepare("
-            SELECT user_id, phone, email, full_name, username, created_at 
+            SELECT user_id, username, email, phone, full_name, created_at 
             FROM users WHERE user_id = :user_id
         ");
         $stmt->execute([':user_id' => $userId]);
@@ -321,10 +355,10 @@ try {
 
         SessionManager::setUser([
             'user_id' => $user['user_id'],
-            'phone' => $user['phone'],
-            'email' => $user['email'],
-            'full_name' => $user['full_name'] ?? '',
             'username' => $user['username'] ?? '',
+            'email' => $user['email'],
+            'phone' => $user['phone'],
+            'full_name' => $user['full_name'] ?? '',
             'created_at' => $user['created_at']
         ]);
 
@@ -353,4 +387,3 @@ try {
     error_log("VERIFY OTP ERROR Trace: " . $e->getTraceAsString());
     echo json_encode(['success' => false, 'message' => 'System error: ' . $e->getMessage()]);
 }
-?>
