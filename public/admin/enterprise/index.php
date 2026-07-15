@@ -182,6 +182,13 @@ $orgUsers = $stmt->fetchAll(PDO::FETCH_ASSOC);
 $stmt = $pdo->prepare("SELECT id, name FROM departments WHERE organization_id = :org_id ORDER BY name");
 $stmt->execute([':org_id' => $orgId]);
 $departments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// ============================================================
+// HELPER: Safe htmlspecialchars wrapper for PHP 8.1+
+// ============================================================
+function safeHtml($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -216,10 +223,10 @@ th { background:#f8fafc; font-weight:700; font-size:10.5px; text-transform:upper
 <body>
 <div class="wrap">
     <h1>Manage Users</h1>
-    <p class="sub">Signed in as <?php echo htmlspecialchars(strtoupper($userRole)); ?> — you can assign: <?php echo htmlspecialchars(implode(', ', $assignableRoles)); ?></p>
+    <p class="sub">Signed in as <?php echo safeHtml(strtoupper($userRole)); ?> — you can assign: <?php echo safeHtml(implode(', ', $assignableRoles)); ?></p>
 
-    <?php if ($error): ?><div class="error">⚠️ <?php echo htmlspecialchars($error); ?></div><?php endif; ?>
-    <?php if ($success): ?><div class="success">✓ <?php echo htmlspecialchars($success); ?></div><?php endif; ?>
+    <?php if ($error): ?><div class="error">⚠️ <?php echo safeHtml($error); ?></div><?php endif; ?>
+    <?php if ($success): ?><div class="success">✓ <?php echo safeHtml($success); ?></div><?php endif; ?>
 
     <div class="hierarchy-note">
         <strong>Hierarchy in effect:</strong> IT Manager Enterprise and Owner can add or remove anyone.
@@ -230,7 +237,7 @@ th { background:#f8fafc; font-weight:700; font-size:10.5px; text-transform:upper
     <div class="card">
         <h3>Add a user</h3>
         <form method="POST">
-            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
+            <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
             <input type="hidden" name="action" value="create_user">
             <div class="field-row">
                 <div><label>Full Name</label><input type="text" name="full_name" required></div>
@@ -242,7 +249,7 @@ th { background:#f8fafc; font-weight:700; font-size:10.5px; text-transform:upper
                     <label>Role</label>
                     <select name="role" required>
                         <?php foreach ($assignableRoles as $r): ?>
-                        <option value="<?php echo htmlspecialchars($r); ?>"><?php echo htmlspecialchars(ucwords(str_replace('_', ' ', $r))); ?></option>
+                        <option value="<?php echo safeHtml($r); ?>"><?php echo safeHtml(ucwords(str_replace('_', ' ', $r))); ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
@@ -253,7 +260,7 @@ th { background:#f8fafc; font-weight:700; font-size:10.5px; text-transform:upper
                     <select name="department_id">
                         <option value="">— None —</option>
                         <?php foreach ($departments as $d): ?>
-                        <option value="<?php echo $d['id']; ?>"><?php echo htmlspecialchars($d['name']); ?></option>
+                        <option value="<?php echo $d['id']; ?>"><?php echo safeHtml($d['name']); ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
@@ -269,15 +276,20 @@ th { background:#f8fafc; font-weight:700; font-size:10.5px; text-transform:upper
             <tbody>
                 <?php foreach ($orgUsers as $ou): ?>
                 <tr class="<?php echo $ou['is_active'] ? '' : 'inactive'; ?>">
-                    <td><?php echo htmlspecialchars($ou['full_name']); ?></td>
-                    <td><?php echo htmlspecialchars($ou['phone']); ?><?php if ($ou['email']): ?><br><small><?php echo htmlspecialchars($ou['email']); ?></small><?php endif; ?></td>
-                    <td><span class="role-pill"><?php echo htmlspecialchars(str_replace('_', ' ', $ou['role'])); ?></span></td>
-                    <td><?php echo htmlspecialchars($ou['department_name'] ?? '—'); ?></td>
+                    <td><?php echo safeHtml($ou['full_name']); ?></td>
+                    <td>
+                        <?php echo safeHtml($ou['phone']); ?>
+                        <?php if (!empty($ou['email'])): ?>
+                        <br><small><?php echo safeHtml($ou['email']); ?></small>
+                        <?php endif; ?>
+                    </td>
+                    <td><span class="role-pill"><?php echo safeHtml(str_replace('_', ' ', $ou['role'])); ?></span></td>
+                    <td><?php echo safeHtml($ou['department_name'] ?? '—'); ?></td>
                     <td><?php echo $ou['is_active'] ? 'Active' : 'Inactive'; ?></td>
                     <td>
                         <?php if ($ou['is_active'] && in_array($ou['role'], $assignableRoles)): ?>
                         <form method="POST" style="display:inline;" onsubmit="return confirm('Deactivate this user?');">
-                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
+                            <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                             <input type="hidden" name="action" value="deactivate_user">
                             <input type="hidden" name="org_user_id" value="<?php echo $ou['id']; ?>">
                             <button type="submit" class="btn-danger">Deactivate</button>
