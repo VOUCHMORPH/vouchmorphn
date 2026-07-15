@@ -3812,15 +3812,22 @@ class SwapService
         throw new RuntimeException("Participant not found: {$institution}");
     }
 
-    public function getParticipantId(string $institution): int
-    {
-        foreach ($this->participants as $code => $participant) {
-            if (strtoupper($code) === strtoupper($institution)) {
-                return $participant['id'] ?? 0;
+   public function getParticipantId(string $institution): int
+{
+    foreach ($this->participants as $code => $participant) {
+        if (strtoupper($code) === strtoupper($institution)) {
+            $id = $participant['id'] ?? 0;
+            // The 'id' field is a SWIFT/BIC code (string)
+            // We need to generate a numeric ID or hash it
+            if (is_string($id) && !is_numeric($id)) {
+                // Convert the SWIFT code to a numeric ID
+                return abs(crc32($id) % 1000000);
             }
+            return (int)$id;
         }
-        return 0;
     }
+    return 0;
+}
 
     public function getHoldStatus(int $holdId): ?array
     {
