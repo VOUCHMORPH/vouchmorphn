@@ -43,13 +43,10 @@ $isLoader = in_array($userRole, ['program_officer', 'department_head']);
 // HELPER: Check if user can edit a batch
 // ============================================================
 function canEditBatch($batchCreatedBy, $currentUserId, $userRole) {
-    // Owner can edit everything
     if ($userRole === 'owner') return true;
-    // Loaders can only edit their own batches
     if (in_array($userRole, ['program_officer', 'department_head'])) {
         return $batchCreatedBy == $currentUserId;
     }
-    // Everyone else cannot edit
     return false;
 }
 
@@ -77,7 +74,6 @@ $metrics = [];
 $recentBatches = [];
 
 try {
-    // Base query filters - FIXED: removed department_id since it doesn't exist
     $params = [':org_id' => $orgId];
 
     // Total batches
@@ -146,7 +142,7 @@ try {
         $metrics['approved_for_disbursement'] = (int)$stmt->fetchColumn();
     }
 
-    // For approvers - pending approvals (show all pending)
+    // For approvers - pending approvals
     $stmt = $pdo->prepare("
         SELECT COUNT(*) as total 
         FROM disbursement_batches 
@@ -156,32 +152,23 @@ try {
     $stmt->execute([':org_id' => $orgId]);
     $metrics['pending_approvals'] = (int)$stmt->fetchColumn();
     
-    // ============================================================
     // Recent batches with status-based filtering
-    // ============================================================
     $statusFilter = "";
     $statusParams = [':org_id' => $orgId];
 
-    // Different roles see different batches - FIXED: owner sees all
     if ($userRole === 'owner' || $userRole === 'it_manager_enterprise') {
-        // Owners and IT Managers see ALL batches
         $statusFilter = "AND 1=1";
     } elseif ($isReadOnly) {
-        // Auditors/viewers see completed only
         $statusFilter = "AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')";
     } elseif ($isApprover) {
-        // Approvers see pending, approved, and draft
         $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')";
     } elseif ($isSupervisor) {
-        // Supervisors see approved and completed
         $statusFilter = "AND status IN ('approved', 'completed', 'executed', 'APPROVED', 'COMPLETED', 'EXECUTED')";
     } elseif ($isLoader) {
-        // Loaders see ALL their batches + pending + approved + draft
         $statusFilter = "AND (created_by = :user_id OR status IN ('pending', 'pending_approval', 'approved', 'draft'))";
         $statusParams[':user_id'] = $userId;
     }
 
-    // FIXED: Removed department_id from SELECT (column doesn't exist)
     $stmt = $pdo->prepare("
         SELECT 
             id, batch_reference, batch_name, source_institution,
@@ -250,16 +237,6 @@ function getStatusLabel($status) {
     };
 }
 
-function getStatusAction($status) {
-    $status = strtolower($status);
-    return match($status) {
-        'pending', 'pending_approval' => 'Approve',
-        'approved' => 'Disburse',
-        'draft' => 'Submit',
-        default => 'View'
-    };
-}
-
 function getRoleLabel($role) {
     $labels = [
         'owner' => 'Owner',
@@ -283,21 +260,57 @@ function getRoleLabel($role) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · Enterprise Dashboard · <?php echo safeHtml($orgName); ?></title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <title>VOUCHMORPH · Enterprise · <?php echo safeHtml($orgName); ?></title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ... (all existing styles stay the same) ... */
-        * { margin:0; padding:0; box-sizing:border-box; }
-        body {
-            font-family: 'Inter', sans-serif;
-            background: #f1f5f9;
-            color: #0f172a;
-            min-height: 100vh;
+        /* ============================================================
+           VOUCHMORPH STANDARD STYLE
+           Sharp corners · Centralized · Brass/Ink-900 · Appropriate font sizes
+           ============================================================ */
+        :root {
+            --paper:        #EEF1EF;
+            --panel:        #FFFFFF;
+            --ink-900:      #0F2138;
+            --ink-700:      #1D3557;
+            --ink-500:      #4A5A6E;
+            --ink-300:      #8A96A3;
+            --line:         #D3DAD6;
+            --line-strong:  #AEB8B2;
+            --brass:        #8A6D3B;
+            --brass-tint:   #F4EFE3;
+            --seal-red:     #7A2118;
+            --amber:        #8A5A0B;
+            --ledger-green: #24513A;
+            --green-tint:   #E5EEE7;
+            --blue-tint:    #E7EEF4;
+            --danger:       #b3261e;
+            --danger-bg:    #fbeceb;
+
+            --f-body: 'IBM Plex Sans', sans-serif;
+            --f-cond: 'IBM Plex Sans Condensed', sans-serif;
+            --f-mono: 'IBM Plex Mono', monospace;
         }
 
-        /* ===== HEADER ===== */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--f-body);
+            background: var(--paper);
+            color: var(--ink-900);
+            min-height: 100vh;
+            font-size: 14px;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
+        /* ============================================================
+           HEADER
+           ============================================================ */
         .header {
-            background: #0f172a;
+            background: var(--ink-900);
             color: #fff;
             padding: 16px 32px;
             display: flex;
@@ -305,7 +318,7 @@ function getRoleLabel($role) {
             align-items: center;
             flex-wrap: wrap;
             gap: 12px;
-            border-bottom: 3px solid #8A6D3B;
+            border-bottom: 3px solid var(--brass);
         }
         .header-left {
             display: flex;
@@ -314,27 +327,28 @@ function getRoleLabel($role) {
             flex-wrap: wrap;
         }
         .logo {
+            font-family: var(--f-cond);
             font-weight: 700;
             font-size: 18px;
             letter-spacing: 0.08em;
             text-transform: uppercase;
         }
-        .logo span { color: #8A6D3B; }
+        .logo span { color: var(--brass); }
         .org-name {
             font-size: 13px;
-            color: #94a3b8;
+            color: var(--ink-300);
             padding-left: 16px;
             border-left: 1px solid rgba(255,255,255,0.1);
         }
         .role-badge {
             padding: 4px 14px;
-            background: #8A6D3B;
-            color: #0f172a;
+            background: var(--brass);
+            color: var(--ink-900);
             font-size: 10px;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.05em;
-            border-radius: 20px;
+            font-family: var(--f-cond);
         }
         .user-info {
             display: flex;
@@ -347,59 +361,49 @@ function getRoleLabel($role) {
         }
         .user-name {
             font-weight: 600;
-            color: #8A6D3B;
-            font-size: 13px;
+            color: var(--brass);
+            font-size: 14px;
         }
         .user-role {
-            font-size: 10px;
-            color: #94a3b8;
+            font-size: 11px;
+            color: var(--ink-300);
             text-transform: uppercase;
+            font-family: var(--f-cond);
+            letter-spacing: 0.04em;
         }
         .logout-btn {
             padding: 6px 16px;
-            border: 2px solid #8A6D3B;
-            color: #8A6D3B;
+            border: 2px solid var(--brass);
+            color: var(--brass);
             text-decoration: none;
             font-size: 11px;
             font-weight: 600;
             text-transform: uppercase;
-            border-radius: 20px;
+            font-family: var(--f-cond);
             transition: all 0.15s;
+            letter-spacing: 0.04em;
         }
         .logout-btn:hover {
-            background: #8A6D3B;
-            color: #0f172a;
+            background: var(--brass);
+            color: var(--ink-900);
         }
 
-        /* ===== READ ONLY BADGE ===== */
-        .readonly-badge {
-            display: inline-block;
-            padding: 1px 8px;
-            background: #fef3c7;
-            color: #92400e;
-            border-radius: 10px;
-            font-size: 8px;
-            font-weight: 600;
-            text-transform: uppercase;
-            border: 1px solid #f59e0b;
-            margin-left: 4px;
-            vertical-align: middle;
-        }
-
-        /* ===== NAVIGATION ===== */
+        /* ============================================================
+           NAVIGATION
+           ============================================================ */
         .nav {
-            background: #fff;
-            border-bottom: 1px solid #e2e8f0;
+            background: var(--panel);
+            border-bottom: 1px solid var(--line);
             padding: 0 32px;
             display: flex;
-            gap: 24px;
+            gap: 28px;
             flex-wrap: wrap;
             align-items: center;
             overflow-x: auto;
         }
         .nav-item {
-            padding: 12px 0;
-            color: #64748b;
+            padding: 14px 0;
+            color: var(--ink-500);
             text-decoration: none;
             font-size: 12px;
             font-weight: 600;
@@ -408,40 +412,37 @@ function getRoleLabel($role) {
             border-bottom: 2px solid transparent;
             transition: all 0.15s;
             white-space: nowrap;
+            font-family: var(--f-cond);
         }
-        .nav-item:hover { color: #0f172a; }
+        .nav-item:hover { color: var(--ink-900); }
         .nav-item.active {
-            color: #0f172a;
-            border-bottom-color: #8A6D3B;
-        }
-        .nav-item.primary { color: #0f172a; }
-        .nav-item.primary:hover { color: #8A6D3B; }
-        .nav-item.primary.active {
-            color: #8A6D3B;
-            border-bottom-color: #8A6D3B;
+            color: var(--ink-900);
+            border-bottom-color: var(--brass);
         }
         .nav-item .badge {
-            background: #ef4444;
+            background: var(--seal-red);
             color: #fff;
             font-size: 9px;
             padding: 1px 8px;
-            border-radius: 12px;
             margin-left: 4px;
+            font-family: var(--f-mono);
         }
         .nav-item .badge-gold {
-            background: #8A6D3B;
+            background: var(--brass);
             color: #fff;
             font-size: 9px;
             padding: 1px 8px;
-            border-radius: 12px;
             margin-left: 4px;
+            font-family: var(--f-mono);
         }
 
-        /* ===== CONTENT ===== */
+        /* ============================================================
+           CONTENT
+           ============================================================ */
         .content {
             max-width: 1400px;
             margin: 0 auto;
-            padding: 24px 32px;
+            padding: 28px 32px;
         }
         .page-header {
             display: flex;
@@ -449,69 +450,112 @@ function getRoleLabel($role) {
             align-items: center;
             flex-wrap: wrap;
             gap: 16px;
-            margin-bottom: 24px;
+            margin-bottom: 28px;
         }
         .page-header h1 {
+            font-family: var(--f-cond);
             font-size: 24px;
             font-weight: 700;
+            letter-spacing: 0.02em;
         }
         .page-header .sub {
-            color: #64748b;
+            color: var(--ink-500);
             font-size: 14px;
         }
         .page-header .timestamp {
-            color: #94a3b8;
+            color: var(--ink-300);
             font-size: 12px;
+            font-family: var(--f-mono);
         }
 
-        /* ===== METRICS ===== */
+        /* ============================================================
+           QUICK ACTIONS
+           ============================================================ */
+        .quick-actions {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-bottom: 28px;
+        }
+        .quick-action {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            padding: 18px 20px;
+            text-decoration: none;
+            color: var(--ink-900);
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+        .quick-action:hover {
+            border-color: var(--brass);
+            background: var(--brass-tint);
+            transform: translateY(-2px);
+        }
+        .quick-action .icon { font-size: 26px; }
+        .quick-action .label {
+            font-size: 14px;
+            font-weight: 600;
+            font-family: var(--f-cond);
+        }
+        .quick-action .desc {
+            font-size: 12px;
+            color: var(--ink-300);
+        }
+
+        /* ============================================================
+           METRICS
+           ============================================================ */
         .metrics-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
             gap: 12px;
-            margin-bottom: 24px;
+            margin-bottom: 28px;
         }
         .metric-card {
-            background: #fff;
-            border: 1px solid #e2e8f0;
-            border-radius: 12px;
-            padding: 16px 20px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            padding: 18px 20px;
             transition: border-color 0.15s;
         }
         .metric-card:hover {
-            border-color: #8A6D3B;
+            border-color: var(--brass);
         }
         .metric-label {
             font-size: 10px;
             text-transform: uppercase;
-            color: #94a3b8;
+            color: var(--ink-300);
             letter-spacing: 0.05em;
             font-weight: 600;
+            font-family: var(--f-cond);
         }
         .metric-value {
-            font-size: 24px;
+            font-size: 26px;
             font-weight: 700;
-            color: #0f172a;
+            color: var(--ink-900);
             margin-top: 4px;
+            font-family: var(--f-cond);
         }
         .metric-value .currency {
             font-size: 14px;
-            color: #94a3b8;
+            color: var(--ink-300);
             font-weight: 400;
         }
         .metric-sub {
             font-size: 11px;
-            color: #94a3b8;
+            color: var(--ink-300);
             margin-top: 2px;
         }
 
-        /* ===== CARDS ===== */
+        /* ============================================================
+           CARDS
+           ============================================================ */
         .card {
-            background: #fff;
-            border: 1px solid #e2e8f0;
-            border-radius: 12px;
+            background: var(--panel);
+            border: 1px solid var(--line);
             padding: 20px 24px;
-            margin-bottom: 16px;
+            margin-bottom: 20px;
         }
         .card-header {
             display: flex;
@@ -519,21 +563,24 @@ function getRoleLabel($role) {
             align-items: center;
             margin-bottom: 16px;
             padding-bottom: 12px;
-            border-bottom: 1px solid #e2e8f0;
+            border-bottom: 1px solid var(--line);
             flex-wrap: wrap;
             gap: 8px;
         }
         .card-title {
-            font-size: 15px;
+            font-size: 16px;
             font-weight: 700;
+            font-family: var(--f-cond);
+            letter-spacing: 0.02em;
         }
         .card-badge {
             padding: 2px 12px;
-            background: #0f172a;
+            background: var(--ink-900);
             color: #fff;
             font-size: 10px;
             font-weight: 600;
-            border-radius: 20px;
+            font-family: var(--f-cond);
+            letter-spacing: 0.04em;
         }
         .card-actions {
             display: flex;
@@ -541,7 +588,9 @@ function getRoleLabel($role) {
             flex-wrap: wrap;
         }
 
-        /* ===== TABLES ===== */
+        /* ============================================================
+           TABLES
+           ============================================================ */
         .table-responsive { overflow-x: auto; }
         table {
             width: 100%;
@@ -549,152 +598,208 @@ function getRoleLabel($role) {
             font-size: 13px;
         }
         th {
-            background: #f8fafc;
-            color: #64748b;
+            background: var(--paper);
+            color: var(--ink-500);
             padding: 10px 14px;
             text-align: left;
             font-size: 10px;
             text-transform: uppercase;
             letter-spacing: 0.05em;
             font-weight: 600;
-            border-bottom: 2px solid #e2e8f0;
+            border-bottom: 2px solid var(--line);
+            font-family: var(--f-cond);
         }
         td {
             padding: 10px 14px;
-            border-bottom: 1px solid #e2e8f0;
+            border-bottom: 1px solid var(--line);
             vertical-align: middle;
+            font-size: 13px;
         }
-        tr:hover { background: #f8fafc; }
+        tr:hover { background: var(--brass-tint); }
 
-        /* ===== STATUS BADGES ===== */
+        /* ============================================================
+           STATUS BADGES
+           ============================================================ */
         .status {
             display: inline-block;
-            padding: 2px 10px;
+            padding: 2px 12px;
             font-size: 10px;
             font-weight: 600;
             text-transform: uppercase;
-            border-radius: 20px;
             letter-spacing: 0.04em;
+            font-family: var(--f-cond);
         }
-        .status-draft { background: #f1f5f9; color: #64748b; }
-        .status-pending { background: #fef3c7; color: #92400e; }
-        .status-approved { background: #dbeafe; color: #1e40af; }
-        .status-completed { background: #dcfce7; color: #166534; }
-        .status-rejected { background: #fee2e2; color: #991b1b; }
+        .status-draft { background: var(--paper); color: var(--ink-500); }
+        .status-pending { background: #fef3c7; color: var(--amber); }
+        .status-approved { background: var(--blue-tint); color: #1e40af; }
+        .status-completed { background: var(--green-tint); color: var(--ledger-green); }
+        .status-rejected { background: var(--danger-bg); color: var(--danger); }
 
-        /* ===== BUTTONS ===== */
+        /* ============================================================
+           BUTTONS
+           ============================================================ */
         .btn {
-            padding: 6px 16px;
+            padding: 6px 18px;
             font-size: 12px;
             font-weight: 600;
-            border-radius: 20px;
+            font-family: var(--f-cond);
             border: none;
             cursor: pointer;
             transition: all 0.15s;
             text-decoration: none;
             display: inline-block;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
         }
-        .btn:hover { opacity: 0.85; transform: translateY(-1px); }
+        .btn:hover { opacity: 0.85; }
         .btn-primary {
-            background: #0f172a;
+            background: var(--ink-900);
             color: #fff;
         }
         .btn-primary:hover {
-            background: #8A6D3B;
+            background: var(--brass);
+            color: var(--ink-900);
         }
         .btn-success {
-            background: #166534;
+            background: var(--ledger-green);
             color: #fff;
         }
         .btn-success:hover {
-            background: #14532d;
+            background: #1a3d2c;
         }
         .btn-warning {
-            background: #92400e;
+            background: var(--amber);
             color: #fff;
         }
         .btn-warning:hover {
-            background: #78350f;
+            background: #6e4800;
         }
         .btn-outline {
             background: transparent;
-            border: 1px solid #e2e8f0;
-            color: #64748b;
+            border: 1px solid var(--line);
+            color: var(--ink-500);
         }
         .btn-outline:hover {
-            border-color: #0f172a;
-            color: #0f172a;
+            border-color: var(--brass);
+            color: var(--ink-900);
+            background: var(--brass-tint);
         }
-        .btn-sm { padding: 4px 12px; font-size: 11px; }
+        .btn-sm { padding: 4px 14px; font-size: 11px; }
         .btn-disabled {
             opacity: 0.5;
             cursor: not-allowed;
             pointer-events: none;
         }
 
-        /* ===== QUICK ACTIONS ===== */
-        .quick-actions {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 12px;
-            margin-bottom: 24px;
-        }
-        .quick-action {
-            background: #fff;
-            border: 1px solid #e2e8f0;
-            border-radius: 12px;
-            padding: 16px 20px;
-            text-decoration: none;
-            color: #0f172a;
-            transition: all 0.15s;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-        .quick-action:hover {
-            border-color: #8A6D3B;
-            background: #f8fafc;
-            transform: translateY(-2px);
-        }
-        .quick-action .icon { font-size: 24px; }
-        .quick-action .label {
-            font-size: 13px;
-            font-weight: 600;
-        }
-        .quick-action .desc {
-            font-size: 11px;
-            color: #94a3b8;
-        }
-
-        /* ===== EMPTY STATE ===== */
+        /* ============================================================
+           EMPTY STATE
+           ============================================================ */
         .empty-state {
             text-align: center;
-            padding: 40px 20px;
-            color: #94a3b8;
+            padding: 48px 20px;
+            color: var(--ink-300);
         }
-        .empty-state .icon { font-size: 40px; margin-bottom: 8px; }
-        .empty-state p { font-size: 14px; }
+        .empty-state .icon { font-size: 44px; margin-bottom: 12px; }
+        .empty-state p { font-size: 15px; }
 
-        /* ===== FOOTER ===== */
+        /* ============================================================
+           ROLE INFO PANELS
+           ============================================================ */
+        .info-panel {
+            padding: 16px 20px;
+            margin-bottom: 16px;
+            border-left: 3px solid var(--brass);
+        }
+        .info-panel .label {
+            font-weight: 600;
+            font-size: 14px;
+            font-family: var(--f-cond);
+            letter-spacing: 0.02em;
+        }
+        .info-panel .desc {
+            color: var(--ink-500);
+            font-size: 13px;
+            margin-top: 4px;
+        }
+        .info-panel .desc .highlight {
+            font-weight: 600;
+            color: var(--ink-900);
+        }
+
+        /* ============================================================
+           FOOTER
+           ============================================================ */
         .footer {
-            background: #0f172a;
-            color: #94a3b8;
+            background: var(--ink-900);
+            color: var(--ink-300);
             padding: 16px 32px;
             text-align: center;
             font-size: 11px;
-            border-top: 2px solid #8A6D3B;
-            margin-top: 24px;
+            border-top: 2px solid var(--brass);
+            margin-top: 28px;
+            font-family: var(--f-mono);
+        }
+        .footer .sub {
+            color: rgba(255,255,255,0.15);
+            font-size: 9px;
+            margin-top: 4px;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
         }
 
-        /* ===== RESPONSIVE ===== */
+        /* ============================================================
+           RESPONSIVE
+           ============================================================ */
         @media (max-width: 768px) {
             .header { padding: 12px 16px; }
             .nav { padding: 0 16px; gap: 16px; }
             .content { padding: 16px; }
             .metrics-grid { grid-template-columns: repeat(2, 1fr); }
             .quick-actions { grid-template-columns: 1fr; }
-            .table-responsive { font-size: 11px; }
+            .table-responsive { font-size: 12px; }
             th, td { padding: 6px 8px; }
+            .page-header h1 { font-size: 20px; }
+        }
+        @media (max-width: 480px) {
+            .metrics-grid { grid-template-columns: 1fr; }
+            .header-left { gap: 10px; }
+            .user-info { width: 100%; justify-content: flex-end; }
+        }
+
+        /* ============================================================
+           DARK MODE SUPPORT
+           ============================================================ */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --paper: #1B2733;
+                --panel: #1B2733;
+                --ink-900: #ECEFF2;
+                --ink-700: #D5DCE0;
+                --ink-500: #93A2AC;
+                --ink-300: #6B7A85;
+                --line: #2C3A45;
+            }
+            .header { background: #0d1a26; }
+            .nav { background: #1B2733; border-color: #2C3A45; }
+            .nav-item { color: #93A2AC; }
+            .nav-item:hover { color: #ECEFF2; }
+            .nav-item.active { color: #ECEFF2; border-bottom-color: var(--brass); }
+            .card { background: #1B2733; border-color: #2C3A45; }
+            .card-header { border-color: #2C3A45; }
+            .card-badge { background: #2C3A45; color: #ECEFF2; }
+            th { background: #1B2733; color: #93A2AC; border-color: #2C3A45; }
+            td { border-color: #2C3A45; }
+            tr:hover { background: #22303A; }
+            .metric-card { background: #1B2733; border-color: #2C3A45; }
+            .metric-value { color: #ECEFF2; }
+            .quick-action { background: #1B2733; border-color: #2C3A45; color: #ECEFF2; }
+            .quick-action:hover { background: #22303A; border-color: var(--brass); }
+            .btn-primary { background: #2C3A45; color: #ECEFF2; }
+            .btn-primary:hover { background: var(--brass); color: var(--ink-900); }
+            .btn-outline { border-color: #2C3A45; color: #93A2AC; }
+            .btn-outline:hover { border-color: var(--brass); color: #ECEFF2; background: #22303A; }
+            .status-draft { background: #2C3A45; color: #93A2AC; }
+            .footer { background: #0d1a26; }
         }
     </style>
 </head>
@@ -723,7 +828,7 @@ function getRoleLabel($role) {
         <a href="index.php" class="nav-item active">📊 Dashboard</a>
         
         <?php if ($canCreate): ?>
-        <a href="imports/source_input.php" class="nav-item primary">💰 New Disbursement</a>
+        <a href="imports/source_input.php" class="nav-item">💰 New Disbursement</a>
         <?php endif; ?>
         
         <a href="imports/review_batch.php?status=all" class="nav-item">
@@ -793,7 +898,7 @@ function getRoleLabel($role) {
             <?php endif; ?>
             
             <?php if ($isApprover): ?>
-            <a href="imports/review_batch.php?status=pending_approval" class="quick-action" style="border-color: #92400e;">
+            <a href="imports/review_batch.php?status=pending_approval" class="quick-action" style="border-color: var(--amber);">
                 <span class="icon">✅</span>
                 <div>
                     <div class="label">Review & Approve</div>
@@ -803,7 +908,7 @@ function getRoleLabel($role) {
             <?php endif; ?>
             
             <?php if ($isSupervisor): ?>
-            <a href="imports/review_batch.php?status=approved" class="quick-action" style="border-color: #166534;">
+            <a href="imports/review_batch.php?status=approved" class="quick-action" style="border-color: var(--ledger-green);">
                 <span class="icon">💸</span>
                 <div>
                     <div class="label">Disburse Funds</div>
@@ -858,9 +963,9 @@ function getRoleLabel($role) {
             </div>
             
             <?php if (($metrics['pending_batches'] ?? 0) > 0): ?>
-            <div class="metric-card" style="border-color: #92400e;">
+            <div class="metric-card" style="border-color: var(--amber);">
                 <div class="metric-label">Pending Batches</div>
-                <div class="metric-value" style="color: #92400e;"><?php echo number_format($metrics['pending_batches'] ?? 0); ?></div>
+                <div class="metric-value" style="color: var(--amber);"><?php echo number_format($metrics['pending_batches'] ?? 0); ?></div>
                 <div class="metric-sub">Waiting for approval</div>
             </div>
             <?php endif; ?>
@@ -874,25 +979,25 @@ function getRoleLabel($role) {
             <?php endif; ?>
             
             <?php if (($metrics['executed_batches'] ?? 0) > 0): ?>
-            <div class="metric-card" style="border-color: #166534;">
+            <div class="metric-card" style="border-color: var(--ledger-green);">
                 <div class="metric-label">Completed</div>
-                <div class="metric-value" style="color: #166534;"><?php echo number_format($metrics['executed_batches'] ?? 0); ?></div>
+                <div class="metric-value" style="color: var(--ledger-green);"><?php echo number_format($metrics['executed_batches'] ?? 0); ?></div>
                 <div class="metric-sub">Successfully executed</div>
             </div>
             <?php endif; ?>
             
             <?php if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0): ?>
-            <div class="metric-card" style="border-color: #dc2626; background: #fef2f2;">
+            <div class="metric-card" style="border-color: var(--danger); background: var(--danger-bg);">
                 <div class="metric-label">Pending Approvals</div>
-                <div class="metric-value" style="color: #dc2626;"><?php echo number_format($metrics['pending_approvals'] ?? 0); ?></div>
+                <div class="metric-value" style="color: var(--danger);"><?php echo number_format($metrics['pending_approvals'] ?? 0); ?></div>
                 <div class="metric-sub">Needs your review</div>
             </div>
             <?php endif; ?>
             
             <?php if ($canDisburse && ($metrics['approved_for_disbursement'] ?? 0) > 0): ?>
-            <div class="metric-card" style="border-color: #8A6D3B; background: #fdf6ed;">
+            <div class="metric-card" style="border-color: var(--brass); background: var(--brass-tint);">
                 <div class="metric-label">Ready for Disbursement</div>
-                <div class="metric-value" style="color: #8A6D3B;"><?php echo number_format($metrics['approved_for_disbursement'] ?? 0); ?></div>
+                <div class="metric-value" style="color: var(--brass);"><?php echo number_format($metrics['approved_for_disbursement'] ?? 0); ?></div>
                 <div class="metric-sub">Approved batches</div>
             </div>
             <?php endif; ?>
@@ -921,7 +1026,7 @@ function getRoleLabel($role) {
                 <div class="icon">📭</div>
                 <p>No batches found. Create your first disbursement batch to get started.</p>
                 <?php if ($canCreate): ?>
-                <a href="imports/source_input.php" class="btn btn-primary" style="margin-top:12px;">Create First Batch</a>
+                <a href="imports/source_input.php" class="btn btn-primary" style="margin-top:14px;">Create First Batch</a>
                 <?php endif; ?>
             </div>
             <?php else: ?>
@@ -968,72 +1073,62 @@ function getRoleLabel($role) {
 
         <!-- Role-specific info panels -->
         <?php if ($isReadOnly): ?>
-        <div class="card" style="border-left: 3px solid #8A6D3B;">
-            <div class="card-header">
-                <span class="card-title">🔍 Read-Only Access</span>
-            </div>
-            <p style="color: #64748b; font-size: 14px;">
-                You have <?php echo $userRole === 'auditor' ? 'auditor' : 'read-only'; ?> access. 
+        <div class="info-panel" style="border-left-color: var(--brass); background: var(--brass-tint);">
+            <div class="label">🔍 Read-Only Access</div>
+            <div class="desc">
+                You have <span class="highlight"><?php echo $userRole === 'auditor' ? 'auditor' : 'read-only'; ?></span> access. 
                 You can view and export data but cannot create or modify any records.
                 <?php if ($userRole === 'auditor'): ?>
                 This is for compliance and audit purposes.
                 <?php endif; ?>
-            </p>
+            </div>
         </div>
         <?php endif; ?>
 
         <?php if ($isLoader): ?>
-        <div class="card" style="border-left: 3px solid #3b82f6;">
-            <div class="card-header">
-                <span class="card-title">📤 Loader Access</span>
-            </div>
-            <p style="color: #64748b; font-size: 14px;">
+        <div class="info-panel" style="border-left-color: #3b82f6; background: var(--blue-tint);">
+            <div class="label">📤 Loader Access</div>
+            <div class="desc">
                 You can create and upload new disbursement batches. 
                 Once created, they will be sent for approval.
                 <a href="imports/source_input.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Create New Batch</a>
-            </p>
+            </div>
         </div>
         <?php endif; ?>
 
         <?php if ($isApprover): ?>
-        <div class="card" style="border-left: 3px solid #92400e;">
-            <div class="card-header">
-                <span class="card-title">✅ Approver Access</span>
-            </div>
-            <p style="color: #64748b; font-size: 14px;">
+        <div class="info-panel" style="border-left-color: var(--amber); background: #fef3c7;">
+            <div class="label">✅ Approver Access</div>
+            <div class="desc">
                 You can review and approve pending disbursement batches.
                 <?php if (($metrics['pending_approvals'] ?? 0) > 0): ?>
-                <strong><?php echo $metrics['pending_approvals']; ?> batches awaiting your review.</strong>
+                <span class="highlight"><?php echo $metrics['pending_approvals']; ?> batches awaiting your review.</span>
                 <?php endif; ?>
                 <a href="imports/review_batch.php?status=pending_approval" class="btn btn-warning btn-sm" style="margin-left:12px;">Review Now</a>
-            </p>
+            </div>
         </div>
         <?php endif; ?>
 
         <?php if ($isSupervisor): ?>
-        <div class="card" style="border-left: 3px solid #166534;">
-            <div class="card-header">
-                <span class="card-title">💸 Supervisor Access</span>
-            </div>
-            <p style="color: #64748b; font-size: 14px;">
+        <div class="info-panel" style="border-left-color: var(--ledger-green); background: var(--green-tint);">
+            <div class="label">💸 Supervisor Access</div>
+            <div class="desc">
                 You can disburse funds for approved batches.
                 <?php if (($metrics['approved_for_disbursement'] ?? 0) > 0): ?>
-                <strong><?php echo $metrics['approved_for_disbursement']; ?> batches ready for disbursement.</strong>
+                <span class="highlight"><?php echo $metrics['approved_for_disbursement']; ?> batches ready for disbursement.</span>
                 <?php endif; ?>
                 <a href="imports/review_batch.php?status=approved" class="btn btn-success btn-sm" style="margin-left:12px;">Disburse Funds</a>
-            </p>
+            </div>
         </div>
         <?php endif; ?>
 
         <?php if ($userRole === 'beneficiary_registrar'): ?>
-        <div class="card" style="border-left: 3px solid #166534;">
-            <div class="card-header">
-                <span class="card-title">👤 Beneficiary Registrar</span>
-            </div>
-            <p style="color: #64748b; font-size: 14px;">
+        <div class="info-panel" style="border-left-color: var(--ledger-green); background: var(--green-tint);">
+            <div class="label">👤 Beneficiary Registrar</div>
+            <div class="desc">
                 You can add and manage beneficiaries for disbursement batches.
                 <a href="imports/add_destinations.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Add Beneficiaries</a>
-            </p>
+            </div>
         </div>
         <?php endif; ?>
     </main>
@@ -1043,9 +1138,7 @@ function getRoleLabel($role) {
     <!-- ============================================================ -->
     <footer class="footer">
         <div>VOUCHMORPH · Enterprise Disbursement Platform · <?php echo date('Y'); ?></div>
-        <div style="margin-top:4px; color: rgba(255,255,255,0.2); font-size: 10px;">
-            <?php echo safeHtml($orgName); ?> · Role: <?php echo safeHtml(getRoleLabel($userRole)); ?>
-        </div>
+        <div class="sub"><?php echo safeHtml($orgName); ?> · Role: <?php echo safeHtml(getRoleLabel($userRole)); ?></div>
     </footer>
 </body>
 </html>
