@@ -50,6 +50,8 @@ try {
 
 // Dashboard metrics
 $metrics = [];
+$recentBatches = [];
+
 try {
     // Base query filters
     $deptFilter = ($userRole === 'department_head' && $departmentId) ? "AND department_id = :dept_id" : "";
@@ -124,60 +126,58 @@ try {
         $metrics['approved_for_disbursement'] = (int)$stmt->fetchColumn();
     }
 
-   // For approvers - pending approvals (FIXED: show all pending, not just for approvers)
-$stmt = $pdo->prepare("
-    SELECT COUNT(*) as total 
-    FROM disbursement_batches 
-    WHERE organization_id = :org_id 
-    AND status IN ('pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL')
-");
-$stmt->execute([':org_id' => $orgId]);
-$metrics['pending_approvals'] = (int)$stmt->fetchColumn();
+    // For approvers - pending approvals (FIXED: show all pending, not just for approvers)
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) as total 
+        FROM disbursement_batches 
+        WHERE organization_id = :org_id 
+        AND status IN ('pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL')
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $metrics['pending_approvals'] = (int)$stmt->fetchColumn();
+    
+    // ============================================================
+    // Recent batches with status-based filtering
+    // ============================================================
+    $statusFilter = "";
+    $statusParams = [':org_id' => $orgId];
+
+    // Different roles see different batches
+    if ($isReadOnly) {
+        // Auditors/viewers see completed only
+        $statusFilter = "AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')";
+    } elseif ($isApprover) {
+        // Approvers see pending and approved
+        $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')";
+    } elseif ($isSupervisor) {
+        // Supervisors see approved and completed
+        $statusFilter = "AND status IN ('approved', 'completed', 'executed', 'APPROVED', 'COMPLETED', 'EXECUTED')";
+    } elseif ($isLoader) {
+        // FIXED: Loaders see ALL their batches + pending batches
+        $statusFilter = "AND (created_by = :user_id OR status IN ('pending', 'pending_approval', 'approved'))";
+        $statusParams[':user_id'] = $userId;
     }
 
- 
-    
-    // Recent batches with status-based filtering
-$statusFilter = "";
-$statusParams = [':org_id' => $orgId];
+    $stmt = $pdo->prepare("
+        SELECT 
+            id, batch_reference, batch_name, source_institution,
+            total_amount, total_destinations, status, created_at,
+            updated_at, created_by, department_id
+        FROM disbursement_batches 
+        WHERE organization_id = :org_id $statusFilter
+        ORDER BY 
+            CASE 
+                WHEN status IN ('pending', 'pending_approval') THEN 1
+                WHEN status = 'approved' THEN 2
+                ELSE 3
+            END,
+            created_at DESC 
+        LIMIT 15
+    ");
+    $stmt->execute($statusParams);
+    $recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Different roles see different batches
-if ($isReadOnly) {
-    // Auditors/viewers see completed only
-    $statusFilter = "AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')";
-} elseif ($isApprover) {
-    // Approvers see pending and approved
-    $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')";
-} elseif ($isSupervisor) {
-    // Supervisors see approved and completed
-    $statusFilter = "AND status IN ('approved', 'completed', 'executed', 'APPROVED', 'COMPLETED', 'EXECUTED')";
-} elseif ($isLoader) {
-    // FIXED: Loaders see ALL their batches + pending batches
-    $statusFilter = "AND (created_by = :user_id OR status IN ('pending', 'pending_approval', 'approved'))";
-    $statusParams[':user_id'] = $userId;
-}
-
-$stmt = $pdo->prepare("
-    SELECT 
-        id, batch_reference, batch_name, source_institution,
-        total_amount, total_destinations, status, created_at,
-        updated_at, created_by, department_id
-    FROM disbursement_batches 
-    WHERE organization_id = :org_id $statusFilter
-    ORDER BY 
-        CASE 
-            WHEN status IN ('pending', 'pending_approval') THEN 1
-            WHEN status = 'approved' THEN 2
-            ELSE 3
-        END,
-        created_at DESC 
-    LIMIT 15
-");
-$stmt->execute($statusParams);
-$recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    
-
- catch (PDOException $e) {
+} catch (PDOException $e) {
     error_log("[ENTERPRISE DASHBOARD] Metrics error: " . $e->getMessage());
     $metrics = array_fill_keys([
         'total_batches', 'pending_batches', 'approved_batches', 
