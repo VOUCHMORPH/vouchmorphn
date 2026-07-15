@@ -1,6 +1,8 @@
 <?php
-// batches/index.php - ENTERPRISE DISBURSEMENT BATCHES
-// MATCHES INDEX.PHP AND UPLOAD.PHP STYLE
+/**
+ * batches/index.php - List all disbursement batches
+ * Enterprise batch management dashboard
+ */
 require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
@@ -8,79 +10,108 @@ use Core\Database\DBConnection;
 
 $db = DBConnection::getConnection();
 $orgId = getOrganizationId();
+$userRole = $user['role'] ?? 'viewer';
+$userId = $user['user_id'] ?? $user['id'] ?? null;
+$departmentId = $user['department_id'] ?? null;
 
-// Get stats for consistency
-$stats = ['total_batches' => 0, 'pending' => 0, 'beneficiaries' => 0];
-try {
-    $stmt = $db->prepare("SELECT COUNT(*) as total FROM import_batches WHERE organization_id = :org_id");
-    $stmt->execute([':org_id' => $orgId]);
-    $stats['total_batches'] = $stmt->fetchColumn() ?: 0;
-
-    $stmt = $db->prepare("SELECT COUNT(*) as total FROM import_batches WHERE organization_id = :org_id AND status = 'READY_FOR_APPROVAL'");
-    $stmt->execute([':org_id' => $orgId]);
-    $stats['pending'] = $stmt->fetchColumn() ?: 0;
-
-    $stmt = $db->prepare("SELECT COUNT(*) as total FROM organization_beneficiaries WHERE organization_id = :org_id AND is_active = true");
-    $stmt->execute([':org_id' => $orgId]);
-    $stats['beneficiaries'] = $stmt->fetchColumn() ?: 0;
-} catch (PDOException $e) {
-    // Silent fail
-}
-
-// Get filter parameters
-$status = $_GET['status'] ?? 'all';
+// Filters
+$statusFilter = $_GET['status'] ?? 'all';
 $search = $_GET['search'] ?? '';
 
-$sql = "SELECT * FROM import_batches WHERE organization_id = :org_id";
+// Build query
 $params = [':org_id' => $orgId];
+$where = ["organization_id = :org_id"];
 
-if ($status !== 'all') {
-    $sql .= " AND status = :status";
-    $params[':status'] = $status;
+// Department scope
+if ($userRole === 'department_head' && $departmentId) {
+    $where[] = "department_id = :dept_id";
+    $params[':dept_id'] = $departmentId;
 }
 
+// Status filter
+if ($statusFilter !== 'all') {
+    $where[] = "status = :status";
+    $params[':status'] = $statusFilter;
+}
+
+// Search
 if ($search) {
-    $sql .= " AND (batch_reference ILIKE :search OR batch_name ILIKE :search)";
+    $where[] = "(batch_reference ILIKE :search OR batch_name ILIKE :search OR source_institution ILIKE :search)";
     $params[':search'] = "%$search%";
 }
 
-$sql .= " ORDER BY created_at DESC";
+// Role-based visibility
+if (in_array($userRole, ['auditor', 'viewer', 'it_support'])) {
+    $where[] = "status IN ('completed', 'executed')";
+} elseif (in_array($userRole, ['approver', 'senior_approver'])) {
+    $where[] = "status IN ('pending', 'pending_approval', 'approved')";
+} elseif ($userRole === 'supervisor') {
+    $where[] = "status IN ('approved', 'completed', 'executed')";
+}
 
-$stmt = $db->prepare($sql);
+$whereClause = implode(" AND ", $where);
+
+$stmt = $db->prepare("
+    SELECT 
+        id, batch_reference, batch_name, source_institution,
+        total_amount, total_destinations, status, created_at,
+        updated_at, created_by, department_id,
+        approved_at, executed_at
+    FROM disbursement_batches
+    WHERE $whereClause
+    ORDER BY 
+        CASE 
+            WHEN status IN ('pending', 'pending_approval') THEN 1
+            WHEN status = 'approved' THEN 2
+            ELSE 3
+        END,
+        created_at DESC
+");
 $stmt->execute($params);
 $batches = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Get status counts for filters
-$stmt = $db->prepare("
-    SELECT status, COUNT(*) as count FROM import_batches 
-    WHERE organization_id = :org_id GROUP BY status
-");
+// Get counts for status badges
+$counts = [];
+$stmt = $db->prepare("SELECT status, COUNT(*) as count FROM disbursement_batches WHERE organization_id = :org_id GROUP BY status");
 $stmt->execute([':org_id' => $orgId]);
-$statusCounts = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
-
-$config = [
-    'show_actions' => in_array($user['role'] ?? '', ['owner', 'program_officer', 'department_head']),
-    'show_beneficiaries' => in_array($user['role'] ?? '', ['owner', 'auditor', 'program_officer', 'beneficiary_registrar', 'department_head', 'viewer']),
-    'show_all_batches' => !in_array($user['role'] ?? '', ['beneficiary_registrar']),
-    'show_governance' => in_array($user['role'] ?? '', ['owner', 'auditor', 'department_head']),
-    'show_settings' => in_array($user['role'] ?? '', ['owner']),
-];
-
-$departmentName = '';
-$departmentId = $user['department_id'] ?? null;
-if ($departmentId) {
-    $stmt = $db->prepare("SELECT name FROM departments WHERE id = :id AND organization_id = :org_id");
-    $stmt->execute([':id' => $departmentId, ':org_id' => $orgId]);
-    $dept = $stmt->fetch(PDO::FETCH_ASSOC);
-    $departmentName = $dept['name'] ?? '';
+while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+    $counts[strtolower($row['status'])] = $row['count'];
 }
 
-$roleDisplay = strtoupper($user['role'] ?? 'USER');
+$roleDisplay = strtoupper($userRole);
 $orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
-$fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats['pending'] + 1), 3, '0', STR_PAD_LEFT);
+
+function getStatusClass($status) {
+    $status = strtolower($status);
+    return match($status) {
+        'draft' => 'draft',
+        'pending', 'pending_approval' => 'pending',
+        'approved' => 'approved',
+        'completed', 'executed' => 'completed',
+        'rejected' => 'rejected',
+        default => 'draft'
+    };
+}
+
+function getStatusLabel($status) {
+    $status = strtolower($status);
+    return match($status) {
+        'draft' => '📝 Draft',
+        'pending', 'pending_approval' => '⏳ Pending',
+        'approved' => '✅ Approved',
+        'completed' => '✔️ Completed',
+        'executed' => '🚀 Executed',
+        'rejected' => '❌ Rejected',
+        default => ucfirst($status)
+    };
+}
 
 function formatCurrency($amount) {
     return 'BWP ' . number_format($amount, 2);
+}
+
+function safeHtml($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
 }
 ?>
 <!DOCTYPE html>
@@ -88,627 +119,373 @@ function formatCurrency($amount) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · MULTI-ASSET DISBURSEMENT REGISTRY</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <title>Batches · VOUCHMORPH Enterprise</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        :root {
-            --paper:        #EEF1EF;
-            --panel:        #FFFFFF;
-            --ink-900:      #0F2138;
-            --ink-700:      #1D3557;
-            --ink-500:      #4A5A6E;
-            --ink-300:      #8A96A3;
-            --line:         #D3DAD6;
-            --line-strong:  #AEB8B2;
-            --brass:        #8A6D3B;
-            --brass-tint:   #F4EFE3;
-            --seal-red:     #7A2118;
-            --amber:        #8A5A0B;
-            --ledger-green: #24513A;
-            --green-tint:   #E5EEE7;
-            --blue-tint:    #E7EEF4;
-
-            --f-body: 'IBM Plex Sans', sans-serif;
-            --f-cond: 'IBM Plex Sans Condensed', sans-serif;
-            --f-mono: 'IBM Plex Mono', monospace;
-        }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        html, body { height: 100%; }
-
+        * { margin:0; padding:0; box-sizing:border-box; }
         body {
-            font-family: var(--f-body);
-            background: var(--paper);
-            color: var(--ink-900);
-            font-size: 13px;
-            line-height: 1.45;
-            -webkit-font-smoothing: antialiased;
+            font-family: 'Inter', sans-serif;
+            background: #f1f5f9;
+            color: #0f172a;
             min-height: 100vh;
+        }
+        .header {
+            background: #0f172a;
+            color: #fff;
+            padding: 16px 32px;
             display: flex;
-            flex-direction: column;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            border-bottom: 3px solid #8A6D3B;
         }
-
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: var(--line-strong); }
-        a { color: inherit; }
-        button { font-family: inherit; cursor: pointer; }
-
-        .doc-panel { position: relative; background: var(--panel); border: 1px solid var(--line); }
-        .doc-panel::before, .doc-panel::after { content: ""; position: absolute; width: 9px; height: 9px; pointer-events: none; }
-        .doc-panel::before { top: -1px; left: -1px; border-top: 2px solid var(--brass); border-left: 2px solid var(--brass); }
-        .doc-panel::after  { bottom: -1px; right: -1px; border-bottom: 2px solid var(--brass); border-right: 2px solid var(--brass); }
-
-        .stamp {
-            display: inline-block; padding: 2px 8px; border: 1.5px solid currentColor;
-            transform: rotate(-2.5deg); font-family: var(--f-mono); font-size: 9px; font-weight: 600;
-            letter-spacing: 0.09em; text-transform: uppercase; white-space: nowrap;
-        }
-        .stamp.completed  { color: var(--ledger-green); }
-        .stamp.processing { color: var(--ink-700); }
-        .stamp.pending     { color: var(--amber); }
-        .stamp.failed      { color: var(--seal-red); }
-        .stamp.draft       { color: var(--ink-300); }
-
-        .eyebrow { font-family: var(--f-cond); font-weight: 700; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-500); }
-        .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
-
-        /* ============================================================
-           MASTHEAD - PERFECTLY CENTERED TITLE, USER MENU ON RIGHT
-           ============================================================ */
-        .masthead {
-            background: var(--ink-900);
-            color: white;
-            padding: 14px 32px;
+        .header-left {
             display: flex;
             align-items: center;
-            justify-content: center;
-            position: relative;
-            border-bottom: 3px solid var(--brass);
-            min-height: 80px;
+            gap: 20px;
+            flex-wrap: wrap;
         }
-        .masthead .center {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-            flex: 1;
-        }
-        .masthead h1 {
-            font-size: 19px;
+        .logo {
             font-weight: 700;
-            letter-spacing: 0.03em;
-            text-transform: uppercase;
-            text-align: center;
-        }
-        .masthead .file-ref {
-            font-family: var(--f-mono);
-            font-size: 11px;
-            color: rgba(255,255,255,0.35);
-            margin-top: 2px;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            text-align: center;
-        }
-
-        /* User menu - positioned absolutely on the right */
-        .masthead .user-menu {
-            position: absolute;
-            right: 32px;
-            top: 50%;
-            transform: translateY(-50%);
-            display: flex;
-            align-items: center;
-            gap: 14px;
-        }
-        .masthead .user-menu .role-pill {
-            font-family: var(--f-cond);
-            font-size: 10px;
-            font-weight: 700;
+            font-size: 18px;
             letter-spacing: 0.08em;
-            color: var(--brass);
-            border: 1px solid var(--brass);
-            padding: 2px 10px;
             text-transform: uppercase;
         }
-        .masthead .user-menu .status-dot {
-            display: inline-block;
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: #5FAE7E;
-            margin-right: 4px;
-        }
-        .masthead .user-menu .time {
-            font-family: var(--f-mono);
+        .logo span { color: #8A6D3B; }
+        .role-badge {
+            padding: 4px 14px;
+            background: #8A6D3B;
+            color: #0f172a;
             font-size: 10px;
-            color: rgba(255,255,255,0.4);
-        }
-        .masthead .user-menu .menu-divider {
-            width: 1px;
-            height: 20px;
-            background: rgba(255,255,255,0.08);
-        }
-        .masthead .user-menu .menu-link {
-            color: rgba(255,255,255,0.4);
-            text-decoration: none;
-            font-family: var(--f-cond);
-            font-size: 10px;
-            font-weight: 600;
+            font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.05em;
-            transition: var(--transition);
-            padding: 4px 8px;
-            border: 1px solid transparent;
+            border-radius: 20px;
         }
-        .masthead .user-menu .menu-link:hover {
-            color: var(--brass);
-            border-color: var(--brass);
-        }
-        .masthead .user-menu .menu-link.logout-link {
-            color: rgba(255,255,255,0.25);
-        }
-        .masthead .user-menu .menu-link.logout-link:hover {
-            color: var(--seal-red);
-            border-color: var(--seal-red);
-        }
-        .masthead .user-menu .menu-link .icon {
-            margin-right: 4px;
-        }
-
-        /* ============================================================
-           VOUCHMORPH™ WATERMARK - ROTATED 90° ON LEFT SIDE
-           ============================================================ */
-        .vouchmorph-watermark {
-            position: fixed;
-            left: 8px;
-            top: 50%;
-            transform: translateY(-50%) rotate(-90deg);
-            font-family: var(--f-mono);
-            font-size: 11px;
-            letter-spacing: 0.25em;
-            color: rgba(138, 109, 59, 0.12);
-            font-weight: 700;
-            text-transform: uppercase;
-            user-select: none;
-            pointer-events: none;
-            white-space: nowrap;
-            z-index: 0;
-        }
-        .vouchmorph-watermark .tm {
-            font-size: 8px;
-            vertical-align: super;
-            letter-spacing: 0;
-        }
-
-        /* ============================================================
-           CENTRAL LAYOUT
-           ============================================================ */
-        .stage {
-            flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center;
-            padding: 120px 20px 60px;
-            position: relative;
-            z-index: 1;
-        }
-        .stage-inner { width: 100%; max-width: 1100px; display: flex; flex-direction: column; align-items: center; gap: 28px; }
-
-        .welcome { text-align: center; margin-bottom: 8px; }
-        .welcome .eyebrow { justify-content: center; }
-        .welcome h2 { font-size: 20px; font-weight: 700; letter-spacing: 0.01em; text-transform: uppercase; margin-top: 6px; }
-        .welcome p { font-family: var(--f-cond); font-size: 11px; color: var(--ink-500); margin-top: 4px; letter-spacing: 0.02em; text-transform: uppercase; }
-
-        /* ============================================================
-           BACK LINK
-           ============================================================ */
-        .back-link {
-            display: inline-flex;
+        .user-info {
+            display: flex;
             align-items: center;
-            gap: 6px;
-            color: var(--ink-500);
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .user-name {
+            font-weight: 600;
+            color: #8A6D3B;
+            font-size: 13px;
+        }
+        .user-role {
+            font-size: 10px;
+            color: #94a3b8;
+            text-transform: uppercase;
+        }
+        .logout-btn {
+            padding: 6px 16px;
+            border: 2px solid #8A6D3B;
+            color: #8A6D3B;
             text-decoration: none;
             font-size: 11px;
             font-weight: 600;
-            font-family: var(--f-cond);
+            text-transform: uppercase;
+            border-radius: 20px;
+            transition: all 0.15s;
+        }
+        .logout-btn:hover {
+            background: #8A6D3B;
+            color: #0f172a;
+        }
+        .nav {
+            background: #fff;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 0 32px;
+            display: flex;
+            gap: 24px;
+            flex-wrap: wrap;
+            align-items: center;
+            overflow-x: auto;
+        }
+        .nav-item {
+            padding: 12px 0;
+            color: #64748b;
+            text-decoration: none;
+            font-size: 12px;
+            font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.05em;
             border-bottom: 2px solid transparent;
-            transition: all 0.15s ease;
-            align-self: flex-start;
+            transition: all 0.15s;
+            white-space: nowrap;
         }
-        .back-link:hover {
-            color: var(--brass);
-            border-bottom-color: var(--brass);
+        .nav-item:hover { color: #0f172a; }
+        .nav-item.active {
+            color: #0f172a;
+            border-bottom-color: #8A6D3B;
         }
-
-        /* ============================================================
-           FILTER BAR
-           ============================================================ */
-        .filter-bar {
+        .nav-item .badge {
+            background: #ef4444;
+            color: #fff;
+            font-size: 9px;
+            padding: 1px 8px;
+            border-radius: 12px;
+            margin-left: 4px;
+        }
+        .content {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 24px 32px;
+        }
+        .page-header {
             display: flex;
-            gap: 8px;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .page-header h1 { font-size: 24px; font-weight: 700; }
+        .filters {
+            display: flex;
+            gap: 12px;
             flex-wrap: wrap;
             align-items: center;
-            width: 100%;
         }
-        .filter-btn {
-            padding: 6px 14px;
-            border: 1.5px solid var(--line);
+        .filter-tab {
+            padding: 6px 16px;
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            color: #64748b;
             text-decoration: none;
-            color: var(--ink-500);
-            font-size: 10px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            font-family: var(--f-cond);
-            transition: all 0.15s ease;
-            background: var(--panel);
+            font-size: 12px;
+            font-weight: 500;
+            border-radius: 20px;
+            transition: all 0.15s;
         }
-        .filter-btn:hover {
-            border-color: var(--brass);
-            color: var(--ink-900);
+        .filter-tab:hover { border-color: #8A6D3B; color: #0f172a; }
+        .filter-tab.active {
+            background: #0f172a;
+            color: #fff;
+            border-color: #0f172a;
         }
-        .filter-btn.active {
-            background: var(--ink-900);
-            border-color: var(--ink-900);
-            color: white;
+        .filter-tab .count {
+            background: rgba(255,255,255,0.2);
+            padding: 0 6px;
+            border-radius: 10px;
+            font-size: 9px;
         }
-        .filter-btn .count {
-            color: var(--ink-300);
-            font-weight: 400;
-        }
-        .filter-btn.active .count {
-            color: rgba(255,255,255,0.5);
-        }
-
-        .filter-bar .search-wrap {
-            margin-left: auto;
+        .filter-tab.active .count { background: rgba(255,255,255,0.2); }
+        .search-box {
             display: flex;
             gap: 8px;
-            align-items: center;
         }
-        .filter-bar .search-wrap input {
-            padding: 6px 12px;
-            border: 1.5px solid var(--line);
-            font-size: 11px;
-            font-family: var(--f-body);
-            background: var(--panel);
-            color: var(--ink-900);
-            width: 200px;
-            transition: border-color 0.15s ease;
+        .search-box input {
+            padding: 8px 14px;
+            border: 1px solid #e2e8f0;
+            border-radius: 20px;
+            font-size: 13px;
+            min-width: 200px;
         }
-        .filter-bar .search-wrap input:focus {
+        .search-box input:focus {
             outline: none;
-            border-color: var(--brass);
+            border-color: #8A6D3B;
         }
-        .filter-bar .search-wrap button {
-            padding: 6px 14px;
-            background: var(--ink-900);
-            color: white;
-            border: 1.5px solid var(--ink-900);
-            font-size: 10px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            font-family: var(--f-cond);
-            cursor: pointer;
-            transition: all 0.15s ease;
+        .card {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin-bottom: 16px;
         }
-        .filter-bar .search-wrap button:hover {
-            background: var(--brass);
-            border-color: var(--brass);
-            color: var(--ink-900);
+        .table-responsive { overflow-x: auto; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
         }
-
-        .filter-bar .new-batch-btn {
-            padding: 6px 16px;
-            background: var(--ink-900);
-            color: white;
-            border: 1.5px solid var(--ink-900);
-            text-decoration: none;
-            font-size: 10px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            font-family: var(--f-cond);
-            transition: all 0.15s ease;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .filter-bar .new-batch-btn:hover {
-            background: var(--brass);
-            border-color: var(--brass);
-            color: var(--ink-900);
-        }
-
-        /* ============================================================
-           TABLE
-           ============================================================ */
-        .table-wrap { overflow-x: auto; width: 100%; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; }
-        th, td { padding: 10px 16px; text-align: left; border-bottom: 1px solid var(--line); }
         th {
-            background: var(--brass-tint);
-            font-family: var(--f-cond);
-            font-weight: 700;
-            font-size: 9px;
-            color: var(--ink-500);
-            text-transform: uppercase;
-            letter-spacing: 0.07em;
-            border-bottom: 2px solid var(--line-strong);
-            position: sticky;
-            top: 0;
-        }
-        tbody tr:nth-child(even) td { background: #F8FAF8; }
-        tbody tr:hover td { background: var(--blue-tint); }
-        td code {
-            font-family: var(--f-mono);
+            background: #f8fafc;
+            color: #64748b;
+            padding: 10px 14px;
+            text-align: left;
             font-size: 10px;
-            font-weight: 600;
-            color: var(--ink-700);
-            background: var(--brass-tint);
-            padding: 1px 5px;
-            text-transform: uppercase;
-        }
-        td .amt { font-family: var(--f-mono); font-weight: 700; font-variant-numeric: tabular-nums; }
-
-        .status-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            font-size: 8px;
-            font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.05em;
-            font-family: var(--f-cond);
-            border: 1.5px solid transparent;
+            font-weight: 600;
+            border-bottom: 2px solid #e2e8f0;
         }
-        .status-badge.completed { background: var(--green-tint); color: var(--ledger-green); border-color: var(--ledger-green); }
-        .status-badge.processing { background: var(--warning-bg); color: var(--amber); border-color: var(--amber); }
-        .status-badge.ready_for_approval { background: var(--blue-tint); color: var(--ink-700); border-color: var(--ink-500); }
-        .status-badge.failed { background: var(--danger-bg); color: var(--seal-red); border-color: var(--seal-red); }
-        .status-badge.partial { background: #fef3c7; color: #92400e; border-color: #92400e; }
-        .status-badge.draft { background: var(--line); color: var(--ink-300); border-color: var(--ink-300); }
-
-        .action-link {
-            font-family: var(--f-cond);
-            font-weight: 700;
+        td {
+            padding: 10px 14px;
+            border-bottom: 1px solid #e2e8f0;
+            vertical-align: middle;
+        }
+        tr:hover { background: #f8fafc; }
+        .status {
+            display: inline-block;
+            padding: 2px 10px;
             font-size: 10px;
-            letter-spacing: 0.06em;
-            text-decoration: none;
-            color: var(--ink-700);
-            border-bottom: 1.5px solid var(--brass);
+            font-weight: 600;
             text-transform: uppercase;
-            padding-bottom: 1px;
-            transition: all 0.15s ease;
+            border-radius: 20px;
+            letter-spacing: 0.04em;
         }
-        .action-link:hover {
-            color: var(--brass);
-            border-bottom-color: var(--brass);
+        .status-draft { background: #f1f5f9; color: #64748b; }
+        .status-pending { background: #fef3c7; color: #92400e; }
+        .status-approved { background: #dbeafe; color: #1e40af; }
+        .status-completed { background: #dcfce7; color: #166534; }
+        .status-rejected { background: #fee2e2; color: #991b1b; }
+        .btn {
+            padding: 6px 16px;
+            font-size: 12px;
+            font-weight: 600;
+            border-radius: 20px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.15s;
+            text-decoration: none;
+            display: inline-block;
         }
-
-        .empty-state { text-align: center; padding: 40px 20px; color: var(--ink-300); }
-        .empty-state .mark { font-family: var(--f-mono); font-size: 20px; display: block; margin-bottom: 8px; color: var(--brass); }
-        .empty-state p { font-family: var(--f-cond); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
-        .empty-state a { color: var(--ink-700); font-weight: 700; text-decoration: none; border-bottom: 1px solid var(--brass); }
-
-        .page-footer { padding: 16px 0 26px; text-align: center; border-top: 1px solid var(--line); width: 100%; }
-        .page-footer .notice { font-family: var(--f-cond); font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-300); }
-        .page-footer .role-line { font-family: var(--f-mono); font-size: 9px; color: var(--ink-300); margin-top: 4px; text-transform: uppercase; }
-
-        @media (max-width: 992px) {
-            .masthead { padding: 12px 16px; flex-direction: column; min-height: auto; gap: 6px; }
-            .masthead .user-menu {
-                position: static;
-                transform: none;
-                justify-content: center;
-                flex-wrap: wrap;
-            }
-            .vouchmorph-watermark { display: none; }
-            .stage { padding: 80px 16px 40px; }
-            .filter-bar .search-wrap { margin-left: 0; width: 100%; }
-            .filter-bar .search-wrap input { flex: 1; }
+        .btn-primary { background: #0f172a; color: #fff; }
+        .btn-primary:hover { background: #8A6D3B; }
+        .btn-outline {
+            background: transparent;
+            border: 1px solid #e2e8f0;
+            color: #64748b;
         }
-
-        @media (max-width: 640px) {
-            .masthead h1 { font-size: 14px; }
-            .masthead .file-ref { font-size: 9px; }
-            .masthead .user-menu { gap: 8px; }
-            .masthead .user-menu .role-pill { font-size: 8px; padding: 1px 6px; }
-            .masthead .user-menu .time { font-size: 8px; }
-            .masthead .user-menu .menu-link { font-size: 8px; padding: 2px 6px; }
-            .stage { padding: 60px 14px 30px; }
-            .vouchmorph-watermark { display: none; }
-            .filter-bar { gap: 6px; }
-            .filter-btn { font-size: 8px; padding: 4px 10px; }
-            .filter-bar .search-wrap input { font-size: 9px; padding: 4px 8px; }
-            .filter-bar .search-wrap button { font-size: 8px; padding: 4px 10px; }
-            .filter-bar .new-batch-btn { font-size: 8px; padding: 4px 10px; }
-            th, td { padding: 6px 10px; font-size: 10px; }
-            td code { font-size: 8px; }
+        .btn-outline:hover {
+            border-color: #0f172a;
+            color: #0f172a;
         }
-
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --paper: #131C24; --panel: #1B2733; --line: #2C3A45; --line-strong: #3C4C58;
-                --ink-900: #ECEFF2; --ink-700: #C9D2D9; --ink-500: #93A2AC; --ink-300: #6B7A85;
-                --brass-tint: #22303A; --blue-tint: #1D2A38; --green-tint: #17261D;
-            }
-            .vouchmorph-watermark { color: rgba(201, 151, 42, 0.08); }
-            .filter-btn {
-                background: #1B2733;
-                border-color: #2C3A45;
-                color: #6B7A85;
-            }
-            .filter-btn:hover {
-                border-color: var(--brass);
-                color: #ECEFF2;
-            }
-            .filter-btn.active {
-                background: #2C3A45;
-                border-color: #2C3A45;
-                color: #ECEFF2;
-            }
-            .filter-bar .search-wrap input {
-                background: #1B2733;
-                border-color: #2C3A45;
-                color: #ECEFF2;
-            }
-            .filter-bar .search-wrap input:focus {
-                border-color: var(--brass);
-            }
-            .filter-bar .search-wrap button {
-                background: #2C3A45;
-                border-color: #2C3A45;
-                color: #ECEFF2;
-            }
-            .filter-bar .search-wrap button:hover {
-                background: var(--brass);
-                border-color: var(--brass);
-                color: var(--ink-900);
-            }
-            .filter-bar .new-batch-btn {
-                background: #2C3A45;
-                border-color: #2C3A45;
-                color: #ECEFF2;
-            }
-            .filter-bar .new-batch-btn:hover {
-                background: var(--brass);
-                border-color: var(--brass);
-                color: var(--ink-900);
-            }
-            tbody tr:nth-child(even) td { background: #182129; }
-            tbody tr:hover td { background: #1A2A3A; }
-            th { background: #1A1A2E; }
-            .status-badge.ready_for_approval { background: #1A2A3A; color: #93A2AC; }
+        .btn-sm { padding: 4px 12px; font-size: 11px; }
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #94a3b8;
+        }
+        .empty-state .icon { font-size: 40px; margin-bottom: 8px; }
+        .footer {
+            background: #0f172a;
+            color: #94a3b8;
+            padding: 16px 32px;
+            text-align: center;
+            font-size: 11px;
+            border-top: 2px solid #8A6D3B;
+            margin-top: 24px;
+        }
+        @media (max-width: 768px) {
+            .header { padding: 12px 16px; }
+            .nav { padding: 0 16px; gap: 16px; }
+            .content { padding: 16px; }
+            .filters { flex-direction: column; align-items: stretch; }
+            .search-box input { min-width: auto; }
         }
     </style>
 </head>
 <body>
-    <!-- VouchMorph™ Watermark -->
-    <div class="vouchmorph-watermark">VouchMorph<span class="tm">™</span></div>
-
-    <!-- Masthead -->
-    <div class="masthead">
-        <div class="center">
-            <h1><?php echo $orgName; ?> — National Disbursement</h1>
-            <div class="file-ref">FILE NO. <?php echo htmlspecialchars($fileRef); ?> · <?php echo strtoupper(date('d M Y')); ?></div>
+    <header class="header">
+        <div class="header-left">
+            <div class="logo">VOUCHMORPH <span>·</span> <?php echo safeHtml($orgName); ?></div>
+            <span class="role-badge"><?php echo safeHtml($userRole); ?></span>
         </div>
-        <div class="user-menu">
-            <span class="role-pill"><?php echo $roleDisplay; ?></span>
-            <span class="time"><span class="status-dot"></span><?php echo date('H:i'); ?> UTC+2</span>
-            <span class="menu-divider"></span>
-            <?php if ($config['show_settings']): ?>
-            <a href="../settings/index.php" class="menu-link">
-                <span class="icon">⚙</span> Settings
-            </a>
-            <?php endif; ?>
-            <a href="../logout.php" class="menu-link logout-link">
-                <span class="icon">↗</span> Sign Out
-            </a>
-        </div>
-    </div>
-
-    <!-- Central stage -->
-    <div class="stage">
-        <div class="stage-inner">
-
-            <!-- Welcome -->
-            <div class="welcome">
-                <div class="eyebrow"><span class="section-mark">§</span>Registry Access</div>
-                <h2>WELCOME, <?php echo strtoupper(substr($user['full_name'] ?? $user['email'], 0, 24)); ?></h2>
-                <p>VIEW AND MANAGE DISBURSEMENT BATCHES<?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?></p>
+        <div class="user-info">
+            <div>
+                <div class="user-name"><?php echo safeHtml($user['full_name'] ?? 'User'); ?></div>
+                <div class="user-role"><?php echo safeHtml($userRole); ?></div>
             </div>
+            <a href="../logout.php" class="logout-btn">Sign Out</a>
+        </div>
+    </header>
 
-            <!-- Return to Dashboard -->
-            <a href="../index.php" class="back-link">← Return to Dashboard</a>
+    <nav class="nav">
+        <a href="../index.php" class="nav-item">📊 Dashboard</a>
+        <a href="index.php" class="nav-item active">📋 Batches</a>
+        <?php if (in_array($userRole, ['owner', 'program_officer', 'department_head'])): ?>
+        <a href="../imports/source_input.php" class="nav-item primary">💰 New Batch</a>
+        <?php endif; ?>
+    </nav>
 
-            <!-- Filter Bar -->
-            <div class="filter-bar">
-                <a href="?status=all" class="filter-btn <?php echo $status === 'all' ? 'active' : ''; ?>">
-                    All <span class="count">(<?php echo array_sum($statusCounts); ?>)</span>
-                </a>
-                <a href="?status=READY_FOR_APPROVAL" class="filter-btn <?php echo $status === 'READY_FOR_APPROVAL' ? 'active' : ''; ?>">
-                    Pending <span class="count">(<?php echo $statusCounts['READY_FOR_APPROVAL'] ?? 0; ?>)</span>
-                </a>
-                <a href="?status=COMPLETED" class="filter-btn <?php echo $status === 'COMPLETED' ? 'active' : ''; ?>">
-                    Completed <span class="count">(<?php echo $statusCounts['COMPLETED'] ?? 0; ?>)</span>
-                </a>
-                <a href="?status=PROCESSING" class="filter-btn <?php echo $status === 'PROCESSING' ? 'active' : ''; ?>">
-                    Processing <span class="count">(<?php echo $statusCounts['PROCESSING'] ?? 0; ?>)</span>
-                </a>
-                <a href="?status=FAILED" class="filter-btn <?php echo $status === 'FAILED' ? 'active' : ''; ?>">
-                    Failed <span class="count">(<?php echo $statusCounts['FAILED'] ?? 0; ?>)</span>
-                </a>
-                <div class="search-wrap">
-                    <form method="GET" style="display:flex; gap:8px; align-items:center;">
-                        <input type="text" name="search" placeholder="Search batches..." value="<?php echo htmlspecialchars($search); ?>">
-                        <input type="hidden" name="status" value="<?php echo $status; ?>">
-                        <button type="submit">Search</button>
+    <main class="content">
+        <div class="page-header">
+            <h1>📋 Disbursement Batches</h1>
+            <div class="filters">
+                <div class="search-box">
+                    <form method="GET" style="display:flex; gap:8px;">
+                        <input type="text" name="search" placeholder="Search batches..." value="<?php echo safeHtml($search); ?>">
+                        <button type="submit" class="btn btn-outline btn-sm">Search</button>
+                        <?php if ($search): ?>
+                        <a href="index.php" class="btn btn-outline btn-sm">Clear</a>
+                        <?php endif; ?>
                     </form>
-                    <a href="../imports/upload.php" class="new-batch-btn">+ New Batch</a>
                 </div>
             </div>
-
-            <!-- Batches Table -->
-            <div class="doc-panel" style="width:100%; padding:0; overflow:hidden;">
-                <div class="eyebrow" style="padding:10px 18px; background:var(--brass-tint); border-bottom:1px solid var(--line);">
-                    <span class="section-mark">§</span>Batch Register
-                    <span style="float:right; color:var(--ink-300); font-weight:400; font-size:9px;">
-                        <?php echo count($batches); ?> records
-                    </span>
-                </div>
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Reference</th>
-                                <th>Batch Name</th>
-                                <th>Date</th>
-                                <th>Amount</th>
-                                <th>Recipients</th>
-                                <th>Status</th>
-                                <th></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php if (empty($batches)): ?>
-                            <tr>
-                                <td colspan="7">
-                                    <div class="empty-state">
-                                        <span class="mark">§</span>
-                                        <p>NO BATCHES ON RECORD. <a href="../imports/upload.php">CREATE THE FIRST ENTRY →</a></p>
-                                    </div>
-                                </td>
-                            </tr>
-                            <?php endif; ?>
-                            <?php foreach ($batches as $batch): 
-                                $status = strtolower($batch['status'] ?? 'draft');
-                                $statusDisplay = strtoupper(str_replace('_', ' ', $batch['status'] ?? 'Draft'));
-                            ?>
-                            <tr>
-                                <td><code><?php echo htmlspecialchars($batch['batch_reference']); ?></code></td>
-                                <td><?php echo htmlspecialchars($batch['batch_name']); ?></td>
-                                <td><?php echo date('M d, Y H:i', strtotime($batch['created_at'])); ?></td>
-                                <td><span class="amt"><?php echo formatCurrency($batch['total_amount']); ?></span></td>
-                                <td><?php echo $batch['total_rows']; ?></td>
-                                <td><span class="status-badge <?php echo $status; ?>"><?php echo htmlspecialchars($statusDisplay); ?></span></td>
-                                <td><a href="view.php?id=<?php echo $batch['id']; ?>" class="action-link">Review →</a></td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
         </div>
-    </div>
 
-    <!-- Footer -->
-    <footer class="page-footer">
-        <div class="notice">SECURE ENTERPRISE MULTI ASSET PAYMENT · DISTRIBUTION RESTRICTED · ISO 27001 · © <?php echo date('Y'); ?> VOUCHMORPH</div>
-        <div class="role-line"><?php echo $roleDisplay; ?><?php if ($departmentName): ?> · <?php echo strtoupper($departmentName); ?><?php endif; ?> · <?php echo htmlspecialchars($fileRef); ?></div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">
+            <a href="?status=all" class="filter-tab <?php echo $statusFilter === 'all' ? 'active' : ''; ?>">All</a>
+            <a href="?status=pending_approval" class="filter-tab <?php echo $statusFilter === 'pending_approval' ? 'active' : ''; ?>">
+                ⏳ Pending <?php if (($counts['pending_approval'] ?? 0) > 0): ?><span class="count"><?php echo $counts['pending_approval']; ?></span><?php endif; ?>
+            </a>
+            <a href="?status=approved" class="filter-tab <?php echo $statusFilter === 'approved' ? 'active' : ''; ?>">
+                ✅ Approved <?php if (($counts['approved'] ?? 0) > 0): ?><span class="count"><?php echo $counts['approved']; ?></span><?php endif; ?>
+            </a>
+            <a href="?status=completed" class="filter-tab <?php echo $statusFilter === 'completed' ? 'active' : ''; ?>">
+                ✔️ Completed <?php if (($counts['completed'] ?? 0) > 0): ?><span class="count"><?php echo $counts['completed']; ?></span><?php endif; ?>
+            </a>
+            <a href="?status=draft" class="filter-tab <?php echo $statusFilter === 'draft' ? 'active' : ''; ?>">
+                📝 Draft <?php if (($counts['draft'] ?? 0) > 0): ?><span class="count"><?php echo $counts['draft']; ?></span><?php endif; ?>
+            </a>
+        </div>
+
+        <div class="card">
+            <?php if (empty($batches)): ?>
+            <div class="empty-state">
+                <div class="icon">📭</div>
+                <p>No batches found.</p>
+                <?php if (in_array($userRole, ['owner', 'program_officer', 'department_head'])): ?>
+                <a href="../imports/source_input.php" class="btn btn-primary" style="margin-top:12px;">Create First Batch</a>
+                <?php endif; ?>
+            </div>
+            <?php else: ?>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Reference</th>
+                            <th>Name</th>
+                            <th>Source</th>
+                            <th>Amount</th>
+                            <th>Destinations</th>
+                            <th>Status</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($batches as $batch): ?>
+                        <tr>
+                            <td><strong><?php echo safeHtml($batch['batch_reference']); ?></strong></td>
+                            <td><?php echo safeHtml($batch['batch_name'] ?? '—'); ?></td>
+                            <td><?php echo safeHtml($batch['source_institution'] ?? '—'); ?></td>
+                            <td><strong><?php echo formatCurrency($batch['total_amount'] ?? 0); ?></strong></td>
+                            <td><?php echo number_format($batch['total_destinations'] ?? 0); ?></td>
+                            <td>
+                                <span class="status status-<?php echo getStatusClass($batch['status']); ?>">
+                                    <?php echo getStatusLabel($batch['status']); ?>
+                                </span>
+                            </td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($batch['created_at'] ?? 'now')); ?></td>
+                            <td>
+                                <a href="view.php?id=<?php echo $batch['id']; ?>" class="btn btn-outline btn-sm">View</a>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div>VOUCHMORPH · Enterprise Disbursement Platform · <?php echo date('Y'); ?></div>
     </footer>
 </body>
 </html>
