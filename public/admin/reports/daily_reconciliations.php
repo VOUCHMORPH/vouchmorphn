@@ -7,7 +7,7 @@
 // Simple session check
 session_start();
 if (!isset($_SESSION['admin_id']) && !isset($_SESSION['admin_username'])) {
-    header('Location: admin_login.php');
+    header('Location: ../admin_login.php');
     exit();
 }
 
@@ -707,14 +707,6 @@ $formattedDate = date('F j, Y', strtotime($selectedDate));
             text-align: center;
         }
 
-        .hour-row {
-            background: #f8f9fa;
-        }
-
-        .hour-row td {
-            font-weight: 600;
-        }
-
         .admin-footer {
             background: #001B44;
             color: #A1B5D8;
@@ -763,23 +755,24 @@ $formattedDate = date('F j, Y', strtotime($selectedDate));
                 <div class="user-name"><?php echo $_SESSION['admin_full_name'] ?? $_SESSION['admin_username'] ?? 'Administrator'; ?></div>
                 <div class="user-role"><?php echo $_SESSION['admin_role'] ?? 'Admin'; ?></div>
             </div>
-            <a href="admin_logout.php" class="logout-btn">LOGOUT</a>
+            <a href="../admin_logout.php" class="logout-btn">LOGOUT</a>
         </div>
     </header>
 
     <nav class="admin-nav">
-        <a href="admin_dashboard.php" class="nav-item">DASHBOARD</a>
-        <a href="?view=reports" class="nav-item active">DAILY REPORT</a>
-        <a href="monthly_reconciliation.php" class="nav-item">MONTHLY REPORT</a>
-        <a href="#" class="nav-item">TRANSACTIONS</a>
-        <a href="#" class="nav-item">AUDIT</a>
+        <a href="../admin_dashboard.php" class="nav-item">DASHBOARD</a>
+        <a href="daily_reconciliations.php" class="nav-item active">DAILY REPORT</a>
+        <a href="monthly_reconciliations.php" class="nav-item">MONTHLY REPORT</a>
+        <a href="audit_trails.php" class="nav-item">AUDIT</a>
+        <a href="suspicious_activity_report.php" class="nav-item">SUSPICIOUS</a>
         <?php if (isset($_SESSION['admin_role_id']) && $_SESSION['admin_role_id'] == 999): ?>
-            <a href="#" class="nav-item">CONFIGURATION</a>
+            <a href="../admin_management.php" class="nav-item">ADMIN</a>
         <?php endif; ?>
-        <a href="admin_dashboard.php" class="dashboard-link">← Back to Dashboard</a>
+        <a href="../admin_dashboard.php" class="dashboard-link">← Back to Dashboard</a>
     </nav>
 
     <main class="admin-content">
+        <!-- Content Header -->
         <div class="content-header">
             <div>
                 <h1>📊 Daily Reconciliation Report</h1>
@@ -799,11 +792,11 @@ $formattedDate = date('F j, Y', strtotime($selectedDate));
                     <a href="?date=<?php echo date('Y-m-d'); ?>" class="btn btn-today">TODAY</a>
                 </div>
                 <a href="?<?php echo http_build_query(array_merge($_GET, array('export' => 'csv'))); ?>" class="btn btn-success">📥 CSV</a>
-                <a href="admin_dashboard.php" class="btn btn-outline">⬅ BACK</a>
+                <a href="../admin_dashboard.php" class="btn btn-outline">⬅ BACK</a>
             </div>
         </div>
 
-        <!-- Summary Stats -->
+        <!-- Stats Grid -->
         <div class="stats-grid">
             <div class="stat-card">
                 <h3>Total Swaps</h3>
@@ -831,7 +824,6 @@ $formattedDate = date('F j, Y', strtotime($selectedDate));
             </div>
         </div>
 
-        <!-- Range Summary -->
         <div class="stats-grid">
             <div class="stat-card">
                 <h3>Min Amount</h3>
@@ -886,7 +878,7 @@ $formattedDate = date('F j, Y', strtotime($selectedDate));
                             $hourData = $hourlyBreakdown[$i];
                             if ($hourData['total'] > 0) $hasData = true;
                         ?>
-                            <tr class="<?php echo $hourData['total'] > 0 ? '' : ''; ?>">
+                            <tr>
                                 <td>
                                     <strong><?php echo sprintf('%02d:00', $i); ?></strong>
                                     <?php if ($hourData['total'] > 0): ?>
