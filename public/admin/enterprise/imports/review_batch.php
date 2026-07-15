@@ -3,6 +3,18 @@
 require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
+// Load required classes
+                require_once '../../../../src/Domain/Services/SwapService.php';
+                require_once '../../../../src/Core/Config/LoadCountry.php';
+                require_once '../../../../src/Infrastructure/Crypto/MessageSigner.php';
+                require_once '../../../../src/Infrastructure/Crypto/SignatureVerifier.php';
+                require_once '../../../../src/Infrastructure/Crypto/CertificateManager.php';
+                
+                use Domain\Services\SwapService;
+                use Core\Config\LoadCountry;
+                use Infrastructure\Crypto\MessageSigner;
+                use Infrastructure\Crypto\SignatureVerifier;
+                use Infrastructure\Crypto\CertificateManager;
 use Core\Database\DBConnection;
 
 $db = DBConnection::getConnection();
@@ -129,18 +141,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // FIXED: Proper SwapService instantiation with dependencies
             // ============================================================
             try {
-                // Load required classes
-                require_once '../../../../src/Domain/Services/SwapService.php';
-                require_once '../../../../src/Core/Config/LoadCountry.php';
-                require_once '../../../../src/Infrastructure/Crypto/MessageSigner.php';
-                require_once '../../../../src/Infrastructure/Crypto/SignatureVerifier.php';
-                require_once '../../../../src/Infrastructure/Crypto/CertificateManager.php';
-                
-                use Domain\Services\SwapService;
-                use Core\Config\LoadCountry;
-                use Infrastructure\Crypto\MessageSigner;
-                use Infrastructure\Crypto\SignatureVerifier;
-                use Infrastructure\Crypto\CertificateManager;
                 
                 // Load country configuration
                 $countryName = $_ENV['VOUCHMORPH_COUNTRY'] ?? getenv('VOUCHMORPH_COUNTRY') ?? 'Botswana';
