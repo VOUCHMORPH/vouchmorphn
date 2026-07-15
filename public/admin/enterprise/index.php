@@ -21,9 +21,13 @@ $departmentId = $user['department_id'] ?? null;
 // ============================================================
 $canCreate = in_array($userRole, ['owner', 'it_manager_enterprise', 'program_officer', 'department_head']);
 $canApprove = in_array($userRole, ['owner', 'approver', 'senior_approver', 'it_manager_enterprise']);
+$canDisburse = in_array($userRole, ['owner', 'supervisor', 'it_manager_enterprise']);
 $canManageUsers = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise']);
 $canViewAll = in_array($userRole, ['owner', 'auditor', 'it_manager_enterprise', 'it_officer_enterprise']);
 $isReadOnly = in_array($userRole, ['auditor', 'viewer', 'it_support']);
+$isApprover = in_array($userRole, ['approver', 'senior_approver']);
+$isSupervisor = in_array($userRole, ['supervisor']);
+$isLoader = in_array($userRole, ['program_officer', 'department_head']);
 
 // ============================================================
 // FETCH DASHBOARD DATA
@@ -47,38 +51,47 @@ try {
 // Dashboard metrics
 $metrics = [];
 try {
+    // Base query filters
+    $deptFilter = ($userRole === 'department_head' && $departmentId) ? "AND department_id = :dept_id" : "";
+    $params = [':org_id' => $orgId];
+    if ($deptFilter) {
+        $params[':dept_id'] = $departmentId;
+    }
+
     // Total batches
     $stmt = $pdo->prepare("
         SELECT COUNT(*) as total FROM disbursement_batches 
-        WHERE organization_id = :org_id
+        WHERE organization_id = :org_id $deptFilter
     ");
-    $stmt->execute([':org_id' => $orgId]);
+    $stmt->execute($params);
     $metrics['total_batches'] = (int)$stmt->fetchColumn();
 
     // Batches by status
     $stmt = $pdo->prepare("
         SELECT status, COUNT(*) as count 
         FROM disbursement_batches 
-        WHERE organization_id = :org_id 
+        WHERE organization_id = :org_id $deptFilter
         GROUP BY status
     ");
-    $stmt->execute([':org_id' => $orgId]);
+    $stmt->execute($params);
     $batchStatus = [];
     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $batchStatus[strtolower($row['status'])] = $row['count'];
+        $status = strtolower($row['status']);
+        $batchStatus[$status] = $row['count'];
     }
     $metrics['pending_batches'] = $batchStatus['pending'] ?? $batchStatus['pending_approval'] ?? 0;
     $metrics['approved_batches'] = $batchStatus['approved'] ?? 0;
     $metrics['executed_batches'] = $batchStatus['executed'] ?? $batchStatus['completed'] ?? 0;
+    $metrics['rejected_batches'] = $batchStatus['rejected'] ?? 0;
     
     // Total disbursed amount
     $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(total_amount), 0) as total 
         FROM disbursement_batches 
-        WHERE organization_id = :org_id 
+        WHERE organization_id = :org_id $deptFilter
         AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')
     ");
-    $stmt->execute([':org_id' => $orgId]);
+    $stmt->execute($params);
     $metrics['total_disbursed'] = (float)$stmt->fetchColumn();
 
     // Total beneficiaries
@@ -99,45 +112,19 @@ try {
     $stmt->execute([':org_id' => $orgId]);
     $metrics['total_users'] = (int)$stmt->fetchColumn();
 
-    // Recent batches (last 30 days)
-    $stmt = $pdo->prepare("
-        SELECT 
-            id, batch_reference, batch_name, source_institution,
-            total_amount, total_destinations, status, created_at,
-            updated_at
-        FROM disbursement_batches 
-        WHERE organization_id = :org_id 
-        AND created_at >= NOW() - INTERVAL '30 days'
-        ORDER BY created_at DESC 
-        LIMIT 10
-    ");
-    $stmt->execute([':org_id' => $orgId]);
-    $recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    // If department head, filter by department
-    if ($userRole === 'department_head' && $departmentId) {
+    // For supervisors - approved batches ready for disbursement
+    if ($canDisburse) {
         $stmt = $pdo->prepare("
             SELECT COUNT(*) as total 
             FROM disbursement_batches 
             WHERE organization_id = :org_id 
-            AND department_id = :dept_id
+            AND status = 'approved'
         ");
-        $stmt->execute([':org_id' => $orgId, ':dept_id' => $departmentId]);
-        $metrics['department_batches'] = (int)$stmt->fetchColumn();
-        
-        // Department total disbursed
-        $stmt = $pdo->prepare("
-            SELECT COALESCE(SUM(total_amount), 0) as total 
-            FROM disbursement_batches 
-            WHERE organization_id = :org_id 
-            AND department_id = :dept_id
-            AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')
-        ");
-        $stmt->execute([':org_id' => $orgId, ':dept_id' => $departmentId]);
-        $metrics['department_disbursed'] = (float)$stmt->fetchColumn();
+        $stmt->execute([':org_id' => $orgId]);
+        $metrics['approved_for_disbursement'] = (int)$stmt->fetchColumn();
     }
 
-    // Pending approvals (for approvers)
+    // For approvers - pending approvals
     if ($canApprove) {
         $stmt = $pdo->prepare("
             SELECT COUNT(*) as total 
@@ -149,12 +136,52 @@ try {
         $metrics['pending_approvals'] = (int)$stmt->fetchColumn();
     }
 
+    // Recent batches with status-based filtering
+    $statusFilter = "";
+    $statusParams = [':org_id' => $orgId];
+    
+    // Different roles see different batches
+    if ($isReadOnly) {
+        // Auditors/viewers see completed only
+        $statusFilter = "AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')";
+    } elseif ($isApprover) {
+        // Approvers see pending and approved
+        $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')";
+    } elseif ($isSupervisor) {
+        // Supervisors see approved and completed
+        $statusFilter = "AND status IN ('approved', 'completed', 'executed', 'APPROVED', 'COMPLETED', 'EXECUTED')";
+    } elseif ($isLoader) {
+        // Loaders see their own batches + pending
+        $statusFilter = "AND (status IN ('pending', 'pending_approval', 'draft', 'approved') OR created_by = :user_id)";
+        $statusParams[':user_id'] = $userId;
+    }
+
+    $stmt = $pdo->prepare("
+        SELECT 
+            id, batch_reference, batch_name, source_institution,
+            total_amount, total_destinations, status, created_at,
+            updated_at, created_by, department_id
+        FROM disbursement_batches 
+        WHERE organization_id = :org_id $statusFilter
+        AND created_at >= NOW() - INTERVAL '30 days'
+        ORDER BY 
+            CASE 
+                WHEN status IN ('pending', 'pending_approval') THEN 1
+                WHEN status = 'approved' THEN 2
+                ELSE 3
+            END,
+            created_at DESC 
+        LIMIT 15
+    ");
+    $stmt->execute($statusParams);
+    $recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
 } catch (PDOException $e) {
     error_log("[ENTERPRISE DASHBOARD] Metrics error: " . $e->getMessage());
     $metrics = array_fill_keys([
         'total_batches', 'pending_batches', 'approved_batches', 
         'executed_batches', 'total_disbursed', 'total_beneficiaries',
-        'total_users'
+        'total_users', 'pending_approvals'
     ], 0);
     $recentBatches = [];
 }
@@ -197,6 +224,16 @@ function getStatusLabel($status) {
     };
 }
 
+function getStatusAction($status) {
+    $status = strtolower($status);
+    return match($status) {
+        'pending', 'pending_approval' => 'Approve',
+        'approved' => 'Disburse',
+        'draft' => 'Submit',
+        default => 'View'
+    };
+}
+
 function getRoleLabel($role) {
     $labels = [
         'owner' => 'Owner',
@@ -207,6 +244,7 @@ function getRoleLabel($role) {
         'program_officer' => 'Program Officer',
         'approver' => 'Approver',
         'senior_approver' => 'Senior Approver',
+        'supervisor' => 'Supervisor',
         'beneficiary_registrar' => 'Beneficiary Registrar',
         'auditor' => 'Auditor',
         'viewer' => 'Viewer'
@@ -342,6 +380,14 @@ function getRoleLabel($role) {
         }
         .nav-item .badge {
             background: #ef4444;
+            color: #fff;
+            font-size: 9px;
+            padding: 1px 8px;
+            border-radius: 12px;
+            margin-left: 4px;
+        }
+        .nav-item .badge-gold {
+            background: #8A6D3B;
             color: #fff;
             font-size: 9px;
             padding: 1px 8px;
@@ -490,7 +536,7 @@ function getRoleLabel($role) {
         }
         .status-draft { background: #f1f5f9; color: #64748b; }
         .status-pending { background: #fef3c7; color: #92400e; }
-        .status-approved { background: #dcfce7; color: #166534; }
+        .status-approved { background: #dbeafe; color: #1e40af; }
         .status-completed { background: #dcfce7; color: #166534; }
         .status-rejected { background: #fee2e2; color: #991b1b; }
 
@@ -506,7 +552,7 @@ function getRoleLabel($role) {
             text-decoration: none;
             display: inline-block;
         }
-        .btn:hover { opacity: 0.9; }
+        .btn:hover { opacity: 0.85; transform: translateY(-1px); }
         .btn-primary {
             background: #0f172a;
             color: #fff;
@@ -520,6 +566,13 @@ function getRoleLabel($role) {
         }
         .btn-success:hover {
             background: #14532d;
+        }
+        .btn-warning {
+            background: #92400e;
+            color: #fff;
+        }
+        .btn-warning:hover {
+            background: #78350f;
         }
         .btn-outline {
             background: transparent;
@@ -554,6 +607,7 @@ function getRoleLabel($role) {
         .quick-action:hover {
             border-color: #8A6D3B;
             background: #f8fafc;
+            transform: translateY(-2px);
         }
         .quick-action .icon { font-size: 24px; }
         .quick-action .label {
@@ -620,7 +674,7 @@ function getRoleLabel($role) {
         <a href="index.php" class="nav-item active">📊 Dashboard</a>
         
         <?php if ($canCreate): ?>
-        <a href="imports/source_input.php" class="nav-item primary">➕ New Disbursement</a>
+        <a href="imports/source_input.php" class="nav-item primary">💰 New Disbursement</a>
         <?php endif; ?>
         
         <a href="imports/review_batch.php?status=all" class="nav-item">
@@ -628,10 +682,25 @@ function getRoleLabel($role) {
             <?php if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0): ?>
             <span class="badge"><?php echo $metrics['pending_approvals']; ?></span>
             <?php endif; ?>
+            <?php if ($canDisburse && ($metrics['approved_for_disbursement'] ?? 0) > 0): ?>
+            <span class="badge-gold"><?php echo $metrics['approved_for_disbursement']; ?></span>
+            <?php endif; ?>
         </a>
         
         <?php if ($canApprove): ?>
-        <a href="imports/review_batch.php?status=pending_approval" class="nav-item">⏳ Pending Approvals</a>
+        <a href="imports/review_batch.php?status=pending_approval" class="nav-item">⏳ Pending Approvals
+            <?php if (($metrics['pending_approvals'] ?? 0) > 0): ?>
+            <span class="badge"><?php echo $metrics['pending_approvals']; ?></span>
+            <?php endif; ?>
+        </a>
+        <?php endif; ?>
+        
+        <?php if ($canDisburse): ?>
+        <a href="imports/review_batch.php?status=approved" class="nav-item">🚀 Disburse Funds
+            <?php if (($metrics['approved_for_disbursement'] ?? 0) > 0): ?>
+            <span class="badge-gold"><?php echo $metrics['approved_for_disbursement']; ?></span>
+            <?php endif; ?>
+        </a>
         <?php endif; ?>
         
         <a href="beneficiaries.php" class="nav-item">👥 Beneficiaries</a>
@@ -662,9 +731,9 @@ function getRoleLabel($role) {
             <div class="timestamp"><?php echo date('l, F j, Y · H:i'); ?></div>
         </div>
 
-        <?php if ($canCreate && empty($isReadOnly)): ?>
-        <!-- Quick Actions -->
+        <!-- Quick Actions - Role Specific -->
         <div class="quick-actions">
+            <?php if ($canCreate): ?>
             <a href="imports/source_input.php" class="quick-action">
                 <span class="icon">💰</span>
                 <div>
@@ -672,6 +741,29 @@ function getRoleLabel($role) {
                     <div class="desc">Create a payment batch</div>
                 </div>
             </a>
+            <?php endif; ?>
+            
+            <?php if ($isApprover): ?>
+            <a href="imports/review_batch.php?status=pending_approval" class="quick-action" style="border-color: #92400e;">
+                <span class="icon">✅</span>
+                <div>
+                    <div class="label">Review & Approve</div>
+                    <div class="desc"><?php echo ($metrics['pending_approvals'] ?? 0) . ' batches pending'; ?></div>
+                </div>
+            </a>
+            <?php endif; ?>
+            
+            <?php if ($isSupervisor): ?>
+            <a href="imports/review_batch.php?status=approved" class="quick-action" style="border-color: #166534;">
+                <span class="icon">💸</span>
+                <div>
+                    <div class="label">Disburse Funds</div>
+                    <div class="desc"><?php echo ($metrics['approved_for_disbursement'] ?? 0) . ' batches ready'; ?></div>
+                </div>
+            </a>
+            <?php endif; ?>
+            
+            <?php if ($canCreate || $userRole === 'beneficiary_registrar'): ?>
             <a href="imports/add_destinations.php" class="quick-action">
                 <span class="icon">👤</span>
                 <div>
@@ -679,26 +771,28 @@ function getRoleLabel($role) {
                     <div class="desc">Import or add recipients</div>
                 </div>
             </a>
+            <?php endif; ?>
+            
             <a href="beneficiaries.php" class="quick-action">
                 <span class="icon">📋</span>
                 <div>
-                    <div class="label">Manage Beneficiaries</div>
-                    <div class="desc">View and update records</div>
+                    <div class="label">View Beneficiaries</div>
+                    <div class="desc"><?php echo number_format($metrics['total_beneficiaries'] ?? 0); ?> active records</div>
                 </div>
             </a>
+            
             <?php if ($canManageUsers): ?>
             <a href="settings/users.php" class="quick-action">
                 <span class="icon">👥</span>
                 <div>
                     <div class="label">Manage Users</div>
-                    <div class="desc">Add or remove team members</div>
+                    <div class="desc"><?php echo number_format($metrics['total_users'] ?? 0); ?> team members</div>
                 </div>
             </a>
             <?php endif; ?>
         </div>
-        <?php endif; ?>
 
-        <!-- Metrics -->
+        <!-- Metrics - Role Specific -->
         <div class="metrics-grid">
             <div class="metric-card">
                 <div class="metric-label">Total Disbursed</div>
@@ -707,11 +801,13 @@ function getRoleLabel($role) {
                 </div>
                 <div class="metric-sub">Lifetime disbursements</div>
             </div>
+            
             <div class="metric-card">
                 <div class="metric-label">Total Batches</div>
                 <div class="metric-value"><?php echo number_format($metrics['total_batches'] ?? 0); ?></div>
                 <div class="metric-sub">All time</div>
             </div>
+            
             <?php if (($metrics['pending_batches'] ?? 0) > 0): ?>
             <div class="metric-card" style="border-color: #92400e;">
                 <div class="metric-label">Pending Batches</div>
@@ -719,37 +815,44 @@ function getRoleLabel($role) {
                 <div class="metric-sub">Waiting for approval</div>
             </div>
             <?php endif; ?>
+            
             <?php if (($metrics['approved_batches'] ?? 0) > 0): ?>
-            <div class="metric-card" style="border-color: #166534;">
+            <div class="metric-card" style="border-color: #1e40af;">
                 <div class="metric-label">Approved</div>
-                <div class="metric-value" style="color: #166534;"><?php echo number_format($metrics['approved_batches'] ?? 0); ?></div>
-                <div class="metric-sub">Ready for execution</div>
+                <div class="metric-value" style="color: #1e40af;"><?php echo number_format($metrics['approved_batches'] ?? 0); ?></div>
+                <div class="metric-sub">Ready for disbursement</div>
             </div>
             <?php endif; ?>
+            
+            <?php if (($metrics['executed_batches'] ?? 0) > 0): ?>
+            <div class="metric-card" style="border-color: #166534;">
+                <div class="metric-label">Completed</div>
+                <div class="metric-value" style="color: #166534;"><?php echo number_format($metrics['executed_batches'] ?? 0); ?></div>
+                <div class="metric-sub">Successfully executed</div>
+            </div>
+            <?php endif; ?>
+            
+            <?php if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0): ?>
+            <div class="metric-card" style="border-color: #dc2626; background: #fef2f2;">
+                <div class="metric-label">Pending Approvals</div>
+                <div class="metric-value" style="color: #dc2626;"><?php echo number_format($metrics['pending_approvals'] ?? 0); ?></div>
+                <div class="metric-sub">Needs your review</div>
+            </div>
+            <?php endif; ?>
+            
+            <?php if ($canDisburse && ($metrics['approved_for_disbursement'] ?? 0) > 0): ?>
+            <div class="metric-card" style="border-color: #8A6D3B; background: #fdf6ed;">
+                <div class="metric-label">Ready for Disbursement</div>
+                <div class="metric-value" style="color: #8A6D3B;"><?php echo number_format($metrics['approved_for_disbursement'] ?? 0); ?></div>
+                <div class="metric-sub">Approved batches</div>
+            </div>
+            <?php endif; ?>
+            
             <div class="metric-card">
                 <div class="metric-label">Beneficiaries</div>
                 <div class="metric-value"><?php echo number_format($metrics['total_beneficiaries'] ?? 0); ?></div>
                 <div class="metric-sub">Active recipients</div>
             </div>
-            <div class="metric-card">
-                <div class="metric-label">Team Members</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_users'] ?? 0); ?></div>
-                <div class="metric-sub">Active users</div>
-            </div>
-            <?php if ($userRole === 'department_head' && isset($metrics['department_batches'])): ?>
-            <div class="metric-card" style="border-color: #3b82f6;">
-                <div class="metric-label">My Department</div>
-                <div class="metric-value" style="color: #3b82f6;"><?php echo number_format($metrics['department_batches']); ?></div>
-                <div class="metric-sub">Batches · <?php echo formatCurrency($metrics['department_disbursed'] ?? 0); ?></div>
-            </div>
-            <?php endif; ?>
-            <?php if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0): ?>
-            <div class="metric-card" style="border-color: #ef4444; background: #fef2f2;">
-                <div class="metric-label">Pending Approvals</div>
-                <div class="metric-value" style="color: #dc2626;"><?php echo number_format($metrics['pending_approvals'] ?? 0); ?></div>
-                <div class="metric-sub">Needs your attention</div>
-            </div>
-            <?php endif; ?>
         </div>
 
         <!-- Recent Batches -->
@@ -805,8 +908,13 @@ function getRoleLabel($role) {
                             <td><?php echo date('Y-m-d H:i', strtotime($batch['created_at'] ?? 'now')); ?></td>
                             <td>
                                 <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>" class="btn btn-outline btn-sm">View</a>
+                                
                                 <?php if ($canApprove && in_array(strtolower($batch['status']), ['pending', 'pending_approval'])): ?>
-                                <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>&action=approve" class="btn btn-success btn-sm">Approve</a>
+                                <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>&action=approve" class="btn btn-warning btn-sm">Approve</a>
+                                <?php endif; ?>
+                                
+                                <?php if ($canDisburse && strtolower($batch['status']) === 'approved'): ?>
+                                <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>&action=disburse" class="btn btn-success btn-sm">Disburse</a>
                                 <?php endif; ?>
                             </td>
                         </tr>
@@ -817,7 +925,7 @@ function getRoleLabel($role) {
             <?php endif; ?>
         </div>
 
-        <!-- Role-specific info -->
+        <!-- Role-specific info panels -->
         <?php if ($isReadOnly): ?>
         <div class="card" style="border-left: 3px solid #8A6D3B;">
             <div class="card-header">
@@ -833,19 +941,20 @@ function getRoleLabel($role) {
         </div>
         <?php endif; ?>
 
-        <?php if ($userRole === 'beneficiary_registrar'): ?>
-        <div class="card" style="border-left: 3px solid #166534;">
+        <?php if ($isLoader): ?>
+        <div class="card" style="border-left: 3px solid #3b82f6;">
             <div class="card-header">
-                <span class="card-title">👤 Beneficiary Registrar</span>
+                <span class="card-title">📤 Loader Access</span>
             </div>
             <p style="color: #64748b; font-size: 14px;">
-                You can add and manage beneficiaries for disbursement batches.
-                <a href="imports/add_destinations.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Add Beneficiaries</a>
+                You can create and upload new disbursement batches. 
+                Once created, they will be sent for approval.
+                <a href="imports/source_input.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Create New Batch</a>
             </p>
         </div>
         <?php endif; ?>
 
-        <?php if ($userRole === 'approver' || $userRole === 'senior_approver'): ?>
+        <?php if ($isApprover): ?>
         <div class="card" style="border-left: 3px solid #92400e;">
             <div class="card-header">
                 <span class="card-title">✅ Approver Access</span>
@@ -855,22 +964,34 @@ function getRoleLabel($role) {
                 <?php if (($metrics['pending_approvals'] ?? 0) > 0): ?>
                 <strong><?php echo $metrics['pending_approvals']; ?> batches awaiting your review.</strong>
                 <?php endif; ?>
-                <a href="imports/review_batch.php?status=pending_approval" class="btn btn-primary btn-sm" style="margin-left:12px;">Review Now</a>
+                <a href="imports/review_batch.php?status=pending_approval" class="btn btn-warning btn-sm" style="margin-left:12px;">Review Now</a>
             </p>
         </div>
         <?php endif; ?>
 
-        <?php if ($userRole === 'department_head'): ?>
-        <div class="card" style="border-left: 3px solid #3b82f6;">
+        <?php if ($isSupervisor): ?>
+        <div class="card" style="border-left: 3px solid #166534;">
             <div class="card-header">
-                <span class="card-title">🏛️ Department Head</span>
+                <span class="card-title">💸 Supervisor Access</span>
             </div>
             <p style="color: #64748b; font-size: 14px;">
-                You manage your department's disbursement activities.
-                <?php if (isset($metrics['department_batches'])): ?>
-                <strong><?php echo $metrics['department_batches']; ?> batches</strong> from your department.
+                You can disburse funds for approved batches.
+                <?php if (($metrics['approved_for_disbursement'] ?? 0) > 0): ?>
+                <strong><?php echo $metrics['approved_for_disbursement']; ?> batches ready for disbursement.</strong>
                 <?php endif; ?>
-                <a href="imports/source_input.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Create Department Batch</a>
+                <a href="imports/review_batch.php?status=approved" class="btn btn-success btn-sm" style="margin-left:12px;">Disburse Funds</a>
+            </p>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($userRole === 'beneficiary_registrar'): ?>
+        <div class="card" style="border-left: 3px solid #166534;">
+            <div class="card-header">
+                <span class="card-title">👤 Beneficiary Registrar</span>
+            </div>
+            <p style="color: #64748b; font-size: 14px;">
+                You can add and manage beneficiaries for disbursement batches.
+                <a href="imports/add_destinations.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Add Beneficiaries</a>
             </p>
         </div>
         <?php endif; ?>
