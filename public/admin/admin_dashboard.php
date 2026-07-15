@@ -2,10 +2,23 @@
 /**
  * admin_dashboard.php - VouchMorph Enhanced Admin Dashboard with Diagnostics
  * Features: Role-based access, Transaction Search, Full Tracking, Reports, Debug Mode, Table Diagnostics
+ *
+ * FIX APPLIED: the "0 records in Transactions view vs 31 in Diagnostic" bug.
+ * Root cause: several LEFT JOINs cast a text reference column to int —
+ * e.g. `ht.swap_reference::int` — but swap_reference/reference values are
+ * strings like "SWAP_1730987143_abc123" (see SwapService::generateReference()),
+ * never numeric. Postgres throws "invalid input syntax for integer" on that
+ * cast, the whole query throws, the catch block swallows it, and
+ * $recentTransactions/$searchResults end up empty even though swap_requests
+ * has real rows. Fix: drop the ::int-casting JOINs entirely and fetch
+ * hold/settlement/cashout/invoice/identity status with separate queries per
+ * row, matching as plain text against both swap_id (cast to string in PHP,
+ * not SQL) and swap_uuid. This mirrors the same pattern already used safely
+ * in the TRANSACTION DETAIL section below (which uses `::text`, a no-op
+ * cast on an already-text column, which is why that section never had this
+ * bug).
  */
-
 declare(strict_types=1);
-
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
@@ -63,7 +76,6 @@ $roleDefinitions = [
         'level' => 50
     ]
 ];
-
 $roleName = $roleDefinitions[$adminRoleId]['name'] ?? 'Administrator';
 $userPermissions = $roleDefinitions[$adminRoleId]['permissions'] ?? [];
 
@@ -119,24 +131,24 @@ foreach ($tablesToCheck as $table => $label) {
     try {
         $stmt = $db->prepare("
             SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables 
+                SELECT 1 FROM information_schema.tables
                 WHERE table_schema = 'public' AND table_name = :table
             )
         ");
         $stmt->execute([':table' => $table]);
         $exists = (bool)$stmt->fetchColumn();
-        
+
         if ($exists) {
             $countStmt = $db->query("SELECT COUNT(*) FROM " . $table);
             $count = (int)$countStmt->fetchColumn();
-            
+
             // Get sample row if count > 0
             $sample = null;
             if ($count > 0) {
                 $sampleStmt = $db->query("SELECT * FROM " . $table . " LIMIT 1");
                 $sample = $sampleStmt->fetch(PDO::FETCH_ASSOC);
             }
-            
+
             $diagnosticData[$table] = [
                 'label' => $label,
                 'exists' => true,
@@ -172,14 +184,13 @@ foreach ($tablesToCheck as $table => $label) {
 $tables = array_keys($tablesToCheck);
 $tableStatus = [];
 $totalRecords = 0;
-
 if ($debug) {
     foreach ($tables as $table) {
         try {
             $stmt = $db->prepare("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = :table");
             $stmt->execute([':table' => $table]);
             $exists = (int)$stmt->fetchColumn() > 0;
-            
+
             if ($exists) {
                 $countStmt = $db->query("SELECT COUNT(*) FROM " . $table);
                 $count = (int)$countStmt->fetchColumn();
@@ -195,16 +206,65 @@ if ($debug) {
 }
 
 // ============================================================
-// TRANSACTION SEARCH
+// HELPER: fetch a related row's status from an audit-side table,
+// matching as plain text against BOTH the internal swap_id and the
+// swap_uuid/reference string — never casting the audit table's text
+// column to int. This is the actual fix: no `::int`, ever, on a
+// reference column that stores "SWAP_<timestamp>_<hex>" strings.
+// ============================================================
+function fetchRelatedStatus(PDO $db, string $table, string $refColumn, $swapId, ?string $swapUuid): ?array
+{
+    try {
+        $stmt = $db->prepare("
+            SELECT * FROM {$table}
+            WHERE {$refColumn} = :ref OR {$refColumn} = :uuid
+            ORDER BY created_at DESC LIMIT 1
+        ");
+        $stmt->execute([
+            ':ref' => (string)($swapId ?? ''),
+            ':uuid' => (string)($swapUuid ?? ''),
+        ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] fetchRelatedStatus({$table}) error: " . $e->getMessage());
+        return null;
+    }
+}
+
+function attachRelatedStatuses(PDO $db, array &$row): void
+{
+    $swapId = $row['swap_id'] ?? null;
+    $swapUuid = $row['swap_uuid'] ?? null;
+
+    $hold = fetchRelatedStatus($db, 'hold_transactions', 'swap_reference', $swapId, $swapUuid);
+    $row['hold_status'] = $hold['status'] ?? null;
+
+    $settlement = fetchRelatedStatus($db, 'settlement_queue', 'reference', $swapId, $swapUuid);
+    $row['settlement_status'] = $settlement['status'] ?? null;
+
+    $cashout = fetchRelatedStatus($db, 'cashout_authorizations', 'swap_reference', $swapId, $swapUuid);
+    $row['cashout_status'] = $cashout['status'] ?? null;
+
+    $invoice = fetchRelatedStatus($db, 'fee_invoices', 'swap_reference', $swapId, $swapUuid);
+    $row['invoice_status'] = $invoice['status'] ?? null;
+
+    $identity = fetchRelatedStatus($db, 'identity_swap_holds', 'swap_reference', $swapId, $swapUuid);
+    $row['identity_status'] = $identity['status'] ?? null;
+}
+
+// ============================================================
+// TRANSACTION SEARCH — FIXED: no ::int JOINs. Base query only
+// touches swap_requests + users; related-table statuses are
+// fetched per-row via attachRelatedStatuses() above.
 // ============================================================
 $searchResults = [];
 $searchPerformed = false;
-
 if (!empty($search) && hasPermission('search_transactions')) {
     $searchPerformed = true;
     try {
         $stmt = $db->prepare("
-            SELECT 
+            SELECT
                 sr.swap_id,
                 sr.swap_uuid,
                 sr.user_id,
@@ -218,21 +278,10 @@ if (!empty($search) && hasPermission('search_transactions')) {
                 u.full_name as user_name,
                 u.phone as user_phone,
                 u.email as user_email,
-                u.national_id,
-                ht.status as hold_status,
-                ht.hold_reference,
-                sq.status as settlement_status,
-                ca.status as cashout_status,
-                fi.status as invoice_status,
-                idh.status as identity_status
+                u.national_id
             FROM swap_requests sr
             LEFT JOIN users u ON sr.user_id = u.user_id
-            LEFT JOIN hold_transactions ht ON sr.swap_id = ht.swap_reference::int
-            LEFT JOIN settlement_queue sq ON sr.swap_id = sq.reference::int
-            LEFT JOIN cashout_authorizations ca ON sr.swap_id = ca.swap_reference::int
-            LEFT JOIN fee_invoices fi ON sr.swap_id = fi.swap_reference::int
-            LEFT JOIN identity_swap_holds idh ON sr.swap_id = idh.swap_reference::int
-            WHERE 
+            WHERE
                 sr.swap_id::text ILIKE :search
                 OR sr.swap_uuid ILIKE :search
                 OR u.full_name ILIKE :search
@@ -249,6 +298,11 @@ if (!empty($search) && hasPermission('search_transactions')) {
         ");
         $stmt->execute([':search' => '%' . $search . '%']);
         $searchResults = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($searchResults as &$result) {
+            attachRelatedStatuses($db, $result);
+        }
+        unset($result);
     } catch (Throwable $e) {
         error_log("[ADMIN DASHBOARD] Search error: " . $e->getMessage());
         $searchResults = [];
@@ -257,15 +311,17 @@ if (!empty($search) && hasPermission('search_transactions')) {
 
 // ============================================================
 // TRANSACTION DETAIL (Full lifecycle)
+// These queries already used `::text` (a no-op cast on an
+// already-text column) rather than `::int`, so they were never
+// part of the crash — left as-is.
 // ============================================================
 $transactionDetail = null;
 $transactionTimeline = [];
-
 if ($transactionId && hasPermission('review_transactions')) {
     try {
         // Main transaction
         $stmt = $db->prepare("
-            SELECT 
+            SELECT
                 sr.*,
                 u.full_name as user_name,
                 u.email as user_email,
@@ -289,7 +345,7 @@ if ($transactionId && hasPermission('review_transactions')) {
         if ($transactionDetail) {
             // Build timeline
             $timeline = [];
-            
+
             // 1. Transaction Created
             $timeline[] = [
                 'stage' => 'CREATED',
@@ -297,10 +353,10 @@ if ($transactionId && hasPermission('review_transactions')) {
                 'description' => 'Transaction created',
                 'details' => ['amount' => $transactionDetail['amount'], 'currency' => $transactionDetail['from_currency'] ?? 'BWP']
             ];
-            
+
             // 2. Hold
             $stmt = $db->prepare("
-                SELECT * FROM hold_transactions 
+                SELECT * FROM hold_transactions
                 WHERE swap_reference::text = :ref OR swap_reference::text = :id
                 ORDER BY created_at DESC LIMIT 1
             ");
@@ -319,10 +375,10 @@ if ($transactionId && hasPermission('review_transactions')) {
                     ]
                 ];
             }
-            
+
             // 3. Settlement
             $stmt = $db->prepare("
-                SELECT * FROM settlement_queue 
+                SELECT * FROM settlement_queue
                 WHERE reference::text = :ref OR reference::text = :id
                 ORDER BY created_at DESC LIMIT 1
             ");
@@ -341,10 +397,10 @@ if ($transactionId && hasPermission('review_transactions')) {
                     ]
                 ];
             }
-            
+
             // 4. Cashout
             $stmt = $db->prepare("
-                SELECT * FROM cashout_authorizations 
+                SELECT * FROM cashout_authorizations
                 WHERE swap_reference::text = :ref OR swap_reference::text = :id
                 ORDER BY created_at DESC LIMIT 1
             ");
@@ -363,10 +419,10 @@ if ($transactionId && hasPermission('review_transactions')) {
                     ]
                 ];
             }
-            
+
             // 5. Identity Hold (if applicable)
             $stmt = $db->prepare("
-                SELECT * FROM identity_swap_holds 
+                SELECT * FROM identity_swap_holds
                 WHERE swap_reference::text = :ref OR swap_reference::text = :id
                 ORDER BY created_at DESC LIMIT 1
             ");
@@ -384,10 +440,10 @@ if ($transactionId && hasPermission('review_transactions')) {
                     ]
                 ];
             }
-            
+
             // 6. Fee Invoice
             $stmt = $db->prepare("
-                SELECT * FROM fee_invoices 
+                SELECT * FROM fee_invoices
                 WHERE swap_reference::text = :ref OR swap_reference::text = :id
                 ORDER BY created_at DESC LIMIT 1
             ");
@@ -406,10 +462,10 @@ if ($transactionId && hasPermission('review_transactions')) {
                     ]
                 ];
             }
-            
+
             // 7. Settlement Outbox
             $stmt = $db->prepare("
-                SELECT * FROM settlement_outbox 
+                SELECT * FROM settlement_outbox
                 WHERE swap_reference::text = :ref OR swap_reference::text = :id
                 ORDER BY created_at DESC LIMIT 1
             ");
@@ -427,12 +483,12 @@ if ($transactionId && hasPermission('review_transactions')) {
                     ]
                 ];
             }
-            
+
             // Sort by timestamp
             usort($timeline, function($a, $b) {
                 return strtotime($a['timestamp']) - strtotime($b['timestamp']);
             });
-            
+
             $transactionTimeline = $timeline;
         }
     } catch (Throwable $e) {
@@ -448,63 +504,63 @@ try {
     // Total users
     $stmt = $db->query("SELECT COUNT(*) FROM users");
     $metrics['total_users'] = (int)$stmt->fetchColumn();
-    
+
     // Total swaps
     $stmt = $db->query("SELECT COUNT(*) FROM swap_requests");
     $metrics['total_swaps'] = (int)$stmt->fetchColumn();
-    
+
     // Completed swaps
     $stmt = $db->query("SELECT COUNT(*) FROM swap_requests WHERE status IN ('COMPLETED', 'success')");
     $metrics['completed_swaps'] = (int)$stmt->fetchColumn();
-    
+
     // Pending swaps
     $stmt = $db->query("SELECT COUNT(*) FROM swap_requests WHERE status IN ('PENDING', 'pending')");
     $metrics['pending_swaps'] = (int)$stmt->fetchColumn();
-    
+
     // Total volume
     $stmt = $db->query("SELECT COALESCE(SUM(amount), 0) FROM swap_requests");
     $metrics['total_volume'] = (float)$stmt->fetchColumn();
-    
+
     // Today's volume
     $stmt = $db->query("SELECT COALESCE(SUM(amount), 0) FROM swap_requests WHERE DATE(created_at) = CURRENT_DATE");
     $metrics['today_volume'] = (float)$stmt->fetchColumn();
-    
+
     // Active holds
     $stmt = $db->query("SELECT COUNT(*) FROM hold_transactions WHERE status IN ('ACTIVE', 'HELD')");
     $metrics['active_holds'] = (int)$stmt->fetchColumn();
-    
+
     // Pending settlements
     $stmt = $db->query("SELECT COUNT(*) FROM settlement_queue WHERE status = 'PENDING'");
     $metrics['pending_settlements'] = (int)$stmt->fetchColumn();
-    
+
     // Total fee invoices
     $stmt = $db->query("SELECT COUNT(*) FROM fee_invoices");
     $metrics['total_invoices'] = (int)$stmt->fetchColumn();
-    
+
     // Unpaid invoices
     $stmt = $db->query("SELECT COUNT(*) FROM fee_invoices WHERE status = 'SENT'");
     $metrics['unpaid_invoices'] = (int)$stmt->fetchColumn();
-    
+
     // Total cashouts
     $stmt = $db->query("SELECT COUNT(*) FROM cashout_authorizations");
     $metrics['total_cashouts'] = (int)$stmt->fetchColumn();
-    
+
     // Pending cashouts
     $stmt = $db->query("SELECT COUNT(*) FROM cashout_authorizations WHERE status = 'PENDING'");
     $metrics['pending_cashouts'] = (int)$stmt->fetchColumn();
-    
+
     // Identity holds
     $stmt = $db->query("SELECT COUNT(*) FROM identity_swap_holds WHERE status = 'pending'");
     $metrics['pending_identity_holds'] = (int)$stmt->fetchColumn();
-    
+
     // Total audit logs
     $stmt = $db->query("SELECT COUNT(*) FROM audit_logs");
     $metrics['total_audit_logs'] = (int)$stmt->fetchColumn();
-    
+
     // Total admin actions
     $stmt = $db->query("SELECT COUNT(*) FROM admin_actions");
     $metrics['total_admin_actions'] = (int)$stmt->fetchColumn();
-    
+
 } catch (Throwable $e) {
     error_log("[ADMIN DASHBOARD] Metrics error: " . $e->getMessage());
     $metrics = array_fill_keys([
@@ -516,20 +572,23 @@ try {
 }
 
 // ============================================================
-// RECENT TRANSACTIONS - CHECK IF TABLE HAS DATA
+// RECENT TRANSACTIONS — FIXED: no ::int JOINs. Base query only
+// touches swap_requests + users; hold/settlement status attached
+// per-row via attachRelatedStatuses(). Falls back to an even
+// simpler query (no user JOIN either) if something still errors,
+// so a bad users JOIN can never blank out the whole view again.
 // ============================================================
 $recentTransactions = [];
 $tableHasData = false;
-
 try {
     // Check if swap_requests has any data
     $checkStmt = $db->query("SELECT COUNT(*) FROM swap_requests");
     $count = (int)$checkStmt->fetchColumn();
     $tableHasData = $count > 0;
-    
+
     if ($tableHasData) {
         $stmt = $db->query("
-            SELECT 
+            SELECT
                 sr.swap_id,
                 sr.swap_uuid,
                 sr.user_id,
@@ -542,20 +601,45 @@ try {
                 sr.destination_country,
                 u.full_name as user_name,
                 u.phone as user_phone,
-                u.email as user_email,
-                ht.status as hold_status,
-                sq.status as settlement_status
+                u.email as user_email
             FROM swap_requests sr
             LEFT JOIN users u ON sr.user_id = u.user_id
-            LEFT JOIN hold_transactions ht ON sr.swap_id = ht.swap_reference::int
-            LEFT JOIN settlement_queue sq ON sr.swap_id = sq.reference::int
-            ORDER BY sr.created_at DESC 
-            LIMIT 30
+            ORDER BY sr.created_at DESC
+            LIMIT 50
         ");
         $recentTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($recentTransactions as &$tx) {
+            attachRelatedStatuses($db, $tx);
+        }
+        unset($tx);
     }
 } catch (Throwable $e) {
     error_log("[ADMIN DASHBOARD] Recent transactions error: " . $e->getMessage());
+    // Fallback: even simpler query, no JOIN at all
+    try {
+        $stmt = $db->query("
+            SELECT
+                swap_id,
+                swap_uuid,
+                user_id,
+                amount,
+                status,
+                created_at,
+                from_currency,
+                to_currency,
+                source_country,
+                destination_country
+            FROM swap_requests
+            ORDER BY created_at DESC
+            LIMIT 50
+        ");
+        $recentTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $tableHasData = !empty($recentTransactions);
+    } catch (Throwable $e2) {
+        error_log("[ADMIN DASHBOARD] Fallback query error: " . $e2->getMessage());
+        $recentTransactions = [];
+    }
 }
 
 // ============================================================
@@ -564,7 +648,7 @@ try {
 $recentAuditLogs = [];
 try {
     $stmt = $db->query("
-        SELECT 
+        SELECT
             audit_id,
             audit_uuid,
             entity_type,
@@ -578,8 +662,8 @@ try {
             performed_by_id,
             endpoint,
             duration_ms
-        FROM audit_logs 
-        ORDER BY performed_at DESC 
+        FROM audit_logs
+        ORDER BY performed_at DESC
         LIMIT 30
     ");
     $recentAuditLogs = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -593,7 +677,7 @@ try {
 $recentHolds = [];
 try {
     $stmt = $db->query("
-        SELECT 
+        SELECT
             hold_id,
             hold_reference,
             swap_reference,
@@ -606,8 +690,8 @@ try {
             destination_institution,
             placed_at,
             created_at
-        FROM hold_transactions 
-        ORDER BY created_at DESC 
+        FROM hold_transactions
+        ORDER BY created_at DESC
         LIMIT 20
     ");
     $recentHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -621,7 +705,7 @@ try {
 $recentInvoices = [];
 try {
     $stmt = $db->query("
-        SELECT 
+        SELECT
             invoice_uuid,
             swap_reference,
             source_institution,
@@ -632,8 +716,8 @@ try {
             status,
             created_at,
             paid_at
-        FROM fee_invoices 
-        ORDER BY created_at DESC 
+        FROM fee_invoices
+        ORDER BY created_at DESC
         LIMIT 20
     ");
     $recentInvoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -646,72 +730,71 @@ try {
 // ============================================================
 $reportData = null;
 $reportSummary = [];
-
 if ($reportType && hasPermission('view_reports')) {
     try {
         switch ($reportType) {
             case 'daily':
                 $stmt = $db->query("
-                    SELECT 
+                    SELECT
                         DATE(created_at) as date,
                         COUNT(*) as total,
                         SUM(amount) as volume,
                         COUNT(CASE WHEN status IN ('COMPLETED', 'success') THEN 1 END) as completed,
                         COUNT(CASE WHEN status IN ('PENDING', 'pending') THEN 1 END) as pending,
                         COUNT(CASE WHEN status IN ('FAILED', 'failed') THEN 1 END) as failed
-                    FROM swap_requests 
+                    FROM swap_requests
                     WHERE created_at >= NOW() - INTERVAL '30 days'
                     GROUP BY DATE(created_at)
                     ORDER BY date DESC
                 ");
                 $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 break;
-                
+
             case 'settlements':
                 $stmt = $db->query("
-                    SELECT 
+                    SELECT
                         status,
                         COUNT(*) as count,
                         SUM(amount) as total
-                    FROM settlement_queue 
+                    FROM settlement_queue
                     GROUP BY status
                 ");
                 $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 break;
-                
+
             case 'fees':
                 $stmt = $db->query("
-                    SELECT 
+                    SELECT
                         fee_type,
                         COUNT(*) as count,
                         SUM(fee_amount) as total_fee,
                         SUM(total_amount) as total_with_vat,
                         status
-                    FROM fee_invoices 
+                    FROM fee_invoices
                     GROUP BY fee_type, status
                     ORDER BY created_at DESC
                 ");
                 $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 break;
-                
+
             case 'cashouts':
                 $stmt = $db->query("
-                    SELECT 
+                    SELECT
                         status,
                         COUNT(*) as count,
                         SUM(amount) as total,
                         cashout_point,
                         cashout_provider
-                    FROM cashout_authorizations 
+                    FROM cashout_authorizations
                     GROUP BY status, cashout_point, cashout_provider
                 ");
                 $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 break;
-                
+
             default:
                 $reportData = [];
         }
-        
+
         // Calculate summary
         if ($reportData) {
             $reportSummary = [
@@ -745,7 +828,7 @@ function safeHtml($value) {
             color: #001B44;
             min-height: 100vh;
         }
-        
+
         .admin-header {
             background: #001B44;
             border-bottom: 5px solid #FFDA63;
@@ -814,7 +897,7 @@ function safeHtml($value) {
             transition: all 0.2s;
         }
         .logout-btn:hover { background: #FFDA63; color: #001B44; }
-        
+
         .admin-nav {
             background: #fff;
             border-bottom: 2px solid #001B44;
@@ -846,7 +929,7 @@ function safeHtml($value) {
             color: #ff4444 !important;
             border-bottom-color: #ff4444 !important;
         }
-        
+
         .admin-content { padding: 30px; max-width: 1600px; margin: 0 auto; }
         .content-header {
             margin-bottom: 30px;
@@ -865,7 +948,7 @@ function safeHtml($value) {
             color: #666;
             font-size: 0.8rem;
         }
-        
+
         /* Search Bar */
         .search-bar {
             display: flex;
@@ -901,7 +984,7 @@ function safeHtml($value) {
             color: #001B44;
             border-color: #FFDA63;
         }
-        
+
         /* Metrics Grid */
         .metrics-grid {
             display: grid;
@@ -934,7 +1017,7 @@ function safeHtml($value) {
             font-size: 0.8rem;
             color: #666;
         }
-        
+
         /* Cards */
         .card {
             background: #fff;
@@ -964,7 +1047,7 @@ function safeHtml($value) {
             color: #fff;
             font-size: 0.7rem;
         }
-        
+
         .table-responsive { overflow-x: auto; }
         table {
             width: 100%;
@@ -988,7 +1071,7 @@ function safeHtml($value) {
             font-size: 0.75rem;
         }
         tr:hover { background: #f5f5f5; }
-        
+
         .status {
             display: inline-block;
             padding: 2px 8px;
@@ -1002,7 +1085,7 @@ function safeHtml($value) {
         .status-pending { background: #fff3cd; color: #856404; border-color: #ffeeba; }
         .status-failed { background: #f8d7da; color: #721c24; border-color: #f5c6cb; }
         .status-info { background: #cce5ff; color: #004085; border-color: #b8daff; }
-        
+
         /* Diagnostic Cards */
         .diagnostic-grid {
             display: grid;
@@ -1028,14 +1111,14 @@ function safeHtml($value) {
             font-size: 0.7rem;
             font-weight: 600;
         }
-        
+
         .empty-state {
             text-align: center;
             padding: 40px;
             color: #999;
         }
         .empty-state .icon { font-size: 3rem; margin-bottom: 10px; }
-        
+
         .admin-footer {
             background: #001B44;
             color: #A1B5D8;
@@ -1045,7 +1128,7 @@ function safeHtml($value) {
             border-top: 3px solid #FFDA63;
             margin-top: 30px;
         }
-        
+
         .report-filter {
             display: flex;
             gap: 10px;
@@ -1072,7 +1155,7 @@ function safeHtml($value) {
             color: #001B44;
             border-color: #FFDA63;
         }
-        
+
         @media (max-width: 768px) {
             .metrics-grid { grid-template-columns: repeat(2, 1fr); }
             .diagnostic-grid { grid-template-columns: 1fr; }
@@ -1101,7 +1184,6 @@ function safeHtml($value) {
             <a href="admin_logout.php" class="logout-btn">LOGOUT</a>
         </div>
     </header>
-
     <nav class="admin-nav">
         <a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">📊 DASHBOARD</a>
         <a href="?view=transactions" class="nav-item <?php echo $view === 'transactions' ? 'active' : ''; ?>">📋 TRANSACTIONS</a>
@@ -1117,7 +1199,6 @@ function safeHtml($value) {
         <a href="?view=dashboard&debug=1" class="nav-item debug-link">🔍 DEBUG</a>
         <?php endif; ?>
     </nav>
-
     <main class="admin-content">
         <!-- ============================================================ -->
         <!-- DIAGNOSTIC VIEW - Shows all table data status -->
@@ -1128,7 +1209,7 @@ function safeHtml($value) {
             <div class="timestamp">Check which tables have data</div>
             <a href="?view=dashboard" class="nav-item" style="padding: 8px 16px; border: 2px solid #001B44; border-radius: 4px;">← Back</a>
         </div>
-        
+
         <div class="diagnostic-grid">
             <?php foreach ($diagnosticData as $table => $info): ?>
             <div class="diagnostic-card">
@@ -1155,9 +1236,9 @@ function safeHtml($value) {
                 <?php if ($info['exists'] && $info['has_data'] && $info['sample']): ?>
                 <div style="margin-top: 10px; font-size: 0.6rem; color: #666; max-height: 100px; overflow: auto; background: #f8f9fa; padding: 8px; border-radius: 4px;">
                     <strong>Sample:</strong>
-                    <?php 
+                    <?php
                     $sampleKeys = array_slice(array_keys($info['sample']), 0, 5);
-                    foreach ($sampleKeys as $key): 
+                    foreach ($sampleKeys as $key):
                     ?>
                     <div><span style="color: #001B44;"><?php echo safeHtml($key); ?>:</span> <?php echo safeHtml(substr((string)$info['sample'][$key], 0, 50)); ?></div>
                     <?php endforeach; ?>
@@ -1170,7 +1251,6 @@ function safeHtml($value) {
             <?php endforeach; ?>
         </div>
         <?php endif; ?>
-
         <!-- ============================================================ -->
         <!-- DEBUG VIEW -->
         <!-- ============================================================ -->
@@ -1205,7 +1285,6 @@ function safeHtml($value) {
             <?php endforeach; ?>
         </div>
         <?php endif; ?>
-
         <!-- ============================================================ -->
         <!-- DASHBOARD VIEW -->
         <!-- ============================================================ -->
@@ -1215,7 +1294,6 @@ function safeHtml($value) {
             <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?></div>
             <a href="?view=diagnostic" class="nav-item" style="padding: 8px 16px; border: 2px solid #001B44; border-radius: 4px;">🔬 Check Data Sources</a>
         </div>
-
         <!-- Data Source Warning -->
         <?php if (!$tableHasData): ?>
         <div style="background: #fff3cd; border: 2px solid #856404; padding: 15px; margin-bottom: 20px; border-radius: 4px;">
@@ -1226,7 +1304,6 @@ function safeHtml($value) {
             </p>
         </div>
         <?php endif; ?>
-
         <div class="metrics-grid">
             <div class="metric-card">
                 <div class="metric-label">Total Users</div>
@@ -1277,7 +1354,6 @@ function safeHtml($value) {
                 <div class="metric-value"><?php echo number_format($metrics['total_audit_logs']); ?></div>
             </div>
         </div>
-
         <div class="card">
             <div class="card-header">
                 <span class="card-title">📋 Recent Transactions</span>
@@ -1315,22 +1391,22 @@ function safeHtml($value) {
                     <tbody>
                         <?php foreach ($recentTransactions as $tx): ?>
                         <tr>
-                            <td><?php echo safeHtml(substr($tx['swap_uuid'] ?? $tx['swap_id'] ?? 'N/A', 0, 8)); ?></td>
+                            <td><?php echo safeHtml(substr($tx['swap_uuid'] ?? (string)($tx['swap_id'] ?? 'N/A'), 0, 8)); ?></td>
                             <td><?php echo safeHtml($tx['user_name'] ?? $tx['user_id'] ?? 'N/A'); ?></td>
                             <td><?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
                             <td><?php echo safeHtml($tx['from_currency'] ?? 'BWP'); ?> → <?php echo safeHtml($tx['to_currency'] ?? 'BWP'); ?></td>
                             <td>
-                                <?php 
+                                <?php
                                 $status = strtolower($tx['status'] ?? 'pending');
                                 $class = $status === 'completed' || $status === 'success' ? 'success' : ($status === 'failed' ? 'failed' : 'pending');
                                 ?>
                                 <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($tx['status'] ?? 'pending'); ?></span>
                             </td>
-                            <td><?php echo $tx['hold_status'] ? '<span class="status status-info">HELD</span>' : '—'; ?></td>
-                            <td><?php echo $tx['settlement_status'] ? '<span class="status status-success">SETTLED</span>' : '—'; ?></td>
+                            <td><?php echo !empty($tx['hold_status']) ? '<span class="status status-info">' . safeHtml($tx['hold_status']) . '</span>' : '—'; ?></td>
+                            <td><?php echo !empty($tx['settlement_status']) ? '<span class="status status-success">' . safeHtml($tx['settlement_status']) . '</span>' : '—'; ?></td>
                             <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'] ?? 'now')); ?></td>
                             <td>
-                                <a href="?view=track&id=<?php echo $tx['swap_id'] ?? $tx['swap_uuid'] ?? ''; ?>" 
+                                <a href="?view=track&id=<?php echo urlencode((string)($tx['swap_uuid'] ?? $tx['swap_id'] ?? '')); ?>"
                                    style="color: #001B44; font-weight: 600; font-size: 0.65rem; text-transform: uppercase;">Track →</a>
                             </td>
                         </tr>
@@ -1341,7 +1417,6 @@ function safeHtml($value) {
             <?php endif; ?>
         </div>
         <?php endif; ?>
-
         <!-- ============================================================ -->
         <!-- TRANSACTIONS VIEW -->
         <!-- ============================================================ -->
@@ -1351,17 +1426,16 @@ function safeHtml($value) {
             <div class="timestamp">All swap transactions</div>
             <a href="?view=dashboard" class="nav-item" style="padding: 8px 16px; border: 2px solid #001B44; border-radius: 4px;">← Back</a>
         </div>
-        
+
         <!-- Quick Search -->
         <div class="search-bar">
             <form method="GET" style="display: flex; gap: 10px; flex: 1; flex-wrap: wrap;">
                 <input type="hidden" name="view" value="search">
-                <input type="text" name="search" placeholder="Search by ID, User, Phone, Email, National ID, Status, Currency..." 
+                <input type="text" name="search" placeholder="Search by ID, User, Phone, Email, National ID, Status, Currency..."
                        style="flex: 1; min-width: 200px; padding: 12px 16px; border: 2px solid #001B44; font-family: 'IBM Plex Mono', monospace;">
                 <button type="submit">🔍 SEARCH</button>
             </form>
         </div>
-
         <div class="card">
             <div class="card-header">
                 <span class="card-title">All Transactions</span>
@@ -1399,12 +1473,12 @@ function safeHtml($value) {
                     <tbody>
                         <?php foreach ($recentTransactions as $tx): ?>
                         <tr>
-                            <td><?php echo safeHtml(substr($tx['swap_uuid'] ?? $tx['swap_id'] ?? 'N/A', 0, 8)); ?></td>
+                            <td><?php echo safeHtml(substr($tx['swap_uuid'] ?? (string)($tx['swap_id'] ?? 'N/A'), 0, 8)); ?></td>
                             <td><?php echo safeHtml($tx['user_name'] ?? $tx['user_id'] ?? 'N/A'); ?></td>
                             <td><?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
                             <td><?php echo safeHtml($tx['from_currency'] ?? 'BWP'); ?> → <?php echo safeHtml($tx['to_currency'] ?? 'BWP'); ?></td>
                             <td>
-                                <?php 
+                                <?php
                                 $status = strtolower($tx['status'] ?? 'pending');
                                 $class = $status === 'completed' || $status === 'success' ? 'success' : ($status === 'failed' ? 'failed' : 'pending');
                                 ?>
@@ -1412,11 +1486,11 @@ function safeHtml($value) {
                             </td>
                             <td><?php echo safeHtml($tx['source_country'] ?? 'N/A'); ?></td>
                             <td><?php echo safeHtml($tx['destination_country'] ?? 'N/A'); ?></td>
-                            <td><?php echo $tx['hold_status'] ? '<span class="status status-info">HELD</span>' : '—'; ?></td>
-                            <td><?php echo $tx['settlement_status'] ? '<span class="status status-success">SETTLED</span>' : '—'; ?></td>
+                            <td><?php echo !empty($tx['hold_status']) ? '<span class="status status-info">' . safeHtml($tx['hold_status']) . '</span>' : '—'; ?></td>
+                            <td><?php echo !empty($tx['settlement_status']) ? '<span class="status status-success">' . safeHtml($tx['settlement_status']) . '</span>' : '—'; ?></td>
                             <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'] ?? 'now')); ?></td>
                             <td>
-                                <a href="?view=track&id=<?php echo $tx['swap_id'] ?? $tx['swap_uuid'] ?? ''; ?>" 
+                                <a href="?view=track&id=<?php echo urlencode((string)($tx['swap_uuid'] ?? $tx['swap_id'] ?? '')); ?>"
                                    style="color: #001B44; font-weight: 600; font-size: 0.65rem; text-transform: uppercase;">Track →</a>
                             </td>
                         </tr>
@@ -1427,14 +1501,18 @@ function safeHtml($value) {
             <?php endif; ?>
         </div>
         <?php endif; ?>
-
         <!-- ============================================================ -->
         <!-- SEARCH VIEW, TRACK VIEW, AUDIT VIEW, HOLDS VIEW, INVOICES VIEW, REPORTS VIEW -->
-        <!-- (These remain the same as before - omitted for brevity) -->
+        <!-- These blocks were marked "omitted for brevity" in the file you -->
+        <!-- pasted — I never saw their real markup, so I'm not inventing it -->
+        <!-- here. $searchResults, $transactionDetail, $transactionTimeline, -->
+        <!-- $recentAuditLogs, $recentHolds, $recentInvoices, and $reportData -->
+        <!-- are all still computed above with the same ::int fix applied, -->
+        <!-- and are ready to render — paste your actual markup for these -->
+        <!-- views (or confirm they're unchanged in your real file) and I'll -->
+        <!-- wire it to this corrected data layer. -->
         <!-- ============================================================ -->
-
     </main>
-
     <footer class="admin-footer">
         <p>VOUCHMORPH · Botswana · <?php echo date('Y'); ?></p>
         <p style="margin-top: 5px;">Bank of Botswana Regulatory Sandbox Participant</p>
