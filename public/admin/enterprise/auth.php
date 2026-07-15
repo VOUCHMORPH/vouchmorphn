@@ -1,21 +1,17 @@
 <?php
 // auth.php - Enterprise authentication helper
 
-// ============================================================================
-// SESSION COOKIE HARDENING — MUST be set BEFORE session_start()
-// ============================================================================
-ini_set('session.cookie_httponly', '1');
-ini_set('session.cookie_secure', '1');   // Requires HTTPS
-ini_set('session.cookie_samesite', 'Lax');
-
-// Import the DBConnection class at the top level
-require_once dirname(__DIR__, 3) . '/src/Core/Database/DBConnection.php';
-use Core\Database\DBConnection;
-
-// Only start session if not already active
 if (session_status() === PHP_SESSION_NONE) {
+    // These must be set BEFORE session_start()
+    ini_set('session.cookie_httponly', '1');
+    ini_set('session.cookie_secure', '1');   // Requires HTTPS
+    ini_set('session.cookie_samesite', 'Lax');
     session_start();
 }
+
+// Import the DBConnection class
+require_once dirname(__DIR__, 3) . '/src/Core/Database/DBConnection.php';
+use Core\Database\DBConnection;
 
 // ============================================================================
 // DATABASE CONNECTION
