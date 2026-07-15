@@ -6,7 +6,7 @@
  * Different roles see different views based on their permissions.
  */
 
-// ============================================================================
+// ============================================================================ 
 // FIX: Session settings MUST be set BEFORE any output (just in case)
 // ============================================================================
 if (session_status() === PHP_SESSION_NONE) {
