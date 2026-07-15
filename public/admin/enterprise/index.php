@@ -6,6 +6,16 @@
  * Different roles see different views based on their permissions.
  */
 
+// ============================================================================
+// FIX: Session settings MUST be set BEFORE any output (just in case)
+// ============================================================================
+if (session_status() === PHP_SESSION_NONE) {
+    ini_set('session.cookie_httponly', '1');
+    ini_set('session.cookie_secure', '1');
+    ini_set('session.cookie_samesite', 'Lax');
+    session_start();
+}
+
 require_once 'auth.php';
 $user = requireEnterpriseAuth();
 $pdo = getDBConnection();
