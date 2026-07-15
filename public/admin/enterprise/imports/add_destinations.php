@@ -174,12 +174,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
                 
+                // ============================================================
+                // FIXED: Update batch total AND auto-submit for approval
+                // ============================================================
                 $stmt = $db->prepare("
                     UPDATE disbursement_batches 
                     SET total_destinations = :count,
                         total_amount = :amount,
                         pending_count = :count,
                         identity_recipients = :identity_count,
+                        status = 'pending_approval',  -- Auto-submit after adding destinations
+                        submitted_by = :user_id,
+                        submitted_at = NOW(),
                         updated_at = NOW()
                     WHERE id = :id
                 ");
@@ -187,12 +193,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':count' => $destCount,
                     ':amount' => $totalAmount,
                     ':identity_count' => $identityDestCount,
+                    ':user_id' => $userId,
                     ':id' => $batchId
                 ]);
                 
                 $db->commit();
-                header("Location: review.php?batch_id=$batchId");
+                
+                // Redirect to review page
+                header("Location: review.php?batch_id=$batchId&submitted=1");
                 exit;
+                
             } catch (Exception $e) {
                 $db->rollBack();
                 error_log("[add_destinations] Error: " . $e->getMessage());
@@ -579,7 +589,7 @@ $canSubmit = in_array($user['role'] ?? '', ['owner', 'program_officer', 'departm
                 <div class="actions-bar">
                     <button type="button" class="btn btn-secondary" onclick="addRow('institution')">➕ Add Another</button>
                     <button type="button" class="btn btn-identity" onclick="addRow('identity')">🆔 Add Identity Recipient</button>
-                    <button type="submit" class="btn btn-primary" id="submitBtn" disabled>💾 Save & Review</button>
+                    <button type="submit" class="btn btn-primary" id="submitBtn" disabled>💾 Save & Submit for Approval</button>
                     <a href="review.php?batch_id=<?php echo $batchId; ?>" class="btn btn-outline">📋 Review</a>
                 </div>
             </div>
