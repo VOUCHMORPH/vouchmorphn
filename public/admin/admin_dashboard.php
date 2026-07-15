@@ -1,15 +1,10 @@
 <?php
 /**
- * admin_dashboard.php - VouchMorph Admin Dashboard
- * Works with available tables only - no missing tables/columns required
- * 
- * Available tables: users, admins, swap_requests, swap_ledgers, hold_transactions,
- * settlement_queue, settlement_outbox, swap_fee_collections, fee_invoices, 
- * net_positions, cashout_authorizations, deposit_transactions, swap_vouchers,
- * identity_swap_holds, cross_border_messages, audit_logs, admin_actions,
- * organization_audit_logs, regulatory_reports, participants, departments,
- * organization_users
+ * admin_dashboard_debug.php - Admin Dashboard with Debug Mode
+ * Shows table status and record counts for all tables
  */
+
+declare(strict_types=1);
 
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
@@ -56,277 +51,218 @@ try {
         throw new Exception("Database connection failed");
     }
     $db->query("SELECT 1");
+    error_log("[ADMIN DASHBOARD] Database connected successfully");
 } catch (Throwable $e) {
     error_log("[ADMIN DASHBOARD] DB Error: " . $e->getMessage());
-    die("Database connection failed. Please check configuration.");
-}
-
-// Get view
-$view = $_GET['view'] ?? 'dashboard';
-
-// ============================================================
-// DASHBOARD METRICS - Using only available tables
-// ============================================================
-$metrics = [];
-
-try {
-    // Total users
-    $stmt = $db->query("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL OR deleted_at IS NOT NULL");
-    $metrics['total_users'] = (int)$stmt->fetchColumn();
-    
-    // Total admins
-    $stmt = $db->query("SELECT COUNT(*) FROM admins WHERE deleted_at IS NULL");
-    $metrics['total_admins'] = (int)$stmt->fetchColumn();
-    
-    // Total swaps
-    $stmt = $db->query("SELECT COUNT(*) FROM swap_requests");
-    $metrics['total_swaps'] = (int)$stmt->fetchColumn();
-    
-    // Completed swaps
-    $stmt = $db->query("SELECT COUNT(*) FROM swap_requests WHERE status = 'COMPLETED' OR status = 'success'");
-    $metrics['completed_swaps'] = (int)$stmt->fetchColumn();
-    
-    // Pending swaps
-    $stmt = $db->query("SELECT COUNT(*) FROM swap_requests WHERE status = 'PENDING' OR status = 'pending'");
-    $metrics['pending_swaps'] = (int)$stmt->fetchColumn();
-    
-    // Failed swaps
-    $stmt = $db->query("SELECT COUNT(*) FROM swap_requests WHERE status = 'FAILED' OR status = 'failed'");
-    $metrics['failed_swaps'] = (int)$stmt->fetchColumn();
-    
-    // Total volume
-    $stmt = $db->query("SELECT COALESCE(SUM(amount), 0) FROM swap_requests");
-    $metrics['total_volume'] = (float)$stmt->fetchColumn();
-    
-    // Active holds
-    $stmt = $db->query("SELECT COUNT(*) FROM hold_transactions WHERE status = 'ACTIVE' OR status = 'HELD'");
-    $metrics['active_holds'] = (int)$stmt->fetchColumn();
-    
-    // Pending settlements
-    $stmt = $db->query("SELECT COUNT(*) FROM settlement_queue WHERE status = 'PENDING'");
-    $metrics['pending_settlements'] = (int)$stmt->fetchColumn();
-    
-    // Completed settlements
-    $stmt = $db->query("SELECT COUNT(*) FROM settlement_queue WHERE status = 'COMPLETED'");
-    $metrics['completed_settlements'] = (int)$stmt->fetchColumn();
-    
-    // Pending cashouts
-    $stmt = $db->query("SELECT COUNT(*) FROM cashout_authorizations WHERE status = 'PENDING'");
-    $metrics['pending_cashouts'] = (int)$stmt->fetchColumn();
-    
-    // Completed cashouts
-    $stmt = $db->query("SELECT COUNT(*) FROM cashout_authorizations WHERE status = 'COMPLETED'");
-    $metrics['completed_cashouts'] = (int)$stmt->fetchColumn();
-    
-    // Pending identity holds
-    $stmt = $db->query("SELECT COUNT(*) FROM identity_swap_holds WHERE status = 'pending'");
-    $metrics['pending_identity_holds'] = (int)$stmt->fetchColumn();
-    
-    // Total fee invoices
-    $stmt = $db->query("SELECT COUNT(*) FROM fee_invoices");
-    $metrics['total_invoices'] = (int)$stmt->fetchColumn();
-    
-    // Unpaid invoices
-    $stmt = $db->query("SELECT COUNT(*) FROM fee_invoices WHERE status = 'SENT'");
-    $metrics['unpaid_invoices'] = (int)$stmt->fetchColumn();
-    
-    // Participants count
-    $stmt = $db->query("SELECT COUNT(*) FROM participants");
-    $metrics['total_participants'] = (int)$stmt->fetchColumn();
-    
-    // Today's date
-    $metrics['today'] = date('Y-m-d');
-    
-} catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Metrics error: " . $e->getMessage());
-    $metrics = [
-        'total_users' => 0,
-        'total_admins' => 0,
-        'total_swaps' => 0,
-        'completed_swaps' => 0,
-        'pending_swaps' => 0,
-        'failed_swaps' => 0,
-        'total_volume' => 0,
-        'active_holds' => 0,
-        'pending_settlements' => 0,
-        'completed_settlements' => 0,
-        'pending_cashouts' => 0,
-        'completed_cashouts' => 0,
-        'pending_identity_holds' => 0,
-        'total_invoices' => 0,
-        'unpaid_invoices' => 0,
-        'total_participants' => 0,
-        'today' => date('Y-m-d')
-    ];
+    die("Database connection failed: " . $e->getMessage());
 }
 
 // ============================================================
-// RECENT TRANSACTIONS
+// DEBUG: TABLE SCHEMA CHECK
 // ============================================================
-$recentTransactions = [];
+$tables = [
+    'audit_logs',
+    'hold_transactions',
+    'swap_requests',
+    'users',
+    'admins',
+    'cashout_authorizations',
+    'identity_swap_holds',
+    'fee_invoices',
+    'settlement_queue',
+    'settlement_outbox',
+    'swap_ledgers',
+    'swap_fee_collections',
+    'net_positions',
+    'deposit_transactions',
+    'swap_vouchers',
+    'cross_border_messages',
+    'admin_actions',
+    'organization_audit_logs',
+    'regulatory_reports',
+    'participants',
+    'departments',
+    'organization_users'
+];
+
+$tableStatus = [];
+$totalRecords = 0;
+
+foreach ($tables as $table) {
+    try {
+        // Check if table exists
+        $stmt = $db->prepare("
+            SELECT COUNT(*) FROM information_schema.tables 
+            WHERE table_schema = 'public' AND table_name = :table
+        ");
+        $stmt->execute([':table' => $table]);
+        $exists = (int)$stmt->fetchColumn() > 0;
+        
+        if ($exists) {
+            // Get record count
+            $countStmt = $db->query("SELECT COUNT(*) FROM " . $table);
+            $count = (int)$countStmt->fetchColumn();
+            $totalRecords += $count;
+            
+            // Get column list
+            $colStmt = $db->prepare("
+                SELECT column_name, data_type 
+                FROM information_schema.columns 
+                WHERE table_schema = 'public' AND table_name = :table
+                ORDER BY column_name
+            ");
+            $colStmt->execute([':table' => $table]);
+            $columns = $colStmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Get last record if exists
+            $lastRecord = null;
+            if ($count > 0) {
+                try {
+                    $lastStmt = $db->query("SELECT * FROM " . $table . " ORDER BY created_at DESC LIMIT 1");
+                    $lastRecord = $lastStmt->fetch(PDO::FETCH_ASSOC);
+                } catch (Throwable $e) {
+                    // Try with id or other column
+                    try {
+                        $lastStmt = $db->query("SELECT * FROM " . $table . " ORDER BY id DESC LIMIT 1");
+                        $lastRecord = $lastStmt->fetch(PDO::FETCH_ASSOC);
+                    } catch (Throwable $e2) {
+                        $lastRecord = null;
+                    }
+                }
+            }
+            
+            $tableStatus[$table] = [
+                'exists' => true,
+                'count' => $count,
+                'columns' => $columns,
+                'last_record' => $lastRecord
+            ];
+        } else {
+            $tableStatus[$table] = [
+                'exists' => false,
+                'count' => 0,
+                'columns' => [],
+                'last_record' => null
+            ];
+        }
+    } catch (Throwable $e) {
+        $tableStatus[$table] = [
+            'exists' => false,
+            'count' => 0,
+            'columns' => [],
+            'last_record' => null,
+            'error' => $e->getMessage()
+        ];
+    }
+}
+
+// ============================================================
+// GET RECENT DATA FROM KEY TABLES
+// ============================================================
+$recentAuditLogs = [];
 try {
     $stmt = $db->query("
         SELECT 
-            sr.swap_id,
-            sr.swap_uuid,
-            sr.amount,
-            sr.status,
-            sr.created_at,
-            sr.from_currency,
-            sr.to_currency,
-            sr.source_country,
-            sr.destination_country,
-            u.username,
-            u.phone,
-            u.full_name as user_full_name
-        FROM swap_requests sr
-        LEFT JOIN users u ON sr.user_id = u.user_id
-        ORDER BY sr.created_at DESC
+            audit_id,
+            audit_uuid,
+            entity_type,
+            entity_id,
+            action,
+            category,
+            severity,
+            performed_at,
+            ip_address,
+            performed_by_type,
+            performed_by_id
+        FROM audit_logs 
+        ORDER BY performed_at DESC 
         LIMIT 20
     ");
-    $recentTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $recentAuditLogs = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Recent transactions error: " . $e->getMessage());
-    $recentTransactions = [];
+    error_log("[ADMIN DASHBOARD] Audit logs query error: " . $e->getMessage());
+    $recentAuditLogs = [];
 }
 
-// ============================================================
-// RECENT CASHOUTS
-// ============================================================
-$recentCashouts = [];
-try {
-    $stmt = $db->query("
-        SELECT 
-            auth_id,
-            swap_reference,
-            client_phone,
-            source_institution,
-            amount,
-            currency,
-            status,
-            cashout_point,
-            cashout_provider,
-            created_at,
-            completed_at
-        FROM cashout_authorizations
-        ORDER BY created_at DESC
-        LIMIT 10
-    ");
-    $recentCashouts = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Cashouts error: " . $e->getMessage());
-}
-
-// ============================================================
-// RECENT SETTLEMENTS
-// ============================================================
-$recentSettlements = [];
-try {
-    $stmt = $db->query("
-        SELECT 
-            id,
-            reference,
-            debtor,
-            creditor,
-            amount,
-            currency,
-            status,
-            created_at,
-            updated_at
-        FROM settlement_queue
-        ORDER BY created_at DESC
-        LIMIT 10
-    ");
-    $recentSettlements = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Settlements error: " . $e->getMessage());
-}
-
-// ============================================================
-// RECENT IDENTITY SWAPS
-// ============================================================
-$recentIdentitySwaps = [];
+$recentHolds = [];
 try {
     $stmt = $db->query("
         SELECT 
             hold_id,
+            hold_reference,
             swap_reference,
-            source_institution,
-            source_identifier,
+            participant_name,
+            asset_type,
             amount,
             currency,
-            identity_type,
-            identity_value,
             status,
-            created_at,
-            confirmed_at,
-            completed_at
-        FROM identity_swap_holds
-        ORDER BY created_at DESC
-        LIMIT 10
-    ");
-    $recentIdentitySwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Identity swaps error: " . $e->getMessage());
-}
-
-// ============================================================
-// RECENT INVOICES
-// ============================================================
-$recentInvoices = [];
-try {
-    $stmt = $db->query("
-        SELECT 
-            invoice_uuid,
-            swap_reference,
             source_institution,
-            fee_type,
-            fee_amount,
-            currency,
-            total_amount,
-            status,
-            created_at,
-            paid_at
-        FROM fee_invoices
-        ORDER BY created_at DESC
-        LIMIT 10
-    ");
-    $recentInvoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Invoices error: " . $e->getMessage());
-}
-
-// ============================================================
-// ADMIN ACTIONS
-// ============================================================
-$recentAdminActions = [];
-try {
-    $stmt = $db->query("
-        SELECT 
-            id,
-            admin_id,
-            action_type,
-            entity_type,
-            entity_id,
-            status,
-            ip_address,
+            destination_institution,
+            placed_at,
             created_at
-        FROM admin_actions
-        ORDER BY created_at DESC
-        LIMIT 10
+        FROM hold_transactions 
+        ORDER BY created_at DESC 
+        LIMIT 20
     ");
-    $recentAdminActions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $recentHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Admin actions error: " . $e->getMessage());
+    error_log("[ADMIN DASHBOARD] Holds query error: " . $e->getMessage());
+    $recentHolds = [];
 }
 
+// Get view
+$view = $_GET['view'] ?? 'dashboard';
+$debug = isset($_GET['debug']) && $_GET['debug'] === '1';
+
+// ============================================================
+// DEBUG: Check if audit_logs has records by trying to insert a test record
+// ============================================================
+$auditWriteTest = false;
+if (isset($db)) {
+    try {
+        $testUuid = 'TEST_' . uniqid();
+        $stmt = $db->prepare("
+            INSERT INTO audit_logs (
+                audit_uuid, 
+                entity_type, 
+                entity_id, 
+                action, 
+                category, 
+                severity,
+                performed_by_type,
+                performed_by_id,
+                ip_address,
+                performed_at
+            ) VALUES (
+                :uuid,
+                'test',
+                0,
+                'TEST_ENTRY',
+                'debug',
+                'INFO',
+                'system',
+                0,
+                '127.0.0.1',
+                NOW()
+            )
+        ");
+        $stmt->execute([':uuid' => $testUuid]);
+        $auditWriteTest = true;
+        
+        // Delete test record
+        $db->prepare("DELETE FROM audit_logs WHERE audit_uuid = :uuid")->execute([':uuid' => $testUuid]);
+    } catch (Throwable $e) {
+        $auditWriteTest = false;
+        error_log("[ADMIN DASHBOARD] Audit write test failed: " . $e->getMessage());
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · Admin Dashboard</title>
+    <title>VOUCHMORPH · ADMIN DASHBOARD</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -337,7 +273,6 @@ try {
             min-height: 100vh;
         }
         
-        /* Header */
         .admin-header {
             background: #001B44;
             border-bottom: 5px solid #FFDA63;
@@ -369,6 +304,15 @@ try {
             font-size: 0.8rem;
             text-transform: uppercase;
         }
+        .debug-badge {
+            padding: 5px 15px;
+            background: rgba(255,0,0,0.2);
+            border: 1px solid #ff4444;
+            color: #ff4444;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            font-weight: 700;
+        }
         .user-info {
             display: flex;
             align-items: center;
@@ -390,7 +334,6 @@ try {
         }
         .logout-btn:hover { background: #FFDA63; color: #001B44; }
         
-        /* Navigation */
         .admin-nav {
             background: #fff;
             border-bottom: 2px solid #001B44;
@@ -416,8 +359,11 @@ try {
             color: #001B44;
             border-bottom-color: #FFDA63;
         }
+        .debug-link {
+            color: #ff4444 !important;
+            border-bottom-color: #ff4444 !important;
+        }
         
-        /* Content */
         .admin-content { padding: 30px; max-width: 1400px; margin: 0 auto; }
         .content-header {
             margin-bottom: 30px;
@@ -437,48 +383,58 @@ try {
             font-size: 0.8rem;
         }
         
-        /* Metrics Grid */
-        .metrics-grid {
+        /* Debug Cards */
+        .debug-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
             gap: 20px;
             margin-bottom: 30px;
         }
-        .metric-card {
+        .debug-card {
             background: #fff;
             border: 2px solid #001B44;
             padding: 20px;
             box-shadow: 4px 4px 0 #A1B5D8;
-            transition: transform 0.2s;
         }
-        .metric-card:hover { transform: translateY(-2px); }
-        .metric-label {
+        .debug-card .status {
+            display: inline-block;
+            padding: 2px 10px;
             font-size: 0.7rem;
+            font-weight: 600;
             text-transform: uppercase;
-            color: #666;
-            letter-spacing: 1px;
+            border-radius: 3px;
+        }
+        .debug-card .status-exists {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .debug-card .status-missing {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .debug-card .status-empty {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeeba;
+        }
+        .debug-card .table-name {
+            font-weight: 700;
+            font-size: 1.1rem;
             margin-bottom: 10px;
         }
-        .metric-value {
+        .debug-card .count {
             font-size: 2rem;
-            font-weight: 600;
-            color: #001B44;
-            line-height: 1.2;
-            word-break: break-word;
+            font-weight: 700;
         }
         
-        /* Cards */
-        .grid-2 {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 20px;
-            margin-bottom: 30px;
-        }
         .card {
             background: #fff;
             border: 2px solid #001B44;
             padding: 20px;
             overflow: hidden;
+            margin-bottom: 30px;
         }
         .card-header {
             display: flex;
@@ -565,12 +521,21 @@ try {
             margin-top: 30px;
         }
         
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+        .empty-state .icon {
+            font-size: 3rem;
+            margin-bottom: 10px;
+        }
+        
         @media (max-width: 768px) {
-            .grid-2 { grid-template-columns: 1fr; }
+            .debug-grid { grid-template-columns: 1fr; }
             .admin-nav { padding: 0 15px; gap: 15px; }
             .admin-content { padding: 20px; }
             .admin-header { padding: 15px; }
-            .metric-value { font-size: 1.5rem; }
         }
     </style>
 </head>
@@ -579,6 +544,9 @@ try {
         <div class="header-left">
             <div class="logo">VOUCHMORPH <span>ADMIN</span></div>
             <div class="country-badge">BOTSWANA</div>
+            <?php if ($debug): ?>
+            <div class="debug-badge">🔍 DEBUG MODE</div>
+            <?php endif; ?>
         </div>
         <div class="user-info">
             <div class="user-details">
@@ -591,574 +559,333 @@ try {
 
     <nav class="admin-nav">
         <a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">DASHBOARD</a>
-        <a href="?view=transactions" class="nav-item <?php echo $view === 'transactions' ? 'active' : ''; ?>">TRANSACTIONS</a>
-        <a href="?view=cashouts" class="nav-item <?php echo $view === 'cashouts' ? 'active' : ''; ?>">CASHOUTS</a>
-        <a href="?view=settlements" class="nav-item <?php echo $view === 'settlements' ? 'active' : ''; ?>">SETTLEMENTS</a>
-        <a href="?view=identity" class="nav-item <?php echo $view === 'identity' ? 'active' : ''; ?>">IDENTITY</a>
-        <a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">INVOICES</a>
-        <a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">AUDIT</a>
+        <a href="?view=debug&debug=1" class="nav-item <?php echo $debug ? 'active debug-link' : ''; ?>">🔍 DEBUG</a>
+        <a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">AUDIT LOGS</a>
+        <a href="?view=holds" class="nav-item <?php echo $view === 'holds' ? 'active' : ''; ?>">HOLDS</a>
         <?php if ($adminRoleId === 999): ?>
         <a href="admin_management.php" class="nav-item">ADMINISTRATORS</a>
         <?php endif; ?>
     </nav>
 
     <main class="admin-content">
-        <?php if ($view === 'dashboard'): ?>
+        <?php if ($view === 'debug' || $debug): ?>
         <!-- ============================================================ -->
-        <!-- DASHBOARD VIEW -->
-        <!-- ============================================================ -->
-        <div class="content-header">
-            <h1>EXECUTIVE DASHBOARD</h1>
-            <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?> · Botswana Time</div>
-        </div>
-
-        <div class="metrics-grid">
-            <div class="metric-card">
-                <div class="metric-label">Total Users</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_users']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Total Swaps</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_swaps']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Completed Swaps</div>
-                <div class="metric-value"><?php echo number_format($metrics['completed_swaps']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Total Volume (BWP)</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_volume'], 0); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Active Holds</div>
-                <div class="metric-value"><?php echo number_format($metrics['active_holds']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Pending Settlements</div>
-                <div class="metric-value"><?php echo number_format($metrics['pending_settlements']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Pending Cashouts</div>
-                <div class="metric-value"><?php echo number_format($metrics['pending_cashouts']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Identity Holds</div>
-                <div class="metric-value"><?php echo number_format($metrics['pending_identity_holds']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Unpaid Invoices</div>
-                <div class="metric-value"><?php echo number_format($metrics['unpaid_invoices']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Participants</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_participants']); ?></div>
-            </div>
-        </div>
-
-        <div class="grid-2">
-            <!-- Recent Transactions -->
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Recent Transactions</span>
-                    <span class="card-badge">Last 20</span>
-                </div>
-                <div class="table-responsive">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Amount</th>
-                                <th>From/To</th>
-                                <th>Status</th>
-                                <th>Date</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php if (!empty($recentTransactions)): ?>
-                            <?php foreach ($recentTransactions as $tx): ?>
-                            <tr>
-                                <td><?php echo htmlspecialchars(substr($tx['swap_uuid'] ?? $tx['swap_id'] ?? 'N/A', 0, 8)); ?></td>
-                                <td><?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
-                                <td>
-                                    <?php echo htmlspecialchars($tx['from_currency'] ?? 'BWP'); ?> 
-                                    → <?php echo htmlspecialchars($tx['to_currency'] ?? 'BWP'); ?>
-                                </td>
-                                <td>
-                                    <?php 
-                                    $status = strtolower($tx['status'] ?? 'pending');
-                                    $class = $status === 'completed' || $status === 'success' ? 'success' : ($status === 'failed' ? 'failed' : 'pending');
-                                    ?>
-                                    <span class="status status-<?php echo $class; ?>">
-                                        <?php echo htmlspecialchars($tx['status'] ?? 'pending'); ?>
-                                    </span>
-                                </td>
-                                <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'] ?? 'now')); ?></td>
-                            </tr>
-                            <?php endforeach; ?>
-                            <?php else: ?>
-                            <tr><td colspan="5" style="text-align:center; padding:20px; color:#999;">No transactions found</td></tr>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- Recent Cashouts -->
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Recent Cashouts</span>
-                    <span class="card-badge">Last 10</span>
-                </div>
-                <div class="table-responsive">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Phone</th>
-                                <th>Amount</th>
-                                <th>Status</th>
-                                <th>Date</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php if (!empty($recentCashouts)): ?>
-                            <?php foreach ($recentCashouts as $co): ?>
-                            <tr>
-                                <td><?php echo htmlspecialchars($co['client_phone'] ?? 'N/A'); ?></td>
-                                <td><?php echo number_format((float)($co['amount'] ?? 0), 2); ?></td>
-                                <td>
-                                    <?php 
-                                    $status = strtolower($co['status'] ?? 'pending');
-                                    $class = $status === 'completed' ? 'success' : ($status === 'failed' ? 'failed' : 'pending');
-                                    ?>
-                                    <span class="status status-<?php echo $class; ?>">
-                                        <?php echo htmlspecialchars($co['status'] ?? 'pending'); ?>
-                                    </span>
-                                </td>
-                                <td><?php echo date('Y-m-d H:i', strtotime($co['created_at'] ?? 'now')); ?></td>
-                            </tr>
-                            <?php endforeach; ?>
-                            <?php else: ?>
-                            <tr><td colspan="4" style="text-align:center; padding:20px; color:#999;">No cashouts found</td></tr>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <div class="grid-2">
-            <!-- Recent Settlements -->
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Recent Settlements</span>
-                    <span class="card-badge">Last 10</span>
-                </div>
-                <div class="table-responsive">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Debtor</th>
-                                <th>Creditor</th>
-                                <th>Amount</th>
-                                <th>Status</th>
-                                <th>Date</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php if (!empty($recentSettlements)): ?>
-                            <?php foreach ($recentSettlements as $s): ?>
-                            <tr>
-                                <td><?php echo htmlspecialchars($s['debtor'] ?? 'N/A'); ?></td>
-                                <td><?php echo htmlspecialchars($s['creditor'] ?? 'N/A'); ?></td>
-                                <td><?php echo number_format((float)($s['amount'] ?? 0), 2); ?></td>
-                                <td>
-                                    <?php 
-                                    $status = strtolower($s['status'] ?? 'pending');
-                                    $class = $status === 'completed' ? 'success' : ($status === 'failed' ? 'failed' : 'pending');
-                                    ?>
-                                    <span class="status status-<?php echo $class; ?>">
-                                        <?php echo htmlspecialchars($s['status'] ?? 'pending'); ?>
-                                    </span>
-                                </td>
-                                <td><?php echo date('Y-m-d H:i', strtotime($s['created_at'] ?? 'now')); ?></td>
-                            </tr>
-                            <?php endforeach; ?>
-                            <?php else: ?>
-                            <tr><td colspan="5" style="text-align:center; padding:20px; color:#999;">No settlements found</td></tr>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- Recent Identity Swaps -->
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Identity Swaps</span>
-                    <span class="card-badge">Last 10</span>
-                </div>
-                <div class="table-responsive">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Identity</th>
-                                <th>Amount</th>
-                                <th>Source</th>
-                                <th>Status</th>
-                                <th>Date</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php if (!empty($recentIdentitySwaps)): ?>
-                            <?php foreach ($recentIdentitySwaps as $id): ?>
-                            <tr>
-                                <td>
-                                    <?php echo htmlspecialchars($id['identity_type'] ?? 'N/A'); ?>: 
-                                    <?php echo htmlspecialchars(substr($id['identity_value'] ?? '', 0, 6)); ?>
-                                </td>
-                                <td><?php echo number_format((float)($id['amount'] ?? 0), 2); ?></td>
-                                <td><?php echo htmlspecialchars($id['source_institution'] ?? 'N/A'); ?></td>
-                                <td>
-                                    <?php 
-                                    $status = strtolower($id['status'] ?? 'pending');
-                                    $class = $status === 'completed' ? 'success' : ($status === 'pending' ? 'pending' : 'info');
-                                    ?>
-                                    <span class="status status-<?php echo $class; ?>">
-                                        <?php echo htmlspecialchars($id['status'] ?? 'pending'); ?>
-                                    </span>
-                                </td>
-                                <td><?php echo date('Y-m-d H:i', strtotime($id['created_at'] ?? 'now')); ?></td>
-                            </tr>
-                            <?php endforeach; ?>
-                            <?php else: ?>
-                            <tr><td colspan="5" style="text-align:center; padding:20px; color:#999;">No identity swaps found</td></tr>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <?php elseif ($view === 'transactions'): ?>
-        <!-- ============================================================ -->
-        <!-- TRANSACTIONS VIEW -->
+        <!-- DEBUG VIEW - Shows all tables and their status -->
         <!-- ============================================================ -->
         <div class="content-header">
-            <h1>TRANSACTIONS</h1>
-            <div class="timestamp">All swap transactions</div>
+            <h1>🔍 DATABASE DEBUG</h1>
+            <div class="timestamp">Table status and record counts</div>
         </div>
+
+        <!-- Summary -->
+        <div class="debug-grid">
+            <div class="debug-card">
+                <div class="table-name">📊 Total Tables</div>
+                <div class="count"><?php echo count(array_filter($tableStatus, fn($t) => $t['exists'])); ?>/<?php echo count($tables); ?></div>
+                <div style="font-size: 0.8rem; color: #666; margin-top: 5px;">
+                    <?php echo count(array_filter($tableStatus, fn($t) => !$t['exists'])); ?> tables missing
+                </div>
+            </div>
+            <div class="debug-card">
+                <div class="table-name">📝 Total Records</div>
+                <div class="count"><?php echo number_format($totalRecords); ?></div>
+                <div style="font-size: 0.8rem; color: #666; margin-top: 5px;">
+                    Across all existing tables
+                </div>
+            </div>
+            <div class="debug-card">
+                <div class="table-name">🔐 Audit Write Test</div>
+                <div class="count" style="font-size: 1.5rem;">
+                    <?php if ($auditWriteTest): ?>
+                    <span style="color: green;">✅ PASSED</span>
+                    <?php else: ?>
+                    <span style="color: red;">❌ FAILED</span>
+                    <?php endif; ?>
+                </div>
+                <div style="font-size: 0.8rem; color: #666; margin-top: 5px;">
+                    <?php echo $auditWriteTest ? 'Can insert into audit_logs' : 'Cannot write to audit_logs - check permissions'; ?>
+                </div>
+            </div>
+        </div>
+
+        <!-- Table Status Grid -->
+        <div class="debug-grid">
+            <?php foreach ($tableStatus as $table => $status): ?>
+            <div class="debug-card">
+                <div class="table-name">
+                    <?php echo htmlspecialchars($table); ?>
+                    <?php if ($status['exists']): ?>
+                    <span class="status status-exists">EXISTS</span>
+                    <?php else: ?>
+                    <span class="status status-missing">MISSING</span>
+                    <?php endif; ?>
+                </div>
+                <div class="count">
+                    <?php if ($status['exists']): ?>
+                    <?php echo number_format($status['count']); ?>
+                    <?php if ($status['count'] === 0): ?>
+                    <span class="status status-empty">EMPTY</span>
+                    <?php endif; ?>
+                    <?php else: ?>
+                    —
+                    <?php endif; ?>
+                </div>
+                <div style="font-size: 0.7rem; color: #666; margin-top: 5px;">
+                    <?php if ($status['exists']): ?>
+                    <?php echo count($status['columns']); ?> columns
+                    <?php if (!empty($status['last_record'])): ?>
+                    <br>Last record: <?php echo date('Y-m-d H:i', strtotime($status['last_record']['created_at'] ?? $status['last_record']['performed_at'] ?? 'now')); ?>
+                    <?php endif; ?>
+                    <?php if (isset($status['error'])): ?>
+                    <br><span style="color: red;">Error: <?php echo htmlspecialchars($status['error']); ?></span>
+                    <?php endif; ?>
+                    <?php else: ?>
+                    Table does not exist
+                    <?php endif; ?>
+                </div>
+            </div>
+            <?php endforeach; ?>
+        </div>
+
+        <?php elseif ($view === 'audit'): ?>
+        <!-- ============================================================ -->
+        <!-- AUDIT LOGS VIEW -->
+        <!-- ============================================================ -->
+        <div class="content-header">
+            <h1>📋 AUDIT LOGS</h1>
+            <div class="timestamp">System audit trail</div>
+            <a href="?view=debug&debug=1" class="nav-item debug-link" style="padding: 8px 16px; border: 2px solid #ff4444; border-radius: 4px;">🔍 Debug Tables</a>
+        </div>
+        
         <div class="card">
+            <div class="card-header">
+                <span class="card-title">Recent Audit Entries</span>
+                <span class="card-badge"><?php echo count($recentAuditLogs); ?> RECORDS</span>
+            </div>
+            <?php if (empty($recentAuditLogs)): ?>
+            <div class="empty-state">
+                <div class="icon">📭</div>
+                <p>No audit logs found in the database.</p>
+                <p style="font-size: 0.8rem; margin-top: 10px; color: #666;">
+                    <?php if ($auditWriteTest): ?>
+                    ✅ Database write test passed - logs should appear when actions are performed.
+                    <?php else: ?>
+                    ❌ Audit write test failed - check database permissions.
+                    <?php endif; ?>
+                </p>
+                <p style="font-size: 0.8rem; margin-top: 5px; color: #666;">
+                    Try logging in/out or performing an admin action to generate logs.
+                </p>
+            </div>
+            <?php else: ?>
             <div class="table-responsive">
                 <table>
                     <thead>
                         <tr>
                             <th>ID</th>
-                            <th>Amount</th>
-                            <th>From/To</th>
-                            <th>Status</th>
-                            <th>Source Country</th>
-                            <th>Dest Country</th>
-                            <th>Created</th>
+                            <th>Action</th>
+                            <th>Entity</th>
+                            <th>Category</th>
+                            <th>Severity</th>
+                            <th>Performed By</th>
+                            <th>IP</th>
+                            <th>Date</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (!empty($recentTransactions)): ?>
-                        <?php foreach ($recentTransactions as $tx): ?>
+                        <?php foreach ($recentAuditLogs as $log): ?>
                         <tr>
-                            <td><?php echo htmlspecialchars(substr($tx['swap_uuid'] ?? $tx['swap_id'] ?? 'N/A', 0, 8)); ?></td>
-                            <td><?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
+                            <td><?php echo htmlspecialchars((string)($log['audit_id'] ?? 'N/A')); ?></td>
+                            <td><?php echo htmlspecialchars((string)($log['action'] ?? 'N/A')); ?></td>
                             <td>
-                                <?php echo htmlspecialchars($tx['from_currency'] ?? 'BWP'); ?> 
-                                → <?php echo htmlspecialchars($tx['to_currency'] ?? 'BWP'); ?>
+                                <?php echo htmlspecialchars((string)($log['entity_type'] ?? 'N/A')); ?>
+                                <?php if (!empty($log['entity_id'])): ?>
+                                <br><small style="color: #999;">ID: <?php echo htmlspecialchars((string)$log['entity_id']); ?></small>
+                                <?php endif; ?>
+                            </td>
+                            <td>
+                                <span class="status status-<?php 
+                                    $category = strtolower($log['category'] ?? '');
+                                    echo $category === 'security' ? 'success' : 'info';
+                                ?>">
+                                    <?php echo htmlspecialchars((string)($log['category'] ?? 'N/A')); ?>
+                                </span>
+                            </td>
+                            <td>
+                                <span class="status status-<?php 
+                                    $severity = strtolower($log['severity'] ?? '');
+                                    echo $severity === 'critical' ? 'failed' : 'info';
+                                ?>">
+                                    <?php echo htmlspecialchars((string)($log['severity'] ?? 'N/A')); ?>
+                                </span>
                             </td>
                             <td>
                                 <?php 
-                                $status = strtolower($tx['status'] ?? 'pending');
-                                $class = $status === 'completed' || $status === 'success' ? 'success' : ($status === 'failed' ? 'failed' : 'pending');
+                                $performer = $log['performed_by_type'] ?? '';
+                                if ($performer === 'admin') {
+                                    echo '👤 Admin #' . htmlspecialchars((string)($log['performed_by_id'] ?? 'N/A'));
+                                } elseif ($performer === 'user') {
+                                    echo '👤 User #' . htmlspecialchars((string)($log['performed_by_id'] ?? 'N/A'));
+                                } elseif ($performer === 'system') {
+                                    echo '⚙️ System';
+                                } else {
+                                    echo htmlspecialchars((string)($performer ?: 'N/A'));
+                                }
                                 ?>
-                                <span class="status status-<?php echo $class; ?>">
-                                    <?php echo htmlspecialchars($tx['status'] ?? 'pending'); ?>
-                                </span>
                             </td>
-                            <td><?php echo htmlspecialchars($tx['source_country'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($tx['destination_country'] ?? 'N/A'); ?></td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'] ?? 'now')); ?></td>
+                            <td><?php echo htmlspecialchars((string)($log['ip_address'] ?? 'N/A')); ?></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($log['performed_at'] ?? 'now')); ?></td>
                         </tr>
                         <?php endforeach; ?>
-                        <?php else: ?>
-                        <tr><td colspan="7" style="text-align:center; padding:30px; color:#999;">No transactions found</td></tr>
-                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
+            <?php endif; ?>
         </div>
 
-        <?php elseif ($view === 'cashouts'): ?>
+        <?php elseif ($view === 'holds'): ?>
         <!-- ============================================================ -->
-        <!-- CASHOUTS VIEW -->
+        <!-- HOLDS VIEW -->
         <!-- ============================================================ -->
         <div class="content-header">
-            <h1>CASHOUTS</h1>
-            <div class="timestamp">Cashout authorizations</div>
+            <h1>🔒 HOLD TRANSACTIONS</h1>
+            <div class="timestamp">Active and historical holds</div>
+            <a href="?view=debug&debug=1" class="nav-item debug-link" style="padding: 8px 16px; border: 2px solid #ff4444; border-radius: 4px;">🔍 Debug Tables</a>
         </div>
+        
         <div class="card">
+            <div class="card-header">
+                <span class="card-title">Hold Records</span>
+                <span class="card-badge"><?php echo count($recentHolds); ?> RECORDS</span>
+            </div>
+            <?php if (empty($recentHolds)): ?>
+            <div class="empty-state">
+                <div class="icon">🔒</div>
+                <p>No hold transactions found in the database.</p>
+                <p style="font-size: 0.8rem; margin-top: 10px; color: #666;">
+                    Holds are created when swaps are processed. Check if any swaps have been executed.
+                </p>
+            </div>
+            <?php else: ?>
             <div class="table-responsive">
                 <table>
                     <thead>
                         <tr>
-                            <th>Phone</th>
-                            <th>Amount</th>
-                            <th>Point</th>
-                            <th>Provider</th>
-                            <th>Status</th>
-                            <th>Created</th>
-                            <th>Completed</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php if (!empty($recentCashouts)): ?>
-                        <?php foreach ($recentCashouts as $co): ?>
-                        <tr>
-                            <td><?php echo htmlspecialchars($co['client_phone'] ?? 'N/A'); ?></td>
-                            <td><?php echo number_format((float)($co['amount'] ?? 0), 2); ?></td>
-                            <td><?php echo htmlspecialchars($co['cashout_point'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($co['cashout_provider'] ?? 'N/A'); ?></td>
-                            <td>
-                                <?php 
-                                $status = strtolower($co['status'] ?? 'pending');
-                                $class = $status === 'completed' ? 'success' : ($status === 'failed' ? 'failed' : 'pending');
-                                ?>
-                                <span class="status status-<?php echo $class; ?>">
-                                    <?php echo htmlspecialchars($co['status'] ?? 'pending'); ?>
-                                </span>
-                            </td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($co['created_at'] ?? 'now')); ?></td>
-                            <td><?php echo $co['completed_at'] ? date('Y-m-d H:i', strtotime($co['completed_at'])) : '-'; ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php else: ?>
-                        <tr><td colspan="7" style="text-align:center; padding:30px; color:#999;">No cashouts found</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <?php elseif ($view === 'settlements'): ?>
-        <!-- ============================================================ -->
-        <!-- SETTLEMENTS VIEW -->
-        <!-- ============================================================ -->
-        <div class="content-header">
-            <h1>SETTLEMENTS</h1>
-            <div class="timestamp">Settlement queue</div>
-        </div>
-        <div class="card">
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Reference</th>
-                            <th>Debtor</th>
-                            <th>Creditor</th>
-                            <th>Amount</th>
-                            <th>Status</th>
-                            <th>Created</th>
-                            <th>Updated</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php if (!empty($recentSettlements)): ?>
-                        <?php foreach ($recentSettlements as $s): ?>
-                        <tr>
-                            <td><?php echo htmlspecialchars(substr($s['reference'] ?? '', 0, 12)); ?></td>
-                            <td><?php echo htmlspecialchars($s['debtor'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($s['creditor'] ?? 'N/A'); ?></td>
-                            <td><?php echo number_format((float)($s['amount'] ?? 0), 2); ?></td>
-                            <td>
-                                <?php 
-                                $status = strtolower($s['status'] ?? 'pending');
-                                $class = $status === 'completed' ? 'success' : ($status === 'failed' ? 'failed' : 'pending');
-                                ?>
-                                <span class="status status-<?php echo $class; ?>">
-                                    <?php echo htmlspecialchars($s['status'] ?? 'pending'); ?>
-                                </span>
-                            </td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($s['created_at'] ?? 'now')); ?></td>
-                            <td><?php echo $s['updated_at'] ? date('Y-m-d H:i', strtotime($s['updated_at'])) : '-'; ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php else: ?>
-                        <tr><td colspan="7" style="text-align:center; padding:30px; color:#999;">No settlements found</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <?php elseif ($view === 'identity'): ?>
-        <!-- ============================================================ -->
-        <!-- IDENTITY VIEW -->
-        <!-- ============================================================ -->
-        <div class="content-header">
-            <h1>IDENTITY SWAPS</h1>
-            <div class="timestamp">Identity verification holds</div>
-        </div>
-        <div class="card">
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Ref</th>
-                            <th>Identity</th>
-                            <th>Value</th>
-                            <th>Amount</th>
-                            <th>Source</th>
-                            <th>Status</th>
-                            <th>Created</th>
-                            <th>Confirmed</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php if (!empty($recentIdentitySwaps)): ?>
-                        <?php foreach ($recentIdentitySwaps as $id): ?>
-                        <tr>
-                            <td><?php echo htmlspecialchars(substr($id['swap_reference'] ?? '', 0, 8)); ?></td>
-                            <td><?php echo htmlspecialchars($id['identity_type'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars(substr($id['identity_value'] ?? '', 0, 10)); ?></td>
-                            <td><?php echo number_format((float)($id['amount'] ?? 0), 2); ?></td>
-                            <td><?php echo htmlspecialchars($id['source_institution'] ?? 'N/A'); ?></td>
-                            <td>
-                                <?php 
-                                $status = strtolower($id['status'] ?? 'pending');
-                                $class = $status === 'completed' ? 'success' : ($status === 'pending' ? 'pending' : 'info');
-                                ?>
-                                <span class="status status-<?php echo $class; ?>">
-                                    <?php echo htmlspecialchars($id['status'] ?? 'pending'); ?>
-                                </span>
-                            </td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($id['created_at'] ?? 'now')); ?></td>
-                            <td><?php echo $id['confirmed_at'] ? date('Y-m-d H:i', strtotime($id['confirmed_at'])) : '-'; ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php else: ?>
-                        <tr><td colspan="8" style="text-align:center; padding:30px; color:#999;">No identity swaps found</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <?php elseif ($view === 'invoices'): ?>
-        <!-- ============================================================ -->
-        <!-- INVOICES VIEW -->
-        <!-- ============================================================ -->
-        <div class="content-header">
-            <h1>FEE INVOICES</h1>
-            <div class="timestamp">VouchMorph fee invoices</div>
-        </div>
-        <div class="card">
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Invoice</th>
+                            <th>Hold Ref</th>
                             <th>Swap Ref</th>
-                            <th>Source</th>
-                            <th>Type</th>
-                            <th>Fee</th>
-                            <th>Total</th>
+                            <th>Participant</th>
+                            <th>Asset</th>
+                            <th>Amount</th>
                             <th>Status</th>
-                            <th>Created</th>
-                            <th>Paid</th>
+                            <th>Source</th>
+                            <th>Destination</th>
+                            <th>Date</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (!empty($recentInvoices)): ?>
-                        <?php foreach ($recentInvoices as $inv): ?>
+                        <?php foreach ($recentHolds as $hold): ?>
                         <tr>
-                            <td><?php echo htmlspecialchars(substr($inv['invoice_uuid'] ?? '', 0, 8)); ?></td>
-                            <td><?php echo htmlspecialchars(substr($inv['swap_reference'] ?? '', 0, 8)); ?></td>
-                            <td><?php echo htmlspecialchars($inv['source_institution'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($inv['fee_type'] ?? 'N/A'); ?></td>
-                            <td><?php echo number_format((float)($inv['fee_amount'] ?? 0), 2); ?></td>
-                            <td><?php echo number_format((float)($inv['total_amount'] ?? 0), 2); ?></td>
+                            <td><?php echo htmlspecialchars(substr($hold['hold_reference'] ?? '', 0, 12)); ?></td>
+                            <td><?php echo htmlspecialchars(substr($hold['swap_reference'] ?? '', 0, 12)); ?></td>
+                            <td><?php echo htmlspecialchars((string)($hold['participant_name'] ?? 'N/A')); ?></td>
+                            <td><?php echo htmlspecialchars((string)($hold['asset_type'] ?? 'N/A')); ?></td>
+                            <td><?php echo number_format((float)($hold['amount'] ?? 0), 2); ?> <?php echo htmlspecialchars((string)($hold['currency'] ?? 'BWP')); ?></td>
                             <td>
                                 <?php 
-                                $status = strtolower($inv['status'] ?? 'pending');
-                                $class = $status === 'paid' ? 'success' : ($status === 'failed' ? 'failed' : 'pending');
+                                $status = strtolower($hold['status'] ?? '');
+                                $class = $status === 'active' || $status === 'held' ? 'success' : ($status === 'released' ? 'info' : 'pending');
                                 ?>
                                 <span class="status status-<?php echo $class; ?>">
-                                    <?php echo htmlspecialchars($inv['status'] ?? 'pending'); ?>
+                                    <?php echo htmlspecialchars((string)($hold['status'] ?? 'N/A')); ?>
                                 </span>
                             </td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($inv['created_at'] ?? 'now')); ?></td>
-                            <td><?php echo $inv['paid_at'] ? date('Y-m-d H:i', strtotime($inv['paid_at'])) : '-'; ?></td>
+                            <td><?php echo htmlspecialchars((string)($hold['source_institution'] ?? 'N/A')); ?></td>
+                            <td><?php echo htmlspecialchars((string)($hold['destination_institution'] ?? 'N/A')); ?></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($hold['created_at'] ?? $hold['placed_at'] ?? 'now')); ?></td>
                         </tr>
                         <?php endforeach; ?>
-                        <?php else: ?>
-                        <tr><td colspan="9" style="text-align:center; padding:30px; color:#999;">No invoices found</td></tr>
-                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
+            <?php endif; ?>
         </div>
 
-        <?php elseif ($view === 'audit'): ?>
+        <?php else: ?>
         <!-- ============================================================ -->
-        <!-- AUDIT VIEW -->
+        <!-- DEFAULT DASHBOARD -->
         <!-- ============================================================ -->
         <div class="content-header">
-            <h1>AUDIT LOGS</h1>
-            <div class="timestamp">Admin actions</div>
+            <h1>EXECUTIVE DASHBOARD</h1>
+            <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?> · Botswana Time</div>
+            <a href="?view=debug&debug=1" class="nav-item debug-link" style="padding: 8px 16px; border: 2px solid #ff4444; border-radius: 4px;">🔍 Debug Mode</a>
         </div>
+
         <div class="card">
+            <div class="card-header">
+                <span class="card-title">📊 System Overview</span>
+                <span class="card-badge">LIVE</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; padding: 10px;">
+                <?php foreach ($tableStatus as $table => $status): ?>
+                <div style="background: #f8f9fa; padding: 15px; border: 1px solid #ddd; border-radius: 4px;">
+                    <div style="font-weight: 700; font-size: 0.8rem;"><?php echo htmlspecialchars($table); ?></div>
+                    <div style="font-size: 1.5rem; font-weight: 700; color: <?php echo $status['exists'] ? ($status['count'] > 0 ? '#155724' : '#856404') : '#721c24'; ?>;">
+                        <?php echo $status['exists'] ? number_format($status['count']) : '❌'; ?>
+                    </div>
+                    <div style="font-size: 0.7rem; color: #666;">
+                        <?php echo $status['exists'] ? ($status['count'] > 0 ? 'records found' : 'empty') : 'missing'; ?>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🔐 Audit Logs Status</span>
+                <span class="card-badge"><?php echo count($recentAuditLogs); ?> RECORDS</span>
+            </div>
+            <?php if (empty($recentAuditLogs)): ?>
+            <div class="empty-state">
+                <div class="icon">📭</div>
+                <p>No audit logs found.</p>
+                <p style="font-size: 0.8rem; color: #666;">
+                    <?php if ($auditWriteTest): ?>
+                    ✅ Audit writes are working. Logs will appear when admin actions are performed.
+                    <?php else: ?>
+                    ❌ Audit writes are failing. Check database permissions.
+                    <?php endif; ?>
+                </p>
+                <p style="margin-top: 10px;">
+                    <a href="?view=audit" style="color: #001B44; font-weight: 600;">View Audit Logs →</a>
+                </p>
+            </div>
+            <?php else: ?>
             <div class="table-responsive">
                 <table>
                     <thead>
                         <tr>
                             <th>Action</th>
                             <th>Entity</th>
-                            <th>Status</th>
-                            <th>Admin</th>
-                            <th>IP</th>
+                            <th>Category</th>
+                            <th>Performed By</th>
                             <th>Date</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (!empty($recentAdminActions)): ?>
-                        <?php foreach ($recentAdminActions as $action): ?>
+                        <?php foreach (array_slice($recentAuditLogs, 0, 10) as $log): ?>
                         <tr>
-                            <td><?php echo htmlspecialchars($action['action_type'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($action['entity_type'] ?? 'N/A'); ?></td>
-                            <td>
-                                <?php 
-                                $status = strtolower($action['status'] ?? '');
-                                $class = $status === 'success' ? 'success' : ($status === 'failed' ? 'failed' : 'pending');
-                                ?>
-                                <span class="status status-<?php echo $class; ?>">
-                                    <?php echo htmlspecialchars($action['status'] ?? 'pending'); ?>
-                                </span>
-                            </td>
-                            <td><?php echo htmlspecialchars($action['admin_id'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($action['ip_address'] ?? 'N/A'); ?></td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($action['created_at'] ?? 'now')); ?></td>
+                            <td><?php echo htmlspecialchars((string)($log['action'] ?? 'N/A')); ?></td>
+                            <td><?php echo htmlspecialchars((string)($log['entity_type'] ?? 'N/A')); ?></td>
+                            <td><?php echo htmlspecialchars((string)($log['category'] ?? 'N/A')); ?></td>
+                            <td><?php echo htmlspecialchars((string)($log['performed_by_type'] ?? 'N/A')); ?></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($log['performed_at'] ?? 'now')); ?></td>
                         </tr>
                         <?php endforeach; ?>
-                        <?php else: ?>
-                        <tr><td colspan="6" style="text-align:center; padding:30px; color:#999;">No audit logs found</td></tr>
-                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
-        </div>
-
-        <?php else: ?>
-        <div class="content-header">
-            <h1>Module: <?php echo ucfirst($view); ?></h1>
-            <div class="timestamp">Coming soon</div>
-        </div>
-        <div class="card">
-            <p style="padding: 20px; color: #666;">This module is currently under development.</p>
+            <?php endif; ?>
         </div>
         <?php endif; ?>
     </main>
