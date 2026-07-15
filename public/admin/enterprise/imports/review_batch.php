@@ -218,7 +218,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $csrfToken = generateCsrfToken();
 $roleDisplay = strtoupper($user['role'] ?? 'USER');
 $canSubmit = in_array($user['role'] ?? '', ['owner', 'program_officer', 'department_head']) && $canEdit;
-$canApprove = in_array($user['role'] ?? '', ['owner', 'approver', 'senior_approver']);
+$canApprove = in_array($user['role'] ?? '', ['approver', 'senior_approver']);
 $canExecute = in_array($user['role'] ?? '', ['owner']);
 $status = strtolower($batch['status'] ?? 'draft');  // FIXED: always lowercase for comparison
 ?>
