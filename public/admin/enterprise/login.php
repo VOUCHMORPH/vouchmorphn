@@ -116,32 +116,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
 
                     // ============================================================
-                    // UPDATED: Multi-Destination Workflow Redirects
+                    // ROLE-BASED REDIRECTS - Each role sees what they should see
                     // ============================================================
                     $__role = $user['role'];
 
+                    // OWNER & IT MANAGERS - Full dashboard access
                     if (in_array($__role, ['owner', 'it_manager_enterprise', 'it_officer_enterprise'], true)) {
-                        // Super users go to dashboard with full access
                         header('Location: index.php');
                         
+                    // PROGRAM OFFICERS & DEPARTMENT HEADS - Create new disbursements (LOADERS)
                     } elseif (in_array($__role, ['program_officer', 'department_head'], true)) {
-                        // Program Officers and Department Heads can create new disbursements
                         header('Location: imports/source_input.php');
                         
+                    // APPROVERS - See pending approvals
                     } elseif (in_array($__role, ['approver', 'senior_approver'], true)) {
-                        // Approvers see pending approvals
                         header('Location: imports/review_batch.php?status=pending_approval');
                         
+                    // SUPERVISORS - Can disburse funds after approval
+                    } elseif (in_array($__role, ['supervisor'], true)) {
+                        header('Location: imports/review_batch.php?status=approved');
+                        
+                    // AUDITORS - Read-only view all batches
                     } elseif ($__role === 'auditor') {
-                        // Auditors see all batches in read-only mode
                         header('Location: imports/review_batch.php?status=all');
                         
+                    // VIEWERS - Only completed batches
                     } elseif ($__role === 'viewer') {
-                        // Viewers only see completed batches
                         header('Location: imports/review_batch.php?status=completed');
                         
+                    // BENEFICIARY REGISTRARS - Add destinations
                     } elseif ($__role === 'beneficiary_registrar') {
-                        // Beneficiary Registrars add destinations
                         header('Location: imports/add_destinations.php');
                         
                     } else {
