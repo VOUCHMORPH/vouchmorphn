@@ -1,12 +1,12 @@
 <?php
-// enterprise/imports/review_batch.php - Review and approve batch WITH DEBUGGING
+// enterprise/imports/review_batch.php - Review and approve batch
 require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
 // ============================================================
-// LOAD SWAPSERVICE AND DEPENDENCIES PROPERLY
+// LOAD SWAPSERVICE AND DEPENDENCIES
 // ============================================================
 require_once '../../../../vendor/autoload.php';
 require_once '../../../../src/Domain/Services/SwapService.php';
@@ -27,13 +27,10 @@ $success = '';
 // HELPER: Check if user can edit this batch
 // ============================================================
 function canEditBatch($batchCreatedBy, $currentUserId, $userRole) {
-    // Owner can edit everything
     if ($userRole === 'owner') return true;
-    // Loaders (program_officer, department_head) can only edit their own
     if (in_array($userRole, ['program_officer', 'department_head'])) {
         return $batchCreatedBy == $currentUserId;
     }
-    // Everyone else cannot edit
     return false;
 }
 
@@ -66,13 +63,15 @@ if (!$batch) {
 }
 
 // ============================================================
-// CHECK PERMISSIONS FOR THIS BATCH
+// CHECK PERMISSIONS
 // ============================================================
 $isOwnBatch = ($batch['created_by'] == $userId);
 $canEdit = canEditBatch($batch['created_by'], $userId, $user['role'] ?? 'viewer');
 $isReadOnly = !$canEdit;
 
-// Get destinations
+// ============================================================
+// GET DESTINATIONS
+// ============================================================
 $destinations = [];
 $stmt = $db->prepare("
     SELECT * FROM disbursement_destinations 
@@ -83,15 +82,12 @@ $stmt->execute([':batch_id' => $batchId]);
 $destinations = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // ============================================================
-// DEBUG: Log raw data before processing
+// DEBUG: Log raw data
 // ============================================================
 error_log("=== REVIEW_BATCH DEBUG: RAW DATA ===");
 error_log("Batch ID: " . $batchId);
 error_log("Batch Reference: " . ($batch['batch_reference'] ?? 'NULL'));
 error_log("Source Institution: " . ($batch['source_institution'] ?? 'NULL'));
-error_log("Source Identifier: " . ($batch['source_identifier'] ?? 'NULL'));
-error_log("Total Amount: " . ($batch['total_amount'] ?? 'NULL'));
-error_log("Currency: " . ($batch['currency'] ?? 'NULL'));
 error_log("Destinations Count: " . count($destinations));
 
 foreach ($destinations as $idx => $dest) {
@@ -105,7 +101,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     requireCsrfToken($_POST['csrf_token'] ?? null);
     $action = $_POST['action'] ?? '';
     
-    // Prevent editing if read-only
     if ($isReadOnly && !in_array($action, ['approve', 'reject', 'execute'])) {
         $error = "You cannot modify this batch. It was created by another user.";
     } else {
@@ -152,7 +147,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
         } elseif ($action === 'execute') {
             // ============================================================
-            // DEBUG: Start execution with full payload logging
+            // FIXED: PROPER MULTI-DESTINATION PAYLOAD
             // ============================================================
             error_log("=== REVIEW_BATCH DEBUG: EXECUTION STARTED ===");
             
@@ -164,17 +159,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 error_log("[review_batch] Initializing SwapService...");
                 error_log("[review_batch] Country: " . $countryName);
                 
-                // Instantiate SwapService with 3 args
                 $swapService = new SwapService(
-                    $db,                    // PDO
-                    $fullCountryConfig,     // Full country config
-                    $countryName            // Country name
+                    $db,
+                    $fullCountryConfig,
+                    $countryName
                 );
                 
                 error_log("[review_batch] SwapService initialized successfully");
                 
                 // ============================================================
-                // BUILD PAYLOAD WITH FULL DEBUGGING
+                // BUILD PAYLOAD - ENSURE MULTI_DESTINATION FORMAT
                 // ============================================================
                 $payload = [
                     'swap_type' => 'MULTI_DESTINATION',
@@ -188,17 +182,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'destinations' => []
                 ];
                 
-                error_log("[review_batch] PAYLOAD BEFORE DESTINATIONS: " . json_encode($payload, JSON_PRETTY_PRINT));
+                error_log("[review_batch] Base Payload: " . json_encode($payload, JSON_PRETTY_PRINT));
                 
-                // Build destinations with full debugging
+                // ============================================================
+                // BUILD DESTINATIONS - WITH PROPER FIELDS
+                // ============================================================
                 foreach ($destinations as $idx => $dest) {
                     error_log("[review_batch] Processing destination $idx: " . json_encode($dest));
                     
+                    // Determine institution
+                    $institution = $dest['institution'] ?? 'UNKNOWN';
+                    $assetType = $dest['asset_type'] ?? 'WALLET';
+                    $isIdentity = ($dest['is_identity_recipient'] ?? false) || $institution === 'IDENTITY_RECIPIENT';
+                    
                     // Build destination payload
                     $destPayload = [
-                        'to_institution' => $dest['institution'] ?? 'UNKNOWN',
-                        'destination_institution' => $dest['institution'] ?? 'UNKNOWN',
-                        'destination_asset_type' => $dest['asset_type'] ?? 'WALLET',
+                        'to_institution' => $isIdentity ? 'VOUCHMORPH' : $institution,
+                        'destination_institution' => $isIdentity ? 'VOUCHMORPH' : $institution,
+                        'destination_asset_type' => $isIdentity ? 'IDENTITY' : $assetType,
                         'destination_identifier' => $dest['identifier'],
                         'destination_identifier_type' => $dest['identifier_type'] ?? 'account',
                         'amount' => (float)$dest['amount'],
@@ -208,20 +209,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'beneficiary_name' => $dest['beneficiary_name'] ?? null
                     ];
                     
-                    // Handle identity recipients
-                    if (($dest['is_identity_recipient'] ?? false) || $dest['institution'] === 'IDENTITY_RECIPIENT') {
-                        $destPayload['to_institution'] = 'VOUCHMORPH';
-                        $destPayload['destination_institution'] = 'VOUCHMORPH';
-                        $destPayload['destination_asset_type'] = 'IDENTITY';
+                    // Add identity-specific fields
+                    if ($isIdentity) {
                         $destPayload['identity_type'] = $dest['identity_type'] ?? 'national_id';
                         $destPayload['identity_value'] = $dest['identity_value'] ?? $dest['identifier'];
                         $destPayload['is_identity_recipient'] = true;
                         error_log("[review_batch] Destination $idx is IDENTITY recipient");
                     }
                     
-                    // Add to payload
                     $payload['destinations'][] = $destPayload;
-                    
                     error_log("[review_batch] Destination $idx payload: " . json_encode($destPayload));
                 }
                 
@@ -229,16 +225,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // FINAL PAYLOAD DEBUG
                 // ============================================================
                 error_log("=== REVIEW_BATCH DEBUG: FINAL PAYLOAD ===");
-                error_log("Full Payload: " . json_encode($payload, JSON_PRETTY_PRINT));
                 error_log("Destinations in payload: " . count($payload['destinations']));
+                error_log("Full Payload: " . json_encode($payload, JSON_PRETTY_PRINT));
                 
-                // Save payload to a file for inspection
+                // Save payload to file for inspection
                 $debugFile = '/tmp/payload_debug_' . date('Ymd_His') . '.json';
                 file_put_contents($debugFile, json_encode($payload, JSON_PRETTY_PRINT));
                 error_log("Payload saved to: " . $debugFile);
                 
                 // ============================================================
-                // EXECUTE THE SWAP
+                // EXECUTE SWAP
                 // ============================================================
                 error_log("[review_batch] Executing multi-destination swap with " . count($payload['destinations']) . " destinations");
                 
@@ -248,7 +244,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 error_log("[review_batch] Result: " . json_encode($result, JSON_PRETTY_PRINT));
                 
                 // ============================================================
-                // UPDATE BATCH STATUS BASED ON RESULT
+                // UPDATE BATCH STATUS
                 // ============================================================
                 $status = $result['status'] ?? 'COMPLETED';
                 $successCount = $result['successful_destinations'] ?? 0;
@@ -281,7 +277,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':id' => $batchId
                 ]);
                 
-                // Update destination statuses
+                // ============================================================
+                // UPDATE DESTINATION STATUSES
+                // ============================================================
                 if (isset($result['destinations']) && is_array($result['destinations'])) {
                     foreach ($result['destinations'] as $idx => $destResult) {
                         $destIndex = $destResult['index'] ?? $idx;
@@ -326,7 +324,7 @@ $csrfToken = generateCsrfToken();
 $roleDisplay = strtoupper($user['role'] ?? 'USER');
 
 // ============================================================
-// PERMISSIONS - Owner can submit and execute, but NOT approve
+// PERMISSIONS
 // ============================================================
 $canSubmit = in_array($user['role'] ?? '', ['owner', 'program_officer', 'department_head']) && $canEdit;
 $canApprove = in_array($user['role'] ?? '', ['approver', 'senior_approver']);
@@ -510,6 +508,20 @@ $status = strtolower($batch['status'] ?? 'draft');
             min-height: 80px;
             font-family: inherit;
         }
+        .debug-panel {
+            background: #1e293b;
+            color: #e2e8f0;
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            margin-top: 12px;
+        }
+        .debug-panel .label { color: #fbbf24; }
+        .debug-panel .value { color: #4ade80; }
         @media (max-width: 768px) {
             .grid-3 { grid-template-columns: 1fr; }
             .masthead { flex-direction: column; text-align: center; }
@@ -713,33 +725,40 @@ $status = strtolower($batch['status'] ?? 'draft');
                 <a href="../index.php" class="btn btn-outline">🏠 Dashboard</a>
             </div>
         </div>
-        
+
         <!-- ============================================================ -->
-        <!-- DEBUG PANEL - Shows payload info if execution failed -->
+        <!-- DEBUG PANEL - Shows when execution fails -->
         <!-- ============================================================ -->
         <?php if ($error && strpos($error, 'Execution failed') !== false): ?>
         <div class="card" style="border-left: 4px solid #f59e0b; background: #fffbeb; margin-top: 20px;">
             <div class="card-header">
                 <span class="card-title">🔍 Debug Information</span>
+                <span class="readonly-badge">ERROR</span>
             </div>
             <div style="font-family: monospace; font-size: 12px; background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-all;">
                 <strong style="color: #fbbf24;">Error:</strong> <?php echo htmlspecialchars($error); ?><br><br>
                 <strong style="color: #fbbf24;">Batch ID:</strong> <?php echo $batchId; ?><br>
-                <strong style="color: #fbbf24;">Destinations:</strong> <?php echo count($destinations); ?><br>
+                <strong style="color: #fbbf24;">Batch Reference:</strong> <?php echo htmlspecialchars($batch['batch_reference']); ?><br>
+                <strong style="color: #fbbf24;">Source Institution:</strong> <?php echo htmlspecialchars($batch['source_institution']); ?><br>
+                <strong style="color: #fbbf24;">Total Amount:</strong> <?php echo number_format($batch['total_amount'] ?? 0, 2); ?><br>
+                <strong style="color: #fbbf24;">Destinations:</strong> <?php echo count($destinations); ?><br><br>
+                
+                <strong style="color: #60a5fa;">Destination Details:</strong><br>
                 <?php foreach ($destinations as $idx => $dest): ?>
-                <br><strong style="color: #60a5fa;">Destination <?php echo $idx + 1; ?>:</strong>
-                Institution: <?php echo htmlspecialchars($dest['institution'] ?? 'NULL'); ?><br>
-                Identifier: <?php echo htmlspecialchars($dest['identifier'] ?? 'NULL'); ?><br>
-                Amount: <?php echo htmlspecialchars($dest['amount'] ?? 'NULL'); ?><br>
-                Currency: <?php echo htmlspecialchars($dest['currency'] ?? 'NULL'); ?><br>
-                Asset Type: <?php echo htmlspecialchars($dest['asset_type'] ?? 'NULL'); ?><br>
-                Delivery: <?php echo htmlspecialchars($dest['delivery_method'] ?? 'NULL'); ?><br>
-                Identity: <?php echo ($dest['is_identity_recipient'] ?? false) ? 'YES' : 'NO'; ?><br>
+                <span style="color: #94a3b8;">Destination <?php echo $idx + 1; ?>:</span><br>
+                &nbsp;&nbsp;Institution: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['institution'] ?? 'NULL'); ?></span><br>
+                &nbsp;&nbsp;Identifier: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['identifier'] ?? 'NULL'); ?></span><br>
+                &nbsp;&nbsp;Amount: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['amount'] ?? 'NULL'); ?></span><br>
+                &nbsp;&nbsp;Currency: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['currency'] ?? 'NULL'); ?></span><br>
+                &nbsp;&nbsp;Asset Type: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['asset_type'] ?? 'NULL'); ?></span><br>
+                &nbsp;&nbsp;Delivery: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['delivery_method'] ?? 'NULL'); ?></span><br>
+                &nbsp;&nbsp;Identity: <span style="color: <?php echo ($dest['is_identity_recipient'] ?? false) ? '#fbbf24' : '#94a3b8'; ?>;"><?php echo ($dest['is_identity_recipient'] ?? false) ? 'YES' : 'NO'; ?></span><br>
+                &nbsp;&nbsp;Status: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['status'] ?? 'PENDING'); ?></span><br>
                 <?php endforeach; ?>
             </div>
             <div style="margin-top: 12px;">
                 <p style="color: #64748b; font-size: 13px;">
-                    💡 Check the server logs for the full payload dump. The payload was saved to <code>/tmp/payload_debug_*.json</code>
+                    💡 Check the server logs for the full payload dump. The payload was saved to <code style="background: #1e293b; color: #4ade80; padding: 2px 6px; border-radius: 4px;">/tmp/payload_debug_*.json</code>
                 </p>
             </div>
         </div>
