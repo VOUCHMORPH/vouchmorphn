@@ -159,7 +159,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         error_log("Failed to create audit log: " . $e->getMessage());
                     }
 
-                    header('Location: index.php');
+                    $__role = $user['role'];
+                    if (in_array($__role, ['owner', 'it_manager_enterprise', 'it_officer_enterprise'], true)) {
+                        header('Location: index.php');
+                    } elseif (in_array($__role, ['approver', 'senior_approver', 'department_head', 'auditor', 'viewer'], true)) {
+                        header('Location: imports/review.php');
+                    } elseif ($__role === 'program_officer') {
+                        header('Location: imports/upload.php');
+                    } elseif ($__role === 'beneficiary_registrar') {
+                        header('Location: imports/manual_entry.php');
+                    } else {
+                        header('Location: index.php');
+                    }
                     exit;
                 }
             }
