@@ -2,27 +2,8 @@
 // public/user/login.php
 // Supports: phone, phone2, phone3, email, national_id, drivers_license, passport
 //
-// FIXED IN THIS VERSION (see inline comments marked FIX:):
-//   1. REMOVED the old "identifier only, no password" login branch entirely.
-//      That branch let anyone who knew (or guessed) a registered phone,
-//      email, national ID, driver's license or passport number log in as
-//      that person with zero secrets. There is now exactly ONE login path:
-//      identifier + PIN, always, for every identifier type.
-//   2. Added a mandatory OTP step after a correct PIN, sent ONLY to the
-//      contact channel already on file — never a channel chosen at the
-//      login screen, since that would let a stolen password redirect the
-//      second factor to an attacker-controlled destination.
-//   3. Fixed a bug where selecting a non-phone identifier while using PIN
-//      login still ran the value through normalizePhone(), corrupting it.
-//   4. role_id is now actually fetched from the database and carried into
-//      the session, instead of being hardcoded to 'USER'.
-//   5. The client IP used for rate limiting now takes only the first hop
-//      of a comma-separated X-Forwarded-For chain.
-//   6. REMOVED hardcoded CAZACOM — SMS now routes to the correct network
-//      based on phone number prefix (Mascom, Orange, Cazacom, etc.)
-//   7. FIXED: SMS success logging now checks actual result before logging success
-//   8. FIXED: Better error messages when SMS fails
-//   9. FIXED: SessionManager::setUser() -> SessionManager::login() for compatibility
+// MODIFIED: OTP is now SUSPENDED/DISABLED - PIN-only login for testing
+// OTP can be re-enabled by setting ENABLE_OTP to true
 
 ob_start();
 error_reporting(E_ALL);
@@ -38,7 +19,6 @@ require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
 require_once __DIR__ . '/../../src/Security/Monitoring/ApiRateLimiter.php';
 require_once __DIR__ . '/../../src/Infrastructure/SMS/Contracts/ProviderInterface.php';
 require_once __DIR__ . '/../../src/Core/Factories/CommunicationFactory.php';
-// FIX: real SMTP email gateway, replacing mail().
 require_once __DIR__ . '/../../src/Infrastructure/Email/Contracts/EmailProviderInterface.php';
 require_once __DIR__ . '/../../src/Infrastructure/Email/EmailGatewayClient.php';
 
@@ -48,6 +28,11 @@ use Core\Config\LoadCountry;
 use Security\Monitoring\ApiRateLimiter;
 use Core\Factories\CommunicationFactory;
 use Infrastructure\Email\EmailGatewayClient;
+
+// ============================================================
+// OTP SUSPENDED - Set to true to re-enable OTP
+// ============================================================
+define('ENABLE_OTP', false);  // Change to true to enable OTP again
 
 SessionManager::start();
 
@@ -79,7 +64,6 @@ $localLength      = (int)($countryConfig['local_phone_length'] ?? 8);
 $phonePlaceholder = $countryConfig['phone_placeholder'] ?? str_repeat('0', $localLength);
 $countryName      = $countryConfig['name'] ?? $systemCountry;
 $phonePattern     = '[0-9]{' . $localLength . '}';
-// REMOVED: $clientPartnerKey = 'CAZACOM'; // No longer hardcoded
 
 // --------------------------------------------------
 // DB Bootstrap
@@ -122,8 +106,6 @@ function generateOTP(): string
     return str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
 }
 
-// FIX: single source of truth for "first hop only" — used for both the
-// rate-limit key and anywhere else a client IP is recorded.
 function getClientIp(): string
 {
     $ip = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
@@ -157,9 +139,9 @@ $identifierType = $_POST['identifier_type'] ?? 'phone';
 $inputValueRaw = trim($_POST['identifier'] ?? '');
 
 // ================================================================
-// STEP 2: Verify the login OTP (separate action, same file)
+// STEP 2: Verify the login OTP (ONLY if ENABLE_OTP is true)
 // ================================================================
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'verify_login_otp') {
+if (ENABLE_OTP && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'verify_login_otp') {
     header('Content-Type: application/json; charset=utf-8');
 
     $submittedOtp = trim($_POST['otp'] ?? '');
@@ -190,7 +172,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'verif
         exit;
     }
 
-    // OTP correct — now, and only now, commit the session.
+    // OTP correct — now commit the session.
     try {
         $stmt = $db->prepare("
             SELECT user_id, phone, phone2, phone3, email,
@@ -213,8 +195,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'verif
 
         session_regenerate_id(true);
 
-        // FIX: Use SessionManager::login() instead of setUser()
-        // role_id is now real, fetched from the users table, not hardcoded.
         SessionManager::login([
             'user_id'         => $user['user_id'],
             'username'        => $user['username'] ?? '',
@@ -245,13 +225,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'verif
 }
 
 // ================================================================
-// STEP 1: Identifier + PIN
+// STEP 1: Identifier + PIN (OTP is SUSPENDED)
 // ================================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verify_login_otp') {
 
-    // FIX: normalize based on the ACTUALLY SELECTED identifier type only —
-    // previously this also fired for login_method === 'pin' regardless of
-    // type, corrupting emails and ID numbers into near-empty strings.
+    // Normalize based on identifier type
     if ($identifierType === 'phone') {
         $formattedValue = normalizePhone($inputValueRaw, $countryDialCode);
         $inputValue = getLocalPhonePart($formattedValue, $countryDialCode);
@@ -265,12 +243,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
     $clientIp = getClientIp();
     $rateLimited = false;
 
-    // FIX: Rate limiter - skip if Redis not available
+    // Rate limiter
     try {
-        // Check if Redis class exists before using rate limiter
         if (class_exists('Redis')) {
-            $ipLimiter = new ApiRateLimiter(15, 600);         // 15 attempts / 10 min per IP
-            $identifierLimiter = new ApiRateLimiter(6, 600);  // 6 attempts / 10 min per identifier
+            $ipLimiter = new ApiRateLimiter(15, 600);
+            $identifierLimiter = new ApiRateLimiter(6, 600);
 
             $ipOk = $ipLimiter->check('user_login_ip:' . $clientIp);
             $identifierOk = $inputValueRaw !== ''
@@ -282,11 +259,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
                 error_log("[USER LOGIN] Rate limit exceeded - IP: {$clientIp}, Identifier: {$inputValueRaw}");
             }
         } else {
-            // Redis not available - log but continue without rate limiting
             error_log("[USER LOGIN] Redis not available - rate limiting disabled");
         }
     } catch (\Throwable $e) {
-        // Rate limiter failed - continue without it
         error_log("[USER LOGIN] Rate limiter unavailable: " . $e->getMessage() . " - continuing without rate limiting");
     }
 
@@ -325,9 +300,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
                     error_log("[USER LOGIN] Account locked: {$formattedValue} until {$user['locked_until']}");
                     $error = "Account temporarily locked due to repeated failed attempts. Try again after {$unlockAt}.";
                 } elseif (!$user || (int)$user['verified'] !== 1) {
-                    // FIX: identical message whether the account doesn't exist or the
-                    // PIN would be wrong — never confirm to an anonymous caller
-                    // whether a given identifier is registered.
                     $error = "Invalid login credentials.";
                     error_log("[USER LOGIN] User not found or not verified");
                 } elseif (empty($user['password_hash']) || !password_verify($pin, $user['password_hash'])) {
@@ -355,85 +327,114 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
                     }
                 } else {
                     // ========================================================
-                    // PIN CORRECT — do NOT set the session yet. Send an OTP to
-                    // the channel already on file and require it before the
-                    // session is committed. This is the fix for the old
-                    // "identifier only, no secret" bypass: there is now no
-                    // path to a session without both PIN and OTP.
+                    // PIN CORRECT 
+                    // If OTP is ENABLED: send OTP and require it
+                    // If OTP is SUSPENDED: log in immediately
                     // ========================================================
-                    $otpChannel = !empty($user['phone']) ? 'sms' : (!empty($user['email']) ? 'email' : null);
-                    $otpDestination = $otpChannel === 'sms' ? $user['phone'] : ($user['email'] ?? null);
+                    
+                    if (ENABLE_OTP) {
+                        // OTP ENABLED - Send OTP and require verification
+                        $otpChannel = !empty($user['phone']) ? 'sms' : (!empty($user['email']) ? 'email' : null);
+                        $otpDestination = $otpChannel === 'sms' ? $user['phone'] : ($user['email'] ?? null);
 
-                    if (!$otpChannel || !$otpDestination) {
-                        $error = "Your account has no verified contact method on file. Please contact support.";
-                        error_log("[USER LOGIN] User {$user['user_id']} has neither phone nor email — cannot send login OTP");
-                    } else {
-                        $otpPlain = generateOTP();
-                        $otpHash = password_hash($otpPlain, PASSWORD_DEFAULT);
-
-                        $_SESSION['login_otp_pending'] = [
-                            'user_id' => $user['user_id'],
-                            'code_hash' => $otpHash,
-                            'expires_at' => time() + 300,
-                            'attempts' => 0,
-                        ];
-
-                        $sent = false;
-                        if ($otpChannel === 'sms') {
-                            try {
-                                // ============================================================
-                                // FIX: Send OTP through the CORRECT network for the phone number
-                                // No longer hardcoded to CAZACOM - auto-detects network from prefix
-                                // ============================================================
-                                $comm = CommunicationFactory::createForPhone('sms', $otpDestination);
-                                $result = $comm->send($otpDestination, "Your VouchMorph login code: {$otpPlain}");
-                                
-                                // ============================================================
-                                // FIX: Check the actual result before logging success
-                                // ============================================================
-                                $sent = (bool)($result['success'] ?? false);
-                                $mfaHint = maskPhone($otpDestination);
-                                
-                                if ($sent) {
-                                    // Log which network was used
-                                    $providerName = $comm->getProviderName();
-                                    error_log("[USER LOGIN] Login OTP sent via {$providerName} to {$otpDestination}");
-                                } else {
-                                    $errorMsg = $result['error'] ?? 'Unknown error';
-                                    error_log("[USER LOGIN] SMS OTP send FAILED: {$errorMsg}");
-                                    // Store error for user display
-                                    $_SESSION['login_otp_error'] = "We couldn't send your verification code. Please try again.";
-                                }
-                            } catch (Throwable $e) {
-                                error_log("[USER LOGIN] SMS OTP send exception: " . $e->getMessage());
-                                $sent = false;
-                                $_SESSION['login_otp_error'] = "System error sending verification code. Please try again.";
-                            }
+                        if (!$otpChannel || !$otpDestination) {
+                            $error = "Your account has no verified contact method on file. Please contact support.";
+                            error_log("[USER LOGIN] User {$user['user_id']} has neither phone nor email — cannot send login OTP");
                         } else {
-                            try {
-                                $emailClient = new EmailGatewayClient($config['email'] ?? []);
-                                $subject = "Your VouchMorph Login Code";
-                                $body = "<p>Your login verification code is: <strong style='font-size:22px;'>{$otpPlain}</strong></p><p>This code expires in 5 minutes. Never share it with anyone.</p>";
-                                $result = $emailClient->sendEmail($otpDestination, $subject, $body);
-                                $sent = (bool)($result['success'] ?? false);
-                                $mfaHint = maskEmail($otpDestination);
-                                
-                                if (!$sent) {
-                                    $errorMsg = $result['error'] ?? 'Unknown email error';
-                                    error_log("[USER LOGIN] Email OTP send FAILED: {$errorMsg}");
+                            $otpPlain = generateOTP();
+                            $otpHash = password_hash($otpPlain, PASSWORD_DEFAULT);
+
+                            $_SESSION['login_otp_pending'] = [
+                                'user_id' => $user['user_id'],
+                                'code_hash' => $otpHash,
+                                'expires_at' => time() + 300,
+                                'attempts' => 0,
+                            ];
+
+                            $sent = false;
+                            if ($otpChannel === 'sms') {
+                                try {
+                                    $comm = CommunicationFactory::createForPhone('sms', $otpDestination);
+                                    $result = $comm->send($otpDestination, "Your VouchMorph login code: {$otpPlain}");
+                                    $sent = (bool)($result['success'] ?? false);
+                                    $mfaHint = maskPhone($otpDestination);
+                                    
+                                    if ($sent) {
+                                        $providerName = $comm->getProviderName();
+                                        error_log("[USER LOGIN] Login OTP sent via {$providerName} to {$otpDestination}");
+                                    } else {
+                                        $errorMsg = $result['error'] ?? 'Unknown error';
+                                        error_log("[USER LOGIN] SMS OTP send FAILED: {$errorMsg}");
+                                        $_SESSION['login_otp_error'] = "We couldn't send your verification code. Please try again.";
+                                    }
+                                } catch (Throwable $e) {
+                                    error_log("[USER LOGIN] SMS OTP send exception: " . $e->getMessage());
+                                    $sent = false;
+                                    $_SESSION['login_otp_error'] = "System error sending verification code. Please try again.";
                                 }
-                            } catch (Throwable $e) {
-                                error_log("[USER LOGIN] Email OTP send failed: " . $e->getMessage());
-                                $sent = false;
+                            } else {
+                                try {
+                                    $emailClient = new EmailGatewayClient($config['email'] ?? []);
+                                    $subject = "Your VouchMorph Login Code";
+                                    $body = "<p>Your login verification code is: <strong style='font-size:22px;'>{$otpPlain}</strong></p><p>This code expires in 5 minutes. Never share it with anyone.</p>";
+                                    $result = $emailClient->sendEmail($otpDestination, $subject, $body);
+                                    $sent = (bool)($result['success'] ?? false);
+                                    $mfaHint = maskEmail($otpDestination);
+                                    
+                                    if (!$sent) {
+                                        $errorMsg = $result['error'] ?? 'Unknown email error';
+                                        error_log("[USER LOGIN] Email OTP send FAILED: {$errorMsg}");
+                                    }
+                                } catch (Throwable $e) {
+                                    error_log("[USER LOGIN] Email OTP send failed: " . $e->getMessage());
+                                    $sent = false;
+                                }
+                            }
+
+                            if ($sent) {
+                                $mfaRequired = true;
+                                error_log("[USER LOGIN] PIN OK, OTP sent via {$otpChannel} to user_id={$user['user_id']}");
+                            } else {
+                                unset($_SESSION['login_otp_pending']);
+                                $error = "We couldn't send your verification code right now. Please try again shortly.";
                             }
                         }
+                    } else {
+                        // ========================================================
+                        // OTP SUSPENDED - Log in immediately after PIN verification
+                        // ========================================================
+                        try {
+                            $resetStmt = $db->prepare("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE user_id = :id");
+                            $resetStmt->execute([':id' => $user['user_id']]);
 
-                        if ($sent) {
-                            $mfaRequired = true;
-                            error_log("[USER LOGIN] PIN OK, OTP sent via {$otpChannel} to user_id={$user['user_id']}");
-                        } else {
-                            unset($_SESSION['login_otp_pending']);
-                            $error = "We couldn't send your verification code right now. Please try again shortly.";
+                            session_regenerate_id(true);
+
+                            SessionManager::login([
+                                'user_id'         => $user['user_id'],
+                                'username'        => $user['username'] ?? '',
+                                'full_name'       => $user['full_name'] ?? $user['username'],
+                                'phone'           => $user['phone'],
+                                'phone2'          => $user['phone2'] ?? null,
+                                'phone3'          => $user['phone3'] ?? null,
+                                'email'           => $user['email'] ?? null,
+                                'national_id'     => $user['national_id'] ?? null,
+                                'drivers_license' => $user['drivers_license'] ?? null,
+                                'passport'        => $user['passport'] ?? null,
+                                'role_id'         => $user['role_id'] ?? null,
+                                'country'         => $systemCountry,
+                                'created_at'      => $user['created_at'] ?? null,
+                                'pin_enabled'     => (int)($user['pin_enabled'] ?? 0) === 1,
+                            ]);
+
+                            error_log("[USER LOGIN] LOGIN COMPLETE (PIN ONLY - OTP SUSPENDED): user_id={$user['user_id']}");
+                            
+                            // Redirect to dashboard
+                            header('Location: user_dashboard.php');
+                            exit;
+
+                        } catch (\Throwable $e) {
+                            error_log("[USER LOGIN] Login error: " . $e->getMessage());
+                            $error = "System error. Please try again.";
                         }
                     }
                 }
@@ -483,41 +484,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
         border: 1px solid rgba(255, 255, 255, 0.08);
         backdrop-filter: blur(10px);
         box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        border-radius: 16px;
     }
     .login-header { padding: 2rem 2rem 1.5rem; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
     .login-header h1 { font-family: 'Clash Display', sans-serif; font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; background: linear-gradient(135deg, #FFFFFF 0%, #00F0FF 40%, #B000FF 100%); -webkit-background-clip: text; background-clip: text; color: transparent; margin-bottom: 0.5rem; }
     .subtitle { font-size: 0.875rem; color: #A0A0B0; margin-bottom: 1rem; }
-    .system-badge { display: inline-block; padding: 0.25rem 0.75rem; background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); font-size: 0.7rem; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: #00F0FF; }
+    .system-badge { display: inline-block; padding: 0.25rem 0.75rem; background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); font-size: 0.7rem; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: #00F0FF; border-radius: 20px; }
+    .otp-suspended-badge { display: inline-block; padding: 0.25rem 0.75rem; background: rgba(255, 193, 7, 0.15); border: 1px solid rgba(255, 193, 7, 0.3); font-size: 0.65rem; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: #FFC107; border-radius: 20px; margin-left: 8px; }
     .login-form { padding: 2rem; }
     .step-pane { display: none; }
     .step-pane.active { display: block; animation: fadeInUp 0.4s ease; }
     .form-group { margin-bottom: 1.5rem; }
     .form-group label { display: block; margin-bottom: 0.5rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #C0C0D0; }
     .identifier-type-selector { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
-    .id-type-btn { padding: 0.4rem 0.8rem; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #808090; font-size: 0.7rem; font-weight: 500; text-transform: uppercase; cursor: pointer; transition: all 0.2s; font-family: 'Inter', sans-serif; }
+    .id-type-btn { padding: 0.4rem 0.8rem; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #808090; font-size: 0.7rem; font-weight: 500; text-transform: uppercase; cursor: pointer; transition: all 0.2s; font-family: 'Inter', sans-serif; border-radius: 6px; }
     .id-type-btn.active { border-color: #00F0FF; color: #00F0FF; background: rgba(0, 240, 255, 0.1); }
     .id-type-btn:hover { color: #FFFFFF; }
-    .phone-input-container { display: flex; border: 1px solid rgba(255, 255, 255, 0.15); background: rgba(0, 0, 0, 0.5); transition: all 0.2s ease; }
+    .phone-input-container { display: flex; border: 1px solid rgba(255, 255, 255, 0.15); background: rgba(0, 0, 0, 0.5); transition: all 0.2s ease; border-radius: 8px; overflow: hidden; }
     .phone-input-container:focus-within { border-color: #00F0FF; box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.2); }
     .phone-prefix { padding: 0.875rem 1rem; font-family: 'Space Grotesk', monospace; font-weight: 500; color: #00F0FF; background: rgba(0, 240, 255, 0.05); border-right: 1px solid rgba(255, 255, 255, 0.1); letter-spacing: 0.5px; display: none; }
     .phone-prefix.show { display: flex; }
     .form-control { flex: 1; border: none; padding: 0.875rem 1rem; font-size: 1rem; font-family: 'Inter', sans-serif; background: transparent; color: #FFFFFF; outline: none; width: 100%; }
     .form-control::placeholder { color: #505060; }
     .pin-input, .otp-input { font-family: 'Space Grotesk', monospace; font-size: 1.25rem; letter-spacing: 0.5rem; text-align: center; }
-    .login-btn { width: 100%; padding: 1rem; background: linear-gradient(135deg, #00F0FF 0%, #B000FF 100%); color: #050505; border: none; font-family: 'General Sans', sans-serif; font-weight: 700; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.1em; cursor: pointer; transition: all 0.2s ease; margin-top: 0.5rem; }
+    .login-btn { width: 100%; padding: 1rem; background: linear-gradient(135deg, #00F0FF 0%, #B000FF 100%); color: #050505; border: none; font-family: 'General Sans', sans-serif; font-weight: 700; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.1em; cursor: pointer; transition: all 0.2s ease; margin-top: 0.5rem; border-radius: 8px; }
     .login-btn:hover { transform: translateY(-2px); box-shadow: 0 10px 30px -10px rgba(0, 240, 255, 0.4); }
     .login-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
     .btn-secondary { background: transparent; border: 1px solid rgba(255, 255, 255, 0.3); color: #FFFFFF; margin-top: 0.75rem; }
-    .error-message { background: rgba(255, 48, 48, 0.1); border-left: 3px solid #FF3030; padding: 0.875rem; margin-bottom: 1.5rem; font-size: 0.8125rem; color: #FF6060; }
-    .mfa-info { background: rgba(0, 240, 255, 0.08); border-left: 3px solid #00F0FF; padding: 0.875rem; margin-bottom: 1.5rem; font-size: 0.8125rem; color: #A0E0FF; }
+    .error-message { background: rgba(255, 48, 48, 0.1); border-left: 3px solid #FF3030; padding: 0.875rem; margin-bottom: 1.5rem; font-size: 0.8125rem; color: #FF6060; border-radius: 4px; }
+    .mfa-info { background: rgba(0, 240, 255, 0.08); border-left: 3px solid #00F0FF; padding: 0.875rem; margin-bottom: 1.5rem; font-size: 0.8125rem; color: #A0E0FF; border-radius: 4px; }
     .security-notice { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid rgba(255, 255, 255, 0.05); font-size: 0.7rem; color: #606070; text-align: center; }
-    .login-footer { padding: 1.25rem 2rem; border-top: 1px solid rgba(255, 255, 255, 0.05); background: rgba(10, 10, 20, 0.3); }
+    .login-footer { padding: 1.25rem 2rem; border-top: 1px solid rgba(255, 255, 255, 0.05); background: rgba(10, 10, 20, 0.3); border-radius: 0 0 16px 16px; }
     .login-links { display: flex; justify-content: center; gap: 2rem; flex-wrap: wrap; }
     .login-links a { color: #808090; text-decoration: none; font-size: 0.75rem; font-weight: 500; transition: color 0.2s; }
     .login-links a:hover { color: #00F0FF; }
+    .otp-status { text-align: center; padding: 0.5rem; background: rgba(255, 193, 7, 0.05); border: 1px dashed rgba(255, 193, 7, 0.2); border-radius: 8px; margin-bottom: 1rem; font-size: 0.75rem; color: #FFC107; }
     @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
     @media (max-width: 640px) {
-        .login-container { margin: 1rem; }
+        .login-container { margin: 1rem; border-radius: 12px; }
         .login-header { padding: 1.5rem 1.5rem 1rem; }
         .login-header h1 { font-size: 1.5rem; }
         .login-form { padding: 1.5rem; }
@@ -534,7 +538,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
     <div class="login-header">
         <h1>VOUCHMORPH<sup style="font-size: 0.7rem;">™</sup></h1>
         <div class="subtitle">Interoperability Platform</div>
-        <div class="system-badge"><?= htmlspecialchars(strtoupper($countryName)) ?> • SECURE LOGIN</div>
+        <div>
+            <span class="system-badge"><?= htmlspecialchars(strtoupper($countryName)) ?> • SECURE LOGIN</span>
+            <?php if (!ENABLE_OTP): ?>
+            <span class="otp-suspended-badge">⚡ OTP SUSPENDED</span>
+            <?php endif; ?>
+        </div>
     </div>
 
     <div class="login-form">
@@ -542,12 +551,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
             <div class="error-message"><?= htmlspecialchars($error) ?></div>
         <?php endif; ?>
 
-        <?php if ($mfaRequired): ?>
+        <?php if (!ENABLE_OTP): ?>
+        <div class="otp-status">⚡ Two-factor authentication is currently suspended. PIN-only login is active.</div>
+        <?php endif; ?>
+
+        <?php if ($mfaRequired && ENABLE_OTP): ?>
             <div class="mfa-info">🔐 We've sent a verification code to <strong><?= htmlspecialchars($mfaHint) ?></strong>. Enter it below to finish logging in.</div>
         <?php endif; ?>
 
-        <!-- STEP 1: Identifier + PIN — the ONLY way in. No lookup-only path exists anymore. -->
-        <div id="step-credentials" class="step-pane <?= $mfaRequired ? '' : 'active' ?>">
+        <!-- STEP 1: Identifier + PIN -->
+        <div id="step-credentials" class="step-pane <?= ($mfaRequired && ENABLE_OTP) ? '' : 'active' ?>">
             <form method="POST" novalidate id="credentialsForm">
                 <div class="form-group">
                     <label>IDENTIFIER TYPE</label>
@@ -575,11 +588,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
                     <input type="password" name="pin" class="form-control pin-input" required maxlength="6"
                            placeholder="••••••" inputmode="numeric" autocomplete="current-password">
                 </div>
-                <button type="submit" class="login-btn">CONTINUE →</button>
+                <button type="submit" class="login-btn">
+                    <?= ENABLE_OTP ? 'CONTINUE →' : 'LOGIN →' ?>
+                </button>
             </form>
         </div>
 
-        <!-- STEP 2: OTP, sent only to the channel already on file -->
+        <!-- STEP 2: OTP (only shown if ENABLE_OTP is true) -->
+        <?php if (ENABLE_OTP): ?>
         <div id="step-otp" class="step-pane <?= $mfaRequired ? 'active' : '' ?>">
             <form id="otpForm" novalidate>
                 <div class="form-group">
@@ -590,8 +606,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
                 <button type="button" class="login-btn btn-secondary" onclick="backToCredentials()">← BACK</button>
             </form>
         </div>
+        <?php endif; ?>
 
-        <div class="security-notice">We never ask where to send your code — it always goes to the phone or email already on your account.</div>
+        <div class="security-notice">
+            <?php if (ENABLE_OTP): ?>
+            We never ask where to send your code — it always goes to the phone or email already on your account.
+            <?php else: ?>
+            PIN-only login is active. Two-factor authentication is temporarily suspended.
+            <?php endif; ?>
+        </div>
     </div>
 
     <div class="login-footer">
@@ -605,6 +628,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') !== 'verif
 
 <script>
 const countryDialCode = '<?= $countryDialCode ?>';
+const enableOtp = <?= ENABLE_OTP ? 'true' : 'false' ?>;
 
 function setIdentifierType(type) {
     document.querySelectorAll('#step-credentials .id-type-btn').forEach(btn => btn.classList.remove('active'));
@@ -641,8 +665,8 @@ function backToCredentials() {
     document.getElementById('step-credentials').classList.add('active');
 }
 
-// STEP 2 submits via fetch to the same file with action=verify_login_otp,
-// so a page reload never resubmits the PIN.
+// OTP form submission (only if ENABLE_OTP)
+<?php if (ENABLE_OTP): ?>
 document.getElementById('otpForm')?.addEventListener('submit', function(e) {
     e.preventDefault();
     const otp = document.getElementById('otp-input').value.trim();
@@ -679,6 +703,7 @@ document.getElementById('otpForm')?.addEventListener('submit', function(e) {
         alert('Network error. Please try again.');
     });
 });
+<?php endif; ?>
 
 document.getElementById('identifier-input')?.addEventListener('keypress', function(e) {
     if (e.key === 'Enter') this.closest('form').submit();
