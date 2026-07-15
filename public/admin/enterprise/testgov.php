@@ -1,7 +1,7 @@
 <?php
 /**
- * test_simple.php - Simple System Test
- * Tests core functionality without requiring complex configs
+ * test_batches.php - Check Database for Batches
+ * Shows all batches in the system with their details
  */
 
 // Suppress session warnings
@@ -13,7 +13,7 @@ if (session_status() === PHP_SESSION_NONE) {
 echo "<!DOCTYPE html>
 <html>
 <head>
-    <title>System Test</title>
+    <title>Batch Database Check</title>
     <style>
         body { font-family: monospace; background: #0f172a; color: #e2e8f0; padding: 40px; }
         .pass { color: #4ade80; }
@@ -26,231 +26,315 @@ echo "<!DOCTYPE html>
         .step.fail { border-color: #f87171; }
         .step.warn { border-color: #fbbf24; }
         .step.info { border-color: #60a5fa; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #334155; }
+        th { background: #1e293b; color: #94a3b8; }
+        tr:hover { background: #1e293b; }
         .btn { background: #4ade80; color: #0f172a; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; display: inline-block; }
         .btn:hover { background: #22c55e; }
-        .btn-primary { background: #60a5fa; color: #0f172a; }
-        .btn-primary:hover { background: #3b82f6; }
-        .login-form { background: #1e293b; padding: 20px; border-radius: 8px; border: 1px solid #334155; max-width: 400px; margin: 10px 0; }
-        .login-form label { display: block; margin: 8px 0 4px; color: #94a3b8; }
-        .login-form input { width: 100%; padding: 8px 12px; border: 1px solid #334155; border-radius: 4px; background: #0f172a; color: #e2e8f0; }
-        .login-form .btn { margin-top: 12px; width: 100%; }
+        .status-draft { color: #94a3b8; }
+        .status-pending { color: #fbbf24; }
+        .status-approved { color: #60a5fa; }
+        .status-completed { color: #4ade80; }
+        .status-rejected { color: #f87171; }
     </style>
 </head>
 <body>
-<h1>🔧 VouchMorph System Test</h1>
-<p class='info'>Testing database connection, tables, and authentication</p>";
+<h1>📋 Batch Database Check</h1>
+<p class='info'>Checking all batches in the system</p>";
 
 // ============================================================
-// TEST 1: Database Connection
+// LOAD AUTH
 // ============================================================
-echo "<div class='step'>";
-echo "<h2>Test 1: Database Connection</h2>";
-
 try {
     require_once 'auth.php';
     $pdo = getDBConnection();
-    echo "<span class='pass'>✅ Database connected</span><br>";
+    $orgId = getOrganizationId();
+    $user = getCurrentUser();
     
-    $stmt = $pdo->query("SELECT version() as version, now() as time");
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    echo "Version: " . ($row['version'] ?? 'Unknown') . "<br>";
-    echo "Server Time: " . ($row['time'] ?? 'Unknown') . "<br>";
-    $dbConnected = true;
+    echo "<div class='step pass'>";
+    echo "<h2>✅ Authentication</h2>";
+    if ($user) {
+        echo "Logged in as: " . ($user['full_name'] ?? $user['username'] ?? 'User') . "<br>";
+        echo "Role: <strong>" . ($user['role'] ?? 'Unknown') . "</strong><br>";
+        echo "Organization ID: " . ($orgId ?? 'N/A') . "<br>";
+    } else {
+        echo "<span class='warn'>⚠️ Not logged in - showing all batches</span><br>";
+    }
+    echo "</div>";
+    
 } catch (Exception $e) {
-    echo "<span class='fail'>❌ Database error: " . $e->getMessage() . "</span><br>";
-    $dbConnected = false;
+    echo "<div class='step fail'>";
+    echo "<h2>❌ Authentication Failed</h2>";
+    echo "Error: " . $e->getMessage() . "<br>";
+    echo "</div>";
+    exit;
 }
-echo "</div>";
 
 // ============================================================
-// TEST 2: Tables
+// CHECK BATCHES
 // ============================================================
 echo "<div class='step'>";
-echo "<h2>Test 2: Required Tables</h2>";
+echo "<h2>📊 Batch Statistics</h2>";
 
-if ($dbConnected) {
-    $tables = [
-        'disbursement_batches',
-        'disbursement_destinations',
-        'source_accounts',
-        'batch_approvals',
-        'organizations',
-        'organization_users',
-        'users'
-    ];
+try {
+    // Total batches in system
+    $stmt = $pdo->query("SELECT COUNT(*) as total FROM disbursement_batches");
+    $totalBatches = $stmt->fetchColumn();
+    echo "<span class='pass'>📋 Total Batches in System: $totalBatches</span><br>";
     
-    $allExist = true;
-    foreach ($tables as $table) {
-        try {
-            $stmt = $pdo->prepare("SELECT 1 FROM information_schema.tables WHERE table_name = :table");
-            $stmt->execute([':table' => $table]);
-            if ($stmt->fetch()) {
-                echo "<span class='pass'>✅ $table</span><br>";
-            } else {
-                echo "<span class='fail'>❌ $table - MISSING</span><br>";
-                $allExist = false;
-            }
-        } catch (Exception $e) {
-            echo "<span class='fail'>❌ $table - Error: " . $e->getMessage() . "</span><br>";
-            $allExist = false;
-        }
-    }
-    
-    if ($allExist) {
-        echo "<span class='pass'>✅ All tables exist</span><br>";
-    }
-}
-echo "</div>";
-
-// ============================================================
-// TEST 3: Authentication
-// ============================================================
-echo "<div class='step'>";
-echo "<h2>Test 3: Authentication</h2>";
-
-if (isset($_SESSION['enterprise_user'])) {
-    $user = $_SESSION['enterprise_user'];
-    echo "<span class='pass'>✅ Logged in</span><br>";
-    echo "User: " . ($user['full_name'] ?? $user['username'] ?? 'Unknown') . "<br>";
-    echo "Role: <strong>" . ($user['role'] ?? 'Unknown') . "</strong><br>";
-    echo "Organization ID: " . ($user['organization_id'] ?? 'N/A') . "<br>";
-    echo "Organization: " . ($user['organization_name'] ?? 'N/A') . "<br>";
-    $isLoggedIn = true;
-    $orgId = $user['organization_id'] ?? null;
-} else {
-    echo "<span class='warn'>⚠️ Not logged in</span><br>";
-    echo "<div class='login-form'>";
-    echo "<h3 style='color:#fbbf24;'>🔑 Login</h3>";
-    echo "<form method='POST' action='login.php'>";
-    echo "<label>Email</label>";
-    echo "<input type='email' name='email' value='program_officer@example.com' placeholder='Enter email'>";
-    echo "<label>Password</label>";
-    echo "<input type='password' name='password' value='password123' placeholder='Enter password'>";
-    echo "<button type='submit' class='btn btn-primary'>Login</button>";
-    echo "</form>";
-    echo "<p style='margin-top:8px; font-size:11px; color:#64748b;'>Try: program_officer@example.com / password123</p>";
-    echo "</div>";
-    $isLoggedIn = false;
-    $orgId = null;
-}
-echo "</div>";
-
-// ============================================================
-// TEST 4: Organization Data (if logged in)
-// ============================================================
-if ($isLoggedIn && $dbConnected) {
-    echo "<div class='step'>";
-    echo "<h2>Test 4: Organization Data</h2>";
-    
-    try {
-        $stmt = $pdo->prepare("SELECT id, name, country_code, status FROM organizations WHERE id = :id");
-        $stmt->execute([':id' => $orgId]);
-        $org = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($org) {
-            echo "<span class='pass'>✅ Organization found</span><br>";
-            echo "Name: " . ($org['name'] ?? 'N/A') . "<br>";
-            echo "Country: " . ($org['country_code'] ?? 'N/A') . "<br>";
-            echo "Status: " . ($org['status'] ?? 'N/A') . "<br>";
-        } else {
-            echo "<span class='fail'>❌ Organization not found</span><br>";
-        }
-    } catch (Exception $e) {
-        echo "<span class='fail'>❌ Error: " . $e->getMessage() . "</span><br>";
-    }
-    echo "</div>";
-    
-    // ============================================================
-    // TEST 5: Source Accounts
-    // ============================================================
-    echo "<div class='step'>";
-    echo "<h2>Test 5: Source Accounts</h2>";
-    
-    try {
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM source_accounts WHERE organization_id = :org_id AND is_active = true");
-        $stmt->execute([':org_id' => $orgId]);
-        $count = $stmt->fetchColumn();
-        
-        if ($count > 0) {
-            echo "<span class='pass'>✅ Found $count source accounts</span><br>";
-            
-            $stmt = $pdo->prepare("SELECT institution, source_identifier, balance FROM source_accounts WHERE organization_id = :org_id AND is_active = true LIMIT 5");
-            $stmt->execute([':org_id' => $orgId]);
-            $sources = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            foreach ($sources as $s) {
-                echo "<span class='info'>🏦 " . $s['institution'] . " - " . $s['source_identifier'] . " (BWP " . number_format($s['balance'] ?? 0, 2) . ")</span><br>";
-            }
-        } else {
-            echo "<span class='warn'>⚠️ No source accounts found</span><br>";
-            echo "<a href='imports/add_source.php' class='btn'>➕ Add Source Account</a>";
-        }
-    } catch (Exception $e) {
-        echo "<span class='fail'>❌ Error: " . $e->getMessage() . "</span><br>";
-    }
-    echo "</div>";
-    
-    // ============================================================
-    // TEST 6: Batch Summary
-    // ============================================================
-    echo "<div class='step'>";
-    echo "<h2>Test 6: Batch Summary</h2>";
-    
-    try {
-        // Total batches
+    // Batches for this organization
+    if ($orgId) {
         $stmt = $pdo->prepare("SELECT COUNT(*) FROM disbursement_batches WHERE organization_id = :org_id");
         $stmt->execute([':org_id' => $orgId]);
-        $total = $stmt->fetchColumn();
-        echo "<span class='pass'>📋 Total Batches: $total</span><br>";
-        
-        // By status
-        $stmt = $pdo->prepare("SELECT status, COUNT(*) as count FROM disbursement_batches WHERE organization_id = :org_id GROUP BY status");
-        $stmt->execute([':org_id' => $orgId]);
-        $statuses = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        if (!empty($statuses)) {
-            foreach ($statuses as $s) {
-                $icon = match(strtolower($s['status'])) {
-                    'draft' => '📝',
-                    'pending', 'pending_approval' => '⏳',
-                    'approved' => '✅',
-                    'completed', 'executed' => '✔️',
-                    'rejected' => '❌',
-                    default => '📋'
-                };
-                echo "<span class='info'>$icon " . strtoupper($s['status']) . ": " . $s['count'] . "</span><br>";
-            }
-        }
-        
-        // Total disbursed
-        $stmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount), 0) FROM disbursement_batches WHERE organization_id = :org_id AND status IN ('completed', 'executed')");
-        $stmt->execute([':org_id' => $orgId]);
-        $totalDisbursed = $stmt->fetchColumn();
-        echo "<span class='pass'>💰 Total Disbursed: BWP " . number_format($totalDisbursed, 2) . "</span><br>";
-        
-    } catch (Exception $e) {
-        echo "<span class='fail'>❌ Error: " . $e->getMessage() . "</span><br>";
+        $orgBatches = $stmt->fetchColumn();
+        echo "<span class='pass'>🏢 Batches for your Organization: $orgBatches</span><br>";
     }
-    echo "</div>";
+    
+    // Batches by status
+    $stmt = $pdo->query("
+        SELECT status, COUNT(*) as count 
+        FROM disbursement_batches 
+        GROUP BY status 
+        ORDER BY count DESC
+    ");
+    $statusCounts = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    echo "<br><strong>Status Distribution:</strong><br>";
+    if (!empty($statusCounts)) {
+        foreach ($statusCounts as $sc) {
+            $status = strtoupper($sc['status']);
+            $color = match(strtolower($status)) {
+                'draft' => 'status-draft',
+                'pending', 'pending_approval' => 'status-pending',
+                'approved' => 'status-approved',
+                'completed', 'executed' => 'status-completed',
+                'rejected' => 'status-rejected',
+                default => ''
+            };
+            echo "<span class='$color'>$status: " . $sc['count'] . "</span><br>";
+        }
+    } else {
+        echo "<span class='warn'>⚠️ No batches found</span><br>";
+    }
+    
+    // Total amount disbursed
+    $stmt = $pdo->query("
+        SELECT COALESCE(SUM(total_amount), 0) as total 
+        FROM disbursement_batches 
+        WHERE status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')
+    ");
+    $totalDisbursed = $stmt->fetchColumn();
+    echo "<br><span class='pass'>💰 Total Disbursed: BWP " . number_format($totalDisbursed, 2) . "</span><br>";
+    
+} catch (Exception $e) {
+    echo "<span class='fail'>❌ Error: " . $e->getMessage() . "</span><br>";
 }
+echo "</div>";
+
+// ============================================================
+// LIST ALL BATCHES
+// ============================================================
+echo "<div class='step'>";
+echo "<h2>📋 All Batches</h2>";
+
+try {
+    $stmt = $pdo->prepare("
+        SELECT 
+            id, 
+            batch_reference, 
+            batch_name, 
+            status, 
+            total_amount, 
+            total_destinations,
+            identity_recipients,
+            created_at,
+            created_by,
+            submitted_at,
+            approved_at,
+            executed_at
+        FROM disbursement_batches 
+        ORDER BY created_at DESC
+        LIMIT 50
+    ");
+    $stmt->execute();
+    $batches = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    if (empty($batches)) {
+        echo "<span class='warn'>⚠️ No batches found in the database</span><br>";
+        echo "<a href='imports/source_input.php' class='btn'>💰 Create Your First Batch</a>";
+    } else {
+        echo "<span class='pass'>✅ Found " . count($batches) . " batches</span><br><br>";
+        
+        echo "<table>";
+        echo "<tr>";
+        echo "<th>ID</th>";
+        echo "<th>Reference</th>";
+        echo "<th>Name</th>";
+        echo "<th>Status</th>";
+        echo "<th>Amount</th>";
+        echo "<th>Dest</th>";
+        echo "<th>Identity</th>";
+        echo "<th>Created</th>";
+        echo "<th>Actions</th>";
+        echo "</tr>";
+        
+        foreach ($batches as $batch) {
+            $status = strtoupper($batch['status'] ?? 'UNKNOWN');
+            $color = match(strtolower($status)) {
+                'draft' => 'status-draft',
+                'pending', 'pending_approval' => 'status-pending',
+                'approved' => 'status-approved',
+                'completed', 'executed' => 'status-completed',
+                'rejected' => 'status-rejected',
+                default => ''
+            };
+            
+            echo "<tr>";
+            echo "<td>" . $batch['id'] . "</td>";
+            echo "<td><strong>" . ($batch['batch_reference'] ?? 'N/A') . "</strong></td>";
+            echo "<td>" . ($batch['batch_name'] ?? '—') . "</td>";
+            echo "<td class='$color'>" . $status . "</td>";
+            echo "<td>BWP " . number_format($batch['total_amount'] ?? 0, 2) . "</td>";
+            echo "<td>" . ($batch['total_destinations'] ?? 0) . "</td>";
+            echo "<td>" . ($batch['identity_recipients'] ?? 0) . "</td>";
+            echo "<td>" . date('Y-m-d H:i', strtotime($batch['created_at'] ?? 'now')) . "</td>";
+            echo "<td>";
+            echo "<a href='batches/view.php?id=" . $batch['id'] . "' style='color:#60a5fa;'>View</a>";
+            if (strtolower($status) === 'draft') {
+                echo " | <a href='imports/add_destinations.php?batch_id=" . $batch['id'] . "' style='color:#fbbf24;'>Edit</a>";
+            }
+            if (strtolower($status) === 'pending_approval' || strtolower($status) === 'pending') {
+                echo " | <a href='imports/review_batch.php?batch_id=" . $batch['id'] . "' style='color:#fbbf24;'>Review</a>";
+            }
+            echo "</td>";
+            echo "</tr>";
+        }
+        echo "</table>";
+    }
+} catch (Exception $e) {
+    echo "<span class='fail'>❌ Error: " . $e->getMessage() . "</span><br>";
+}
+echo "</div>";
+
+// ============================================================
+// CHECK DESTINATIONS
+// ============================================================
+echo "<div class='step'>";
+echo "<h2>🎯 Destinations</h2>";
+
+try {
+    $stmt = $pdo->query("
+        SELECT COUNT(*) as total, 
+               SUM(CASE WHEN is_identity_recipient = true THEN 1 ELSE 0 END) as identity_count,
+               SUM(amount) as total_amount
+        FROM disbursement_destinations
+    ");
+    $destStats = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    echo "<span class='pass'>📌 Total Destinations: " . ($destStats['total'] ?? 0) . "</span><br>";
+    echo "<span class='info'>🆔 Identity Recipients: " . ($destStats['identity_count'] ?? 0) . "</span><br>";
+    echo "<span class='pass'>💰 Total Amount: BWP " . number_format($destStats['total_amount'] ?? 0, 2) . "</span><br>";
+    
+    // Show recent destinations
+    $stmt = $pdo->prepare("
+        SELECT d.*, b.batch_reference 
+        FROM disbursement_destinations d
+        LEFT JOIN disbursement_batches b ON d.batch_id = b.id
+        ORDER BY d.id DESC
+        LIMIT 10
+    ");
+    $stmt->execute();
+    $dests = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    if (!empty($dests)) {
+        echo "<br><strong>Recent Destinations:</strong><br>";
+        echo "<table>";
+        echo "<tr><th>Batch</th><th>#</th><th>Institution</th><th>Amount</th><th>Beneficiary</th><th>Status</th></tr>";
+        foreach ($dests as $d) {
+            echo "<tr>";
+            echo "<td>" . ($d['batch_reference'] ?? 'N/A') . "</td>";
+            echo "<td>" . ($d['destination_index'] ?? '') . "</td>";
+            echo "<td>" . ($d['institution'] ?? '') . "</td>";
+            echo "<td>BWP " . number_format($d['amount'] ?? 0, 2) . "</td>";
+            echo "<td>" . ($d['beneficiary_name'] ?? '—') . "</td>";
+            echo "<td>" . ($d['status'] ?? 'PENDING') . "</td>";
+            echo "</tr>";
+        }
+        echo "</table>";
+    }
+} catch (Exception $e) {
+    echo "<span class='fail'>❌ Error: " . $e->getMessage() . "</span><br>";
+}
+echo "</div>";
+
+// ============================================================
+// QUICK FIX SUGGESTIONS
+// ============================================================
+echo "<div class='step'>";
+echo "<h2>💡 Quick Fix Suggestions</h2>";
+
+try {
+    // Check for old tables
+    $stmt = $pdo->query("SELECT 1 FROM information_schema.tables WHERE table_name = 'import_batches'");
+    if ($stmt->fetch()) {
+        echo "<span class='warn'>⚠️ 'import_batches' table still exists. Consider dropping if no longer needed.</span><br>";
+    }
+    
+    $stmt = $pdo->query("SELECT 1 FROM information_schema.tables WHERE table_name = 'import_rows'");
+    if ($stmt->fetch()) {
+        echo "<span class='warn'>⚠️ 'import_rows' table still exists. Consider dropping if no longer needed.</span><br>";
+    }
+    
+    // Check if there are any batches
+    $stmt = $pdo->query("SELECT COUNT(*) FROM disbursement_batches");
+    $batchCount = $stmt->fetchColumn();
+    
+    if ($batchCount == 0) {
+        echo "<span class='warn'>⚠️ No batches found. Create your first batch:</span><br>";
+        echo "<a href='imports/source_input.php' class='btn'>💰 Create First Batch</a><br>";
+    }
+    
+    // Check for source accounts
+    if ($orgId) {
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM source_accounts WHERE organization_id = :org_id");
+        $stmt->execute([':org_id' => $orgId]);
+        $sourceCount = $stmt->fetchColumn();
+        
+        if ($sourceCount == 0) {
+            echo "<span class='warn'>⚠️ No source accounts. Add one:</span><br>";
+            echo "<a href='imports/add_source.php' class='btn'>🏦 Add Source Account</a><br>";
+        }
+    }
+    
+} catch (Exception $e) {
+    echo "<span class='fail'>❌ Error: " . $e->getMessage() . "</span><br>";
+}
+echo "</div>";
 
 // ============================================================
 // SUMMARY
 // ============================================================
 echo "<div class='box' style='border: 2px solid #4ade80; margin-top: 20px;'>";
 echo "<h2>📊 Summary</h2>";
-echo "<span class='pass'>✅ Database: " . ($dbConnected ? 'Connected' : 'Failed') . "</span><br>";
-echo "<span class='pass'>✅ Tables: " . ($allExist ?? false ? 'All present' : 'Check above') . "</span><br>";
-echo $isLoggedIn ? "<span class='pass'>✅ Logged in</span><br>" : "<span class='warn'>⚠️ Not logged in - Login above</span><br>";
 
-if ($isLoggedIn) {
-    echo "<br><strong>Quick Links:</strong><br>";
-    echo "<a href='index.php' class='btn' style='margin:4px;'>📊 Dashboard</a>";
-    echo "<a href='imports/source_input.php' class='btn' style='margin:4px;'>💰 New Disbursement</a>";
-    echo "<a href='imports/review_batch.php?status=all' class='btn' style='margin:4px;'>📋 Batches</a>";
-    echo "<a href='imports/add_source.php' class='btn' style='margin:4px;'>🏦 Add Source</a>";
-} else {
-    echo "<br><a href='login.php' class='btn btn-primary'>🔑 Go to Login</a>";
+try {
+    $stmt = $pdo->query("SELECT COUNT(*) FROM disbursement_batches");
+    $total = $stmt->fetchColumn();
+    echo "<span class='pass'>📋 Total Batches: $total</span><br>";
+    
+    if ($total > 0) {
+        echo "<span class='pass'>✅ Batches exist in the database</span><br>";
+        echo "<br><strong>Quick Actions:</strong><br>";
+        echo "<a href='imports/review_batch.php?status=all' class='btn' style='margin:4px;'>📋 View All Batches</a>";
+        echo "<a href='imports/source_input.php' class='btn' style='margin:4px;'>💰 New Batch</a>";
+        echo "<a href='index.php' class='btn' style='margin:4px;'>📊 Dashboard</a>";
+    } else {
+        echo "<span class='warn'>⚠️ No batches found</span><br>";
+        echo "<br><a href='imports/source_input.php' class='btn'>💰 Create Your First Batch</a>";
+    }
+} catch (Exception $e) {
+    echo "<span class='fail'>❌ Error: " . $e->getMessage() . "</span><br>";
 }
 echo "</div>";
 
