@@ -1,5 +1,16 @@
 <?php
 // login.php - Enterprise Login with Multi-Destination Workflow Redirects
+
+// ============================================================================
+// FIX: Session settings MUST be set BEFORE any output
+// ============================================================================
+if (session_status() === PHP_SESSION_NONE) {
+    ini_set('session.cookie_httponly', '1');
+    ini_set('session.cookie_secure', '1');
+    ini_set('session.cookie_samesite', 'Lax');
+    session_start();
+}
+
 require_once 'auth.php';
 
 $pdo = getDBConnection();
