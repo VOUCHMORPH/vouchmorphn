@@ -20,11 +20,17 @@ $stmt = $db->prepare("SELECT id, name FROM departments WHERE organization_id = :
 $stmt->execute([':org_id' => $orgId]);
 $departments = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Get programs
+// Get programs - FIXED: Handle empty values properly
 $programs = [];
-$stmt = $db->prepare("SELECT id, name FROM programs WHERE organization_id = :org_id ORDER BY name");
-$stmt->execute([':org_id' => $orgId]);
-$programs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+try {
+    $stmt = $db->prepare("SELECT id, name FROM programs WHERE organization_id = :org_id ORDER BY name");
+    $stmt->execute([':org_id' => $orgId]);
+    $programs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    // Programs table might not exist - just use empty array
+    error_log("[manual.php] Programs query failed: " . $e->getMessage());
+    $programs = [];
+}
 
 // Check if user exists in organization_users before audit log
 $userExistsInOrg = false;
@@ -41,12 +47,11 @@ if ($userId) {
     $userExistsInOrg = !empty($orgUser);
 }
 
-// FIXED: Define getUserDepartmentScope if it doesn't exist
+// Define getUserDepartmentScope if it doesn't exist
 if (!function_exists('getUserDepartmentScope')) {
     function getUserDepartmentScope() {
         global $db, $orgId, $userId;
         try {
-            // Get user's department from organization_users
             $stmt = $db->prepare("
                 SELECT department_id FROM organization_users 
                 WHERE user_id = :user_id AND organization_id = :org_id AND is_active = true
@@ -80,23 +85,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $batchRef = 'MANUAL_' . date('Ymd_His') . '_' . strtoupper(substr(uniqid(), -6));
                 $batchName = $_POST['batch_name'] ?? 'Manual Entry ' . date('Y-m-d H:i');
                 $paymentMode = $_POST['payment_mode'] ?? 'BULK';
-                $programId = $_POST['program_id'] ?? null;
+                
+                // ============================================================
+                // FIXED: Handle empty values properly - convert empty strings to null
+                // ============================================================
+                $programId = !empty($_POST['program_id']) ? (int)$_POST['program_id'] : null;
                 $scheduledDate = !empty($_POST['scheduled_date']) ? $_POST['scheduled_date'] : null;
                 $requiresApproval = isset($_POST['requires_approval']) ? 1 : 0;
                 $requiresDualApproval = isset($_POST['requires_dual_approval']) ? 1 : 0;
                 
-                // FIXED: Restrict department override for non-owners
+                // Restrict department override for non-owners
                 $deptId = $_POST['department_id'] ?? $departmentId;
-                // If user has scope restriction, enforce it
                 if ($departmentId && $deptId != $departmentId) {
-                    // Check if user is owner/global admin
                     $isGlobal = in_array($user['role'] ?? '', ['owner', 'super_admin']);
                     if (!$isGlobal) {
-                        $deptId = $departmentId; // Force to their department
+                        $deptId = $departmentId;
                     }
                 }
 
-                // Insert batch - FIXED: Use RETURNING id properly
+                // Insert batch - FIXED: Program_id now properly handled with null
                 $stmt = $db->prepare("
                     INSERT INTO import_batches (
                         organization_id, batch_reference, batch_name, original_filename,
@@ -110,6 +117,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         :dept_id, :program_id, 0, 0, 'BWP', NOW(), NOW()
                     ) RETURNING id
                 ");
+                
+                // FIXED: Use null for empty program_id instead of empty string
                 $stmt->execute([
                     ':org_id' => $orgId,
                     ':ref' => $batchRef,
@@ -120,10 +129,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':requires_dual_approval' => $requiresDualApproval,
                     ':user_id' => $userId,
                     ':dept_id' => $deptId,
-                    ':program_id' => $programId,
+                    ':program_id' => $programId, // Now properly null instead of empty string
                 ]);
                 
-                // FIXED: Get ID from RETURNING clause instead of lastInsertId()
                 $result = $stmt->fetch(PDO::FETCH_ASSOC);
                 $batchId = $result['id'] ?? null;
                 
@@ -278,10 +286,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($validCount > 0) {
                     $success = "$validCount entries added successfully!" . ($invalidCount > 0 ? " $invalidCount had errors." : "");
                     
-                    // FIXED: Use absolute path for redirect
-                    $redirectUrl = "review.php?batch_id=" . urlencode($batchId);
-                    
-                    // Add success message as session flash if session exists
                     if (session_status() === PHP_SESSION_NONE) {
                         session_start();
                     }
@@ -289,7 +293,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $_SESSION['flash_type'] = 'success';
                     $_SESSION['batch_id'] = $batchId;
                     
-                    header("Location: " . $redirectUrl);
+                    header("Location: review.php?batch_id=" . urlencode($batchId));
                     exit;
                 } else {
                     $error = "No valid entries. Please check your data.";
@@ -354,7 +358,10 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats[
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* [All existing styles remain the same - keeping them for brevity] */
+        /* ============================================================
+           ALL EXISTING STYLES REMAIN THE SAME
+           (Keep the styles from your original file)
+           ============================================================ */
         :root {
             --paper:        #EEF1EF;
             --panel:        #FFFFFF;
@@ -674,58 +681,19 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats[
             justify-content: center;
             gap: 6px;
         }
-        .btn-primary {
-            background: var(--ink-900);
-            color: white;
-            border-color: var(--ink-900);
-        }
-        .btn-primary:hover {
-            background: var(--brass);
-            border-color: var(--brass);
-            color: var(--ink-900);
-        }
-        .btn-secondary {
-            background: var(--line);
-            color: var(--ink-700);
-            border-color: var(--line);
-        }
-        .btn-secondary:hover {
-            background: var(--line-strong);
-            border-color: var(--line-strong);
-        }
-        .btn-success {
-            background: var(--ledger-green);
-            color: white;
-            border-color: var(--ledger-green);
-        }
-        .btn-success:hover {
-            background: #1a3d2c;
-            border-color: #1a3d2c;
-        }
-        .btn-danger {
-            background: var(--seal-red);
-            color: white;
-            border-color: var(--seal-red);
-        }
-        .btn-danger:hover {
-            background: #5a1812;
-            border-color: #5a1812;
-        }
-        .btn-outline {
-            background: transparent;
-            color: var(--ink-700);
-            border-color: var(--line);
-        }
-        .btn-outline:hover {
-            border-color: var(--brass);
-            color: var(--brass);
-        }
+        .btn-primary { background: var(--ink-900); color: white; border-color: var(--ink-900); }
+        .btn-primary:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
+        .btn-secondary { background: var(--line); color: var(--ink-700); border-color: var(--line); }
+        .btn-secondary:hover { background: var(--line-strong); border-color: var(--line-strong); }
+        .btn-success { background: var(--ledger-green); color: white; border-color: var(--ledger-green); }
+        .btn-success:hover { background: #1a3d2c; border-color: #1a3d2c; }
+        .btn-danger { background: var(--seal-red); color: white; border-color: var(--seal-red); }
+        .btn-danger:hover { background: #5a1812; border-color: #5a1812; }
+        .btn-outline { background: transparent; color: var(--ink-700); border-color: var(--line); }
+        .btn-outline:hover { border-color: var(--brass); color: var(--brass); }
         .btn-sm { padding: 6px 14px; font-size: 9px; }
         .btn-block { width: 100%; justify-content: center; }
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
         .summary-stats {
             display: grid;
