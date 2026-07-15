@@ -1,4 +1,10 @@
 <?php
+/**
+ * enterprise/imports/review.php
+ * 
+ * FIXED: Uses disbursement_batches and disbursement_destinations
+ * instead of import_batches and import_rows
+ */
 require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
@@ -8,7 +14,11 @@ $db = DBConnection::getConnection();
 $orgId = getOrganizationId();
 $batchId = $_GET['batch_id'] ?? 0;
 
-$stmt = $db->prepare("SELECT * FROM import_batches WHERE id = :id AND organization_id = :org_id");
+// FIXED: Use disbursement_batches
+$stmt = $db->prepare("
+    SELECT * FROM disbursement_batches 
+    WHERE id = :id AND organization_id = :org_id
+");
 $stmt->execute([':id' => $batchId, ':org_id' => $orgId]);
 $batch = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -16,28 +26,34 @@ if (!$batch) {
     die("Batch not found");
 }
 
+// FIXED: Get source from source_accounts
 $source = null;
-if ($batch['source_id']) {
-    $stmt = $db->prepare("SELECT * FROM organization_sources WHERE id = :id");
-    $stmt->execute([':id' => $batch['source_id']]);
+if ($batch['source_account_id']) {
+    $stmt = $db->prepare("
+        SELECT * FROM source_accounts 
+        WHERE id = :id AND organization_id = :org_id
+    ");
+    $stmt->execute([':id' => $batch['source_account_id'], ':org_id' => $orgId]);
     $source = $stmt->fetch(PDO::FETCH_ASSOC);
 }
 
+// FIXED: Use disbursement_destinations
 $stmt = $db->prepare("
-    SELECT * FROM import_rows
-    WHERE batch_id = :batch_id AND validation_status = 'VALID'
-    ORDER BY row_number
+    SELECT * FROM disbursement_destinations
+    WHERE batch_id = :batch_id
+    ORDER BY destination_index
 ");
 $stmt->execute([':batch_id' => $batchId]);
-$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$destinations = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-$totalAmount = array_sum(array_column($rows, 'amount'));
+$totalAmount = array_sum(array_column($destinations, 'amount'));
 $feeRate = 0.015;
 $totalFee = $totalAmount * $feeRate;
 $netAmount = $totalAmount - $totalFee;
 
-// FIXED: CSRF token for the submitForApproval() fetch() call below
 $csrfToken = generateCsrfToken();
+$userRole = $user['role'] ?? 'viewer';
+$canSubmit = in_array($userRole, ['owner', 'program_officer', 'department_head']);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -85,6 +101,7 @@ $csrfToken = generateCsrfToken();
         .btn-secondary { background: #e2e8f0; color: #0f172a; }
         .btn-success { background: #10b981; color: white; }
         .requires-approval { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 16px; border-radius: 12px; margin-bottom: 20px; }
+        .identity-badge { background: #6f42c1; color: white; padding: 2px 8px; border-radius: 12px; font-size: 10px; }
     </style>
 </head>
 <body>
@@ -93,12 +110,11 @@ $csrfToken = generateCsrfToken();
         <div class="sidebar-header"><h2>VouchMorph <span>Enterprise</span></h2></div>
         <div class="sidebar-nav">
             <a href="../index.php" class="nav-item">📊 Dashboard</a>
-            <a href="upload.php" class="nav-item active">📁 New Payment</a>
+            <a href="source_input.php" class="nav-item active">📁 New Payment</a>
             <a href="../batches/index.php" class="nav-item">📦 Batches</a>
-            <a href="../beneficiaries/index.php" class="nav-item">👥 Beneficiaries</a>
-            <a href="../templates/index.php" class="nav-item">📋 Templates</a>
-            <a href="../reports/index.php" class="nav-item">📄 Reports</a>
-            <a href="../settings/index.php" class="nav-item">⚙️ Settings</a>
+            <a href="../beneficiaries.php" class="nav-item">👥 Beneficiaries</a>
+            <a href="../reports.php" class="nav-item">📄 Reports</a>
+            <a href="../settings.php" class="nav-item">⚙️ Settings</a>
         </div>
     </div>
 
@@ -106,12 +122,11 @@ $csrfToken = generateCsrfToken();
         <div class="top-bar"><div class="greeting"><h1>Review & Approve</h1></div></div>
 
         <div class="step-indicator">
-            <div class="step completed"><div class="step-number">✓</div><div class="step-label">Upload</div></div>
-            <div class="step completed"><div class="step-number">✓</div><div class="step-label">Map</div></div>
-            <div class="step completed"><div class="step-number">✓</div><div class="step-label">Validate</div></div>
             <div class="step completed"><div class="step-number">✓</div><div class="step-label">Source</div></div>
-            <div class="step active"><div class="step-number">5</div><div class="step-label">Review</div></div>
-            <div class="step"><div class="step-number">6</div><div class="step-label">Execute</div></div>
+            <div class="step completed"><div class="step-number">✓</div><div class="step-label">Destinations</div></div>
+            <div class="step active"><div class="step-number">3</div><div class="step-label">Review</div></div>
+            <div class="step"><div class="step-number">4</div><div class="step-label">Approve</div></div>
+            <div class="step"><div class="step-number">5</div><div class="step-label">Execute</div></div>
         </div>
 
         <div class="requires-approval">
@@ -124,7 +139,7 @@ $csrfToken = generateCsrfToken();
                 <div class="summary-grid">
                     <div class="summary-card">
                         <div class="summary-label">Total Recipients</div>
-                        <div class="summary-value"><?php echo count($rows); ?></div>
+                        <div class="summary-value"><?php echo count($destinations); ?></div>
                     </div>
                     <div class="summary-card">
                         <div class="summary-label">Total Gross Amount</div>
@@ -132,7 +147,15 @@ $csrfToken = generateCsrfToken();
                     </div>
                     <div class="summary-card">
                         <div class="summary-label">Source Account</div>
-                        <div class="summary-value" style="font-size: 16px;"><?php echo htmlspecialchars($source['source_name'] ?? 'N/A'); ?></div>
+                        <div class="summary-value" style="font-size: 16px;">
+                            <?php 
+                            if ($source) {
+                                echo htmlspecialchars($source['institution'] . ' - ' . $source['source_identifier']);
+                            } else {
+                                echo 'N/A';
+                            }
+                            ?>
+                        </div>
                     </div>
                 </div>
 
@@ -146,18 +169,45 @@ $csrfToken = generateCsrfToken();
         </div>
 
         <div class="card">
-            <div class="card-header">📋 Beneficiary List (<?php echo count($rows); ?> recipients)</div>
+            <div class="card-header">📋 Destination List (<?php echo count($destinations); ?> recipients)</div>
             <div class="card-body">
                 <div style="overflow-x: auto; max-height: 400px;">
                     <table>
-                        <thead><tr><th>#</th><th>Name</th><th>Destination</th><th>Amount</th></tr></thead>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Type</th>
+                                <th>Name</th>
+                                <th>Destination</th>
+                                <th>Amount</th>
+                            </tr>
+                        </thead>
                         <tbody>
-                            <?php foreach ($rows as $index => $row): ?>
+                            <?php foreach ($destinations as $index => $dest): ?>
                             <tr>
                                 <td><?php echo $index + 1; ?></td>
-                                <td><?php echo htmlspecialchars($row['recipient_name']); ?></td>
-                                <td><?php echo htmlspecialchars($row['destination_value']); ?><br><small><?php echo $row['destination_type']; ?></small></td>
-                                <td>P<?php echo number_format($row['amount'], 2); ?></td>
+                                <td>
+                                    <?php if ($dest['is_identity_recipient'] ?? false): ?>
+                                    <span class="identity-badge">🆔 IDENTITY</span>
+                                    <?php else: ?>
+                                    <span style="background:#e2e8f0; padding:2px 8px; border-radius:12px; font-size:10px;">🏛️ INST</span>
+                                    <?php endif; ?>
+                                </td>
+                                <td><?php echo htmlspecialchars($dest['beneficiary_name'] ?? 'N/A'); ?></td>
+                                <td>
+                                    <?php 
+                                    if ($dest['is_identity_recipient'] ?? false) {
+                                        echo htmlspecialchars($dest['identity_type'] . ': ' . $dest['identity_value']);
+                                    } else {
+                                        echo htmlspecialchars($dest['identifier']);
+                                    }
+                                    ?>
+                                    <br><small>
+                                        <?php echo htmlspecialchars($dest['institution'] ?? 'N/A'); ?>
+                                        · <?php echo htmlspecialchars($dest['delivery_method']); ?>
+                                    </small>
+                                </td>
+                                <td>P<?php echo number_format($dest['amount'], 2); ?></td>
                             </tr>
                             <?php endforeach; ?>
                         </tbody>
@@ -167,30 +217,41 @@ $csrfToken = generateCsrfToken();
         </div>
 
         <div class="btn-group">
-            <button class="btn btn-secondary" onclick="location.href='sources.php?batch_id=<?php echo $batchId; ?>'">← Back</button>
+            <button class="btn btn-secondary" onclick="location.href='add_destinations.php?batch_id=<?php echo $batchId; ?>'">← Back</button>
+            <?php if ($canSubmit && $batch['status'] === 'draft'): ?>
             <button class="btn btn-success" onclick="submitForApproval()">✓ Submit for Approval</button>
+            <?php endif; ?>
+            <?php if ($batch['status'] === 'pending_approval'): ?>
+            <button class="btn btn-primary" disabled>⏳ Pending Approval</button>
+            <?php endif; ?>
         </div>
     </div>
 </div>
 <script>
-// FIXED: CSRF token embedded server-side, sent in the JSON body
 const CSRF_TOKEN = <?php echo json_encode($csrfToken); ?>;
+const BATCH_ID = <?php echo (int)$batchId; ?>;
 
 function submitForApproval() {
+    if (!confirm('Submit this batch for approval? Once submitted, it cannot be edited without approval.')) {
+        return;
+    }
+    
     fetch('approve.php', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            batch_id: <?php echo $batchId; ?>,
+            batch_id: BATCH_ID,
             action: 'submit',
             csrf_token: CSRF_TOKEN
         })
     }).then(res => res.json()).then(data => {
         if (data.success) {
-            window.location.href = '../batches/view.php?id=<?php echo $batchId; ?>';
+            window.location.href = '../batches/view.php?id=' + BATCH_ID;
         } else {
             alert('Error: ' + data.error);
         }
+    }).catch(err => {
+        alert('Network error: ' + err.message);
     });
 }
 </script>
