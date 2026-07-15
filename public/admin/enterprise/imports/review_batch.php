@@ -22,6 +22,7 @@ $batchId = $_GET['batch_id'] ?? 0;
 
 $error = '';
 $success = '';
+$failedDestinations = []; // Track failed destinations for display
 
 // ============================================================
 // HELPER: Check if user can edit this batch
@@ -146,9 +147,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $batch['status'] = 'rejected';
             
         } elseif ($action === 'execute') {
-            // ============================================================
-            // FIXED: Split identity vs institution destinations
-            // ============================================================
             error_log("=== REVIEW_BATCH DEBUG: EXECUTION STARTED ===");
             
             try {
@@ -189,6 +187,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $overallSuccess = 0;
                 $overallFailed = 0;
                 $overallPending = 0;
+                $failedDestinations = []; // Reset for this execution
                 
                 // ============================================================
                 // 1. IDENTITY DESTINATIONS - One initiateSwapToIdentity() each
@@ -217,7 +216,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     try {
                         $idResult = $swapService->executeAtomicSwap($identityPayload);
-                        $overallPending++;  // Identity swaps go to pending confirmation
+                        $overallPending++;
                         
                         $stmt = $db->prepare("
                             UPDATE disbursement_destinations
@@ -241,7 +240,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         
                     } catch (Exception $e) {
                         $overallFailed++;
-                        error_log("[review_batch] Identity destination {$dest['destination_index']} failed: " . $e->getMessage());
+                        $errorMsg = $e->getMessage();
+                        
+                        // STORE FAILED DESTINATION INFO
+                        $failedDestinations[] = [
+                            'index' => $dest['destination_index'],
+                            'institution' => $dest['institution'] ?? 'IDENTITY_RECIPIENT',
+                            'beneficiary' => $dest['beneficiary_name'] ?? $dest['identity_value'] ?? 'Unknown',
+                            'amount' => $dest['amount'],
+                            'currency' => $dest['currency'] ?? 'BWP',
+                            'error' => $errorMsg
+                        ];
+                        
+                        error_log("[review_batch] Identity destination {$dest['destination_index']} failed: " . $errorMsg);
                         
                         $stmt = $db->prepare("
                             UPDATE disbursement_destinations
@@ -250,7 +261,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             WHERE batch_id = :batch_id AND destination_index = :idx
                         ");
                         $stmt->execute([
-                            ':error' => $e->getMessage(),
+                            ':error' => $errorMsg,
                             ':batch_id' => $batchId,
                             ':idx' => $dest['destination_index'],
                         ]);
@@ -259,7 +270,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 // ============================================================
                 // 2. INSTITUTION DESTINATIONS - Always MULTI_DESTINATION
-                //    Works for 1 or more destinations
                 // ============================================================
                 if (!empty($institutionDestinations)) {
                     error_log("[review_batch] Processing " . count($institutionDestinations) . " institution destinations via MULTI_DESTINATION");
@@ -297,14 +307,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     error_log("[review_batch] MULTI_DESTINATION result: " . json_encode($multiResult, JSON_PRETTY_PRINT));
                     
-                    $overallSuccess += $multiResult['successful_destinations'] ?? 0;
-                    $overallFailed += $multiResult['failed_destinations'] ?? 0;
+                    // Track successes and failures
+                    $multiSuccess = $multiResult['successful_destinations'] ?? 0;
+                    $multiFailed = $multiResult['failed_destinations'] ?? 0;
+                    
+                    $overallSuccess += $multiSuccess;
+                    $overallFailed += $multiFailed;
                     
                     // Map result rows back to institutionDestinations by array position
-                    // executeMultiDestinationSwap() preserves input order in results
                     foreach ($multiResult['destinations'] ?? [] as $idx => $destResult) {
                         $origDest = $institutionDestinations[$idx] ?? null;
                         if (!$origDest) continue;
+                        
+                        $status = $destResult['status'] ?? 'FAILED';
+                        $errorMsg = $destResult['error'] ?? null;
+                        
+                        // If failed, store for reporting
+                        if ($status !== 'SUCCESS' && $status !== 'COMPLETED') {
+                            $failedDestinations[] = [
+                                'index' => $origDest['destination_index'],
+                                'institution' => $origDest['institution'],
+                                'beneficiary' => $origDest['beneficiary_name'] ?? $origDest['identifier'],
+                                'amount' => $origDest['amount'],
+                                'currency' => $origDest['currency'] ?? 'BWP',
+                                'error' => $errorMsg ?? 'Unknown error'
+                            ];
+                        }
                         
                         $stmt = $db->prepare("
                             UPDATE disbursement_destinations
@@ -315,10 +343,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             WHERE batch_id = :batch_id AND destination_index = :idx
                         ");
                         $stmt->execute([
-                            ':status' => $destResult['status'] ?? 'FAILED',
+                            ':status' => $status,
                             ':hold_ref' => $destResult['hold_reference'] ?? null,
                             ':tx_ref' => $destResult['transaction_reference'] ?? null,
-                            ':error' => $destResult['error'] ?? null,
+                            ':error' => $errorMsg,
                             ':batch_id' => $batchId,
                             ':idx' => $origDest['destination_index'],
                         ]);
@@ -331,7 +359,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 
                 // ============================================================
-                // ROLL UP BATCH STATUS - FIXED: No ambiguous parameter
+                // ROLL UP BATCH STATUS
                 // ============================================================
                 $finalStatus = 'completed';
                 if ($overallFailed > 0 && $overallSuccess > 0) {
@@ -342,12 +370,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $finalStatus = 'pending_identity_confirmation';
                 }
                 
-                // Determine if status is terminal (completed/success) - FIXED: use PHP, not SQL
                 $isTerminal = in_array($finalStatus, ['completed', 'success', 'COMPLETED']);
                 
                 error_log("[review_batch] Final status: $finalStatus (success: $overallSuccess, failed: $overallFailed, pending: $overallPending)");
                 
-                // FIXED: Each parameter appears ONCE to avoid type ambiguity
                 $stmt = $db->prepare("
                     UPDATE disbursement_batches 
                     SET status = :status,
@@ -372,19 +398,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':id' => $batchId
                 ]);
                 
-                $success = "Batch executed! $overallSuccess succeeded, $overallFailed failed, $overallPending pending identity confirmation.";
+                // ============================================================
+                // BUILD DETAILED SUCCESS/ERROR MESSAGE
+                // ============================================================
+                if ($finalStatus === 'completed') {
+                    $success = "✅ All $overallSuccess destinations paid successfully!";
+                } elseif ($finalStatus === 'partial_success') {
+                    $success = "⚠️ Batch partially executed.<br>";
+                    $success .= "✅ <strong>$overallSuccess succeeded</strong><br>";
+                    $success .= "❌ <strong>$overallFailed failed</strong><br><br>";
+                    $success .= "<strong>Failed Destinations:</strong><br>";
+                    foreach ($failedDestinations as $failed) {
+                        $success .= "• <strong>#{$failed['index']}</strong> - {$failed['institution']} - ";
+                        $success .= "{$failed['beneficiary']} - " . number_format($failed['amount'], 2) . " {$failed['currency']}<br>";
+                        $success .= "  <span style='color:#7A2118; font-size:12px;'>Error: " . htmlspecialchars($failed['error']) . "</span><br>";
+                    }
+                } elseif ($finalStatus === 'failed') {
+                    $error = "❌ All $overallFailed destinations failed.<br><br>";
+                    $error .= "<strong>Failed Destinations:</strong><br>";
+                    foreach ($failedDestinations as $failed) {
+                        $error .= "• <strong>#{$failed['index']}</strong> - {$failed['institution']} - ";
+                        $error .= "{$failed['beneficiary']} - " . number_format($failed['amount'], 2) . " {$failed['currency']}<br>";
+                        $error .= "  <span style='color:#7A2118; font-size:12px;'>Error: " . htmlspecialchars($failed['error']) . "</span><br>";
+                    }
+                } else {
+                    $success = "Batch executed! $overallSuccess succeeded, $overallFailed failed, $overallPending pending identity confirmation.";
+                }
+                
                 $batch['status'] = $finalStatus;
                 
             } catch (Exception $e) {
                 error_log("[review_batch] Execution error: " . $e->getMessage());
                 error_log("[review_batch] Trace: " . $e->getTraceAsString());
                 
-                // Debug: Log the payload that caused the error
-                if (isset($payload)) {
-                    error_log("[review_batch] PAYLOAD THAT CAUSED ERROR: " . json_encode($payload, JSON_PRETTY_PRINT));
-                }
+                // Mark all destinations as FAILED on system error
+                $stmt = $db->prepare("
+                    UPDATE disbursement_destinations 
+                    SET status = 'FAILED',
+                        error_message = :error,
+                        updated_at = NOW()
+                    WHERE batch_id = :batch_id 
+                    AND status NOT IN ('COMPLETED', 'SUCCESS')
+                ");
+                $stmt->execute([
+                    ':error' => 'System error: ' . $e->getMessage(),
+                    ':batch_id' => $batchId
+                ]);
                 
-                $error = "Execution failed: " . $e->getMessage();
+                $error = "❌ Execution failed: " . $e->getMessage();
             }
         }
     }
@@ -485,6 +546,7 @@ $status = strtolower($batch['status'] ?? 'draft');
         .status-failed { background: #fbeceb; color: var(--seal-red); }
         .status-pending_identity_confirmation { background: #dbeafe; color: #1e40af; }
         .status-partial_success { background: #fef3c7; color: #92400e; }
+        .status-success { background: #dcfce7; color: #166534; }
         .readonly-badge {
             display: inline-block;
             padding: 4px 12px;
@@ -513,9 +575,19 @@ $status = strtolower($batch['status'] ?? 'draft');
         .btn-danger { background: var(--seal-red); color: white; }
         .btn-danger:hover { background: #5a1812; }
         .btn-secondary { background: var(--line); color: var(--ink-700); }
-        .btn-secondary:hover { background: var(--line-strong); }
+        .btn-secondary:hover { background: #c0c8c4; }
         .btn-outline { background: transparent; border: 2px solid var(--line); }
         .btn-outline:hover { border-color: var(--brass); }
+        .btn-retry { 
+            background: #dbeafe; 
+            color: #1e40af; 
+            padding: 4px 12px;
+            font-size: 11px;
+            border-radius: 20px;
+            border: none;
+            cursor: pointer;
+        }
+        .btn-retry:hover { background: #bfdbfe; }
         .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
         th { background: var(--ink-900); color: white; padding: 10px; text-align: left; }
@@ -556,6 +628,15 @@ $status = strtolower($batch['status'] ?? 'draft');
             margin-bottom: 16px;
             border-left: 3px solid var(--seal-red);
         }
+        .error .failed-item {
+            margin-left: 16px;
+            margin-top: 4px;
+            font-size: 13px;
+        }
+        .error .failed-item .error-msg {
+            color: #7A2118;
+            font-size: 12px;
+        }
         .success {
             background: #dcfce7;
             color: #166534;
@@ -563,6 +644,16 @@ $status = strtolower($batch['status'] ?? 'draft');
             border-radius: 8px;
             margin-bottom: 16px;
             border-left: 3px solid #10b981;
+        }
+        .success .failed-item {
+            margin-left: 16px;
+            margin-top: 4px;
+            font-size: 13px;
+            color: #92400e;
+        }
+        .success .failed-item .error-msg {
+            color: #7A2118;
+            font-size: 12px;
         }
         .rejection-form {
             display: none;
@@ -594,6 +685,17 @@ $status = strtolower($batch['status'] ?? 'draft');
         }
         .debug-panel .label { color: #fbbf24; }
         .debug-panel .value { color: #4ade80; }
+        .status-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .status-badge.success { background: #dcfce7; color: #166534; }
+        .status-badge.failed { background: #fbeceb; color: #7A2118; }
+        .status-badge.pending { background: #fef3c7; color: #92400e; }
+        .status-badge.completed { background: #dcfce7; color: #166534; }
+        .status-badge.processing { background: #dbeafe; color: #1e40af; }
         @media (max-width: 768px) {
             .grid-3 { grid-template-columns: 1fr; }
             .masthead { flex-direction: column; text-align: center; }
@@ -626,10 +728,15 @@ $status = strtolower($batch['status'] ?? 'draft');
         </div>
 
         <?php if ($error): ?>
-        <div class="error">⚠️ <?php echo htmlspecialchars($error); ?></div>
+        <div class="error">
+            ⚠️ <?php echo $error; ?>
+        </div>
         <?php endif; ?>
+        
         <?php if ($success): ?>
-        <div class="success">✅ <?php echo htmlspecialchars($success); ?></div>
+        <div class="success">
+            ✅ <?php echo $success; ?>
+        </div>
         <?php endif; ?>
 
         <!-- READ ONLY NOTICE -->
@@ -695,12 +802,28 @@ $status = strtolower($batch['status'] ?? 'draft');
                 by <?php echo htmlspecialchars($batch['executed_by_name'] ?? 'N/A'); ?>
             </div>
             <?php endif; ?>
+            
+            <!-- Execution summary if partial or failed -->
+            <?php if (in_array($status, ['partial_success', 'failed'])): ?>
+            <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
+                <div style="display:flex; gap:20px; flex-wrap:wrap;">
+                    <div><strong>✅ Successful:</strong> <?php echo $batch['successful_count'] ?? 0; ?></div>
+                    <div><strong>❌ Failed:</strong> <?php echo $batch['failed_count'] ?? 0; ?></div>
+                    <div><strong>⏳ Pending:</strong> <?php echo $batch['pending_count'] ?? 0; ?></div>
+                </div>
+            </div>
+            <?php endif; ?>
         </div>
 
         <!-- Destinations -->
         <div class="card">
             <div class="card-header">
                 <span class="card-title">👥 Destinations (<?php echo count($destinations); ?>)</span>
+                <?php if (in_array($status, ['partial_success', 'failed'])): ?>
+                <span style="color:#7A2118; font-weight:600;">
+                    ⚠️ <?php echo $batch['failed_count'] ?? 0; ?> failed
+                </span>
+                <?php endif; ?>
             </div>
             <div class="table-responsive">
                 <table>
@@ -713,6 +836,11 @@ $status = strtolower($batch['status'] ?? 'draft');
                             <th>Beneficiary</th>
                             <th>Delivery</th>
                             <th>Status</th>
+                            <th>Transaction Ref</th>
+                            <th>Error Message</th>
+                            <?php if ($user['role'] === 'owner' && in_array($status, ['partial_success', 'failed'])): ?>
+                            <th>Action</th>
+                            <?php endif; ?>
                         </tr>
                     </thead>
                     <tbody>
@@ -725,10 +853,43 @@ $status = strtolower($batch['status'] ?? 'draft');
                             <td><?php echo htmlspecialchars($dest['beneficiary_name'] ?? '-'); ?></td>
                             <td><?php echo htmlspecialchars($dest['delivery_method']); ?></td>
                             <td>
-                                <span class="workflow-status status-<?php echo strtolower($dest['status']); ?>">
-                                    <?php echo htmlspecialchars($dest['status']); ?>
+                                <?php
+                                $statusClass = strtolower($dest['status'] ?? 'PENDING');
+                                $displayStatus = $dest['status'] ?? 'PENDING';
+                                
+                                // Add emoji for better visibility
+                                if (in_array($statusClass, ['completed', 'success'])) {
+                                    $displayStatus = '✅ ' . $displayStatus;
+                                } elseif ($statusClass === 'failed') {
+                                    $displayStatus = '❌ ' . $displayStatus;
+                                } elseif (in_array($statusClass, ['pending', 'processing'])) {
+                                    $displayStatus = '⏳ ' . $displayStatus;
+                                }
+                                ?>
+                                <span class="workflow-status status-<?php echo $statusClass; ?>">
+                                    <?php echo $displayStatus; ?>
                                 </span>
                             </td>
+                            <td>
+                                <?php if (!empty($dest['transaction_reference'])): ?>
+                                    <code style="font-size:11px; background:#f1f5f9; padding:2px 6px; border-radius:4px;">
+                                        <?php echo htmlspecialchars($dest['transaction_reference']); ?>
+                                    </code>
+                                <?php else: ?>
+                                    -
+                                <?php endif; ?>
+                            </td>
+                            <td style="color:#7A2118; font-size:12px; max-width:200px;">
+                                <?php echo htmlspecialchars($dest['error_message'] ?? ''); ?>
+                            </td>
+                            <?php if ($user['role'] === 'owner' && in_array($status, ['partial_success', 'failed']) && strtolower($dest['status'] ?? '') === 'failed'): ?>
+                            <td>
+                                <a href="retry_destination.php?batch_id=<?php echo $batchId; ?>&dest_idx=<?php echo $dest['destination_index']; ?>" 
+                                   class="btn-retry">
+                                    🔄 Retry
+                                </a>
+                            </td>
+                            <?php endif; ?>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -780,10 +941,12 @@ $status = strtolower($batch['status'] ?? 'draft');
 
                 <!-- Execute - Only for Owners -->
                 <?php if ($status === 'approved' && $canExecute): ?>
-                <form method="POST" style="display:inline;" onsubmit="return confirm('Execute this multi-destination swap? This will move real funds.')">
+                <form method="POST" style="display:inline;" onsubmit="return confirm('⚠️ EXECUTE DISBURSEMENT: This will move real funds. Only proceed if you have verified all approvals. Continue?')">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
                     <input type="hidden" name="action" value="execute">
-                    <button type="submit" class="btn btn-success">🚀 Execute Disbursement</button>
+                    <button type="submit" class="btn btn-success" style="background: #7A2118; font-size: 15px; padding: 12px 32px;">
+                        🚀 EXECUTE DISBURSEMENT
+                    </button>
                 </form>
                 <?php endif; ?>
 
