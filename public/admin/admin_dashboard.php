@@ -118,6 +118,8 @@ $tablesToCheck = [
     'cashout_authorizations' => 'Cashout Authorizations',
     'fee_invoices' => 'Fee Invoices',
     'identity_swap_holds' => 'Identity Swap Holds',
+    'multi_destination_swaps' => 'Multi-Destination Swaps',
+    'idempotency_keys' => 'Idempotency Keys',
     'swap_fee_collections' => 'Swap Fee Collections',
     'net_positions' => 'Net Positions',
     'deposit_transactions' => 'Deposit Transactions',
@@ -254,6 +256,50 @@ function attachRelatedStatuses(PDO $db, array &$row): void
 }
 
 // ============================================================
+// TABLE-BY-TABLE ACTIVITY FEED
+//
+// Why this exists: nothing in the SwapService.php you shared ever INSERTs
+// into `swap_requests` — every real swap execution writes to
+// hold_transactions (createLocalHold), identity_swap_holds
+// (storeIdentityHold), cashout_authorizations (storeCashoutAuthorization),
+// or multi_destination_swaps (storeMultiDestinationRecord) instead.
+// swap_requests looks like a separate/legacy table that isn't part of the
+// current execution path at all — which is exactly why gating the whole
+// Transactions view on "does swap_requests have rows" showed nothing even
+// once the ::int crash was fixed: the table it depends on may genuinely
+// stay empty forever while real swaps keep landing in the other tables.
+//
+// Fix: each real activity table is fetched independently with its own
+// `SELECT * ... LIMIT N`, no JOIN, no shared gate. One table being empty
+// (or not yet existing) never affects any other table's card.
+// ============================================================
+const ACTIVITY_TABLES = [
+    'swap_requests' => 'Swap Requests (legacy/system table)',
+    'hold_transactions' => 'Holds — Source Verify & Debit',
+    'identity_swap_holds' => 'Identity Swaps',
+    'cashout_authorizations' => 'Cashouts',
+    'multi_destination_swaps' => 'Multi-Destination Swaps',
+    'fee_invoices' => 'Fee Invoices (Billing)',
+];
+
+function fetchTableRows(PDO $db, string $table, int $limit = 50): array
+{
+    try {
+        $stmt = $db->query("SELECT * FROM {$table} ORDER BY created_at DESC LIMIT {$limit}");
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] fetchTableRows({$table}) error: " . $e->getMessage());
+        return [];
+    }
+}
+
+$activityData = [];
+foreach (ACTIVITY_TABLES as $table => $label) {
+    $activityData[$table] = fetchTableRows($db, $table);
+}
+$anyActivityHasData = (bool)array_filter($activityData, fn($rows) => !empty($rows));
+
+// ============================================================
 // TRANSACTION SEARCH — FIXED: no ::int JOINs. Base query only
 // touches swap_requests + users; related-table statuses are
 // fetched per-row via attachRelatedStatuses() above.
@@ -341,6 +387,36 @@ if ($transactionId && hasPermission('review_transactions')) {
         ");
         $stmt->execute([':id' => $transactionId, ':uuid' => $transactionId]);
         $transactionDetail = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        // FALLBACK: swap_requests may simply not have this reference (see
+        // the ACTIVITY_TABLES note above — it may not be written by the
+        // current swap flow at all). Anchor the timeline on whichever real
+        // activity table actually has it instead of giving up.
+        if (!$transactionDetail) {
+            $fallbackAnchors = [
+                'hold_transactions' => 'swap_reference',
+                'identity_swap_holds' => 'swap_reference',
+                'cashout_authorizations' => 'swap_reference',
+                'multi_destination_swaps' => 'reference',
+            ];
+            foreach ($fallbackAnchors as $anchorTable => $anchorCol) {
+                $anchorRow = fetchRelatedStatus($db, $anchorTable, $anchorCol, $transactionId, $transactionId);
+                if ($anchorRow) {
+                    $transactionDetail = [
+                        'swap_id' => null,
+                        'swap_uuid' => $anchorRow[$anchorCol] ?? $transactionId,
+                        'amount' => $anchorRow['amount'] ?? $anchorRow['total_amount'] ?? 0,
+                        'from_currency' => $anchorRow['currency'] ?? 'BWP',
+                        'status' => $anchorRow['status'] ?? 'unknown',
+                        'created_at' => $anchorRow['created_at'] ?? null,
+                        'user_name' => null,
+                        '_anchor_table' => $anchorTable,
+                    ];
+                    error_log("[ADMIN DASHBOARD] No swap_requests row for {$transactionId} — anchored timeline on {$anchorTable} instead");
+                    break;
+                }
+            }
+        }
 
         if ($transactionDetail) {
             // Build timeline
@@ -811,6 +887,58 @@ if ($reportType && hasPermission('view_reports')) {
 // Helper function for safe HTML
 function safeHtml($value) {
     return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+
+// Renders one independent activity-table card. Pulls whichever of the
+// common fields exist on this table's rows (every real activity table
+// has some subset of reference/amount/currency/status/institution/
+// created_at — see the INSERT statements in SwapService.php) and shows
+// everything else in an expandable raw row, rather than assuming a fixed
+// schema shared across tables.
+function renderActivityCard(string $table, string $label, array $rows): string {
+    $count = count($rows);
+    $html = '<div class="card"><div class="card-header">'
+        . '<span class="card-title">' . safeHtml($label) . '</span>'
+        . '<span class="card-badge">' . $count . ' RECORDS</span>'
+        . '</div>';
+
+    if ($count === 0) {
+        $html .= '<div class="empty-state"><div class="icon">📭</div>'
+            . '<p>No rows in <code>' . safeHtml($table) . '</code> yet.</p></div>';
+        $html .= '</div>';
+        return $html;
+    }
+
+    $refFields = ['swap_reference', 'reference', 'hold_reference', 'swap_uuid', 'swap_id', 'invoice_uuid'];
+    $amountFields = ['amount', 'total_amount', 'fee_amount'];
+    $instFields = ['source_institution', 'participant_name', 'destination_institution'];
+
+    $html .= '<div class="table-responsive"><table><thead><tr>'
+        . '<th>Reference</th><th>Amount</th><th>Currency</th><th>Status</th><th>Institution</th><th>Created</th><th>Details</th>'
+        . '</tr></thead><tbody>';
+
+    foreach ($rows as $row) {
+        $ref = null;
+        foreach ($refFields as $f) { if (!empty($row[$f])) { $ref = $row[$f]; break; } }
+        $amount = null;
+        foreach ($amountFields as $f) { if (isset($row[$f])) { $amount = $row[$f]; break; } }
+        $inst = null;
+        foreach ($instFields as $f) { if (!empty($row[$f])) { $inst = $row[$f]; break; } }
+
+        $html .= '<tr>'
+            . '<td>' . safeHtml(substr((string)($ref ?? 'N/A'), 0, 24)) . '</td>'
+            . '<td>' . ($amount !== null ? number_format((float)$amount, 2) : '—') . '</td>'
+            . '<td>' . safeHtml($row['currency'] ?? 'BWP') . '</td>'
+            . '<td><span class="status status-info">' . safeHtml($row['status'] ?? 'N/A') . '</span></td>'
+            . '<td>' . safeHtml($inst ?? 'N/A') . '</td>'
+            . '<td>' . safeHtml($row['created_at'] ?? 'N/A') . '</td>'
+            . '<td><details><summary style="cursor:pointer;color:#001B44;font-size:0.65rem;">Raw row</summary>'
+            . '<pre style="font-size:0.65rem;white-space:pre-wrap;max-width:400px;overflow:auto;">' . safeHtml(json_encode($row, JSON_PRETTY_PRINT)) . '</pre></details></td>'
+            . '</tr>';
+    }
+
+    $html .= '</tbody></table></div></div>';
+    return $html;
 }
 ?>
 <!DOCTYPE html>
@@ -1294,11 +1422,13 @@ function safeHtml($value) {
             <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?></div>
             <a href="?view=diagnostic" class="nav-item" style="padding: 8px 16px; border: 2px solid #001B44; border-radius: 4px;">🔬 Check Data Sources</a>
         </div>
-        <!-- Data Source Warning -->
-        <?php if (!$tableHasData): ?>
+        <!-- Data Source Warning: checks ALL activity tables, not just
+             swap_requests — swap_requests isn't written by the current
+             swap execution flow, so gating on it alone was the bug. -->
+        <?php if (!$anyActivityHasData): ?>
         <div style="background: #fff3cd; border: 2px solid #856404; padding: 15px; margin-bottom: 20px; border-radius: 4px;">
-            <strong>⚠️ No transactions found in the database.</strong>
-            <p style="margin-top: 5px; font-size: 0.8rem;">The <code>swap_requests</code> table is empty. Transactions will appear here once swaps are executed.</p>
+            <strong>⚠️ No activity found in any transaction table.</strong>
+            <p style="margin-top: 5px; font-size: 0.8rem;"><code>swap_requests</code>, <code>hold_transactions</code>, <code>identity_swap_holds</code>, <code>cashout_authorizations</code>, <code>multi_destination_swaps</code>, and <code>fee_invoices</code> are all currently empty. Activity will appear here once swaps are executed.</p>
             <p style="font-size: 0.8rem; margin-top: 5px;">
                 <a href="?view=diagnostic" style="color: #001B44; font-weight: 600;">🔬 Check all tables →</a>
             </p>
@@ -1436,21 +1566,29 @@ function safeHtml($value) {
                 <button type="submit">🔍 SEARCH</button>
             </form>
         </div>
+        <?php if (!$anyActivityHasData): ?>
+        <div style="background: #fff3cd; border: 2px solid #856404; padding: 15px; margin-bottom: 20px; border-radius: 4px;">
+            <strong>⚠️ No activity in any transaction table yet.</strong>
+            <p style="margin-top: 5px; font-size: 0.8rem;">Every table below is independent — none of them being empty affects any other. <a href="?view=diagnostic" style="color: #001B44; font-weight: 600;">🔬 Full diagnostic →</a></p>
+        </div>
+        <?php endif; ?>
+
+        <!-- swap_requests, shown with the richer user-joined view (name,
+             hold/settlement status already attached) since that data is
+             only meaningful when swap_requests actually has rows tying
+             back to a user. All other tables below are rendered generically
+             and independently — one table having no rows never blanks out
+             any other table's card. -->
         <div class="card">
             <div class="card-header">
-                <span class="card-title">All Transactions</span>
+                <span class="card-title">Swap Requests (legacy/system table)</span>
                 <span class="card-badge"><?php echo count($recentTransactions); ?> RECORDS</span>
             </div>
             <?php if (empty($recentTransactions)): ?>
             <div class="empty-state">
                 <div class="icon">📭</div>
-                <p>No transactions found in the database</p>
-                <p style="font-size: 0.8rem; color: #666; margin-top: 5px;">
-                    The <code>swap_requests</code> table is currently empty.
-                </p>
-                <p style="margin-top: 10px;">
-                    <a href="?view=diagnostic" style="color: #001B44; font-weight: 600; text-decoration: underline;">🔬 Check all tables →</a>
-                </p>
+                <p>No rows in <code>swap_requests</code>.</p>
+                <p style="font-size: 0.8rem; color: #666; margin-top: 5px;">This table isn't written by the current swap execution flow — see the tables below for real activity.</p>
             </div>
             <?php else: ?>
             <div class="table-responsive">
@@ -1500,6 +1638,17 @@ function safeHtml($value) {
             </div>
             <?php endif; ?>
         </div>
+
+        <?php
+        // Every other activity table, rendered independently — this is the
+        // direct fix for "some tables are empty so nothing shows": each
+        // card below stands alone, fed by its own SELECT, with no JOIN and
+        // no shared gate with any other table.
+        foreach (ACTIVITY_TABLES as $table => $label):
+            if ($table === 'swap_requests') continue; // already rendered above with the richer view
+            echo renderActivityCard($table, $label, $activityData[$table] ?? []);
+        endforeach;
+        ?>
         <?php endif; ?>
         <!-- ============================================================ -->
         <!-- SEARCH VIEW, TRACK VIEW, AUDIT VIEW, HOLDS VIEW, INVOICES VIEW, REPORTS VIEW -->
