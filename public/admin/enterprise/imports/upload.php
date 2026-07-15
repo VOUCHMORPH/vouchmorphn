@@ -15,6 +15,25 @@ $templates = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $error = '';
 
+// ============================================================
+// FIX: Check if user exists in organization_users before audit log
+// ============================================================
+$userExistsInOrg = false;
+$userId = $user['id'] ?? $user['user_id'] ?? null;
+
+if ($userId) {
+    $userCheck = $db->prepare("
+        SELECT id FROM organization_users 
+        WHERE user_id = :user_id AND organization_id = :org_id AND is_active = true
+    ");
+    $userCheck->execute([
+        ':user_id' => $userId,
+        ':org_id' => $orgId
+    ]);
+    $orgUser = $userCheck->fetch(PDO::FETCH_ASSOC);
+    $userExistsInOrg = !empty($orgUser);
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     requireCsrfToken($_POST['csrf_token'] ?? null);
 
@@ -47,7 +66,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':name' => $_POST['batch_name'] ?: $originalName,
                 ':filename' => $originalName,
                 ':format' => $format,
-                ':user_id' => $user['id'] ?? $user['user_id'] ?? null,
+                ':user_id' => $userId,
                 ':dept_id' => getUserDepartmentScope(),
             ]);
             $batchId = $db->lastInsertId();
@@ -68,30 +87,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            try {
-                $auditStmt = $db->prepare("
-                    INSERT INTO organization_audit_logs (
-                        organization_id, user_id, action, entity_type, entity_id,
-                        old_values, new_values, ip_address, user_agent, created_at
-                    ) VALUES (
-                        :org_id, :user_id, 'BATCH_UPLOADED', 'import_batch', :entity_id,
-                        NULL, :new_values, :ip, :ua, NOW()
-                    )
-                ");
-                $auditStmt->execute([
-                    ':org_id' => $orgId,
-                    ':user_id' => $user['id'] ?? $user['user_id'] ?? null,
-                    ':entity_id' => $batchId,
-                    ':new_values' => json_encode([
-                        'batch_reference' => $batchRef,
-                        'original_filename' => $originalName,
-                        'source_format' => $format,
-                    ]),
-                    ':ip' => $_SERVER['REMOTE_ADDR'] ?? null,
-                    ':ua' => $_SERVER['HTTP_USER_AGENT'] ?? null,
-                ]);
-            } catch (PDOException $e) {
-                error_log("[upload.php] Failed to write audit log: " . $e->getMessage());
+            // ============================================================
+            // FIX: Only write audit log if user exists in organization_users
+            // ============================================================
+            if ($userExistsInOrg) {
+                try {
+                    $auditStmt = $db->prepare("
+                        INSERT INTO organization_audit_logs (
+                            organization_id, user_id, action, entity_type, entity_id,
+                            old_values, new_values, ip_address, user_agent, created_at
+                        ) VALUES (
+                            :org_id, :user_id, 'BATCH_UPLOADED', 'import_batch', :entity_id,
+                            NULL, :new_values, :ip, :ua, NOW()
+                        )
+                    ");
+                    $auditStmt->execute([
+                        ':org_id' => $orgId,
+                        ':user_id' => $userId,
+                        ':entity_id' => $batchId,
+                        ':new_values' => json_encode([
+                            'batch_reference' => $batchRef,
+                            'original_filename' => $originalName,
+                            'source_format' => $format,
+                        ]),
+                        ':ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+                        ':ua' => $_SERVER['HTTP_USER_AGENT'] ?? null,
+                    ]);
+                } catch (PDOException $e) {
+                    error_log("[upload.php] Failed to write audit log: " . $e->getMessage());
+                }
+            } else {
+                error_log("[upload.php] Skipping audit log - user_id {$userId} not found in organization_users");
             }
 
             header("Location: preview.php?batch_id=$batchId");
@@ -216,9 +242,7 @@ function formatCurrency($amount) {
         .eyebrow { font-family: var(--f-cond); font-weight: 700; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-500); }
         .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
 
-        /* ============================================================
-           MASTHEAD - PERFECTLY CENTERED TITLE, USER MENU ON RIGHT
-           ============================================================ */
+        /* Masthead */
         .masthead {
             background: var(--ink-900);
             color: white;
@@ -254,8 +278,6 @@ function formatCurrency($amount) {
             letter-spacing: 0.04em;
             text-align: center;
         }
-
-        /* User menu - positioned absolutely on the right */
         .masthead .user-menu {
             position: absolute;
             right: 32px;
@@ -320,9 +342,7 @@ function formatCurrency($amount) {
             margin-right: 4px;
         }
 
-        /* ============================================================
-           VOUCHMORPH™ WATERMARK - ROTATED 90° ON LEFT SIDE
-           ============================================================ */
+        /* VouchMorph™ Watermark */
         .vouchmorph-watermark {
             position: fixed;
             left: 8px;
@@ -345,9 +365,7 @@ function formatCurrency($amount) {
             letter-spacing: 0;
         }
 
-        /* ============================================================
-           CENTRAL LAYOUT
-           ============================================================ */
+        /* Central layout */
         .stage {
             flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center;
             padding: 120px 20px 60px;
@@ -361,9 +379,7 @@ function formatCurrency($amount) {
         .welcome h2 { font-size: 20px; font-weight: 700; letter-spacing: 0.01em; text-transform: uppercase; margin-top: 6px; }
         .welcome p { font-family: var(--f-cond); font-size: 11px; color: var(--ink-500); margin-top: 4px; letter-spacing: 0.02em; text-transform: uppercase; }
 
-        /* ============================================================
-           STEP INDICATOR
-           ============================================================ */
+        /* Step indicator */
         .step-indicator {
             display: flex;
             align-items: center;
@@ -426,12 +442,8 @@ function formatCurrency($amount) {
         .step.active .step-label { color: var(--ink-900); }
         .step.done .step-label { color: var(--ledger-green); }
 
-        /* ============================================================
-           UPLOAD FORM
-           ============================================================ */
-        .upload-form {
-            width: 100%;
-        }
+        /* Upload form */
+        .upload-form { width: 100%; }
         .form-group { margin-bottom: 20px; }
         .form-group label {
             display: block;
@@ -653,7 +665,6 @@ function formatCurrency($amount) {
     </style>
 </head>
 <body>
-    <!-- VouchMorph™ Watermark -->
     <div class="vouchmorph-watermark">VouchMorph<span class="tm">™</span></div>
 
     <!-- Masthead -->
