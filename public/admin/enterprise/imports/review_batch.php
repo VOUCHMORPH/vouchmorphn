@@ -127,8 +127,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'execute') {
             // Execute the multi-destination swap
             try {
-                require_once '../../../../src/BusinessLogicLayer/services/SwapService.php';
-                $swapService = new SwapService($db, [], 'Botswana');
+               require_once '../../../../src/Domain/Services/SwapService.php';
+             $swapService = new \Domain\Services\SwapService($db, [], 'Botswana');
                 
                 $payload = [
                     'swap_type' => 'MULTI_DESTINATION',
