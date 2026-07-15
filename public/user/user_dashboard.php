@@ -1,35 +1,59 @@
 <?php
-// This should be at the top of your dashboard PHP file
-session_start();
+// ============================================================
+// FIX 1: Use SessionManager instead of bare session_start()
+// ============================================================
+require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
+use Application\Utils\SessionManager;
 
-// Check if user is logged in
-if (!isset($_SESSION['user_id']) && !isset($_SESSION['admin_id'])) {
+// Start session using SessionManager
+SessionManager::start();
+
+// Check if user is logged in using SessionManager
+if (!SessionManager::isLoggedIn()) {
     header('Location: login.php');
     exit();
 }
 
-// Get user info from session
-$userName = $_SESSION['full_name'] ?? $_SESSION['username'] ?? $_SESSION['admin_username'] ?? 'User';
-$userCountry = $_SESSION['country'] ?? $_SESSION['admin_country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
-$userCurrency = $_SESSION['currency'] ?? getenv('VOUCHMORPH_CURRENCY') ?: 'BWP';
-$userRole = $_SESSION['role'] ?? $_SESSION['admin_role'] ?? 'user';
+// Get user info from session using SessionManager
+$userData = SessionManager::getUser();
+$userName = $userData['full_name'] ?? $userData['username'] ?? 'User';
+$userCountry = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
+$userCurrency = $userData['currency'] ?? getenv('VOUCHMORPH_CURRENCY') ?: 'BWP';
+$userRole = $userData['role'] ?? 'user';
 
-// Get API configuration from environment or database
-$apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
+// Get API configuration from environment
+$apiKey = getenv('VOUCHMORPH_API_KEY') ?: '';
 $apiBase = getenv('API_BASE_URL') ?: '';
 
-// Load country-specific configuration
+// Check if we're in test mode (no valid API key)
+$isTestMode = empty($apiKey);
+
+// ============================================================
+// LOAD COUNTRY CONFIGURATION - NO HARDCODED BANKS
+// ============================================================
 $countryConfig = [];
 $countryConfigPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/config.php';
 if (file_exists($countryConfigPath)) {
     $countryConfig = require $countryConfigPath;
 }
 
-// Load participants dynamically based on country
+// Load participants dynamically based on country - NO HARDCODED FALLBACK
 $participants = [];
 $participantsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/participants.yaml';
 if (file_exists($participantsPath)) {
-    $participants = yaml_parse_file($participantsPath)['participants'] ?? [];
+    $parsed = yaml_parse_file($participantsPath);
+    $participants = $parsed['participants'] ?? [];
+} else {
+    error_log("[DASHBOARD] Participants file not found: " . $participantsPath);
+}
+
+// Load assets dynamically based on country
+$assets = [];
+$assetsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/assets.yaml';
+if (file_exists($assetsPath)) {
+    $assets = yaml_parse_file($assetsPath) ?? [];
+} else {
+    error_log("[DASHBOARD] Assets file not found: " . $assetsPath);
 }
 
 // Get available countries for switching
@@ -41,6 +65,23 @@ if (is_dir($countriesDir)) {
             $availableCountries[] = $dir;
         }
     }
+}
+
+// ============================================================
+// BUILD ASSETS FROM CONFIG - NO HARDCODED VALUES
+// ============================================================
+$assetTypes = [];
+foreach ($assets as $assetKey => $assetConfig) {
+    $assetTypes[$assetKey] = [
+        'icon' => $assetConfig['icon'] ?? '📦',
+        'label' => $assetConfig['label'] ?? $assetKey,
+        'fields' => $assetConfig['fields'] ?? []
+    ];
+}
+
+// If no assets loaded, show error but don't hardcode
+if (empty($assetTypes)) {
+    error_log("[DASHBOARD] No assets loaded for country: " . $userCountry);
 }
 ?>
 <!DOCTYPE html>
@@ -89,6 +130,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .logout-btn { color: var(--text-muted); text-decoration: none; padding: 6px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); transition: var(--transition); }
 .logout-btn:hover { background: var(--surface-hover); color: var(--text); }
 .role-badge { font-size: 10px; color: var(--primary); border: 1px solid var(--primary); padding: 2px 10px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px; }
+.test-mode-badge { font-size: 10px; color: #ff6b6b; border: 1px solid #ff6b6b; padding: 2px 10px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px; animation: pulse 2s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
 .message { padding: 12px 16px; border-radius: var(--radius-sm); margin: 0 0 16px; font-size: 13px; display: none; }
 .message.show { display: block; }
@@ -203,6 +246,9 @@ details.raw-json-wrap summary { cursor: pointer; font-size: 11px; color: var(--t
     <div class="topbar-right">
         <span class="greeting">Hello, <span id="userName"><?php echo htmlspecialchars($userName); ?></span></span>
         <span class="role-badge"><?php echo htmlspecialchars(strtoupper($userRole)); ?></span>
+        <?php if ($isTestMode): ?>
+        <span class="test-mode-badge">🔓 TEST MODE</span>
+        <?php endif; ?>
         <select class="country-selector" id="countrySelector" onchange="switchCountry(this.value)">
             <?php foreach ($availableCountries as $country): ?>
             <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $userCountry ? 'selected' : ''; ?>>
@@ -316,7 +362,7 @@ details.raw-json-wrap summary { cursor: pointer; font-size: 11px; color: var(--t
             <label class="field-label">Sources (minimum 2)</label>
             <div id="multiSourceList"></div>
             <span class="quick-link" onclick="addMultiSourceRow()">➕ Add another source</span>
-            <div class="multi-total">Total requested: <span class="amt" id="multiTotal">BWP 0.00</span></div>
+            <div class="multi-total">Total requested: <span class="amt" id="multiTotal"><?php echo $userCurrency; ?> 0.00</span></div>
             <div class="help" style="margin-top:6px;text-align:center;">Each source needs its own PIN — funds are only pulled once its balance and PIN are verified.</div>
         </div>
     </div>
@@ -339,96 +385,27 @@ details.raw-json-wrap summary { cursor: pointer; font-size: 11px; color: var(--t
 
 <script>
 // ============================================================
-// CONFIGURATION - DYNAMIC FROM SERVER
+// CONFIGURATION - DYNAMIC FROM SERVER - NO HARDCODED VALUES
 // ============================================================
 const CONFIG = {
     API_KEY: '<?php echo htmlspecialchars($apiKey); ?>',
     COUNTRY_CODE: '<?php echo htmlspecialchars($userCountry); ?>',
     CURRENCY: '<?php echo htmlspecialchars($userCurrency); ?>',
     API_BASE: '<?php echo htmlspecialchars($apiBase); ?>',
+    IS_TEST_MODE: <?php echo $isTestMode ? 'true' : 'false'; ?>,
     PREVIEW_ENDPOINT: '<?php echo $apiBase; ?>/api/v1/swap/preview.php',
     EXECUTE_ENDPOINT: '<?php echo $apiBase; ?>/api/v1/swap/execute.php',
 };
 
 // ============================================================
-// PARTICIPANTS - LOAD DYNAMICALLY FROM SERVER
+// PARTICIPANTS - LOADED DYNAMICALLY FROM COUNTRY FILE - NO HARDCODING
 // ============================================================
 const PARTICIPANTS = <?php echo json_encode($participants); ?>;
 
 // ============================================================
-// ASSETS - COUNTRY SPECIFIC (can be overridden by server)
+// ASSETS - LOADED DYNAMICALLY FROM COUNTRY FILE - NO HARDCODING
 // ============================================================
-const ASSETS = {
-    ACCOUNT: {
-        icon: '🏦', label: 'Bank Account',
-        fields: [
-            { name: 'account_number', label: 'Account Number', type: 'text', required: true, pattern: '^[0-9]{8,16}$', placeholder: 'Enter account number', help_text: '8-16 digit account number' },
-        ],
-    },
-    ATM: {
-        icon: '🏧', label: 'ATM Cashout',
-        fields: [
-            { name: 'atm_code', label: 'ATM Code', type: 'text', required: true, pattern: '^[0-9]{6}$', placeholder: 'Enter ATM code', help_text: '6-digit ATM code' },
-            { name: 'atm_pin', label: 'ATM PIN', type: 'password', required: true, vault_field: 'pin', min_length: 4, max_length: 6, placeholder: 'Enter ATM PIN', help_text: '4-6 digit ATM PIN' },
-        ],
-    },
-    VOUCHER: {
-        icon: '🎫', label: 'ATM Cashout Voucher',
-        fields: [
-            { name: 'voucher_number', label: 'Voucher Number', type: 'text', required: true, pattern: '^[A-Z0-9]{8,16}$', placeholder: 'Enter voucher number', help_text: '8-16 character voucher number' },
-            { name: 'voucher_pin', label: 'Voucher PIN', type: 'password', required: true, vault_field: 'pin', min_length: 4, max_length: 6, placeholder: 'Enter voucher PIN', help_text: '4-6 digit voucher PIN' },
-            { name: 'amount', label: 'Voucher Amount', type: 'number', required: true, min: 1, placeholder: '0.00', help_text: 'Amount on the voucher' },
-            { name: 'phone', label: 'Phone Number', type: 'tel', required: false, pattern: '^\\+?[0-9]{10,15}$', placeholder: '+267XXXXXXXX', help_text: 'Phone number associated with the voucher' },
-        ],
-    },
-    'MNO-WALLET': {
-        icon: '📱', label: 'Mobile Wallet',
-        fields: [
-            { name: 'phone_number', label: 'Phone Number', type: 'tel', required: true, pattern: '^\\+?[0-9]{10,15}$', placeholder: '+267XXXXXXXX', help_text: 'Phone number (country code optional)' },
-            { name: 'wallet_pin', label: 'Wallet PIN', type: 'password', required: true, vault_field: 'pin', min_length: 4, max_length: 6, placeholder: 'Enter wallet PIN', help_text: '4-6 digit wallet PIN' },
-        ],
-    },
-    'BANK-WALLET': {
-        icon: '👛', label: 'Bank Wallet',
-        fields: [
-            { name: 'wallet_account', label: 'Wallet Account', type: 'text', required: true, placeholder: 'Enter wallet account', help_text: 'Wallet account identifier' },
-            { name: 'wallet_pin', label: 'Wallet PIN', type: 'password', required: true, vault_field: 'pin', min_length: 4, max_length: 6, placeholder: 'Enter wallet PIN', help_text: '4-6 digit wallet PIN' },
-        ],
-    },
-    CARD: {
-        icon: '💳', label: 'Payment Card',
-        fields: [
-            { name: 'card_number', label: 'Card Number', type: 'text', required: true, pattern: '^[0-9]{16}$', placeholder: '1234-5678-9012-3456', help_text: '16-digit card number' },
-            { name: 'card_pin', label: 'Card PIN', type: 'password', required: true, vault_field: 'pin', min_length: 4, max_length: 6, placeholder: 'Enter card PIN', help_text: '4-6 digit card PIN' },
-            { name: 'cvv', label: 'CVV', type: 'password', required: true, min_length: 3, max_length: 4, placeholder: '123', help_text: '3-4 digit CVV' },
-            { name: 'expiry_month', label: 'Expiry Month', type: 'number', required: true, min: 1, max: 12, placeholder: 'MM', help_text: 'Expiry month (1-12)' },
-            { name: 'expiry_year', label: 'Expiry Year', type: 'number', required: true, min: 2024, max: 2034, placeholder: 'YYYY', help_text: 'Expiry year' },
-        ],
-    },
-    'POSTAL-ORDER': {
-        icon: '✉️', label: 'Postal Order',
-        fields: [
-            { name: 'order_number', label: 'Order Number', type: 'text', required: true, pattern: '^[A-Z0-9]{10,20}$', placeholder: 'Enter order number', help_text: '10-20 character order number' },
-            { name: 'order_pin', label: 'Order PIN', type: 'password', required: true, vault_field: 'pin', min_length: 4, max_length: 8, placeholder: 'Enter order PIN', help_text: '4-8 digit order PIN' },
-            { name: 'postal_code', label: 'Postal Code', type: 'text', required: false, placeholder: 'Enter postal code', help_text: 'Postal code for the order' },
-        ],
-    },
-    CHEQUE: {
-        icon: '📝', label: 'Cheque',
-        fields: [
-            { name: 'cheque_number', label: 'Cheque Number', type: 'text', required: true, pattern: '^[0-9]{6,10}$', placeholder: 'Enter cheque number', help_text: '6-10 digit cheque number' },
-            { name: 'bank_code', label: 'Bank Code', type: 'text', required: true, pattern: '^[A-Z0-9]{4,8}$', placeholder: 'Enter bank code', help_text: '4-8 character bank code' },
-            { name: 'branch_code', label: 'Branch Code', type: 'text', required: false, pattern: '^[A-Z0-9]{4,6}$', placeholder: 'Enter branch code', help_text: 'Branch code (optional)' },
-        ],
-    },
-    CRYPTO: {
-        icon: '₿', label: 'Cryptocurrency',
-        fields: [
-            { name: 'wallet_address', label: 'Wallet Address', type: 'text', required: true, pattern: '^[a-zA-Z0-9]{26,42}$', placeholder: 'Enter wallet address', help_text: '26-42 character wallet address' },
-            { name: 'network', label: 'Network', type: 'select', required: true, options: ['Bitcoin', 'Ethereum', 'Solana', 'USDC', 'USDT'], placeholder: 'Select network', help_text: 'Cryptocurrency network' },
-        ],
-    },
-};
+const ASSETS = <?php echo json_encode($assetTypes); ?>;
 
 // ============================================================
 // STATE
@@ -456,30 +433,25 @@ function switchCountry(country) {
 }
 
 // ============================================================
-// INIT
+// INIT - DYNAMICALLY POPULATE FROM CONFIG - NO HARDCODING
 // ============================================================
 document.addEventListener('DOMContentLoaded', function() {
     const fromSelect = document.getElementById('fromInstSelect');
     const toSelect = document.getElementById('toInstSelect');
     
-    // Populate institutions
+    // Populate institutions from loaded participants - NO HARDCODING
     const instOptions = Object.keys(PARTICIPANTS);
+    
     if (instOptions.length === 0) {
-        // Fallback: use default participants if none loaded
-        const defaultParticipants = {
-            ZURUBANK: { name: 'Zuru Bank', type: 'BANK', asset_types: ['ACCOUNT', 'VOUCHER'], limits: { min_amount: 10, max_amount: 500000, currency: 'BWP' } },
-            SACCUSSALIS: { name: 'Saccussalis', type: 'BANK', asset_types: ['ACCOUNT', 'VOUCHER', 'BANK-WALLET'], limits: { min_amount: 10, max_amount: 500000, currency: 'BWP' } },
-            CAZACOM: { name: 'CazaCom', type: 'MNO', asset_types: ['MNO-WALLET', 'VOUCHER'], limits: { min_amount: 1, max_amount: 100000, currency: 'BWP' } },
-            VOUCHMORPH: { name: 'VouchMorph', type: 'ORCHESTRATOR', asset_types: ['CARD', 'VOUCHER'], limits: { min_amount: 1, max_amount: 1000000, currency: 'BWP' } },
-        };
-        Object.keys(defaultParticipants).forEach(code => {
-            PARTICIPANTS[code] = defaultParticipants[code];
-        });
+        // Show error if no participants loaded
+        showMessage('No institutions found for this country. Please check the configuration.', 'error');
+        console.error('No participants loaded for country:', CONFIG.COUNTRY_CODE);
     }
     
-    Object.keys(PARTICIPANTS).forEach(code => {
-        fromSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${PARTICIPANTS[code].name}</option>`);
-        toSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${PARTICIPANTS[code].name}</option>`);
+    instOptions.forEach(code => {
+        const name = PARTICIPANTS[code]?.name || code;
+        fromSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${name}</option>`);
+        toSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${name}</option>`);
     });
     
     document.getElementById('fromAmount').addEventListener('input', function() {
@@ -490,21 +462,34 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // ============================================================
-// API HELPERS
+// API HELPERS - Test mode support
 // ============================================================
 function buildHeaders() {
     const headers = { 'Content-Type': 'application/json' };
     if (CONFIG.COUNTRY_CODE) headers['X-Country-Code'] = CONFIG.COUNTRY_CODE;
-    if (CONFIG.API_KEY) headers['X-API-Key'] = CONFIG.API_KEY;
+    if (CONFIG.API_KEY && !CONFIG.IS_TEST_MODE) {
+        headers['X-API-Key'] = CONFIG.API_KEY;
+    }
     return headers;
 }
 
 async function callApi(endpoint, payload) {
+    // Add test_mode parameter if in test mode
+    let url = endpoint;
+    if (CONFIG.IS_TEST_MODE) {
+        url += (url.includes('?') ? '&' : '?') + 'test_mode=1';
+        console.log('[TEST MODE] API call with test_mode=1');
+    }
+    
     let response, body;
     try {
-        response = await fetch(endpoint, { method: 'POST', headers: buildHeaders(), body: JSON.stringify(payload) });
+        response = await fetch(url, { 
+            method: 'POST', 
+            headers: buildHeaders(), 
+            body: JSON.stringify(payload) 
+        });
     } catch (networkErr) {
-        return { ok: false, error: 'Network error: could not reach ' + endpoint + ' (' + networkErr.message + ')' };
+        return { ok: false, error: 'Network error: could not reach ' + url + ' (' + networkErr.message + ')' };
     }
     try {
         body = await response.json();
@@ -518,7 +503,7 @@ async function callApi(endpoint, payload) {
 }
 
 // ============================================================
-// FROM (SOURCE)
+// FROM (SOURCE) - DYNAMIC FROM CONFIG
 // ============================================================
 function selectFromInst(code) {
     state.fromInst = code || null;
@@ -529,12 +514,15 @@ function selectFromInst(code) {
     const inst = PARTICIPANTS[code];
     if (!inst) { showMessage('Institution not found: ' + code, 'error'); return; }
     const sel = document.getElementById('fromAssetSelect');
-    sel.innerHTML = '<option value="">Select asset type</option>' + (inst.asset_types || []).map(t => `<option value="${t}">${ASSETS[t]?.icon || ''} ${ASSETS[t]?.label || t}</option>`).join('');
+    const assetTypes = inst.asset_types || [];
+    sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => 
+        `<option value="${t}">${ASSETS[t]?.icon || '📦'} ${ASSETS[t]?.label || t}</option>`
+    ).join('');
     assetGroup.style.display = 'block';
     document.getElementById('fromCurrencyLabel').textContent = inst.limits?.currency || CONFIG.CURRENCY;
     document.getElementById('fromLimitsHelp').textContent = inst.limits
         ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
-    if (inst.asset_types && inst.asset_types.length === 1) { sel.value = inst.asset_types[0]; selectFromAsset(inst.asset_types[0]); }
+    if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectFromAsset(assetTypes[0]); }
     else { document.getElementById('fromFields').innerHTML = ''; refreshUI(); }
 }
 
@@ -550,7 +538,7 @@ function updateFromField(name, value) { state.fromFields[name] = value; refreshU
 function setAmount(val) { document.getElementById('fromAmount').value = val; state.fromAmount = val; refreshUI(); }
 
 // ============================================================
-// SHARED: dynamic asset field rendering
+// SHARED: dynamic asset field rendering - FROM CONFIG
 // ============================================================
 function assetHasAmountField(assetType) {
     return (ASSETS[assetType]?.fields || []).some(f => f.name === 'amount');
@@ -558,7 +546,9 @@ function assetHasAmountField(assetType) {
 
 function renderDynamicFields(containerId, assetType, prefix, onChange, includePin) {
     const container = document.getElementById(containerId);
-    const fields = (ASSETS[assetType]?.fields || []).filter(f => includePin || f.vault_field !== 'pin').filter(f => f.name !== 'amount');
+    const fields = (ASSETS[assetType]?.fields || [])
+        .filter(f => includePin || f.vault_field !== 'pin')
+        .filter(f => f.name !== 'amount');
     if (!fields || fields.length === 0) { container.innerHTML = ''; return; }
     container.innerHTML = fields.map(f => {
         const attrs = [];
@@ -594,7 +584,9 @@ function validateDynamicField(input, field) {
 }
 
 function fieldsValidForAsset(assetType, values, includePin) {
-    const fields = (ASSETS[assetType]?.fields || []).filter(f => includePin || f.vault_field !== 'pin').filter(f => f.name !== 'amount');
+    const fields = (ASSETS[assetType]?.fields || [])
+        .filter(f => includePin || f.vault_field !== 'pin')
+        .filter(f => f.name !== 'amount');
     return fields.every(f => {
         const val = values[f.name];
         if (f.required && (!val || String(val).trim().length === 0)) return false;
@@ -615,7 +607,7 @@ function amountWithinLimits(instCode, amount) {
 }
 
 // ============================================================
-// TO (DESTINATION)
+// TO (DESTINATION) - DYNAMIC FROM CONFIG
 // ============================================================
 function selectToInst(code) {
     state.toInst = code || null;
@@ -627,9 +619,12 @@ function selectToInst(code) {
         if (!code) { group.style.display = 'none'; document.getElementById('toFields').style.display = 'none'; refreshUI(); return; }
         const inst = PARTICIPANTS[code];
         if (!inst) { showMessage('Institution not found: ' + code, 'error'); return; }
-        sel.innerHTML = '<option value="">Select asset type</option>' + (inst.asset_types || []).map(t => `<option value="${t}">${ASSETS[t]?.icon || ''} ${ASSETS[t]?.label || t}</option>`).join('');
+        const assetTypes = inst.asset_types || [];
+        sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => 
+            `<option value="${t}">${ASSETS[t]?.icon || '📦'} ${ASSETS[t]?.label || t}</option>`
+        ).join('');
         group.style.display = 'block';
-        if (inst.asset_types && inst.asset_types.length === 1) { sel.value = inst.asset_types[0]; selectToAsset(inst.asset_types[0]); }
+        if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectToAsset(assetTypes[0]); }
         else { document.getElementById('toFields').style.display = 'none'; refreshUI(); }
     } else {
         refreshUI();
@@ -680,7 +675,7 @@ function quickSetSwapType(type) {
 }
 
 // ============================================================
-// MULTI-SOURCE ROWS
+// MULTI-SOURCE ROWS - DYNAMIC FROM CONFIG
 // ============================================================
 let multiSourceSeq = 0;
 
@@ -706,7 +701,7 @@ function renderMultiSourceRows() {
                 <label>Institution</label>
                 <select onchange="setMultiSourceInst(${src.id}, this.value)">
                     <option value="">Select institution</option>
-                    ${Object.keys(PARTICIPANTS).map(code => `<option value="${code}" ${src.institution === code ? 'selected' : ''}>${PARTICIPANTS[code].name}</option>`).join('')}
+                    ${Object.keys(PARTICIPANTS).map(code => `<option value="${code}" ${src.institution === code ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`).join('')}
                 </select>
             </div>
             ${src.institution ? `
