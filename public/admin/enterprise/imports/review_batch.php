@@ -5,6 +5,15 @@ $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
+// ============================================================
+// FIX: Load SwapService and dependencies directly
+// ============================================================
+require_once '../../../../src/Domain/Services/SwapService.php';
+require_once '../../../../src/Core/Config/LoadCountry.php';
+
+use Domain\Services\SwapService;
+use Core\Config\LoadCountry;
+
 $db = DBConnection::getConnection();
 $orgId = getOrganizationId();
 $userId = $user['id'] ?? $user['user_id'] ?? null;
@@ -126,11 +135,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
         } elseif ($action === 'execute') {
             // ============================================================
-            // USE API ENDPOINSTEAD OF DIRECT SwapService INSTANTIATION
+            // FIXED: Direct SwapService call - NO HTTP!
             // ============================================================
             try {
-                // Build the API URL
-                $apiUrl = rtrim(getenv('API_BASE_URL') ?: 'https://vouchmorphn-production.up.railway.app', '/') . '/api/v1/swap/execute.php';
+                // Load country configuration
+                $countryName = $_ENV['VOUCHMORPH_COUNTRY'] ?? getenv('VOUCHMORPH_COUNTRY') ?? 'Botswana';
+                $fullCountryConfig = LoadCountry::getConfig();
+                
+                error_log("[review_batch] Initializing SwapService...");
+                
+                // Instantiate SwapService with 3 args
+                $swapService = new SwapService(
+                    $db, 
+                    $fullCountryConfig, 
+                    $countryName
+                );
+                
+                error_log("[review_batch] SwapService initialized successfully");
                 
                 // Build the payload
                 $payload = [
@@ -149,61 +170,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $payload['destinations'][] = [
                         'to_institution' => $dest['institution'],
                         'destination_institution' => $dest['institution'],
-                        'destination_asset_type' => $dest['asset_type'],
+                        'destination_asset_type' => $dest['asset_type'] ?? 'WALLET',
                         'destination_identifier' => $dest['identifier'],
-                        'destination_identifier_type' => $dest['identifier_type'],
+                        'destination_identifier_type' => $dest['identifier_type'] ?? 'account',
                         'amount' => (float)$dest['amount'],
                         'currency' => $dest['currency'] ?? 'BWP',
-                        'delivery_method' => $dest['delivery_method'],
+                        'delivery_method' => $dest['delivery_method'] ?? 'DEPOSIT',
                         'beneficiary_phone' => $dest['beneficiary_phone'],
                         'beneficiary_name' => $dest['beneficiary_name']
                     ];
                 }
                 
-                // Add user_id for auditing
-                $payload['user_id'] = $userId;
+                error_log("[review_batch] Executing multi-destination swap with " . count($destinations) . " destinations");
+                error_log("[review_batch] Payload: " . json_encode($payload));
                 
-                // Send request to API
-                $ch = curl_init();
-                curl_setopt($ch, CURLOPT_URL, $apiUrl);
-                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                curl_setopt($ch, CURLOPT_POST, true);
-                curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
-                curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                    'Content-Type: application/json',
-                    'Accept: application/json'
-                ]);
-                curl_setopt($ch, CURLOPT_TIMEOUT, 60);
-                curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // Set to true in production
+                // Execute the swap
+                $result = $swapService->executeAtomicSwap($payload);
                 
-                $response = curl_exec($ch);
-                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                $curlError = curl_error($ch);
-                curl_close($ch);
+                error_log("[review_batch] Swap completed, status: " . ($result['status'] ?? 'unknown'));
                 
-                if ($curlError) {
-                    throw new Exception("API connection error: " . $curlError);
-                }
-                
-                if ($httpCode !== 200) {
-                    $errorData = json_decode($response, true);
-                    throw new Exception("API returned HTTP $httpCode: " . ($errorData['message'] ?? $response));
-                }
-                
-                $result = json_decode($response, true);
-                
-                if (!$result || !isset($result['success'])) {
-                    throw new Exception("Invalid API response: " . $response);
-                }
-                
-                if (!$result['success']) {
-                    throw new Exception($result['message'] ?? 'API execution failed');
-                }
-                
-                // Update batch status based on API response
+                // Update batch status
                 $status = $result['status'] ?? 'COMPLETED';
-                $successCount = $result['successful_destinations'] ?? $result['success_count'] ?? 0;
-                $failedCount = $result['failed_destinations'] ?? $result['failed_count'] ?? 0;
+                $successCount = $result['successful_destinations'] ?? 0;
+                $failedCount = $result['failed_destinations'] ?? 0;
                 $pendingCount = $result['pending_count'] ?? 0;
                 
                 $stmt = $db->prepare("
@@ -216,7 +205,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         executed_at = NOW(),
                         results_payload = :results::jsonb,
                         completed_at = CASE 
-                            WHEN :status IN ('COMPLETED', 'success', 'completed') THEN NOW() 
+                            WHEN LOWER(:status) IN ('completed', 'success') THEN NOW() 
                             ELSE completed_at 
                         END,
                         updated_at = NOW()
@@ -235,9 +224,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Update destination statuses
                 if (isset($result['destinations']) && is_array($result['destinations'])) {
                     foreach ($result['destinations'] as $idx => $destResult) {
-                        if (isset($destResult['index'])) {
-                            $idx = $destResult['index'];
-                        }
+                        $destIndex = $destResult['index'] ?? $idx;
                         $stmt = $db->prepare("
                             UPDATE disbursement_destinations 
                             SET status = :status,
@@ -252,7 +239,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             ':tx_ref' => $destResult['transaction_reference'] ?? null,
                             ':error' => $destResult['error'] ?? $destResult['message'] ?? null,
                             ':batch_id' => $batchId,
-                            ':idx' => $idx + 1
+                            ':idx' => $destIndex + 1
                         ]);
                     }
                 }
@@ -262,6 +249,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
             } catch (Exception $e) {
                 error_log("[review_batch] Execution error: " . $e->getMessage());
+                error_log("[review_batch] Trace: " . $e->getTraceAsString());
                 $error = "Execution failed: " . $e->getMessage();
             }
         }
