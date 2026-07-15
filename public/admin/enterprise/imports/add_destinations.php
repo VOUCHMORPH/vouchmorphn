@@ -110,8 +110,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($isIdentityRecipient) {
                         $identityDestCount++;
                         
-                        // For identity-based recipients, we don't need institution
-                        // They receive through identification
                         $stmt = $db->prepare("
                             INSERT INTO disbursement_destinations (
                                 batch_id, destination_index, institution, asset_type,
@@ -149,7 +147,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ]);
                         
                     } else {
-                        // Regular institution-based recipient
                         $stmt = $db->prepare("
                             INSERT INTO disbursement_destinations (
                                 batch_id, destination_index, institution, asset_type,
@@ -240,6 +237,7 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
     <title>Add Destinations · VouchMorph Enterprise</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        /* ... (keep all existing styles) ... */
         :root {
             --paper: #EEF1EF;
             --panel: #FFFFFF;
@@ -792,9 +790,11 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
         <?php endif; ?>
     </div>
 
+    <!-- ============================================================ -->
+    <!-- FIXED JAVASCRIPT -->
+    <!-- ============================================================ -->
     <script>
         let rowCount = 0;
-        let currentType = 'institution';
 
         function getTemplate() {
             return document.getElementById('rowTemplate').cloneNode(true);
@@ -809,18 +809,28 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
             // Set row type
             template.dataset.type = type || 'institution';
             
+            // Add event listeners to all inputs
             template.querySelectorAll('input, select').forEach(el => {
-                el.id = el.className + '_' + rowCount;
-                el.addEventListener('input', updateSummary);
-                el.addEventListener('change', updateSummary);
+                el.addEventListener('input', function() {
+                    updateSummary();
+                    enableSubmit();
+                });
+                el.addEventListener('change', function() {
+                    updateSummary();
+                    enableSubmit();
+                });
             });
             
             // Set initial visibility
             if (type === 'identity') {
                 template.classList.add('identity-row');
-                template.querySelector('.identity-badge').classList.remove('hidden');
-                template.querySelector('.institution-fields').classList.add('hidden');
-                template.querySelector('.identity-fields').classList.remove('hidden');
+                const badge = template.querySelector('.identity-badge');
+                if (badge) badge.classList.remove('hidden');
+                const instFields = template.querySelector('.institution-fields');
+                if (instFields) instFields.classList.add('hidden');
+                const identityFields = template.querySelector('.identity-fields');
+                if (identityFields) identityFields.classList.remove('hidden');
+                
                 // Set toggle buttons
                 const toggles = template.querySelectorAll('.toggle-btn');
                 toggles.forEach(btn => {
@@ -829,13 +839,14 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
                         btn.classList.add('identity-active');
                     }
                 });
-                // Set delivery method to AGENT for identity recipients
-                const deliverySelect = template.querySelector('.dest-delivery');
-                if (deliverySelect) deliverySelect.value = 'AGENT';
             } else {
-                template.querySelector('.identity-badge').classList.add('hidden');
-                template.querySelector('.institution-fields').classList.remove('hidden');
-                template.querySelector('.identity-fields').classList.add('hidden');
+                const badge = template.querySelector('.identity-badge');
+                if (badge) badge.classList.add('hidden');
+                const instFields = template.querySelector('.institution-fields');
+                if (instFields) instFields.classList.remove('hidden');
+                const identityFields = template.querySelector('.identity-fields');
+                if (identityFields) identityFields.classList.add('hidden');
+                
                 const toggles = template.querySelectorAll('.toggle-btn');
                 toggles.forEach(btn => {
                     btn.classList.remove('active', 'identity-active');
@@ -863,19 +874,22 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
             if (type === 'identity') {
                 btn.classList.add('identity-active');
                 row.classList.add('identity-row');
-                row.querySelector('.identity-badge').classList.remove('hidden');
-                row.querySelector('.institution-fields').classList.add('hidden');
-                row.querySelector('.identity-fields').classList.remove('hidden');
+                const badge = row.querySelector('.identity-badge');
+                if (badge) badge.classList.remove('hidden');
+                const instFields = row.querySelector('.institution-fields');
+                if (instFields) instFields.classList.add('hidden');
+                const identityFields = row.querySelector('.identity-fields');
+                if (identityFields) identityFields.classList.remove('hidden');
                 row.dataset.type = 'identity';
-                // Set delivery method to AGENT for identity recipients
-                const deliverySelect = row.querySelector('.dest-delivery');
-                if (deliverySelect) deliverySelect.value = 'AGENT';
             } else {
                 btn.classList.add('active');
                 row.classList.remove('identity-row');
-                row.querySelector('.identity-badge').classList.add('hidden');
-                row.querySelector('.institution-fields').classList.remove('hidden');
-                row.querySelector('.identity-fields').classList.add('hidden');
+                const badge = row.querySelector('.identity-badge');
+                if (badge) badge.classList.add('hidden');
+                const instFields = row.querySelector('.institution-fields');
+                if (instFields) instFields.classList.remove('hidden');
+                const identityFields = row.querySelector('.identity-fields');
+                if (identityFields) identityFields.classList.add('hidden');
                 row.dataset.type = 'institution';
             }
             
@@ -915,7 +929,6 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
                         if (el.tagName === 'INPUT') el.value = '';
                         else if (el.tagName === 'SELECT') el.selectedIndex = 0;
                     });
-                    // Reset to institution type
                     const toggle = firstRow.querySelector('.toggle-btn[data-type="institution"]');
                     if (toggle) toggleRecipientType(toggle);
                 }
@@ -930,10 +943,12 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
             let total = 0;
             let valid = 0;
             let identityCount = 0;
+            let institutionCount = 0;
 
             rows.forEach(row => {
                 const isIdentity = row.dataset.type === 'identity';
-                const amount = parseFloat(row.querySelector('.dest-amount')?.value) || 0;
+                const amountInput = row.querySelector('.dest-amount');
+                const amount = parseFloat(amountInput?.value) || 0;
                 
                 if (isIdentity) {
                     identityCount++;
@@ -944,6 +959,7 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
                         valid++;
                     }
                 } else {
+                    institutionCount++;
                     const inst = row.querySelector('.dest-institution')?.value;
                     const ident = row.querySelector('.dest-identifier')?.value?.trim();
                     if (inst && ident && amount > 0) {
@@ -965,7 +981,8 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
 
             rows.forEach(row => {
                 const isIdentity = row.dataset.type === 'identity';
-                const amount = parseFloat(row.querySelector('.dest-amount')?.value) || 0;
+                const amountInput = row.querySelector('.dest-amount');
+                const amount = parseFloat(amountInput?.value) || 0;
                 
                 if (isIdentity) {
                     const identityType = row.querySelector('.dest-identity-type')?.value;
@@ -982,7 +999,10 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
                 }
             });
 
-            document.getElementById('submitBtn').disabled = !hasValid;
+            const submitBtn = document.getElementById('submitBtn');
+            if (submitBtn) {
+                submitBtn.disabled = !hasValid;
+            }
         }
 
         // Initialize with 2 rows - one institution, one identity
@@ -998,7 +1018,8 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
 
             rows.forEach(row => {
                 const isIdentity = row.dataset.type === 'identity';
-                const amount = parseFloat(row.querySelector('.dest-amount')?.value) || 0;
+                const amountInput = row.querySelector('.dest-amount');
+                const amount = parseFloat(amountInput?.value) || 0;
                 const name = row.querySelector('.dest-beneficiary-name')?.value?.trim() || '';
                 const phone = row.querySelector('.dest-beneficiary-phone')?.value?.trim() || '';
                 const email = row.querySelector('.dest-beneficiary-email')?.value?.trim() || '';
