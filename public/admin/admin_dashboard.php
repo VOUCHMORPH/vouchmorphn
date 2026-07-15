@@ -191,7 +191,7 @@ $view = $_GET['view'] ?? 'dashboard';
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · ADMIN DASHBOARD · <?php echo htmlspecialchars($countryCode); ?></title>
+    <title>VOUCHMORPH · ADMIN DASHBOARD · <?php echo htmlspecialchars((string)$countryCode); ?></title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * {
@@ -458,6 +458,12 @@ $view = $_GET['view'] ?? 'dashboard';
             border-color: #ffeeba;
         }
 
+        .status-failed {
+            background: #f8d7da;
+            color: #721c24;
+            border-color: #f5c6cb;
+        }
+
         .admin-footer {
             background: #001B44;
             color: #A1B5D8;
@@ -494,12 +500,12 @@ $view = $_GET['view'] ?? 'dashboard';
     <header class="admin-header">
         <div class="header-left">
             <div class="logo">VOUCHMORPH <span>ADMIN</span></div>
-            <div class="country-badge"><?php echo htmlspecialchars($countryCode); ?> · <?php echo htmlspecialchars($countryName); ?></div>
+            <div class="country-badge"><?php echo htmlspecialchars((string)$countryCode); ?> · <?php echo htmlspecialchars((string)$countryName); ?></div>
         </div>
         <div class="user-info">
             <div class="user-details">
-                <div class="user-name"><?php echo htmlspecialchars($adminFullName ?: $adminUsername); ?></div>
-                <div class="user-role"><?php echo htmlspecialchars($roleName); ?></div>
+                <div class="user-name"><?php echo htmlspecialchars((string)($adminFullName ?: $adminUsername)); ?></div>
+                <div class="user-role"><?php echo htmlspecialchars((string)$roleName); ?></div>
             </div>
             <a href="admin_logout.php" class="logout-btn">LOGOUT</a>
         </div>
@@ -530,7 +536,7 @@ $view = $_GET['view'] ?? 'dashboard';
         <?php if ($view === 'dashboard'): ?>
         <div class="content-header">
             <h1>EXECUTIVE DASHBOARD</h1>
-            <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?> · <?php echo htmlspecialchars($countryName); ?> Time</div>
+            <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?> · <?php echo htmlspecialchars((string)$countryName); ?> Time</div>
         </div>
 
         <div class="metrics-grid">
@@ -539,7 +545,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 <div class="metric-value"><?php echo number_format($metrics['today_transactions']); ?></div>
             </div>
             <div class="metric-card">
-                <div class="metric-label">TODAY'S VOLUME (<?php echo htmlspecialchars($currencySymbol); ?>)</div>
+                <div class="metric-label">TODAY'S VOLUME (<?php echo htmlspecialchars((string)$currencySymbol); ?>)</div>
                 <div class="metric-value"><?php echo $metrics['today_volume']; ?></div>
             </div>
             <div class="metric-card">
@@ -555,7 +561,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 <div class="metric-value"><?php echo number_format($metrics['total_users']); ?></div>
             </div>
             <div class="metric-card">
-                <div class="metric-label">TOTAL VOLUME (<?php echo htmlspecialchars($currencySymbol); ?>)</div>
+                <div class="metric-label">TOTAL VOLUME (<?php echo htmlspecialchars((string)$currencySymbol); ?>)</div>
                 <div class="metric-value"><?php echo $metrics['total_volume']; ?></div>
             </div>
         </div>
@@ -580,9 +586,9 @@ $view = $_GET['view'] ?? 'dashboard';
                                 $status = $p['status'] ?? 'ACTIVE';
                             ?>
                             <tr>
-                                <td><?php echo htmlspecialchars($code); ?></td>
-                                <td><?php echo htmlspecialchars($type); ?></td>
-                                <td><span class="status status-success"><?php echo htmlspecialchars($status); ?></span></td>
+                                <td><?php echo htmlspecialchars((string)$code); ?></td>
+                                <td><?php echo htmlspecialchars((string)$type); ?></td>
+                                <td><span class="status status-success"><?php echo htmlspecialchars((string)$status); ?></span></td>
                             </tr>
                             <?php endforeach; ?>
                             <?php if (count($participants) === 0): ?>
@@ -606,9 +612,15 @@ $view = $_GET['view'] ?? 'dashboard';
                         <tbody>
                             <?php foreach ($recentTransactions as $tx): ?>
                             <tr>
-                                <td><?php echo htmlspecialchars($tx['swap_id'] ?? 'N/A'); ?></td>
-                                <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
-                                <td><span class="status status-<?php echo strtolower($tx['status'] ?? 'pending') === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status'] ?? 'pending'); ?></span></td>
+                                <td><?php echo htmlspecialchars((string)($tx['swap_id'] ?? 'N/A')); ?></td>
+                                <td><?php echo htmlspecialchars((string)$currencySymbol); ?> <?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
+                                <td>
+                                    <?php 
+                                    $status = strtolower($tx['status'] ?? 'pending');
+                                    $statusClass = $status === 'completed' ? 'success' : ($status === 'failed' ? 'failed' : 'pending');
+                                    ?>
+                                    <span class="status status-<?php echo $statusClass; ?>"><?php echo htmlspecialchars((string)($tx['status'] ?? 'pending')); ?></span>
+                                </td>
                                 <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'] ?? 'now')); ?></td>
                             </tr>
                             <?php endforeach; ?>
@@ -627,12 +639,12 @@ $view = $_GET['view'] ?? 'dashboard';
                 <span class="card-badge">LIVE</span>
             </div>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-                <div><strong>Country:</strong> <?php echo htmlspecialchars($countryName); ?> (<?php echo htmlspecialchars($countryCode); ?>)</div>
-                <div><strong>Environment:</strong> <?php echo htmlspecialchars(getenv('APP_ENV') ?: 'production'); ?></div>
+                <div><strong>Country:</strong> <?php echo htmlspecialchars((string)$countryName); ?> (<?php echo htmlspecialchars((string)$countryCode); ?>)</div>
+                <div><strong>Environment:</strong> <?php echo htmlspecialchars((string)(getenv('APP_ENV') ?: 'production')); ?></div>
                 <div><strong>Database:</strong> <span style="color: green;">✓ Connected</span></div>
                 <div><strong>PHP Version:</strong> <?php echo phpversion(); ?></div>
                 <div><strong>Server Time:</strong> <?php echo date('Y-m-d H:i:s'); ?></div>
-                <div><strong>Admin Role:</strong> <?php echo htmlspecialchars($roleName); ?></div>
+                <div><strong>Admin Role:</strong> <?php echo htmlspecialchars((string)$roleName); ?></div>
             </div>
         </div>
 
@@ -648,7 +660,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>End-of-day net positions and settlement amounts</p>
                 <p style="margin-top: 15px;">
-                    <a href="reports/daily_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="reports/daily_reconciliations.php?country=<?php echo htmlspecialchars((string)$countryCode); ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
             <div class="card">
@@ -657,7 +669,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>7-year audit trail of all swap transactions</p>
                 <p style="margin-top: 15px;">
-                    <a href="reports/audit_trails.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="reports/audit_trails.php?country=<?php echo htmlspecialchars((string)$countryCode); ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
             <div class="card">
@@ -666,7 +678,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>AML/KYC compliance and fraud monitoring</p>
                 <p style="margin-top: 15px;">
-                    <a href="reports/suspicious.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="reports/suspicious.php?country=<?php echo htmlspecialchars((string)$countryCode); ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
             <div class="card">
@@ -675,7 +687,7 @@ $view = $_GET['view'] ?? 'dashboard';
                 </div>
                 <p>Monthly financial reconciliation report</p>
                 <p style="margin-top: 15px;">
-                    <a href="reports/monthly_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
+                    <a href="reports/monthly_reconciliations.php?country=<?php echo htmlspecialchars((string)$countryCode); ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
                 </p>
             </div>
         </div>
@@ -690,11 +702,11 @@ $view = $_GET['view'] ?? 'dashboard';
                 <div class="card-header">
                     <span class="card-title">Country Configuration</span>
                 </div>
-                <p>Current Country: <strong><?php echo htmlspecialchars($countryName); ?></strong></p>
-                <p>Currency: <strong><?php echo htmlspecialchars($currencySymbol); ?></strong></p>
+                <p>Current Country: <strong><?php echo htmlspecialchars((string)$countryName); ?></strong></p>
+                <p>Currency: <strong><?php echo htmlspecialchars((string)$currencySymbol); ?></strong></p>
                 <p>Timezone: <strong>Africa/Gaborone</strong></p>
                 <p style="margin-top: 15px;">
-                    <a href="../../src/Core/Config/Countries/<?php echo $countryCode; ?>/config.php" style="color: #001B44;">Edit Config →</a>
+                    <a href="../../src/Core/Config/Countries/<?php echo htmlspecialchars((string)$countryCode); ?>/config.php" style="color: #001B44;">Edit Config →</a>
                 </p>
             </div>
             <div class="card">
@@ -719,23 +731,40 @@ $view = $_GET['view'] ?? 'dashboard';
             </div>
             <div class="table-responsive">
                 <?php
-                $txStmt = $db->query("SELECT * FROM swap_requests ORDER BY created_at DESC LIMIT 50");
-                $allTransactions = $txStmt->fetchAll();
+                try {
+                    $txStmt = $db->query("SELECT * FROM swap_requests ORDER BY created_at DESC LIMIT 50");
+                    $allTransactions = $txStmt->fetchAll();
+                } catch (Throwable $e) {
+                    error_log("[ADMIN DASHBOARD] Transactions query error: " . $e->getMessage());
+                    $allTransactions = [];
+                }
                 ?>
                 <table>
                     <thead>
                         <tr><th>ID</th><th>User</th><th>Amount</th><th>Status</th><th>Created At</th></tr>
                     </thead>
                     <tbody>
+                        <?php if (!empty($allTransactions)): ?>
                         <?php foreach ($allTransactions as $tx): ?>
                         <tr>
-                            <td><?php echo htmlspecialchars($tx['swap_id'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($tx['user_id'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
-                            <td><span class="status status-<?php echo strtolower($tx['status'] ?? 'pending') === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status'] ?? 'pending'); ?></span></td>
+                            <td><?php echo htmlspecialchars((string)($tx['swap_id'] ?? $tx['id'] ?? 'N/A')); ?></td>
+                            <td><?php echo htmlspecialchars((string)($tx['user_id'] ?? 'N/A')); ?></td>
+                            <td><?php echo htmlspecialchars((string)$currencySymbol); ?> <?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
+                            <td>
+                                <?php 
+                                $status = strtolower($tx['status'] ?? 'pending');
+                                $statusClass = $status === 'completed' || $status === 'success' ? 'success' : ($status === 'failed' ? 'failed' : 'pending');
+                                ?>
+                                <span class="status status-<?php echo $statusClass; ?>"><?php echo htmlspecialchars((string)($tx['status'] ?? 'pending')); ?></span>
+                            </td>
                             <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'] ?? 'now')); ?></td>
                         </tr>
                         <?php endforeach; ?>
+                        <?php else: ?>
+                        <tr>
+                            <td colspan="5" style="text-align: center; padding: 30px; color: #999;">No transactions found</td>
+                        </tr>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
@@ -753,23 +782,34 @@ $view = $_GET['view'] ?? 'dashboard';
             </div>
             <div class="table-responsive">
                 <?php
-                $auditStmt = $db->query("SELECT * FROM admin_actions ORDER BY created_at DESC LIMIT 50");
-                $auditLogs = $auditStmt->fetchAll();
+                try {
+                    $auditStmt = $db->query("SELECT * FROM admin_actions ORDER BY created_at DESC LIMIT 50");
+                    $auditLogs = $auditStmt->fetchAll();
+                } catch (Throwable $e) {
+                    error_log("[ADMIN DASHBOARD] Audit query error: " . $e->getMessage());
+                    $auditLogs = [];
+                }
                 ?>
                 <table>
                     <thead>
                         <tr><th>Action</th><th>Entity</th><th>Status</th><th>Admin</th><th>Date</th></tr>
                     </thead>
                     <tbody>
+                        <?php if (!empty($auditLogs)): ?>
                         <?php foreach ($auditLogs as $log): ?>
                         <tr>
-                            <td><?php echo htmlspecialchars($log['action_type'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($log['entity_type'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($log['status'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($log['assigned_admin_id'] ?? 'N/A'); ?></td>
+                            <td><?php echo htmlspecialchars((string)($log['action_type'] ?? $log['action'] ?? 'N/A')); ?></td>
+                            <td><?php echo htmlspecialchars((string)($log['entity_type'] ?? $log['entity'] ?? 'N/A')); ?></td>
+                            <td><?php echo htmlspecialchars((string)($log['status'] ?? 'N/A')); ?></td>
+                            <td><?php echo htmlspecialchars((string)($log['assigned_admin_id'] ?? $log['admin_id'] ?? 'N/A')); ?></td>
                             <td><?php echo date('Y-m-d H:i', strtotime($log['created_at'] ?? 'now')); ?></td>
                         </tr>
                         <?php endforeach; ?>
+                        <?php else: ?>
+                        <tr>
+                            <td colspan="5" style="text-align: center; padding: 30px; color: #999;">No audit logs found</td>
+                        </tr>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
@@ -777,7 +817,7 @@ $view = $_GET['view'] ?? 'dashboard';
 
         <?php else: ?>
         <div class="content-header">
-            <h1><?php echo ucfirst($view); ?></h1>
+            <h1><?php echo htmlspecialchars((string)ucfirst($view)); ?></h1>
             <div class="timestamp">Module under development</div>
         </div>
         <div class="card">
@@ -787,7 +827,7 @@ $view = $_GET['view'] ?? 'dashboard';
     </main>
 
     <footer class="admin-footer">
-        <p>VOUCHMORPH · <?php echo htmlspecialchars($countryName); ?> · <?php echo date('Y'); ?></p>
+        <p>VOUCHMORPH · <?php echo htmlspecialchars((string)$countryName); ?> · <?php echo date('Y'); ?></p>
         <p style="margin-top: 5px;">Bank of Botswana Regulatory Sandbox Participant</p>
     </footer>
 </body>
