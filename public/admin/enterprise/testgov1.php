@@ -1,16 +1,19 @@
 <?php
 /**
- * check_user_org.php - Debug user organization and batch visibility
+ * test_queries.php - Test different query variations to find what works
  */
 
 require_once 'auth.php';
 $user = requireEnterpriseAuth();
 $pdo = getDBConnection();
+$orgId = getOrganizationId();
+$userId = $user['user_id'] ?? $user['id'] ?? null;
+$userRole = $user['role'] ?? 'viewer';
 
 echo "<!DOCTYPE html>
 <html>
 <head>
-    <title>Debug User Organization</title>
+    <title>Test Queries</title>
     <style>
         body { font-family: monospace; background: #0f172a; color: #e2e8f0; padding: 40px; }
         .pass { color: #4ade80; }
@@ -22,238 +25,287 @@ echo "<!DOCTYPE html>
         .step.pass { border-color: #4ade80; }
         .step.fail { border-color: #f87171; }
         .step.warn { border-color: #fbbf24; }
+        .step.info { border-color: #60a5fa; }
         table { width: 100%; border-collapse: collapse; font-size: 12px; }
         th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #334155; }
         th { background: #1e293b; color: #94a3b8; }
+        pre { background: #0f172a; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 11px; color: #94a3b8; }
+        .query-result { margin: 8px 0; padding: 8px; border-radius: 4px; }
+        .query-result.pass { background: #052e16; border-left: 3px solid #4ade80; }
+        .query-result.fail { background: #2c0a0a; border-left: 3px solid #f87171; }
+        .query-result.warn { background: #2c240a; border-left: 3px solid #fbbf24; }
     </style>
 </head>
 <body>
-<h1>🔍 Debug: User Organization & Batches</h1>";
+<h1>🔍 Test Query Variations</h1>";
 
 // ============================================================
-// 1. Current User Info
+// User Info
 // ============================================================
-echo "<div class='step'>";
-echo "<h2>1. Current User</h2>";
-
-$userId = $user['user_id'] ?? $user['id'] ?? null;
-$orgId = getOrganizationId();
-$userRole = $user['role'] ?? 'viewer';
-
+echo "<div class='step info'>";
+echo "<h2>Current User</h2>";
 echo "User ID: <strong>" . ($userId ?? 'NULL') . "</strong><br>";
 echo "Role: <strong>" . ($userRole ?? 'NULL') . "</strong><br>";
-echo "Organization ID from session: <strong>" . ($orgId ?? 'NULL') . "</strong><br>";
-echo "Full Name: " . ($user['full_name'] ?? 'NULL') . "<br>";
-echo "Email: " . ($user['email'] ?? 'NULL') . "<br>";
-
-// Check if user exists in organization_users
-$stmt = $pdo->prepare("
-    SELECT ou.*, o.name as org_name
-    FROM organization_users ou
-    JOIN organizations o ON ou.organization_id = o.id
-    WHERE ou.user_id = :user_id
-");
-$stmt->execute([':user_id' => $userId]);
-$orgUser = $stmt->fetch(PDO::FETCH_ASSOC);
-
-if ($orgUser) {
-    echo "<span class='pass'>✅ User found in organization_users</span><br>";
-    echo "Organization ID: " . $orgUser['organization_id'] . "<br>";
-    echo "Organization Name: " . $orgUser['org_name'] . "<br>";
-    echo "Role in DB: " . $orgUser['role'] . "<br>";
-    echo "Is Active: " . ($orgUser['is_active'] ? '✅ Yes' : '❌ No') . "<br>";
-} else {
-    echo "<span class='fail'>❌ User NOT found in organization_users!</span><br>";
-    echo "This is why you're not seeing batches - your user isn't properly linked to an organization.";
-}
+echo "Organization ID: <strong>" . ($orgId ?? 'NULL') . "</strong><br>";
 echo "</div>";
 
 // ============================================================
-// 2. All Batches in Database
+// Test 1: Simple Query - No Filters
 // ============================================================
 echo "<div class='step'>";
-echo "<h2>2. All Batches in Database</h2>";
+echo "<h2>Test 1: No Filters (Should return ALL batches)</h2>";
 
-$stmt = $pdo->query("
-    SELECT id, batch_reference, status, created_by, organization_id
-    FROM disbursement_batches
-    ORDER BY id
-");
-$allBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$sql1 = "SELECT id, batch_reference, status, created_by, organization_id FROM disbursement_batches ORDER BY id";
+$stmt = $pdo->query($sql1);
+$result1 = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-if (empty($allBatches)) {
-    echo "<span class='warn'>⚠️ No batches found in database</span><br>";
-} else {
-    echo "<span class='pass'>✅ Found " . count($allBatches) . " batches</span><br>";
+echo "<div class='query-result " . (count($result1) > 0 ? 'pass' : 'fail') . "'>";
+echo "Count: " . count($result1) . " batches<br>";
+echo "<pre>" . htmlspecialchars($sql1) . "</pre>";
+if (count($result1) > 0) {
     echo "<table>";
     echo "<tr><th>ID</th><th>Reference</th><th>Status</th><th>Created By</th><th>Org ID</th></tr>";
-    foreach ($allBatches as $batch) {
-        echo "<tr>";
-        echo "<td>" . $batch['id'] . "</td>";
-        echo "<td>" . $batch['batch_reference'] . "</td>";
-        echo "<td>" . $batch['status'] . "</td>";
-        echo "<td>" . ($batch['created_by'] ?? 'NULL') . "</td>";
-        echo "<td>" . ($batch['organization_id'] ?? 'NULL') . "</td>";
-        echo "</tr>";
+    foreach ($result1 as $row) {
+        echo "<tr><td>{$row['id']}</td><td>{$row['batch_reference']}</td><td>{$row['status']}</td><td>{$row['created_by']}</td><td>{$row['organization_id']}</td></tr>";
     }
     echo "</table>";
+} else {
+    echo "<span class='fail'>❌ No results</span>";
 }
+echo "</div>";
 echo "</div>";
 
 // ============================================================
-// 3. Batches Visible to This User (Using Dashboard Query)
+// Test 2: With organization_id filter
 // ============================================================
 echo "<div class='step'>";
-echo "<h2>3. Batches Visible to This User (Dashboard Query)</h2>";
+echo "<h2>Test 2: With organization_id = $orgId</h2>";
 
-$orgId = getOrganizationId();
-$userId = $user['user_id'] ?? $user['id'] ?? null;
-$userRole = $user['role'] ?? 'viewer';
+$sql2 = "SELECT id, batch_reference, status, created_by, organization_id FROM disbursement_batches WHERE organization_id = :org_id ORDER BY id";
+$stmt = $pdo->prepare($sql2);
+$stmt->execute([':org_id' => $orgId]);
+$result2 = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-echo "Using: org_id=$orgId, user_id=$userId, role=$userRole<br><br>";
-
-// Simulate the dashboard query
-$statusFilter = "";
-$statusParams = [':org_id' => $orgId];
-
-if ($userRole === 'owner') {
-    // Owners should see ALL batches
-    $statusFilter = "AND 1=1";
-    echo "<span class='info'>Role is OWNER - should see ALL batches</span><br>";
-} elseif (in_array($userRole, ['auditor', 'viewer', 'it_support'])) {
-    $statusFilter = "AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')";
-} elseif (in_array($userRole, ['approver', 'senior_approver'])) {
-    $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')";
-} elseif ($userRole === 'supervisor') {
-    $statusFilter = "AND status IN ('approved', 'completed', 'executed', 'APPROVED', 'COMPLETED', 'EXECUTED')";
-} elseif (in_array($userRole, ['program_officer', 'department_head'])) {
-    $statusFilter = "AND (created_by = :user_id OR status IN ('pending', 'pending_approval', 'approved', 'draft'))";
-    $statusParams[':user_id'] = $userId;
-}
-
-// Build the full query
-$sql = "
-    SELECT id, batch_reference, status, created_by, organization_id
-    FROM disbursement_batches 
-    WHERE organization_id = :org_id $statusFilter
-    ORDER BY created_at DESC 
-    LIMIT 15
-";
-
-echo "SQL: <br><pre style='background:#0f172a; padding:10px; border-radius:4px; font-size:11px;'>" . htmlspecialchars($sql) . "</pre><br>";
-echo "Params: <pre style='background:#0f172a; padding:10px; border-radius:4px; font-size:11px;'>" . print_r($statusParams, true) . "</pre><br>";
-
-$stmt = $pdo->prepare($sql);
-$stmt->execute($statusParams);
-$visibleBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-if (empty($visibleBatches)) {
-    echo "<span class='fail'>❌ No batches visible to this user!</span><br>";
-    
-    // Check if there are any batches with this org_id
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM disbursement_batches WHERE organization_id = :org_id");
-    $stmt->execute([':org_id' => $orgId]);
-    $count = $stmt->fetchColumn();
-    
-    if ($count == 0) {
-        echo "<span class='warn'>⚠️ No batches found with organization_id = $orgId</span><br>";
-        echo "Batches exist but with different organization_id.<br>";
-        
-        // Show what organization_ids exist
-        $stmt = $pdo->query("SELECT DISTINCT organization_id FROM disbursement_batches");
-        $orgIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
-        echo "Existing organization_ids in batches: " . implode(', ', $orgIds) . "<br>";
-    } else {
-        echo "<span class='info'>ℹ️ Found $count batches with organization_id = $orgId, but they're filtered out by role/status</span><br>";
-    }
-} else {
-    echo "<span class='pass'>✅ Found " . count($visibleBatches) . " visible batches</span><br>";
+echo "<div class='query-result " . (count($result2) > 0 ? 'pass' : 'fail') . "'>";
+echo "Count: " . count($result2) . " batches<br>";
+echo "<pre>" . htmlspecialchars($sql2) . "</pre>";
+echo "Params: org_id = $orgId<br>";
+if (count($result2) > 0) {
     echo "<table>";
     echo "<tr><th>ID</th><th>Reference</th><th>Status</th><th>Created By</th></tr>";
-    foreach ($visibleBatches as $batch) {
+    foreach ($result2 as $row) {
+        echo "<tr><td>{$row['id']}</td><td>{$row['batch_reference']}</td><td>{$row['status']}</td><td>{$row['created_by']}</td></tr>";
+    }
+    echo "</table>";
+} else {
+    echo "<span class='fail'>❌ No results</span>";
+}
+echo "</div>";
+echo "</div>";
+
+// ============================================================
+// Test 3: Owner filter (AND 1=1)
+// ============================================================
+echo "<div class='step'>";
+echo "<h2>Test 3: Owner Filter (AND 1=1 - should show ALL)</h2>";
+
+$sql3 = "SELECT id, batch_reference, status, created_by, organization_id FROM disbursement_batches WHERE organization_id = :org_id AND 1=1 ORDER BY id";
+$stmt = $pdo->prepare($sql3);
+$stmt->execute([':org_id' => $orgId]);
+$result3 = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+echo "<div class='query-result " . (count($result3) > 0 ? 'pass' : 'fail') . "'>";
+echo "Count: " . count($result3) . " batches<br>";
+echo "<pre>" . htmlspecialchars($sql3) . "</pre>";
+echo "Params: org_id = $orgId<br>";
+if (count($result3) > 0) {
+    echo "<span class='pass'>✅ This query works for owners!</span><br>";
+    echo "<table>";
+    echo "<tr><th>ID</th><th>Reference</th><th>Status</th><th>Created By</th></tr>";
+    foreach ($result3 as $row) {
+        echo "<tr><td>{$row['id']}</td><td>{$row['batch_reference']}</td><td>{$row['status']}</td><td>{$row['created_by']}</td></tr>";
+    }
+    echo "</table>";
+} else {
+    echo "<span class='fail'>❌ No results</span>";
+}
+echo "</div>";
+echo "</div>";
+
+// ============================================================
+// Test 4: Approver filter (pending, approved, draft)
+// ============================================================
+echo "<div class='step'>";
+echo "<h2>Test 4: Approver Filter (pending, approved, draft)</h2>";
+
+$sql4 = "SELECT id, batch_reference, status, created_by, organization_id FROM disbursement_batches WHERE organization_id = :org_id AND status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED') ORDER BY id";
+$stmt = $pdo->prepare($sql4);
+$stmt->execute([':org_id' => $orgId]);
+$result4 = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+echo "<div class='query-result " . (count($result4) > 0 ? 'pass' : 'fail') . "'>";
+echo "Count: " . count($result4) . " batches<br>";
+echo "<pre>" . htmlspecialchars($sql4) . "</pre>";
+echo "Params: org_id = $orgId<br>";
+if (count($result4) > 0) {
+    echo "<span class='pass'>✅ This query works for approvers!</span><br>";
+} else {
+    echo "<span class='fail'>❌ No results</span>";
+}
+echo "</div>";
+echo "</div>";
+
+// ============================================================
+// Test 5: Loader filter (own + pending + approved + draft)
+// ============================================================
+echo "<div class='step'>";
+echo "<h2>Test 5: Loader Filter (own + pending + approved + draft)</h2>";
+
+$sql5 = "SELECT id, batch_reference, status, created_by, organization_id FROM disbursement_batches WHERE organization_id = :org_id AND (created_by = :user_id OR status IN ('pending', 'pending_approval', 'approved', 'draft')) ORDER BY id";
+$stmt = $pdo->prepare($sql5);
+$stmt->execute([':org_id' => $orgId, ':user_id' => $userId]);
+$result5 = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+echo "<div class='query-result " . (count($result5) > 0 ? 'pass' : 'fail') . "'>";
+echo "Count: " . count($result5) . " batches<br>";
+echo "<pre>" . htmlspecialchars($sql5) . "</pre>";
+echo "Params: org_id = $orgId, user_id = $userId<br>";
+if (count($result5) > 0) {
+    echo "<span class='pass'>✅ This query works for loaders!</span><br>";
+} else {
+    echo "<span class='fail'>❌ No results</span>";
+}
+echo "</div>";
+echo "</div>";
+
+// ============================================================
+// Test 6: Supervisor filter (approved + completed)
+// ============================================================
+echo "<div class='step'>";
+echo "<h2>Test 6: Supervisor Filter (approved + completed)</h2>";
+
+$sql6 = "SELECT id, batch_reference, status, created_by, organization_id FROM disbursement_batches WHERE organization_id = :org_id AND status IN ('approved', 'completed', 'executed', 'APPROVED', 'COMPLETED', 'EXECUTED') ORDER BY id";
+$stmt = $pdo->prepare($sql6);
+$stmt->execute([':org_id' => $orgId]);
+$result6 = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+echo "<div class='query-result " . (count($result6) > 0 ? 'pass' : 'warn') . "'>";
+echo "Count: " . count($result6) . " batches<br>";
+echo "<pre>" . htmlspecialchars($sql6) . "</pre>";
+echo "Params: org_id = $orgId<br>";
+if (count($result6) > 0) {
+    echo "<span class='pass'>✅ This query works for supervisors!</span><br>";
+} else {
+    echo "<span class='warn'>⚠️ No approved/completed batches yet</span><br>";
+}
+echo "</div>";
+echo "</div>";
+
+// ============================================================
+// Test 7: Read-only filter (completed only)
+// ============================================================
+echo "<div class='step'>";
+echo "<h2>Test 7: Read-only Filter (completed only)</h2>";
+
+$sql7 = "SELECT id, batch_reference, status, created_by, organization_id FROM disbursement_batches WHERE organization_id = :org_id AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED') ORDER BY id";
+$stmt = $pdo->prepare($sql7);
+$stmt->execute([':org_id' => $orgId]);
+$result7 = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+echo "<div class='query-result " . (count($result7) > 0 ? 'pass' : 'warn') . "'>";
+echo "Count: " . count($result7) . " batches<br>";
+echo "<pre>" . htmlspecialchars($sql7) . "</pre>";
+echo "Params: org_id = $orgId<br>";
+if (count($result7) > 0) {
+    echo "<span class='pass'>✅ This query works for read-only users!</span><br>";
+} else {
+    echo "<span class='warn'>⚠️ No completed batches yet</span><br>";
+}
+echo "</div>";
+echo "</div>";
+
+// ============================================================
+// Test 8: Full dashboard query (with ORDER BY and LIMIT)
+// ============================================================
+echo "<div class='step'>";
+echo "<h2>Test 8: Full Dashboard Query (Owner - AND 1=1)</h2>";
+
+$sql8 = "
+    SELECT 
+        id, batch_reference, batch_name, source_institution,
+        total_amount, total_destinations, status, created_at,
+        updated_at, created_by, department_id
+    FROM disbursement_batches 
+    WHERE organization_id = :org_id AND 1=1
+    ORDER BY 
+        CASE 
+            WHEN status IN ('pending', 'pending_approval') THEN 1
+            WHEN status = 'approved' THEN 2
+            WHEN status = 'draft' THEN 3
+            ELSE 4
+        END,
+        created_at DESC 
+    LIMIT 15
+";
+$stmt = $pdo->prepare($sql8);
+$stmt->execute([':org_id' => $orgId]);
+$result8 = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+echo "<div class='query-result " . (count($result8) > 0 ? 'pass' : 'fail') . "'>";
+echo "Count: " . count($result8) . " batches<br>";
+echo "<pre>" . htmlspecialchars($sql8) . "</pre>";
+echo "Params: org_id = $orgId<br>";
+if (count($result8) > 0) {
+    echo "<span class='pass'>✅ FULL DASHBOARD QUERY WORKS!</span><br>";
+    echo "<table>";
+    echo "<tr><th>ID</th><th>Reference</th><th>Status</th><th>Amount</th><th>Created By</th></tr>";
+    foreach ($result8 as $row) {
         echo "<tr>";
-        echo "<td>" . $batch['id'] . "</td>";
-        echo "<td>" . $batch['batch_reference'] . "</td>";
-        echo "<td>" . $batch['status'] . "</td>";
-        echo "<td>" . ($batch['created_by'] ?? 'NULL') . "</td>";
+        echo "<td>{$row['id']}</td>";
+        echo "<td>{$row['batch_reference']}</td>";
+        echo "<td>{$row['status']}</td>";
+        echo "<td>" . number_format($row['total_amount'] ?? 0, 2) . "</td>";
+        echo "<td>{$row['created_by']}</td>";
         echo "</tr>";
     }
     echo "</table>";
-}
-echo "</div>";
-
-// ============================================================
-// 4. Fix Suggestion
-// ============================================================
-echo "<div class='step'>";
-echo "<h2>4. Fix Suggestion</h2>";
-
-// Check what's wrong
-$stmt = $pdo->prepare("SELECT COUNT(*) FROM disbursement_batches WHERE organization_id = :org_id");
-$stmt->execute([':org_id' => $orgId]);
-$orgBatchCount = $stmt->fetchColumn();
-
-if ($orgBatchCount == 0) {
-    echo "<span class='warn'>⚠️ Your batches have a DIFFERENT organization_id than your user.</span><br>";
-    echo "<span class='info'>Run this SQL to fix:</span><br>";
-    echo "<pre style='background:#0f172a; padding:10px; border-radius:4px; font-size:11px;'>
--- Check what org_id your batches have
-SELECT DISTINCT organization_id FROM disbursement_batches;
-
--- Update all batches to match your organization (replace 1 with your actual org_id)
-UPDATE disbursement_batches 
-SET organization_id = 1
-WHERE organization_id IS NULL OR organization_id != 1;
-
--- Also update your user's organization if needed
-UPDATE organization_users 
-SET organization_id = 1
-WHERE user_id = $userId;
-</pre>";
-} elseif ($userRole === 'owner' && empty($visibleBatches)) {
-    echo "<span class='fail'>❌ Owner role but no batches visible. This is a bug.</span><br>";
-    echo "<span class='info'>Check if the owner filter is working correctly in index.php.</span><br>";
-    echo "The filter for owners should be: <code>AND 1=1</code> (show all)<br>";
 } else {
-    echo "<span class='pass'>✅ Everything looks correct. Try refreshing the page.</span><br>";
+    echo "<span class='fail'>❌ No results - something is wrong with the query</span>";
 }
-
+echo "</div>";
 echo "</div>";
 
 // ============================================================
-// 5. Quick Fix Button
+// Summary
 // ============================================================
 echo "<div class='box' style='border: 2px solid #4ade80; margin-top: 20px;'>";
-echo "<h2>🛠️ Quick Fix</h2>";
+echo "<h2>📊 Summary</h2>";
 
-// Get actual org_id from batches
-$stmt = $pdo->query("SELECT DISTINCT organization_id FROM disbursement_batches LIMIT 1");
-$batchOrgId = $stmt->fetchColumn();
+$workingQueries = [];
+if (count($result1) > 0) $workingQueries[] = "Test 1: No Filters";
+if (count($result2) > 0) $workingQueries[] = "Test 2: organization_id only";
+if (count($result3) > 0) $workingQueries[] = "Test 3: AND 1=1 (OWNER)";
+if (count($result4) > 0) $workingQueries[] = "Test 4: Approver filter";
+if (count($result5) > 0) $workingQueries[] = "Test 5: Loader filter";
+if (count($result6) > 0) $workingQueries[] = "Test 6: Supervisor filter";
+if (count($result7) > 0) $workingQueries[] = "Test 7: Read-only filter";
+if (count($result8) > 0) $workingQueries[] = "Test 8: Full Dashboard Query";
 
-if ($batchOrgId && $orgId != $batchOrgId) {
-    echo "<span class='warn'>⚠️ Your user's org_id ($orgId) doesn't match batch org_id ($batchOrgId)</span><br>";
-    echo "<form method='POST' action=''>";
-    echo "<input type='hidden' name='fix_org' value='1'>";
-    echo "<button type='submit' class='btn' style='background:#fbbf24; color:#0f172a; padding:8px 16px; border:none; border-radius:4px; cursor:pointer; margin-top:8px;'>🔧 Fix: Update User Organization to $batchOrgId</button>";
-    echo "</form>";
+echo "Working queries: <br>";
+foreach ($workingQueries as $q) {
+    echo "<span class='pass'>✅ $q</span><br>";
 }
 
-// Handle fix
-if (isset($_POST['fix_org'])) {
-    $stmt = $pdo->prepare("UPDATE organization_users SET organization_id = :org_id WHERE user_id = :user_id");
-    $stmt->execute([':org_id' => $batchOrgId, ':user_id' => $userId]);
-    
-    // Also update session
-    $_SESSION['enterprise_user']['organization_id'] = $batchOrgId;
-    
-    echo "<span class='pass'>✅ Organization updated! Refreshing...</span><br>";
-    echo "<script>setTimeout(function(){ window.location.href = 'index.php'; }, 1500);</script>";
+if (count($result8) > 0) {
+    echo "<br><span class='pass'>✅ The FULL DASHBOARD QUERY with AND 1=1 works!</span><br>";
+    echo "The fix is to make sure the owner role uses <code>AND 1=1</code> in the status filter.";
+} else {
+    echo "<br><span class='fail'>❌ None of the queries returned results. Check database connection.</span><br>";
 }
 
-echo "<div style='margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;'>";
-echo "<a href='check_user_org.php' class='btn' style='background:#60a5fa;'>🔄 Re-run</a>";
-echo "<a href='index.php' class='btn'>📊 Dashboard</a>";
-echo "<a href='logout.php' class='btn' style='background:#f87171;'>🚪 Logout</a>";
+echo "<div style='margin-top:16px; display:flex; gap:12px; flex-wrap:wrap;'>";
+echo "<a href='test_queries.php' class='btn' style='background:#60a5fa; color:#0f172a; padding:8px 16px; border:none; border-radius:4px; cursor:pointer; text-decoration:none;'>🔄 Re-run</a>";
+echo "<a href='index.php' class='btn' style='background:#4ade80; color:#0f172a; padding:8px 16px; border:none; border-radius:4px; cursor:pointer; text-decoration:none;'>📊 Dashboard</a>";
 echo "</div>";
 echo "</div>";
 
