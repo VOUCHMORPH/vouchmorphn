@@ -127,8 +127,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'execute') {
             // Execute the multi-destination swap
             try {
-               require_once '../../../../src/Domain/Services/SwapService.php';
-             $swapService = new \Domain\Services\SwapService($db, [], 'Botswana');
+                require_once '../../../../src/Domain/Services/SwapService.php';
+                $swapService = new \Domain\Services\SwapService($db, [], 'Botswana');
                 
                 $payload = [
                     'swap_type' => 'MULTI_DESTINATION',
@@ -217,10 +217,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $csrfToken = generateCsrfToken();
 $roleDisplay = strtoupper($user['role'] ?? 'USER');
+
+// ============================================================
+// PERMISSIONS - FIXED: Owner can submit and execute, but NOT approve
+// ============================================================
 $canSubmit = in_array($user['role'] ?? '', ['owner', 'program_officer', 'department_head']) && $canEdit;
-$canApprove = in_array($user['role'] ?? '', ['approver', 'senior_approver']);
-$canExecute = in_array($user['role'] ?? '', ['owner']);
-$status = strtolower($batch['status'] ?? 'draft');  // FIXED: always lowercase for comparison
+$canApprove = in_array($user['role'] ?? '', ['approver', 'senior_approver']);  // REMOVED 'owner' from approve
+$canExecute = in_array($user['role'] ?? '', ['owner']);  // Only owner can disburse
+
+$status = strtolower($batch['status'] ?? 'draft');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -550,7 +555,7 @@ $status = strtolower($batch['status'] ?? 'draft');  // FIXED: always lowercase f
                 <?php endif; ?>
             </div>
             <div class="actions-bar">
-                <!-- Submit for Approval - Only for OWN batches in DRAFT -->
+                <!-- Submit for Approval - Owners and Loaders can submit -->
                 <?php if ($status === 'draft' && $canSubmit && !$isReadOnly): ?>
                 <form method="POST" style="display:inline;">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
@@ -562,7 +567,8 @@ $status = strtolower($batch['status'] ?? 'draft');  // FIXED: always lowercase f
                 <?php endif; ?>
 
                 <!-- ============================================================ -->
-                <!-- APPROVE BUTTON - FIXED: Check for lowercase status -->
+                <!-- APPROVE BUTTON - ONLY for Approver and Senior Approver -->
+                <!-- Owner CANNOT approve -->
                 <!-- ============================================================ -->
                 <?php if ($status === 'pending_approval' && $canApprove): ?>
                 <form method="POST" style="display:inline;" onsubmit="return confirm('Approve this batch?')">
@@ -585,7 +591,9 @@ $status = strtolower($batch['status'] ?? 'draft');  // FIXED: always lowercase f
                 </div>
                 <?php endif; ?>
 
-                <!-- Execute - For Owners -->
+                <!-- ============================================================ -->
+                <!-- EXECUTE/DISBURSE - Only for OWNER -->
+                <!-- ============================================================ -->
                 <?php if ($status === 'approved' && $canExecute): ?>
                 <form method="POST" style="display:inline;" onsubmit="return confirm('Execute this multi-destination swap? This will move real funds.')">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
