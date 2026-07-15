@@ -667,8 +667,8 @@ class SwapService
         $swapType = $payload['swap_type'] ?? 'STANDARD';
         
         // Check if multi-source
-        $isMultiSource = isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 1;
-        $isMultiDestination = isset($payload['destinations']) && is_array($payload['destinations']) && count($payload['destinations']) > 1;
+        $isMultiSource = isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) ;
+        $isMultiDestination = isset($payload['destinations']) && is_array($payload['destinations']) && count($payload['destinations']) >= 1;
         
         if ($isMultiSource) {
             $swapType = 'MULTI_SOURCE';
@@ -784,10 +784,10 @@ class SwapService
         
         $sourceInstitution = $this->extractSourceInstitution($payload);
         
-        $destinations = $payload['destinations'] ?? [];
-        if (empty($destinations) || count($destinations) < 2) {
-            throw new RuntimeException("At least 2 destinations required for multi-destination swap");
-        }
+       $destinations = $payload['destinations'] ?? [];
+if (empty($destinations)) {
+    throw new RuntimeException("At least 1 destination required for multi-destination swap");
+}
         
         $currency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
         $sourceIdentifier = $this->extractSourceIdentifier($payload);
