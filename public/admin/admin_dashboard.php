@@ -606,10 +606,10 @@ $view = $_GET['view'] ?? 'dashboard';
                         <tbody>
                             <?php foreach ($recentTransactions as $tx): ?>
                             <tr>
-                                <td><?php echo $tx['swap_id']; ?></td>
-                                <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format($tx['amount'], 2); ?></td>
-                                <td><span class="status status-<?php echo strtolower($tx['status']) === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status']); ?></span></td>
-                                <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'])); ?></td>
+                                <td><?php echo htmlspecialchars($tx['swap_id'] ?? 'N/A'); ?></td>
+                                <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
+                                <td><span class="status status-<?php echo strtolower($tx['status'] ?? 'pending') === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status'] ?? 'pending'); ?></span></td>
+                                <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'] ?? 'now')); ?></td>
                             </tr>
                             <?php endforeach; ?>
                             <?php if (empty($recentTransactions)): ?>
@@ -729,11 +729,11 @@ $view = $_GET['view'] ?? 'dashboard';
                     <tbody>
                         <?php foreach ($allTransactions as $tx): ?>
                         <tr>
-                            <td><?php echo $tx['swap_id']; ?></td>
-                            <td><?php echo $tx['user_id']; ?></td>
-                            <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format($tx['amount'], 2); ?></td>
-                            <td><span class="status status-<?php echo strtolower($tx['status']) === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status']); ?></span></td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'])); ?></td>
+                            <td><?php echo htmlspecialchars($tx['swap_id'] ?? 'N/A'); ?></td>
+                            <td><?php echo htmlspecialchars($tx['user_id'] ?? 'N/A'); ?></td>
+                            <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
+                            <td><span class="status status-<?php echo strtolower($tx['status'] ?? 'pending') === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status'] ?? 'pending'); ?></span></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'] ?? 'now')); ?></td>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -766,8 +766,8 @@ $view = $_GET['view'] ?? 'dashboard';
                             <td><?php echo htmlspecialchars($log['action_type'] ?? 'N/A'); ?></td>
                             <td><?php echo htmlspecialchars($log['entity_type'] ?? 'N/A'); ?></td>
                             <td><?php echo htmlspecialchars($log['status'] ?? 'N/A'); ?></td>
-                            <td><?php echo $log['assigned_admin_id']; ?></td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($log['created_at'])); ?></td>
+                            <td><?php echo htmlspecialchars($log['assigned_admin_id'] ?? 'N/A'); ?></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($log['created_at'] ?? 'now')); ?></td>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>
