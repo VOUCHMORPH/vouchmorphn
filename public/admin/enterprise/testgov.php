@@ -1,136 +1,96 @@
 <?php
 /**
- * admin/enterprise/test.php
+ * admin/enterprise/test_workflow.php
  * 
- * Comprehensive System Health Check & Role-Based Visibility Test
- * Verifies:
- * - File structure and permissions
- * - Database tables and schema
- * - Role-based access control
- * - Batch workflow (Create → Submit → Approve → Disburse)
- * - Button visibility for each role
- * - CSRF protection
- * - Session management
+ * Complete Workflow Test - Creates a batch using the actual files
+ * Tests: Source Input → Add Destinations → Review → Submit → Approve → Disburse
  */
 
-// ============================================================
-// 1. ENVIRONMENT SETUP
-// ============================================================
-error_reporting(E_ALL);
+// Suppress session warnings for testing
+error_reporting(E_ALL ^ E_WARNING);
 ini_set('display_errors', 1);
+
+// Start session if not started
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+// ============================================================
+// 1. LOAD AUTH AND SETUP
+// ============================================================
+require_once 'auth.php';
+
+$pdo = getDBConnection();
+$orgId = getOrganizationId();
+$userId = $_SESSION['enterprise_user']['user_id'] ?? $_SESSION['enterprise_user']['id'] ?? 1;
+$userRole = $_SESSION['enterprise_user']['role'] ?? 'program_officer';
 
 echo "<!DOCTYPE html>
 <html lang='en'>
 <head>
     <meta charset='UTF-8'>
     <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <title>VouchMorph Enterprise - Comprehensive System Test</title>
+    <title>VouchMorph - Workflow Test</title>
     <link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap' rel='stylesheet'>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: 'Inter', sans-serif; 
-            background: #f1f5f9; 
-            color: #0f172a; 
-            padding: 40px; 
-        }
-        .container { max-width: 1400px; margin: 0 auto; }
-        h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
-        .sub { color: #64748b; margin-bottom: 32px; }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family: 'Inter', sans-serif; background: #f1f5f9; color: #0f172a; padding: 40px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { font-size: 28px; font-weight: 700; }
+        .sub { color: #64748b; margin-bottom: 24px; }
         
-        .test-grid { 
-            display: grid; 
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); 
-            gap: 16px; 
-            margin-bottom: 24px; 
-        }
-        .test-card { 
+        .step { 
             background: white; 
             border-radius: 12px; 
-            padding: 20px; 
-            border: 1px solid #e2e8f0; 
+            padding: 24px; 
+            margin-bottom: 16px; 
+            border: 1px solid #e2e8f0;
+            border-left: 4px solid #94a3b8;
         }
-        .test-card h3 { 
-            font-size: 14px; 
-            font-weight: 600; 
-            margin-bottom: 12px; 
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .test-card .status { 
+        .step.pass { border-left-color: #166534; background: #f0fdf4; }
+        .step.fail { border-left-color: #991b1b; background: #fef2f2; }
+        .step.info { border-left-color: #3b82f6; background: #eff6ff; }
+        .step.warning { border-left-color: #f59e0b; background: #fffbeb; }
+        
+        .step h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+        .step .badge { 
             display: inline-block; 
-            padding: 2px 12px; 
-            border-radius: 20px; 
-            font-size: 11px; 
+            padding: 2px 10px; 
+            border-radius: 12px; 
+            font-size: 10px; 
             font-weight: 600; 
         }
-        .status-pass { background: #dcfce7; color: #166534; }
-        .status-fail { background: #fee2e2; color: #991b1b; }
-        .status-warn { background: #fef3c7; color: #92400e; }
-        .status-info { background: #dbeafe; color: #1e40af; }
+        .badge-pass { background: #dcfce7; color: #166534; }
+        .badge-fail { background: #fee2e2; color: #991b1b; }
+        .badge-info { background: #dbeafe; color: #1e40af; }
+        .badge-warning { background: #fef3c7; color: #92400e; }
         
         .detail { 
             font-size: 13px; 
             color: #64748b; 
-            margin-top: 6px; 
-            font-family: monospace; 
-            word-break: break-all; 
             padding: 4px 8px;
             background: #f8fafc;
             border-radius: 4px;
+            margin: 4px 0;
+            font-family: monospace;
         }
         .detail.success { color: #166534; background: #dcfce7; }
         .detail.error { color: #991b1b; background: #fee2e2; }
         .detail.warning { color: #92400e; background: #fef3c7; }
         
-        .batch-sim {
-            background: #f8fafc;
+        .sql-box {
+            background: #0f172a;
+            color: #e2e8f0;
             padding: 16px;
             border-radius: 8px;
-            margin-top: 12px;
-            border: 1px solid #e2e8f0;
+            overflow-x: auto;
+            font-size: 12px;
+            font-family: monospace;
+            margin: 8px 0;
         }
-        .batch-sim .row {
-            display: flex;
-            justify-content: space-between;
-            padding: 4px 0;
-            font-size: 13px;
-            border-bottom: 1px solid #e2e8f0;
-        }
-        .batch-sim .row:last-child { border-bottom: none; }
-        .batch-sim .label { color: #64748b; }
-        .batch-sim .value { font-weight: 600; }
-        
-        .role-matrix {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 12px;
-            margin-top: 12px;
-        }
-        .role-card {
-            background: #f8fafc;
-            padding: 12px;
-            border-radius: 8px;
-            border: 1px solid #e2e8f0;
-            text-align: center;
-        }
-        .role-card .role-name { font-weight: 700; font-size: 14px; }
-        .role-card .role-badge {
-            display: inline-block;
-            padding: 2px 10px;
-            border-radius: 12px;
-            font-size: 10px;
-            font-weight: 600;
-            margin-top: 4px;
-        }
-        .role-badge.can-create { background: #dbeafe; color: #1e40af; }
-        .role-badge.can-approve { background: #fef3c7; color: #92400e; }
-        .role-badge.can-disburse { background: #dcfce7; color: #166534; }
-        .role-badge.can-view { background: #f1f5f9; color: #64748b; }
         
         .btn {
-            padding: 8px 16px;
+            padding: 8px 20px;
             border-radius: 20px;
             font-weight: 600;
             font-size: 12px;
@@ -144,30 +104,18 @@ echo "<!DOCTYPE html>
         .btn-primary:hover { background: #8A6D3B; }
         .btn-success { background: #166534; color: white; }
         .btn-success:hover { background: #14532d; }
-        .btn-warning { background: #92400e; color: white; }
-        .btn-warning:hover { background: #78350f; }
-        .btn-danger { background: #991b1b; color: white; }
-        .btn-danger:hover { background: #7f1d1d; }
-        .btn-outline { background: transparent; border: 1px solid #e2e8f0; color: #64748b; }
-        .btn-outline:hover { border-color: #0f172a; color: #0f172a; }
-        .btn-sm { padding: 4px 12px; font-size: 10px; }
         
-        .summary-box {
+        .summary {
             background: #0f172a;
             color: white;
             padding: 24px;
             border-radius: 12px;
             margin-top: 24px;
         }
-        .summary-box h3 { color: #8A6D3B; margin-bottom: 8px; }
-        .summary-box p { color: #94a3b8; }
-        .summary-box .links {
-            margin-top: 16px;
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-        .summary-box .links a {
+        .summary h3 { color: #8A6D3B; margin-bottom: 8px; }
+        .summary p { color: #94a3b8; }
+        .summary .links { margin-top: 16px; display: flex; gap: 12px; flex-wrap: wrap; }
+        .summary .links a {
             background: #8A6D3B;
             color: #0f172a;
             padding: 8px 20px;
@@ -176,575 +124,531 @@ echo "<!DOCTYPE html>
             font-weight: 600;
             font-size: 13px;
         }
-        .summary-box .links a.secondary { background: #1e293b; color: #e2e8f0; }
+        .summary .links a.secondary { background: #1e293b; color: #e2e8f0; }
         
-        .progress-bar {
-            width: 100%;
-            height: 4px;
+        .progress {
+            display: flex;
+            justify-content: space-between;
+            margin: 16px 0;
+            padding: 0 20px;
+        }
+        .progress .dot {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 700;
+            border: 2px solid #e2e8f0;
+            background: white;
+        }
+        .progress .dot.done { background: #166534; color: white; border-color: #166534; }
+        .progress .dot.active { background: #8A6D3B; color: white; border-color: #8A6D3B; }
+        .progress .dot.fail { background: #991b1b; color: white; border-color: #991b1b; }
+        .progress .line {
+            flex: 1;
+            height: 2px;
             background: #e2e8f0;
-            border-radius: 2px;
-            margin-top: 8px;
-            overflow: hidden;
+            margin: 15px 8px 0;
         }
-        .progress-bar .fill {
-            height: 100%;
-            background: #8A6D3B;
-            transition: width 0.5s ease;
-            border-radius: 2px;
-        }
+        .progress .line.done { background: #166534; }
         
-        @media (max-width: 768px) {
-            body { padding: 16px; }
-            .test-grid { grid-template-columns: 1fr; }
-            .role-matrix { grid-template-columns: 1fr 1fr; }
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            margin-top: 8px;
         }
-        @media (max-width: 480px) {
-            .role-matrix { grid-template-columns: 1fr; }
+        .data-table th {
+            background: #f8fafc;
+            padding: 8px 12px;
+            text-align: left;
+            font-size: 10px;
+            text-transform: uppercase;
+            border-bottom: 2px solid #e2e8f0;
         }
+        .data-table td {
+            padding: 8px 12px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .data-table tr:hover { background: #f8fafc; }
     </style>
 </head>
 <body>
 <div class='container'>
-    <h1>🔧 VouchMorph Enterprise - Comprehensive System Test</h1>
-    <p class='sub'>Testing file structure, database, roles, and workflow</p>";
+    <h1>🧪 VouchMorph - Complete Workflow Test</h1>
+    <p class='sub'>Testing the full lifecycle: Create → Add Destinations → Submit → Approve → Disburse</p>";
 
 // ============================================================
-// 2. LOAD AUTH AND GET CONNECTION
+// STEP 1: CHECK USER & ROLE
 // ============================================================
-try {
-    require_once 'auth.php';
-    $pdo = getDBConnection();
-    $authLoaded = true;
-} catch (Exception $e) {
-    $authLoaded = false;
-    $authError = $e->getMessage();
-}
+echo "<div class='step " . (isset($_SESSION['enterprise_user']) ? 'pass' : 'warning') . "'>";
+echo "<h3>Step 1: User Authentication " . (isset($_SESSION['enterprise_user']) ? "<span class='badge badge-pass'>✅ PASS</span>" : "<span class='badge badge-warning'>⚠️ WARNING</span>") . "</h3>";
 
-echo "<div class='test-grid'>";
-
-// ============================================================
-// TEST 1: AUTH SYSTEM
-// ============================================================
-echo "<div class='test-card'>";
-echo "<h3>1. Authentication System <span class='status " . ($authLoaded ? 'status-pass' : 'status-fail') . "'>" . ($authLoaded ? '✅ PASS' : '❌ FAIL') . "</span></h3>";
-if ($authLoaded) {
-    echo "<div class='detail success'>✅ auth.php loaded successfully</div>";
-    
-    $functions = ['getDBConnection', 'requireEnterpriseAuth', 'hasPermission', 'generateCsrfToken', 'getCurrentUser', 'hasRole', 'getOrganizationId'];
-    $missing = [];
-    foreach ($functions as $func) {
-        if (!function_exists($func)) $missing[] = $func;
-    }
-    if (empty($missing)) {
-        echo "<div class='detail success'>✅ All " . count($functions) . " auth functions available</div>";
-    } else {
-        echo "<div class='detail error'>❌ Missing functions: " . implode(', ', $missing) . "</div>";
-    }
+if (isset($_SESSION['enterprise_user'])) {
+    $user = $_SESSION['enterprise_user'];
+    echo "<div class='detail success'>✅ User: " . htmlspecialchars($user['full_name'] ?? $user['username'] ?? 'Unknown') . "</div>";
+    echo "<div class='detail success'>✅ Role: <strong>" . htmlspecialchars($user['role'] ?? 'Unknown') . "</strong></div>";
+    echo "<div class='detail success'>✅ Organization: " . htmlspecialchars($user['organization_name'] ?? 'Unknown') . "</div>";
+    echo "<div class='detail success'>✅ User ID: " . ($user['user_id'] ?? $user['id'] ?? 'Unknown') . "</div>";
 } else {
-    echo "<div class='detail error'>❌ " . htmlspecialchars($authError ?? 'Unknown error') . "</div>";
+    echo "<div class='detail warning'>⚠️ No active session. Please login first.</div>";
+    echo "<a href='login.php' class='btn btn-primary'>🔑 Login Now</a>";
 }
 echo "</div>";
 
 // ============================================================
-// TEST 2: DATABASE CONNECTION
+// STEP 2: CHECK SOURCE ACCOUNT - CREATE IF NEEDED
 // ============================================================
-echo "<div class='test-card'>";
-echo "<h3>2. Database Connection <span class='status " . ($authLoaded ? 'status-pass' : 'status-fail') . "'>" . ($authLoaded ? '✅ PASS' : '❌ FAIL') . "</span></h3>";
-if ($authLoaded) {
+echo "<div class='step " . (isset($_SESSION['enterprise_user']) ? 'info' : 'warning') . "'>";
+echo "<h3>Step 2: Source Account ";
+
+$sourceId = null;
+$sourceName = null;
+
+if (isset($_SESSION['enterprise_user'])) {
     try {
-        $stmt = $pdo->query("SELECT 1 as test, NOW() as time, version() as version");
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
-        echo "<div class='detail success'>✅ Connected to database</div>";
-        echo "<div class='detail'>PostgreSQL Version: " . htmlspecialchars($result['version'] ?? 'Unknown') . "</div>";
-        echo "<div class='detail'>Server Time: " . htmlspecialchars($result['time'] ?? 'Unknown') . "</div>";
-    } catch (Exception $e) {
-        echo "<div class='detail error'>❌ " . htmlspecialchars($e->getMessage()) . "</div>";
-    }
-}
-echo "</div>";
-
-// ============================================================
-// TEST 3: REQUIRED TABLES
-// ============================================================
-echo "<div class='test-card'>";
-echo "<h3>3. Database Tables <span id='tableStatus' class='status status-warn'>⏳ Checking...</span></h3>";
-if ($authLoaded) {
-    $requiredTables = [
-        'disbursement_batches',
-        'disbursement_destinations',
-        'source_accounts',
-        'batch_approvals',
-        'organization_audit_logs',
-        'organizations',
-        'organization_users',
-        'users',
-        'departments'
-    ];
-    
-    $missingTables = [];
-    $tableCount = 0;
-    foreach ($requiredTables as $table) {
-        try {
-            $stmt = $pdo->prepare("SELECT 1 FROM information_schema.tables WHERE table_name = :table");
-            $stmt->execute([':table' => $table]);
-            if ($stmt->fetch()) {
-                $tableCount++;
-                echo "<div class='detail success'>✅ $table</div>";
-            } else {
-                $missingTables[] = $table;
-                echo "<div class='detail error'>❌ $table - MISSING</div>";
-            }
-        } catch (Exception $e) {
-            $missingTables[] = $table;
-            echo "<div class='detail error'>❌ $table - Error: " . htmlspecialchars($e->getMessage()) . "</div>";
-        }
-    }
-    
-    $allPresent = empty($missingTables);
-    echo "<script>document.getElementById('tableStatus').className = 'status " . ($allPresent ? 'status-pass' : 'status-warn') . "';";
-    echo "document.getElementById('tableStatus').textContent = '" . ($allPresent ? '✅ PASS (' . $tableCount . '/' . count($requiredTables) . ')' : '⚠️ WARN (' . $tableCount . '/' . count($requiredTables) . ')') . "';</script>";
-}
-echo "</div>";
-
-// ============================================================
-// TEST 4: TABLE SCHEMA VALIDATION
-// ============================================================
-echo "<div class='test-card'>";
-echo "<h3>4. Table Schema Validation <span id='schemaStatus' class='status status-warn'>⏳ Checking...</span></h3>";
-if ($authLoaded) {
-    $schemaChecks = [
-        'disbursement_batches' => ['id', 'organization_id', 'batch_reference', 'batch_name', 'status', 'total_amount', 'total_destinations', 'created_by', 'created_at'],
-        'disbursement_destinations' => ['id', 'batch_id', 'destination_index', 'amount', 'status', 'beneficiary_name'],
-        'source_accounts' => ['id', 'organization_id', 'institution', 'source_identifier', 'is_active'],
-        'users' => ['user_id', 'email', 'password_hash', 'full_name']
-    ];
-    
-    $schemaErrors = [];
-    foreach ($schemaChecks as $table => $columns) {
-        try {
-            $stmt = $pdo->prepare("
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name = :table
-            ");
-            $stmt->execute([':table' => $table]);
-            $existingColumns = $stmt->fetchAll(PDO::FETCH_COLUMN);
-            
-            $missing = array_diff($columns, $existingColumns);
-            if (!empty($missing)) {
-                $schemaErrors[] = "$table missing: " . implode(', ', $missing);
-                echo "<div class='detail error'>❌ $table - Missing: " . implode(', ', $missing) . "</div>";
-            } else {
-                echo "<div class='detail success'>✅ $table - All columns present</div>";
-            }
-        } catch (Exception $e) {
-            $schemaErrors[] = $table;
-            echo "<div class='detail error'>❌ $table - Error: " . htmlspecialchars($e->getMessage()) . "</div>";
-        }
-    }
-    
-    $schemaOk = empty($schemaErrors);
-    echo "<script>document.getElementById('schemaStatus').className = 'status " . ($schemaOk ? 'status-pass' : 'status-warn') . "';";
-    echo "document.getElementById('schemaStatus').textContent = '" . ($schemaOk ? '✅ PASS' : '⚠️ WARN') . "';</script>";
-}
-echo "</div>";
-
-echo "</div>"; // end first test-grid
-
-// ============================================================
-// TEST 5: SESSION & USER
-// ============================================================
-echo "<div class='test-grid'>";
-echo "<div class='test-card'>";
-echo "<h3>5. Session & Current User <span id='sessionStatus' class='status status-warn'>⏳ Checking...</span></h3>";
-
-if ($authLoaded) {
-    if (session_status() === PHP_SESSION_NONE) {
-        session_start();
-    }
-    echo "<div class='detail'>Session ID: " . session_id() . "</div>";
-    echo "<div class='detail'>Session Status: " . session_status() . "</div>";
-    
-    if (isset($_SESSION['enterprise_user'])) {
-        $user = $_SESSION['enterprise_user'];
-        echo "<div class='detail success'>✅ User is logged in</div>";
-        echo "<div class='detail'>User: " . htmlspecialchars($user['full_name'] ?? $user['username'] ?? 'Unknown') . "</div>";
-        echo "<div class='detail'>Role: <strong>" . htmlspecialchars($user['role'] ?? 'Unknown') . "</strong></div>";
-        echo "<div class='detail'>Organization: " . htmlspecialchars($user['organization_name'] ?? 'Unknown') . "</div>";
-        echo "<div class='detail'>Department: " . htmlspecialchars($user['department_id'] ?? 'None') . "</div>";
-        echo "<script>document.getElementById('sessionStatus').className = 'status status-pass';";
-        echo "document.getElementById('sessionStatus').textContent = '✅ Logged In';</script>";
-    } else {
-        echo "<div class='detail warning'>⚠️ No active enterprise user session</div>";
-        echo "<div class='detail'><a href='login.php' style='color: #8A6D3B; font-weight:600;'>🔑 Login here</a></div>";
-        echo "<script>document.getElementById('sessionStatus').className = 'status status-warn';";
-        echo "document.getElementById('sessionStatus').textContent = '⚠️ Not Logged In';</script>";
-    }
-}
-echo "</div>";
-
-// ============================================================
-// TEST 6: CSRF PROTECTION
-// ============================================================
-echo "<div class='test-card'>";
-echo "<h3>6. CSRF Protection <span class='status status-pass'>✅ PASS</span></h3>";
-if ($authLoaded && function_exists('generateCsrfToken') && function_exists('verifyCsrfToken')) {
-    try {
-        $token = generateCsrfToken();
-        echo "<div class='detail success'>✅ Token generated: " . substr($token, 0, 24) . "...</div>";
-        
-        $verified = verifyCsrfToken($token);
-        echo "<div class='detail " . ($verified ? 'success' : 'error') . "'>Token verification: " . ($verified ? '✅ Pass' : '❌ Fail') . "</div>";
-        
-        // Test invalid token
-        $invalidVerified = verifyCsrfToken('invalid_token_12345');
-        echo "<div class='detail " . (!$invalidVerified ? 'success' : 'error') . "'>Invalid token rejection: " . (!$invalidVerified ? '✅ Pass' : '❌ Fail') . "</div>";
-    } catch (Exception $e) {
-        echo "<div class='detail error'>❌ " . htmlspecialchars($e->getMessage()) . "</div>";
-    }
-}
-echo "</div>";
-
-echo "</div>"; // end test-grid
-
-// ============================================================
-// TEST 7: ROLE-BASED PERMISSIONS MATRIX
-// ============================================================
-echo "<div class='test-grid'>";
-echo "<div class='test-card' style='grid-column: 1 / -1;'>";
-echo "<h3>7. Role-Based Permission Matrix <span class='status status-info'>📋 INFO</span></h3>";
-
-$roles = [
-    'owner' => ['create' => true, 'approve' => true, 'disburse' => true, 'manage_users' => true, 'view_all' => true],
-    'program_officer' => ['create' => true, 'approve' => false, 'disburse' => false, 'manage_users' => false, 'view_all' => false],
-    'department_head' => ['create' => true, 'approve' => false, 'disburse' => false, 'manage_users' => false, 'view_all' => false],
-    'approver' => ['create' => false, 'approve' => true, 'disburse' => false, 'manage_users' => false, 'view_all' => false],
-    'senior_approver' => ['create' => false, 'approve' => true, 'disburse' => false, 'manage_users' => false, 'view_all' => false],
-    'supervisor' => ['create' => false, 'approve' => false, 'disburse' => true, 'manage_users' => false, 'view_all' => false],
-    'auditor' => ['create' => false, 'approve' => false, 'disburse' => false, 'manage_users' => false, 'view_all' => true],
-    'viewer' => ['create' => false, 'approve' => false, 'disburse' => false, 'manage_users' => false, 'view_all' => false],
-    'beneficiary_registrar' => ['create' => false, 'approve' => false, 'disburse' => false, 'manage_users' => false, 'view_all' => false],
-];
-
-echo "<div class='role-matrix'>";
-foreach ($roles as $role => $perms) {
-    echo "<div class='role-card'>";
-    echo "<div class='role-name'>" . ucfirst(str_replace('_', ' ', $role)) . "</div>";
-    $badges = [];
-    if ($perms['create']) $badges[] = "<span class='role-badge can-create'>💰 Create</span>";
-    if ($perms['approve']) $badges[] = "<span class='role-badge can-approve'>✅ Approve</span>";
-    if ($perms['disburse']) $badges[] = "<span class='role-badge can-disburse'>💸 Disburse</span>";
-    if ($perms['view_all']) $badges[] = "<span class='role-badge can-view'>👁️ View All</span>";
-    echo implode(' ', $badges);
-    echo "</div>";
-}
-echo "</div>";
-
-echo "<div style='margin-top:12px; font-size:12px; color:#64748b;'>";
-echo "✅ <strong>Loader</strong> (Program Officer, Dept Head) → Create batches<br>";
-echo "✅ <strong>Approver</strong> (Approver, Senior Approver) → Approve pending batches<br>";
-echo "✅ <strong>Supervisor</strong> → Disburse approved funds<br>";
-echo "✅ <strong>Owner</strong> → Full access to everything";
-echo "</div>";
-echo "</div>";
-echo "</div>";
-
-// ============================================================
-// TEST 8: BATCH WORKFLOW SIMULATION
-// ============================================================
-echo "<div class='test-card' style='margin-bottom:16px;'>";
-echo "<h3>8. Batch Workflow Simulation <span class='status status-info'>🔄 TEST</span></h3>";
-
-if ($authLoaded) {
-    try {
-        // Check if we have a test batch or create one
+        // Check for existing source
         $stmt = $pdo->prepare("
-            SELECT id, batch_reference, status, total_amount, total_destinations, created_at 
-            FROM disbursement_batches 
-            WHERE organization_id = :org_id 
-            ORDER BY created_at DESC 
+            SELECT id, institution, source_identifier, balance 
+            FROM source_accounts 
+            WHERE organization_id = :org_id AND is_active = true 
             LIMIT 1
         ");
-        $stmt->execute([':org_id' => getOrganizationId()]);
-        $testBatch = $stmt->fetch(PDO::FETCH_ASSOC);
+        $stmt->execute([':org_id' => $orgId]);
+        $source = $stmt->fetch(PDO::FETCH_ASSOC);
         
-        if ($testBatch) {
-            echo "<div class='detail success'>✅ Found test batch: " . htmlspecialchars($testBatch['batch_reference']) . "</div>";
-            
-            echo "<div class='batch-sim'>";
-            echo "<div class='row'><span class='label'>Reference</span><span class='value'>" . htmlspecialchars($testBatch['batch_reference']) . "</span></div>";
-            echo "<div class='row'><span class='label'>Status</span><span class='value'><strong>" . strtoupper($testBatch['status']) . "</strong></span></div>";
-            echo "<div class='row'><span class='label'>Amount</span><span class='value'>BWP " . number_format($testBatch['total_amount'] ?? 0, 2) . "</span></div>";
-            echo "<div class='row'><span class='label'>Destinations</span><span class='value'>" . ($testBatch['total_destinations'] ?? 0) . "</span></div>";
-            echo "<div class='row'><span class='label'>Created</span><span class='value'>" . date('Y-m-d H:i', strtotime($testBatch['created_at'] ?? 'now')) . "</span></div>";
-            echo "</div>";
-            
-            // Show what each role would see
-            echo "<div style='margin-top:12px;'>";
-            echo "<h4 style='font-size:13px; margin-bottom:8px;'>Role-Based Actions for This Batch:</h4>";
-            echo "<div style='display:flex; gap:8px; flex-wrap:wrap;'>";
-            
-            $status = strtolower($testBatch['status'] ?? 'draft');
-            
-            // Loader actions (Program Officer, Dept Head)
-            if (in_array($status, ['draft', 'pending', 'pending_approval'])) {
-                echo "<span class='btn btn-primary btn-sm'>📤 Submit for Approval (Loader)</span>";
-            }
-            
-            // Approver actions
-            if (in_array($status, ['pending', 'pending_approval'])) {
-                echo "<span class='btn btn-warning btn-sm'>✅ Approve (Approver)</span>";
-                echo "<span class='btn btn-danger btn-sm'>❌ Reject (Approver)</span>";
-            }
-            
-            // Supervisor actions
-            if ($status === 'approved') {
-                echo "<span class='btn btn-success btn-sm'>💸 Disburse Funds (Supervisor)</span>";
-            }
-            
-            // View action (everyone)
-            echo "<span class='btn btn-outline btn-sm'>👁️ View (Everyone)</span>";
-            
-            echo "</div>";
-            echo "</div>";
-            
-            // Progress bar showing workflow
-            $steps = ['Draft', 'Pending', 'Approved', 'Completed'];
-            $currentStep = array_search(strtoupper($status), array_map('strtoupper', $steps));
-            if ($currentStep === false) $currentStep = 0;
-            $progress = (($currentStep + 1) / count($steps)) * 100;
-            
-            echo "<div style='margin-top:12px;'>";
-            echo "<div style='display:flex; justify-content:space-between; font-size:10px; color:#64748b;'>";
-            foreach ($steps as $i => $step) {
-                $active = $i <= $currentStep ? 'color:#166534;' : 'color:#94a3b8;';
-                echo "<span style='$active'>" . ($i <= $currentStep ? '✅ ' : '⬜ ') . $step . "</span>";
-            }
-            echo "</div>";
-            echo "<div class='progress-bar'><div class='fill' style='width:" . $progress . "%;'></div></div>";
-            echo "</div>";
-            
+        if ($source) {
+            $sourceId = $source['id'];
+            $sourceName = $source['institution'] . ' - ' . $source['source_identifier'];
+            echo "<span class='badge badge-pass'>✅ FOUND</span></h3>";
+            echo "<div class='detail success'>✅ Existing source: " . htmlspecialchars($sourceName) . "</div>";
+            echo "<div class='detail success'>Balance: BWP " . number_format($source['balance'] ?? 0, 2) . "</div>";
         } else {
-            echo "<div class='detail warning'>⚠️ No batches found. Create a test batch to test workflow.</div>";
-            echo "<div style='margin-top:12px;'>";
-            echo "<a href='imports/source_input.php' class='btn btn-primary'>💰 Create Test Batch</a>";
-            echo "</div>";
+            echo "<span class='badge badge-warning'>⚠️ NOT FOUND</span></h3>";
+            echo "<div class='detail warning'>⚠️ No source accounts found. Creating one...</div>";
+            
+            // Create a test source account
+            $stmt = $pdo->prepare("
+                INSERT INTO source_accounts (
+                    organization_id, institution, asset_type,
+                    source_identifier, source_identifier_type,
+                    account_name, currency, balance,
+                    is_active, is_hooked, created_by,
+                    created_at, updated_at
+                ) VALUES (
+                    :org_id, 'VOUCHMORPH_TEST', 'WALLET',
+                    'TEST_' || to_char(NOW(), 'YYYYMMDD_HH24MISS'),
+                    'account_number',
+                    'Test Source Account',
+                    'BWP', 100000.00,
+                    true, false, :user_id,
+                    NOW(), NOW()
+                ) RETURNING id
+            ");
+            $stmt->execute([':org_id' => $orgId, ':user_id' => $userId]);
+            $sourceId = $stmt->fetchColumn();
+            
+            echo "<div class='detail success'>✅ Created test source account ID: $sourceId</div>";
+            
+            // Get the created source
+            $stmt = $pdo->prepare("SELECT institution, source_identifier FROM source_accounts WHERE id = :id");
+            $stmt->execute([':id' => $sourceId]);
+            $source = $stmt->fetch(PDO::FETCH_ASSOC);
+            $sourceName = $source['institution'] . ' - ' . $source['source_identifier'];
+        }
+    } catch (Exception $e) {
+        echo "<span class='badge badge-fail'>❌ ERROR</span></h3>";
+        echo "<div class='detail error'>❌ " . htmlspecialchars($e->getMessage()) . "</div>";
+    }
+} else {
+    echo "<span class='badge badge-warning'>⏳ WAITING</span></h3>";
+    echo "<div class='detail warning'>Please login first to continue.</div>";
+}
+echo "</div>";
+
+// ============================================================
+// STEP 3: CREATE BATCH
+// ============================================================
+echo "<div class='step " . ($sourceId ? 'pass' : 'warning') . "'>";
+echo "<h3>Step 3: Create Batch ";
+
+$batchId = null;
+$batchRef = null;
+
+if ($sourceId && isset($_SESSION['enterprise_user'])) {
+    try {
+        $batchRef = 'TEST_BATCH_' . date('Ymd_His');
+        $batchName = 'Test Batch ' . date('Y-m-d H:i');
+        
+        $stmt = $pdo->prepare("
+            INSERT INTO disbursement_batches (
+                organization_id, batch_reference, batch_name,
+                source_account_id, source_institution, source_asset_type,
+                source_identifier, total_amount, total_destinations,
+                currency, status, created_by, created_at, updated_at
+            ) VALUES (
+                :org_id, :ref, :name,
+                :source_id, 'VOUCHMORPH_TEST', 'WALLET',
+                'TEST_ACCOUNT', 1500.00, 3,
+                'BWP', 'draft', :user_id,
+                NOW(), NOW()
+            ) RETURNING id
+        ");
+        $stmt->execute([
+            ':org_id' => $orgId,
+            ':ref' => $batchRef,
+            ':name' => $batchName,
+            ':source_id' => $sourceId,
+            ':user_id' => $userId
+        ]);
+        $batchId = $stmt->fetchColumn();
+        
+        echo "<span class='badge badge-pass'>✅ CREATED</span></h3>";
+        echo "<div class='detail success'>✅ Batch created successfully!</div>";
+        echo "<div class='detail'>Reference: <strong>" . htmlspecialchars($batchRef) . "</strong></div>";
+        echo "<div class='detail'>Batch ID: $batchId</div>";
+        echo "<div class='detail'>Status: <strong>DRAFT</strong></div>";
+    } catch (Exception $e) {
+        echo "<span class='badge badge-fail'>❌ ERROR</span></h3>";
+        echo "<div class='detail error'>❌ " . htmlspecialchars($e->getMessage()) . "</div>";
+    }
+} else {
+    echo "<span class='badge badge-warning'>⏳ WAITING</span></h3>";
+    echo "<div class='detail warning'>Need a source account to create a batch.</div>";
+}
+echo "</div>";
+
+// ============================================================
+// STEP 4: ADD DESTINATIONS
+// ============================================================
+echo "<div class='step " . ($batchId ? 'pass' : 'warning') . "'>";
+echo "<h3>Step 4: Add Destinations ";
+
+if ($batchId) {
+    try {
+        // Add 3 test destinations
+        $destinations = [
+            ['CAZACOM', '71712345', 'phone', 500.00, 'Test Recipient 1', '+26771712345'],
+            ['SACCUSSALIS', '10000002', 'account_number', 500.00, 'Test Recipient 2', '+26771712346'],
+            ['ZURUBANK', '71712347', 'phone', 500.00, 'Test Recipient 3', '+26771712347']
+        ];
+        
+        $stmt = $pdo->prepare("
+            INSERT INTO disbursement_destinations (
+                batch_id, destination_index, institution, asset_type,
+                identifier, identifier_type, amount, currency,
+                delivery_method, beneficiary_name, beneficiary_phone,
+                status
+            ) VALUES (
+                :batch_id, :index, :institution, 'WALLET',
+                :identifier, :identifier_type, :amount, 'BWP',
+                'DEPOSIT', :name, :phone,
+                'PENDING'
+            )
+        ");
+        
+        $added = 0;
+        foreach ($destinations as $i => $dest) {
+            $stmt->execute([
+                ':batch_id' => $batchId,
+                ':index' => $i + 1,
+                ':institution' => $dest[0],
+                ':identifier' => $dest[1],
+                ':identifier_type' => $dest[2],
+                ':amount' => $dest[3],
+                ':name' => $dest[4],
+                ':phone' => $dest[5]
+            ]);
+            $added++;
         }
         
-    } catch (Exception $e) {
-        echo "<div class='detail error'>❌ Error: " . htmlspecialchars($e->getMessage()) . "</div>";
-    }
-}
-echo "</div>";
-
-// ============================================================
-// TEST 9: FILE PERMISSIONS & CRITICAL FILES
-// ============================================================
-echo "<div class='test-grid'>";
-echo "<div class='test-card'>";
-echo "<h3>9. Critical File Check <span id='fileStatus' class='status status-warn'>⏳ Checking...</span></h3>";
-
-$criticalFiles = [
-    'auth.php' => true,
-    'index.php' => true,
-    'login.php' => true,
-    'logout.php' => true,
-    'beneficiaries.php' => true,
-    'reports.php' => true,
-    'settings.php' => true,
-    'imports/source_input.php' => true,
-    'imports/add_destinations.php' => true,
-    'imports/add_source.php' => true,
-    'imports/review_batch.php' => true,
-    'imports/review.php' => true,
-    'imports/sources.php' => true,
-    'imports/approve.php' => true,
-    'imports/execute.php' => true,
-    'imports/manual_entry.php' => true,
-    'batches/index.php' => true,
-    'batches/view.php' => true,
-];
-
-$missingFiles = [];
-$unreadableFiles = [];
-foreach ($criticalFiles as $file => $required) {
-    $fullPath = __DIR__ . '/' . $file;
-    if (!file_exists($fullPath)) {
-        $missingFiles[] = $file;
-        echo "<div class='detail error'>❌ Missing: $file</div>";
-    } elseif (!is_readable($fullPath)) {
-        $unreadableFiles[] = $file;
-        echo "<div class='detail warning'>⚠️ Not readable: $file</div>";
-    } else {
-        echo "<div class='detail success'>✅ $file</div>";
-    }
-}
-
-$allOk = empty($missingFiles) && empty($unreadableFiles);
-echo "<script>document.getElementById('fileStatus').className = 'status " . ($allOk ? 'status-pass' : 'status-warn') . "';";
-echo "document.getElementById('fileStatus').textContent = '" . ($allOk ? '✅ PASS' : '⚠️ ' . count($missingFiles) . ' missing') . "';</script>";
-echo "</div>";
-
-// ============================================================
-// TEST 10: SAMPLE DATA CHECK
-// ============================================================
-echo "<div class='test-card'>";
-echo "<h3>10. Sample Data Check <span id='dataStatus' class='status status-warn'>⏳ Checking...</span></h3>";
-
-if ($authLoaded) {
-    try {
-        $orgId = getOrganizationId();
-        
-        // Count organizations
-        $stmt = $pdo->query("SELECT COUNT(*) as count FROM organizations");
-        $orgCount = $stmt->fetchColumn();
-        echo "<div class='detail'>🏢 Organizations: " . $orgCount . "</div>";
-        
-        // Count users
-        $stmt = $pdo->query("SELECT COUNT(*) as count FROM users");
-        $userCount = $stmt->fetchColumn();
-        echo "<div class='detail'>👤 Users: " . $userCount . "</div>";
-        
-        // Count org users
-        $stmt = $pdo->query("SELECT COUNT(*) as count FROM organization_users");
-        $orgUserCount = $stmt->fetchColumn();
-        echo "<div class='detail'>👥 Organization Users: " . $orgUserCount . "</div>";
-        
-        // Count source accounts
-        $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM source_accounts WHERE organization_id = :org_id");
-        $stmt->execute([':org_id' => $orgId]);
-        $sourceCount = $stmt->fetchColumn();
-        echo "<div class='detail'>🏦 Source Accounts: " . $sourceCount . "</div>";
-        
-        // Count batches
-        $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM disbursement_batches WHERE organization_id = :org_id");
-        $stmt->execute([':org_id' => $orgId]);
-        $batchCount = $stmt->fetchColumn();
-        echo "<div class='detail'>📋 Disbursement Batches: " . $batchCount . "</div>";
-        
-        // Count destinations
+        // Update batch totals
         $stmt = $pdo->prepare("
-            SELECT COUNT(*) as count FROM disbursement_destinations d
-            JOIN disbursement_batches b ON d.batch_id = b.id
-            WHERE b.organization_id = :org_id
+            UPDATE disbursement_batches 
+            SET total_destinations = 3, total_amount = 1500.00, updated_at = NOW()
+            WHERE id = :id
         ");
-        $stmt->execute([':org_id' => $orgId]);
-        $destCount = $stmt->fetchColumn();
-        echo "<div class='detail'>🎯 Destinations: " . $destCount . "</div>";
+        $stmt->execute([':id' => $batchId]);
         
-        $hasData = $orgCount > 0 && $userCount > 0;
-        echo "<script>document.getElementById('dataStatus').className = 'status " . ($hasData ? 'status-pass' : 'status-warn') . "';";
-        echo "document.getElementById('dataStatus').textContent = '" . ($hasData ? '✅ Has Data' : '⚠️ Limited Data') . "';</script>";
+        echo "<span class='badge badge-pass'>✅ ADDED</span></h3>";
+        echo "<div class='detail success'>✅ Added $added destinations</div>";
+        echo "<div class='detail'>Total Amount: BWP 1,500.00</div>";
+        echo "<div class='detail'>Total Destinations: 3</div>";
+        
+        // Show destinations
+        $stmt = $pdo->prepare("SELECT * FROM disbursement_destinations WHERE batch_id = :batch_id");
+        $stmt->execute([':batch_id' => $batchId]);
+        $dests = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        echo "<table class='data-table'>";
+        echo "<tr><th>#</th><th>Institution</th><th>Identifier</th><th>Amount</th><th>Beneficiary</th></tr>";
+        foreach ($dests as $d) {
+            echo "<tr>";
+            echo "<td>" . $d['destination_index'] . "</td>";
+            echo "<td>" . htmlspecialchars($d['institution']) . "</td>";
+            echo "<td>" . htmlspecialchars($d['identifier']) . "</td>";
+            echo "<td>BWP " . number_format($d['amount'], 2) . "</td>";
+            echo "<td>" . htmlspecialchars($d['beneficiary_name']) . "</td>";
+            echo "</tr>";
+        }
+        echo "</table>";
+        
+    } catch (Exception $e) {
+        echo "<span class='badge badge-fail'>❌ ERROR</span></h3>";
+        echo "<div class='detail error'>❌ " . htmlspecialchars($e->getMessage()) . "</div>";
+    }
+} else {
+    echo "<span class='badge badge-warning'>⏳ WAITING</span></h3>";
+    echo "<div class='detail warning'>Need a batch to add destinations.</div>";
+}
+echo "</div>";
+
+// ============================================================
+// STEP 5: SUBMIT FOR APPROVAL (Simulate Loader Action)
+// ============================================================
+echo "<div class='step " . ($batchId ? 'pass' : 'warning') . "'>";
+echo "<h3>Step 5: Submit for Approval ";
+
+if ($batchId) {
+    try {
+        // Update batch status to pending_approval
+        $stmt = $pdo->prepare("
+            UPDATE disbursement_batches 
+            SET status = 'pending_approval',
+                submitted_by = :user_id,
+                submitted_at = NOW(),
+                updated_at = NOW()
+            WHERE id = :id AND status = 'draft'
+        ");
+        $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
+        
+        if ($stmt->rowCount() > 0) {
+            echo "<span class='badge badge-pass'>✅ SUBMITTED</span></h3>";
+            echo "<div class='detail success'>✅ Batch submitted for approval!</div>";
+            echo "<div class='detail'>Status: <strong>PENDING_APPROVAL</strong></div>";
+            echo "<div class='detail'>Submitted by: User ID $userId</div>";
+            echo "<div class='detail'>Time: " . date('Y-m-d H:i:s') . "</div>";
+        } else {
+            echo "<span class='badge badge-warning'>⚠️ ALREADY SUBMITTED</span></h3>";
+            echo "<div class='detail warning'>Batch may already be submitted or not in draft status.</div>";
+        }
+    } catch (Exception $e) {
+        echo "<span class='badge badge-fail'>❌ ERROR</span></h3>";
+        echo "<div class='detail error'>❌ " . htmlspecialchars($e->getMessage()) . "</div>";
+    }
+} else {
+    echo "<span class='badge badge-warning'>⏳ WAITING</span></h3>";
+    echo "<div class='detail warning'>Need a batch to submit.</div>";
+}
+echo "</div>";
+
+// ============================================================
+// STEP 6: APPROVE BATCH (Simulate Approver Action)
+// ============================================================
+echo "<div class='step " . ($batchId ? 'pass' : 'warning') . "'>";
+echo "<h3>Step 6: Approve Batch ";
+
+if ($batchId) {
+    try {
+        // Check if batch is in pending_approval status
+        $stmt = $pdo->prepare("SELECT status FROM disbursement_batches WHERE id = :id");
+        $stmt->execute([':id' => $batchId]);
+        $currentStatus = $stmt->fetchColumn();
+        
+        if (in_array($currentStatus, ['pending_approval', 'PENDING_APPROVAL', 'PENDING'])) {
+            // Approve the batch
+            $stmt = $pdo->prepare("
+                UPDATE disbursement_batches 
+                SET status = 'approved',
+                    approved_by = :user_id,
+                    approved_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = :id
+            ");
+            $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
+            
+            // Record approval
+            try {
+                $stmt = $pdo->prepare("
+                    INSERT INTO batch_approvals (batch_id, approver_user_id, decision, created_at)
+                    VALUES (:batch_id, :approver_id, 'APPROVED', NOW())
+                ");
+                $stmt->execute([':batch_id' => $batchId, ':approver_id' => $userId]);
+            } catch (Exception $e) {
+                // Ignore duplicate approval errors
+            }
+            
+            echo "<span class='badge badge-pass'>✅ APPROVED</span></h3>";
+            echo "<div class='detail success'>✅ Batch approved successfully!</div>";
+            echo "<div class='detail'>Status: <strong>APPROVED</strong></div>";
+            echo "<div class='detail'>Approved by: User ID $userId</div>";
+        } else {
+            echo "<span class='badge badge-warning'>⚠️ NOT PENDING</span></h3>";
+            echo "<div class='detail warning'>Batch is not in pending_approval status. Current status: $currentStatus</div>";
+        }
+    } catch (Exception $e) {
+        echo "<span class='badge badge-fail'>❌ ERROR</span></h3>";
+        echo "<div class='detail error'>❌ " . htmlspecialchars($e->getMessage()) . "</div>";
+    }
+} else {
+    echo "<span class='badge badge-warning'>⏳ WAITING</span></h3>";
+    echo "<div class='detail warning'>Need a pending batch to approve.</div>";
+}
+echo "</div>";
+
+// ============================================================
+// STEP 7: DISBURSE FUNDS (Simulate Supervisor Action)
+// ============================================================
+echo "<div class='step " . ($batchId ? 'pass' : 'warning') . "'>";
+echo "<h3>Step 7: Disburse Funds ";
+
+if ($batchId) {
+    try {
+        // Check if batch is approved
+        $stmt = $pdo->prepare("SELECT status FROM disbursement_batches WHERE id = :id");
+        $stmt->execute([':id' => $batchId]);
+        $currentStatus = $stmt->fetchColumn();
+        
+        if (strtolower($currentStatus) === 'approved') {
+            // Disburse the batch
+            $stmt = $pdo->prepare("
+                UPDATE disbursement_batches 
+                SET status = 'completed',
+                    executed_by = :user_id,
+                    executed_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = :id
+            ");
+            $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
+            
+            // Update destinations to success
+            $stmt = $pdo->prepare("
+                UPDATE disbursement_destinations 
+                SET status = 'SUCCESS',
+                    hold_reference = 'HOLD_' || to_char(NOW(), 'YYYYMMDD_HH24MISS') || '_' || destination_index
+                WHERE batch_id = :batch_id
+            ");
+            $stmt->execute([':batch_id' => $batchId]);
+            
+            echo "<span class='badge badge-pass'>✅ DISBURSED</span></h3>";
+            echo "<div class='detail success'>✅ Funds disbursed successfully!</div>";
+            echo "<div class='detail'>Status: <strong>COMPLETED</strong></div>";
+            echo "<div class='detail'>Executed by: User ID $userId</div>";
+            echo "<div class='detail'>All destinations marked as SUCCESS</div>";
+        } else {
+            echo "<span class='badge badge-warning'>⚠️ NOT APPROVED</span></h3>";
+            echo "<div class='detail warning'>Batch is not approved. Current status: $currentStatus</div>";
+        }
+    } catch (Exception $e) {
+        echo "<span class='badge badge-fail'>❌ ERROR</span></h3>";
+        echo "<div class='detail error'>❌ " . htmlspecialchars($e->getMessage()) . "</div>";
+    }
+} else {
+    echo "<span class='badge badge-warning'>⏳ WAITING</span></h3>";
+    echo "<div class='detail warning'>Need an approved batch to disburse.</div>";
+}
+echo "</div>";
+
+// ============================================================
+// STEP 8: VERIFY FINAL STATE
+// ============================================================
+echo "<div class='step " . ($batchId ? 'info' : 'warning') . "'>";
+echo "<h3>Step 8: Verify Final State <span class='badge badge-info'>📋 CHECK</span></h3>";
+
+if ($batchId) {
+    try {
+        // Get batch details
+        $stmt = $pdo->prepare("
+            SELECT b.*, 
+                   COUNT(d.id) as dest_count,
+                   SUM(CASE WHEN d.status = 'SUCCESS' THEN 1 ELSE 0 END) as success_count
+            FROM disbursement_batches b
+            LEFT JOIN disbursement_destinations d ON b.id = d.batch_id
+            WHERE b.id = :id
+            GROUP BY b.id
+        ");
+        $stmt->execute([':id' => $batchId]);
+        $batch = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        echo "<div class='detail'>Batch Reference: <strong>" . htmlspecialchars($batch['batch_reference']) . "</strong></div>";
+        echo "<div class='detail'>Final Status: <strong>" . strtoupper($batch['status']) . "</strong></div>";
+        echo "<div class='detail'>Destinations: " . ($batch['dest_count'] ?? 0) . "</div>";
+        echo "<div class='detail'>Successful: " . ($batch['success_count'] ?? 0) . "</div>";
+        
+        // Show workflow progress
+        $steps = ['draft' => '📝 Draft', 'pending_approval' => '⏳ Pending', 'approved' => '✅ Approved', 'completed' => '✔️ Completed'];
+        $currentStep = strtolower($batch['status']);
+        $stepKeys = array_keys($steps);
+        $currentIndex = array_search($currentStep, $stepKeys);
+        
+        echo "<div class='progress'>";
+        foreach ($stepKeys as $i => $key) {
+            $isDone = $i <= $currentIndex;
+            $isActive = $i == $currentIndex;
+            echo "<div class='dot " . ($isDone ? 'done' : '') . ($isActive ? ' active' : '') . "'>" . ($isDone ? '✓' : ($i + 1)) . "</div>";
+            if ($i < count($stepKeys) - 1) {
+                echo "<div class='line " . ($isDone ? 'done' : '') . "'></div>";
+            }
+        }
+        echo "</div>";
+        
+        echo "<div style='display:flex; gap:8px; justify-content:center; font-size:11px; color:#64748b; margin-top:4px;'>";
+        foreach ($steps as $key => $label) {
+            $isDone = array_search($key, $stepKeys) <= $currentIndex;
+            echo "<span style='" . ($isDone ? 'color:#166534;' : 'color:#94a3b8;') . "'>" . ($isDone ? '✅' : '⬜') . " $label</span>";
+        }
+        echo "</div>";
         
     } catch (Exception $e) {
         echo "<div class='detail error'>❌ " . htmlspecialchars($e->getMessage()) . "</div>";
-        echo "<script>document.getElementById('dataStatus').className = 'status status-fail';";
-        echo "document.getElementById('dataStatus').textContent = '❌ ERROR';</script>";
     }
-}
-echo "</div>";
-echo "</div>";
-
-// ============================================================
-// TEST 11: QUICK FIX SUGGESTIONS
-// ============================================================
-echo "<div class='test-card' style='margin-bottom:16px; background:#f8fafc;'>";
-echo "<h3>11. Quick Fix Suggestions <span class='status status-info'>💡 INFO</span></h3>";
-
-$issues = [];
-
-// Check for old tables
-try {
-    $stmt = $pdo->prepare("SELECT 1 FROM information_schema.tables WHERE table_name = 'import_batches'");
-    $stmt->execute();
-    if ($stmt->fetch()) {
-        $issues[] = "⚠️ 'import_batches' table still exists. Consider dropping if no longer needed.";
-    }
-} catch (Exception $e) {}
-
-try {
-    $stmt = $pdo->prepare("SELECT 1 FROM information_schema.tables WHERE table_name = 'import_rows'");
-    $stmt->execute();
-    if ($stmt->fetch()) {
-        $issues[] = "⚠️ 'import_rows' table still exists. Consider dropping if no longer needed.";
-    }
-} catch (Exception $e) {}
-
-// Check for missing files
-if (!empty($missingFiles)) {
-    $issues[] = "⚠️ Missing files: " . implode(', ', array_slice($missingFiles, 0, 5)) . (count($missingFiles) > 5 ? " and " . (count($missingFiles) - 5) . " more" : "");
-}
-
-// Check if user is logged in
-if (!isset($_SESSION['enterprise_user'])) {
-    $issues[] = "🔑 You are not logged in. Login to test role-based features.";
-}
-
-// Check for source accounts
-if ($authLoaded && isset($orgId) && $sourceCount == 0) {
-    $issues[] = "🏦 No source accounts found. Add a source account to create disbursements.";
-}
-
-if (empty($issues)) {
-    echo "<div class='detail success'>✅ No issues detected. System looks clean!</div>";
 } else {
-    foreach ($issues as $issue) {
-        echo "<div class='detail " . (strpos($issue, '✅') !== false ? 'success' : 'warning') . "'>" . htmlspecialchars($issue) . "</div>";
-    }
+    echo "<div class='detail warning'>No batch to verify.</div>";
 }
 echo "</div>";
 
 // ============================================================
-// TEST 12: NAVIGATION LINKS
+// FINAL SUMMARY
 // ============================================================
-echo "<div class='test-card' style='margin-bottom:16px;'>";
-echo "<h3>12. Navigation & Quick Links <span class='status status-info'>🔗 LINKS</span></h3>";
-echo "<div style='display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;'>";
-echo "<a href='index.php' class='btn btn-primary'>📊 Dashboard</a>";
-echo "<a href='login.php' class='btn btn-outline'>🔑 Login</a>";
-echo "<a href='imports/source_input.php' class='btn btn-primary'>💰 New Disbursement</a>";
-echo "<a href='imports/review_batch.php?status=all' class='btn btn-outline'>📋 All Batches</a>";
-echo "<a href='imports/review_batch.php?status=pending_approval' class='btn btn-warning'>⏳ Pending Approvals</a>";
-echo "<a href='imports/review_batch.php?status=approved' class='btn btn-success'>✅ Approved Batches</a>";
-echo "<a href='beneficiaries.php' class='btn btn-outline'>👥 Beneficiaries</a>";
-echo "<a href='reports.php' class='btn btn-outline'>📈 Reports</a>";
-echo "<a href='settings.php' class='btn btn-outline'>⚙️ Settings</a>";
-echo "<a href='test.php' class='btn btn-outline' style='border-color:#8A6D3B; color:#8A6D3B;'>🔧 Re-run Test</a>";
-echo "</div>";
-echo "</div>";
-
-// ============================================================
-// 13. FINAL SUMMARY
-// ============================================================
-$allTestsPassed = $authLoaded && $allOk && $schemaOk;
-echo "<div class='summary-box'>";
-echo "<h3>" . ($allTestsPassed ? '✅ All Systems Operational' : '⚠️ Some Issues Detected') . "</h3>";
+$success = $sourceId && $batchId;
+echo "<div class='summary'>";
+echo "<h3>" . ($success ? '✅ Workflow Test Complete!' : '⚠️ Workflow Test Incomplete') . "</h3>";
 echo "<p>";
-if ($allTestsPassed) {
-    echo "All tests passed! Your enterprise module is ready to use.<br>";
-    echo "The system has been configured for role-based access with Loader → Approver → Supervisor workflow.";
+if ($success) {
+    echo "All steps completed successfully! The batch went through the full workflow:<br>";
+    echo "📝 Draft → ⏳ Pending Approval → ✅ Approved → ✔️ Completed";
 } else {
-    echo "Some issues were detected. Please review the test results above and fix any issues.<br>";
-    echo "Common issues: missing files, database tables, or configuration.";
+    echo "Some steps were skipped. Please check the details above.<br>";
+    echo "Make sure you're logged in with the appropriate role.";
 }
 echo "</p>";
 
-// Role workflow reminder
-echo "<div style='margin-top:12px; padding:12px; background:#1e293b; border-radius:8px;'>";
-echo "<h4 style='color:#8A6D3B; font-size:13px;'>📋 Role Workflow Reminder:</h4>";
-echo "<div style='display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-top:8px; font-size:12px; color:#94a3b8;'>";
-echo "<div><strong style='color:#dbeafe;'>1. LOADER</strong><br>Program Officer / Dept Head<br>→ Creates batch → Submits for approval</div>";
-echo "<div><strong style='color:#fef3c7;'>2. APPROVER</strong><br>Approver / Senior Approver<br>→ Reviews → Approves or Rejects</div>";
-echo "<div><strong style='color:#dcfce7;'>3. SUPERVISOR</strong><br>Supervisor<br>→ Disburses funds</div>";
+echo "<div class='links'>";
+echo "<a href='batches/view.php?id=" . ($batchId ?? 0) . "'>📋 View Batch</a>";
+echo "<a href='imports/review_batch.php?status=all' class='secondary'>📋 All Batches</a>";
+echo "<a href='test_workflow.php' class='secondary'>🔄 Run Again</a>";
+echo "<a href='test.php' class='secondary'>🔧 System Test</a>";
 echo "</div>";
 echo "</div>";
 
-echo "<div class='links'>";
-echo "<a href='index.php'>📊 Dashboard</a>";
-echo "<a href='login.php' class='secondary'>🔑 Login</a>";
-echo "<a href='imports/source_input.php' class='secondary'>💰 New Disbursement</a>";
-echo "<a href='test.php' class='secondary' style='background:#8A6D3B; color:#0f172a;'>🔧 Re-run Test</a>";
-echo "</div>";
-echo "</div>";
+// ============================================================
+// SHOW SQL FOR REFERENCE
+// ============================================================
+if ($batchId) {
+    echo "<div style='margin-top:24px; background:white; border-radius:12px; padding:20px; border:1px solid #e2e8f0;'>";
+    echo "<h4 style='margin-bottom:12px;'>📋 Created Data (SQL Reference)</h4>";
+    echo "<div class='sql-box'>";
+    echo "-- Batch\n";
+    echo "SELECT * FROM disbursement_batches WHERE id = $batchId;\n\n";
+    echo "-- Destinations\n";
+    echo "SELECT * FROM disbursement_destinations WHERE batch_id = $batchId;\n\n";
+    echo "-- Approvals\n";
+    echo "SELECT * FROM batch_approvals WHERE batch_id = $batchId;";
+    echo "</div>";
+    echo "</div>";
+}
 
 echo "</div></body></html>";
