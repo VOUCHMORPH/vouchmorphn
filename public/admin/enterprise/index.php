@@ -177,7 +177,7 @@ $stmt->execute($statusParams);
 $recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
 
-} catch (PDOException $e) {
+ catch (PDOException $e) {
     error_log("[ENTERPRISE DASHBOARD] Metrics error: " . $e->getMessage());
     $metrics = array_fill_keys([
         'total_batches', 'pending_batches', 'approved_batches', 
