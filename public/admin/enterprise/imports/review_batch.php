@@ -13,7 +13,23 @@ $batchId = $_GET['batch_id'] ?? 0;
 $error = '';
 $success = '';
 
-// Get batch
+// ============================================================
+// HELPER: Check if user can edit this batch
+// ============================================================
+function canEditBatch($batchCreatedBy, $currentUserId, $userRole) {
+    // Owner can edit everything
+    if ($userRole === 'owner') return true;
+    // Loaders (program_officer, department_head) can only edit their own
+    if (in_array($userRole, ['program_officer', 'department_head'])) {
+        return $batchCreatedBy == $currentUserId;
+    }
+    // Everyone else cannot edit
+    return false;
+}
+
+// ============================================================
+// GET BATCH
+// ============================================================
 $batch = null;
 if ($batchId) {
     $stmt = $db->prepare("
@@ -39,6 +55,13 @@ if (!$batch) {
     die("Batch not found.");
 }
 
+// ============================================================
+// CHECK PERMISSIONS FOR THIS BATCH
+// ============================================================
+$isOwnBatch = ($batch['created_by'] == $userId);
+$canEdit = canEditBatch($batch['created_by'], $userId, $user['role'] ?? 'viewer');
+$isReadOnly = !$canEdit;
+
 // Get destinations
 $destinations = [];
 $stmt = $db->prepare("
@@ -49,145 +72,152 @@ $stmt = $db->prepare("
 $stmt->execute([':batch_id' => $batchId]);
 $destinations = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Handle actions
+// ============================================================
+// HANDLE ACTIONS
+// ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     requireCsrfToken($_POST['csrf_token'] ?? null);
     $action = $_POST['action'] ?? '';
     
-    if ($action === 'submit_for_approval') {
-        $stmt = $db->prepare("
-            UPDATE disbursement_batches 
-            SET status = 'PENDING_APPROVAL',
-                submitted_by = :user_id,
-                submitted_at = NOW(),
-                updated_at = NOW()
-            WHERE id = :id AND status = 'DRAFT'
-        ");
-        $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
-        $success = "Batch submitted for approval.";
-        $batch['status'] = 'PENDING_APPROVAL';
-        
-    } elseif ($action === 'approve') {
-        $stmt = $db->prepare("
-            UPDATE disbursement_batches 
-            SET status = 'APPROVED',
-                approved_by = :user_id,
-                approved_at = NOW(),
-                updated_at = NOW()
-            WHERE id = :id AND status = 'PENDING_APPROVAL'
-        ");
-        $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
-        $success = "Batch approved.";
-        $batch['status'] = 'APPROVED';
-        
-    } elseif ($action === 'reject') {
-        $reason = $_POST['rejection_reason'] ?? 'No reason provided';
-        $stmt = $db->prepare("
-            UPDATE disbursement_batches 
-            SET status = 'REJECTED',
-                rejection_reason = :reason,
-                reviewed_by = :user_id,
-                reviewed_at = NOW(),
-                updated_at = NOW()
-            WHERE id = :id
-        ");
-        $stmt->execute([':reason' => $reason, ':user_id' => $userId, ':id' => $batchId]);
-        $success = "Batch rejected.";
-        $batch['status'] = 'REJECTED';
-        
-    } elseif ($action === 'execute') {
-        // Execute the multi-destination swap
-        try {
-            require_once '../../../../src/BusinessLogicLayer/services/SwapService.php';
-            $swapService = new SwapService($db, [], 'Botswana');
-            
-            $payload = [
-                'swap_type' => 'MULTI_DESTINATION',
-                'reference' => $batch['batch_reference'],
-                'from_institution' => $batch['source_institution'],
-                'source_institution' => $batch['source_institution'],
-                'asset_type' => $batch['source_asset_type'] ?? 'ACCOUNT',
-                'source_identifier' => $batch['source_identifier'],
-                'amount' => (float)$batch['total_amount'],
-                'currency' => $batch['currency'] ?? 'BWP',
-                'destinations' => []
-            ];
-            
-            foreach ($destinations as $dest) {
-                $payload['destinations'][] = [
-                    'to_institution' => $dest['institution'],
-                    'destination_institution' => $dest['institution'],
-                    'destination_asset_type' => $dest['asset_type'],
-                    'destination_identifier' => $dest['identifier'],
-                    'destination_identifier_type' => $dest['identifier_type'],
-                    'amount' => (float)$dest['amount'],
-                    'currency' => $dest['currency'] ?? 'BWP',
-                    'delivery_method' => $dest['delivery_method'],
-                    'beneficiary_phone' => $dest['beneficiary_phone'],
-                    'beneficiary_name' => $dest['beneficiary_name']
-                ];
-            }
-            
-            $result = $swapService->executeAtomicSwap($payload);
-            
-            $status = $result['status'] ?? 'COMPLETED';
-            $successCount = $result['successful_destinations'] ?? 0;
-            $failedCount = $result['failed_destinations'] ?? 0;
-            
+    // Prevent editing if read-only
+    if ($isReadOnly && !in_array($action, ['approve', 'reject', 'execute'])) {
+        $error = "You cannot modify this batch. It was created by another user.";
+    } else {
+        if ($action === 'submit_for_approval') {
             $stmt = $db->prepare("
                 UPDATE disbursement_batches 
-                SET status = :status,
-                    successful_count = :success,
-                    failed_count = :failed,
-                    pending_count = 0,
-                    executed_by = :user_id,
-                    executed_at = NOW(),
-                    results_payload = :results::jsonb,
-                    completed_at = NOW(),
+                SET status = 'PENDING_APPROVAL',
+                    submitted_by = :user_id,
+                    submitted_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = :id AND status = 'DRAFT'
+            ");
+            $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
+            $success = "Batch submitted for approval.";
+            $batch['status'] = 'PENDING_APPROVAL';
+            
+        } elseif ($action === 'approve') {
+            $stmt = $db->prepare("
+                UPDATE disbursement_batches 
+                SET status = 'APPROVED',
+                    approved_by = :user_id,
+                    approved_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = :id AND status = 'PENDING_APPROVAL'
+            ");
+            $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
+            $success = "Batch approved.";
+            $batch['status'] = 'APPROVED';
+            
+        } elseif ($action === 'reject') {
+            $reason = $_POST['rejection_reason'] ?? 'No reason provided';
+            $stmt = $db->prepare("
+                UPDATE disbursement_batches 
+                SET status = 'REJECTED',
+                    rejection_reason = :reason,
+                    reviewed_by = :user_id,
+                    reviewed_at = NOW(),
                     updated_at = NOW()
                 WHERE id = :id
             ");
-            $stmt->execute([
-                ':status' => $status,
-                ':success' => $successCount,
-                ':failed' => $failedCount,
-                ':user_id' => $userId,
-                ':results' => json_encode($result),
-                ':id' => $batchId
-            ]);
+            $stmt->execute([':reason' => $reason, ':user_id' => $userId, ':id' => $batchId]);
+            $success = "Batch rejected.";
+            $batch['status'] = 'REJECTED';
             
-            foreach ($result['destinations'] ?? [] as $idx => $destResult) {
+        } elseif ($action === 'execute') {
+            // Execute the multi-destination swap
+            try {
+                require_once '../../../../src/BusinessLogicLayer/services/SwapService.php';
+                $swapService = new SwapService($db, [], 'Botswana');
+                
+                $payload = [
+                    'swap_type' => 'MULTI_DESTINATION',
+                    'reference' => $batch['batch_reference'],
+                    'from_institution' => $batch['source_institution'],
+                    'source_institution' => $batch['source_institution'],
+                    'asset_type' => $batch['source_asset_type'] ?? 'ACCOUNT',
+                    'source_identifier' => $batch['source_identifier'],
+                    'amount' => (float)$batch['total_amount'],
+                    'currency' => $batch['currency'] ?? 'BWP',
+                    'destinations' => []
+                ];
+                
+                foreach ($destinations as $dest) {
+                    $payload['destinations'][] = [
+                        'to_institution' => $dest['institution'],
+                        'destination_institution' => $dest['institution'],
+                        'destination_asset_type' => $dest['asset_type'],
+                        'destination_identifier' => $dest['identifier'],
+                        'destination_identifier_type' => $dest['identifier_type'],
+                        'amount' => (float)$dest['amount'],
+                        'currency' => $dest['currency'] ?? 'BWP',
+                        'delivery_method' => $dest['delivery_method'],
+                        'beneficiary_phone' => $dest['beneficiary_phone'],
+                        'beneficiary_name' => $dest['beneficiary_name']
+                    ];
+                }
+                
+                $result = $swapService->executeAtomicSwap($payload);
+                
+                $status = $result['status'] ?? 'COMPLETED';
+                $successCount = $result['successful_destinations'] ?? 0;
+                $failedCount = $result['failed_destinations'] ?? 0;
+                
                 $stmt = $db->prepare("
-                    UPDATE disbursement_destinations 
+                    UPDATE disbursement_batches 
                     SET status = :status,
-                        hold_reference = :hold_ref,
-                        transaction_reference = :tx_ref,
-                        error_message = :error
-                    WHERE batch_id = :batch_id AND destination_index = :idx
+                        successful_count = :success,
+                        failed_count = :failed,
+                        pending_count = 0,
+                        executed_by = :user_id,
+                        executed_at = NOW(),
+                        results_payload = :results::jsonb,
+                        completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = :id
                 ");
                 $stmt->execute([
-                    ':status' => $destResult['status'] ?? 'FAILED',
-                    ':hold_ref' => $destResult['hold_reference'] ?? null,
-                    ':tx_ref' => $destResult['transaction_reference'] ?? null,
-                    ':error' => $destResult['error'] ?? null,
-                    ':batch_id' => $batchId,
-                    ':idx' => $idx + 1
+                    ':status' => $status,
+                    ':success' => $successCount,
+                    ':failed' => $failedCount,
+                    ':user_id' => $userId,
+                    ':results' => json_encode($result),
+                    ':id' => $batchId
                 ]);
+                
+                foreach ($result['destinations'] ?? [] as $idx => $destResult) {
+                    $stmt = $db->prepare("
+                        UPDATE disbursement_destinations 
+                        SET status = :status,
+                            hold_reference = :hold_ref,
+                            transaction_reference = :tx_ref,
+                            error_message = :error
+                        WHERE batch_id = :batch_id AND destination_index = :idx
+                    ");
+                    $stmt->execute([
+                        ':status' => $destResult['status'] ?? 'FAILED',
+                        ':hold_ref' => $destResult['hold_reference'] ?? null,
+                        ':tx_ref' => $destResult['transaction_reference'] ?? null,
+                        ':error' => $destResult['error'] ?? null,
+                        ':batch_id' => $batchId,
+                        ':idx' => $idx + 1
+                    ]);
+                }
+                
+                $success = "Batch executed successfully! $successCount succeeded, $failedCount failed.";
+                $batch['status'] = $status;
+                
+            } catch (Exception $e) {
+                error_log("[review_batch] Execution error: " . $e->getMessage());
+                $error = "Execution failed: " . $e->getMessage();
             }
-            
-            $success = "Batch executed successfully! $successCount succeeded, $failedCount failed.";
-            $batch['status'] = $status;
-            
-        } catch (Exception $e) {
-            error_log("[review_batch] Execution error: " . $e->getMessage());
-            $error = "Execution failed: " . $e->getMessage();
         }
     }
 }
 
 $csrfToken = generateCsrfToken();
 $roleDisplay = strtoupper($user['role'] ?? 'USER');
-$canSubmit = in_array($user['role'] ?? '', ['owner', 'program_officer', 'department_head']);
+$canSubmit = in_array($user['role'] ?? '', ['owner', 'program_officer', 'department_head']) && $canEdit;
 $canApprove = in_array($user['role'] ?? '', ['owner', 'approver', 'senior_approver']);
 $canExecute = in_array($user['role'] ?? '', ['owner']);
 $status = $batch['status'] ?? 'DRAFT';
@@ -200,6 +230,7 @@ $status = $batch['status'] ?? 'DRAFT';
     <title>Review & Approve · VouchMorph Enterprise</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        /* ... (keep existing styles) ... */
         :root {
             --paper: #EEF1EF;
             --panel: #FFFFFF;
@@ -275,6 +306,17 @@ $status = $batch['status'] ?? 'DRAFT';
         .status-PROCESSING { background: #e0e7ff; color: #3730a3; }
         .status-COMPLETED { background: #dcfce7; color: #166534; }
         .status-FAILED { background: #fbeceb; color: var(--seal-red); }
+        .readonly-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            background: #fef3c7;
+            color: #92400e;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            border: 1px solid #f59e0b;
+        }
         .btn {
             padding: 10px 24px;
             border: none;
@@ -295,7 +337,7 @@ $status = $batch['status'] ?? 'DRAFT';
         .btn-secondary:hover { background: var(--line-strong); }
         .btn-outline { background: transparent; border: 2px solid var(--line); }
         .btn-outline:hover { border-color: var(--brass); }
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .btn-disabled { opacity: 0.5; cursor: not-allowed; }
         .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
         th { background: var(--ink-900); color: white; padding: 10px; text-align: left; }
@@ -352,8 +394,16 @@ $status = $batch['status'] ?? 'DRAFT';
             border-radius: 8px;
         }
         .rejection-form.show { display: block; }
+        .rejection-form textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            min-height: 80px;
+            font-family: inherit;
+        }
         @media (max-width: 768px) {
-            .grid-2, .grid-3 { grid-template-columns: 1fr; }
+            .grid-3 { grid-template-columns: 1fr; }
             .masthead { flex-direction: column; text-align: center; }
             .step-indicator { flex-wrap: wrap; gap: 8px; }
             .step { flex: 0 0 45%; }
@@ -390,6 +440,22 @@ $status = $batch['status'] ?? 'DRAFT';
         <div class="success">✅ <?php echo htmlspecialchars($success); ?></div>
         <?php endif; ?>
 
+        <!-- READ ONLY NOTICE -->
+        <?php if ($isReadOnly && !in_array($user['role'] ?? '', ['owner', 'approver', 'senior_approver'])): ?>
+        <div class="card" style="border-left: 4px solid #f59e0b; background: #fef3c7;">
+            <div style="display:flex; align-items:center; gap:12px;">
+                <span style="font-size:24px;">🔒</span>
+                <div>
+                    <strong style="color:#92400e;">Read-Only Mode</strong>
+                    <p style="color:#78350f; font-size:13px; margin-top:2px;">
+                        This batch was created by <?php echo htmlspecialchars($batch['created_by_name'] ?? 'another user'); ?>. 
+                        You can view the details but cannot make changes.
+                    </p>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
+
         <!-- Batch Summary -->
         <div class="card">
             <div class="card-header">
@@ -398,6 +464,9 @@ $status = $batch['status'] ?? 'DRAFT';
                     <span class="workflow-status status-<?php echo $status; ?>">
                         <?php echo htmlspecialchars($status); ?>
                     </span>
+                    <?php if ($isReadOnly): ?>
+                    <span class="readonly-badge" style="margin-left:8px;">🔒 READ ONLY</span>
+                    <?php endif; ?>
                 </span>
             </div>
             <div class="grid-3">
@@ -479,9 +548,13 @@ $status = $batch['status'] ?? 'DRAFT';
         <div class="card">
             <div class="card-header">
                 <span class="card-title">⚡ Actions</span>
+                <?php if ($isReadOnly): ?>
+                <span class="readonly-badge">🔒 Read-Only</span>
+                <?php endif; ?>
             </div>
             <div class="actions-bar">
-                <?php if ($status === 'DRAFT' && $canSubmit): ?>
+                <!-- Submit for Approval - Only for OWN batches in DRAFT -->
+                <?php if ($status === 'DRAFT' && $canSubmit && !$isReadOnly): ?>
                 <form method="POST" style="display:inline;">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
                     <input type="hidden" name="action" value="submit_for_approval">
@@ -491,6 +564,7 @@ $status = $batch['status'] ?? 'DRAFT';
                 </form>
                 <?php endif; ?>
 
+                <!-- Approve - For Approvers -->
                 <?php if ($status === 'PENDING_APPROVAL' && $canApprove): ?>
                 <form method="POST" style="display:inline;" onsubmit="return confirm('Approve this batch?')">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
@@ -504,7 +578,7 @@ $status = $batch['status'] ?? 'DRAFT';
                         <input type="hidden" name="action" value="reject">
                         <div class="form-group">
                             <label style="display:block; margin-bottom:4px; font-weight:600;">Rejection Reason</label>
-                            <textarea name="rejection_reason" style="width:100%; padding:8px; border:1px solid var(--line); border-radius:8px; min-height:80px;" required></textarea>
+                            <textarea name="rejection_reason" required></textarea>
                         </div>
                         <button type="submit" class="btn btn-danger">Submit Rejection</button>
                         <button type="button" class="btn btn-secondary" onclick="toggleRejection()">Cancel</button>
@@ -512,6 +586,7 @@ $status = $batch['status'] ?? 'DRAFT';
                 </div>
                 <?php endif; ?>
 
+                <!-- Execute - For Owners -->
                 <?php if ($status === 'APPROVED' && $canExecute): ?>
                 <form method="POST" style="display:inline;" onsubmit="return confirm('Execute this multi-destination swap? This will move real funds.')">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
@@ -520,11 +595,14 @@ $status = $batch['status'] ?? 'DRAFT';
                 </form>
                 <?php endif; ?>
 
-                <?php if ($status === 'DRAFT'): ?>
+                <!-- Edit Destinations - Only for OWN batches in DRAFT -->
+                <?php if ($status === 'DRAFT' && $canEdit && !$isReadOnly): ?>
                 <a href="add_destinations.php?batch_id=<?php echo $batchId; ?>" class="btn btn-secondary">✏️ Edit Destinations</a>
                 <?php endif; ?>
 
-                <a href="../index.php" class="btn btn-secondary">🏠 Dashboard</a>
+                <!-- Always show Dashboard and Batches links -->
+                <a href="../batches/index.php" class="btn btn-outline">📋 All Batches</a>
+                <a href="../index.php" class="btn btn-outline">🏠 Dashboard</a>
             </div>
         </div>
     </div>
