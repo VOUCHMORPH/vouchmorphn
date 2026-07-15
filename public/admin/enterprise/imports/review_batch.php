@@ -125,10 +125,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $batch['status'] = 'rejected';
             
         } elseif ($action === 'execute') {
-            // Execute the multi-destination swap
+            // ============================================================
+            // FIXED: Proper SwapService instantiation with dependencies
+            // ============================================================
             try {
+                // Load required classes
                 require_once '../../../../src/Domain/Services/SwapService.php';
-                $swapService = new \Domain\Services\SwapService($db, [], 'Botswana');
+                require_once '../../../../src/Core/Config/LoadCountry.php';
+                require_once '../../../../src/Infrastructure/Crypto/MessageSigner.php';
+                require_once '../../../../src/Infrastructure/Crypto/SignatureVerifier.php';
+                require_once '../../../../src/Infrastructure/Crypto/CertificateManager.php';
+                
+                use Domain\Services\SwapService;
+                use Core\Config\LoadCountry;
+                use Infrastructure\Crypto\MessageSigner;
+                use Infrastructure\Crypto\SignatureVerifier;
+                use Infrastructure\Crypto\CertificateManager;
+                
+                // Load country configuration
+                $countryName = $_ENV['VOUCHMORPH_COUNTRY'] ?? getenv('VOUCHMORPH_COUNTRY') ?? 'Botswana';
+                $fullCountryConfig = LoadCountry::getConfig();
+                
+                // Create crypto dependencies
+                $messageSigner = new MessageSigner();
+                $signatureVerifier = new SignatureVerifier();
+                $certificateManager = new CertificateManager();
+                
+                // Instantiate SwapService with all dependencies
+                $swapService = new SwapService(
+                    $db, 
+                    $fullCountryConfig, 
+                    $countryName,
+                    $messageSigner,
+                    $signatureVerifier,
+                    $certificateManager
+                );
                 
                 $payload = [
                     'swap_type' => 'MULTI_DESTINATION',
@@ -219,11 +250,11 @@ $csrfToken = generateCsrfToken();
 $roleDisplay = strtoupper($user['role'] ?? 'USER');
 
 // ============================================================
-// PERMISSIONS - FIXED: Owner can submit and execute, but NOT approve
+// PERMISSIONS - Owner can submit and execute, but NOT approve
 // ============================================================
 $canSubmit = in_array($user['role'] ?? '', ['owner', 'program_officer', 'department_head']) && $canEdit;
-$canApprove = in_array($user['role'] ?? '', ['approver', 'senior_approver']);  // REMOVED 'owner' from approve
-$canExecute = in_array($user['role'] ?? '', ['owner']);  // Only owner can disburse
+$canApprove = in_array($user['role'] ?? '', ['approver', 'senior_approver']);
+$canExecute = in_array($user['role'] ?? '', ['owner']);
 
 $status = strtolower($batch['status'] ?? 'draft');
 ?>
@@ -555,7 +586,7 @@ $status = strtolower($batch['status'] ?? 'draft');
                 <?php endif; ?>
             </div>
             <div class="actions-bar">
-                <!-- Submit for Approval - Owners and Loaders can submit -->
+                <!-- Submit for Approval - Only for OWN batches in DRAFT -->
                 <?php if ($status === 'draft' && $canSubmit && !$isReadOnly): ?>
                 <form method="POST" style="display:inline;">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
@@ -566,10 +597,7 @@ $status = strtolower($batch['status'] ?? 'draft');
                 </form>
                 <?php endif; ?>
 
-                <!-- ============================================================ -->
-                <!-- APPROVE BUTTON - ONLY for Approver and Senior Approver -->
-                <!-- Owner CANNOT approve -->
-                <!-- ============================================================ -->
+                <!-- Approve - Only for Approver and Senior Approver -->
                 <?php if ($status === 'pending_approval' && $canApprove): ?>
                 <form method="POST" style="display:inline;" onsubmit="return confirm('Approve this batch?')">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
@@ -591,9 +619,7 @@ $status = strtolower($batch['status'] ?? 'draft');
                 </div>
                 <?php endif; ?>
 
-                <!-- ============================================================ -->
-                <!-- EXECUTE/DISBURSE - Only for OWNER -->
-                <!-- ============================================================ -->
+                <!-- Execute - Only for Owners -->
                 <?php if ($status === 'approved' && $canExecute): ?>
                 <form method="POST" style="display:inline;" onsubmit="return confirm('Execute this multi-destination swap? This will move real funds.')">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
