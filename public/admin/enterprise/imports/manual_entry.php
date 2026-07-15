@@ -1,13 +1,9 @@
 <?php
 /**
  * enterprise/imports/manual_entry.php
- *
- * The Preparer stage's "punch it in manually" path -- the schema already
- * anticipated this (import_batches.payment_mode defaults to 'MANUAL') but
- * there was no screen for it. This creates the batch + rows directly,
- * skipping preview.php/validate.php (those exist to map unknown file
- * headers -- there's nothing to map here, the operator typed the real
- * field names in) and goes straight to sources.php.
+ * 
+ * FIXED: Uses disbursement_batches and disbursement_destinations
+ * instead of import_batches and import_rows
  */
 require_once '../auth.php';
 $user = requireEnterpriseAuth();
@@ -29,7 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $batchName = trim($_POST['batch_name'] ?? '');
     $rowsIn = $_POST['rows'] ?? [];
 
-    // Filter out any completely-blank rows the JS "add another" left behind
+    // Filter out blank rows
     $rows = array_values(array_filter($rowsIn, function ($r) {
         return trim($r['recipient_name'] ?? '') !== '' && trim($r['destination_value'] ?? '') !== '';
     }));
@@ -76,67 +72,77 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $batchRef = 'MANUAL_' . date('Ymd_His') . '_' . strtoupper(substr(uniqid(), -6));
                 $deptId = getUserDepartmentScope();
 
+                // FIXED: Insert into disbursement_batches
                 $stmt = $pdo->prepare("
-                    INSERT INTO import_batches (
-                        organization_id, batch_reference, batch_name, source_format,
-                        total_rows, valid_rows, invalid_rows, total_amount, currency,
-                        payment_mode, status, execution_mode, uploaded_by, department_id,
-                        requires_approval, created_at, updated_at
+                    INSERT INTO disbursement_batches (
+                        organization_id, batch_reference, batch_name,
+                        total_amount, total_destinations, currency,
+                        status, created_by, department_id,
+                        created_at, updated_at
                     ) VALUES (
-                        :org_id, :ref, :name, 'MANUAL',
-                        :total_rows, :valid_rows, 0, :total_amount, 'BWP',
-                        'MANUAL', 'DRAFT', 'ONE_SOURCE_MANY_DEST', :user_id, :dept_id,
-                        true, NOW(), NOW()
+                        :org_id, :ref, :name,
+                        :total_amount, :dest_count, :currency,
+                        'draft', :user_id, :dept_id,
+                        NOW(), NOW()
                     ) RETURNING id
                 ");
                 $stmt->execute([
                     ':org_id' => $orgId,
                     ':ref' => $batchRef,
                     ':name' => $batchName ?: ('Manual entry ' . date('d M Y')),
-                    ':total_rows' => count($validRows),
-                    ':valid_rows' => count($validRows),
                     ':total_amount' => $totalAmount,
+                    ':dest_count' => count($validRows),
+                    ':currency' => 'BWP',
                     ':user_id' => $user['id'] ?? $user['user_id'] ?? null,
                     ':dept_id' => $deptId,
                 ]);
                 $batchId = $stmt->fetchColumn();
 
+                // FIXED: Insert into disbursement_destinations
                 $rowStmt = $pdo->prepare("
-                    INSERT INTO import_rows (
-                        batch_id, row_number, recipient_name, recipient_phone,
-                        recipient_national_id, amount, currency, destination_type,
-                        destination_provider, destination_value, identity_type,
-                        validation_status, created_at, updated_at
+                    INSERT INTO disbursement_destinations (
+                        batch_id, destination_index, institution, asset_type,
+                        identifier, identifier_type, amount, currency,
+                        delivery_method, beneficiary_name, beneficiary_phone,
+                        beneficiary_national_id, identity_type, identity_value,
+                        is_identity_recipient, status
                     ) VALUES (
-                        :batch_id, :row_num, :name, :phone,
-                        :national_id, :amount, :currency, :dest_type,
-                        :dest_provider, :dest_value, :identity_type,
-                        'VALID', NOW(), NOW()
+                        :batch_id, :index, :institution, :asset_type,
+                        :identifier, :identifier_type, :amount, :currency,
+                        :delivery_method, :beneficiary_name, :beneficiary_phone,
+                        :beneficiary_national_id, :identity_type, :identity_value,
+                        :is_identity, 'PENDING'
                     )
                 ");
                 foreach ($validRows as $i => $r) {
+                    $isIdentity = $r['destination_type'] === 'IDENTIFIER';
                     $rowStmt->execute([
                         ':batch_id' => $batchId,
-                        ':row_num' => $i + 1,
-                        ':name' => $r['recipient_name'],
-                        ':phone' => $r['recipient_phone'],
-                        ':national_id' => $r['recipient_national_id'],
+                        ':index' => $i + 1,
+                        ':institution' => $isIdentity ? 'IDENTITY_RECIPIENT' : ($r['destination_provider'] ?: 'UNKNOWN'),
+                        ':asset_type' => $isIdentity ? 'IDENTITY' : ($r['destination_type'] === 'ACCOUNT' ? 'ACCOUNT' : 'WALLET'),
+                        ':identifier' => $r['destination_value'],
+                        ':identifier_type' => $isIdentity ? ($r['identity_type'] ?? 'national_id') : strtolower($r['destination_type']),
                         ':amount' => $r['amount'],
                         ':currency' => $r['currency'],
-                        ':dest_type' => $r['destination_type'],
-                        ':dest_provider' => $r['destination_provider'],
-                        ':dest_value' => $r['destination_value'],
+                        ':delivery_method' => $isIdentity ? 'AGENT' : ($r['destination_type'] === 'VOUCHER' ? 'VOUCHER' : 'DEPOSIT'),
+                        ':beneficiary_name' => $r['recipient_name'],
+                        ':beneficiary_phone' => $r['recipient_phone'],
+                        ':beneficiary_national_id' => $r['recipient_national_id'],
                         ':identity_type' => $r['identity_type'],
+                        ':identity_value' => $isIdentity ? $r['destination_value'] : null,
+                        ':is_identity' => $isIdentity ? 'true' : 'false',
                     ]);
                 }
 
+                // Audit log
                 try {
                     $auditStmt = $pdo->prepare("
                         INSERT INTO organization_audit_logs (
                             organization_id, user_id, action, entity_type, entity_id,
                             new_values, ip_address, user_agent, created_at
                         ) VALUES (
-                            :org_id, :user_id, 'BATCH_CREATED_MANUAL', 'import_batch', :entity_id,
+                            :org_id, :user_id, 'BATCH_CREATED_MANUAL', 'disbursement_batch', :entity_id,
                             :new_values, :ip, :ua, NOW()
                         )
                     ");
@@ -144,7 +150,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ':org_id' => $orgId,
                         ':user_id' => $user['id'] ?? $user['user_id'] ?? null,
                         ':entity_id' => $batchId,
-                        ':new_values' => json_encode(['batch_reference' => $batchRef, 'row_count' => count($validRows), 'total_amount' => $totalAmount]),
+                        ':new_values' => json_encode([
+                            'batch_reference' => $batchRef, 
+                            'row_count' => count($validRows), 
+                            'total_amount' => $totalAmount
+                        ]),
                         ':ip' => $_SERVER['REMOTE_ADDR'] ?? null,
                         ':ua' => $_SERVER['HTTP_USER_AGENT'] ?? null,
                     ]);
@@ -153,7 +163,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 $pdo->commit();
-                header("Location: sources.php?batch_id={$batchId}");
+                
+                // Redirect to add source selection
+                header("Location: source_input.php?batch_id={$batchId}");
                 exit;
             } catch (PDOException $e) {
                 $pdo->rollBack();
@@ -196,7 +208,7 @@ input, select { width:100%; padding:9px 12px; border:1px solid #cbd5e1; border-r
 <body>
 <div class="wrap">
     <h1>New Disbursement — Manual Entry</h1>
-    <p class="sub">For a handful of recipients. Uploading a file for a large batch? <a href="upload.php">Use file upload instead →</a></p>
+    <p class="sub">For a handful of recipients. Have a large batch? Use the multi-destination flow instead.</p>
 
     <?php if ($error): ?><div class="error">⚠️ <?php echo htmlspecialchars($error); ?></div><?php endif; ?>
 
@@ -221,7 +233,7 @@ input, select { width:100%; padding:9px 12px; border:1px solid #cbd5e1; border-r
             <span>Total: <strong id="totalAmount">BWP 0.00</strong></span>
         </div>
 
-        <button type="submit" class="submit-btn">Save and Continue to Source Selection →</button>
+        <button type="submit" class="submit-btn">Save and Continue →</button>
     </form>
 </div>
 
