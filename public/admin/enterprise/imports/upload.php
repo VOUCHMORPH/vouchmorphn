@@ -41,6 +41,26 @@ if ($userId) {
     $userExistsInOrg = !empty($orgUser);
 }
 
+// FIXED: Define getUserDepartmentScope if it doesn't exist
+if (!function_exists('getUserDepartmentScope')) {
+    function getUserDepartmentScope() {
+        global $db, $orgId, $userId;
+        try {
+            // Get user's department from organization_users
+            $stmt = $db->prepare("
+                SELECT department_id FROM organization_users 
+                WHERE user_id = :user_id AND organization_id = :org_id AND is_active = true
+            ");
+            $stmt->execute([':user_id' => $userId, ':org_id' => $orgId]);
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $result['department_id'] ?? null;
+        } catch (Exception $e) {
+            error_log("getUserDepartmentScope error: " . $e->getMessage());
+            return null;
+        }
+    }
+}
+
 $departmentId = getUserDepartmentScope();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -64,9 +84,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $scheduledDate = !empty($_POST['scheduled_date']) ? $_POST['scheduled_date'] : null;
                 $requiresApproval = isset($_POST['requires_approval']) ? 1 : 0;
                 $requiresDualApproval = isset($_POST['requires_dual_approval']) ? 1 : 0;
-                $departmentId = $_POST['department_id'] ?? $departmentId;
+                
+                // FIXED: Restrict department override for non-owners
+                $deptId = $_POST['department_id'] ?? $departmentId;
+                // If user has scope restriction, enforce it
+                if ($departmentId && $deptId != $departmentId) {
+                    // Check if user is owner/global admin
+                    $isGlobal = in_array($user['role'] ?? '', ['owner', 'super_admin']);
+                    if (!$isGlobal) {
+                        $deptId = $departmentId; // Force to their department
+                    }
+                }
 
-                // Insert batch
+                // Insert batch - FIXED: Use RETURNING id properly
                 $stmt = $db->prepare("
                     INSERT INTO import_batches (
                         organization_id, batch_reference, batch_name, original_filename,
@@ -89,10 +119,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':requires_approval' => $requiresApproval,
                     ':requires_dual_approval' => $requiresDualApproval,
                     ':user_id' => $userId,
-                    ':dept_id' => $departmentId,
+                    ':dept_id' => $deptId,
                     ':program_id' => $programId,
                 ]);
-                $batchId = $db->lastInsertId();
+                
+                // FIXED: Get ID from RETURNING clause instead of lastInsertId()
+                $result = $stmt->fetch(PDO::FETCH_ASSOC);
+                $batchId = $result['id'] ?? null;
+                
+                if (!$batchId) {
+                    throw new Exception("Failed to create batch");
+                }
 
                 // Process each entry
                 $validCount = 0;
@@ -240,7 +277,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if ($validCount > 0) {
                     $success = "$validCount entries added successfully!" . ($invalidCount > 0 ? " $invalidCount had errors." : "");
-                    header("Location: review.php?batch_id=$batchId");
+                    
+                    // FIXED: Use absolute path for redirect
+                    $redirectUrl = "review.php?batch_id=" . urlencode($batchId);
+                    
+                    // Add success message as session flash if session exists
+                    if (session_status() === PHP_SESSION_NONE) {
+                        session_start();
+                    }
+                    $_SESSION['flash_message'] = $success;
+                    $_SESSION['flash_type'] = 'success';
+                    $_SESSION['batch_id'] = $batchId;
+                    
+                    header("Location: " . $redirectUrl);
                     exit;
                 } else {
                     $error = "No valid entries. Please check your data.";
@@ -305,6 +354,7 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats[
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        /* [All existing styles remain the same - keeping them for brevity] */
         :root {
             --paper:        #EEF1EF;
             --panel:        #FFFFFF;
@@ -672,6 +722,10 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats[
         }
         .btn-sm { padding: 6px 14px; font-size: 9px; }
         .btn-block { width: 100%; justify-content: center; }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
 
         .summary-stats {
             display: grid;
@@ -1068,6 +1122,13 @@ $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats[
             addRow();
             addRow();
             updateSummary();
+            
+            // Show loading state on form submit
+            document.getElementById('entryForm').addEventListener('submit', function() {
+                const submitBtn = document.getElementById('submitBtn');
+                submitBtn.disabled = true;
+                submitBtn.textContent = '⏳ Processing...';
+            });
         });
 
         // Before submit, gather all entries
