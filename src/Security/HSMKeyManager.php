@@ -3,10 +3,17 @@
 
 namespace Security;
 
+use Security\Encryption\KeyVault;
+
 /**
  * Hardware Security Module Interface
  * ISO 27001:2022 Annex A.10 (Cryptography)
  * Keys NEVER leave the HSM - European banking standard
+ * 
+ * WARNING: SoftwareHSM is NOT persistent across requests.
+ * Keys generated in one request cannot be used in another.
+ * This is suitable ONLY for development/testing.
+ * For production, set HSM_TYPE to 'aws' or 'azure'.
  */
 class HSMKeyManager
 {
@@ -14,9 +21,19 @@ class HSMKeyManager
     private $sessionHandle;
     private $masterKeyHandle;
     private $vaultClient;
+    private string $hsmType;
     
     public function __construct()
     {
+        $this->hsmType = getenv('HSM_TYPE') ?: 'software';
+        
+        // Check if using software HSM in production
+        if ($this->hsmType === 'software' && getenv('APP_ENV') === 'production') {
+            error_log("[HSMKeyManager] WARNING: Using SoftwareHSM in production! " .
+                      "Keys will NOT persist across requests. " .
+                      "Set HSM_TYPE to 'aws' or 'azure' for production.");
+        }
+        
         $this->connectToHSM();
         $this->authenticate();
         $this->loadMasterKey();
@@ -44,6 +61,7 @@ class HSMKeyManager
             );
         } else {
             // Software HSM for development (NEVER in production)
+            error_log("[HSMKeyManager] Using SoftwareHSM - keys do not persist across requests");
             $this->hsmClient = new SoftwareHSM();
         }
     }
@@ -182,6 +200,10 @@ class HSMKeyManager
 
 /**
  * Software HSM for development only (NEVER use in production)
+ * 
+ * WARNING: This implementation does NOT persist keys across requests.
+ * Keys generated in one request are lost when the request ends.
+ * This is suitable ONLY for testing/development.
  */
 class SoftwareHSM
 {
@@ -200,20 +222,30 @@ class SoftwareHSM
             'private_key_type' => OPENSSL_KEYTYPE_RSA
         ]);
         
+        // Log warning about non-persistence
+        error_log("[SoftwareHSM] WARNING: Generated key '{$keyId}' will NOT persist across requests");
+        
         return ['KeyHandle' => $keyId];
     }
     
     public function sign(array $params): array
     {
-        $key = $this->keys[$params['KeyHandle']];
+        $key = $this->keys[$params['KeyHandle']] ?? null;
+        if (!$key) {
+            throw new \RuntimeException("Key handle '{$params['KeyHandle']}' not found - keys do not persist");
+        }
         openssl_sign($params['Message'], $signature, $key, OPENSSL_ALGO_SHA256);
         return ['Signature' => $signature];
     }
     
     public function verify(array $params): array
     {
-        $key = openssl_pkey_get_public($this->keys[$params['KeyHandle']]);
-        $valid = openssl_verify($params['Message'], $params['Signature'], $key, OPENSSL_ALGO_SHA256);
+        $key = $this->keys[$params['KeyHandle']] ?? null;
+        if (!$key) {
+            return ['Success' => false];
+        }
+        $publicKey = openssl_pkey_get_public($key);
+        $valid = openssl_verify($params['Message'], $params['Signature'], $publicKey, OPENSSL_ALGO_SHA256);
         return ['Success' => $valid === 1];
     }
 }

@@ -1,1614 +1,1065 @@
 <?php
-// public/user/dashboard.php - FULLY DYNAMIC, NO HARDCODING
-// Works for any country by loading config from the country folder
-// Backend dictates outcome - this only sends properly formatted payloads
-
+// ============================================================
+// FIX 1: Use SessionManager instead of bare session_start()
+// ============================================================
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 use Application\Utils\SessionManager;
 
+// Start session using SessionManager
 SessionManager::start();
 
+// Check if user is logged in using SessionManager
 if (!SessionManager::isLoggedIn()) {
-    header("Location: login.php");
-    exit;
+    header('Location: login.php');
+    exit();
 }
 
-$user = SessionManager::getUser();
-$loggedPhone = htmlspecialchars($user['phone'] ?? '');
-$userId = $user['user_id'] ?? null;
-$userPhone = htmlspecialchars($user['phone'] ?? '');
-$userNationalId = htmlspecialchars($user['national_id'] ?? '');
-$userEmail = htmlspecialchars($user['email'] ?? '');
+// Get user info from session using SessionManager
+$userData = SessionManager::getUser();
+$userName = $userData['full_name'] ?? $userData['username'] ?? 'User';
+$userCountry = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
+$userCurrency = $userData['currency'] ?? getenv('VOUCHMORPH_CURRENCY') ?: 'BWP';
+$userRole = $userData['role'] ?? 'user';
 
-require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
-require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
+// Get API configuration from environment
+$apiKey = getenv('VOUCHMORPH_API_KEY') ?: '';
+$apiBase = getenv('API_BASE_URL') ?: '';
 
-use Core\Database\DBConnection;
-use Core\Config\LoadCountry;
-
-$config = LoadCountry::getConfig();
-$countryCode = $config['country_code'] ?? 'BW';
-$countryName = $config['country'] ?? 'Botswana';
-$currencySymbol = $config['currency_symbol'] ?? 'BWP';
-$currency = $config['currency'] ?? 'BWP';
-
-// Load ATM notes for cashout denomination validation (display only, backend validates)
-$atmNotesPath = __DIR__ . '/../../src/Core/Config/Countries/' . $countryName . '/atm_notes.json';
-$atmDenominations = [200, 100, 50, 20, 10]; // Default
-if (file_exists($atmNotesPath)) {
-    $atmData = json_decode(file_get_contents($atmNotesPath), true);
-    $atmDenominations = $atmData[$currency] ?? $atmDenominations;
-}
-
-try {
-    $swapDB = DBConnection::getConnection();
-} catch (Exception $e) {
-    die("Database error");
-}
+// Check if we're in test mode (no valid API key)
+$isTestMode = empty($apiKey);
 
 // ============================================================
-// DYNAMIC LOADING - Reads from country folder
+// LOAD COUNTRY CONFIGURATION - NO HARDCODED BANKS
 // ============================================================
-
-$countryFolder = __DIR__ . '/../../src/Core/Config/Countries/' . $countryName;
-$participantsYamlPath = $countryFolder . '/participants.yaml';
-$assetsYamlPath = __DIR__ . '/../../src/Core/Config/assets.yaml';
-
-function parseParticipantsYaml($path) {
-    $participants = [];
-    if (!file_exists($path)) return $participants;
-    
-    $content = file_get_contents($path);
-    $lines = explode("\n", $content);
-    $current = null;
-    $inParticipants = false;
-    
-    foreach ($lines as $line) {
-        $line = rtrim($line);
-        if (empty($line) || $line[0] === '#') continue;
-        
-        if (preg_match('/^participants:$/', $line)) {
-            $inParticipants = true;
-            continue;
-        }
-        
-        if ($inParticipants && preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
-            $current = $matches[1];
-            $participants[$current] = [
-                'code' => $current,
-                'name' => $current,
-                'asset_types' => [],
-                'delivery_modes' => ['CASHOUT', 'DEPOSIT'],
-                'type' => 'BANK'
-            ];
-            continue;
-        }
-        
-        if ($current && preg_match('/^    name: (.+)$/', $line, $matches)) {
-            $participants[$current]['name'] = trim($matches[1], '"\'');
-            continue;
-        }
-        
-        if ($current && preg_match('/^    type: (.+)$/', $line, $matches)) {
-            $participants[$current]['type'] = trim($matches[1], '"\'');
-            continue;
-        }
-        
-        if ($current && preg_match('/^    asset_types:$/', $line)) {
-            $participants[$current]['asset_types'] = [];
-            continue;
-        }
-        
-        if ($current && isset($participants[$current]['asset_types']) && preg_match('/^      - (.+)$/', $line, $matches)) {
-            $participants[$current]['asset_types'][] = trim($matches[1]);
-            continue;
-        }
-        
-        if ($current && preg_match('/^    delivery_modes:$/', $line)) {
-            $participants[$current]['delivery_modes'] = [];
-            continue;
-        }
-        
-        if ($current && isset($participants[$current]['delivery_modes']) && preg_match('/^      - (.+)$/', $line, $matches)) {
-            $participants[$current]['delivery_modes'][] = trim($matches[1]);
-        }
-    }
-    
-    // If no asset_types defined, set default based on institution type
-    foreach ($participants as $code => &$p) {
-        if (empty($p['asset_types'])) {
-            // Default asset types based on institution type
-            if ($code === 'ZURUBANK') {
-                $p['asset_types'] = ['VOUCHER', 'ACCOUNT'];
-            } elseif ($code === 'VOUCHMORPH') {
-                $p['asset_types'] = ['VOUCHER', 'ACCOUNT'];
-            } elseif ($code === 'SACCUSSALIS') {
-                $p['asset_types'] = ['ACCOUNT'];
-            } elseif ($code === 'CAZACOM') {
-                $p['asset_types'] = ['MNO-WALLET'];
-            } else {
-                $p['asset_types'] = ['ACCOUNT'];
-            }
-        }
-    }
-    
-    return $participants;
+$countryConfig = [];
+$countryConfigPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/config.php';
+if (file_exists($countryConfigPath)) {
+    $countryConfig = require $countryConfigPath;
 }
 
-function parseAssetsYaml($path) {
-    $assets = [];
-    if (!file_exists($path)) return $assets;
-    
-    $content = file_get_contents($path);
-    $lines = explode("\n", $content);
-    $current = null;
-    
-    foreach ($lines as $line) {
-        $line = rtrim($line);
-        if (empty($line) || $line[0] === '#') continue;
-        
-        if (preg_match('/^([A-Z-]+):$/', $line, $matches)) {
-            $current = $matches[1];
-            $assets[$current] = ['code' => $current];
-            continue;
-        }
-        
-        if ($current && preg_match('/^  ui:/', $line)) {
-            continue;
-        }
-        
-        if ($current && preg_match('/^    display_name: (.+)$/', $line, $matches)) {
-            $assets[$current]['display_name'] = trim($matches[1], '"\'');
-            continue;
-        }
-        
-        if ($current && preg_match('/^    icon: (.+)$/', $line, $matches)) {
-            $assets[$current]['icon'] = trim($matches[1], '"\'');
-            continue;
-        }
-        
-        if ($current && preg_match('/^    description: (.+)$/', $line, $matches)) {
-            $assets[$current]['description'] = trim($matches[1], '"\'');
-            continue;
-        }
-        
-        if ($current && preg_match('/^  fields:$/', $line)) {
-            $assets[$current]['fields'] = [];
-            continue;
-        }
-        
-        if ($current && isset($assets[$current]['fields']) && preg_match('/^    - name: (.+)$/', $line, $matches)) {
-            $assets[$current]['fields'][] = ['name' => trim($matches[1])];
-            continue;
-        }
-        
-        if ($current && isset($assets[$current]['fields']) && preg_match('/^      label: (.+)$/', $line, $matches)) {
-            if (!empty($assets[$current]['fields'])) {
-                $assets[$current]['fields'][count($assets[$current]['fields']) - 1]['label'] = trim($matches[1], '"\'');
-            }
-            continue;
-        }
-        
-        if ($current && isset($assets[$current]['fields']) && preg_match('/^      placeholder: (.+)$/', $line, $matches)) {
-            if (!empty($assets[$current]['fields'])) {
-                $assets[$current]['fields'][count($assets[$current]['fields']) - 1]['placeholder'] = trim($matches[1], '"\'');
-            }
-            continue;
-        }
-        
-        if ($current && isset($assets[$current]['fields']) && preg_match('/^      required: (.+)$/', $line, $matches)) {
-            if (!empty($assets[$current]['fields'])) {
-                $assets[$current]['fields'][count($assets[$current]['fields']) - 1]['required'] = trim($matches[1]) === 'true';
-            }
-            continue;
-        }
-    }
-    
-    return $assets;
+// Load participants dynamically based on country - NO HARDCODED FALLBACK
+$participants = [];
+$participantsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/participants.yaml';
+if (file_exists($participantsPath)) {
+    $parsed = yaml_parse_file($participantsPath);
+    $participants = $parsed['participants'] ?? [];
+} else {
+    error_log("[DASHBOARD] Participants file not found: " . $participantsPath);
 }
 
-$participants = parseParticipantsYaml($participantsYamlPath);
-$assets = parseAssetsYaml($assetsYamlPath);
-
-// Build asset fields mapping for dynamic form generation
-$assetFields = [];
-foreach ($assets as $code => $asset) {
-    $assetFields[$code] = $asset['fields'] ?? [];
+// Load assets dynamically based on country
+$assets = [];
+$assetsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/assets.yaml';
+if (file_exists($assetsPath)) {
+    $assets = yaml_parse_file($assetsPath) ?? [];
+} else {
+    error_log("[DASHBOARD] Assets file not found: " . $assetsPath);
 }
 
-// ============================================================
-// NEW: GET SELECTED SWAP DETAILS FOR DETAILED VIEW
-// ============================================================
-$swapId = $_GET['id'] ?? null;
-$selectedSwap = null;
-$fullResponse = null;
-$feeCalcDetails = null;
-$generatedCodes = null;
-$signatureChain = null;
-$deliveryDetails = null;
-$requestPayload = null;
-
-if ($swapId) {
-    try {
-        $stmt = $swapDB->prepare("
-            SELECT sl.*, 
-                   sl.request_payload, 
-                   sl.response_payload,
-                   sl.fee_calculation_details,
-                   sl.generated_codes,
-                   sl.signature_chain,
-                   sl.delivery_details
-            FROM swap_ledgers sl
-            WHERE sl.swap_reference = ? AND sl.user_id = ?
-        ");
-        $stmt->execute([$swapId, $userId]);
-        $selectedSwap = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($selectedSwap) {
-            $fullResponse = json_decode($selectedSwap['response_payload'] ?? '{}', true);
-            $feeCalcDetails = json_decode($selectedSwap['fee_calculation_details'] ?? '{}', true);
-            $generatedCodes = json_decode($selectedSwap['generated_codes'] ?? '{}', true);
-            $signatureChain = json_decode($selectedSwap['signature_chain'] ?? '{}', true);
-            $deliveryDetails = json_decode($selectedSwap['delivery_details'] ?? '{}', true);
-            $requestPayload = json_decode($selectedSwap['request_payload'] ?? '{}', true);
+// Get available countries for switching
+$availableCountries = [];
+$countriesDir = __DIR__ . '/../../src/Core/Config/Countries/';
+if (is_dir($countriesDir)) {
+    foreach (scandir($countriesDir) as $dir) {
+        if (is_dir($countriesDir . $dir) && !in_array($dir, ['.', '..'])) {
+            $availableCountries[] = $dir;
         }
-    } catch (Exception $e) {
-        error_log("Error fetching swap details: " . $e->getMessage());
     }
 }
 
-// Get recent swaps for this user (updated to include swap_id for linking)
-$recentSwaps = [];
-try {
-    $stmt = $swapDB->prepare("
-        SELECT swap_reference, amount, from_institution, to_institution, status, created_at, fee_amount, swap_type
-        FROM swap_ledgers 
-        WHERE user_id = ? 
-        ORDER BY created_at DESC 
-        LIMIT 10
-    ");
-    $stmt->execute([$userId]);
-    $recentSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) {}
+// ============================================================
+// BUILD ASSETS FROM CONFIG - NO HARDCODED VALUES
+// ============================================================
+$assetTypes = [];
+foreach ($assets as $assetKey => $assetConfig) {
+    $assetTypes[$assetKey] = [
+        'icon' => $assetConfig['icon'] ?? '📦',
+        'label' => $assetConfig['label'] ?? $assetKey,
+        'fields' => $assetConfig['fields'] ?? []
+    ];
+}
 
-$apiUrl = '/api/v1/swap/execute.php';
-$previewUrl = '/api/v1/swap/preview.php';
-$apiKey = getenv('VOUCHMORPH_API_KEY') ?: 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
-
-$denominationsList = implode(', ', $atmDenominations);
+// If no assets loaded, show error but don't hardcode
+if (empty($assetTypes)) {
+    error_log("[DASHBOARD] No assets loaded for country: " . $userCountry);
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VouchMorph | Swap | <?= htmlspecialchars($countryName) ?></title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0a0e27;
-            padding: 20px;
-            color: #fff;
-        }
-        .container { max-width: 1200px; margin: 0 auto; }
-        
-        .header {
-            background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 16px;
-            border: 1px solid rgba(255,255,255,0.1);
-        }
-        .logo h1 { font-size: 24px; background: linear-gradient(135deg, #fff, #00f0ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .logo p { font-size: 12px; color: #a0a0b0; margin-top: 4px; }
-        .country-badge { 
-            padding: 4px 12px; 
-            background: rgba(0,240,255,0.1); 
-            border: 1px solid #00f0ff; 
-            border-radius: 20px;
-            font-size: 12px;
-        }
-        .user-info { text-align: right; }
-        .user-phone { color: #00f0ff; font-weight: bold; }
-        
-        .card {
-            background: #12162e;
-            border-radius: 12px;
-            padding: 24px;
-            margin-bottom: 24px;
-            border: 1px solid rgba(255,255,255,0.08);
-        }
-        .card h3 { margin-bottom: 20px; font-size: 18px; display: flex; align-items: center; gap: 8px; }
-        .card h4 { margin: 16px 0 12px 0; font-size: 14px; color: #00f0ff; }
-        
-        .two-columns {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-        .form-group { margin-bottom: 16px; }
-        label {
-            display: block;
-            font-size: 11px;
-            font-weight: 600;
-            margin-bottom: 6px;
-            color: #a0a0b0;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        select, input {
-            width: 100%;
-            padding: 12px;
-            background: #1a1f3a;
-            border: 1px solid #2a2f4a;
-            border-radius: 8px;
-            color: #fff;
-            font-size: 14px;
-        }
-        select:focus, input:focus { outline: none; border-color: #00f0ff; }
-        select option { background: #1a1f3a; }
-        
-        .dynamic-fields {
-            margin-top: 16px;
-            padding-top: 16px;
-            border-top: 1px solid #2a2f4a;
-            display: none;
-        }
-        .dynamic-fields.active { display: block; }
-        
-        .corridor-warning {
-            background: rgba(255, 193, 7, 0.1);
-            border-left: 3px solid #ffc107;
-            padding: 10px;
-            border-radius: 6px;
-            font-size: 12px;
-            margin-bottom: 16px;
-            display: none;
-        }
-        .corridor-warning.show { display: block; }
-        
-        .denomination-info {
-            background: rgba(0, 240, 255, 0.05);
-            border-left: 3px solid #00f0ff;
-            padding: 10px;
-            border-radius: 6px;
-            font-size: 11px;
-            margin-bottom: 16px;
-            display: none;
-        }
-        .denomination-info.show { display: block; }
-        
-        .quick-amounts {
-            display: flex;
-            gap: 8px;
-            margin-top: 8px;
-            flex-wrap: wrap;
-        }
-        .quick-amount {
-            padding: 5px 12px;
-            background: #1a1f3a;
-            border-radius: 20px;
-            cursor: pointer;
-            font-size: 12px;
-            border: 1px solid #2a2f4a;
-        }
-        .quick-amount:hover { background: #00f0ff; color: #0a0e27; }
-        
-        .info-note {
-            background: rgba(0, 240, 255, 0.05);
-            border-left: 3px solid #00f0ff;
-            padding: 10px;
-            border-radius: 6px;
-            font-size: 11px;
-            color: #a0a0b0;
-            margin: 12px 0;
-        }
-        
-        button {
-            width: 100%;
-            padding: 14px;
-            background: linear-gradient(135deg, #00f0ff, #b000ff);
-            color: #0a0e27;
-            border: none;
-            border-radius: 8px;
-            font-size: 15px;
-            font-weight: bold;
-            cursor: pointer;
-            margin-top: 8px;
-        }
-        button:hover { transform: translateY(-1px); filter: brightness(1.05); }
-        button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-        
-        .summary {
-            background: rgba(0, 240, 255, 0.05);
-            padding: 14px;
-            border-radius: 8px;
-            margin: 16px 0;
-            font-size: 13px;
-            border: 1px solid rgba(0, 240, 255, 0.2);
-        }
-        
-        .result {
-            padding: 16px;
-            border-radius: 8px;
-            margin-top: 16px;
-            display: none;
-        }
-        .result.success { background: rgba(76, 175, 80, 0.2); border: 1px solid #4caf50; display: block; color: #4caf50; }
-        .result.error { background: rgba(244, 67, 54, 0.2); border: 1px solid #f44336; display: block; color: #f44336; }
-        .result.loading { background: rgba(255, 193, 7, 0.2); border: 1px solid #ffc107; display: block; color: #ffc107; }
-        
-        .note-breakdown {
-            background: rgba(76, 175, 80, 0.1);
-            padding: 10px;
-            border-radius: 6px;
-            margin: 10px 0;
-            font-family: monospace;
-        }
-        
-        .swap-item {
-            display: flex;
-            justify-content: space-between;
-            padding: 12px;
-            border-bottom: 1px solid #2a2f4a;
-            font-size: 12px;
-            flex-wrap: wrap;
-            gap: 8px;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-        .swap-item:hover { background: #1a1f3a; }
-        .swap-status.completed { color: #4caf50; }
-        .swap-status.failed { color: #f44336; }
-        .swap-status.pending { color: #ffc107; }
-        
-        .fee-display { color: #ffc107; font-size: 10px; margin-top: 4px; }
-        
-        .back-link {
-            display: inline-block;
-            margin-bottom: 20px;
-            color: #00f0ff;
-            text-decoration: none;
-        }
-        
-        .code-block {
-            background: #0a0e27;
-            border-radius: 8px;
-            padding: 16px;
-            font-family: 'Monaco', 'Menlo', monospace;
-            font-size: 12px;
-            overflow-x: auto;
-            white-space: pre-wrap;
-            word-break: break-all;
-            border: 1px solid #2a2f4a;
-            max-height: 400px;
-            overflow-y: auto;
-        }
-        
-        .fee-breakdown {
-            background: rgba(255, 193, 7, 0.1);
-            border-left: 3px solid #ffc107;
-            padding: 12px;
-            border-radius: 6px;
-            margin: 10px 0;
-        }
-        
-        .delivery-info {
-            background: rgba(76, 175, 80, 0.1);
-            border-left: 3px solid #4caf50;
-            padding: 12px;
-            border-radius: 6px;
-            margin: 10px 0;
-        }
-        
-        .generated-code {
-            background: linear-gradient(135deg, #1a1f3a, #0a0e27);
-            border: 2px solid #00f0ff;
-            border-radius: 12px;
-            padding: 20px;
-            text-align: center;
-            margin: 20px 0;
-        }
-        .generated-code .code {
-            font-size: 32px;
-            font-family: monospace;
-            letter-spacing: 4px;
-            color: #00f0ff;
-            font-weight: bold;
-        }
-        
-        .tabs {
-            display: flex;
-            gap: 8px;
-            border-bottom: 1px solid #2a2f4a;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-        }
-        .tab {
-            padding: 10px 20px;
-            background: #1a1f3a;
-            border: none;
-            color: #fff;
-            cursor: pointer;
-            border-radius: 8px 8px 0 0;
-            transition: all 0.2s;
-        }
-        .tab.active {
-            background: #00f0ff;
-            color: #0a0e27;
-        }
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
-        
-        .signature-chain {
-            background: #0a0e27;
-            padding: 12px;
-            border-radius: 8px;
-            margin: 8px 0;
-            font-size: 11px;
-        }
-        
-        .info-box {
-            background: #1a1f3a;
-            border-radius: 8px;
-            padding: 16px;
-            border: 1px solid #2a2f4a;
-        }
-        .info-label { font-size: 10px; text-transform: uppercase; color: #888; margin-bottom: 5px; }
-        
-        .three-columns {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-        
-        /* ============================================================
-           CONFIRMATION MODAL STYLES
-           ============================================================ */
-        .modal-overlay {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.85);
-            z-index: 1000;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-        }
-        .modal-overlay.show { display: flex; }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VouchMorph – Swap</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+    --bg: #0a0a12;
+    --surface: rgba(255,255,255,0.04);
+    --surface-hover: rgba(255,255,255,0.08);
+    --border: rgba(255,255,255,0.08);
+    --border-active: rgba(0,240,255,0.3);
+    --text: #ffffff;
+    --text-muted: #8888a0;
+    --text-dim: #505070;
+    --primary: #00f0ff;
+    --primary-dark: #00c0d0;
+    --gradient: linear-gradient(135deg, #00f0ff 0%, #b000ff 100%);
+    --success: #00e676;
+    --warning: #ffc107;
+    --danger: #ff5252;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; padding: 16px; line-height: 1.5; }
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--text-dim); border-radius: 4px; }
 
-        .modal {
-            background: #12162e;
-            border-radius: 16px;
-            padding: 30px;
-            max-width: 600px;
-            width: 100%;
-            max-height: 90vh;
-            overflow-y: auto;
-            border: 1px solid rgba(255,255,255,0.1);
-            position: relative;
-        }
+.container { max-width: 560px; margin: 0 auto; }
 
-        .modal h2 {
-            font-size: 22px;
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
+.topbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+.logo { font-size: 22px; font-weight: 800; background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.topbar-right { display: flex; align-items: center; gap: 16px; font-size: 14px; flex-wrap: wrap; }
+.topbar-right .greeting { color: var(--text-muted); }
+.country-selector { background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 10px; color: var(--text-muted); font-size: 12px; cursor: pointer; font-family: var(--font); }
+.country-selector:focus { outline: none; border-color: var(--primary); }
+.country-selector option { background: var(--bg); }
+.logout-btn { color: var(--text-muted); text-decoration: none; padding: 6px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); transition: var(--transition); }
+.logout-btn:hover { background: var(--surface-hover); color: var(--text); }
+.role-badge { font-size: 10px; color: var(--primary); border: 1px solid var(--primary); padding: 2px 10px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px; }
+.test-mode-badge { font-size: 10px; color: #ff6b6b; border: 1px solid #ff6b6b; padding: 2px 10px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px; animation: pulse 2s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
-        .confirmation-details {
-            background: #0a0e27;
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 20px;
-        }
+.message { padding: 12px 16px; border-radius: var(--radius-sm); margin: 0 0 16px; font-size: 13px; display: none; }
+.message.show { display: block; }
+.message.info { background: rgba(0,240,255,0.1); border-left: 3px solid var(--primary); color: var(--primary); }
+.message.success { background: rgba(0,230,118,0.1); border-left: 3px solid var(--success); color: var(--success); }
+.message.error { background: rgba(255,82,82,0.1); border-left: 3px solid var(--danger); color: var(--danger); }
+.message.warning { background: rgba(255,193,7,0.1); border-left: 3px solid var(--warning); color: var(--warning); }
 
-        .confirmation-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 10px 0;
-            border-bottom: 1px solid #1a1f3a;
-        }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
+.section { margin-bottom: 4px; }
+.section-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 12px; }
+.section-title .n { width: 20px; height: 20px; border-radius: 50%; background: var(--gradient); color: #000; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 
-        .confirmation-row:last-child { border-bottom: none; }
+.swap-divider { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 20px 0; color: var(--text-dim); }
+.swap-divider::before, .swap-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.swap-divider .icon { font-size: 16px; }
 
-        .confirmation-row .label {
-            color: #888;
-            font-size: 13px;
-        }
+.field-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 4px; }
 
-        .confirmation-row .value {
-            font-weight: bold;
-            font-size: 14px;
-        }
+.field-group { margin-bottom: 12px; }
+.field-group:last-child { margin-bottom: 0; }
+.field-group label { display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 4px; }
+.field-group input, .field-group select {
+    width: 100%; padding: 11px 14px; background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text); font-size: 14px; font-family: var(--font); transition: var(--transition);
+    appearance: none; -webkit-appearance: none;
+}
+.field-group select {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0l5 6 5-6z' fill='%238888a0'/></svg>");
+    background-repeat: no-repeat; background-position: right 14px center; padding-right: 34px; cursor: pointer;
+}
+.field-group input:focus, .field-group select:focus { outline: none; border-color: var(--primary); }
+.field-group input.invalid { border-color: var(--danger); }
+.field-group .help { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+.field-group input::placeholder { color: var(--text-dim); }
+.field-group select option { background: var(--bg); }
 
-        .confirmation-row .value.positive { color: #4caf50; }
-        .confirmation-row .value.negative { color: #ff6b6b; }
-        .confirmation-row .value.highlight { color: #00f0ff; }
+.amount-field { position: relative; }
+.amount-field input { padding-right: 64px; font-size: 18px; font-weight: 600; }
+.amount-field .currency-suffix { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 12px; font-weight: 600; pointer-events: none; }
 
-        .fee-breakdown-item {
-            padding: 6px 0;
-            font-size: 13px;
-            color: #ccc;
-            border-bottom: 1px solid #1a1f3a;
-        }
+.asset-fields { margin: 4px 0 12px; padding: 14px; background: rgba(255,255,255,0.02); border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.04); }
 
-        .fee-breakdown-item:last-child { border-bottom: none; }
+.identity-field { margin: 4px 0 12px; padding: 14px; background: rgba(0,240,255,0.04); border: 1px dashed var(--primary); border-radius: var(--radius-sm); }
+.identity-field .hint { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 
-        .fee-breakdown-item .fee-name { color: #888; }
-        .fee-breakdown-item .fee-amount {
-            float: right;
-            font-weight: bold;
-        }
+.cta-row { display: flex; justify-content: center; margin-top: 24px; }
+.btn { padding: 14px 40px; border: none; border-radius: 999px; font-size: 14px; font-weight: 700; font-family: var(--font); cursor: pointer; transition: var(--transition); }
+.btn-primary { background: var(--gradient); color: #000; }
+.btn-primary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,240,255,0.25); }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+.btn-success { background: var(--success); color: #000; }
+.btn-success:hover:not(:disabled) { transform: translateY(-2px); }
+.btn-success:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+.btn-secondary { background: rgba(255,255,255,0.06); color: var(--text); border: 1px solid var(--border); padding: 14px 32px; border-radius: 999px; font-size: 14px; font-weight: 600; font-family: var(--font); cursor: pointer; transition: var(--transition); }
+.btn-secondary:hover { background: var(--surface-hover); }
+.btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid rgba(255,82,82,0.3); padding: 6px 14px; border-radius: 999px; font-size: 11px; cursor: pointer; }
+.btn-danger-outline:hover { background: rgba(255,82,82,0.08); }
 
-        .total-row {
-            font-size: 18px;
-            padding-top: 12px;
-            margin-top: 8px;
-            border-top: 2px solid #00f0ff;
-            color: #00f0ff;
-        }
+.quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 12px; }
+.quick-link {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--primary);
+    background: rgba(0,240,255,0.06); border: 1px solid rgba(0,240,255,0.15); padding: 5px 12px; border-radius: 999px;
+    cursor: pointer; transition: var(--transition); font-family: var(--font); user-select: none;
+}
+.quick-link:hover { background: rgba(0,240,255,0.12); border-color: var(--border-active); }
+.quick-link.muted { color: var(--text-muted); background: rgba(255,255,255,0.04); border-color: var(--border); }
+.quick-link.muted:hover { color: var(--text); }
+.quick-link.danger { color: var(--danger); background: rgba(255,82,82,0.06); border-color: rgba(255,82,82,0.15); }
 
-        .modal-actions {
-            display: flex;
-            gap: 12px;
-            margin-top: 20px;
-        }
+.source-row { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 10px; background: rgba(255,255,255,0.02); }
+.source-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.source-row-head .idx { font-size: 12px; color: var(--text-muted); font-weight: 600; }
+.multi-total { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 12px; }
+.multi-total .amt { color: var(--text); font-weight: 700; }
 
-        .modal-actions button {
-            flex: 1;
-            padding: 14px;
-            border-radius: 8px;
-            font-weight: bold;
-            cursor: pointer;
-            font-size: 15px;
-            border: none;
-        }
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(0,0,0,0.3); border-top-color: #000; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; vertical-align: -2px; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
-        .btn-cancel {
-            background: transparent;
-            border: 1px solid #ff6b6b !important;
-            color: #ff6b6b;
-        }
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); backdrop-filter: blur(8px); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
+.modal-overlay.active { display: flex; }
+.modal { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 24px; }
+.modal-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.modal-header h2 { font-size: 20px; font-weight: 700; }
+.modal-close { background: none; border: none; color: var(--text-muted); font-size: 24px; cursor: pointer; transition: var(--transition); }
+.modal-close:hover { color: var(--text); }
+.preview-box { background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; margin: 12px 0; }
+.preview-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.04); gap: 12px; }
+.preview-row:last-child { border-bottom: none; }
+.preview-row .label { color: var(--text-muted); font-size: 13px; }
+.preview-row .value { font-weight: 600; font-size: 14px; text-align: right; }
+.preview-row .value.highlight { color: var(--primary); font-size: 20px; }
+.result-box { text-align: center; padding: 12px 0; }
+.result-box .icon { font-size: 48px; }
+.result-box .title { font-size: 18px; font-weight: 700; margin: 8px 0 4px; }
+.result-box .ref { font-size: 13px; color: var(--text-muted); }
+.result-box .amount-display { margin: 12px 0; padding: 12px; background: rgba(255,255,255,0.04); border-radius: var(--radius-sm); }
+.result-box .amount-display .amt { font-size: 28px; font-weight: 700; }
+.result-box .atm-code { margin: 12px 0; padding: 16px; background: rgba(0,240,255,0.08); border: 2px solid var(--primary); border-radius: var(--radius-sm); }
+.result-box .atm-code .code { font-size: 28px; font-weight: 700; font-family: monospace; letter-spacing: 4px; }
+.raw-json { text-align: left; font-size: 11px; background: rgba(0,0,0,0.3); border-radius: var(--radius-sm); padding: 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; color: var(--text-muted); margin-top: 12px; max-height: 200px; overflow-y: auto; }
+details.raw-json-wrap summary { cursor: pointer; font-size: 11px; color: var(--text-dim); margin-top: 8px; }
+.modal .cta-row { gap: 12px; }
 
-        .btn-cancel:hover { background: rgba(255,107,107,0.1); }
-
-        .btn-confirm {
-            background: linear-gradient(135deg, #00f0ff, #b000ff);
-            border: none;
-            color: #0a0e27;
-        }
-
-        .btn-confirm:hover { transform: translateY(-1px); filter: brightness(1.05); }
-        .btn-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
-
-        .loading-spinner {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid rgba(255,255,255,0.3);
-            border-radius: 50%;
-            border-top-color: #00f0ff;
-            animation: spin 0.8s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        .forex-info {
-            background: rgba(255, 193, 7, 0.1);
-            border-left: 3px solid #ffc107;
-            padding: 10px;
-            border-radius: 6px;
-            font-size: 12px;
-            margin: 8px 0;
-        }
-
-        .modal-error {
-            color: #ff6b6b;
-            font-size: 13px;
-            display: none;
-            margin-bottom: 12px;
-            padding: 10px;
-            background: rgba(255,107,107,0.1);
-            border-radius: 6px;
-        }
-        
-        @media (max-width: 768px) {
-            .two-columns { grid-template-columns: 1fr; gap: 16px; }
-            .three-columns { grid-template-columns: 1fr; }
-            .modal { padding: 20px; }
-            .modal-actions { flex-direction: column; }
-        }
-    </style>
+@media (max-width: 480px) { .card { padding: 18px; } .btn, .btn-secondary { padding: 12px 24px; } .topbar { flex-direction: column; align-items: stretch; } .topbar-right { justify-content: center; } }
+</style>
 </head>
 <body>
 <div class="container">
-    <div class="header">
-        <div class="logo">
-            <h1>VouchMorph</h1>
-            <p>Financial Institution Interoperability</p>
-        </div>
-        <div style="display: flex; gap: 12px; align-items: center;">
-            <div class="country-badge"><?= htmlspecialchars($countryCode) ?></div>
-            <div class="user-info">
-                <div>👤 <span class="user-phone"><?= $loggedPhone ?></span></div>
-                <div style="font-size: 10px; margin-top: 4px;"><a href="logout.php" style="color: #888;">Logout</a></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- ============================================================ -->
-    <!-- DETAILED SWAP VIEW (shown when ?id=xxx is present) -->
-    <!-- ============================================================ -->
-    <?php if ($selectedSwap && $swapId): ?>
-        <a href="dashboard.php" class="back-link">← Back to Dashboard</a>
-        
-        <div class="card">
-            <h3>🔍 Swap Details: <?= htmlspecialchars($selectedSwap['swap_reference'] ?? 'N/A') ?></h3>
-            
-            <!-- Generated Codes -->
-            <?php if (!empty($generatedCodes) && (!empty($generatedCodes['atm_pin']) || !empty($generatedCodes['voucher_number']))): ?>
-                <div class="generated-code">
-                    <div style="font-size: 12px; margin-bottom: 10px;">🎫 Generated Codes</div>
-                    <?php if (!empty($generatedCodes['atm_pin'])): ?>
-                        <div class="code">🏧 <?= htmlspecialchars($generatedCodes['atm_pin']) ?></div>
-                        <div style="font-size: 11px; margin-top: 8px;">ATM Cashout Code</div>
-                    <?php endif; ?>
-                    <?php if (!empty($generatedCodes['voucher_number'])): ?>
-                        <div class="code" style="font-size: 20px;">🎟️ <?= htmlspecialchars($generatedCodes['voucher_number']) ?></div>
-                        <div style="font-size: 11px; margin-top: 8px;">Voucher Number</div>
-                    <?php endif; ?>
-                    <?php if (!empty($generatedCodes['expires_at'])): ?>
-                        <div style="font-size: 10px; margin-top: 8px;">Expires: <?= htmlspecialchars($generatedCodes['expires_at']) ?></div>
-                    <?php endif; ?>
-                </div>
-            <?php endif; ?>
-            
-            <!-- Basic Info -->
-            <div class="three-columns">
-                <div class="info-box">
-                    <div class="info-label">Status</div>
-                    <div><?= ucfirst($selectedSwap['status'] ?? 'Pending') ?></div>
-                </div>
-                <div class="info-box">
-                    <div class="info-label">Swap Type</div>
-                    <div><?= htmlspecialchars($selectedSwap['swap_type'] ?? 'STANDARD') ?></div>
-                </div>
-                <div class="info-box">
-                    <div class="info-label">Created At</div>
-                    <div><?= htmlspecialchars($selectedSwap['created_at'] ?? 'N/A') ?></div>
-                </div>
-            </div>
-            
-            <div class="two-columns">
-                <div class="info-box">
-                    <div class="info-label">Source</div>
-                    <strong><?= htmlspecialchars($selectedSwap['from_institution'] ?? '?') ?></strong>
-                </div>
-                <div class="info-box">
-                    <div class="info-label">Destination</div>
-                    <strong><?= htmlspecialchars($selectedSwap['to_institution'] ?? '?') ?></strong>
-                </div>
-                <div class="info-box">
-                    <div class="info-label">Amount</div>
-                    <strong><?= number_format($selectedSwap['amount'] ?? 0, 2) ?> <?= $currencySymbol ?></strong>
-                </div>
-                <div class="info-box">
-                    <div class="info-label">Fee</div>
-                    <strong><?= number_format($selectedSwap['fee_amount'] ?? 0, 2) ?> <?= $currencySymbol ?></strong>
-                </div>
-                <div class="info-box">
-                    <div class="info-label">Net Amount</div>
-                    <strong><?= number_format(($selectedSwap['amount'] ?? 0) - ($selectedSwap['fee_amount'] ?? 0), 2) ?> <?= $currencySymbol ?></strong>
-                </div>
-                <div class="info-box">
-                    <div class="info-label">Asset Type</div>
-                    <strong><?= htmlspecialchars($selectedSwap['asset_type'] ?? 'ACCOUNT') ?></strong>
-                </div>
-            </div>
-            
-            <!-- Delivery Details -->
-            <?php if (!empty($deliveryDetails)): ?>
-                <h4>📦 Delivery Details</h4>
-                <div class="delivery-info">
-                    <strong>Method:</strong> <?= htmlspecialchars($deliveryDetails['delivery_method'] ?? 'N/A') ?><br>
-                    <strong>Delivered Amount:</strong> <?= number_format($deliveryDetails['amount_delivered'] ?? 0, 2) ?> <?= $currencySymbol ?><br>
-                    <?php if (!empty($deliveryDetails['remainder_at_source'])): ?>
-                        <strong>Remainder at Source:</strong> <?= number_format($deliveryDetails['remainder_at_source'], 2) ?> <?= $currencySymbol ?><br>
-                    <?php endif; ?>
-                    <?php if (!empty($deliveryDetails['message'])): ?>
-                        <strong>Message:</strong> <?= htmlspecialchars($deliveryDetails['message']) ?><br>
-                    <?php endif; ?>
-                    <?php if (!empty($deliveryDetails['note_breakdown'])): ?>
-                        <div class="note-breakdown">
-                            <strong>🏧 Note Breakdown:</strong><br>
-                            <?php foreach ($deliveryDetails['note_breakdown'] as $note => $count): ?>
-                                <?= $count ?> x <?= $note ?> <?= $currencySymbol ?><br>
-                            <?php endforeach; ?>
-                        </div>
-                    <?php endif; ?>
-                </div>
-            <?php endif; ?>
-            
-            <!-- Fee Calculation Details -->
-            <?php if (!empty($feeCalcDetails)): ?>
-                <h4>💰 Fee Calculation</h4>
-                <div class="fee-breakdown">
-                    <strong>Fee Type:</strong> <?= htmlspecialchars($feeCalcDetails['fee_type'] ?? 'N/A') ?><br>
-                    <strong>Original Amount:</strong> <?= number_format($feeCalcDetails['original_amount'] ?? 0, 2) ?> <?= $currencySymbol ?><br>
-                    <strong>Total Fee:</strong> <?= number_format($feeCalcDetails['total_fee'] ?? 0, 2) ?> <?= $currencySymbol ?><br>
-                    <strong>Net Amount:</strong> <?= number_format($feeCalcDetails['net_amount'] ?? 0, 2) ?> <?= $currencySymbol ?><br>
-                    <?php if (!empty($feeCalcDetails['breakdown'])): ?>
-                        <div style="margin-top: 10px;"><strong>Breakdown:</strong></div>
-                        <?php foreach ($feeCalcDetails['breakdown'] as $feeName => $feeValue): ?>
-                            <?php if (is_numeric($feeValue)): ?>
-                                <div style="margin-left: 15px;">• <?= ucfirst(str_replace('_', ' ', $feeName)) ?>: <?= number_format($feeValue, 2) ?> <?= $currencySymbol ?></div>
-                            <?php endif; ?>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                    <?php if (!empty($feeCalcDetails['revenue_split'])): ?>
-                        <div style="margin-top: 10px;"><strong>Revenue Split:</strong></div>
-                        <?php foreach ($feeCalcDetails['revenue_split'] as $party => $split): ?>
-                            <div style="margin-left: 15px;">• <?= htmlspecialchars($party) ?>: <?= number_format($split, 2) ?> <?= $currencySymbol ?></div>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </div>
-            <?php endif; ?>
-            
-            <!-- Payload Tabs -->
-            <h4>📄 Request & Response Data</h4>
-            <div class="tabs">
-                <button class="tab active" onclick="showTab('request')">📨 Request Payload</button>
-                <button class="tab" onclick="showTab('response')">📬 Response Payload</button>
-                <?php if (!empty($signatureChain)): ?>
-                    <button class="tab" onclick="showTab('signatures')">🔐 Signature Chain</button>
-                <?php endif; ?>
-            </div>
-            
-            <div id="tab-request" class="tab-content active">
-                <div class="code-block">
-                    <?php 
-                    $displayPayload = $requestPayload ?? json_decode($selectedSwap['request_payload'] ?? '{}', true);
-                    echo htmlspecialchars(json_encode($displayPayload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-                    ?>
-                </div>
-            </div>
-            
-            <div id="tab-response" class="tab-content">
-                <div class="code-block">
-                    <?php 
-                    $displayResponse = $fullResponse ?? json_decode($selectedSwap['response_payload'] ?? '{}', true);
-                    echo htmlspecialchars(json_encode($displayResponse, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-                    ?>
-                </div>
-            </div>
-            
-            <?php if (!empty($signatureChain)): ?>
-                <div id="tab-signatures" class="tab-content">
-                    <?php foreach ($signatureChain as $type => $sig): ?>
-                        <div class="signature-chain">
-                            <strong><?= ucfirst($type) ?>:</strong><br>
-                            <div style="font-size: 10px; word-break: break-all;">
-                                Signature: <?= htmlspecialchars(substr($sig['signature'] ?? '', 0, 100)) ?>...<br>
-                                Timestamp: <?= htmlspecialchars($sig['timestamp'] ?? 'N/A') ?><br>
-                                Source: <?= htmlspecialchars($sig['source'] ?? 'N/A') ?>
-                            </div>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-        </div>
-        
-    <?php else: ?>
-        <!-- ============================================================ -->
-        <!-- NEW SWAP FORM -->
-        <!-- ============================================================ -->
-        <div class="card">
-            <h3>🔄 New Swap</h3>
-            
-            <div id="corridorWarning" class="corridor-warning">
-                ⚠️ Source and destination institutions must be different.
-            </div>
-            
-            <div id="denominationInfo" class="denomination-info">
-                💡 Cashout amounts are dispensed using available notes: <strong><?= $denominationsList ?> <?= $currencySymbol ?></strong>
-            </div>
-            
-            <div class="two-columns">
-                <!-- LEFT COLUMN - SOURCE -->
-                <div>
-                    <div class="form-group">
-                        <label>📤 SOURCE INSTITUTION</label>
-                        <select id="fromInstitution">
-                            <option value="">-- Select --</option>
-                            <?php foreach ($participants as $code => $p): ?>
-                                <option value="<?= htmlspecialchars($code) ?>">
-                                    <?= htmlspecialchars($p['name'] ?? $code) ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>🔑 SOURCE IDENTIFIER (Who is sending)</label>
-                        <input type="text" id="sourceIdentifier" 
-                               placeholder="Phone number or National ID or Email"
-                               value="<?= !empty($userPhone) ? $userPhone : (!empty($userNationalId) ? $userNationalId : '') ?>">
-                        <div class="info-note">
-                            💡 This identifies who is sending money.
-                        </div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>🏷️ ASSET TYPE</label>
-                        <select id="assetType">
-                            <option value="">-- Select --</option>
-                        </select>
-                        <div id="assetTypeHint" style="font-size: 10px; color: #888; margin-top: 5px;"></div>
-                    </div>
-                    
-                    <div id="assetFieldsContainer" class="dynamic-fields"></div>
-                </div>
-                
-                <!-- RIGHT COLUMN - DESTINATION -->
-                <div>
-                    <div class="form-group">
-                        <label>📥 DESTINATION INSTITUTION</label>
-                        <select id="toInstitution">
-                            <option value="">-- Select --</option>
-                            <?php foreach ($participants as $code => $p): ?>
-                                <option value="<?= htmlspecialchars($code) ?>">
-                                    <?= htmlspecialchars($p['name'] ?? $code) ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>📦 SWAP TYPE</label>
-                        <select id="swapType">
-                            <option value="CASHOUT">🏧 Cashout (ATM Code)</option>
-                            <option value="DEPOSIT">💳 Deposit (Wallet/Bank)</option>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>🔑 IDENTIFIER TYPE</label>
-                        <select id="identifierType">
-                            <option value="auto" selected>🔍 Auto-detect</option>
-                            <option value="phone">📱 Phone Number</option>
-                            <option value="national_id">🆔 National ID</option>
-                            <option value="email">📧 Email</option>
-                        </select>
-                    </div>
-                    
-                    <div id="destFieldsContainer" class="dynamic-fields"></div>
-                </div>
-            </div>
-
-            <div class="form-group">
-                <label>💰 AMOUNT (<?= $currencySymbol ?>)</label>
-                <input type="number" id="amount" step="0.01" placeholder="0.00">
-                <div class="quick-amounts">
-                    <?php foreach ($atmDenominations as $denom): ?>
-                        <span class="quick-amount" data-amount="<?= $denom ?>"><?= $denom ?></span>
-                    <?php endforeach; ?>
-                    <span class="quick-amount" data-amount="500">500</span>
-                    <span class="quick-amount" data-amount="1000">1000</span>
-                </div>
-            </div>
-
-            <div class="summary" id="summary">📋 Fill in the fields above</div>
-
-            <button id="executeBtn">🚀 Execute Swap</button>
-        </div>
-
-        <div id="result" class="result"></div>
-    <?php endif; ?>
-
-    <!-- ============================================================ -->
-    <!-- CONFIRMATION MODAL -->
-    <!-- ============================================================ -->
-    <div id="confirmModal" class="modal-overlay">
-        <div class="modal">
-            <h2>🔄 Confirm Swap</h2>
-            
-            <div id="confirmationDetails" class="confirmation-details">
-                <div style="text-align:center; padding:20px;">
-                    <div class="loading-spinner"></div>
-                    <br>Calculating fees...
-                </div>
-            </div>
-            
-            <div id="modalError" class="modal-error"></div>
-            
-            <div class="modal-actions">
-                <button class="btn-cancel" onclick="closeConfirmation()">Cancel</button>
-                <button id="confirmBtn" class="btn-confirm">✅ Confirm & Execute</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- ============================================================ -->
-    <!-- RECENT SWAPS SECTION -->
-    <!-- ============================================================ -->
-    <div class="card">
-        <h3>📋 Recent Swaps</h3>
-        <?php if (empty($recentSwaps)): ?>
-            <div style="text-align:center; padding:20px; color:#a0a0b0;">No swaps yet</div>
-        <?php else: ?>
-            <?php foreach ($recentSwaps as $swap): ?>
-                <div class="swap-item" onclick="window.location.href='?id=<?= urlencode($swap['swap_reference']) ?>'">
-                    <div>
-                        <strong><?= htmlspecialchars($swap['from_institution'] ?? '?') ?></strong> → <strong><?= htmlspecialchars($swap['to_institution'] ?? '?') ?></strong>
-                        <?php if (!empty($swap['swap_type'])): ?>
-                            <div style="font-size: 10px; color: #888;"><?= htmlspecialchars($swap['swap_type']) ?></div>
-                        <?php endif; ?>
-                        <?php if (!empty($swap['fee_amount'])): ?>
-                            <div class="fee-display">Fee: <?= number_format($swap['fee_amount'], 2) ?> <?= $currencySymbol ?></div>
-                        <?php endif; ?>
-                    </div>
-                    <div style="text-align: right;">
-                        <div><?= number_format($swap['amount'], 2) ?> <?= $currencySymbol ?></div>
-                        <div class="swap-status <?= strtolower($swap['status'] ?? 'completed') ?>"><?= $swap['status'] ?? 'Completed' ?></div>
-                        <div style="font-size: 10px; color: #888;"><?= date('Y-m-d H:i', strtotime($swap['created_at'])) ?></div>
-                        <div style="font-size: 10px; color: #00f0ff; margin-top: 4px;">Click to view details →</div>
-                    </div>
-                </div>
-            <?php endforeach; ?>
+<div class="topbar">
+    <div class="logo">VOUCHMORPH</div>
+    <div class="topbar-right">
+        <span class="greeting">Hello, <span id="userName"><?php echo htmlspecialchars($userName); ?></span></span>
+        <span class="role-badge"><?php echo htmlspecialchars(strtoupper($userRole)); ?></span>
+        <?php if ($isTestMode): ?>
+        <span class="test-mode-badge">🔓 TEST MODE</span>
         <?php endif; ?>
+        <select class="country-selector" id="countrySelector" onchange="switchCountry(this.value)">
+            <?php foreach ($availableCountries as $country): ?>
+            <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $userCountry ? 'selected' : ''; ?>>
+                <?php echo htmlspecialchars($country); ?>
+            </option>
+            <?php endforeach; ?>
+        </select>
+        <span class="quick-link muted" onclick="openProfileModal()">👤 My Profile</span>
+        <a href="logout.php" class="logout-btn">Logout</a>
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- JAVASCRIPT -->
-<!-- ============================================================ -->
+<div id="mainMessage" class="message"></div>
+
+<div class="card">
+    <div class="section" id="fromSection">
+        <div class="section-title"><span class="n">1</span> From</div>
+
+        <div class="field-group">
+            <label>Institution</label>
+            <select id="fromInstSelect" onchange="selectFromInst(this.value)">
+                <option value="">Select institution</option>
+            </select>
+        </div>
+
+        <div class="field-group" id="fromAssetGroup" style="display:none;">
+            <label>Asset Type</label>
+            <select id="fromAssetSelect" onchange="selectFromAsset(this.value)"></select>
+        </div>
+
+        <div class="asset-fields" id="fromFields"></div>
+
+        <div class="field-group amount-field">
+            <label>Amount</label>
+            <input type="number" id="fromAmount" placeholder="0.00" step="0.01" min="0.01">
+            <span class="currency-suffix" id="fromCurrencyLabel"><?php echo htmlspecialchars($userCurrency); ?></span>
+            <div class="help" id="fromLimitsHelp"></div>
+        </div>
+    </div>
+
+    <div class="swap-divider"><span class="icon">⇅</span></div>
+
+    <div class="section" id="toSection">
+        <div class="section-title"><span class="n">2</span> To</div>
+
+        <div class="field-group">
+            <label>Swap Type</label>
+            <select id="swapTypeSelect" onchange="setSwapType(this.value)">
+                <option value="DEPOSIT">Deposit</option>
+                <option value="CASHOUT">Cashout</option>
+                <option value="IDENTITY">Send to Identity</option>
+                <option value="MULTI_SOURCE">Multi-Source</option>
+            </select>
+        </div>
+
+        <div class="quick-actions">
+            <span class="quick-link" onclick="quickSetSwapType('IDENTITY')">🔑 Swap to Identity</span>
+            <span class="quick-link" onclick="quickSetSwapType('MULTI_SOURCE')">🧩 Multi-Source</span>
+        </div>
+
+        <div id="toInstSection">
+            <div class="field-group">
+                <label>Institution</label>
+                <select id="toInstSelect" onchange="selectToInst(this.value)">
+                    <option value="">Select institution</option>
+                </select>
+            </div>
+        </div>
+        <div class="field-group" id="toAssetSection" style="display:none;">
+            <label>Asset Type</label>
+            <select id="toAssetSelect" onchange="selectToAsset(this.value)"></select>
+        </div>
+        <div class="asset-fields" id="toFields" style="display:none;"></div>
+
+        <div id="cashoutFields" style="display:none;">
+            <div class="field-group">
+                <label>Delivery Method</label>
+                <select id="deliveryMethodSelect" onchange="setDeliveryMethod(this.value)">
+                    <option value="ATM">🏧 ATM</option>
+                    <option value="AGENT">🧑‍💼 Agent</option>
+                </select>
+            </div>
+            <div class="field-group">
+                <label>Beneficiary Phone (optional)</label>
+                <input id="beneficiaryPhone" placeholder="+267XXXXXXXX" oninput="state.beneficiaryPhone=this.value; refreshUI();">
+                <div class="help">Cashout code will be sent by SMS if provided</div>
+            </div>
+        </div>
+
+        <div class="identity-field" id="identityFields" style="display:none;">
+            <div class="field-group">
+                <label>Identity Type</label>
+                <select id="identityType" onchange="state.toIdentityType=this.value">
+                    <option value="national_id">National ID</option>
+                    <option value="phone">Phone Number</option>
+                    <option value="email">Email</option>
+                </select>
+            </div>
+            <div class="field-group">
+                <label>Identity Value</label>
+                <input id="identityValue" placeholder="Enter the identity value" oninput="state.toIdentityValue=this.value.trim(); refreshUI();">
+            </div>
+            <div class="field-group">
+                <label>SMS Notification (optional)</label>
+                <input id="identitySms" placeholder="Phone to send SMS notification" oninput="state.toIdentitySms=this.value">
+            </div>
+            <div class="hint">The recipient will be notified and can claim the funds within 24 hours</div>
+        </div>
+
+        <div id="multiSourceFields" style="display:none;">
+            <label class="field-label">Sources (minimum 2)</label>
+            <div id="multiSourceList"></div>
+            <span class="quick-link" onclick="addMultiSourceRow()">➕ Add another source</span>
+            <div class="multi-total">Total requested: <span class="amt" id="multiTotal"><?php echo $userCurrency; ?> 0.00</span></div>
+            <div class="help" style="margin-top:6px;text-align:center;">Each source needs its own PIN — funds are only pulled once its balance and PIN are verified.</div>
+        </div>
+    </div>
+
+    <div class="cta-row">
+        <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()" disabled>Review Swap →</button>
+    </div>
+</div>
+</div>
+
+<div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
+    <div class="modal" id="modalContent">
+        <div class="modal-header">
+            <h2 id="modalTitle">Swap Preview</h2>
+            <button class="modal-close" onclick="closeModal()">✕</button>
+        </div>
+        <div id="modalBody"></div>
+    </div>
+</div>
+
 <script>
-// Dynamic data from PHP (loaded from YAML)
-const participants = <?= json_encode($participants) ?>;
-const assetFields = <?= json_encode($assetFields) ?>;
-const assets = <?= json_encode($assets) ?>;
+// ============================================================
+// CONFIGURATION - DYNAMIC FROM SERVER - NO HARDCODED VALUES
+// ============================================================
+const CONFIG = {
+    API_KEY: '<?php echo htmlspecialchars($apiKey); ?>',
+    COUNTRY_CODE: '<?php echo htmlspecialchars($userCountry); ?>',
+    CURRENCY: '<?php echo htmlspecialchars($userCurrency); ?>',
+    API_BASE: '<?php echo htmlspecialchars($apiBase); ?>',
+    IS_TEST_MODE: <?php echo $isTestMode ? 'true' : 'false'; ?>,
+    PREVIEW_ENDPOINT: '<?php echo $apiBase; ?>/api/v1/swap/preview.php',
+    EXECUTE_ENDPOINT: '<?php echo $apiBase; ?>/api/v1/swap/execute.php',
+};
 
-const institutionAssets = {};
-for (const [code, p] of Object.entries(participants)) {
-    institutionAssets[code] = p.asset_types || ['ACCOUNT'];
+// ============================================================
+// PARTICIPANTS - LOADED DYNAMICALLY FROM COUNTRY FILE - NO HARDCODING
+// ============================================================
+const PARTICIPANTS = <?php echo json_encode($participants); ?>;
+
+// ============================================================
+// ASSETS - LOADED DYNAMICALLY FROM COUNTRY FILE - NO HARDCODING
+// ============================================================
+const ASSETS = <?php echo json_encode($assetTypes); ?>;
+
+// ============================================================
+// STATE
+// ============================================================
+let state = {
+    fromInst: null, fromAsset: null, fromFields: {}, fromAmount: 0,
+    swapType: 'DEPOSIT',
+    toInst: null, toAsset: null, toFields: {},
+    deliveryMethod: 'ATM', beneficiaryPhone: '',
+    toIdentityType: 'national_id', toIdentityValue: '', toIdentitySms: '',
+    multiSources: [],
+    lastPreview: null,
+    swapPayload: null,
+};
+
+let savedIdentities = [];
+
+// ============================================================
+// COUNTRY SWITCH
+// ============================================================
+function switchCountry(country) {
+    if (country !== CONFIG.COUNTRY_CODE) {
+        window.location.href = '?country=' + encodeURIComponent(country);
+    }
 }
 
-// DOM Elements
-const fromInstSelect = document.getElementById('fromInstitution');
-const toInstSelect = document.getElementById('toInstitution');
-const assetTypeSelect = document.getElementById('assetType');
-const assetTypeHint = document.getElementById('assetTypeHint');
-const swapTypeSelect = document.getElementById('swapType');
-const assetFieldsContainer = document.getElementById('assetFieldsContainer');
-const destFieldsContainer = document.getElementById('destFieldsContainer');
-const corridorWarning = document.getElementById('corridorWarning');
-const denominationInfo = document.getElementById('denominationInfo');
-const amountInput = document.getElementById('amount');
-const summaryDiv = document.getElementById('summary');
-const sourceIdentifierInput = document.getElementById('sourceIdentifier');
-const identifierTypeSelect = document.getElementById('identifierType');
-
-// Modal elements
-const confirmModal = document.getElementById('confirmModal');
-const confirmationDetails = document.getElementById('confirmationDetails');
-const modalError = document.getElementById('modalError');
-const confirmBtn = document.getElementById('confirmBtn');
-
-let pendingPayload = null;
-let previewData = null;
-
-function updateAssetTypes() {
-    const fromInst = fromInstSelect.value;
-    assetTypeSelect.innerHTML = '<option value="">-- Select Asset Type --</option>';
+// ============================================================
+// INIT - DYNAMICALLY POPULATE FROM CONFIG - NO HARDCODING
+// ============================================================
+document.addEventListener('DOMContentLoaded', function() {
+    const fromSelect = document.getElementById('fromInstSelect');
+    const toSelect = document.getElementById('toInstSelect');
     
-    if (!fromInst) {
-        assetTypeHint.innerHTML = '';
-        return;
+    // Populate institutions from loaded participants - NO HARDCODING
+    const instOptions = Object.keys(PARTICIPANTS);
+    
+    if (instOptions.length === 0) {
+        // Show error if no participants loaded
+        showMessage('No institutions found for this country. Please check the configuration.', 'error');
+        console.error('No participants loaded for country:', CONFIG.COUNTRY_CODE);
     }
     
-    const assetsList = institutionAssets[fromInst] || ['ACCOUNT'];
-    
-    if (assetsList.length === 0) {
-        assetTypeHint.innerHTML = '⚠️ No asset types defined for this institution';
-        return;
-    }
-    
-    assetTypeHint.innerHTML = `Supported asset types: ${assetsList.join(', ')}`;
-    
-    assetsList.forEach(asset => {
-        const displayName = assets[asset]?.display_name || asset;
-        const icon = assets[asset]?.icon || '';
-        const option = document.createElement('option');
-        option.value = asset;
-        option.textContent = icon ? `${icon} ${displayName}` : displayName;
-        assetTypeSelect.appendChild(option);
+    instOptions.forEach(code => {
+        const name = PARTICIPANTS[code]?.name || code;
+        fromSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${name}</option>`);
+        toSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${name}</option>`);
     });
     
-    if (assetsList.length === 1) {
-        assetTypeSelect.value = assetsList[0];
-        updateAssetFields();
-        updateSummary();
-    }
-}
-
-function updateAssetFields() {
-    const assetType = assetTypeSelect.value;
-    const fields = assetFields[assetType] || [];
-    
-    assetFieldsContainer.innerHTML = '';
-    assetFieldsContainer.classList.remove('active');
-    
-    if (fields.length === 0 || !assetType) return;
-    
-    let html = '<div class="two-columns">';
-    fields.forEach(field => {
-        const fieldName = field.name;
-        const label = field.label || fieldName.replace(/_/g, ' ').toUpperCase();
-        const placeholder = field.placeholder || `Enter ${fieldName.replace(/_/g, ' ')}`;
-        const inputType = fieldName.includes('pin') ? 'password' : 'text';
-        html += `
-            <div class="form-group">
-                <label>${label}</label>
-                <input type="${inputType}" id="${fieldName}" class="asset-field" placeholder="${placeholder}">
-            </div>
-        `;
+    document.getElementById('fromAmount').addEventListener('input', function() {
+        state.fromAmount = parseFloat(this.value) || 0;
+        refreshUI();
     });
-    html += '</div>';
-    
-    assetFieldsContainer.innerHTML = html;
-    assetFieldsContainer.classList.add('active');
-}
+    refreshUI();
+});
 
-function updateDestinationFields() {
-    const swapType = swapTypeSelect.value;
-    
-    destFieldsContainer.innerHTML = '';
-    destFieldsContainer.classList.remove('active');
-    
-    if (swapType === 'CASHOUT') {
-        denominationInfo.classList.add('show');
-        destFieldsContainer.innerHTML = `
-            <div class="form-group">
-                <label>📱 BENEFICIARY PHONE (Where to send ATM code)</label>
-                <input type="tel" id="beneficiaryPhone" placeholder="+267XXXXXXXX" value="<?= $loggedPhone ?>">
-            </div>
-            <div class="info-note">💡 ATM cashout code will be sent via SMS to this number.</div>
-        `;
-        destFieldsContainer.classList.add('active');
-    } else {
-        denominationInfo.classList.remove('show');
-        destFieldsContainer.innerHTML = `
-            <div class="form-group">
-                <label>🏦 DESTINATION IDENTIFIER (Who receives money)</label>
-                <input type="text" id="destinationIdentifier" placeholder="Phone number or National ID or Account number">
-            </div>
-            <div class="info-note">💡 The person receiving the money.</div>
-        `;
-        destFieldsContainer.classList.add('active');
+// ============================================================
+// API HELPERS - Test mode support
+// ============================================================
+function buildHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    if (CONFIG.COUNTRY_CODE) headers['X-Country-Code'] = CONFIG.COUNTRY_CODE;
+    if (CONFIG.API_KEY && !CONFIG.IS_TEST_MODE) {
+        headers['X-API-Key'] = CONFIG.API_KEY;
     }
+    return headers;
 }
 
-function validateCorridor() {
-    const fromInst = fromInstSelect.value;
-    const toInst = toInstSelect.value;
+async function callApi(endpoint, payload) {
+    // Add test_mode parameter if in test mode
+    let url = endpoint;
+    if (CONFIG.IS_TEST_MODE) {
+        url += (url.includes('?') ? '&' : '?') + 'test_mode=1';
+        console.log('[TEST MODE] API call with test_mode=1');
+    }
     
-    if (!fromInst || !toInst) {
-        corridorWarning.classList.remove('show');
+    let response, body;
+    try {
+        response = await fetch(url, { 
+            method: 'POST', 
+            headers: buildHeaders(), 
+            body: JSON.stringify(payload) 
+        });
+    } catch (networkErr) {
+        return { ok: false, error: 'Network error: could not reach ' + url + ' (' + networkErr.message + ')' };
+    }
+    try {
+        body = await response.json();
+    } catch (parseErr) {
+        return { ok: false, error: 'Server returned a non-JSON response (HTTP ' + response.status + ')' };
+    }
+    if (!response.ok || body.success === false) {
+        return { ok: false, error: body.error || ('HTTP ' + response.status), body };
+    }
+    return { ok: true, body };
+}
+
+// ============================================================
+// FROM (SOURCE) - DYNAMIC FROM CONFIG
+// ============================================================
+function selectFromInst(code) {
+    state.fromInst = code || null;
+    state.fromAsset = null;
+    state.fromFields = {};
+    const assetGroup = document.getElementById('fromAssetGroup');
+    if (!code) { assetGroup.style.display = 'none'; document.getElementById('fromFields').innerHTML = ''; refreshUI(); return; }
+    const inst = PARTICIPANTS[code];
+    if (!inst) { showMessage('Institution not found: ' + code, 'error'); return; }
+    const sel = document.getElementById('fromAssetSelect');
+    const assetTypes = inst.asset_types || [];
+    sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => 
+        `<option value="${t}">${ASSETS[t]?.icon || '📦'} ${ASSETS[t]?.label || t}</option>`
+    ).join('');
+    assetGroup.style.display = 'block';
+    document.getElementById('fromCurrencyLabel').textContent = inst.limits?.currency || CONFIG.CURRENCY;
+    document.getElementById('fromLimitsHelp').textContent = inst.limits
+        ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
+    if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectFromAsset(assetTypes[0]); }
+    else { document.getElementById('fromFields').innerHTML = ''; refreshUI(); }
+}
+
+function selectFromAsset(type) {
+    state.fromAsset = type || null;
+    state.fromFields = {};
+    if (!type) { document.getElementById('fromFields').innerHTML = ''; refreshUI(); return; }
+    renderDynamicFields('fromFields', type, 'fromField_', updateFromField, true);
+    refreshUI();
+}
+
+function updateFromField(name, value) { state.fromFields[name] = value; refreshUI(); }
+function setAmount(val) { document.getElementById('fromAmount').value = val; state.fromAmount = val; refreshUI(); }
+
+// ============================================================
+// SHARED: dynamic asset field rendering - FROM CONFIG
+// ============================================================
+function assetHasAmountField(assetType) {
+    return (ASSETS[assetType]?.fields || []).some(f => f.name === 'amount');
+}
+
+function renderDynamicFields(containerId, assetType, prefix, onChange, includePin) {
+    const container = document.getElementById(containerId);
+    const fields = (ASSETS[assetType]?.fields || [])
+        .filter(f => includePin || f.vault_field !== 'pin')
+        .filter(f => f.name !== 'amount');
+    if (!fields || fields.length === 0) { container.innerHTML = ''; return; }
+    container.innerHTML = fields.map(f => {
+        const attrs = [];
+        if (f.pattern) attrs.push(`pattern="${f.pattern}"`);
+        if (f.min_length) attrs.push(`minlength="${f.min_length}"`);
+        if (f.max_length) attrs.push(`maxlength="${f.max_length}"`);
+        if (f.min !== undefined) attrs.push(`min="${f.min}"`);
+        if (f.max !== undefined) attrs.push(`max="${f.max}"`);
+        if (f.required) attrs.push('required');
+        if (f.type === 'select') {
+            return `<div class="field-group">
+                <label>${f.label} ${f.required ? '*' : ''}</label>
+                <select id="${prefix}${f.name}" onchange="window['${onChange.name}']('${f.name}', this.value)">
+                    <option value="">${f.placeholder || 'Select'}</option>
+                    ${(f.options || []).map(o => `<option value="${o}">${o}</option>`).join('')}
+                </select>
+                ${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}
+            </div>`;
+        }
+        return `<div class="field-group">
+            <label>${f.label} ${f.required ? '*' : ''}</label>
+            <input type="${f.type}" id="${prefix}${f.name}" placeholder="${f.placeholder || ''}" ${attrs.join(' ')}
+                   oninput="window['${onChange.name}']('${f.name}', this.value); validateDynamicField(this, ${JSON.stringify(f).replace(/"/g, '&quot;')})">
+            ${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}
+        </div>`;
+    }).join('');
+}
+
+function validateDynamicField(input, field) {
+    let valid = true;
+    if (field.pattern && input.value) valid = new RegExp(field.pattern).test(input.value);
+    input.classList.toggle('invalid', !valid && input.value.length > 0);
+}
+
+function fieldsValidForAsset(assetType, values, includePin) {
+    const fields = (ASSETS[assetType]?.fields || [])
+        .filter(f => includePin || f.vault_field !== 'pin')
+        .filter(f => f.name !== 'amount');
+    return fields.every(f => {
+        const val = values[f.name];
+        if (f.required && (!val || String(val).trim().length === 0)) return false;
+        if (val && f.pattern && !new RegExp(f.pattern).test(val)) return false;
         return true;
-    }
-    
-    if (fromInst === toInst) {
-        corridorWarning.classList.add('show');
-        return false;
-    }
-    
-    corridorWarning.classList.remove('show');
-    return true;
-}
-
-function updateSummary() {
-    const fromInst = fromInstSelect.options[fromInstSelect.selectedIndex]?.text || '?';
-    const toInst = toInstSelect.options[toInstSelect.selectedIndex]?.text || '?';
-    const asset = assetTypeSelect.options[assetTypeSelect.selectedIndex]?.text || '?';
-    const swapType = swapTypeSelect.options[swapTypeSelect.selectedIndex]?.text || '?';
-    let amount = parseFloat(amountInput.value) || 0;
-    
-    summaryDiv.innerHTML = `📋 ${fromInst} (${asset}) → ${toInst} (${swapType}) | Amount: <?= $currencySymbol ?> ${amount.toFixed(2)}`;
-}
-
-function buildPayload() {
-    const fromInst = fromInstSelect.value;
-    const toInst = toInstSelect.value;
-    const assetType = assetTypeSelect.value;
-    const swapType = swapTypeSelect.value;
-    const amount = parseFloat(amountInput.value);
-    const reference = 'SWAP_' + Date.now();
-    const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
-    
-    // SOURCE IDENTIFIER
-    const sourceIdentifier = sourceIdentifierInput?.value.trim() || '';
-    let identifierType = identifierTypeSelect?.value || 'auto';
-    
-    // Auto-detect if set to auto
-    if (identifierType === 'auto' && sourceIdentifier) {
-        if (sourceIdentifier.match(/^[\+]?[0-9]{10,15}$/)) identifierType = 'phone';
-        else if (sourceIdentifier.match(/^[A-Z0-9]{6,20}$/i)) identifierType = 'national_id';
-        else if (sourceIdentifier.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) identifierType = 'email';
-    }
-    
-    const payload = {
-        reference: reference,
-        idempotency_key: idempotencyKey,
-        swap_type: swapType,
-        from_institution: fromInst,
-        to_institution: toInst,
-        asset_type: assetType,
-        amount: amount,
-        currency: '<?= $currency ?>',
-        source_identifier: sourceIdentifier,
-        source_identifier_type: identifierType
-    };
-    
-    if (identifierType === 'phone') payload.source_phone = sourceIdentifier;
-    else if (identifierType === 'national_id') payload.source_national_id = sourceIdentifier;
-    else if (identifierType === 'email') payload.source_email = sourceIdentifier;
-    
-    // Asset fields
-    document.querySelectorAll('.asset-field').forEach(field => {
-        const value = field.value.trim();
-        if (value) payload[field.id] = value;
     });
-    
-    // Destination fields
-    if (swapType === 'CASHOUT') {
-        const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value.trim();
-        if (beneficiaryPhone) {
-            payload.beneficiary_phone = beneficiaryPhone;
-            payload.destination_identifier = beneficiaryPhone;
-            payload.destination_identifier_type = 'phone';
-        }
-    } else if (swapType === 'DEPOSIT') {
-        const destinationIdentifier = document.getElementById('destinationIdentifier')?.value.trim();
-        if (destinationIdentifier) {
-            payload.destination_identifier = destinationIdentifier;
-            payload.destination_identifier_type = 'auto';
-            if (destinationIdentifier.match(/^[\+]?[0-9]{10,15}$/)) {
-                payload.destination_identifier_type = 'phone';
-                payload.destination_phone = destinationIdentifier;
-            } else if (destinationIdentifier.match(/^[A-Z0-9]{6,20}$/i)) {
-                payload.destination_identifier_type = 'national_id';
-                payload.destination_national_id = destinationIdentifier;
-            } else if (destinationIdentifier.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
-                payload.destination_identifier_type = 'email';
-                payload.destination_email = destinationIdentifier;
-            }
-            payload.destination_account = destinationIdentifier;
-        }
+}
+
+function extractPinFromFields(assetType, values) {
+    const pinField = (ASSETS[assetType]?.fields || []).find(f => f.vault_field === 'pin');
+    return pinField ? (values[pinField.name] || '') : '';
+}
+
+function amountWithinLimits(instCode, amount) {
+    const limits = PARTICIPANTS[instCode]?.limits;
+    if (!limits) return true;
+    return amount >= limits.min_amount && amount <= limits.max_amount;
+}
+
+// ============================================================
+// TO (DESTINATION) - DYNAMIC FROM CONFIG
+// ============================================================
+function selectToInst(code) {
+    state.toInst = code || null;
+    state.toAsset = null;
+    state.toFields = {};
+    if (state.swapType === 'DEPOSIT' || state.swapType === 'MULTI_SOURCE') {
+        const sel = document.getElementById('toAssetSelect');
+        const group = document.getElementById('toAssetSection');
+        if (!code) { group.style.display = 'none'; document.getElementById('toFields').style.display = 'none'; refreshUI(); return; }
+        const inst = PARTICIPANTS[code];
+        if (!inst) { showMessage('Institution not found: ' + code, 'error'); return; }
+        const assetTypes = inst.asset_types || [];
+        sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => 
+            `<option value="${t}">${ASSETS[t]?.icon || '📦'} ${ASSETS[t]?.label || t}</option>`
+        ).join('');
+        group.style.display = 'block';
+        if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectToAsset(assetTypes[0]); }
+        else { document.getElementById('toFields').style.display = 'none'; refreshUI(); }
+    } else {
+        refreshUI();
     }
-    
+}
+
+function selectToAsset(type) {
+    state.toAsset = type || null;
+    state.toFields = {};
+    const box = document.getElementById('toFields');
+    if (!type) { box.style.display = 'none'; box.innerHTML = ''; refreshUI(); return; }
+    box.style.display = 'block';
+    renderDynamicFields('toFields', type, 'toField_', updateToField, false);
+    refreshUI();
+}
+
+function updateToField(name, value) { state.toFields[name] = value; refreshUI(); }
+function setDeliveryMethod(method) { state.deliveryMethod = method; refreshUI(); }
+
+// ============================================================
+// SWAP TYPE SWITCHING
+// ============================================================
+function setSwapType(type) {
+    state.swapType = type;
+    const isIdentity = type === 'IDENTITY';
+    const isMulti = type === 'MULTI_SOURCE';
+    const isDeposit = type === 'DEPOSIT';
+    const isCashout = type === 'CASHOUT';
+
+    document.getElementById('identityFields').style.display = isIdentity ? 'block' : 'none';
+    document.getElementById('multiSourceFields').style.display = isMulti ? 'block' : 'none';
+    document.getElementById('cashoutFields').style.display = isCashout ? 'block' : 'none';
+    document.getElementById('toInstSection').style.display = (isDeposit || isCashout || isMulti) ? 'block' : 'none';
+    document.getElementById('toAssetSection').style.display = (isDeposit || isMulti) && state.toAsset ? 'block' : 'none';
+    document.getElementById('toFields').style.display = (isDeposit || isMulti) && state.toAsset ? 'block' : 'none';
+    document.getElementById('fromSection').style.display = isMulti ? 'none' : 'block';
+    document.querySelector('.swap-divider').style.display = isMulti ? 'none' : 'flex';
+
+    if (isMulti && state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
+    refreshUI();
+}
+
+function quickSetSwapType(type) {
+    document.getElementById('swapTypeSelect').value = type;
+    setSwapType(type);
+    const target = type === 'IDENTITY' ? document.getElementById('identityFields') : document.getElementById('multiSourceFields');
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+// ============================================================
+// MULTI-SOURCE ROWS - DYNAMIC FROM CONFIG
+// ============================================================
+let multiSourceSeq = 0;
+
+function addMultiSourceRow() {
+    state.multiSources.push({ id: ++multiSourceSeq, institution: null, assetType: null, fields: {}, amount: 0 });
+    renderMultiSourceRows();
+}
+
+function removeMultiSourceRow(id) {
+    state.multiSources = state.multiSources.filter(s => s.id !== id);
+    renderMultiSourceRows();
+}
+
+function renderMultiSourceRows() {
+    const container = document.getElementById('multiSourceList');
+    container.innerHTML = state.multiSources.map((src, idx) => `
+        <div class="source-row">
+            <div class="source-row-head">
+                <span class="idx">Source ${idx + 1}</span>
+                ${state.multiSources.length > 2 ? `<button class="btn-danger-outline" onclick="removeMultiSourceRow(${src.id})">Remove</button>` : ''}
+            </div>
+            <div class="field-group">
+                <label>Institution</label>
+                <select onchange="setMultiSourceInst(${src.id}, this.value)">
+                    <option value="">Select institution</option>
+                    ${Object.keys(PARTICIPANTS).map(code => `<option value="${code}" ${src.institution === code ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`).join('')}
+                </select>
+            </div>
+            ${src.institution ? `
+            <div class="field-group">
+                <label>Asset Type</label>
+                <select onchange="setMultiSourceAsset(${src.id}, this.value)">
+                    <option value="">Select asset type</option>
+                    ${(PARTICIPANTS[src.institution]?.asset_types || []).map(t => `<option value="${t}" ${src.assetType === t ? 'selected' : ''}>${ASSETS[t]?.label || t}</option>`).join('')}
+                </select>
+            </div>` : ''}
+            ${src.assetType ? (ASSETS[src.assetType]?.fields || []).filter(f => f.name !== 'amount').map(f => `
+                <div class="field-group">
+                    <label>${f.label} ${f.required ? '*' : ''}</label>
+                    <input type="${f.type === 'select' ? 'text' : f.type}" value="${src.fields[f.name] || ''}"
+                           placeholder="${f.placeholder || ''}"
+                           oninput="setMultiSourceField(${src.id}, '${f.name}', this.value)">
+                </div>
+            `).join('') : ''}
+            <div class="field-group">
+                <label>Amount to pull from this source</label>
+                <input type="number" min="0.01" step="0.01" value="${src.amount || ''}" placeholder="0.00"
+                       oninput="setMultiSourceAmount(${src.id}, this.value)">
+            </div>
+        </div>
+    `).join('');
+    updateMultiTotal();
+    refreshUI();
+}
+
+function setMultiSourceInst(id, code) {
+    const src = state.multiSources.find(s => s.id === id);
+    src.institution = code || null; src.assetType = null; src.fields = {};
+    renderMultiSourceRows();
+}
+
+function setMultiSourceAsset(id, type) {
+    const src = state.multiSources.find(s => s.id === id);
+    src.assetType = type || null; src.fields = {};
+    renderMultiSourceRows();
+}
+
+function setMultiSourceField(id, name, value) {
+    state.multiSources.find(s => s.id === id).fields[name] = value;
+    refreshUI();
+}
+
+function setMultiSourceAmount(id, value) {
+    state.multiSources.find(s => s.id === id).amount = parseFloat(value) || 0;
+    updateMultiTotal();
+    refreshUI();
+}
+
+function updateMultiTotal() {
+    const total = state.multiSources.reduce((sum, s) => sum + (s.amount || 0), 0);
+    document.getElementById('multiTotal').textContent = `${CONFIG.CURRENCY} ${total.toFixed(2)}`;
+}
+
+function multiSourcesValid() {
+    if (state.multiSources.length < 2) return false;
+    return state.multiSources.every(s => {
+        if (!s.institution || !s.assetType || !(s.amount > 0)) return false;
+        const pin = extractPinFromFields(s.assetType, s.fields);
+        const needsPin = ASSETS[s.assetType]?.fields?.some(f => f.vault_field === 'pin');
+        if (needsPin && pin.length < 4) return false;
+        return fieldsValidForAsset(s.assetType, s.fields, true);
+    });
+}
+
+// ============================================================
+// VALIDATION
+// ============================================================
+function refreshUI() {
+    const btn = document.getElementById('reviewBtn');
+    btn.disabled = !isSwapReady();
+}
+
+function isSwapReady() {
+    if (state.swapType === 'MULTI_SOURCE') {
+        return multiSourcesValid() && state.toInst && state.toAsset && fieldsValidForAsset(state.toAsset, state.toFields, false);
+    }
+    const hasSource = state.fromInst && state.fromAsset;
+    if (!hasSource) return false;
+    if (!(state.fromAmount > 0) || !amountWithinLimits(state.fromInst, state.fromAmount)) return false;
+    if (!fieldsValidForAsset(state.fromAsset, state.fromFields, true)) return false;
+
+    if (state.swapType === 'IDENTITY') return !!state.toIdentityValue;
+    if (state.swapType === 'CASHOUT') return !!state.toInst;
+    return !!(state.toInst && state.toAsset && fieldsValidForAsset(state.toAsset, state.toFields, false));
+}
+
+// ============================================================
+// BUILD PAYLOAD
+// ============================================================
+function buildPayload() {
+    const reference = 'SWAP_' + Date.now();
+    const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+
+    if (state.swapType === 'MULTI_SOURCE') {
+        const sources = state.multiSources.map(s => {
+            const pin = extractPinFromFields(s.assetType, s.fields);
+            const identifierField = (ASSETS[s.assetType]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+            const assetFields = { ...s.fields };
+            if (assetHasAmountField(s.assetType)) assetFields.amount = s.amount;
+            return {
+                institution: s.institution, asset_type: s.assetType,
+                identifier: identifierField ? s.fields[identifierField.name] : null,
+                amount: s.amount, wallet_pin: pin || undefined, pin: pin || undefined, asset_fields: assetFields,
+            };
+        });
+        const totalAmount = sources.reduce((sum, s) => sum + s.amount, 0);
+        const destFields = { ...state.toFields };
+        if (assetHasAmountField(state.toAsset)) destFields.amount = totalAmount;
+        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        const payload = {
+            swap_type: 'MULTI_SOURCE', reference, idempotency_key: idempotencyKey,
+            amount: totalAmount, currency: CONFIG.CURRENCY, contribution_strategy: 'USER_SPECIFIED',
+            sources, to_institution: state.toInst, destination_institution: state.toInst,
+            destination_asset_type: state.toAsset, asset_type: state.toAsset,
+            destination_asset_fields: destFields,
+        };
+        for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
+        if (destIdField) payload.destination_identifier = state.toFields[destIdField.name];
+        return payload;
+    }
+
+    const pin = extractPinFromFields(state.fromAsset, state.fromFields);
+    const sourceAssetFields = { ...state.fromFields };
+    if (assetHasAmountField(state.fromAsset)) sourceAssetFields.amount = state.fromAmount;
+    const payload = {
+        swap_type: state.swapType, reference, idempotency_key: idempotencyKey,
+        from_institution: state.fromInst, source_institution: state.fromInst,
+        asset_type: state.fromAsset, amount: state.fromAmount,
+        currency: PARTICIPANTS[state.fromInst]?.limits?.currency || CONFIG.CURRENCY,
+        wallet_pin: pin || undefined, pin: pin || undefined, asset_fields: sourceAssetFields,
+        ...sourceAssetFields,
+    };
+    payload.amount = state.fromAmount;
+    const idField = (ASSETS[state.fromAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    if (idField) payload.source_identifier = state.fromFields[idField.name];
+
+    if (state.swapType === 'IDENTITY') {
+        payload.identity_type = state.toIdentityType;
+        payload.identity_value = state.toIdentityValue;
+        if (state.toIdentitySms) payload.notification_phone = state.toIdentitySms;
+    } else if (state.swapType === 'CASHOUT') {
+        payload.to_institution = state.toInst;
+        payload.destination_institution = state.toInst;
+        payload.delivery_method = state.deliveryMethod;
+        if (state.beneficiaryPhone) { payload.beneficiary_phone = state.beneficiaryPhone; payload.client_phone = state.beneficiaryPhone; }
+    } else {
+        payload.to_institution = state.toInst;
+        payload.destination_institution = state.toInst;
+        payload.destination_asset_type = state.toAsset;
+        const destFields = { ...state.toFields };
+        if (assetHasAmountField(state.toAsset)) destFields.amount = state.fromAmount;
+        payload.destination_asset_fields = destFields;
+        for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
+        payload.amount = state.fromAmount;
+        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        if (destIdField) payload.destination_identifier = state.toFields[destIdField.name];
+    }
     return payload;
 }
 
 // ============================================================
-// CONFIRMATION MODAL FUNCTIONS
+// PREVIEW
 // ============================================================
-
-async function showConfirmation(payload) {
-    modalError.style.display = 'none';
-    confirmBtn.disabled = true;
-    confirmBtn.textContent = '⏳ Loading...';
-    confirmationDetails.innerHTML = `
-        <div style="text-align:center; padding:20px;">
-            <div class="loading-spinner"></div>
-            <br>Calculating fees...
-        </div>
-    `;
-    confirmModal.classList.add('show');
-    
-    try {
-        const response = await fetch('<?= $previewUrl ?>', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-API-Key': '<?= $apiKey ?>'
-            },
-            body: JSON.stringify(payload)
-        });
-        
-        const result = await response.json();
-        
-        if (!result.success) {
-            throw new Error(result.error || 'Failed to calculate fees');
-        }
-        
-        previewData = result.preview;
-        pendingPayload = payload;
-        
-        buildConfirmationUI(previewData);
-        confirmBtn.disabled = false;
-        confirmBtn.textContent = '✅ Confirm & Execute';
-        
-    } catch (error) {
-        modalError.textContent = '❌ ' + error.message;
-        modalError.style.display = 'block';
-        confirmationDetails.innerHTML = `
-            <div style="text-align:center; padding:20px; color:#ff6b6b;">
-                ❌ Failed to calculate fees
-            </div>
-        `;
-        confirmBtn.disabled = true;
-        confirmBtn.textContent = '❌ Error';
-    }
-}
-
-function buildConfirmationUI(preview) {
-    const sourceCurrency = preview.source_currency || '<?= $currency ?>';
-    const destCurrency = preview.destination_currency || sourceCurrency;
-    const amount = preview.amount_requested || 0;
-    const totalFee = preview.total_fee || 0;
-    const netAmount = preview.net_amount_destination_currency || amount;
-    const exchangeRate = preview.exchange_rate || 1.0;
-    const forexApplied = preview.forex_applied || false;
-    const breakdown = preview.fee_breakdown || [];
-    
-    // Build fee breakdown HTML
-    let breakdownHTML = '';
-    if (breakdown.length > 0) {
-        breakdownHTML = '<div style="margin-top:12px; padding-top:12px; border-top:1px solid #1a1f3a;">';
-        breakdownHTML += '<div style="font-size:12px; color:#888; margin-bottom:8px;">Fee Breakdown:</div>';
-        
-        breakdown.forEach(item => {
-            const amountVal = item.amount || 0;
-            const name = item.name || item.slot || 'Fee';
-            const owner = item.owner || '';
-            if (amountVal > 0) {
-                breakdownHTML += `
-                    <div class="fee-breakdown-item">
-                        <span class="fee-name">${name} ${owner ? '(' + owner + ')' : ''}</span>
-                        <span class="fee-amount">${amountVal.toFixed(2)} ${sourceCurrency}</span>
-                    </div>
-                `;
-            }
-        });
-        
-        breakdownHTML += '</div>';
-    }
-    
-    // Forex info
-    let forexHTML = '';
-    if (forexApplied) {
-        forexHTML = `
-            <div class="forex-info">
-                🌍 Exchange Rate: 1 ${sourceCurrency} = ${exchangeRate.toFixed(6)} ${destCurrency}
-                ${preview.forex_profit > 0 ? `<br>💹 FX Profit: ${preview.forex_profit.toFixed(2)} ${destCurrency}` : ''}
-            </div>
-        `;
-    }
-    
-    // Destination split info
-    let destSplitHTML = '';
-    if (preview.destination_split) {
-        const ds = preview.destination_split;
-        destSplitHTML = `
-            <div style="margin-top:8px; font-size:12px; color:#888;">
-                <div>🏧 Generate Code Fee: ${ds.generate_code_fee.toFixed(2)} ${sourceCurrency}</div>
-                <div>✅ Cashout Completion Fee: ${ds.cashout_completion_fee.toFixed(2)} ${sourceCurrency}</div>
-            </div>
-        `;
-    }
-    
-    confirmationDetails.innerHTML = `
-        <div style="margin-bottom:12px;">
-            <div style="font-size:12px; color:#888;">${preview.swap_type || 'Swap'}</div>
-            <div style="font-size:14px; color:#00f0ff;">${preview.source_institution} → ${preview.destination_institution}</div>
-        </div>
-        
-        <div class="confirmation-row">
-            <span class="label">💰 Amount Requested</span>
-            <span class="value">${amount.toFixed(2)} ${sourceCurrency}</span>
-        </div>
-        
-        <div class="confirmation-row">
-            <span class="label">📊 Total Fee</span>
-            <span class="value negative">${totalFee.toFixed(2)} ${sourceCurrency}</span>
-        </div>
-        
-        ${forexHTML}
-        ${breakdownHTML}
-        ${destSplitHTML}
-        
-        <div class="confirmation-row total-row">
-            <span class="label">📥 You Will Receive</span>
-            <span class="value highlight">${netAmount.toFixed(2)} ${destCurrency}</span>
-        </div>
-    `;
-}
-
-function closeConfirmation() {
-    confirmModal.classList.remove('show');
-    pendingPayload = null;
-    previewData = null;
-    confirmBtn.disabled = false;
-    confirmBtn.textContent = '✅ Confirm & Execute';
-    modalError.style.display = 'none';
-}
-
-// Tab switching function for detailed view
-function showTab(tabName) {
-    const tabs = document.querySelectorAll('.tab-content');
-    const tabButtons = document.querySelectorAll('.tab');
-    
-    tabs.forEach(tab => tab.classList.remove('active'));
-    tabButtons.forEach(btn => btn.classList.remove('active'));
-    
-    document.getElementById(`tab-${tabName}`).classList.add('active');
-    if (window.event && window.event.target) window.event.target.classList.add('active');
-}
-
-// ============================================================
-// EXECUTE BUTTON - Shows confirmation first
-// ============================================================
-
-const executeBtn = document.getElementById('executeBtn');
-if (executeBtn) {
-    executeBtn.addEventListener('click', async function(e) {
-        const fromInst = fromInstSelect.value;
-        const toInst = toInstSelect.value;
-        const assetType = assetTypeSelect.value;
-        const amount = parseFloat(amountInput.value);
-        const swapType = swapTypeSelect.value;
-        const sourceIdentifier = sourceIdentifierInput?.value.trim();
-        
-        // Validation
-        if (!fromInst) { alert('Select SOURCE institution'); return; }
-        if (!toInst) { alert('Select DESTINATION institution'); return; }
-        if (!assetType) { alert('Select asset type'); return; }
-        if (!sourceIdentifier) { alert('Enter source identifier (who is sending money)'); return; }
-        if (!amount || amount <= 0) { alert('Enter valid amount'); return; }
-        if (fromInst === toInst) { alert('Source and destination must be different'); return; }
-        
-        if (swapType === 'CASHOUT') {
-            const beneficiaryPhone = document.getElementById('beneficiaryPhone')?.value.trim();
-            if (!beneficiaryPhone) { alert('Enter beneficiary phone number for ATM code'); return; }
-        } else if (swapType === 'DEPOSIT') {
-            const destinationIdentifier = document.getElementById('destinationIdentifier')?.value.trim();
-            if (!destinationIdentifier) { alert('Enter destination identifier (who receives money)'); return; }
-        }
-        
-        // Build payload and show confirmation
-        const payload = buildPayload();
-        await showConfirmation(payload);
-    });
-}
-
-// ============================================================
-// CONFIRM BUTTON - Executes the swap
-// ============================================================
-
-confirmBtn.addEventListener('click', async function() {
-    if (!pendingPayload) return;
-    
-    const btn = this;
-    const resultDiv = document.getElementById('result');
-    
-    btn.disabled = true;
-    btn.innerHTML = '<div class="loading-spinner"></div> Executing...';
-    modalError.style.display = 'none';
-    
-    try {
-        const response = await fetch('<?= $apiUrl ?>', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-API-Key': '<?= $apiKey ?>'
-            },
-            body: JSON.stringify(pendingPayload)
-        });
-        
-        const result = await response.json();
-        
-        if (result.success === true || result.status === 'success' || result.atomic_commit?.status === 'committed') {
-            // Success - close modal and show result
-            closeConfirmation();
-            
-            resultDiv.className = 'result success';
-            let html = `<strong>✅ Swap Successful!</strong><br><br>
-                Reference: ${result.reference || result.swap_reference || 'N/A'}<br>
-                Amount: <?= $currencySymbol ?> ${pendingPayload.amount.toFixed(2)}<br>`;
-            
-            if (result.fee) html += `<strong>Fee: <?= $currencySymbol ?> ${result.fee.toFixed(2)}</strong><br>`;
-            if (result.atm_code) html += `<br><strong>🏧 ATM Code:</strong> ${result.atm_code}<br>`;
-            if (result.voucher_number) html += `<br><strong>🎫 Voucher:</strong> ${result.voucher_number}<br>`;
-            
-            html += `<br><details><summary><strong>📋 Full Response</strong></summary><pre style="margin-top:8px; font-size:11px; overflow-x:auto;">${JSON.stringify(result, null, 2)}</pre></details>`;
-            html += `<br><a href="?id=${result.reference || result.swap_reference}" style="color:#00f0ff;">View Full Details →</a>`;
-            resultDiv.innerHTML = html;
-            resultDiv.scrollIntoView({ behavior: 'smooth' });
-            
-            setTimeout(() => location.reload(), 3000);
+async function previewSwap() {
+    if (!isSwapReady()) {
+        if (state.swapType === 'MULTI_SOURCE') {
+            showMessage('Fill in every source (institution, asset type, identifier, PIN, amount — at least 2) and the destination.', 'warning');
+        } else if (!state.fromInst || !state.fromAsset) {
+            showMessage('Please select a source institution and asset.', 'warning');
+        } else if (!amountWithinLimits(state.fromInst, state.fromAmount)) {
+            const l = PARTICIPANTS[state.fromInst].limits;
+            showMessage(`Amount must be between ${l.min_amount} and ${l.max_amount} ${l.currency}.`, 'warning');
         } else {
-            // Failed - show error in modal
-            let errorMsg = result.message || result.error || 'Unknown error';
-            modalError.textContent = '❌ ' + errorMsg;
-            modalError.style.display = 'block';
-            
-            btn.disabled = false;
-            btn.innerHTML = '🔄 Try Again';
+            showMessage('Please fill in all required fields.', 'warning');
         }
-        
-    } catch (error) {
-        modalError.textContent = '❌ Network error: ' + error.message;
-        modalError.style.display = 'block';
-        btn.disabled = false;
-        btn.innerHTML = '🔄 Try Again';
+        return;
     }
-});
+
+    const payload = buildPayload();
+    state.swapPayload = payload;
+
+    const btn = document.getElementById('reviewBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Working…';
+
+    const result = await callApi(CONFIG.EXECUTE_ENDPOINT, payload);
+
+    btn.disabled = false;
+    btn.innerHTML = original;
+    refreshUI();
+
+    if (!result.ok) { showMessage('Swap failed: ' + result.error, 'error'); return; }
+    showResultModal(result.body);
+}
 
 // ============================================================
-// EVENT LISTENERS
+// RESULT MODAL
 // ============================================================
+function showResultModal(response) {
+    const data = response.data || {};
+    const swapType = state.swapPayload.swap_type;
+    const reference = response.swap_reference || data.reference || data.swap_reference || '—';
+    let inner = '';
 
-if (fromInstSelect) {
-    fromInstSelect.addEventListener('change', () => {
-        updateAssetTypes();
-        validateCorridor();
-        updateSummary();
-    });
+    if (swapType === 'CASHOUT') {
+        inner = `
+            <div class="icon">💰</div>
+            <div class="title">Cashout Code Generated</div>
+            <div class="ref">Reference: ${escapeHtml(reference)}</div>
+            ${data.atm_code || data.voucher_number ? `
+            <div class="atm-code">
+                <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">Code</div>
+                <div class="code">${escapeHtml(data.atm_code || data.voucher_number || data.swap_code || '')}</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">Expires: ${escapeHtml(data.code_expiry || 'see reference')}</div>
+            </div>` : ''}
+            <div class="amount-display">
+                <div style="font-size:12px;color:var(--text-muted);">Amount</div>
+                <div class="amt">${data.amount ?? state.swapPayload.amount} ${state.swapPayload.currency || CONFIG.CURRENCY}</div>
+            </div>`;
+    } else if (swapType === 'IDENTITY') {
+        inner = `
+            <div class="icon">🔑</div>
+            <div class="title">Identity Swap Initiated</div>
+            <div class="ref">Reference: ${escapeHtml(reference)}</div>
+            <div style="margin:12px 0;padding:12px;background:rgba(0,240,255,0.04);border-radius:var(--radius-sm);">
+                <div style="font-size:12px;color:var(--text-muted);">Identity</div>
+                <div style="font-size:16px;font-weight:600;">${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</div>
+            </div>
+            <div class="amount-display">
+                <div style="font-size:12px;color:var(--text-muted);">Amount Held</div>
+                <div class="amt">${data.amount ?? state.swapPayload.amount} ${data.currency || CONFIG.CURRENCY}</div>
+            </div>
+            <div style="font-size:13px;color:var(--text-muted);margin:8px 0;">⏳ Waiting for recipient to claim (expires ${escapeHtml(data.expires_at || 'in 24h')})</div>`;
+    } else if (swapType === 'MULTI_SOURCE') {
+        inner = `
+            <div class="icon">📤</div>
+            <div class="title">Multi-Source Swap Submitted</div>
+            <div class="ref">Reference: ${escapeHtml(reference)}</div>
+            <div style="font-size:13px;color:var(--text-muted);margin:8px 0;">Status: ${escapeHtml(response.status || data.status || 'submitted')}</div>`;
+    } else {
+        inner = `
+            <div class="icon">✅</div>
+            <div class="title">Swap Completed</div>
+            <div class="ref">Reference: ${escapeHtml(reference)}</div>
+            <div class="amount-display">
+                <div style="font-size:12px;color:var(--text-muted);">Amount</div>
+                <div class="amt">${data.amount ?? state.swapPayload.amount} ${CONFIG.CURRENCY}</div>
+                ${data.fee !== undefined ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">Fee: ${data.fee}</div>` : ''}
+            </div>`;
+    }
+
+    openModal('Swap Result', `
+        <div class="result-box">
+            ${inner}
+            <details class="raw-json-wrap"><summary>Raw response</summary><div class="raw-json">${escapeHtml(JSON.stringify(response, null, 2))}</div></details>
+            <div class="cta-row"><button class="btn btn-primary" onclick="closeModal(); location.reload();">Done</button></div>
+        </div>
+    `);
 }
-
-if (toInstSelect) {
-    toInstSelect.addEventListener('change', () => {
-        validateCorridor();
-        updateSummary();
-    });
-}
-
-if (assetTypeSelect) {
-    assetTypeSelect.addEventListener('change', () => {
-        updateAssetFields();
-        updateSummary();
-    });
-}
-
-if (swapTypeSelect) {
-    swapTypeSelect.addEventListener('change', () => {
-        updateDestinationFields();
-        updateSummary();
-    });
-}
-
-if (amountInput) {
-    amountInput.addEventListener('input', updateSummary);
-}
-
-document.querySelectorAll('.quick-amount').forEach(btn => {
-    btn.addEventListener('click', () => {
-        if (amountInput) amountInput.value = btn.dataset.amount;
-        updateSummary();
-    });
-});
 
 // ============================================================
-// INITIALIZATION
+// MY PROFILE - Saved Identities
 // ============================================================
+const IDENTITY_TYPE_LABELS = { national_id: 'National ID', phone: 'Phone Number', email: 'Email' };
 
-if (typeof updateAssetTypes === 'function') updateAssetTypes();
-if (typeof updateDestinationFields === 'function') updateDestinationFields();
+function openProfileModal() {
+    openModal('My Profile', renderProfileModal());
+}
+
+function renderProfileModal() {
+    const rows = savedIdentities.length
+        ? savedIdentities.map((id, i) => `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
+                <div>
+                    <div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div>
+                    <div style="font-size:14px;font-weight:600;">${escapeHtml(id.value)}</div>
+                </div>
+                <div class="quick-actions" style="margin:0;">
+                    <span class="quick-link" onclick="useSavedIdentity(${i})">✓ Use</span>
+                    <span class="quick-link danger" onclick="removeSavedIdentity(${i})">✕ Remove</span>
+                </div>
+            </div>`).join('')
+        : `<div class="hint">No saved identities yet — add a phone number, national ID, or email below for quick reuse in the "Swap to Identity" flow.</div>`;
+    return `
+        <div style="margin-bottom:12px;">${rows}</div>
+        <div class="field-group">
+            <label>Identity Type</label>
+            <select id="newIdentityType">
+                <option value="national_id">National ID</option>
+                <option value="phone">Phone Number</option>
+                <option value="email">Email</option>
+            </select>
+        </div>
+        <div class="field-group">
+            <label>Identity Value</label>
+            <input id="newIdentityValue" placeholder="Enter the identity value">
+        </div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="addSavedIdentity()">+ Add Identity</button></div>
+        <div class="hint" style="margin-top:8px;">Saved here for this session only.</div>`;
+}
+
+function addSavedIdentity() {
+    const type = document.getElementById('newIdentityType').value;
+    const value = document.getElementById('newIdentityValue').value.trim();
+    if (!value) { showMessage('Enter an identity value first', 'error'); return; }
+    savedIdentities.push({ type, value });
+    document.getElementById('modalBody').innerHTML = renderProfileModal();
+}
+
+function removeSavedIdentity(idx) {
+    savedIdentities.splice(idx, 1);
+    document.getElementById('modalBody').innerHTML = renderProfileModal();
+}
+
+function useSavedIdentity(idx) {
+    const id = savedIdentities[idx];
+    if (!id) return;
+    closeModal();
+    quickSetSwapType('IDENTITY');
+    state.toIdentityType = id.type;
+    state.toIdentityValue = id.value;
+    document.getElementById('identityType').value = id.type;
+    document.getElementById('identityValue').value = id.value;
+    refreshUI();
+    showMessage(`Using saved ${IDENTITY_TYPE_LABELS[id.type] || id.type}: ${id.value}`, 'success');
+}
+
+// ============================================================
+// MODAL / MESSAGE HELPERS
+// ============================================================
+function openModal(title, bodyHtml) {
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalBody').innerHTML = bodyHtml;
+    document.getElementById('modal').classList.add('active');
+}
+
+function closeModal() { document.getElementById('modal').classList.remove('active'); }
+
+function showMessage(text, type = 'info') {
+    const el = document.getElementById('mainMessage');
+    el.textContent = text;
+    el.className = `message show ${type}`;
+    clearTimeout(showMessage._t);
+    showMessage._t = setTimeout(() => el.classList.remove('show'), 6000);
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str == null ? '' : String(str);
+    return div.innerHTML;
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 </script>
 </body>
 </html>

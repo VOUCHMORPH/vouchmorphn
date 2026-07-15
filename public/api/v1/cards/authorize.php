@@ -2,18 +2,33 @@
 declare(strict_types=1);
 
 /**
- * VouchMorphn - Card Authorization API
- * Processes ATM/POS transactions for message cards
+ * VouchMorph Card Network - Authorization Endpoint
+ *
+ * This is the real-time entry point a merchant terminal/acquirer hits at
+ * swipe time. It must return in well under a second, so it does ONLY the
+ * fast-path check (authorizePooledSwipe) - no bank calls, no debits.
+ *
+ * The actual source debits, settlement, and shortfall billing happen
+ * asynchronously afterward, picked up by scripts/daemons/card-pool-finalize-worker.php
+ * from the card_pool_finalize_queue table this endpoint writes to on approval.
+ *
+ * Falls back to the existing single-hold authorizeTransaction() for cards
+ * that were preloaded via issueCard()/loadCard() rather than hooked.
+ *
+ * SECURITY NOTES:
+ * - CVV verification removed entirely (PCI-DSS prohibits CVV storage) -
+ *   replaced by a TOTP-based dynamic code, verified inside CardService.
+ * - Brand exclusivity check for pooled hooks confirms the card_suffix is
+ *   a real VouchMorph-issued row in message_cards. It does NOT depend on
+ *   a card_category/card_type column, since that distinction lives in the
+ *   separate card-application intake flow, not the issued-card record -
+ *   only hookSourcesToCard() ever writes to card_pool_hooks, so a row
+ *   existing in message_cards at all is sufficient proof of VouchMorph
+ *   issuance without assuming a column that hasn't been confirmed to exist.
  */
 
-// ============================================
-// 1. BOOTSTRAP & PATHS
-// ============================================
-define('ROOT_PATH', dirname(__DIR__, 4)); // Goes up 5 levels to project root
+define('ROOT_PATH', dirname(__DIR__, 4));
 
-// ============================================
-// 2. HEADERS & CORS
-// ============================================
 header("Content-Type: application/json; charset=UTF-8");
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
@@ -23,197 +38,182 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
-
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
     echo json_encode(['error' => 'Method not allowed. Use POST.']);
     exit();
 }
 
-// ============================================
-// 3. LOAD SYSTEM CONFIG & CORE
-// ============================================
-require_once ROOT_PATH . '/src/CORE_CONFIG/system_country.php';
-require_once ROOT_PATH . '/src/CORE_CONFIG/load_country.php';
+// ============================================================
+// BOOTSTRAP - real paths, not the old BUSINESS_LOGIC_LAYER structure
+// ============================================================
+$container = require_once ROOT_PATH . '/src/bootstrap.php';
+require_once ROOT_PATH . '/src/Domain/Services/CardService.php';
+require_once ROOT_PATH . '/src/Application/Utils/AuditLogger.php';
 
-$country = defined('SYSTEM_COUNTRY') ? SYSTEM_COUNTRY : 'BW';
+use Domain\Services\CardService;
+use Application\Utils\AuditLogger;
 
-// ============================================
-// 4. LOAD REQUIRED CLASSES
-// ============================================
-require_once ROOT_PATH . '/src/DATA_PERSISTENCE_LAYER/config/DBConnection.php';
-require_once ROOT_PATH . '/src/BUSINESS_LOGIC_LAYER/services/CardService.php';
-require_once ROOT_PATH . '/src/BUSINESS_LOGIC_LAYER/Helpers/CardHelper.php';
-
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
-use BUSINESS_LOGIC_LAYER\services\CardService;
-
-// ============================================
-// 5. LOAD COUNTRY-SPECIFIC ENVIRONMENT VARIABLES
-// ============================================
-$envFile = ROOT_PATH . "/src/CORE_CONFIG/countries/{$country}/.env_{$country}";
-if (file_exists($envFile)) {
-    $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    foreach ($lines as $line) {
-        $line = trim($line);
-        if (empty($line) || strpos($line, '#') === 0) continue;
-        $parts = explode('=', $line, 2);
-        if (count($parts) === 2) {
-            $key = trim($parts[0]);
-            $value = trim($parts[1]);
-            putenv("$key=$value");
-            $_ENV[$key] = $value;
-            $_SERVER[$key] = $value;
-        }
-    }
-}
-
-if (!function_exists('get_env_val')) {
-    function get_env_val(string $key) {
-        $val = getenv($key);
-        if ($val === false) {
-            $val = $_ENV[$key] ?? ($_SERVER[$key] ?? null);
-        }
-        return $val;
-    }
-}
-
-// ============================================
-// 6. AUTHENTICATION - SAME PATTERN AS SWAP ENDPOINT
-// ============================================
+// ============================================================
+// AUTHENTICATION - system + per-participant keys from env
+// ============================================================
 $headers = function_exists('getallheaders') ? getallheaders() : [];
 $headersLower = array_change_key_case($headers, CASE_LOWER);
-$providedKey = $headersLower['x-api-key'] ?? $_SERVER['HTTP_X_API_KEY'] ?? null;
+$providedKey = $headersLower['x-api-key'] ?? null;
 
-// Start with SYSTEM key (global)
-$validKeys = array_filter([
-    get_env_val('API_KEY_SYSTEM')
-]);
-
-// Load country-specific participants to get bank keys
-$participantsFile = ROOT_PATH . "/src/CORE_CONFIG/countries/{$country}/participants_{$country}.json";
-if (file_exists($participantsFile)) {
-    $participantsData = json_decode(file_get_contents($participantsFile), true);
-    
-    // For each participant, look for its API key in environment
-    if (isset($participantsData['participants'])) {
-        foreach ($participantsData['participants'] as $participantName => $participant) {
-            // Convert participant name to env key format (e.g., ZURUBANK -> API_KEY_ZURUBANK)
-            $envKey = 'API_KEY_' . strtoupper($participantName);
-            $keyValue = get_env_val($envKey);
-            if ($keyValue) {
-                $validKeys[] = $keyValue;
-            }
-            
-            // Also check for provider_code based keys
-            if (isset($participant['provider_code'])) {
-                $providerEnvKey = 'API_KEY_' . strtoupper($participant['provider_code']);
-                $providerKeyValue = get_env_val($providerEnvKey);
-                if ($providerKeyValue) {
-                    $validKeys[] = $providerKeyValue;
-                }
-            }
-        }
-    }
+$validKeys = array_filter([getenv('API_KEY_SYSTEM')]);
+$participants = $container->get('participants') ?? [];
+foreach ($participants as $code => $participant) {
+    $envKey = 'API_KEY_' . strtoupper($code);
+    $val = getenv($envKey);
+    if ($val) $validKeys[] = $val;
 }
-
-// Remove any empty values
-$validKeys = array_filter($validKeys);
 
 if (!$providedKey || !in_array($providedKey, $validKeys, true)) {
     http_response_code(401);
-    echo json_encode([
-        'success' => false,
-        'error' => 'Unauthorized: Invalid or missing API key',
-        'debug' => ['country' => $country]
-    ]);
+    echo json_encode(['success' => false, 'error' => 'Unauthorized: invalid or missing API key']);
     exit();
 }
 
-// ============================================
-// 7. GET INPUT
-// ============================================
+// ============================================================
+// INPUT
+// ============================================================
 $input = json_decode(file_get_contents('php://input'), true);
-
 if (json_last_error() !== JSON_ERROR_NONE) {
     http_response_code(400);
-    echo json_encode([
-        'success' => false,
-        'error' => 'Invalid JSON payload: ' . json_last_error_msg()
-    ]);
+    echo json_encode(['success' => false, 'error' => 'Invalid JSON payload: ' . json_last_error_msg()]);
     exit();
 }
 
-// Validate required fields for authorization
-if (empty($input['card_number'])) {
-    http_response_code(400);
-    echo json_encode([
-        'success' => false,
-        'error' => 'card_number is required'
-    ]);
-    exit();
-}
-
-if (empty($input['cvv'])) {
-    http_response_code(400);
-    echo json_encode([
-        'success' => false,
-        'error' => 'cvv is required'
-    ]);
-    exit();
-}
-
-if (empty($input['amount']) || $input['amount'] <= 0) {
-    http_response_code(400);
-    echo json_encode([
-        'success' => false,
-        'error' => 'Valid amount is required'
-    ]);
-    exit();
-}
-
-// ============================================
-// 8. DATABASE CONNECTION
-// ============================================
-try {
-    $pdo = DBConnection::getConnection();
-    if (!$pdo) {
-        throw new Exception('Database connection failed');
+foreach (['card_suffix', 'amount'] as $field) {
+    if (empty($input[$field])) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => "{$field} is required"]);
+        exit();
     }
-} catch (Exception $e) {
-    http_response_code(500);
-    echo json_encode([
-        'success' => false,
-        'error' => 'Database connection error'
-    ]);
+}
+
+$cardSuffix = (string)$input['card_suffix'];
+$amount = (float)$input['amount'];
+$merchantContext = [
+    'merchant_reference' => $input['merchant_reference'] ?? null,
+    'merchant_id' => $input['merchant_id'] ?? null,
+    'merchant_name' => $input['merchant_name'] ?? null,
+    'terminal_id' => $input['terminal_id'] ?? null,
+    'acquirer' => $input['acquirer'] ?? null,
+    'channel' => $input['channel'] ?? 'POS',
+];
+
+if ($amount <= 0) {
+    http_response_code(400);
+    echo json_encode(['success' => false, 'error' => 'Valid amount is required']);
     exit();
 }
 
-// ============================================
-// 9. LOAD COUNTRY-SPECIFIC CARD CONFIG
-// ============================================
-$config = [];
-$cardConfigPath = ROOT_PATH . "/src/CORE_CONFIG/countries/{$country}/card_config_{$country}.json";
-if (file_exists($cardConfigPath)) {
-    $config = json_decode(file_get_contents($cardConfigPath), true);
-}
+// ============================================================
+// EXECUTE
+// ============================================================
+$db = $container->get(PDO::class);
+$cardConfig = $container->get('countryConfig');
+$cardService = new CardService($db, $container->get('countryCode'), $cardConfig);
+$auditLogger = new AuditLogger();
 
-// ============================================
-// 10. EXECUTE CARD AUTHORIZATION
-// ============================================
+$startTime = microtime(true);
+
 try {
-    $cardService = new CardService($pdo, $country, $config);
-    $result = $cardService->authorizeTransaction($input);
-    
+    // ============================================================
+    // 1. CHECK: Is there an active pooled hook for this card?
+    // ============================================================
+    $hookCheck = $db->prepare("
+        SELECT hook_reference FROM card_pool_hooks
+        WHERE card_suffix = ? AND status = 'HOOKED' AND expires_at > NOW()
+        ORDER BY created_at DESC LIMIT 1
+    ");
+    $hookCheck->execute([$cardSuffix]);
+    $activeHook = $hookCheck->fetchColumn();
+
+    if ($activeHook) {
+        // ============================================================
+        // EXCLUSIVITY CHECK: Pooled hooks are ONLY for VouchMorph-issued cards
+        //
+        // Simplified from a prior version that checked a card_category
+        // column not confirmed to exist on message_cards - that would have
+        // thrown a SQL error on every pooled swipe, caught by the generic
+        // exception handler below and surfaced only as an opaque
+        // "System error" response. This checks only what's actually known
+        // to exist: a real, active row in message_cards for this suffix.
+        // Since hookSourcesToCard() is the only writer of card_pool_hooks,
+        // that row's existence is itself sufficient proof of VouchMorph
+        // issuance - a Visa/Mastercard PAN would never have a matching
+        // message_cards row regardless of what (incorrectly) ends up in
+        // card_pool_hooks.
+        // ============================================================
+        $brandCheck = $db->prepare("
+            SELECT 1 FROM message_cards 
+            WHERE card_suffix = ? 
+            AND status = 'ACTIVE'
+            LIMIT 1
+        ");
+        $brandCheck->execute([$cardSuffix]);
+        $isVouchMorphCard = $brandCheck->fetchColumn();
+
+        if (!$isVouchMorphCard) {
+            error_log("[CardAuth] Pooled hook rejected - card_suffix {$cardSuffix} not a VouchMorph-issued card");
+            http_response_code(400);
+            echo json_encode([
+                'success' => false,
+                'authorized' => false,
+                'response_code' => '58',
+                'response_message' => 'Pooled hook authorization is only valid for VouchMorph-issued cards',
+            ]);
+            exit();
+        }
+
+        // Pooled card path - authorizePooledSwipe does NO bank calls, just a
+        // local held-total check. This is the sub-second path.
+        $result = $cardService->authorizePooledSwipe($cardSuffix, $amount, $merchantContext);
+
+        if ($result['authorized'] ?? false) {
+            // Queue the real debits/settlement for the background worker -
+            // never do them in this request.
+            $queueStmt = $db->prepare("
+                INSERT INTO card_pool_finalize_queue (hook_reference, merchant_context, status)
+                VALUES (?, ?::jsonb, 'PENDING')
+            ");
+            $queueStmt->execute([$result['hook_reference'], json_encode($merchantContext)]);
+        }
+
+    } else {
+        // No active hook - fall back to the existing preloaded single-hold path
+        // (cards funded via issueCard()/loadCard(), unrelated to pooling).
+        // CVV is no longer checked here or anywhere - authorizeTransaction()
+        // now verifies a TOTP-based dynamic_code instead, per PCI-DSS.
+        $result = $cardService->authorizeTransaction(array_merge($input, $merchantContext));
+    }
+
+    $responseTime = round((microtime(true) - $startTime) * 1000);
+    $result['processing_time_ms'] = $result['processing_time_ms'] ?? $responseTime;
+
+    $auditLogger->log(
+        ($result['authorized'] ?? false) ? 'CARD_AUTH_APPROVED' : 'CARD_AUTH_DECLINED',
+        'INFO',
+        'card_network',
+        null,
+        null,
+        ['card_suffix' => $cardSuffix, 'amount' => $amount, 'response_time_ms' => $responseTime]
+    );
+
     http_response_code(200);
     echo json_encode($result, JSON_PRETTY_PRINT);
-    
+
 } catch (Exception $e) {
-    error_log("Card authorization error for {$country}: " . $e->getMessage());
+    error_log("[CardAuth] Authorization error: " . $e->getMessage());
     http_response_code(400);
     echo json_encode([
         'success' => false,
         'authorized' => false,
-        'error' => $e->getMessage()
+        'response_code' => '96',
+        'response_message' => 'System error',
+        'error' => $e->getMessage(),
     ]);
 }

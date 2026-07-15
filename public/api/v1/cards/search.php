@@ -31,23 +31,22 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 }
 
 // ============================================
-// 3. LOAD SYSTEM CONFIG & CORE
+// 3. BOOTSTRAP - Load container
 // ============================================
-require_once ROOT_PATH . '/src/CORE_CONFIG/system_country.php';
-require_once ROOT_PATH . '/src/CORE_CONFIG/load_country.php';
+$container = require_once ROOT_PATH . '/src/bootstrap.php';
+
+// ============================================
+// 4. LOAD SYSTEM CONFIG & CORE (FIXED PATHS)
+// ============================================
+require_once ROOT_PATH . '/src/Core/Config/SystemCountry.php';
+require_once ROOT_PATH . '/src/Core/Config/LoadCountry.php';
 
 $country = defined('SYSTEM_COUNTRY') ? SYSTEM_COUNTRY : 'BW';
 
 // ============================================
-// 4. LOAD REQUIRED CLASSES
-// ============================================
-require_once ROOT_PATH . '/src/DATA_PERSISTENCE_LAYER/config/DBConnection.php';
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
-
-// ============================================
 // 5. LOAD ENVIRONMENT
 // ============================================
-$envFile = ROOT_PATH . "/src/CORE_CONFIG/countries/{$country}/.env_{$country}";
+$envFile = ROOT_PATH . "/src/Core/Config/Countries/{$country}/.env_{$country}";
 if (file_exists($envFile)) {
     $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($lines as $line) {
@@ -75,7 +74,7 @@ if (!function_exists('get_env_val')) {
 }
 
 // ============================================
-// 6. AUTHENTICATION
+// 6. AUTHENTICATION - No hardcoded fallback
 // ============================================
 $headers = function_exists('getallheaders') ? getallheaders() : [];
 $headersLower = array_change_key_case($headers, CASE_LOWER);
@@ -104,10 +103,10 @@ if (!$phone && !$suffix) {
 }
 
 // ============================================
-// 8. DATABASE CONNECTION
+// 8. DATABASE CONNECTION - from container
 // ============================================
 try {
-    $pdo = DBConnection::getConnection();
+    $pdo = $container->get(PDO::class);
     if (!$pdo) throw new Exception('Database connection failed');
 } catch (Exception $e) {
     http_response_code(500);
@@ -120,7 +119,6 @@ try {
 // ============================================
 try {
     if ($phone) {
-        // Search by phone number
         $stmt = $pdo->prepare("
             SELECT 
                 mc.card_id,
@@ -153,7 +151,6 @@ try {
         $cards = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
     } else {
-        // Search by card suffix
         $stmt = $pdo->prepare("
             SELECT 
                 mc.card_id,
@@ -194,7 +191,6 @@ try {
         exit();
     }
     
-    // Format response
     foreach ($cards as &$card) {
         $card['expiry'] = sprintf("%02d/%d", $card['expiry_month'], $card['expiry_year']);
         $card['balance'] = (float)$card['remaining_amount'];

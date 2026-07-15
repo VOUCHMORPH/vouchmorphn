@@ -27,8 +27,11 @@ ZURUBANK:
       type: env_var
       name: "ZURUBANK_API_KEY"
   
-  # OAuth endpoints (for linking accounts)
+  # OAuth endpoints (for linking accounts - ZURUBANK uses OAuth2)
   oauth:
+    client_id: "VOUCHMORPH_APP_ID"
+    client_secret: "YOUR_BANK_SECRET"
+    redirect_uri: "https://vouchmorphn.com/api/v1/source/auth/callback"
     authorization_url: "/oauth/authorize"
     token_url: "/oauth/token"
     refresh_url: "/oauth/refresh"
@@ -36,36 +39,39 @@ ZURUBANK:
     userinfo_url: "/oauth/userinfo"
     scopes: ["balance", "transactions", "payments"]
   
-  # API endpoints by operation (mapping to BankAPIInterface)
+  # Source linking endpoints (OAuth2 flow)
+  source_linking:
+    initiate: "/oauth/authorize"
+    verify: "/oauth/token"
+    refresh: "/oauth/refresh"
+    revoke: "/oauth/revoke"
+    use: "/api/v1/verify_asset.php"
+  
+  # API endpoints by operation
   endpoints:
-    # SOURCE ROLE METHODS
     source:
       verify_asset: "/api/v1/verify_asset.php"           
       place_hold: "/api/v1/hold.php"                    
       debit_funds: "/api/v1/settlement/notify_debit.php" 
       release_hold: "/api/v1/hold.php"                  
-      get_balance: "/api/v1/balance.php"                
+      get_balance: "/api/v1/accounts/balance.php"                
       get_transactions: "/api/v1/transactions.php"     
     
-    # DESTINATION ROLE METHODS - Cashout flow
     destination_cashout:
       generate_token: "/api/v1/atm/generate_code.php"    
       verify_token: "/api/v1/atm/atm_cashout.php"       
       confirm_cashout: "/api/v1/atm_cashout.php"        
     
-    # DESTINATION ROLE METHODS - Deposit flow
     destination_deposit:
       process_deposit: "/api/v1/deposit/direct.php"      
-      verify_account: "/api/v1/verify_asset.php"        
+      verify_account: "/api/v1/verify_account.php"        
     
-    # Common operations (legacy/compatibility)
     common:
       transfer: "/api/v1/transfer.php"                 
       reverse: "/api/v1/hold.php"                       
       status: "/api/v1/status"                          
       health: "/health"
   
-  # Callbacks (where ZURUBANK calls us)
   callbacks:
     hold_confirmed: "/api/v1/callbacks/hold-confirmed"
     hold_released: "/api/v1/callbacks/hold-released"
@@ -74,14 +80,12 @@ ZURUBANK:
     reversal_confirmed: "/api/v1/callbacks/reversal-confirmed"
     cashout_confirmed: "/api/v1/callbacks/cashout-confirmed"
   
-  # Phone formatting rules
   phone_format:
     prefix: "+"
     country_code: "267"
     expected_length: 11
     supported_networks: ["mascom", "orange", "btc"]
   
-  # Message formatting
   message_profile:
     correlation_id_header: "X-Correlation-ID"
     idempotency_key_header: "X-Idempotency-Key"
@@ -89,7 +93,6 @@ ZURUBANK:
     timestamp_header: "X-Timestamp"
     trace_id_prefix: "ZURUBANK"
   
-  # Retry policy
   retry_policy:
     max_retries: 3
     retry_delay_ms: 1000
@@ -112,6 +115,15 @@ SACCUSSALIS:
       type: env_var
       name: "SACCUSSALIS_API_KEY"
   
+  # Source linking endpoints (OTP-based flow)
+  source_linking:
+    initiate: "/api/v1/auth/initiate.php"
+    verify: "/api/v1/auth/verify.php"
+    refresh: "/api/v1/auth/refresh.php"
+    revoke: "/api/v1/auth/revoke.php"
+    use: "/api/v1/verify_asset.php"
+  
+  # OAuth (for future OAuth2 support)
   oauth:
     authorization_url: "/oauth/authorize"
     token_url: "/oauth/token"
@@ -126,7 +138,7 @@ SACCUSSALIS:
       place_hold: "/api/v1/hold.php"
       debit_funds: "/api/v1/notify_debit.php"
       release_hold: "/api/v1/hold.php"
-      get_balance: "/api/v1/balance"
+      get_balance: "/api/v1/balance.php"
       get_transactions: "/api/v1/transactions"
     
     destination_cashout:
@@ -136,7 +148,7 @@ SACCUSSALIS:
     
     destination_deposit:
       process_deposit: "/api/v1/transaction/credit_funds.php"
-      verify_account: "/api/v1/verify_asset.php"
+      verify_account: "/api/v1/verify_account.php"
     
     common:
       transfer: "/api/v1/transfer.php"
@@ -186,6 +198,14 @@ CAZACOM:
     secret_source:
       type: env_var
       name: "CAZACOM_API_KEY"
+  
+  # Source linking (USSD-based)
+  source_linking:
+    initiate: "/api/v1/mno/initiate_link"
+    verify: "/api/v1/mno/verify_link"
+    refresh: "/api/v1/mno/refresh"
+    revoke: "/api/v1/mno/revoke"
+    use: "/api/v1/mno/verify_wallet"
   
   oauth:
     authorization_url: "/oauth/authorize"

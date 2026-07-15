@@ -5,12 +5,11 @@ namespace Infrastructure\Adapters;
 
 use Infrastructure\Banks\GenericBankClient;
 use Infrastructure\Banks\Contracts\BankAPIInterface;
-use Psr\Log\LoggerInterface;
 
 class GenericInstitutionAdapter implements InstitutionAdapterInterface
 {
     protected BankAPIInterface $bankClient;
-    protected LoggerInterface $logger;
+    protected $logger;  // No type-hint to avoid psr/log dependency
     protected string $institution;
     protected array $config;
     protected array $context = [];
@@ -22,7 +21,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
     
     public function __construct(
         BankAPIInterface $bankClient,
-        LoggerInterface $logger,
+        $logger,  // No type-hint
         string $institution,
         array $config
     ) {
@@ -44,6 +43,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             'HOLD',
             'DEBIT',
             'CREDIT',
+            'RELEASE_HOLD',
             'CASHOUT',
             'VERIFY_ACCOUNT',
             'BALANCE',
@@ -69,12 +69,16 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         if (!$consentRequired) {
             // No consent needed - M-Pesa style
             $this->consentObtained = true;
-            $this->logger->info("Consent not required for {$this->institution}");
+            if ($this->logger) {
+                $this->logger->info("Consent not required for {$this->institution}");
+            }
             return;
         }
         
         // Consent is required - get it now
-        $this->logger->info("Obtaining consent for {$this->institution}");
+        if ($this->logger) {
+            $this->logger->info("Obtaining consent for {$this->institution}");
+        }
         
         try {
             // Get OAuth token
@@ -101,10 +105,14 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
                 $this->consentObtained = true;
             }
             
-            $this->logger->info("Consent obtained for {$this->institution}");
+            if ($this->logger) {
+                $this->logger->info("Consent obtained for {$this->institution}");
+            }
             
         } catch (\Exception $e) {
-            $this->logger->error("Consent failed for {$this->institution}: " . $e->getMessage());
+            if ($this->logger) {
+                $this->logger->error("Consent failed for {$this->institution}: " . $e->getMessage());
+            }
             throw new \RuntimeException("Consent failed: " . $e->getMessage());
         }
     }
@@ -120,14 +128,18 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            $verifyPayload = [
-                'reference' => $payload['reference'] ?? uniqid('verify_'),
-                'asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
-                'amount' => $payload['amount'] ?? 0,
-                'currency' => $payload['currency'] ?? 'BWP',
-                'source_identifier' => $payload['account_id'] ?? $payload['account_identifier'],
-                'access_token' => $this->accessToken
-            ];
+            // Pass through the original payload directly
+            $verifyPayload = $payload;
+            
+            // Only add access_token if not already present
+            if (!isset($verifyPayload['access_token']) && $this->accessToken) {
+                $verifyPayload['access_token'] = $this->accessToken;
+            }
+            
+            // Ensure required fields for backward compatibility
+            if (!isset($verifyPayload['reference'])) {
+                $verifyPayload['reference'] = uniqid('verify_');
+            }
             
             $result = $this->bankClient->verifyAssetSigned($verifyPayload);
             
@@ -135,25 +147,32 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
                 return [
                     'verified' => false,
                     'message' => $result['curl_error'] ?? 'Verification failed',
-                    'account_id' => $payload['account_id']
+                    'account_id' => $payload['account_id'] ?? $payload['source_identifier'] ?? null
                 ];
             }
             
             $data = $result['data'] ?? [];
             
+            // Preserve original payload and signature from bank response
             return [
                 'verified' => $data['verified'] ?? false,
-                'account_id' => $data['asset_id'] ?? $payload['account_id'],
+                'message' => $data['message'] ?? 'Asset verified',
+                'account_id' => $data['asset_id'] ?? $payload['account_id'] ?? $payload['source_identifier'] ?? null,
+                'asset_id' => $data['asset_id'] ?? null,
                 'account_name' => $data['account_name'] ?? null,
                 'balance' => $data['balance'] ?? 0,
-                'currency' => $data['currency'] ?? $payload['currency'] ?? 'BWP'
+                'currency' => $data['currency'] ?? $payload['currency'] ?? 'BWP',
+                'original_payload' => $data['payload'] ?? $result['original_payload'] ?? null,
+                'signature' => $data['signature'] ?? $result['signature'] ?? null,
+                'certificate' => $data['certificate'] ?? $result['certificate'] ?? null,
+                'timestamp' => $data['timestamp'] ?? $result['timestamp'] ?? time()
             ];
             
         } catch (\Exception $e) {
             return [
                 'verified' => false,
                 'message' => $e->getMessage(),
-                'account_id' => $payload['account_id']
+                'account_id' => $payload['account_id'] ?? $payload['source_identifier'] ?? null
             ];
         }
     }
@@ -165,15 +184,21 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            $holdPayload = [
-                'reference' => $payload['reference'] ?? uniqid('hold_'),
-                'asset_id' => $payload['account_id'] ?? $payload['account_identifier'],
-                'amount' => $payload['amount'] ?? 0,
-                'currency' => $payload['currency'] ?? 'BWP',
-                'expiry' => $payload['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
-                'hold_reason' => $payload['hold_reason'] ?? 'PENDING_SWAP',
-                'access_token' => $this->accessToken
-            ];
+            // Pass through the original payload directly
+            $holdPayload = $payload;
+            
+            // Only add access_token if not already present
+            if (!isset($holdPayload['access_token']) && $this->accessToken) {
+                $holdPayload['access_token'] = $this->accessToken;
+            }
+            
+            // Ensure required fields for backward compatibility
+            if (!isset($holdPayload['reference'])) {
+                $holdPayload['reference'] = uniqid('hold_');
+            }
+            if (!isset($holdPayload['expiry'])) {
+                $holdPayload['expiry'] = date('Y-m-d H:i:s', strtotime('+24 hours'));
+            }
             
             $result = $this->bankClient->placeHoldSigned($holdPayload);
             
@@ -186,11 +211,16 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             
             $data = $result['data'] ?? [];
             
+            // Preserve original payload and signature from bank response
             return [
                 'hold_placed' => true,
                 'hold_id' => $data['hold_id'] ?? null,
-                'hold_reference' => $data['hold_reference'] ?? $data['reference'],
-                'status' => $data['status'] ?? 'ACTIVE'
+                'hold_reference' => $data['hold_reference'] ?? $data['reference'] ?? null,
+                'status' => $data['status'] ?? 'ACTIVE',
+                'original_payload' => $data['payload'] ?? $result['original_payload'] ?? null,
+                'signature' => $data['signature'] ?? $result['signature'] ?? null,
+                'certificate' => $data['certificate'] ?? $result['certificate'] ?? null,
+                'timestamp' => $data['timestamp'] ?? $result['timestamp'] ?? time()
             ];
             
         } catch (\Exception $e) {
@@ -208,15 +238,23 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            $debitPayload = [
-                'reference' => $payload['reference'] ?? uniqid('debit_'),
-                'hold_reference' => $payload['hold_reference'] ?? $payload['hold_id'],
-                'amount' => $payload['amount'] ?? 0,
-                'reason' => $payload['reason'] ?? 'Swap completed',
-                'access_token' => $this->accessToken
-            ];
+            // Pass through the original payload directly
+            $debitPayload = $payload;
             
-            $result = $this->bankClient->debitHold($debitPayload);
+            // Only add access_token if not already present
+            if (!isset($debitPayload['access_token']) && $this->accessToken) {
+                $debitPayload['access_token'] = $this->accessToken;
+            }
+            
+            // Ensure required fields for backward compatibility
+            if (!isset($debitPayload['reference'])) {
+                $debitPayload['reference'] = uniqid('debit_');
+            }
+            
+            // FIXED: Call debitFunds() directly, NOT debitHold()
+            // debitHold() reconstructs the payload and drops important fields
+            // like wallet_pin, pin, asset_fields that forwardPin() added.
+            $result = $this->bankClient->debitFunds($debitPayload);
             
             if (!$result['success']) {
                 return [
@@ -229,8 +267,9 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             
             return [
                 'debited' => true,
-                'transaction_reference' => $data['transaction_reference'] ?? $data['reference'],
-                'status' => $data['status'] ?? 'COMPLETED'
+                'transaction_reference' => $data['transaction_reference'] ?? $data['reference'] ?? null,
+                'status' => $data['status'] ?? 'COMPLETED',
+                'message' => $data['message'] ?? 'Debit successful'
             ];
             
         } catch (\Exception $e) {
@@ -248,16 +287,18 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            $creditPayload = [
-                'reference' => $payload['reference'] ?? uniqid('credit_'),
-                'source_institution' => $payload['source_institution'] ?? 'VOUCHMORPH',
-                'destination_type' => $payload['destination_type'] ?? 'ACCOUNT',
-                'destination_id' => $payload['destination_account_id'] ?? $payload['account_id'],
-                'amount' => $payload['amount'] ?? 0,
-                'currency' => $payload['currency'] ?? 'BWP',
-                'source_hold_reference' => $payload['hold_reference'] ?? $payload['hold_id'],
-                'access_token' => $this->accessToken
-            ];
+            // Pass through the original payload directly
+            $creditPayload = $payload;
+            
+            // Only add access_token if not already present
+            if (!isset($creditPayload['access_token']) && $this->accessToken) {
+                $creditPayload['access_token'] = $this->accessToken;
+            }
+            
+            // Ensure required fields for backward compatibility
+            if (!isset($creditPayload['reference'])) {
+                $creditPayload['reference'] = uniqid('credit_');
+            }
             
             $result = $this->bankClient->processDepositWithProof($creditPayload);
             
@@ -272,15 +313,127 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             
             return [
                 'credited' => true,
-                'transaction_reference' => $data['transaction_reference'] ?? $data['reference'],
+                'transaction_reference' => $data['transaction_reference'] ?? $data['reference'] ?? null,
                 'status' => $data['status'] ?? 'COMPLETED',
-                'new_balance' => $data['new_balance'] ?? null
+                'new_balance' => $data['new_balance'] ?? null,
+                'message' => $data['message'] ?? 'Credit successful'
             ];
             
         } catch (\Exception $e) {
             return [
                 'credited' => false,
                 'message' => $e->getMessage()
+            ];
+        }
+    }
+    
+    /**
+     * Release a hold at the institution
+     * CRITICAL: Used for multi-source rollback and error recovery
+     */
+    public function releaseHold(array $payload, array $context): array
+    {
+        $this->context = array_merge($context, $payload);
+        
+        try {
+            $this->ensureConsent();
+            
+            $holdReference = $payload['hold_reference'] ?? null;
+            $reason = $payload['reason'] ?? 'Released by VouchMorph';
+            
+            if (!$holdReference) {
+                if ($this->logger) {
+                    $this->logger->warning("releaseHold called without hold_reference", [
+                        'institution' => $this->institution,
+                        'payload' => $payload
+                    ]);
+                }
+                return [
+                    'released' => false,
+                    'message' => 'hold_reference is required for release',
+                    'hold_reference' => null
+                ];
+            }
+            
+            // Pass through the original payload directly
+            $releasePayload = $payload;
+            
+            // Only add access_token if not already present
+            if (!isset($releasePayload['access_token']) && $this->accessToken) {
+                $releasePayload['access_token'] = $this->accessToken;
+            }
+            
+            // Ensure required fields
+            if (!isset($releasePayload['reference'])) {
+                $releasePayload['reference'] = uniqid('release_');
+            }
+            if (!isset($releasePayload['action'])) {
+                $releasePayload['action'] = 'RELEASE_HOLD';
+            }
+            
+            if ($this->logger) {
+                $this->logger->info("GenericInstitutionAdapter::releaseHold", [
+                    'hold_reference' => $holdReference,
+                    'institution' => $this->institution,
+                    'reason' => $reason
+                ]);
+            }
+            
+            // Check if the bank client supports releaseHold
+            if (method_exists($this->bankClient, 'releaseHold')) {
+                $result = $this->bankClient->releaseHold($releasePayload);
+                
+                if (!$result['success']) {
+                    return [
+                        'released' => false,
+                        'message' => $result['curl_error'] ?? 'Release failed',
+                        'hold_reference' => $holdReference
+                    ];
+                }
+                
+                $data = $result['data'] ?? [];
+                
+                return [
+                    'released' => true,
+                    'status' => $data['status'] ?? 'RELEASED',
+                    'hold_reference' => $holdReference,
+                    'message' => $data['message'] ?? 'Hold released successfully',
+                    'released_at' => $data['released_at'] ?? date('Y-m-d H:i:s')
+                ];
+            }
+            
+            // Fallback: If bank client doesn't have releaseHold, log and return success
+            // This allows the local hold status to be updated even if the institution
+            // doesn't support explicit hold release (some systems auto-release on expiry)
+            if ($this->logger) {
+                $this->logger->warning("Bank client does not support releaseHold, marking as released locally", [
+                    'institution' => $this->institution,
+                    'hold_reference' => $holdReference
+                ]);
+            }
+            
+            return [
+                'released' => true,
+                'status' => 'RELEASED_LOCALLY',
+                'hold_reference' => $holdReference,
+                'message' => 'Hold marked as released locally (institution may auto-release)',
+                'released_at' => date('Y-m-d H:i:s'),
+                'note' => 'Bank client does not support explicit hold release'
+            ];
+            
+        } catch (\Exception $e) {
+            if ($this->logger) {
+                $this->logger->error("releaseHold failed", [
+                    'institution' => $this->institution,
+                    'error' => $e->getMessage(),
+                    'payload' => $payload
+                ]);
+            }
+            
+            return [
+                'released' => false,
+                'message' => $e->getMessage(),
+                'hold_reference' => $payload['hold_reference'] ?? null
             ];
         }
     }
@@ -292,15 +445,26 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            $tokenPayload = [
-                'reference' => $payload['reference'] ?? uniqid('cashout_'),
-                'beneficiary_phone' => $payload['phone'] ?? $payload['beneficiary_phone'],
-                'amount' => $payload['amount'] ?? 0,
-                'currency' => $payload['currency'] ?? 'BWP',
-                'source_verification' => $this->context['verification'] ?? null,
-                'source_hold' => $this->context['hold'] ?? null,
-                'access_token' => $this->accessToken
-            ];
+            // Pass through the original payload directly
+            $tokenPayload = $payload;
+            
+            // Only add access_token if not already present
+            if (!isset($tokenPayload['access_token']) && $this->accessToken) {
+                $tokenPayload['access_token'] = $this->accessToken;
+            }
+            
+            // Ensure required fields for backward compatibility
+            if (!isset($tokenPayload['reference'])) {
+                $tokenPayload['reference'] = uniqid('cashout_');
+            }
+            
+            // Add context data if not already present
+            if (!isset($tokenPayload['source_verification']) && isset($this->context['verification'])) {
+                $tokenPayload['source_verification'] = $this->context['verification'];
+            }
+            if (!isset($tokenPayload['source_hold']) && isset($this->context['hold'])) {
+                $tokenPayload['source_hold'] = $this->context['hold'];
+            }
             
             $result = $this->bankClient->generateTokenWithProof($tokenPayload);
             
@@ -315,10 +479,13 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             
             return [
                 'success' => true,
-                'cashout_code' => $data['cashout_code'] ?? $data['code'],
-                'atm_pin' => $data['atm_pin'] ?? $data['pin'],
+                'cashout_code' => $data['cashout_code'] ?? $data['code'] ?? null,
+                'atm_pin' => $data['atm_pin'] ?? $data['pin'] ?? null,
                 'voucher_number' => $data['voucher_number'] ?? null,
-                'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'))
+                'swap_code' => $data['swap_code'] ?? $data['voucher_number'] ?? null,
+                'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
+                'transaction_reference' => $data['transaction_reference'] ?? null,
+                'message' => $data['message'] ?? 'Token generated'
             ];
             
         } catch (\Exception $e) {
@@ -334,11 +501,13 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         $this->context = array_merge($context, $payload);
         
         try {
-            $verifyPayload = [
-                'token_reference' => $payload['cashout_code'] ?? $payload['code'],
-                'entered_code' => $payload['pin'] ?? $payload['code'],
-                'access_token' => $this->accessToken
-            ];
+            // Pass through the original payload directly
+            $verifyPayload = $payload;
+            
+            // Ensure required fields for backward compatibility
+            if (!isset($verifyPayload['reference'])) {
+                $verifyPayload['reference'] = uniqid('verify_token_');
+            }
             
             $result = $this->bankClient->verifyToken($verifyPayload);
             
@@ -371,12 +540,13 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         $this->context = array_merge($context, $payload);
         
         try {
-            $confirmPayload = [
-                'token_reference' => $payload['cashout_code'] ?? $payload['code'],
-                'dispensed_notes' => $payload['notes'] ?? null,
-                'completed_at' => date('Y-m-d H:i:s'),
-                'access_token' => $this->accessToken
-            ];
+            // Pass through the original payload directly
+            $confirmPayload = $payload;
+            
+            // Ensure required fields for backward compatibility
+            if (!isset($confirmPayload['completed_at'])) {
+                $confirmPayload['completed_at'] = date('Y-m-d H:i:s');
+            }
             
             $result = $this->bankClient->confirmCashout($confirmPayload);
             
@@ -392,7 +562,8 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             return [
                 'confirmed' => $data['confirmed'] ?? false,
                 'transaction_reference' => $data['transaction_reference'] ?? null,
-                'settlement_triggered' => $data['settlement_triggered'] ?? false
+                'settlement_triggered' => $data['settlement_triggered'] ?? false,
+                'message' => $data['message'] ?? 'Cashout confirmed'
             ];
             
         } catch (\Exception $e) {
@@ -410,12 +581,15 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         try {
             $this->ensureConsent();
             
-            $verifyPayload = [
-                'account_id' => $payload['destination_account_id'] ?? $payload['account_id'],
-                'access_token' => $this->accessToken
-            ];
+            // Pass through the original payload directly
+            $verifyPayload = $payload;
             
-            $result = $this->bankClient->processDeposit($verifyPayload);
+            // Only add access_token if not already present
+            if (!isset($verifyPayload['access_token']) && $this->accessToken) {
+                $verifyPayload['access_token'] = $this->accessToken;
+            }
+            
+            $result = $this->bankClient->verifyAccount($verifyPayload);
             
             if (!$result['success']) {
                 return [
@@ -427,15 +601,160 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             $data = $result['data'] ?? [];
             
             return [
-                'verified' => true,
+                'verified' => $data['verified'] ?? false,
                 'account_name' => $data['account_name'] ?? null,
                 'account_type' => $data['account_type'] ?? null,
-                'status' => $data['status'] ?? 'ACTIVE'
+                'status' => $data['status'] ?? 'ACTIVE',
+                'message' => $data['message'] ?? 'Account verified'
             ];
             
         } catch (\Exception $e) {
             return [
                 'verified' => false,
+                'message' => $e->getMessage()
+            ];
+        }
+    }
+    
+    public function transferWithProof(array $payload, array $context): array
+    {
+        $this->context = array_merge($context, $payload);
+        
+        try {
+            $this->ensureConsent();
+            
+            // Pass through the original payload directly
+            $transferPayload = $payload;
+            
+            // Only add access_token if not already present
+            if (!isset($transferPayload['access_token']) && $this->accessToken) {
+                $transferPayload['access_token'] = $this->accessToken;
+            }
+            
+            // Ensure required fields for backward compatibility
+            if (!isset($transferPayload['reference'])) {
+                $transferPayload['reference'] = uniqid('transfer_');
+            }
+            
+            $result = $this->bankClient->transferWithProof($transferPayload);
+            
+            if (!$result['success']) {
+                return [
+                    'success' => false,
+                    'message' => $result['curl_error'] ?? 'Transfer failed'
+                ];
+            }
+            
+            $data = $result['data'] ?? [];
+            
+            return [
+                'success' => true,
+                'transaction_reference' => $data['transaction_reference'] ?? null,
+                'message' => $data['message'] ?? 'Transfer successful'
+            ];
+            
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => $e->getMessage()
+            ];
+        }
+    }
+    
+    // ============================================================
+    // SOURCE LINKING OPERATIONS
+    // ============================================================
+    
+    public function initiateSourceLink(array $payload): array
+    {
+        try {
+            if (method_exists($this->bankClient, 'initiateSourceLink')) {
+                return $this->bankClient->initiateSourceLink($payload);
+            }
+            
+            return [
+                'success' => false,
+                'message' => 'Source linking not supported by this institution'
+            ];
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => $e->getMessage()
+            ];
+        }
+    }
+    
+    public function verifySourceLink(array $payload): array
+    {
+        try {
+            if (method_exists($this->bankClient, 'verifySourceLink')) {
+                return $this->bankClient->verifySourceLink($payload);
+            }
+            
+            return [
+                'success' => false,
+                'message' => 'Source linking verification not supported by this institution'
+            ];
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => $e->getMessage()
+            ];
+        }
+    }
+    
+    public function refreshSourceToken(array $payload): array
+    {
+        try {
+            if (method_exists($this->bankClient, 'refreshSourceToken')) {
+                return $this->bankClient->refreshSourceToken($payload);
+            }
+            
+            return [
+                'success' => false,
+                'message' => 'Token refresh not supported by this institution'
+            ];
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => $e->getMessage()
+            ];
+        }
+    }
+    
+    public function revokeSourceToken(array $payload): array
+    {
+        try {
+            if (method_exists($this->bankClient, 'revokeSourceToken')) {
+                return $this->bankClient->revokeSourceToken($payload);
+            }
+            
+            return [
+                'success' => false,
+                'message' => 'Token revocation not supported by this institution'
+            ];
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'message' => $e->getMessage()
+            ];
+        }
+    }
+    
+    public function generateVoucher(array $payload): array
+    {
+        try {
+            if (method_exists($this->bankClient, 'generateVoucher')) {
+                return $this->bankClient->generateVoucher($payload);
+            }
+            
+            return [
+                'success' => false,
+                'message' => 'Voucher generation not supported by this institution'
+            ];
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
                 'message' => $e->getMessage()
             ];
         }
@@ -453,7 +772,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             $this->ensureConsent();
             
             $balancePayload = [
-                'account_id' => $payload['account_id'] ?? $payload['account_identifier'],
+                'account_id' => $payload['account_id'] ?? $payload['account_identifier'] ?? null,
                 'access_token' => $this->accessToken
             ];
             
@@ -475,7 +794,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
                 'success' => true,
                 'balance' => (float) $result['balance'],
                 'currency' => $result['currency'] ?? $payload['currency'] ?? 'BWP',
-                'account_id' => $payload['account_id'],
+                'account_id' => $payload['account_id'] ?? null,
                 'account_name' => $result['account_name'] ?? null,
                 'last_updated' => date('Y-m-d H:i:s')
             ];
@@ -502,7 +821,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             
             $result = $this->bankClient->getTransactions(
                 $this->accessToken ?? '',
-                $payload['account_id'],
+                $payload['account_id'] ?? null,
                 $limit,
                 $offset
             );

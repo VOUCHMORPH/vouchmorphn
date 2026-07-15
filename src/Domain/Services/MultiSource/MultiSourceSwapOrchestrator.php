@@ -7,7 +7,6 @@ use PDO;
 use Domain\Services\SwapService;
 use Domain\Services\Settlement\HybridSettlementStrategy;
 use Infrastructure\Crypto\AggregateSigner;
-use Psr\Log\LoggerInterface;
 
 /**
  * Multi-Source Swap Orchestrator
@@ -18,7 +17,7 @@ use Psr\Log\LoggerInterface;
 class MultiSourceSwapOrchestrator
 {
     private PoolCoordinator $coordinator;
-    private LoggerInterface $logger;
+    private $logger;
 
     public function __construct(
         PDO $db,
@@ -27,24 +26,24 @@ class MultiSourceSwapOrchestrator
         AggregateSigner $aggregateSigner,
         array $config,
         string $countryCode,
-        ?LoggerInterface $logger = null  // Make it optional
+        $logger = null
     ) {
         // Use a default logger if none provided
         if ($logger === null) {
-            $logger = new class implements LoggerInterface {
-                public function emergency($message, array $context = []) { error_log("[MULTI] EMERGENCY: $message"); }
-                public function alert($message, array $context = []) { error_log("[MULTI] ALERT: $message"); }
-                public function critical($message, array $context = []) { error_log("[MULTI] CRITICAL: $message"); }
-                public function error($message, array $context = []) { error_log("[MULTI] ERROR: $message"); }
-                public function warning($message, array $context = []) { error_log("[MULTI] WARNING: $message"); }
-                public function notice($message, array $context = []) { error_log("[MULTI] NOTICE: $message"); }
-                public function info($message, array $context = []) { error_log("[MULTI] INFO: $message"); }
-                public function debug($message, array $context = []) { error_log("[MULTI] DEBUG: $message"); }
-                public function log($level, $message, array $context = []) { error_log("[MULTI] $level: $message"); }
+            $this->logger = new class {
+                public function emergency($message, array $context = []) { error_log("[MULTI] EMERGENCY: " . $message); }
+                public function alert($message, array $context = []) { error_log("[MULTI] ALERT: " . $message); }
+                public function critical($message, array $context = []) { error_log("[MULTI] CRITICAL: " . $message); }
+                public function error($message, array $context = []) { error_log("[MULTI] ERROR: " . $message); }
+                public function warning($message, array $context = []) { error_log("[MULTI] WARNING: " . $message); }
+                public function notice($message, array $context = []) { error_log("[MULTI] NOTICE: " . $message); }
+                public function info($message, array $context = []) { error_log("[MULTI] INFO: " . $message . " " . json_encode($context)); }
+                public function debug($message, array $context = []) { error_log("[MULTI] DEBUG: " . $message); }
+                public function log($level, $message, array $context = []) { error_log("[MULTI] " . $level . ": " . $message); }
             };
+        } else {
+            $this->logger = $logger;
         }
-        
-        $this->logger = $logger;
         
         $this->coordinator = new PoolCoordinator(
             $db,

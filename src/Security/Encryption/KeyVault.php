@@ -10,6 +10,8 @@ use RuntimeException;
  * 
  * Zero hardcoded values. Works for ANY country, ANY participant.
  * 
+ * FIXED: Added PAN_HMAC_KEY support for CardService
+ * 
  * Compliant with:
  * - PSD2 / EBA RTS (Strong Customer Authentication)
  * - ISO 27001:2022 (Asset & Access Control)
@@ -44,6 +46,29 @@ class KeyVault
         }
         
         $this->keys['encryption_master'] = $this->encryptionKey;
+        
+        // ============================================================
+        // PAN HMAC KEY - for CardService PAN hashing
+        // FIXED: Load as first-class key with length validation
+        // ============================================================
+        $panHmacKey = getenv('PAN_HMAC_KEY');
+        if ($panHmacKey && strlen($panHmacKey) >= 32) {
+            $this->keys['pan_hmac_key'] = $panHmacKey;
+        } else {
+            // Log warning but don't fail - CardService will validate on use
+            error_log("[KeyVault] WARNING: PAN_HMAC_KEY not set or too short (min 32 bytes)");
+        }
+        
+        // ============================================================
+        // VRN SIGNING KEY - for CardService cashout token signing
+        // FIXED: Load as first-class key with length validation
+        // ============================================================
+        $vrnSigningKey = getenv('VRN_SIGNING_KEY');
+        if ($vrnSigningKey && strlen($vrnSigningKey) >= 32) {
+            $this->keys['vrn_signing_key'] = $vrnSigningKey;
+        } else {
+            error_log("[KeyVault] WARNING: VRN_SIGNING_KEY not set or too short (min 32 bytes)");
+        }
         
         // Dynamically load ALL participant keys from environment
         $this->loadAllParticipantKeys();
@@ -180,21 +205,21 @@ class KeyVault
         return $this->keys['encryption_master'];
     }
 
-   /**
- * Get any key by name
- */
-public function getKey(string $name): ?string
-{
-    return $this->keys[$name] ?? null;
-}
+    /**
+     * Get any key by name
+     */
+    public function getKey(string $name): ?string
+    {
+        return $this->keys[$name] ?? null;
+    }
 
-/**
- * Alias for getKey - for compatibility with SmsGatewayClient
- */
-public function get(string $name): ?string
-{
-    return $this->getKey($name);
-}
+    /**
+     * Alias for getKey - for compatibility with SmsGatewayClient
+     */
+    public function get(string $name): ?string
+    {
+        return $this->getKey($name);
+    }
 
     /**
      * Get configuration for a specific participant (bank, MNO, PSP)
@@ -329,7 +354,7 @@ public function get(string $name): ?string
         foreach ($this->keys as $key => $value) {
             if (str_ends_with($key, '_api_key') && !str_starts_with($key, 'upstream_')) {
                 $participant = str_replace('_api_key', '', $key);
-                if (!in_array($participant, ['encryption_master', 'vouchmorph'])) {
+                if (!in_array($participant, ['encryption_master', 'vouchmorph', 'pan_hmac', 'vrn_signing'])) {
                     $participants[] = $participant;
                 }
             }

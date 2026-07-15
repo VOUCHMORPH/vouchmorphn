@@ -1,0 +1,29 @@
+# src/Core/Config/Countries/Botswana/ussd_gateways.yaml
+#
+# Which USSD gateway wire format applies to which shortcode/network.
+# This is the USSD equivalent of endpoints.yaml.
+
+AFRICASTALKING_STYLE:
+  request_fields:
+    session_id: [sessionId, SESSION_ID, session_id]
+    phone: [phoneNumber, MSISDN, phone_number]
+    text: [text, INPUT]
+  response_format: prefix
+  content_type: "text/plain; charset=UTF-8"
+
+TELCO_XML_STYLE:
+  request_fields:
+    session_id: [SessionID]
+    phone: [Msisdn]
+    text: [UserInput]
+  response_format: xml
+  content_type: "application/xml"
+  xml_template: "<response><Type>{type}</Type><Message>{message}</Message></response>"
+
+JSON_ENVELOPE_STYLE:
+  request_fields:
+    session_id: [session_id]
+    phone: [msisdn]
+    text: [ussd_string]
+  response_format: json
+  content_type: "application/json"

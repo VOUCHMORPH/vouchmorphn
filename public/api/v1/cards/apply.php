@@ -24,34 +24,34 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit();
 }
 
-// Load system config
-require_once ROOT_PATH . '/src/CORE_CONFIG/system_country.php';
-require_once ROOT_PATH . '/src/CORE_CONFIG/load_country.php';
+// ============================================
+// 1. BOOTSTRAP - Load container
+// ============================================
+$container = require_once ROOT_PATH . '/src/bootstrap.php';
+
+// ============================================
+// 2. LOAD SYSTEM CONFIG & CORE (FIXED PATHS)
+// ============================================
+require_once ROOT_PATH . '/src/Core/Config/SystemCountry.php';
+require_once ROOT_PATH . '/src/Core/Config/LoadCountry.php';
+
 $country = defined('SYSTEM_COUNTRY') ? SYSTEM_COUNTRY : 'BW';
 
-// Load required classes
-require_once ROOT_PATH . '/src/DATA_PERSISTENCE_LAYER/config/DBConnection.php';
-require_once ROOT_PATH . '/src/BUSINESS_LOGIC_LAYER/services/CardApplicationService.php';
-require_once ROOT_PATH . '/src/BUSINESS_LOGIC_LAYER/services/KYCDocumentService.php';
+// ============================================
+// 3. LOAD REQUIRED CLASSES (fixed paths)
+// ============================================
+require_once ROOT_PATH . '/src/Domain/Services/CardApplicationService.php';
+require_once ROOT_PATH . '/src/Domain/Services/KYCDocumentService.php';
+require_once ROOT_PATH . '/src/Domain/Services/CardService.php';
 
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
-use BUSINESS_LOGIC_LAYER\services\CardApplicationService;
+use Domain\Services\CardApplicationService;
+use Domain\Services\KYCDocumentService;
+use Domain\Services\CardService;
 
 // ============================================
-// ADD THIS MISSING HELPER FUNCTION
+// 4. LOAD ENVIRONMENT
 // ============================================
-if (!function_exists('get_env_val')) {
-    function get_env_val(string $key) {
-        $val = getenv($key);
-        if ($val === false) {
-            $val = $_ENV[$key] ?? ($_SERVER[$key] ?? null);
-        }
-        return $val;
-    }
-}
-
-// Load environment
-$envFile = ROOT_PATH . "/src/CORE_CONFIG/countries/{$country}/.env_{$country}";
+$envFile = ROOT_PATH . "/src/Core/Config/Countries/{$country}/.env_{$country}";
 if (file_exists($envFile)) {
     $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($lines as $line) {
@@ -68,7 +68,19 @@ if (file_exists($envFile)) {
     }
 }
 
-// Authentication
+if (!function_exists('get_env_val')) {
+    function get_env_val(string $key) {
+        $val = getenv($key);
+        if ($val === false) {
+            $val = $_ENV[$key] ?? ($_SERVER[$key] ?? null);
+        }
+        return $val;
+    }
+}
+
+// ============================================
+// 5. AUTHENTICATION - No hardcoded fallback
+// ============================================
 $headers = function_exists('getallheaders') ? getallheaders() : [];
 $headersLower = array_change_key_case($headers, CASE_LOWER);
 $providedKey = $headersLower['x-api-key'] ?? $_SERVER['HTTP_X_API_KEY'] ?? null;
@@ -80,7 +92,9 @@ if (!$providedKey || !in_array($providedKey, $validKeys, true)) {
     exit();
 }
 
-// Get input
+// ============================================
+// 6. GET INPUT
+// ============================================
 $input = json_decode(file_get_contents('php://input'), true);
 if (json_last_error() !== JSON_ERROR_NONE) {
     http_response_code(400);
@@ -88,7 +102,9 @@ if (json_last_error() !== JSON_ERROR_NONE) {
     exit();
 }
 
-// Validate required fields
+// ============================================
+// 7. VALIDATE REQUIRED FIELDS
+// ============================================
 $required = ['full_name', 'id_number', 'id_type', 'date_of_birth', 'phone', 'email', 'card_type'];
 foreach ($required as $field) {
     if (empty($input[$field])) {
@@ -98,16 +114,17 @@ foreach ($required as $field) {
     }
 }
 
-// Validate card type
 if (!in_array($input['card_type'], ['PHYSICAL', 'VIRTUAL'])) {
     http_response_code(400);
     echo json_encode(['success' => false, 'error' => 'card_type must be PHYSICAL or VIRTUAL']);
     exit();
 }
 
-// Database connection
+// ============================================
+// 8. DATABASE CONNECTION - from container
+// ============================================
 try {
-    $pdo = DBConnection::getConnection();
+    $pdo = $container->get(PDO::class);
     if (!$pdo) throw new Exception('Database connection failed');
 } catch (Exception $e) {
     http_response_code(500);
@@ -115,10 +132,12 @@ try {
     exit();
 }
 
-// Process application
+// ============================================
+// 9. PROCESS APPLICATION
+// ============================================
 try {
     $config = [];
-    $cardConfigPath = ROOT_PATH . "/src/CORE_CONFIG/countries/{$country}/card_config_{$country}.json";
+    $cardConfigPath = ROOT_PATH . "/src/Core/Config/Countries/{$country}/card_config_{$country}.json";
     if (file_exists($cardConfigPath)) {
         $config = json_decode(file_get_contents($cardConfigPath), true);
     }

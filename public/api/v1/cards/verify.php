@@ -1,101 +1,133 @@
 <?php
 declare(strict_types=1);
 
-// Headers - good!
+/**
+ * VouchMorphn - Card Verification API
+ * Verifies card authorizations (message-based cards)
+ */
+
+// ============================================
+// 1. BOOTSTRAP & PATHS
+// ============================================
+define('ROOT_PATH', dirname(__DIR__, 4));
+
+// ============================================
+// 2. HEADERS
+// ============================================
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, X-API-Key, X-Correlation-ID'); // Added X-Correlation-ID
+header('Access-Control-Allow-Headers: Content-Type, X-API-Key, X-Correlation-ID');
 
-// Fix paths - they look correct now (4 levels up to root)
-require_once __DIR__ . '/../../../../src/bootstrap.php';
-require_once __DIR__ . '/../../../../src/BUSINESS_LOGIC_LAYER/services/CardService.php';
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
 
-use BUSINESS_LOGIC_LAYER\services\CardService;
+// ============================================
+// 3. BOOTSTRAP - Load container
+// ============================================
+$container = require_once ROOT_PATH . '/src/bootstrap.php';
 
+// ============================================
+// 4. LOAD SYSTEM CONFIG & CORE (FIXED PATHS)
+// ============================================
+require_once ROOT_PATH . '/src/Core/Config/SystemCountry.php';
+require_once ROOT_PATH . '/src/Core/Config/LoadCountry.php';
+
+$country = defined('SYSTEM_COUNTRY') ? SYSTEM_COUNTRY : 'BW';
+
+// ============================================
+// 5. LOAD REQUIRED CLASSES (FIXED PATHS)
+// ============================================
+require_once ROOT_PATH . '/src/Domain/Services/CardService.php';
+
+use Domain\Services\CardService;
+
+// ============================================
+// 6. LOAD ENVIRONMENT
+// ============================================
+$envFile = ROOT_PATH . "/src/Core/Config/Countries/{$country}/.env_{$country}";
+if (file_exists($envFile)) {
+    $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if (empty($line) || strpos($line, '#') === 0) continue;
+        $parts = explode('=', $line, 2);
+        if (count($parts) === 2) {
+            $key = trim($parts[0]);
+            $value = trim($parts[1]);
+            putenv("$key=$value");
+            $_ENV[$key] = $value;
+            $_SERVER[$key] = $value;
+        }
+    }
+}
+
+if (!function_exists('get_env_val')) {
+    function get_env_val(string $key) {
+        $val = getenv($key);
+        if ($val === false) {
+            $val = $_ENV[$key] ?? ($_SERVER[$key] ?? null);
+        }
+        return $val;
+    }
+}
+
+// ============================================
+// 7. AUTHENTICATION - NO HARDCODED FALLBACK
+// ============================================
+$headers = function_exists('getallheaders') ? getallheaders() : [];
+$headersLower = array_change_key_case($headers, CASE_LOWER);
+$providedKey = $headersLower['x-api-key'] ?? $_SERVER['HTTP_X_API_KEY'] ?? null;
+
+$validKeys = array_filter([get_env_val('API_KEY_SYSTEM')]);
+if (!$providedKey || !in_array($providedKey, $validKeys, true)) {
+    http_response_code(401);
+    echo json_encode(['success' => false, 'error' => 'Unauthorized']);
+    exit();
+}
+
+// ============================================
+// 8. GET INPUT
+// ============================================
+$input = json_decode(file_get_contents('php://input'), true);
+if (!$input) {
+    $input = $_GET;
+}
+
+// ============================================
+// 9. DATABASE CONNECTION - from container
+// ============================================
 try {
-    // Better API key validation - use your existing auth function if available
-    $apiKey = $_SERVER['HTTP_X_API_KEY'] ?? $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-    $apiKey = str_replace('Bearer ', '', $apiKey);
-    
-    // Use your existing validateApiKey function if it exists
-    if (function_exists('validateApiKey')) {
-        if (!validateApiKey($apiKey)) {
-            http_response_code(401);
-            echo json_encode(['error' => 'Invalid API key']);
-            exit;
-        }
-    } else {
-        // Fallback to hardcoded check (temporary)
-        if ($apiKey !== 'sys_key_2026_sandbox_001') {
-            http_response_code(401);
-            echo json_encode(['error' => 'Invalid API key']);
-            exit;
-        }
-    }
+    $pdo = $container->get(PDO::class);
+    if (!$pdo) throw new Exception('Database connection failed');
+} catch (Exception $e) {
+    http_response_code(500);
+    echo json_encode(['success' => false, 'error' => 'Database error']);
+    exit();
+}
 
-    // Get request body
-    $input = json_decode(file_get_contents('php://input'), true);
-    if (!$input) {
-        $input = $_GET; // Fallback to GET params
-    }
+// ============================================
+// 10. LOAD COUNTRY-SPECIFIC CARD CONFIG
+// ============================================
+$config = [];
+$cardConfigPath = ROOT_PATH . "/src/Core/Config/Countries/{$country}/card_config_{$country}.json";
+if (file_exists($cardConfigPath)) {
+    $config = json_decode(file_get_contents($cardConfigPath), true);
+}
+
+// ============================================
+// 11. EXECUTE VERIFICATION
+// ============================================
+try {
+    $cardService = new CardService($pdo, $country, $config);
     
-    // IMPORTANT: Don't redefine getDatabaseConnection if bootstrap already provides it
-    // Just use the existing one from bootstrap
-    if (!function_exists('getDatabaseConnection')) {
-        // Define it only if bootstrap doesn't provide it
-        function getDatabaseConnection() {
-            static $pdo = null;
-            if ($pdo === null) {
-                // Use environment variables from Railway
-                $host = $_ENV['PGHOST'] ?? $_ENV['DB_HOST'] ?? 'localhost';
-                $port = $_ENV['PGPORT'] ?? $_ENV['DB_PORT'] ?? '5432';
-                $dbname = $_ENV['PGDATABASE'] ?? $_ENV['DB_NAME'] ?? 'postgres';
-                $user = $_ENV['PGUSER'] ?? $_ENV['DB_USER'] ?? 'postgres';
-                $pass = $_ENV['PGPASSWORD'] ?? $_ENV['DB_PASS'] ?? '';
-                
-                // Check for Railway's DATABASE_URL
-                if (getenv('DATABASE_URL')) {
-                    $dbUrl = parse_url(getenv('DATABASE_URL'));
-                    $host = $dbUrl['host'] ?? $host;
-                    $port = $dbUrl['port'] ?? $port;
-                    $user = $dbUrl['user'] ?? $user;
-                    $pass = $dbUrl['pass'] ?? $pass;
-                    $dbname = ltrim($dbUrl['path'] ?? '', '/') ?: $dbname;
-                }
-                
-                $dsn = "pgsql:host=$host;port=$port;dbname=$dbname";
-                $pdo = new PDO($dsn, $user, $pass);
-                $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-            }
-            return $pdo;
-        }
-    }
-    
-    // Get database connection (from bootstrap or our fallback)
-    $db = getDatabaseConnection();
-    
-    // Load participant config - bootstrap should provide this
-    $participants = [];
-    if (function_exists('loadParticipantsConfig')) {
-        $config = loadParticipantsConfig();
-        $participants = $config['participants'] ?? [];
-    }
-    
-    $cardService = new CardService(
-        $db, 
-        'BWP', 
-        $participants['vouchmorph'] ?? []  // Pass VouchMorph config
-    );
-    
-    // Extract verification data
     $assetType = $input['asset_type'] ?? '';
     $amount = (float)($input['amount'] ?? 0);
     $reference = $input['reference'] ?? '';
     
-    // Handle different verification types
     if ($assetType === 'CARD') {
-        // Verifying a card authorization (message-based)
         $cardSuffix = $input['card']['card_suffix'] ?? 
                      $input['card_suffix'] ?? 
                      $input['card_number'] ?? null;
@@ -104,10 +136,8 @@ try {
             throw new Exception("Card identifier required");
         }
         
-        // Get card authorization (the message)
         $cardInfo = $cardService->getCardAuthorization($cardSuffix);
         
-        // Check if enough authorized amount remains
         if ($cardInfo['remaining_balance'] < $amount) {
             echo json_encode([
                 'verified' => false,
@@ -118,7 +148,6 @@ try {
             exit;
         }
         
-        // Return verification of the MESSAGE, not real money
         echo json_encode([
             'verified' => true,
             'asset_id' => $cardInfo['authorization_id'],
@@ -135,7 +164,6 @@ try {
         ]);
         
     } elseif ($assetType === 'E-WALLET' || $assetType === 'ACCOUNT') {
-        // Regular asset verification - forward to bank
         echo json_encode([
             'verified' => false,
             'message' => 'E-WALLET verification not implemented in this endpoint'

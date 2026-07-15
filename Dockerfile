@@ -35,9 +35,12 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 WORKDIR /var/www/html
 
 # -------------------------------
-# Composer install (FIXED)
+# Composer install (FIXED: update phpspreadsheet specifically, then install)
 # -------------------------------
 COPY composer.json composer.lock ./
+# First, update phpspreadsheet to fix the lock file mismatch
+RUN composer update phpoffice/phpspreadsheet --no-dev --optimize-autoloader --no-interaction --prefer-dist
+# Then run a regular install to ensure everything is consistent
 RUN composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
 
 # -------------------------------

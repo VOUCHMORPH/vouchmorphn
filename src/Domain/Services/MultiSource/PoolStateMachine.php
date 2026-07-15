@@ -3,82 +3,121 @@ declare(strict_types=1);
 
 namespace Domain\Services\MultiSource;
 
-use Domain\Models\FundingPool;
-use Domain\ValueObjects\PoolStatus;
 use RuntimeException;
 
+/**
+ * Pool State Machine
+ * Manages state transitions for multi-source funding pools
+ */
 class PoolStateMachine
 {
+    /**
+     * Valid state transitions
+     * Current state => [allowed next states]
+     */
     private array $transitions = [
-        PoolStatus::CREATED->value => [
-            PoolStatus::VERIFYING->value,
-            PoolStatus::CANCELLED->value
-        ],
-        PoolStatus::VERIFYING->value => [
-            PoolStatus::HOLDING->value,
-            PoolStatus::FAILED->value,
-            PoolStatus::CANCELLED->value
-        ],
-        PoolStatus::HOLDING->value => [
-            PoolStatus::FUNDED->value,
-            PoolStatus::FAILED->value,
-            PoolStatus::ROLLED_BACK->value
-        ],
-        PoolStatus::FUNDED->value => [
-            PoolStatus::DESTINATION_PENDING->value,
-            PoolStatus::FAILED->value
-        ],
-        PoolStatus::DESTINATION_PENDING->value => [
-            PoolStatus::DESTINATION_COMPLETED->value,
-            PoolStatus::FAILED->value
-        ],
-        PoolStatus::DESTINATION_COMPLETED->value => [
-            PoolStatus::DEBITING->value,
-            PoolStatus::FAILED->value
-        ],
-        PoolStatus::DEBITING->value => [
-            PoolStatus::SETTLING->value,
-            PoolStatus::FAILED->value,
-            PoolStatus::ROLLED_BACK->value
-        ],
-        PoolStatus::SETTLING->value => [
-            PoolStatus::INVOICING->value,
-            PoolStatus::FAILED->value
-        ],
-        PoolStatus::INVOICING->value => [
-            PoolStatus::COMPLETED->value,
-            PoolStatus::FAILED->value
-        ],
-        PoolStatus::COMPLETED->value => [],
-        PoolStatus::FAILED->value => [],
-        PoolStatus::CANCELLED->value => [],
-        PoolStatus::ROLLED_BACK->value => []
+        'CREATED' => ['VERIFYING', 'CANCELLED'],
+        'VERIFYING' => ['HOLDING', 'FAILED', 'CANCELLED'],
+        'HOLDING' => ['FUNDED', 'FAILED', 'ROLLED_BACK'],
+        'FUNDED' => ['DESTINATION_PENDING', 'FAILED'],
+        'DESTINATION_PENDING' => ['DESTINATION_COMPLETED', 'FAILED'],
+        'DESTINATION_COMPLETED' => ['DEBITING', 'FAILED'],
+        'DEBITING' => ['SETTLING', 'FAILED', 'ROLLED_BACK'],
+        'SETTLING' => ['INVOICING', 'FAILED'],
+        'INVOICING' => ['COMPLETED', 'FAILED'],
+        'COMPLETED' => [],
+        'FAILED' => [],
+        'CANCELLED' => [],
+        'ROLLED_BACK' => []
     ];
 
-    public function transition(FundingPool $pool, PoolStatus $newStatus, array $metadata = []): void
+    public function transition(array &$pool, string $newStatus, array $metadata = []): void
     {
-        $currentStatus = $pool->getStatus();
+        $currentStatus = $pool['status'] ?? 'CREATED';
+        
+        if ($currentStatus === $newStatus) {
+            return;
+        }
 
         if (!$this->canTransition($currentStatus, $newStatus)) {
             throw new RuntimeException(
-                "Invalid state transition from {$currentStatus->value} to {$newStatus->value}"
+                "Invalid state transition from {$currentStatus} to {$newStatus}"
             );
         }
 
-        $pool->setStatus($newStatus);
-        $pool->setMetadata(array_merge($pool->getMetadata(), $metadata));
+        $pool['status'] = $newStatus;
+        $pool['updated_at'] = date('Y-m-d H:i:s');
+        
+        if (!empty($metadata)) {
+            $pool['metadata'] = array_merge($pool['metadata'] ?? [], $metadata);
+        }
 
         error_log(sprintf(
             "[PoolStateMachine] Pool %s: %s → %s",
-            $pool->getPoolId(),
-            $currentStatus->value,
-            $newStatus->value
+            $pool['id'] ?? 'unknown',
+            $currentStatus,
+            $newStatus
         ));
     }
 
-    public function canTransition(PoolStatus $current, PoolStatus $new): bool
+    public function canTransition(string $current, string $new): bool
     {
-        $allowed = $this->transitions[$current->value] ?? [];
-        return in_array($new->value, $allowed);
+        $allowed = $this->transitions[$current] ?? [];
+        return in_array($new, $allowed);
+    }
+
+    public function getAllowedTransitions(string $current): array
+    {
+        return $this->transitions[$current] ?? [];
+    }
+
+    public function isTerminal(string $state): bool
+    {
+        return empty($this->transitions[$state] ?? []);
+    }
+
+    public function isFailureState(string $state): bool
+    {
+        return in_array($state, ['FAILED', 'CANCELLED', 'ROLLED_BACK']);
+    }
+
+    public function isSuccessState(string $state): bool
+    {
+        return $state === 'COMPLETED';
+    }
+
+    public function getTransitionPath(string $start, string $end): ?array
+    {
+        if ($start === $end) {
+            return [$start];
+        }
+
+        $visited = [];
+        $queue = [[$start]];
+
+        while (!empty($queue)) {
+            $path = array_shift($queue);
+            $current = end($path);
+
+            if ($current === $end) {
+                return $path;
+            }
+
+            if (in_array($current, $visited)) {
+                continue;
+            }
+
+            $visited[] = $current;
+
+            foreach ($this->transitions[$current] ?? [] as $next) {
+                if (!in_array($next, $visited)) {
+                    $newPath = $path;
+                    $newPath[] = $next;
+                    $queue[] = $newPath;
+                }
+            }
+        }
+
+        return null;
     }
 }

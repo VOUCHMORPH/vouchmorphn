@@ -5,89 +5,74 @@ namespace Application\Utils;
 
 /**
  * SessionManager
- * -----------------
- * Secure and centralized session control for VouchMorph SWAP System.
- * Supports both User and Admin sessions.
+ * ---------------
+ * Unified session management for VouchMorph.
+ * Supports: users (from users table), admins (from admins table)
+ * Roles come from roles table - NOT hardcoded.
  */
 class SessionManager
 {
+    private const SESSION_LIFETIME = 86400; // 24 hours
+    private const IDLE_TIMEOUT = 1800; // 30 minutes
+
     /**
-     * Start session securely (once).
+     * Start session securely
      */
     public static function start(): void
     {
-        if (session_status() === PHP_SESSION_NONE) {
-            session_start([
-                'cookie_httponly' => true,
-                'cookie_samesite' => 'Strict',
-                'use_strict_mode' => true,
-            ]);
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            return;
+        }
+
+        // Security settings
+        ini_set('session.cookie_httponly', '1');
+        ini_set('session.cookie_samesite', 'Lax');
+        ini_set('session.gc_maxlifetime', (string)self::SESSION_LIFETIME);
+        ini_set('session.cookie_lifetime', (string)self::SESSION_LIFETIME);
+        
+        if (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') {
+            ini_set('session.cookie_secure', '1');
+        }
+
+        session_start();
+
+        // Check idle timeout
+        if (self::isLoggedIn()) {
+            $lastActivity = $_SESSION['_last_activity'] ?? 0;
+            if (time() - $lastActivity > self::IDLE_TIMEOUT) {
+                self::logout();
+            }
         }
     }
 
     // ============================================================
-    // GENERIC SESSION METHODS (for both User and Admin)
+    // CORE SESSION METHODS
     // ============================================================
 
-    /**
-     * Set a session value (generic key-value).
-     */
     public static function set(string $key, $value): void
     {
         self::start();
         $_SESSION[$key] = $value;
     }
 
-    /**
-     * Get a session value by key.
-     */
     public static function get(string $key, $default = null)
     {
         self::start();
         return $_SESSION[$key] ?? $default;
     }
 
-    /**
-     * Remove a session key.
-     */
     public static function remove(string $key): void
     {
         self::start();
-        if (isset($_SESSION[$key])) {
-            unset($_SESSION[$key]);
-        }
+        unset($_SESSION[$key]);
     }
 
-    /**
-     * Check if a session key exists.
-     */
     public static function has(string $key): bool
     {
         self::start();
         return isset($_SESSION[$key]);
     }
 
-    /**
-     * Get all session data.
-     */
-    public static function getAll(): array
-    {
-        self::start();
-        return $_SESSION;
-    }
-
-    /**
-     * Clear all session data (but keep session active).
-     */
-    public static function clear(): void
-    {
-        self::start();
-        $_SESSION = [];
-    }
-
-    /**
-     * Regenerate session ID for security.
-     */
     public static function regenerateId(): void
     {
         self::start();
@@ -97,272 +82,497 @@ class SessionManager
     }
 
     // ============================================================
-    // USER SESSION METHODS (for frontend users)
+    // LOGIN METHODS
     // ============================================================
 
     /**
-     * Store logged-in user data in session.
+     * Login a user from the 'users' table
+     * 
+     * @param array $userData Must contain: user_id, username, email, phone, role_id
+     *                        Optional: full_name, phone2, phone3, etc.
+     *                        role_name and permissions should be joined from roles table
      */
-    public static function setUser(array $userData): void
+    public static function loginUser(array $userData): void
     {
         self::start();
-        $_SESSION['user'] = $userData;
-        $_SESSION['user_logged_in'] = true;
-        $_SESSION['logged_in'] = true; // Backward compatibility
+        self::regenerateId();
+
+        $_SESSION['user'] = [
+            'id' => $userData['user_id'],
+            'username' => $userData['username'] ?? null,
+            'full_name' => $userData['full_name'] ?? $userData['username'] ?? 'User',
+            'phone' => $userData['phone'] ?? null,
+            'phone2' => $userData['phone2'] ?? null,
+            'phone3' => $userData['phone3'] ?? null,
+            'email' => $userData['email'] ?? null,
+            // Role data from roles table (joined in query)
+            'role' => $userData['role_name'] ?? null,
+            'role_id' => $userData['role_id'] ?? null,
+            'role_level' => $userData['role_level'] ?? null,
+            'permissions' => $userData['permissions'] ?? [],
+            'verified' => $userData['verified'] ?? 0,
+            'kyc_verified' => $userData['kyc_verified'] ?? 0,
+            'wallet_uuid' => $userData['wallet_uuid'] ?? null,
+            'country_code' => $userData['country_code'] ?? null,
+        ];
+        
+        $_SESSION['_logged_in'] = true;
+        $_SESSION['_login_time'] = time();
+        $_SESSION['_last_activity'] = time();
+        $_SESSION['_user_type'] = 'user';
+        $_SESSION['_login_source'] = 'users';
     }
 
     /**
-     * Retrieve current user session data.
+     * Login an admin from the 'admins' table
+     * 
+     * @param array $adminData Must contain: admin_id, username, email, role_id
+     *                         Optional: full_name, phone, country_code
+     *                         role_name and permissions should be joined from roles table
      */
-    public static function getUser(): ?array
+    public static function loginAdmin(array $adminData): void
+    {
+        self::start();
+        self::regenerateId();
+
+        $_SESSION['user'] = [
+            'id' => $adminData['admin_id'],
+            'username' => $adminData['username'] ?? null,
+            'full_name' => $adminData['full_name'] ?? $adminData['username'] ?? 'Admin',
+            'phone' => $adminData['phone'] ?? null,
+            'email' => $adminData['email'] ?? null,
+            // Role data from roles table (joined in query)
+            'role' => $adminData['role_name'] ?? null,
+            'role_id' => $adminData['role_id'] ?? null,
+            'role_level' => $adminData['role_level'] ?? null,
+            'permissions' => $adminData['permissions'] ?? [],
+            'country_code' => $adminData['country_code'] ?? null,
+            'mfa_enabled' => $adminData['mfa_enabled'] ?? 0,
+        ];
+        
+        $_SESSION['_logged_in'] = true;
+        $_SESSION['_login_time'] = time();
+        $_SESSION['_last_activity'] = time();
+        $_SESSION['_user_type'] = 'admin';
+        $_SESSION['_login_source'] = 'admins';
+    }
+
+    /**
+     * Universal login - auto-detects if user or admin
+     * Use this when you don't know which table the user came from
+     */
+    public static function login(array $userData): void
+    {
+        // Check if this is admin data (has admin_id instead of user_id)
+        if (isset($userData['admin_id'])) {
+            self::loginAdmin($userData);
+        } else {
+            self::loginUser($userData);
+        }
+    }
+
+    // ============================================================
+    // CHECK LOGIN STATUS
+    // ============================================================
+
+    public static function isLoggedIn(): bool
+    {
+        self::start();
+        return isset($_SESSION['_logged_in']) && $_SESSION['_logged_in'] === true;
+    }
+
+    public static function user(): ?array
     {
         self::start();
         return $_SESSION['user'] ?? null;
     }
 
-    /**
-     * Retrieve only username for display.
-     */
-    public static function getUserName(): string
+    public static function userId(): ?int
     {
-        $user = self::getUser();
-        return $user['username'] ?? $user['full_name'] ?? $user['name'] ?? 'Unknown';
+        $user = self::user();
+        return $user['id'] ?? null;
     }
 
-    /**
-     * Retrieve current user role.
-     */
-    public static function getUserRole(): ?string
+    public static function username(): ?string
     {
-        $user = self::getUser();
+        $user = self::user();
+        return $user['username'] ?? null;
+    }
+
+    public static function displayName(): string
+    {
+        $user = self::user();
+        return $user['full_name'] ?? $user['username'] ?? 'User';
+    }
+
+    public static function phone(): ?string
+    {
+        $user = self::user();
+        return $user['phone'] ?? null;
+    }
+
+    public static function phone2(): ?string
+    {
+        $user = self::user();
+        return $user['phone2'] ?? null;
+    }
+
+    public static function phone3(): ?string
+    {
+        $user = self::user();
+        return $user['phone3'] ?? null;
+    }
+
+    public static function email(): ?string
+    {
+        $user = self::user();
+        return $user['email'] ?? null;
+    }
+
+    // ============================================================
+    // ROLE METHODS (from roles table via JOIN)
+    // ============================================================
+
+    public static function role(): ?string
+    {
+        $user = self::user();
         return $user['role'] ?? null;
     }
 
-    /**
-     * Get current user ID.
-     */
-    public static function getUserId(): ?int
+    public static function roleId(): ?int
     {
-        self::start();
-        return $_SESSION['user_id'] ?? $_SESSION['user']['id'] ?? null;
+        $user = self::user();
+        return $user['role_id'] ?? null;
     }
 
-    /**
-     * Get current user phone.
-     */
-    public static function getUserPhone(): ?string
+    public static function roleLevel(): ?int
     {
-        self::start();
-        return $_SESSION['user_phone'] ?? $_SESSION['user']['phone'] ?? null;
+        $user = self::user();
+        return $user['role_level'] ?? null;
     }
 
-    /**
-     * Check if regular user is logged in.
-     */
-    public static function isUserLoggedIn(): bool
+    public static function permissions(): array
     {
-        self::start();
-        return (isset($_SESSION['user_logged_in']) && $_SESSION['user_logged_in'] === true)
-            || (isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true);
-    }
-
-    // ============================================================
-    // ADMIN SESSION METHODS (for backend administrators)
-    // ============================================================
-
-    /**
-     * Store logged-in admin data in session.
-     */
-    public static function setAdmin(array $adminData): void
-    {
-        self::start();
-        $_SESSION['admin'] = $adminData;
-        $_SESSION['admin_id'] = $adminData['admin_id'] ?? $adminData['id'] ?? null;
-        $_SESSION['admin_username'] = $adminData['username'] ?? null;
-        $_SESSION['admin_email'] = $adminData['email'] ?? null;
-        $_SESSION['admin_full_name'] = $adminData['full_name'] ?? null;
-        $_SESSION['admin_role_id'] = $adminData['role_id'] ?? null;
-        $_SESSION['admin_country'] = $adminData['country'] ?? $adminData['country_code'] ?? null;
-        $_SESSION['admin_logged_in'] = true;
-    }
-
-    /**
-     * Retrieve current admin session data.
-     */
-    public static function getAdmin(): ?array
-    {
-        self::start();
-        return $_SESSION['admin'] ?? null;
-    }
-
-    /**
-     * Get current admin ID.
-     */
-    public static function getAdminId(): ?int
-    {
-        self::start();
-        return $_SESSION['admin_id'] ?? null;
-    }
-
-    /**
-     * Get current admin username.
-     */
-    public static function getAdminUsername(): ?string
-    {
-        self::start();
-        return $_SESSION['admin_username'] ?? null;
-    }
-
-    /**
-     * Get current admin role ID.
-     */
-    public static function getAdminRoleId(): ?int
-    {
-        self::start();
-        return $_SESSION['admin_role_id'] ?? null;
-    }
-
-    /**
-     * Get current admin country.
-     */
-    public static function getAdminCountry(): ?string
-    {
-        self::start();
-        return $_SESSION['admin_country'] ?? null;
-    }
-
-    /**
-     * Check if admin is logged in.
-     */
-    public static function isAdminLoggedIn(): bool
-    {
-        self::start();
-        return isset($_SESSION['admin_logged_in']) && $_SESSION['admin_logged_in'] === true;
-    }
-
-    /**
-     * Check if MFA is pending for admin.
-     */
-    public static function isAdminMfaPending(): bool
-    {
-        self::start();
-        return isset($_SESSION['admin_mfa_pending']) && $_SESSION['admin_mfa_pending'] === true;
-    }
-
-    /**
-     * Set MFA pending flag.
-     */
-    public static function setAdminMfaPending(bool $pending = true): void
-    {
-        self::start();
-        $_SESSION['admin_mfa_pending'] = $pending;
-    }
-
-    // ============================================================
-    // COMPATIBILITY & LEGACY METHODS
-    // ============================================================
-
-    /**
-     * Check if ANY user (regular or admin) is logged in.
-     */
-    public static function isLoggedIn(): bool
-    {
-        self::start();
-        return self::isUserLoggedIn() || self::isAdminLoggedIn();
-    }
-
-    /**
-     * Get current role (returns 'admin' or user role).
-     */
-    public static function getRole(): ?string
-    {
-        if (self::isAdminLoggedIn()) {
-            return 'admin';
+        $user = self::user();
+        $perms = $user['permissions'] ?? [];
+        
+        if (is_string($perms)) {
+            $perms = json_decode($perms, true) ?? [];
         }
         
-        $user = self::getUser();
-        return $user['role'] ?? null;
+        return is_array($perms) ? $perms : [];
     }
 
-    /**
-     * Require login before allowing access (redirects to user login).
-     */
-    public static function requireLogin(string $redirectTo = 'login.php'): void
+    public static function hasPermission(string $permission): bool
     {
-        if (!self::isLoggedIn()) {
-            header("Location: {$redirectTo}");
-            exit();
-        }
+        $perms = self::permissions();
+        return in_array($permission, $perms, true) || in_array('full_access', $perms, true);
     }
 
     /**
-     * Require admin login before allowing access.
+     * Check if user has any of the given roles
      */
-    public static function requireAdminLogin(string $redirectTo = 'admin_login.php'): void
+    public static function hasRole(array|string $roles): bool
     {
-        if (!self::isAdminLoggedIn()) {
-            header("Location: {$redirectTo}");
-            exit();
+        if (is_string($roles)) {
+            $roles = [$roles];
         }
+        
+        $userRole = self::role();
+        return in_array($userRole, $roles, true);
     }
 
     /**
-     * Require user login before allowing access.
+     * Check specific role from roles table
      */
-    public static function requireUserLogin(string $redirectTo = 'user/login.php'): void
+    public static function isRole(string $role): bool
     {
-        if (!self::isUserLoggedIn()) {
-            header("Location: {$redirectTo}");
-            exit();
-        }
+        return self::role() === $role;
     }
 
-    /**
-     * End the session completely (logs out both user and admin).
-     */
-    public static function destroy(): void
+    // ============================================================
+    // USER TYPE METHODS
+    // ============================================================
+
+    public static function userType(): string
     {
         self::start();
-        $_SESSION = [];
+        return $_SESSION['_user_type'] ?? 'user';
+    }
 
-        if (ini_get("session.use_cookies")) {
+    public static function isAdmin(): bool
+    {
+        return self::userType() === 'admin';
+    }
+
+    public static function isUser(): bool
+    {
+        return self::userType() === 'user';
+    }
+
+    public static function loginSource(): string
+    {
+        self::start();
+        return $_SESSION['_login_source'] ?? 'users';
+    }
+
+    // ============================================================
+    // USER SPECIFIC (from users table)
+    // ============================================================
+
+    public static function isVerified(): bool
+    {
+        $user = self::user();
+        return (bool)($user['verified'] ?? 0);
+    }
+
+    public static function isKycVerified(): bool
+    {
+        $user = self::user();
+        return (bool)($user['kyc_verified'] ?? 0);
+    }
+
+    public static function walletUuid(): ?string
+    {
+        $user = self::user();
+        return $user['wallet_uuid'] ?? null;
+    }
+
+    // ============================================================
+    // ADMIN SPECIFIC (from admins table)
+    // ============================================================
+
+    public static function isMfaEnabled(): bool
+    {
+        $user = self::user();
+        return (bool)($user['mfa_enabled'] ?? 0);
+    }
+
+    public static function countryCode(): ?string
+    {
+        $user = self::user();
+        return $user['country_code'] ?? null;
+    }
+
+    // ============================================================
+    // LOGOUT
+    // ============================================================
+
+    public static function logout(): void
+    {
+        self::start();
+        
+        $_SESSION = [];
+        
+        if (ini_get('session.use_cookies')) {
             $params = session_get_cookie_params();
-            setcookie(session_name(), '', time() - 42000,
-                $params['path'], $params['domain'],
-                $params['secure'], $params['httponly']
+            setcookie(
+                session_name(),
+                '',
+                time() - 3600,
+                $params['path'],
+                $params['domain'],
+                $params['secure'],
+                $params['httponly']
             );
         }
-
+        
         session_destroy();
     }
 
-    /**
-     * Logout user only (preserve admin session if exists).
-     */
-    public static function logoutUser(): void
+    // ============================================================
+    // FLASH MESSAGES
+    // ============================================================
+
+    public static function flash(string $key, string $message): void
     {
         self::start();
-        unset($_SESSION['user']);
-        unset($_SESSION['user_logged_in']);
-        unset($_SESSION['user_id']);
-        unset($_SESSION['user_phone']);
-        unset($_SESSION['logged_in']);
+        $_SESSION['_flash'][$key] = $message;
     }
 
-    /**
-     * Logout admin only (preserve user session if exists).
-     */
-    public static function logoutAdmin(): void
+    public static function getFlash(string $key): ?string
     {
         self::start();
-        unset($_SESSION['admin']);
-        unset($_SESSION['admin_id']);
-        unset($_SESSION['admin_username']);
-        unset($_SESSION['admin_email']);
-        unset($_SESSION['admin_full_name']);
-        unset($_SESSION['admin_role_id']);
-        unset($_SESSION['admin_country']);
-        unset($_SESSION['admin_logged_in']);
-        unset($_SESSION['admin_mfa_pending']);
+        $message = $_SESSION['_flash'][$key] ?? null;
+        unset($_SESSION['_flash'][$key]);
+        return $message;
     }
+
+    public static function hasFlash(string $key): bool
+    {
+        self::start();
+        return isset($_SESSION['_flash'][$key]);
+    }
+
+    // ============================================================
+    // SESSION REFRESH
+    // ============================================================
+
+    public static function refresh(): void
+    {
+        self::start();
+        $_SESSION['_last_activity'] = time();
+    }
+
+    // ============================================================
+    // REQUIRE LOGIN HELPERS
+    // ============================================================
+
+    public static function requireLogin(string $redirectTo = '/login.php'): void
+    {
+        if (!self::isLoggedIn()) {
+            header('Location: ' . $redirectTo);
+            exit();
+        }
+    }
+
+    public static function requireAdmin(string $redirectTo = '/admin/login.php'): void
+    {
+        if (!self::isLoggedIn() || !self::isAdmin()) {
+            header('Location: ' . $redirectTo);
+            exit();
+        }
+    }
+
+    public static function requireUser(string $redirectTo = '/user/login.php'): void
+    {
+        if (!self::isLoggedIn() || !self::isUser()) {
+            header('Location: ' . $redirectTo);
+            exit();
+        }
+    }
+
+    public static function requireRole(string|array $roles, string $redirectTo = '/login.php'): void
+    {
+        if (!self::isLoggedIn() || !self::hasRole($roles)) {
+            header('Location: ' . $redirectTo);
+            exit();
+        }
+    }
+
+    public static function requirePermission(string $permission, string $redirectTo = '/login.php'): void
+    {
+        if (!self::isLoggedIn() || !self::hasPermission($permission)) {
+            header('Location: ' . $redirectTo);
+            exit();
+        }
+    }
+
+    // ============================================================
+    // GET LOGIN TIME
+    // ============================================================
+
+    public static function loginTime(): int
+    {
+        self::start();
+        return $_SESSION['_login_time'] ?? 0;
+    }
+
+    public static function lastActivity(): int
+    {
+        self::start();
+        return $_SESSION['_last_activity'] ?? 0;
+    }
+
+    // ==== BACKWARD-COMPATIBILITY ALIASES ====
+
+    public static function isAdminLoggedIn(): bool
+    {
+        self::start();
+        // New-style session
+        if (isset($_SESSION['_logged_in']) && $_SESSION['_logged_in'] === true
+            && (($_SESSION['_user_type'] ?? '') === 'admin')) {
+            return true;
+        }
+        // Legacy session written by AdminAuth (admin_logged_in / admin_id)
+        return isset($_SESSION['admin_logged_in']) && $_SESSION['admin_logged_in'] === true;
+    }
+
+    public static function isUserLoggedIn(): bool
+    {
+        return self::isLoggedIn() && self::isUser();
+    }
+
+    public static function getAdminId(): ?int
+    {
+        self::start();
+        if (isset($_SESSION['admin_id'])) {
+            return (int)$_SESSION['admin_id'];
+        }
+        return self::userId();
+    }
+
+    public static function getAdminUsername(): ?string
+    {
+        self::start();
+        if (isset($_SESSION['admin_username'])) {
+            return $_SESSION['admin_username'];
+        }
+        return self::username();
+    }
+
+    public static function getAdminRoleId(): ?int
+    {
+        self::start();
+        if (isset($_SESSION['admin_role_id'])) {
+            return (int)$_SESSION['admin_role_id'];
+        }
+        return self::roleId();
+    }
+
+    public static function getAdminCountry(): ?string
+    {
+        self::start();
+        if (isset($_SESSION['admin_country'])) {
+            return $_SESSION['admin_country'];
+        }
+        return self::countryCode();
+    }
+
+    public static function getAdmin(): ?array
+    {
+        return self::getUser();
+    }
+
+    public static function getUser(): ?array
+    {
+        $u = self::user();
+        if ($u === null) {
+            return null;
+        }
+        $u['user_id']  = $u['user_id']  ?? $u['id'] ?? null;
+        $u['admin_id'] = $u['admin_id'] ?? $u['id'] ?? null;
+        return $u;
+    }
+
+    public static function getUserId(): ?int
+    {
+        return self::userId();
+    }
+
+    public static function setUser(array $userData): void
+    {
+        self::loginUser($userData);
+    }
+
+    public static function setAdmin(array $adminData): void
+    {
+        self::loginAdmin($adminData);
+    }
+
+    public static function logoutAdmin(): void
+    {
+        self::logout();
+    }
+
+    public static function logoutUser(): void
+    {
+        self::logout();
+    }
+
+    public static function destroy(): void
+    {
+        self::logout();
+    }
+
 }

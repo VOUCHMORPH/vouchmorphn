@@ -1,650 +1,936 @@
 <?php
-declare(strict_types=1);
+/**
+ * Daily Reconciliation Report
+ * Uses ONLY tables and columns that exist in the database
+ */
 
-require_once __DIR__ . '/../../../vendor/autoload.php';
-require_once __DIR__ . '/../../../src/bootstrap.php';
-
-use Domain\Services\FeeService;
-use Domain\Services\Settlement\HybridSettlementStrategy;
-use Domain\Services\ForexService;
-
-// Session management
+// Simple session check
 session_start();
-
-$allowedRoles = ['GLOBAL_OWNER', 'COUNTRY_MIDDLEMAN', 'AUDITOR', 'ADMIN'];
-
-if (!isset($_SESSION['user']) || !in_array($_SESSION['user']['role'] ?? '', $allowedRoles)) {
-    http_response_code(403);
-    echo "<p style='text-align:center;color:red;font-weight:bold;'>Access denied</p>";
-    exit;
+if (!isset($_SESSION['admin_id']) && !isset($_SESSION['admin_username'])) {
+    header('Location: ../admin_login.php');
+    exit();
 }
 
-// Load country configuration
-$countryCode = $_SESSION['user']['country_code'] ?? 'BW';
-$countryConfig = require_once __DIR__ . "/../../../config/countries/" . strtolower($countryCode) . "/config.php";
+require_once __DIR__ . '/../../../src/Core/Database/DBConnection.php';
+use Core\Database\DBConnection;
 
-// Database connection
-$swapDB = require_once __DIR__ . '/../../../src/Core/Database/DBConnection.php';
+try {
+    $db = DBConnection::getConnection();
+    if (!$db) {
+        throw new Exception("Database connection failed");
+    }
+} catch (Exception $e) {
+    die("Database error: " . $e->getMessage());
+}
 
-// Initialize services
-$feeConfig = json_decode(file_get_contents(__DIR__ . "/../../../config/countries/" . strtolower($countryCode) . "/fees.json"), true);
-$feeService = new FeeService($feeConfig, 'BWP');
-$settlement = new HybridSettlementStrategy($swapDB);
-$forexService = new ForexService($swapDB, $countryConfig, []);
+// Date selection
+$selectedDate = isset($_GET['date']) ? $_GET['date'] : date('Y-m-d');
+$prevDate = date('Y-m-d', strtotime("-1 day", strtotime($selectedDate)));
+$nextDate = date('Y-m-d', strtotime("+1 day", strtotime($selectedDate)));
 
-// Date range parameters
-$dateFrom = $_GET['date_from'] ?? date('Y-m-d');
-$dateTo = $_GET['date_to'] ?? date('Y-m-d');
-$institutionFilter = $_GET['institution'] ?? null;
-$currencyFilter = $_GET['currency'] ?? null;
-
-// ============================================
-// 1. FETCH SWAP TRANSACTIONS
-// ============================================
-
-$query = "
+// ============================================================
+// 1. DAILY SUMMARY FROM swap_requests
+// ============================================================
+$summaryQuery = "
     SELECT 
-        sr.swap_uuid,
-        sr.status,
-        sr.amount,
-        sr.source_currency,
-        sr.destination_currency,
-        sr.exchange_rate,
-        sr.source_details,
-        sr.destination_details,
-        sr.created_at,
-        sr.updated_at,
-        sr.retry_count,
-        sr.original_swap_ref,
-        sr.fee_breakdown,
-        sr.total_cashout_fee,
-        sr.forex_fee_percent,
-        sr.forex_fee_amount,
-        sr.metadata,
-        ht.hold_reference,
-        ht.status as hold_status,
-        ht.created_at as hold_created_at,
-        ht.debited_at,
-        ht.released_at,
-        sfc.total_amount as collected_fee,
-        sfc.fee_type,
-        sfc.vat_amount
-    FROM swap_requests sr
-    LEFT JOIN hold_transactions ht ON sr.swap_uuid = ht.swap_reference
-    LEFT JOIN swap_fee_collections sfc ON sr.swap_uuid = sfc.swap_reference
-    WHERE DATE(sr.created_at) BETWEEN :date_from AND :date_to
+        COUNT(*) as total_swaps,
+        COALESCE(SUM(amount), 0) as total_volume,
+        COALESCE(AVG(amount), 0) as avg_amount,
+        COALESCE(MIN(amount), 0) as min_amount,
+        COALESCE(MAX(amount), 0) as max_amount,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled
+    FROM swap_requests
+    WHERE DATE(created_at) = :date
 ";
+$stmt = $db->prepare($summaryQuery);
+$stmt->execute(array(':date' => $selectedDate));
+$summary = $stmt->fetch(PDO::FETCH_ASSOC);
 
-$params = [
-    ':date_from' => $dateFrom,
-    ':date_to' => $dateTo
-];
-
-if ($institutionFilter) {
-    $query .= " AND (sr.source_details->>'institution' = :institution OR sr.destination_details->>'institution' = :institution)";
-    $params[':institution'] = $institutionFilter;
-}
-
-if ($currencyFilter) {
-    $query .= " AND (sr.source_currency = :currency OR sr.destination_currency = :currency)";
-    $params[':currency'] = $currencyFilter;
-}
-
-$query .= " ORDER BY sr.created_at DESC";
-
-$stmt = $swapDB->prepare($query);
-$stmt->execute($params);
-$swaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-// ============================================
-// 2. FETCH CASHOUT RETRY STATISTICS
-// ============================================
-
-$retryStmt = $swapDB->prepare("
+// ============================================================
+// 2. HOURLY BREAKDOWN FROM swap_requests
+// ============================================================
+$hourlyQuery = "
     SELECT 
-        COUNT(*) as total_retries,
-        SUM(CASE WHEN free_retry_used THEN 1 ELSE 0 END) as free_retries_used,
-        SUM(CASE WHEN free_retry_used = FALSE THEN 1 ELSE 0 END) as paid_retries,
-        AVG(retry_count) as avg_retry_count
-    FROM cashout_retry_tracking
-    WHERE DATE(created_at) BETWEEN :date_from AND :date_to
-");
-$retryStmt->execute([':date_from' => $dateFrom, ':date_to' => $dateTo]);
-$retryStats = $retryStmt->fetch(PDO::FETCH_ASSOC);
+        EXTRACT(HOUR FROM created_at) as hour,
+        COUNT(*) as count,
+        COALESCE(SUM(amount), 0) as volume,
+        status
+    FROM swap_requests
+    WHERE DATE(created_at) = :date
+    GROUP BY EXTRACT(HOUR FROM created_at), status
+    ORDER BY hour ASC
+";
+$stmt = $db->prepare($hourlyQuery);
+$stmt->execute(array(':date' => $selectedDate));
+$hourlyData = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// ============================================
-// 3. FETCH FEE BREAKDOWN
-// ============================================
+// Group by hour
+$hourlyBreakdown = array();
+for ($i = 0; $i < 24; $i++) {
+    $hourlyBreakdown[$i] = array(
+        'hour' => $i,
+        'total' => 0,
+        'volume' => 0,
+        'status' => array()
+    );
+}
+foreach ($hourlyData as $row) {
+    $hour = (int)$row['hour'];
+    $hourlyBreakdown[$hour]['total'] += $row['count'];
+    $hourlyBreakdown[$hour]['volume'] += $row['volume'];
+    $hourlyBreakdown[$hour]['status'][$row['status']] = $row['count'];
+}
 
-$feeBreakdownStmt = $swapDB->prepare("
+// ============================================================
+// 3. FEE SUMMARY FROM swap_fee_collections
+// ============================================================
+$feeQuery = "
     SELECT 
         fee_type,
         COUNT(*) as count,
-        SUM(total_amount) as total_amount,
-        SUM(vat_amount) as total_vat,
+        COALESCE(SUM(total_amount), 0) as total,
+        COALESCE(SUM(vat_amount), 0) as vat,
         currency
-    FROM swap_fee_collections sfc
-    JOIN swap_requests sr ON sfc.swap_reference = sr.swap_uuid
-    WHERE DATE(sr.created_at) BETWEEN :date_from AND :date_to
+    FROM swap_fee_collections
+    WHERE DATE(created_at) = :date
     GROUP BY fee_type, currency
-");
-$feeBreakdownStmt->execute([':date_from' => $dateFrom, ':date_to' => $dateTo]);
-$feeBreakdown = $feeBreakdownStmt->fetchAll(PDO::FETCH_ASSOC);
+    ORDER BY total DESC
+";
+$stmt = $db->prepare($feeQuery);
+$stmt->execute(array(':date' => $selectedDate));
+$fees = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// ============================================
-// 4. FETCH CROSS-BORDER ACTIVITY
-// ============================================
-
-$crossBorderStmt = $swapDB->prepare("
+// ============================================================
+// 4. CROSS-BORDER ACTIVITY FROM cross_border_messages
+// ============================================================
+$crossBorderQuery = "
     SELECT 
         source_country,
         destination_country,
-        COUNT(*) as transaction_count,
-        SUM(source_amount) as total_source_amount,
-        SUM(converted_amount) as total_destination_amount,
-        SUM(corridor_fee) as total_corridor_fees,
+        COUNT(*) as count,
+        COALESCE(SUM(amount), 0) as volume,
         source_currency,
-        destination_currency,
-        AVG(exchange_rate) as avg_exchange_rate
-    FROM cross_border_ledger
-    WHERE DATE(created_at) BETWEEN :date_from AND :date_to
+        destination_currency
+    FROM cross_border_messages
+    WHERE DATE(created_at) = :date
     GROUP BY source_country, destination_country, source_currency, destination_currency
-");
-$crossBorderStmt->execute([':date_from' => $dateFrom, ':date_to' => $dateTo]);
-$crossBorderActivity = $crossBorderStmt->fetchAll(PDO::FETCH_ASSOC);
+    ORDER BY count DESC
+    LIMIT 10
+";
+$stmt = $db->prepare($crossBorderQuery);
+$stmt->execute(array(':date' => $selectedDate));
+$crossBorder = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// ============================================
-// 5. FETCH CORRIDOR ACTIVITY
-// ============================================
-
-$corridorStmt = $swapDB->prepare("
+// ============================================================
+// 5. SETTLEMENT STATUS FROM settlement_queue
+// ============================================================
+$settlementQuery = "
     SELECT 
-        source_country,
-        destination_country,
-        COUNT(*) as settlement_count,
-        SUM(source_amount) as total_settled,
-        SUM(corridor_fee) as total_fees
-    FROM corridor_settlement_ledger
-    WHERE DATE(created_at) BETWEEN :date_from AND :date_to
-    GROUP BY source_country, destination_country
-");
-$corridorStmt->execute([':date_from' => $dateFrom, ':date_to' => $dateTo]);
-$corridorActivity = $corridorStmt->fetchAll(PDO::FETCH_ASSOC);
+        status,
+        COUNT(*) as count,
+        COALESCE(SUM(amount), 0) as total
+    FROM settlement_queue
+    WHERE DATE(created_at) = :date
+    GROUP BY status
+";
+$stmt = $db->prepare($settlementQuery);
+$stmt->execute(array(':date' => $selectedDate));
+$settlements = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// ============================================
-// 6. FETCH HOOK ACTIVITY
-// ============================================
-
-$hookStmt = $swapDB->prepare("
+// ============================================================
+// 6. SETTLEMENT OUTBOX STATUS FROM settlement_outbox
+// ============================================================
+$outboxQuery = "
     SELECT 
-        COUNT(*) as total_hooks,
-        COUNT(DISTINCT user_identifier) as unique_users,
-        SUM(CASE WHEN is_active THEN 1 ELSE 0 END) as active_hooks
-    FROM user_hooks
-    WHERE DATE(created_at) BETWEEN :date_from AND :date_to
-");
-$hookStmt->execute([':date_from' => $dateFrom, ':date_to' => $dateTo]);
-$hookStats = $hookStmt->fetch(PDO::FETCH_ASSOC);
+        status,
+        COUNT(*) as count,
+        COALESCE(SUM(amount), 0) as total
+    FROM settlement_outbox
+    WHERE DATE(created_at) = :date
+    GROUP BY status
+";
+$stmt = $db->prepare($outboxQuery);
+$stmt->execute(array(':date' => $selectedDate));
+$outboxStatus = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// ============================================
-// 7. CALCULATE TOTALS
-// ============================================
+// ============================================================
+// 7. CASHOUT AUTHORIZATIONS FROM cashout_authorizations
+// ============================================================
+$cashoutQuery = "
+    SELECT 
+        status,
+        COUNT(*) as count,
+        COALESCE(SUM(amount), 0) as total
+    FROM cashout_authorizations
+    WHERE DATE(created_at) = :date
+    GROUP BY status
+";
+$stmt = $db->prepare($cashoutQuery);
+$stmt->execute(array(':date' => $selectedDate));
+$cashouts = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-$totalVolume = array_sum(array_column($swaps, 'amount'));
-$totalSwaps = count($swaps);
-$successfulSwaps = count(array_filter($swaps, fn($s) => $s['status'] === 'completed'));
-$failedSwaps = count(array_filter($swaps, fn($s) => $s['status'] === 'failed'));
-$pendingSwaps = count(array_filter($swaps, fn($s) => $s['status'] === 'pending'));
-$cancelledSwaps = count(array_filter($swaps, fn($s) => $s['status'] === 'cancelled'));
+// ============================================================
+// 8. DEPOSIT TRANSACTIONS FROM deposit_transactions
+// ============================================================
+$depositQuery = "
+    SELECT 
+        status,
+        COUNT(*) as count,
+        COALESCE(SUM(amount), 0) as total
+    FROM deposit_transactions
+    WHERE DATE(created_at) = :date
+    GROUP BY status
+";
+$stmt = $db->prepare($depositQuery);
+$stmt->execute(array(':date' => $selectedDate));
+$deposits = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-$totalFeesCollected = array_sum(array_column($feeBreakdown, 'total_amount'));
-$totalVatCollected = array_sum(array_column($feeBreakdown, 'total_vat'));
+// ============================================================
+// 9. ACTIVE HOLDS FROM hold_transactions
+// ============================================================
+$holdQuery = "
+    SELECT 
+        status,
+        COUNT(*) as count,
+        COALESCE(SUM(amount), 0) as total
+    FROM hold_transactions
+    WHERE DATE(created_at) = :date
+    GROUP BY status
+";
+$stmt = $db->prepare($holdQuery);
+$stmt->execute(array(':date' => $selectedDate));
+$holds = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Calculate fee breakdown by type
-$feeByType = [];
-foreach ($feeBreakdown as $fee) {
-    $feeByType[$fee['fee_type']] = ($feeByType[$fee['fee_type']] ?? 0) + $fee['total_amount'];
+// ============================================================
+// 10. RETRY STATISTICS FROM cashout_retry_tracking
+// ============================================================
+$retryQuery = "
+    SELECT 
+        COUNT(*) as total_retries,
+        SUM(CASE WHEN free_retry_used THEN 1 ELSE 0 END) as free_retries,
+        SUM(CASE WHEN free_retry_used = FALSE THEN 1 ELSE 0 END) as paid_retries
+    FROM cashout_retry_tracking
+    WHERE DATE(created_at) = :date
+";
+$stmt = $db->prepare($retryQuery);
+$stmt->execute(array(':date' => $selectedDate));
+$retryStats = $stmt->fetch(PDO::FETCH_ASSOC);
+
+// ============================================================
+// 11. CALCULATE SAFE VALUES FOR DISPLAY
+// ============================================================
+$totalSwaps = isset($summary['total_swaps']) ? (int)$summary['total_swaps'] : 0;
+$totalVolume = isset($summary['total_volume']) ? (float)$summary['total_volume'] : 0;
+$avgAmount = isset($summary['avg_amount']) ? (float)$summary['avg_amount'] : 0;
+$minAmount = isset($summary['min_amount']) ? (float)$summary['min_amount'] : 0;
+$maxAmount = isset($summary['max_amount']) ? (float)$summary['max_amount'] : 0;
+$completed = isset($summary['completed']) ? (int)$summary['completed'] : 0;
+$failed = isset($summary['failed']) ? (int)$summary['failed'] : 0;
+$pending = isset($summary['pending']) ? (int)$summary['pending'] : 0;
+$cancelled = isset($summary['cancelled']) ? (int)$summary['cancelled'] : 0;
+
+// Fee totals
+$totalFees = 0;
+$totalVat = 0;
+foreach ($fees as $fee) {
+    $totalFees += (float)($fee['total'] ?? 0);
+    $totalVat += (float)($fee['vat'] ?? 0);
 }
 
-// Calculate FX activity
-$fxTransactions = array_filter($swaps, fn($s) => $s['source_currency'] !== $s['destination_currency']);
-$totalFxVolume = array_sum(array_column($fxTransactions, 'amount'));
-$totalForexFees = array_sum(array_column($fxTransactions, 'forex_fee_amount'));
+// Retry totals
+$totalRetries = isset($retryStats['total_retries']) ? (int)$retryStats['total_retries'] : 0;
+$freeRetries = isset($retryStats['free_retries']) ? (int)$retryStats['free_retries'] : 0;
+$paidRetries = isset($retryStats['paid_retries']) ? (int)$retryStats['paid_retries'] : 0;
 
-// ============================================
-// 8. CSV EXPORT
-// ============================================
+// Check if date is today
+$isToday = ($selectedDate === date('Y-m-d'));
 
+// CSV Export
 if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     header('Content-Type: text/csv');
-    header('Content-Disposition: attachment; filename="daily_reconciliation_' . $dateFrom . '_to_' . $dateTo . '.csv"');
+    header('Content-Disposition: attachment; filename="daily_reconciliation_' . $selectedDate . '.csv"');
     $output = fopen('php://output', 'w');
     
-    // Header
-    fputcsv($output, ['VOUCHMORPH DAILY RECONCILIATION REPORT']);
-    fputcsv($output, ['Date Range', $dateFrom, 'to', $dateTo]);
-    fputcsv($output, ['Generated At', date('Y-m-d H:i:s')]);
-    fputcsv($output, []);
+    fputcsv($output, array('VOUCHMORPH DAILY RECONCILIATION REPORT'));
+    fputcsv($output, array('Date', date('F j, Y', strtotime($selectedDate))));
+    fputcsv($output, array('Generated At', date('Y-m-d H:i:s')));
+    fputcsv($output, array());
     
-    // Summary
-    fputcsv($output, ['SUMMARY']);
-    fputcsv($output, ['Total Swaps', $totalSwaps]);
-    fputcsv($output, ['Successful Swaps', $successfulSwaps]);
-    fputcsv($output, ['Failed Swaps', $failedSwaps]);
-    fputcsv($output, ['Pending Swaps', $pendingSwaps]);
-    fputcsv($output, ['Cancelled Swaps', $cancelledSwaps]);
-    fputcsv($output, ['Total Volume', number_format($totalVolume, 2)]);
-    fputcsv($output, ['Total Fees Collected', number_format($totalFeesCollected, 2)]);
-    fputcsv($output, ['Total VAT', number_format($totalVatCollected, 2)]);
-    fputcsv($output, []);
-    
-    // Fee Breakdown
-    fputcsv($output, ['FEE BREAKDOWN']);
-    fputcsv($output, ['Fee Type', 'Total Amount', 'Currency']);
-    foreach ($feeBreakdown as $fee) {
-        fputcsv($output, [$fee['fee_type'], number_format($fee['total_amount'], 2), $fee['currency']]);
-    }
-    fputcsv($output, []);
-    
-    // Cross Border Activity
-    fputcsv($output, ['CROSS-BORDER ACTIVITY']);
-    fputcsv($output, ['From', 'To', 'Count', 'Volume', 'Corridor Fees']);
-    foreach ($crossBorderActivity as $cb) {
-        fputcsv($output, [
-            $cb['source_country'], 
-            $cb['destination_country'], 
-            $cb['transaction_count'],
-            number_format($cb['total_source_amount'], 2),
-            number_format($cb['total_corridor_fees'] ?? 0, 2)
-        ]);
-    }
-    fputcsv($output, []);
-    
-    // Transactions Detail
-    fputcsv($output, ['TRANSACTION DETAILS']);
-    fputcsv($output, ['Swap Ref', 'Status', 'Amount', 'Source Currency', 'Dest Currency', 'Fee', 'Created At']);
-    foreach ($swaps as $swap) {
-        fputcsv($output, [
-            $swap['swap_uuid'],
-            $swap['status'],
-            number_format($swap['amount'], 2),
-            $swap['source_currency'],
-            $swap['destination_currency'],
-            number_format($swap['collected_fee'] ?? 0, 2),
-            $swap['created_at']
-        ]);
-    }
+    fputcsv($output, array('SUMMARY'));
+    fputcsv($output, array('Total Swaps', $totalSwaps));
+    fputcsv($output, array('Total Volume', number_format($totalVolume, 2)));
+    fputcsv($output, array('Average', number_format($avgAmount, 2)));
+    fputcsv($output, array('Min', number_format($minAmount, 2)));
+    fputcsv($output, array('Max', number_format($maxAmount, 2)));
+    fputcsv($output, array('Completed', $completed));
+    fputcsv($output, array('Failed', $failed));
+    fputcsv($output, array('Pending', $pending));
+    fputcsv($output, array('Cancelled', $cancelled));
+    fputcsv($output, array('Total Fees', number_format($totalFees, 2)));
+    fputcsv($output, array('Total VAT', number_format($totalVat, 2)));
+    fputcsv($output, array('Total Retries', $totalRetries));
+    fputcsv($output, array('Free Retries', $freeRetries));
+    fputcsv($output, array('Paid Retries', $paidRetries));
     
     fclose($output);
     exit;
 }
 
-// ============================================
-// 9. GET INSTITUTIONS LIST FOR FILTER
-// ============================================
-
-$institutionStmt = $swapDB->prepare("
-    SELECT DISTINCT 
-        source_details->>'institution' as institution
-    FROM swap_requests
-    WHERE source_details->>'institution' IS NOT NULL
-    UNION
-    SELECT DISTINCT 
-        destination_details->>'institution' as institution
-    FROM swap_requests
-    WHERE destination_details->>'institution' IS NOT NULL
-");
-$institutionStmt->execute();
-$institutions = $institutionStmt->fetchAll(PDO::FETCH_COLUMN);
-
+$formattedDate = date('F j, Y', strtotime($selectedDate));
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Daily Reconciliation Report - VouchMorph</title>
+    <title>Daily Reconciliation - VouchMorph</title>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f0f2f5;
-            color: #333;
+            font-family: 'IBM Plex Mono', monospace;
+            background: #f7f9fc;
+            color: #001B44;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
         }
-        
-        .dashboard-container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
+
+        .admin-header {
+            background: #001B44;
+            border-bottom: 5px solid #FFDA63;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: #fff;
+            flex-wrap: wrap;
+            gap: 15px;
         }
-        
-        .dashboard-header {
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            color: white;
-            padding: 20px 30px;
-            border-radius: 12px;
-            margin-bottom: 25px;
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 30px;
+            flex-wrap: wrap;
+        }
+
+        .logo {
+            font-size: 1.2rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+        }
+
+        .logo span {
+            color: #FFDA63;
+            margin-left: 10px;
+            font-size: 0.8rem;
+        }
+
+        .country-badge {
+            padding: 5px 15px;
+            background: rgba(255, 218, 99, 0.2);
+            border: 1px solid #FFDA63;
+            color: #FFDA63;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .user-details {
+            text-align: right;
+        }
+
+        .user-name {
+            font-weight: 600;
+            color: #FFDA63;
+        }
+
+        .user-role {
+            font-size: 0.7rem;
+            color: #A1B5D8;
+            text-transform: uppercase;
+        }
+
+        .logout-btn {
+            padding: 8px 16px;
+            background: transparent;
+            border: 2px solid #FFDA63;
+            color: #FFDA63;
+            text-decoration: none;
+            font-size: 0.8rem;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .logout-btn:hover {
+            background: #FFDA63;
+            color: #001B44;
+        }
+
+        .admin-nav {
+            background: #fff;
+            border-bottom: 2px solid #001B44;
+            padding: 0 30px;
+            display: flex;
+            gap: 30px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .nav-item {
+            padding: 15px 0;
+            color: #666;
+            text-decoration: none;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .nav-item:hover {
+            color: #001B44;
+        }
+
+        .nav-item.active {
+            color: #001B44;
+            border-bottom-color: #FFDA63;
+        }
+
+        .dashboard-link {
+            padding: 8px 16px;
+            background: #FFDA63;
+            color: #001B44;
+            text-decoration: none;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+
+        .dashboard-link:hover {
+            background: #f5c842;
+            transform: translateY(-1px);
+        }
+
+        .admin-content {
+            flex: 1;
+            padding: 30px;
+        }
+
+        .content-header {
+            margin-bottom: 30px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
-            gap: 15px;
+            gap: 20px;
         }
-        
-        .dashboard-header h1 {
-            font-size: 24px;
+
+        .content-header h1 {
+            font-size: 1.5rem;
             font-weight: 600;
+            color: #001B44;
         }
-        
-        .dashboard-header p {
-            opacity: 0.8;
-            font-size: 14px;
-            margin-top: 5px;
-        }
-        
-        .filter-bar {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            display: flex;
-            gap: 15px;
-            flex-wrap: wrap;
-            align-items: flex-end;
-        }
-        
-        .filter-group {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-        
-        .filter-group label {
-            font-size: 12px;
-            font-weight: 600;
+
+        .content-header .timestamp {
             color: #666;
-            text-transform: uppercase;
+            font-size: 0.8rem;
         }
-        
-        .filter-group input, .filter-group select {
-            padding: 10px 15px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            font-size: 14px;
-            min-width: 150px;
+
+        .report-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
         }
-        
+
         .btn {
             padding: 10px 20px;
             border: none;
-            border-radius: 8px;
+            border-radius: 4px;
             cursor: pointer;
             font-weight: 600;
-            transition: all 0.3s;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-block;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
-        
-        .btn-primary {
-            background: #007bff;
-            color: white;
-        }
-        
-        .btn-primary:hover {
-            background: #0056b3;
-        }
-        
-        .btn-secondary {
-            background: #6c757d;
-            color: white;
-        }
-        
-        .btn-secondary:hover {
-            background: #545b62;
-        }
-        
+
         .btn-success {
             background: #28a745;
             color: white;
+            border: 2px solid #28a745;
         }
-        
+
         .btn-success:hover {
             background: #1e7e34;
+            border-color: #1e7e34;
         }
-        
+
+        .btn-outline {
+            background: transparent;
+            color: #001B44;
+            border: 2px solid #001B44;
+        }
+
+        .btn-outline:hover {
+            background: #001B44;
+            color: #fff;
+        }
+
+        .btn-today {
+            background: #FFDA63;
+            color: #001B44;
+            border: 2px solid #FFDA63;
+        }
+
+        .btn-today:hover {
+            background: #f5c842;
+            border-color: #f5c842;
+        }
+
+        .date-nav {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .date-nav .nav-btn {
+            padding: 8px 16px;
+            background: #001B44;
+            color: #fff;
+            border: 2px solid #001B44;
+            text-decoration: none;
+            font-size: 0.8rem;
+            font-weight: 600;
+            transition: all 0.2s;
+            font-family: 'IBM Plex Mono', monospace;
+        }
+
+        .date-nav .nav-btn:hover {
+            background: #FFDA63;
+            color: #001B44;
+            border-color: #FFDA63;
+        }
+
+        .date-badge {
+            padding: 8px 20px;
+            background: #FFDA63;
+            color: #001B44;
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+
+        .today-indicator {
+            padding: 4px 12px;
+            background: #28a745;
+            color: #fff;
+            font-size: 0.7rem;
+            font-weight: 600;
+            border-radius: 4px;
+        }
+
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 20px;
-            margin-bottom: 25px;
+            margin-bottom: 30px;
         }
-        
+
         .stat-card {
-            background: white;
+            background: #fff;
+            border: 2px solid #001B44;
             padding: 20px;
-            border-radius: 12px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            text-align: center;
+            box-shadow: 4px 4px 0 #A1B5D8;
+            transition: transform 0.2s;
         }
-        
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+        }
+
         .stat-card h3 {
-            font-size: 14px;
+            font-size: 0.7rem;
+            text-transform: uppercase;
             color: #666;
+            letter-spacing: 1px;
             margin-bottom: 10px;
         }
-        
+
         .stat-card .value {
-            font-size: 28px;
-            font-weight: bold;
-            color: #1a1a2e;
+            font-size: 2rem;
+            font-weight: 600;
+            color: #001B44;
+            line-height: 1.2;
+            word-break: break-word;
         }
-        
+
         .stat-card .sub {
-            font-size: 12px;
-            color: #999;
-            margin-top: 5px;
+            font-size: 0.7rem;
+            color: #666;
+            margin-top: 8px;
         }
-        
+
         .section {
-            background: white;
-            border-radius: 12px;
+            background: #fff;
+            border: 2px solid #001B44;
             margin-bottom: 25px;
             overflow: hidden;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        
+
         .section-header {
-            background: #f8f9fa;
+            background: #001B44;
             padding: 15px 20px;
-            border-bottom: 1px solid #e9ecef;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            cursor: pointer;
+            flex-wrap: wrap;
+            gap: 10px;
         }
-        
+
         .section-header h2 {
-            font-size: 18px;
+            font-size: 0.9rem;
             font-weight: 600;
+            color: #FFDA63;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
-        
+
+        .section-header .badge {
+            padding: 4px 12px;
+            background: rgba(255, 218, 99, 0.2);
+            color: #FFDA63;
+            font-size: 0.7rem;
+            font-weight: 600;
+            border: 1px solid #FFDA63;
+        }
+
         .section-content {
             padding: 20px;
             overflow-x: auto;
         }
-        
+
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 14px;
+            font-size: 0.85rem;
         }
-        
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #e9ecef;
-        }
-        
+
         th {
             background: #f8f9fa;
+            padding: 12px;
             font-weight: 600;
-            color: #495057;
+            color: #001B44;
+            text-align: left;
+            border-bottom: 2px solid #001B44;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
-        
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #e9ecef;
+        }
+
         tr:hover {
             background: #f8f9fa;
         }
-        
-        .status-badge {
+
+        .badge-status {
             display: inline-block;
-            padding: 4px 10px;
-            border-radius: 20px;
-            font-size: 12px;
+            padding: 3px 10px;
+            font-size: 0.7rem;
             font-weight: 600;
+            text-transform: uppercase;
+            border: 1px solid;
         }
-        
-        .status-completed { background: #d4edda; color: #155724; }
-        .status-failed { background: #f8d7da; color: #721c24; }
-        .status-pending { background: #fff3cd; color: #856404; }
-        .status-cancelled { background: #e2e3e5; color: #383d41; }
-        
-        .export-buttons {
-            display: flex;
-            gap: 10px;
+
+        .badge-success {
+            background: #d4edda;
+            color: #155724;
+            border-color: #c3e6cb;
         }
-        
+
+        .badge-danger {
+            background: #f8d7da;
+            color: #721c24;
+            border-color: #f5c6cb;
+        }
+
+        .badge-warning {
+            background: #fff3cd;
+            color: #856404;
+            border-color: #ffeeba;
+        }
+
+        .badge-info {
+            background: #cce5ff;
+            color: #004085;
+            border-color: #b8daff;
+        }
+
+        .badge-secondary {
+            background: #e2e3e5;
+            color: #383d41;
+            border-color: #d6d8db;
+        }
+
+        .text-right {
+            text-align: right;
+        }
+
+        .text-center {
+            text-align: center;
+        }
+
+        .admin-footer {
+            background: #001B44;
+            color: #A1B5D8;
+            padding: 20px 30px;
+            font-size: 0.7rem;
+            text-align: center;
+            border-top: 3px solid #FFDA63;
+            margin-top: 30px;
+        }
+
         @media (max-width: 768px) {
             .stats-grid {
                 grid-template-columns: repeat(2, 1fr);
             }
-            .filter-bar {
+            .admin-nav {
+                padding: 0 15px;
+                gap: 15px;
+            }
+            .admin-content {
+                padding: 20px;
+            }
+            .admin-header {
+                padding: 15px;
+            }
+            .header-left {
+                gap: 15px;
+            }
+            .content-header {
                 flex-direction: column;
+                align-items: flex-start;
             }
-            .filter-group {
-                width: 100%;
-            }
-            .filter-group input, .filter-group select {
-                width: 100%;
+            .stat-card .value {
+                font-size: 1.5rem;
             }
         }
     </style>
 </head>
 <body>
-    <div class="dashboard-container">
-        <div class="dashboard-header">
+    <header class="admin-header">
+        <div class="header-left">
+            <div class="logo">VOUCHMORPH <span>ADMIN</span></div>
+            <div class="country-badge">BW · BOTSWANA</div>
+        </div>
+        <div class="user-info">
+            <div class="user-details">
+                <div class="user-name"><?php echo $_SESSION['admin_full_name'] ?? $_SESSION['admin_username'] ?? 'Administrator'; ?></div>
+                <div class="user-role"><?php echo $_SESSION['admin_role'] ?? 'Admin'; ?></div>
+            </div>
+            <a href="../admin_logout.php" class="logout-btn">LOGOUT</a>
+        </div>
+    </header>
+
+    <nav class="admin-nav">
+        <a href="../admin_dashboard.php" class="nav-item">DASHBOARD</a>
+        <a href="daily_reconciliations.php" class="nav-item active">DAILY REPORT</a>
+        <a href="monthly_reconciliations.php" class="nav-item">MONTHLY REPORT</a>
+        <a href="audit_trails.php" class="nav-item">AUDIT</a>
+        <a href="suspicious_activity_report.php" class="nav-item">SUSPICIOUS</a>
+        <?php if (isset($_SESSION['admin_role_id']) && $_SESSION['admin_role_id'] == 999): ?>
+            <a href="../admin_management.php" class="nav-item">ADMIN</a>
+        <?php endif; ?>
+        <a href="../admin_dashboard.php" class="dashboard-link">← Back to Dashboard</a>
+    </nav>
+
+    <main class="admin-content">
+        <!-- Content Header -->
+        <div class="content-header">
             <div>
                 <h1>📊 Daily Reconciliation Report</h1>
-                <p>VouchMorph Settlement & Transaction Reconciliation</p>
+                <div class="timestamp">
+                    <?php echo $formattedDate; ?> 
+                    <?php if ($isToday): ?>
+                        <span class="today-indicator">TODAY</span>
+                    <?php endif; ?>
+                    · Generated: <?php echo date('Y-m-d H:i:s'); ?>
+                </div>
             </div>
-            <div class="export-buttons">
-                <a href="?<?= http_build_query(array_merge($_GET, ['export' => 'csv'])) ?>" class="btn btn-success">📥 Export CSV</a>
-                <a href="daily_reconciliations.php" class="btn btn-secondary">🔄 Reset</a>
-            </div>
-        </div>
-        
-        <!-- Filter Bar -->
-        <div class="filter-bar">
-            <div class="filter-group">
-                <label>From Date</label>
-                <input type="date" name="date_from" id="date_from" value="<?= htmlspecialchars($dateFrom) ?>">
-            </div>
-            <div class="filter-group">
-                <label>To Date</label>
-                <input type="date" name="date_to" id="date_to" value="<?= htmlspecialchars($dateTo) ?>">
-            </div>
-            <div class="filter-group">
-                <label>Institution</label>
-                <select name="institution" id="institution">
-                    <option value="">All Institutions</option>
-                    <?php foreach ($institutions as $inst): ?>
-                        <option value="<?= htmlspecialchars($inst) ?>" <?= $institutionFilter === $inst ? 'selected' : '' ?>>
-                            <?= htmlspecialchars($inst) ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            <div class="filter-group">
-                <label>Currency</label>
-                <select name="currency" id="currency">
-                    <option value="">All Currencies</option>
-                    <option value="BWP" <?= $currencyFilter === 'BWP' ? 'selected' : '' ?>>BWP - Pula</option>
-                    <option value="ZAR" <?= $currencyFilter === 'ZAR' ? 'selected' : '' ?>>ZAR - Rand</option>
-                    <option value="USD" <?= $currencyFilter === 'USD' ? 'selected' : '' ?>>USD - Dollar</option>
-                    <option value="EUR" <?= $currencyFilter === 'EUR' ? 'selected' : '' ?>>EUR - Euro</option>
-                    <option value="NGN" <?= $currencyFilter === 'NGN' ? 'selected' : '' ?>>NGN - Naira</option>
-                    <option value="KES" <?= $currencyFilter === 'KES' ? 'selected' : '' ?>>KES - Shilling</option>
-                </select>
-            </div>
-            <div class="filter-group">
-                <button class="btn btn-primary" onclick="applyFilters()">Apply Filters</button>
+            <div class="report-actions">
+                <div class="date-nav">
+                    <a href="?date=<?php echo $prevDate; ?>" class="nav-btn">←</a>
+                    <div class="date-badge"><?php echo date('M j, Y', strtotime($selectedDate)); ?></div>
+                    <a href="?date=<?php echo $nextDate; ?>" class="nav-btn">→</a>
+                    <a href="?date=<?php echo date('Y-m-d'); ?>" class="btn btn-today">TODAY</a>
+                </div>
+                <a href="?<?php echo http_build_query(array_merge($_GET, array('export' => 'csv'))); ?>" class="btn btn-success">📥 CSV</a>
+                <a href="../admin_dashboard.php" class="btn btn-outline">⬅ BACK</a>
             </div>
         </div>
-        
-        <!-- Statistics Cards -->
+
+        <!-- Stats Grid -->
         <div class="stats-grid">
             <div class="stat-card">
                 <h3>Total Swaps</h3>
-                <div class="value"><?= number_format($totalSwaps) ?></div>
-                <div class="sub"><?= $successfulSwaps ?> successful</div>
+                <div class="value"><?php echo number_format($totalSwaps); ?></div>
+                <div class="sub"><?php echo number_format($completed); ?> completed</div>
             </div>
             <div class="stat-card">
                 <h3>Total Volume</h3>
-                <div class="value"><?= number_format($totalVolume, 2) ?></div>
-                <div class="sub">Across all currencies</div>
+                <div class="value"><?php echo number_format($totalVolume, 2); ?></div>
+                <div class="sub">Avg: <?php echo number_format($avgAmount, 2); ?></div>
             </div>
             <div class="stat-card">
                 <h3>Fees Collected</h3>
-                <div class="value"><?= number_format($totalFeesCollected, 2) ?></div>
-                <div class="sub">+ <?= number_format($totalVatCollected, 2) ?> VAT</div>
+                <div class="value"><?php echo number_format($totalFees, 2); ?></div>
+                <div class="sub">VAT: <?php echo number_format($totalVat, 2); ?></div>
             </div>
             <div class="stat-card">
-                <h3>Cashout Retries</h3>
-                <div class="value"><?= number_format($retryStats['total_retries'] ?? 0) ?></div>
-                <div class="sub"><?= number_format($retryStats['free_retries_used'] ?? 0) ?> free retries</div>
-            </div>
-            <div class="stat-card">
-                <h3>FX Volume</h3>
-                <div class="value"><?= number_format($totalFxVolume, 2) ?></div>
-                <div class="sub">Forex Fees: <?= number_format($totalForexFees, 2) ?></div>
-            </div>
-            <div class="stat-card">
-                <h3>Active Hooks</h3>
-                <div class="value"><?= number_format($hookStats['active_hooks'] ?? 0) ?></div>
-                <div class="sub"><?= number_format($hookStats['unique_users'] ?? 0) ?> users</div>
+                <h3>Status</h3>
+                <div class="value" style="font-size: 1.1rem;">
+                    <span class="badge-status badge-success">C: <?php echo number_format($completed); ?></span>
+                    <span class="badge-status badge-danger">F: <?php echo number_format($failed); ?></span>
+                    <span class="badge-status badge-warning">P: <?php echo number_format($pending); ?></span>
+                </div>
+                <div class="sub">Cancelled: <?php echo number_format($cancelled); ?></div>
             </div>
         </div>
-        
-        <!-- Fee Breakdown Section -->
-        <div class="section">
-            <div class="section-header" onclick="toggleSection('feeBreakdown')">
-                <h2>💰 Fee Breakdown</h2>
-                <span>▼</span>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Min Amount</h3>
+                <div class="value"><?php echo number_format($minAmount, 2); ?></div>
+                <div class="sub">Smallest transaction</div>
             </div>
-            <div class="section-content" id="feeBreakdown">
+            <div class="stat-card">
+                <h3>Max Amount</h3>
+                <div class="value"><?php echo number_format($maxAmount, 2); ?></div>
+                <div class="sub">Largest transaction</div>
+            </div>
+            <div class="stat-card">
+                <h3>Total Retries</h3>
+                <div class="value"><?php echo number_format($totalRetries); ?></div>
+                <div class="sub">Free: <?php echo number_format($freeRetries); ?> · Paid: <?php echo number_format($paidRetries); ?></div>
+            </div>
+            <div class="stat-card">
+                <h3>Active Holds</h3>
+                <div class="value"><?php 
+                    $activeHolds = 0;
+                    foreach ($holds as $h) {
+                        if ($h['status'] === 'ACTIVE' || $h['status'] === 'HELD') {
+                            $activeHolds += $h['count'];
+                        }
+                    }
+                    echo number_format($activeHolds);
+                ?></div>
+                <div class="sub">Pending settlement</div>
+            </div>
+        </div>
+
+        <!-- Hourly Breakdown -->
+        <div class="section">
+            <div class="section-header">
+                <h2>⏰ Hourly Breakdown</h2>
+                <span class="badge">24 hours</span>
+            </div>
+            <div class="section-content">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Hour</th>
+                            <th class="text-right">Transactions</th>
+                            <th class="text-right">Volume</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php 
+                        $hasData = false;
+                        for ($i = 0; $i < 24; $i++): 
+                            $hourData = $hourlyBreakdown[$i];
+                            if ($hourData['total'] > 0) $hasData = true;
+                        ?>
+                            <tr>
+                                <td>
+                                    <strong><?php echo sprintf('%02d:00', $i); ?></strong>
+                                    <?php if ($hourData['total'] > 0): ?>
+                                        <span class="badge-status badge-info"><?php echo $hourData['total']; ?></span>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="text-right"><?php echo number_format($hourData['total']); ?></td>
+                                <td class="text-right"><?php echo number_format($hourData['volume'], 2); ?></td>
+                                <td>
+                                    <?php foreach ($hourData['status'] as $status => $count): ?>
+                                        <span class="badge-status badge-info"><?php echo ucfirst($status); ?>: <?php echo $count; ?></span>
+                                    <?php endforeach; ?>
+                                    <?php if (empty($hourData['status'])): ?>
+                                        <span style="color: #999;">—</span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                        <?php endfor; ?>
+                        <?php if (!$hasData): ?>
+                            <tr><td colspan="4" style="text-align:center;">No data available for this day</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Fee Breakdown -->
+        <div class="section">
+            <div class="section-header">
+                <h2>💰 Fee Breakdown</h2>
+                <span class="badge"><?php echo count($fees); ?> types</span>
+            </div>
+            <div class="section-content">
                 <table>
                     <thead>
                         <tr>
                             <th>Fee Type</th>
-                            <th>Count</th>
-                            <th>Total Amount</th>
-                            <th>VAT</th>
+                            <th class="text-right">Count</th>
+                            <th class="text-right">Total</th>
+                            <th class="text-right">VAT</th>
                             <th>Currency</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (!empty($feeBreakdown)): ?>
-                            <?php foreach ($feeBreakdown as $fee): ?>
+                        <?php if (!empty($fees)): ?>
+                            <?php foreach ($fees as $fee): ?>
                                 <tr>
-                                    <td><?= htmlspecialchars($fee['fee_type']) ?></td>
-                                    <td><?= number_format($fee['count']) ?></td>
-                                    <td><strong><?= number_format($fee['total_amount'], 2) ?></strong></td>
-                                    <td><?= number_format($fee['total_vat'], 2) ?></td>
-                                    <td><?= htmlspecialchars($fee['currency']) ?></td>
+                                    <td><strong><?php echo isset($fee['fee_type']) ? htmlspecialchars($fee['fee_type']) : 'N/A'; ?></strong></td>
+                                    <td class="text-right"><?php echo isset($fee['count']) ? number_format($fee['count']) : 0; ?></td>
+                                    <td class="text-right"><?php echo isset($fee['total']) ? number_format((float)$fee['total'], 2) : '0.00'; ?></td>
+                                    <td class="text-right"><?php echo isset($fee['vat']) ? number_format((float)$fee['vat'], 2) : '0.00'; ?></td>
+                                    <td><?php echo isset($fee['currency']) ? htmlspecialchars($fee['currency']) : 'BWP'; ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
@@ -654,191 +940,207 @@ $institutions = $institutionStmt->fetchAll(PDO::FETCH_COLUMN);
                 </table>
             </div>
         </div>
-        
-        <!-- Cross-Border Activity Section -->
+
+        <!-- Cross Border Activity -->
         <div class="section">
-            <div class="section-header" onclick="toggleSection('crossBorder')">
-                <h2>🌍 Cross-Border Activity</h2>
-                <span>▼</span>
+            <div class="section-header">
+                <h2>🌍 Cross Border Activity</h2>
+                <span class="badge">From cross_border_messages</span>
             </div>
-            <div class="section-content" id="crossBorder">
+            <div class="section-content">
                 <table>
                     <thead>
                         <tr>
                             <th>From</th>
                             <th>To</th>
-                            <th>Transactions</th>
-                            <th>Volume (Source)</th>
-                            <th>Volume (Dest)</th>
-                            <th>Corridor Fees</th>
-                            <th>Avg Rate</th>
+                            <th class="text-right">Transactions</th>
+                            <th class="text-right">Volume</th>
+                            <th>Currency</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (!empty($crossBorderActivity)): ?>
-                            <?php foreach ($crossBorderActivity as $cb): ?>
+                        <?php if (!empty($crossBorder)): ?>
+                            <?php foreach ($crossBorder as $cb): ?>
                                 <tr>
-                                    <td><?= htmlspecialchars($cb['source_country']) ?></td>
-                                    <td><?= htmlspecialchars($cb['destination_country']) ?></td>
-                                    <td><?= number_format($cb['transaction_count']) ?></td>
-                                    <td><?= number_format($cb['total_source_amount'], 2) ?> <?= htmlspecialchars($cb['source_currency']) ?></td>
-                                    <td><?= number_format($cb['total_destination_amount'], 2) ?> <?= htmlspecialchars($cb['destination_currency']) ?></td>
-                                    <td><?= number_format($cb['total_corridor_fees'] ?? 0, 2) ?></td>
-                                    <td><?= number_format($cb['avg_exchange_rate'], 4) ?></td>
+                                    <td><span class="badge-status badge-info"><?php echo isset($cb['source_country']) ? htmlspecialchars($cb['source_country']) : 'N/A'; ?></span></td>
+                                    <td><span class="badge-status badge-info"><?php echo isset($cb['destination_country']) ? htmlspecialchars($cb['destination_country']) : 'N/A'; ?></span></td>
+                                    <td class="text-right"><?php echo isset($cb['count']) ? number_format($cb['count']) : 0; ?></td>
+                                    <td class="text-right"><?php echo isset($cb['volume']) ? number_format((float)$cb['volume'], 2) : '0.00'; ?></td>
+                                    <td><?php echo isset($cb['source_currency']) ? htmlspecialchars($cb['source_currency']) : 'N/A'; ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="7" style="text-align:center;">No cross-border activity</td></tr>
+                            <tr><td colspan="5" style="text-align:center;">No cross border activity</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
             </div>
         </div>
-        
-        <!-- Transactions Table -->
+
+        <!-- Settlement Status -->
         <div class="section">
-            <div class="section-header" onclick="toggleSection('transactions')">
-                <h2>📋 Transaction Details</h2>
-                <span>▼</span>
+            <div class="section-header">
+                <h2>📤 Settlement Status</h2>
+                <span class="badge">From settlement_queue</span>
             </div>
-            <div class="section-content" id="transactions">
+            <div class="section-content">
                 <table>
                     <thead>
                         <tr>
-                            <th>Swap Reference</th>
                             <th>Status</th>
-                            <th>Amount</th>
-                            <th>From</th>
-                            <th>To</th>
-                            <th>FX Rate</th>
-                            <th>Fee</th>
-                            <th>Retry</th>
-                            <th>Created At</th>
+                            <th class="text-right">Count</th>
+                            <th class="text-right">Total</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (!empty($swaps)): ?>
-                            <?php foreach ($swaps as $swap): 
-                                $sourceInst = json_decode($swap['source_details'], true)['institution'] ?? 'N/A';
-                                $destInst = json_decode($swap['destination_details'], true)['institution'] ?? 'N/A';
-                                $statusClass = match($swap['status']) {
-                                    'completed' => 'status-completed',
-                                    'failed' => 'status-failed',
-                                    'pending' => 'status-pending',
-                                    'cancelled' => 'status-cancelled',
-                                    default => ''
-                                };
-                            ?>
+                        <?php if (!empty($settlements)): ?>
+                            <?php foreach ($settlements as $s): ?>
                                 <tr>
-                                    <td><code><?= substr(htmlspecialchars($swap['swap_uuid']), 0, 16) ?>...</code></td>
-                                    <td><span class="status-badge <?= $statusClass ?>"><?= htmlspecialchars($swap['status']) ?></span></td>
-                                    <td><strong><?= number_format($swap['amount'], 2) ?></strong> <?= htmlspecialchars($swap['source_currency']) ?></td>
-                                    <td><?= htmlspecialchars($sourceInst) ?></td>
-                                    <td><?= htmlspecialchars($destInst) ?></td>
-                                    <td><?= $swap['exchange_rate'] ? number_format($swap['exchange_rate'], 4) : '-' ?></td>
-                                    <td><?= number_format($swap['collected_fee'] ?? 0, 2) ?></td>
-                                    <td><?= $swap['retry_count'] ?? 0 ?></td>
-                                    <td><?= date('Y-m-d H:i', strtotime($swap['created_at'])) ?></td>
+                                    <td><span class="badge-status badge-info"><?php echo isset($s['status']) ? htmlspecialchars($s['status']) : 'N/A'; ?></span></td>
+                                    <td class="text-right"><?php echo isset($s['count']) ? number_format($s['count']) : 0; ?></td>
+                                    <td class="text-right"><?php echo isset($s['total']) ? number_format((float)$s['total'], 2) : '0.00'; ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="9" style="text-align:center;">No transactions found for selected period</td></tr>
+                            <tr><td colspan="3" style="text-align:center;">No settlement data</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
             </div>
         </div>
-        
-        <!-- Corridor Activity Section -->
+
+        <!-- Settlement Outbox -->
         <div class="section">
-            <div class="section-header" onclick="toggleSection('corridor')">
-                <h2>🔄 Corridor Settlement Activity</h2>
-                <span>▼</span>
+            <div class="section-header">
+                <h2>📤 Settlement Outbox</h2>
+                <span class="badge">From settlement_outbox</span>
             </div>
-            <div class="section-content" id="corridor">
+            <div class="section-content">
                 <table>
                     <thead>
                         <tr>
-                            <th>Source Country</th>
-                            <th>Destination Country</th>
-                            <th>Settlements</th>
-                            <th>Total Settled</th>
-                            <th>Corridor Fees</th>
+                            <th>Status</th>
+                            <th class="text-right">Count</th>
+                            <th class="text-right">Total</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (!empty($corridorActivity)): ?>
-                            <?php foreach ($corridorActivity as $corridor): ?>
+                        <?php if (!empty($outboxStatus)): ?>
+                            <?php foreach ($outboxStatus as $o): ?>
                                 <tr>
-                                    <td><?= htmlspecialchars($corridor['source_country']) ?></td>
-                                    <td><?= htmlspecialchars($corridor['destination_country']) ?></td>
-                                    <td><?= number_format($corridor['settlement_count']) ?></td>
-                                    <td><?= number_format($corridor['total_settled'], 2) ?></td>
-                                    <td><?= number_format($corridor['total_fees'], 2) ?></td>
+                                    <td><span class="badge-status badge-info"><?php echo isset($o['status']) ? htmlspecialchars($o['status']) : 'N/A'; ?></span></td>
+                                    <td class="text-right"><?php echo isset($o['count']) ? number_format($o['count']) : 0; ?></td>
+                                    <td class="text-right"><?php echo isset($o['total']) ? number_format((float)$o['total'], 2) : '0.00'; ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="5" style="text-align:center;">No corridor activity</td></tr>
+                            <tr><td colspan="3" style="text-align:center;">No outbox data</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
             </div>
         </div>
-    </div>
-    
-    <script>
-        function applyFilters() {
-            const dateFrom = document.getElementById('date_from').value;
-            const dateTo = document.getElementById('date_to').value;
-            const institution = document.getElementById('institution').value;
-            const currency = document.getElementById('currency').value;
-            
-            const params = new URLSearchParams();
-            if (dateFrom) params.append('date_from', dateFrom);
-            if (dateTo) params.append('date_to', dateTo);
-            if (institution) params.append('institution', institution);
-            if (currency) params.append('currency', currency);
-            
-            window.location.href = '?' + params.toString();
-        }
-        
-        function toggleSection(sectionId) {
-            const section = document.getElementById(sectionId);
-            const header = section.previousElementSibling;
-            const arrow = header.querySelector('span');
-            
-            if (section.style.display === 'none') {
-                section.style.display = 'block';
-                arrow.textContent = '▼';
-            } else {
-                section.style.display = 'none';
-                arrow.textContent = '▶';
-            }
-        }
-        
-        // Set today's date as default if not set
-        const dateFromInput = document.getElementById('date_from');
-        const dateToInput = document.getElementById('date_to');
-        
-        if (!dateFromInput.value) {
-            const today = new Date().toISOString().split('T')[0];
-            dateFromInput.value = today;
-            dateToInput.value = today;
-        }
-        
-        // Initialize all sections as visible
-        document.querySelectorAll('.section-content').forEach(section => {
-            section.style.display = 'block';
-        });
-    </script>
+
+        <!-- Hold Transactions -->
+        <div class="section">
+            <div class="section-header">
+                <h2>🔒 Hold Transactions</h2>
+                <span class="badge">From hold_transactions</span>
+            </div>
+            <div class="section-content">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Status</th>
+                            <th class="text-right">Count</th>
+                            <th class="text-right">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!empty($holds)): ?>
+                            <?php foreach ($holds as $h): ?>
+                                <tr>
+                                    <td><span class="badge-status badge-info"><?php echo isset($h['status']) ? htmlspecialchars($h['status']) : 'N/A'; ?></span></td>
+                                    <td class="text-right"><?php echo isset($h['count']) ? number_format($h['count']) : 0; ?></td>
+                                    <td class="text-right"><?php echo isset($h['total']) ? number_format((float)$h['total'], 2) : '0.00'; ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <tr><td colspan="3" style="text-align:center;">No hold data</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Cashout Authorizations -->
+        <div class="section">
+            <div class="section-header">
+                <h2>🏧 Cashout Authorizations</h2>
+                <span class="badge">From cashout_authorizations</span>
+            </div>
+            <div class="section-content">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Status</th>
+                            <th class="text-right">Count</th>
+                            <th class="text-right">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!empty($cashouts)): ?>
+                            <?php foreach ($cashouts as $c): ?>
+                                <tr>
+                                    <td><span class="badge-status badge-info"><?php echo isset($c['status']) ? htmlspecialchars($c['status']) : 'N/A'; ?></span></td>
+                                    <td class="text-right"><?php echo isset($c['count']) ? number_format($c['count']) : 0; ?></td>
+                                    <td class="text-right"><?php echo isset($c['total']) ? number_format((float)$c['total'], 2) : '0.00'; ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <tr><td colspan="3" style="text-align:center;">No cashout data</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Deposit Transactions -->
+        <div class="section">
+            <div class="section-header">
+                <h2>💰 Deposit Transactions</h2>
+                <span class="badge">From deposit_transactions</span>
+            </div>
+            <div class="section-content">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Status</th>
+                            <th class="text-right">Count</th>
+                            <th class="text-right">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!empty($deposits)): ?>
+                            <?php foreach ($deposits as $d): ?>
+                                <tr>
+                                    <td><span class="badge-status badge-info"><?php echo isset($d['status']) ? htmlspecialchars($d['status']) : 'N/A'; ?></span></td>
+                                    <td class="text-right"><?php echo isset($d['count']) ? number_format($d['count']) : 0; ?></td>
+                                    <td class="text-right"><?php echo isset($d['total']) ? number_format((float)$d['total'], 2) : '0.00'; ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <tr><td colspan="3" style="text-align:center;">No deposit data</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <footer class="admin-footer">
+        <p>VOUCHMORPH · BOTSWANA · <?php echo date('Y'); ?></p>
+        <p style="margin-top: 5px;">Bank of Botswana Regulatory Sandbox Participant · Daily Reconciliation Report</p>
+    </footer>
 </body>
 </html>
-
-<?php
-// Log the report generation
-$logFile = __DIR__ . '/../../../storage/logs/reconciliation.log';
-if (!is_dir(dirname($logFile))) {
-    mkdir(dirname($logFile), 0755, true);
-}
-file_put_contents($logFile, "[" . date('Y-m-d H:i:s') . "] Daily reconciliation report generated for {$dateFrom} to {$dateTo} by {$_SESSION['user']['username'] ?? 'unknown'}\n", FILE_APPEND);
-?>

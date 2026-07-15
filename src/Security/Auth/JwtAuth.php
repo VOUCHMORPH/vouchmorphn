@@ -1,10 +1,6 @@
 <?php
 
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
-
-// SECURITY_LAYER/Auth/JwtAuth.php
-
-namespace SECURITY_LAYER\Auth;
+namespace Security\Auth;
 
 use \Firebase\JWT\JWT;
 use \Firebase\JWT\Key;
