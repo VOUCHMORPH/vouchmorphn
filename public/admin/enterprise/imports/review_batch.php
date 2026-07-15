@@ -1,5 +1,5 @@
 <?php
-// enterprise/imports/review_batch.php - Review and approve batch
+// enterprise/imports/review_batch.php - Review and approve batch WITH DEBUGGING
 require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
@@ -83,6 +83,22 @@ $stmt->execute([':batch_id' => $batchId]);
 $destinations = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // ============================================================
+// DEBUG: Log raw data before processing
+// ============================================================
+error_log("=== REVIEW_BATCH DEBUG: RAW DATA ===");
+error_log("Batch ID: " . $batchId);
+error_log("Batch Reference: " . ($batch['batch_reference'] ?? 'NULL'));
+error_log("Source Institution: " . ($batch['source_institution'] ?? 'NULL'));
+error_log("Source Identifier: " . ($batch['source_identifier'] ?? 'NULL'));
+error_log("Total Amount: " . ($batch['total_amount'] ?? 'NULL'));
+error_log("Currency: " . ($batch['currency'] ?? 'NULL'));
+error_log("Destinations Count: " . count($destinations));
+
+foreach ($destinations as $idx => $dest) {
+    error_log("Destination $idx: " . json_encode($dest));
+}
+
+// ============================================================
 // HANDLE ACTIONS
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -136,8 +152,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
         } elseif ($action === 'execute') {
             // ============================================================
-            // FIXED: PROPER SWAPSERVICE CALL (same as API but direct)
+            // DEBUG: Start execution with full payload logging
             // ============================================================
+            error_log("=== REVIEW_BATCH DEBUG: EXECUTION STARTED ===");
+            
             try {
                 // Load country configuration
                 $countryName = $_ENV['VOUCHMORPH_COUNTRY'] ?? getenv('VOUCHMORPH_COUNTRY') ?? 'Botswana';
@@ -155,7 +173,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 error_log("[review_batch] SwapService initialized successfully");
                 
-                // Build the payload
+                // ============================================================
+                // BUILD PAYLOAD WITH FULL DEBUGGING
+                // ============================================================
                 $payload = [
                     'swap_type' => 'MULTI_DESTINATION',
                     'reference' => $batch['batch_reference'],
@@ -168,27 +188,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'destinations' => []
                 ];
                 
-                foreach ($destinations as $dest) {
-                    $payload['destinations'][] = [
-                        'to_institution' => $dest['institution'],
-                        'destination_institution' => $dest['institution'],
+                error_log("[review_batch] PAYLOAD BEFORE DESTINATIONS: " . json_encode($payload, JSON_PRETTY_PRINT));
+                
+                // Build destinations with full debugging
+                foreach ($destinations as $idx => $dest) {
+                    error_log("[review_batch] Processing destination $idx: " . json_encode($dest));
+                    
+                    // Build destination payload
+                    $destPayload = [
+                        'to_institution' => $dest['institution'] ?? 'UNKNOWN',
+                        'destination_institution' => $dest['institution'] ?? 'UNKNOWN',
                         'destination_asset_type' => $dest['asset_type'] ?? 'WALLET',
                         'destination_identifier' => $dest['identifier'],
                         'destination_identifier_type' => $dest['identifier_type'] ?? 'account',
                         'amount' => (float)$dest['amount'],
                         'currency' => $dest['currency'] ?? 'BWP',
                         'delivery_method' => $dest['delivery_method'] ?? 'DEPOSIT',
-                        'beneficiary_phone' => $dest['beneficiary_phone'],
-                        'beneficiary_name' => $dest['beneficiary_name']
+                        'beneficiary_phone' => $dest['beneficiary_phone'] ?? null,
+                        'beneficiary_name' => $dest['beneficiary_name'] ?? null
                     ];
+                    
+                    // Handle identity recipients
+                    if (($dest['is_identity_recipient'] ?? false) || $dest['institution'] === 'IDENTITY_RECIPIENT') {
+                        $destPayload['to_institution'] = 'VOUCHMORPH';
+                        $destPayload['destination_institution'] = 'VOUCHMORPH';
+                        $destPayload['destination_asset_type'] = 'IDENTITY';
+                        $destPayload['identity_type'] = $dest['identity_type'] ?? 'national_id';
+                        $destPayload['identity_value'] = $dest['identity_value'] ?? $dest['identifier'];
+                        $destPayload['is_identity_recipient'] = true;
+                        error_log("[review_batch] Destination $idx is IDENTITY recipient");
+                    }
+                    
+                    // Add to payload
+                    $payload['destinations'][] = $destPayload;
+                    
+                    error_log("[review_batch] Destination $idx payload: " . json_encode($destPayload));
                 }
                 
-                error_log("[review_batch] Executing multi-destination swap with " . count($destinations) . " destinations");
+                // ============================================================
+                // FINAL PAYLOAD DEBUG
+                // ============================================================
+                error_log("=== REVIEW_BATCH DEBUG: FINAL PAYLOAD ===");
+                error_log("Full Payload: " . json_encode($payload, JSON_PRETTY_PRINT));
+                error_log("Destinations in payload: " . count($payload['destinations']));
                 
-                // Execute the swap
+                // Save payload to a file for inspection
+                $debugFile = '/tmp/payload_debug_' . date('Ymd_His') . '.json';
+                file_put_contents($debugFile, json_encode($payload, JSON_PRETTY_PRINT));
+                error_log("Payload saved to: " . $debugFile);
+                
+                // ============================================================
+                // EXECUTE THE SWAP
+                // ============================================================
+                error_log("[review_batch] Executing multi-destination swap with " . count($payload['destinations']) . " destinations");
+                
                 $result = $swapService->executeAtomicSwap($payload);
                 
                 error_log("[review_batch] Swap completed, status: " . ($result['status'] ?? 'unknown'));
+                error_log("[review_batch] Result: " . json_encode($result, JSON_PRETTY_PRINT));
                 
                 // ============================================================
                 // UPDATE BATCH STATUS BASED ON RESULT
@@ -253,6 +310,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } catch (Exception $e) {
                 error_log("[review_batch] Execution error: " . $e->getMessage());
                 error_log("[review_batch] Trace: " . $e->getTraceAsString());
+                
+                // Debug: Log the payload that caused the error
+                if (isset($payload)) {
+                    error_log("[review_batch] PAYLOAD THAT CAUSED ERROR: " . json_encode($payload, JSON_PRETTY_PRINT));
+                }
+                
                 $error = "Execution failed: " . $e->getMessage();
             }
         }
@@ -650,6 +713,37 @@ $status = strtolower($batch['status'] ?? 'draft');
                 <a href="../index.php" class="btn btn-outline">🏠 Dashboard</a>
             </div>
         </div>
+        
+        <!-- ============================================================ -->
+        <!-- DEBUG PANEL - Shows payload info if execution failed -->
+        <!-- ============================================================ -->
+        <?php if ($error && strpos($error, 'Execution failed') !== false): ?>
+        <div class="card" style="border-left: 4px solid #f59e0b; background: #fffbeb; margin-top: 20px;">
+            <div class="card-header">
+                <span class="card-title">🔍 Debug Information</span>
+            </div>
+            <div style="font-family: monospace; font-size: 12px; background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-all;">
+                <strong style="color: #fbbf24;">Error:</strong> <?php echo htmlspecialchars($error); ?><br><br>
+                <strong style="color: #fbbf24;">Batch ID:</strong> <?php echo $batchId; ?><br>
+                <strong style="color: #fbbf24;">Destinations:</strong> <?php echo count($destinations); ?><br>
+                <?php foreach ($destinations as $idx => $dest): ?>
+                <br><strong style="color: #60a5fa;">Destination <?php echo $idx + 1; ?>:</strong>
+                Institution: <?php echo htmlspecialchars($dest['institution'] ?? 'NULL'); ?><br>
+                Identifier: <?php echo htmlspecialchars($dest['identifier'] ?? 'NULL'); ?><br>
+                Amount: <?php echo htmlspecialchars($dest['amount'] ?? 'NULL'); ?><br>
+                Currency: <?php echo htmlspecialchars($dest['currency'] ?? 'NULL'); ?><br>
+                Asset Type: <?php echo htmlspecialchars($dest['asset_type'] ?? 'NULL'); ?><br>
+                Delivery: <?php echo htmlspecialchars($dest['delivery_method'] ?? 'NULL'); ?><br>
+                Identity: <?php echo ($dest['is_identity_recipient'] ?? false) ? 'YES' : 'NO'; ?><br>
+                <?php endforeach; ?>
+            </div>
+            <div style="margin-top: 12px;">
+                <p style="color: #64748b; font-size: 13px;">
+                    💡 Check the server logs for the full payload dump. The payload was saved to <code>/tmp/payload_debug_*.json</code>
+                </p>
+            </div>
+        </div>
+        <?php endif; ?>
     </div>
 
     <script>
