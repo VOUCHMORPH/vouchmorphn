@@ -30,6 +30,20 @@ $isSupervisor = in_array($userRole, ['supervisor']);
 $isLoader = in_array($userRole, ['program_officer', 'department_head']);
 
 // ============================================================
+// HELPER: Check if user can edit a batch
+// ============================================================
+function canEditBatch($batchCreatedBy, $currentUserId, $userRole) {
+    // Owner can edit everything
+    if ($userRole === 'owner') return true;
+    // Loaders can only edit their own batches
+    if (in_array($userRole, ['program_officer', 'department_head'])) {
+        return $batchCreatedBy == $currentUserId;
+    }
+    // Everyone else cannot edit
+    return false;
+}
+
+// ============================================================
 // FETCH DASHBOARD DATA
 // ============================================================
 
@@ -153,7 +167,7 @@ try {
         // Supervisors see approved and completed
         $statusFilter = "AND status IN ('approved', 'completed', 'executed', 'APPROVED', 'COMPLETED', 'EXECUTED')";
     } elseif ($isLoader) {
-        // FIXED: Loaders see ALL their batches + pending + approved + draft
+        // Loaders see ALL their batches + pending + approved + draft
         $statusFilter = "AND (created_by = :user_id OR status IN ('pending', 'pending_approval', 'approved', 'draft'))";
         $statusParams[':user_id'] = $userId;
     }
@@ -262,7 +276,6 @@ function getRoleLabel($role) {
     <title>VOUCHMORPH · Enterprise Dashboard · <?php echo safeHtml($orgName); ?></title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ... (all existing styles remain the same) ... */
         * { margin:0; padding:0; box-sizing:border-box; }
         body {
             font-family: 'Inter', sans-serif;
@@ -345,6 +358,21 @@ function getRoleLabel($role) {
         .logout-btn:hover {
             background: #8A6D3B;
             color: #0f172a;
+        }
+
+        /* ===== READ ONLY BADGE ===== */
+        .readonly-badge {
+            display: inline-block;
+            padding: 1px 8px;
+            background: #fef3c7;
+            color: #92400e;
+            border-radius: 10px;
+            font-size: 8px;
+            font-weight: 600;
+            text-transform: uppercase;
+            border: 1px solid #f59e0b;
+            margin-left: 4px;
+            vertical-align: middle;
         }
 
         /* ===== NAVIGATION ===== */
@@ -587,6 +615,11 @@ function getRoleLabel($role) {
             color: #0f172a;
         }
         .btn-sm { padding: 4px 12px; font-size: 11px; }
+        .btn-disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
 
         /* ===== QUICK ACTIONS ===== */
         .quick-actions {
@@ -649,6 +682,8 @@ function getRoleLabel($role) {
             .content { padding: 16px; }
             .metrics-grid { grid-template-columns: repeat(2, 1fr); }
             .quick-actions { grid-template-columns: 1fr; }
+            .table-responsive { font-size: 11px; }
+            th, td { padding: 6px 8px; }
         }
     </style>
 </head>
@@ -890,14 +925,22 @@ function getRoleLabel($role) {
                             <th>Destinations</th>
                             <th>Status</th>
                             <th>Created</th>
+                            <th>Created By</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($recentBatches as $batch): ?>
+                        <?php foreach ($recentBatches as $batch): 
+                            $isOwnBatch = ($batch['created_by'] == $userId);
+                            $canEdit = canEditBatch($batch['created_by'], $userId, $userRole);
+                            $isReadOnlyBatch = $isLoader && !$isOwnBatch;
+                        ?>
                         <tr>
                             <td>
                                 <strong><?php echo safeHtml($batch['batch_reference']); ?></strong>
+                                <?php if ($isReadOnlyBatch): ?>
+                                <span class="readonly-badge">🔒 READ ONLY</span>
+                                <?php endif; ?>
                             </td>
                             <td><?php echo safeHtml($batch['batch_name'] ?? '—'); ?></td>
                             <td><?php echo safeHtml($batch['source_institution'] ?? '—'); ?></td>
@@ -909,13 +952,22 @@ function getRoleLabel($role) {
                                 </span>
                             </td>
                             <td><?php echo date('Y-m-d H:i', strtotime($batch['created_at'] ?? 'now')); ?></td>
+                            <td><?php echo $isOwnBatch ? '👤 You' : 'Other'; ?></td>
                             <td>
+                                <!-- View button - Everyone can view -->
                                 <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>" class="btn btn-outline btn-sm">View</a>
                                 
+                                <!-- Edit button - Only for OWN draft batches -->
+                                <?php if ($canEdit && strtolower($batch['status']) === 'draft'): ?>
+                                <a href="imports/add_destinations.php?batch_id=<?php echo $batch['id']; ?>" class="btn btn-primary btn-sm">✏️ Edit</a>
+                                <?php endif; ?>
+                                
+                                <!-- Approve button - Only for Approvers -->
                                 <?php if ($canApprove && in_array(strtolower($batch['status']), ['pending', 'pending_approval'])): ?>
                                 <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>&action=approve" class="btn btn-warning btn-sm">Approve</a>
                                 <?php endif; ?>
                                 
+                                <!-- Disburse button - Only for Supervisors -->
                                 <?php if ($canDisburse && strtolower($batch['status']) === 'approved'): ?>
                                 <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>&action=disburse" class="btn btn-success btn-sm">Disburse</a>
                                 <?php endif; ?>
@@ -950,8 +1002,9 @@ function getRoleLabel($role) {
                 <span class="card-title">📤 Loader Access</span>
             </div>
             <p style="color: #64748b; font-size: 14px;">
-                You can create and upload new disbursement batches. 
-                Once created, they will be sent for approval.
+                You can view all batches in the system. 
+                <strong>READ ONLY</strong> badges appear on batches you don't own.
+                You can <strong>edit</strong> only the batches you created.
                 <a href="imports/source_input.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Create New Batch</a>
             </p>
         </div>
