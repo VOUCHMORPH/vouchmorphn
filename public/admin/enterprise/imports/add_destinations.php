@@ -53,9 +53,6 @@ try {
     $participants = ['CAZACOM', 'SACCUSSALIS', 'ZURUBANK', 'VOUCHMORPH'];
 }
 
-// ============================================================
-// IDENTITY-BASED RECIPIENT TYPES
-// ============================================================
 $identityTypes = [
     'national_id' => 'National ID (Omang)',
     'voters_id' => "Voter's ID",
@@ -69,9 +66,6 @@ $identityTypes = [
     'residence_permit' => 'Residence Permit'
 ];
 
-// ============================================================
-// DELIVERY METHODS FOR IDENTITY-BASED RECIPIENTS
-// ============================================================
 $deliveryMethods = [
     'CASHOUT' => 'Cashout at Agent/ATM',
     'AGENT' => 'Agent Payout',
@@ -104,12 +98,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $amount = floatval($dest['amount'] ?? 0);
                     $totalAmount += $amount;
                     
-                    // Determine if this is an identity-based recipient
                     $isIdentityRecipient = ($dest['recipient_type'] ?? 'institution') === 'identity';
                     
                     if ($isIdentityRecipient) {
                         $identityDestCount++;
-                        
                         $stmt = $db->prepare("
                             INSERT INTO disbursement_destinations (
                                 batch_id, destination_index, institution, asset_type,
@@ -127,7 +119,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 'PENDING'
                             )
                         ");
-                        
                         $stmt->execute([
                             ':batch_id' => $batchId,
                             ':index' => $destCount,
@@ -145,7 +136,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             ':identity_type' => $dest['identity_type'] ?? 'national_id',
                             ':identity_value' => $dest['identity_value'] ?? ''
                         ]);
-                        
                     } else {
                         $stmt = $db->prepare("
                             INSERT INTO disbursement_destinations (
@@ -164,7 +154,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 'PENDING'
                             )
                         ");
-                        
                         $stmt->execute([
                             ':batch_id' => $batchId,
                             ':index' => $destCount,
@@ -185,7 +174,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
                 
-                // Update batch total
                 $stmt = $db->prepare("
                     UPDATE disbursement_batches 
                     SET total_destinations = :count,
@@ -203,10 +191,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
                 
                 $db->commit();
-                
-                header("Location: review_batch.php?batch_id=$batchId");
+                header("Location: review.php?batch_id=$batchId");
                 exit;
-                
             } catch (Exception $e) {
                 $db->rollBack();
                 error_log("[add_destinations] Error: " . $e->getMessage());
@@ -217,17 +203,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $db->prepare("DELETE FROM disbursement_destinations WHERE batch_id = :batch_id");
         $stmt->execute([':batch_id' => $batchId]);
         $success = "All destinations cleared.";
+        header("Location: add_destinations.php?batch_id=$batchId");
+        exit;
     }
 }
 
 $csrfToken = generateCsrfToken();
 $roleDisplay = strtoupper($user['role'] ?? 'USER');
-$orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
-
-// Check if user can submit for approval
 $canSubmit = in_array($user['role'] ?? '', ['owner', 'program_officer', 'department_head']);
-$canApprove = in_array($user['role'] ?? '', ['owner', 'approver', 'senior_approver']);
-$canExecute = in_array($user['role'] ?? '', ['owner']);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -237,7 +220,6 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
     <title>Add Destinations · VouchMorph Enterprise</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ... (keep all existing styles) ... */
         :root {
             --paper: #EEF1EF;
             --panel: #FFFFFF;
@@ -406,7 +388,6 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
         }
         .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
         .grid-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px; }
-        .grid-5 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr; gap: 12px; }
         .summary-stats {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
@@ -500,7 +481,7 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
             border: 1px dashed var(--identity-purple);
         }
         @media (max-width: 768px) {
-            .grid-3, .grid-4, .grid-5 { grid-template-columns: 1fr; }
+            .grid-3, .grid-4 { grid-template-columns: 1fr; }
             .masthead { flex-direction: column; text-align: center; }
             .step-indicator { flex-wrap: wrap; gap: 8px; }
             .step { flex: 0 0 45%; }
@@ -574,118 +555,6 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
 
                 <div id="destinationsContainer">
                     <!-- Rows added by JavaScript -->
-                    <div class="destination-row" id="rowTemplate" style="display: none;">
-                        <button type="button" class="remove-btn" onclick="removeRow(this)">✕</button>
-                        <div class="identity-badge hidden">🆔 IDENTITY</div>
-                        
-                        <!-- Recipient Type Toggle -->
-                        <div class="toggle-group">
-                            <button type="button" class="toggle-btn active" data-type="institution" onclick="toggleRecipientType(this)">🏛️ Institution Account</button>
-                            <button type="button" class="toggle-btn" data-type="identity" onclick="toggleRecipientType(this)">🆔 Identity-Based</button>
-                        </div>
-
-                        <!-- Institution Fields -->
-                        <div class="institution-fields">
-                            <div class="grid-4">
-                                <div class="form-group">
-                                    <label>Institution *</label>
-                                    <select class="dest-institution">
-                                        <option value="">Select</option>
-                                        <?php foreach ($participants as $p): ?>
-                                        <option value="<?php echo htmlspecialchars($p); ?>"><?php echo htmlspecialchars($p); ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Asset Type</label>
-                                    <select class="dest-asset-type">
-                                        <option value="WALLET">Wallet</option>
-                                        <option value="ACCOUNT">Bank Account</option>
-                                        <option value="PHONE">Phone Number</option>
-                                        <option value="EMAIL">Email</option>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Identifier *</label>
-                                    <input type="text" class="dest-identifier" placeholder="Phone, Account, Email">
-                                </div>
-                                <div class="form-group">
-                                    <label>Amount *</label>
-                                    <input type="number" class="dest-amount" placeholder="0.00" step="0.01" min="0.01">
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Identity Fields -->
-                        <div class="identity-fields hidden">
-                            <div class="grid-3">
-                                <div class="form-group">
-                                    <label>Identity Type *</label>
-                                    <select class="dest-identity-type">
-                                        <?php foreach ($identityTypes as $key => $label): ?>
-                                        <option value="<?php echo $key; ?>"><?php echo $label; ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Identity Number *</label>
-                                    <input type="text" class="dest-identity-value" placeholder="Enter ID number">
-                                    <div class="hint">e.g., National ID, Voter's ID, Passport</div>
-                                </div>
-                                <div class="form-group">
-                                    <label>Amount *</label>
-                                    <input type="number" class="dest-amount" placeholder="0.00" step="0.01" min="0.01">
-                                </div>
-                            </div>
-                            <div class="grid-3">
-                                <div class="form-group">
-                                    <label>Delivery Method *</label>
-                                    <select class="dest-delivery-identity">
-                                        <?php foreach ($deliveryMethods as $key => $label): ?>
-                                        <option value="<?php echo $key; ?>"><?php echo $label; ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Beneficiary Name</label>
-                                    <input type="text" class="dest-beneficiary-name" placeholder="Full name">
-                                </div>
-                                <div class="form-group">
-                                    <label>Beneficiary Phone</label>
-                                    <input type="tel" class="dest-beneficiary-phone" placeholder="+267XXXXXXXX">
-                                    <div class="hint">For SMS notification</div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Common Fields -->
-                        <div class="grid-3" style="margin-top:8px;">
-                            <div class="form-group">
-                                <label>Beneficiary Email</label>
-                                <input type="email" class="dest-beneficiary-email" placeholder="email@example.com">
-                            </div>
-                            <div class="form-group">
-                                <label>Delivery Method</label>
-                                <select class="dest-delivery">
-                                    <option value="DEPOSIT">Deposit</option>
-                                    <option value="CASHOUT">Cashout</option>
-                                    <option value="VOUCHER">Voucher</option>
-                                    <option value="ATM">ATM</option>
-                                    <option value="AGENT">Agent</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>Currency</label>
-                                <select class="dest-currency">
-                                    <option value="BWP">BWP - Botswana Pula</option>
-                                    <option value="ZAR">ZAR - South African Rand</option>
-                                    <option value="USD">USD - US Dollar</option>
-                                    <option value="EUR">EUR - Euro</option>
-                                    <option value="GBP">GBP - British Pound</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
                 </div>
 
                 <div class="summary-stats">
@@ -711,9 +580,7 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
                     <button type="button" class="btn btn-secondary" onclick="addRow('institution')">➕ Add Another</button>
                     <button type="button" class="btn btn-identity" onclick="addRow('identity')">🆔 Add Identity Recipient</button>
                     <button type="submit" class="btn btn-primary" id="submitBtn" disabled>💾 Save & Review</button>
-                    <?php if ($batch['total_destinations'] > 0 && $canSubmit): ?>
-                    <a href="submit_approval.php?batch_id=<?php echo $batchId; ?>" class="btn btn-success">📤 Submit for Approval</a>
-                    <?php endif; ?>
+                    <a href="review.php?batch_id=<?php echo $batchId; ?>" class="btn btn-outline">📋 Review</a>
                 </div>
             </div>
         </form>
@@ -721,18 +588,8 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
         <?php if (!empty($destinations)): ?>
         <div class="card">
             <div class="card-header">
-                <span class="card-title">📋 Existing Destinations</span>
-                <div>
-                    <span style="font-size:11px; color:var(--ink-300); margin-right:12px;">
-                        <?php 
-                        $identityCount = array_filter($destinations, function($d) { 
-                            return ($d['is_identity_recipient'] ?? false) == true; 
-                        });
-                        echo count($identityCount) . ' identity recipients';
-                        ?>
-                    </span>
-                    <span class="btn btn-danger btn-sm" onclick="clearDestinations()">🗑 Clear All</span>
-                </div>
+                <span class="card-title">📋 Existing Destinations (<?php echo count($destinations); ?>)</span>
+                <button class="btn btn-danger btn-sm" onclick="clearDestinations()">🗑 Clear All</button>
             </div>
             <div class="table-responsive">
                 <table style="width:100%; border-collapse:collapse; font-size:13px;">
@@ -744,7 +601,6 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
                             <th style="padding:10px; text-align:left;">Identifier</th>
                             <th style="padding:10px; text-align:left;">Amount</th>
                             <th style="padding:10px; text-align:left;">Beneficiary</th>
-                            <th style="padding:10px; text-align:left;">Delivery</th>
                             <th style="padding:10px; text-align:left;">Status</th>
                         </tr>
                     </thead>
@@ -775,7 +631,6 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
                             </td>
                             <td style="padding:10px;"><?php echo number_format($dest['amount'], 2); ?></td>
                             <td style="padding:10px;"><?php echo htmlspecialchars($dest['beneficiary_name'] ?? '-'); ?></td>
-                            <td style="padding:10px;"><?php echo htmlspecialchars($dest['delivery_method']); ?></td>
                             <td style="padding:10px;">
                                 <span class="workflow-status status-<?php echo strtolower($dest['status']); ?>">
                                     <?php echo htmlspecialchars($dest['status']); ?>
@@ -790,27 +645,140 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
         <?php endif; ?>
     </div>
 
-    <!-- ============================================================ -->
-    <!-- FIXED JAVASCRIPT -->
-    <!-- ============================================================ -->
     <script>
+        // ============================================================
+        // FIXED: Complete JavaScript with proper event handling
+        // ============================================================
         let rowCount = 0;
 
-        function getTemplate() {
-            return document.getElementById('rowTemplate').cloneNode(true);
+        // Template for new rows
+        function getRowTemplate() {
+            return `
+            <div class="destination-row" data-row-id="${rowCount}" data-type="institution">
+                <button type="button" class="remove-btn" onclick="removeRow(this)">✕</button>
+                <div class="identity-badge hidden">🆔 IDENTITY</div>
+                
+                <div class="toggle-group">
+                    <button type="button" class="toggle-btn active" data-type="institution" onclick="toggleRecipientType(this)">🏛️ Institution Account</button>
+                    <button type="button" class="toggle-btn" data-type="identity" onclick="toggleRecipientType(this)">🆔 Identity-Based</button>
+                </div>
+
+                <!-- Institution Fields -->
+                <div class="institution-fields">
+                    <div class="grid-4">
+                        <div class="form-group">
+                            <label>Institution *</label>
+                            <select class="dest-institution">
+                                <option value="">Select</option>
+                                <?php foreach ($participants as $p): ?>
+                                <option value="<?php echo htmlspecialchars($p); ?>"><?php echo htmlspecialchars($p); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Asset Type</label>
+                            <select class="dest-asset-type">
+                                <option value="WALLET">Wallet</option>
+                                <option value="ACCOUNT">Bank Account</option>
+                                <option value="PHONE">Phone Number</option>
+                                <option value="EMAIL">Email</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Identifier *</label>
+                            <input type="text" class="dest-identifier" placeholder="Phone, Account, Email">
+                        </div>
+                        <div class="form-group">
+                            <label>Amount *</label>
+                            <input type="number" class="dest-amount" placeholder="0.00" step="0.01" min="0.01">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Identity Fields -->
+                <div class="identity-fields hidden">
+                    <div class="grid-3">
+                        <div class="form-group">
+                            <label>Identity Type *</label>
+                            <select class="dest-identity-type">
+                                <?php foreach ($identityTypes as $key => $label): ?>
+                                <option value="<?php echo $key; ?>"><?php echo $label; ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Identity Number *</label>
+                            <input type="text" class="dest-identity-value" placeholder="Enter ID number">
+                            <div class="hint">e.g., National ID, Voter's ID, Passport</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Amount *</label>
+                            <input type="number" class="dest-amount" placeholder="0.00" step="0.01" min="0.01">
+                        </div>
+                    </div>
+                    <div class="grid-3">
+                        <div class="form-group">
+                            <label>Delivery Method *</label>
+                            <select class="dest-delivery-identity">
+                                <?php foreach ($deliveryMethods as $key => $label): ?>
+                                <option value="<?php echo $key; ?>"><?php echo $label; ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Beneficiary Name</label>
+                            <input type="text" class="dest-beneficiary-name" placeholder="Full name">
+                        </div>
+                        <div class="form-group">
+                            <label>Beneficiary Phone</label>
+                            <input type="tel" class="dest-beneficiary-phone" placeholder="+267XXXXXXXX">
+                            <div class="hint">For SMS notification</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Common Fields -->
+                <div class="grid-3" style="margin-top:8px;">
+                    <div class="form-group">
+                        <label>Beneficiary Email</label>
+                        <input type="email" class="dest-beneficiary-email" placeholder="email@example.com">
+                    </div>
+                    <div class="form-group">
+                        <label>Delivery Method</label>
+                        <select class="dest-delivery">
+                            <option value="DEPOSIT">Deposit</option>
+                            <option value="CASHOUT">Cashout</option>
+                            <option value="VOUCHER">Voucher</option>
+                            <option value="ATM">ATM</option>
+                            <option value="AGENT">Agent</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Currency</label>
+                        <select class="dest-currency">
+                            <option value="BWP">BWP - Botswana Pula</option>
+                            <option value="ZAR">ZAR - South African Rand</option>
+                            <option value="USD">USD - US Dollar</option>
+                            <option value="EUR">EUR - Euro</option>
+                            <option value="GBP">GBP - British Pound</option>
+                        </select>
+                    </div>
+                </div>
+            </div>`;
         }
 
         function addRow(type) {
             const container = document.getElementById('destinationsContainer');
-            const template = getTemplate();
-            template.style.display = 'block';
-            template.id = 'dest_row_' + rowCount;
+            const html = getRowTemplate();
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = html;
+            const row = tempDiv.firstElementChild;
             
-            // Set row type
-            template.dataset.type = type || 'institution';
+            // Set the row type
+            row.dataset.type = type || 'institution';
             
             // Add event listeners to all inputs
-            template.querySelectorAll('input, select').forEach(el => {
+            row.querySelectorAll('input, select').forEach(el => {
                 el.addEventListener('input', function() {
                     updateSummary();
                     enableSubmit();
@@ -819,44 +787,35 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
                     updateSummary();
                     enableSubmit();
                 });
+                // Also trigger on keyup for text inputs
+                if (el.tagName === 'INPUT') {
+                    el.addEventListener('keyup', function() {
+                        updateSummary();
+                        enableSubmit();
+                    });
+                }
             });
             
-            // Set initial visibility
+            // Set initial visibility based on type
             if (type === 'identity') {
-                template.classList.add('identity-row');
-                const badge = template.querySelector('.identity-badge');
+                row.classList.add('identity-row');
+                const badge = row.querySelector('.identity-badge');
                 if (badge) badge.classList.remove('hidden');
-                const instFields = template.querySelector('.institution-fields');
+                const instFields = row.querySelector('.institution-fields');
                 if (instFields) instFields.classList.add('hidden');
-                const identityFields = template.querySelector('.identity-fields');
+                const identityFields = row.querySelector('.identity-fields');
                 if (identityFields) identityFields.classList.remove('hidden');
                 
-                // Set toggle buttons
-                const toggles = template.querySelectorAll('.toggle-btn');
+                const toggles = row.querySelectorAll('.toggle-btn');
                 toggles.forEach(btn => {
                     btn.classList.remove('active', 'identity-active');
                     if (btn.dataset.type === 'identity') {
                         btn.classList.add('identity-active');
                     }
                 });
-            } else {
-                const badge = template.querySelector('.identity-badge');
-                if (badge) badge.classList.add('hidden');
-                const instFields = template.querySelector('.institution-fields');
-                if (instFields) instFields.classList.remove('hidden');
-                const identityFields = template.querySelector('.identity-fields');
-                if (identityFields) identityFields.classList.add('hidden');
-                
-                const toggles = template.querySelectorAll('.toggle-btn');
-                toggles.forEach(btn => {
-                    btn.classList.remove('active', 'identity-active');
-                    if (btn.dataset.type === 'institution') {
-                        btn.classList.add('active');
-                    }
-                });
             }
             
-            container.appendChild(template);
+            container.appendChild(row);
             rowCount++;
             updateSummary();
             enableSubmit();
@@ -903,7 +862,7 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
 
         function removeRow(btn) {
             const row = btn.closest('.destination-row');
-            const visibleRows = document.querySelectorAll('.destination-row:not([style*="display: none"])');
+            const visibleRows = document.querySelectorAll('.destination-row');
             if (visibleRows.length > 1) {
                 row.remove();
                 updateSummary();
@@ -914,7 +873,7 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
         }
 
         function clearRows() {
-            const rows = document.querySelectorAll('.destination-row:not([style*="display: none"])');
+            const rows = document.querySelectorAll('.destination-row');
             if (rows.length <= 1) {
                 alert('You need at least one destination.');
                 return;
@@ -923,7 +882,7 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
                 rows.forEach((row, index) => {
                     if (index > 0) row.remove();
                 });
-                const firstRow = document.querySelector('.destination-row:not([style*="display: none"])');
+                const firstRow = document.querySelector('.destination-row');
                 if (firstRow) {
                     firstRow.querySelectorAll('input, select').forEach(el => {
                         if (el.tagName === 'INPUT') el.value = '';
@@ -939,7 +898,7 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
         }
 
         function updateSummary() {
-            const rows = document.querySelectorAll('.destination-row:not([style*="display: none"])');
+            const rows = document.querySelectorAll('.destination-row');
             let total = 0;
             let valid = 0;
             let identityCount = 0;
@@ -947,8 +906,12 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
 
             rows.forEach(row => {
                 const isIdentity = row.dataset.type === 'identity';
-                const amountInput = row.querySelector('.dest-amount');
-                const amount = parseFloat(amountInput?.value) || 0;
+                // Find all amount inputs in this row
+                const amountInputs = row.querySelectorAll('.dest-amount');
+                let amount = 0;
+                amountInputs.forEach(inp => {
+                    amount += parseFloat(inp.value) || 0;
+                });
                 
                 if (isIdentity) {
                     identityCount++;
@@ -976,13 +939,16 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
         }
 
         function enableSubmit() {
-            const rows = document.querySelectorAll('.destination-row:not([style*="display: none"])');
+            const rows = document.querySelectorAll('.destination-row');
             let hasValid = false;
 
             rows.forEach(row => {
                 const isIdentity = row.dataset.type === 'identity';
-                const amountInput = row.querySelector('.dest-amount');
-                const amount = parseFloat(amountInput?.value) || 0;
+                const amountInputs = row.querySelectorAll('.dest-amount');
+                let amount = 0;
+                amountInputs.forEach(inp => {
+                    amount += parseFloat(inp.value) || 0;
+                });
                 
                 if (isIdentity) {
                     const identityType = row.querySelector('.dest-identity-type')?.value;
@@ -1013,13 +979,16 @@ $canExecute = in_array($user['role'] ?? '', ['owner']);
 
         // Before submit, gather all entries
         document.getElementById('destinationForm').addEventListener('submit', function(e) {
-            const rows = document.querySelectorAll('.destination-row:not([style*="display: none"])');
+            const rows = document.querySelectorAll('.destination-row');
             const entries = [];
 
             rows.forEach(row => {
                 const isIdentity = row.dataset.type === 'identity';
-                const amountInput = row.querySelector('.dest-amount');
-                const amount = parseFloat(amountInput?.value) || 0;
+                const amountInputs = row.querySelectorAll('.dest-amount');
+                let amount = 0;
+                amountInputs.forEach(inp => {
+                    amount += parseFloat(inp.value) || 0;
+                });
                 const name = row.querySelector('.dest-beneficiary-name')?.value?.trim() || '';
                 const phone = row.querySelector('.dest-beneficiary-phone')?.value?.trim() || '';
                 const email = row.querySelector('.dest-beneficiary-email')?.value?.trim() || '';
