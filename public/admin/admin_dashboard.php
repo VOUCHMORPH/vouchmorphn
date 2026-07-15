@@ -1058,7 +1058,7 @@ try {
                             <td><?php echo date('Y-m-d H:i', strtotime($row['performed_at'] ?? 'now')); ?></td>
                             <td><?php echo safeHtml($row['action'] ?? 'N/A'); ?></td>
                             <td><?php echo safeHtml($row['entity_type'] ?? 'N/A'); ?></td>
-                            <td><?php echo safeHtml($row['performed_by_type'] ?? 'N/A'); ?></td>
+                            <td><?php echo safeHtml($row['performed_by_id'] ?? 'N/A'); ?></td>
                             <td><?php echo safeHtml($row['ip_address'] ?? 'N/A'); ?></td>
                         </tr>
                         <?php endforeach; ?>
