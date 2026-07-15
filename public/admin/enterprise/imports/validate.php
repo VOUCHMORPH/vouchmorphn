@@ -3,6 +3,7 @@ require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
+use PhpOffice\PhpSpreadsheet\IOFactory;  // <-- MOVED THIS TO THE TOP
 
 $db = DBConnection::getConnection();
 $orgId = getOrganizationId();
@@ -149,7 +150,7 @@ if (file_exists($filePath)) {
         // Excel processing with PhpSpreadsheet
         try {
             require_once '../../../../vendor/autoload.php';
-            use PhpOffice\PhpSpreadsheet\IOFactory;
+            // use PhpOffice\PhpSpreadsheet\IOFactory; // <-- REMOVED THIS LINE FROM HERE
             
             $spreadsheet = IOFactory::load($filePath);
             $worksheet = $spreadsheet->getActiveSheet();
