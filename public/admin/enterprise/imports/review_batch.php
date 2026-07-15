@@ -3,18 +3,13 @@
 require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
+
 // Load required classes
-                require_once '../../../../src/Domain/Services/SwapService.php';
-                require_once '../../../../src/Core/Config/LoadCountry.php';
-                require_once '../../../../src/Infrastructure/Crypto/MessageSigner.php';
-                require_once '../../../../src/Infrastructure/Crypto/SignatureVerifier.php';
-                require_once '../../../../src/Infrastructure/Crypto/CertificateManager.php';
-                
-                use Domain\Services\SwapService;
-                use Core\Config\LoadCountry;
-                use Infrastructure\Crypto\MessageSigner;
-                use Infrastructure\Crypto\SignatureVerifier;
-                use Infrastructure\Crypto\CertificateManager;
+require_once '../../../../src/Domain/Services/SwapService.php';
+require_once '../../../../src/Core/Config/LoadCountry.php';
+
+use Domain\Services\SwapService;
+use Core\Config\LoadCountry;
 use Core\Database\DBConnection;
 
 $db = DBConnection::getConnection();
@@ -138,7 +133,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
         } elseif ($action === 'execute') {
             // ============================================================
-            // FIXED: Proper SwapService instantiation with dependencies
+            // SwapService only takes: (PDO $db, array $config, string $country)
             // ============================================================
             try {
                 
@@ -146,19 +141,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $countryName = $_ENV['VOUCHMORPH_COUNTRY'] ?? getenv('VOUCHMORPH_COUNTRY') ?? 'Botswana';
                 $fullCountryConfig = LoadCountry::getConfig();
                 
-                // Create crypto dependencies
-                $messageSigner = new MessageSigner();
-                $signatureVerifier = new SignatureVerifier();
-                $certificateManager = new CertificateManager();
-                
-                // Instantiate SwapService with all dependencies
+                // Instantiate SwapService — 3 args only
                 $swapService = new SwapService(
                     $db, 
                     $fullCountryConfig, 
-                    $countryName,
-                    $messageSigner,
-                    $signatureVerifier,
-                    $certificateManager
+                    $countryName
                 );
                 
                 $payload = [
@@ -266,7 +253,6 @@ $status = strtolower($batch['status'] ?? 'draft');
     <title>Review & Approve · VouchMorph Enterprise</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ... (keep all existing styles - they're fine) ... */
         :root {
             --paper: #EEF1EF;
             --panel: #FFFFFF;
