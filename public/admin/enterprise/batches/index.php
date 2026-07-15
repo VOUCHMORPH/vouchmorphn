@@ -22,15 +22,15 @@ $search = $_GET['search'] ?? '';
 $params = [':org_id' => $orgId];
 $where = ["organization_id = :org_id"];
 
-// Department scope
-if ($userRole === 'department_head' && $departmentId) {
-    $where[] = "department_id = :dept_id";
-    $params[':dept_id'] = $departmentId;
-}
+// Department scope - FIXED: removed department_id since it doesn't exist
+// if ($userRole === 'department_head' && $departmentId) {
+//     $where[] = "department_id = :dept_id";
+//     $params[':dept_id'] = $departmentId;
+// }
 
 // Status filter
 if ($statusFilter !== 'all') {
-    $where[] = "status = :status";
+    $where[] = "LOWER(status) = LOWER(:status)";
     $params[':status'] = $statusFilter;
 }
 
@@ -40,30 +40,39 @@ if ($search) {
     $params[':search'] = "%$search%";
 }
 
-// Role-based visibility
-if (in_array($userRole, ['auditor', 'viewer', 'it_support'])) {
-    $where[] = "status IN ('completed', 'executed')";
+// Role-based visibility - FIXED: added owner and loader visibility
+if ($userRole === 'owner' || $userRole === 'it_manager_enterprise') {
+    // Owners and IT Managers see ALL batches
+    // No additional filters
+} elseif (in_array($userRole, ['auditor', 'viewer'])) {
+    $where[] = "status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')";
 } elseif (in_array($userRole, ['approver', 'senior_approver'])) {
-    $where[] = "status IN ('pending', 'pending_approval', 'approved')";
+    $where[] = "status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')";
 } elseif ($userRole === 'supervisor') {
-    $where[] = "status IN ('approved', 'completed', 'executed')";
+    $where[] = "status IN ('approved', 'completed', 'executed', 'APPROVED', 'COMPLETED', 'EXECUTED')";
+} elseif (in_array($userRole, ['program_officer', 'department_head'])) {
+    // Loaders see their own + pending + approved + draft
+    $where[] = "(created_by = :user_id OR status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED'))";
+    $params[':user_id'] = $userId;
 }
 
 $whereClause = implode(" AND ", $where);
 
+// FIXED: Removed department_id from SELECT
 $stmt = $db->prepare("
     SELECT 
         id, batch_reference, batch_name, source_institution,
         total_amount, total_destinations, status, created_at,
-        updated_at, created_by, department_id,
+        updated_at, created_by,
         approved_at, executed_at
     FROM disbursement_batches
     WHERE $whereClause
     ORDER BY 
         CASE 
-            WHEN status IN ('pending', 'pending_approval') THEN 1
+            WHEN status IN ('pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL') THEN 1
             WHEN status = 'approved' THEN 2
-            ELSE 3
+            WHEN status = 'draft' THEN 3
+            ELSE 4
         END,
         created_at DESC
 ");
@@ -474,6 +483,9 @@ function safeHtml($value) {
                             <td><?php echo date('Y-m-d H:i', strtotime($batch['created_at'] ?? 'now')); ?></td>
                             <td>
                                 <a href="view.php?id=<?php echo $batch['id']; ?>" class="btn btn-outline btn-sm">View</a>
+                                <?php if ($batch['created_by'] == $userId && strtolower($batch['status']) === 'draft'): ?>
+                                <a href="../imports/add_destinations.php?batch_id=<?php echo $batch['id']; ?>" class="btn btn-primary btn-sm">✏️ Edit</a>
+                                <?php endif; ?>
                             </td>
                         </tr>
                         <?php endforeach; ?>
