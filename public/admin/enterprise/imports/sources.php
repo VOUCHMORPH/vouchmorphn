@@ -1,4 +1,13 @@
 <?php
+/**
+ * enterprise/imports/sources.php
+ * 
+ * FIXED: Uses disbursement_batches and source_accounts
+ * instead of import_batches and organization_sources
+ * 
+ * NOTE: This file is now merged with source_input.php functionality.
+ * You may want to redirect source_input.php to this file or vice versa.
+ */
 require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
@@ -8,8 +17,11 @@ $db = DBConnection::getConnection();
 $orgId = getOrganizationId();
 $batchId = $_GET['batch_id'] ?? 0;
 
-// Get batch info
-$stmt = $db->prepare("SELECT * FROM import_batches WHERE id = :id AND organization_id = :org_id");
+// FIXED: Use disbursement_batches
+$stmt = $db->prepare("
+    SELECT * FROM disbursement_batches 
+    WHERE id = :id AND organization_id = :org_id
+");
 $stmt->execute([':id' => $batchId, ':org_id' => $orgId]);
 $batch = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -17,38 +29,66 @@ if (!$batch) {
     die("Batch not found");
 }
 
-// Get valid rows count
-$stmt = $db->prepare("SELECT COUNT(*) as count, SUM(amount) as total FROM import_rows WHERE batch_id = :batch_id AND validation_status = 'VALID'");
+// FIXED: Get destinations count from disbursement_destinations
+$stmt = $db->prepare("
+    SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total 
+    FROM disbursement_destinations 
+    WHERE batch_id = :batch_id
+");
 $stmt->execute([':batch_id' => $batchId]);
-$validStats = $stmt->fetch(PDO::FETCH_ASSOC);
+$destStats = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// Get organization source accounts
-$stmt = $db->prepare("SELECT * FROM organization_sources WHERE organization_id = :org_id AND status = 'ACTIVE'");
+// FIXED: Use source_accounts
+$stmt = $db->prepare("
+    SELECT * FROM source_accounts 
+    WHERE organization_id = :org_id AND is_active = true
+    ORDER BY institution, source_identifier
+");
 $stmt->execute([':org_id' => $orgId]);
 $sources = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Handle form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    requireCsrfToken($_POST['csrf_token'] ?? null);
     $sourceId = $_POST['source_id'] ?? null;
-    $executionMode = $_POST['execution_mode'] ?? 'ONE_SOURCE_MANY_DEST';
     
     if ($sourceId) {
+        // Get source details
         $stmt = $db->prepare("
-            UPDATE import_batches 
-            SET source_id = :source_id, source_type = 'organization_wallet', 
-                execution_mode = :mode, status = 'SOURCES_SELECTED'
-            WHERE id = :id
+            SELECT * FROM source_accounts 
+            WHERE id = :id AND organization_id = :org_id
         ");
-        $stmt->execute([
-            ':source_id' => $sourceId,
-            ':mode' => $executionMode,
-            ':id' => $batchId
-        ]);
+        $stmt->execute([':id' => $sourceId, ':org_id' => $orgId]);
+        $source = $stmt->fetch(PDO::FETCH_ASSOC);
         
-        header("Location: review.php?batch_id=$batchId");
-        exit;
+        if ($source) {
+            $stmt = $db->prepare("
+                UPDATE disbursement_batches 
+                SET source_account_id = :source_id,
+                    source_institution = :institution,
+                    source_asset_type = :asset_type,
+                    source_identifier = :identifier,
+                    status = 'pending_approval',
+                    updated_at = NOW()
+                WHERE id = :id AND organization_id = :org_id
+            ");
+            $stmt->execute([
+                ':source_id' => $sourceId,
+                ':institution' => $source['institution'],
+                ':asset_type' => $source['asset_type'],
+                ':identifier' => $source['source_identifier'],
+                ':id' => $batchId
+            ]);
+            
+            // Redirect to review
+            header("Location: review.php?batch_id=$batchId");
+            exit;
+        }
     }
 }
+
+$csrfToken = generateCsrfToken();
+$userRole = $user['role'] ?? 'viewer';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -160,14 +200,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .source-balance { color: #64748b; font-size: 14px; margin-top: 4px; }
         .source-balance strong { color: #0f172a; }
         .radio-input { margin-right: 16px; transform: scale(1.2); }
-        .execution-mode-select {
-            width: 100%;
-            padding: 12px 16px;
-            border: 1px solid #cbd5e1;
-            border-radius: 12px;
-            font-size: 14px;
-            margin-top: 8px;
-        }
         .btn-group { display: flex; gap: 16px; justify-content: flex-end; margin-top: 24px; }
         .btn {
             padding: 12px 28px;
@@ -179,6 +211,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         .btn-primary { background: #0f172a; color: white; }
         .btn-secondary { background: #e2e8f0; color: #0f172a; }
+        .btn-success { background: #10b981; color: white; }
         .warning-box {
             background: #fef3c7;
             border-left: 4px solid #f59e0b;
@@ -186,6 +219,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-radius: 12px;
             margin-top: 20px;
         }
+        .hooked-badge {
+            background: #dbeafe;
+            color: #1e40af;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: 600;
+        }
+        .no-sources {
+            text-align: center;
+            padding: 40px;
+            color: #94a3b8;
+        }
+        .no-sources .icon { font-size: 48px; margin-bottom: 12px; }
     </style>
 </head>
 <body>
@@ -196,12 +243,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
         <div class="sidebar-nav">
             <a href="../index.php" class="nav-item">📊 Dashboard</a>
-            <a href="upload.php" class="nav-item active">📁 New Payment</a>
+            <a href="source_input.php" class="nav-item active">📁 New Payment</a>
             <a href="../batches/index.php" class="nav-item">📦 Batches</a>
-            <a href="../beneficiaries/index.php" class="nav-item">👥 Beneficiaries</a>
-            <a href="../templates/index.php" class="nav-item">📋 Templates</a>
-            <a href="../reports/index.php" class="nav-item">📄 Reports</a>
-            <a href="../settings/index.php" class="nav-item">⚙️ Settings</a>
+            <a href="../beneficiaries.php" class="nav-item">👥 Beneficiaries</a>
+            <a href="../reports.php" class="nav-item">📄 Reports</a>
+            <a href="../settings.php" class="nav-item">⚙️ Settings</a>
         </div>
     </div>
     
@@ -213,12 +259,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
         
         <div class="step-indicator">
-            <div class="step completed"><div class="step-number">✓</div><div class="step-label">Upload</div></div>
-            <div class="step completed"><div class="step-number">✓</div><div class="step-label">Map</div></div>
-            <div class="step completed"><div class="step-number">✓</div><div class="step-label">Validate</div></div>
-            <div class="step active"><div class="step-number">4</div><div class="step-label">Source</div></div>
-            <div class="step"><div class="step-number">5</div><div class="step-label">Review</div></div>
-            <div class="step"><div class="step-number">6</div><div class="step-label">Execute</div></div>
+            <div class="step completed"><div class="step-number">✓</div><div class="step-label">Source</div></div>
+            <div class="step completed"><div class="step-number">✓</div><div class="step-label">Destinations</div></div>
+            <div class="step active"><div class="step-number">3</div><div class="step-label">Select Source</div></div>
+            <div class="step"><div class="step-number">4</div><div class="step-label">Review</div></div>
+            <div class="step"><div class="step-number">5</div><div class="step-label">Execute</div></div>
         </div>
         
         <div class="card">
@@ -226,12 +271,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="card-body">
                 <div class="stats-summary">
                     <div class="stat-item">
-                        <div class="label">Total Valid Payments</div>
-                        <div class="value"><?php echo number_format($validStats['count'] ?? 0); ?></div>
+                        <div class="label">Total Destinations</div>
+                        <div class="value"><?php echo number_format($destStats['count'] ?? 0); ?></div>
                     </div>
                     <div class="stat-item">
                         <div class="label">Total Amount</div>
-                        <div class="value">P<?php echo number_format($validStats['total'] ?? 0, 2); ?></div>
+                        <div class="value">P<?php echo number_format($destStats['total'] ?? 0, 2); ?></div>
                     </div>
                     <div class="stat-item">
                         <div class="label">Batch Reference</div>
@@ -240,40 +285,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
                 
                 <form method="POST">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
                     <h3 style="margin-bottom: 16px;">🏦 Select Source Account</h3>
                     
-                    <?php foreach ($sources as $source): ?>
-                    <div class="source-option" onclick="selectSource(<?php echo $source['id']; ?>)">
-                        <input type="radio" name="source_id" value="<?php echo $source['id']; ?>" id="source_<?php echo $source['id']; ?>" class="radio-input">
-                        <label for="source_<?php echo $source['id']; ?>" style="cursor: pointer;">
-                            <div class="source-name"><?php echo htmlspecialchars($source['source_name']); ?></div>
-                            <div class="source-balance">
-                                Available Balance: <strong>P<?php echo number_format($source['balance'], 2); ?></strong>
-                                <span style="margin-left: 16px;">Provider: <?php echo $source['provider']; ?></span>
-                            </div>
-                        </label>
+                    <?php if (empty($sources)): ?>
+                    <div class="no-sources">
+                        <div class="icon">📭</div>
+                        <p>No source accounts configured.</p>
+                        <p style="font-size: 13px; margin-top: 8px;">
+                            <a href="add_source.php" style="color: var(--brass);">Add a source account →</a>
+                        </p>
                     </div>
-                    <?php endforeach; ?>
+                    <?php else: ?>
+                        <?php foreach ($sources as $source): ?>
+                        <div class="source-option" onclick="selectSource(<?php echo $source['id']; ?>)">
+                            <input type="radio" name="source_id" value="<?php echo $source['id']; ?>" id="source_<?php echo $source['id']; ?>" class="radio-input">
+                            <label for="source_<?php echo $source['id']; ?>" style="cursor: pointer;">
+                                <div class="source-name">
+                                    <?php echo htmlspecialchars($source['institution']); ?>
+                                    <?php if ($source['is_hooked']): ?>
+                                    <span class="hooked-badge">🔗 Hooked</span>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="source-balance">
+                                    Account: <?php echo htmlspecialchars($source['source_identifier']); ?>
+                                    <span style="margin-left: 16px;">
+                                        Balance: <strong>P<?php echo number_format($source['balance'] ?? 0, 2); ?></strong>
+                                    </span>
+                                    <span style="margin-left: 16px;">
+                                        <?php echo htmlspecialchars($source['asset_type']); ?>
+                                    </span>
+                                </div>
+                            </label>
+                        </div>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
                     
-                    <div style="margin-top: 24px;">
-                        <label style="font-weight: 600;">Execution Mode</label>
-                        <select name="execution_mode" class="execution-mode-select">
-                            <option value="ONE_SOURCE_MANY_DEST">One Source → Many Destinations (Single wallet pays everyone)</option>
-                            <option value="MANY_SOURCES_ONE_DEST">Many Sources → One Destination (Collect from multiple wallets)</option>
-                            <option value="MANY_TO_MANY">Many Sources → Many Destinations (Matrix payment)</option>
-                        </select>
-                    </div>
-                    
-                    <?php if (!empty($sources) && ($validStats['total'] ?? 0) > ($sources[0]['balance'] ?? 0)): ?>
+                    <?php 
+                    $totalAmount = $destStats['total'] ?? 0;
+                    $maxBalance = !empty($sources) ? max(array_column($sources, 'balance')) : 0;
+                    if ($totalAmount > $maxBalance && !empty($sources)): 
+                    ?>
                     <div class="warning-box">
-                        ⚠️ <strong>Warning:</strong> Total payment amount (P<?php echo number_format($validStats['total'] ?? 0, 2); ?>) 
+                        ⚠️ <strong>Warning:</strong> Total payment amount (P<?php echo number_format($totalAmount, 2); ?>) 
                         exceeds selected source balance. Please ensure sufficient funds or add another source account.
                     </div>
                     <?php endif; ?>
                     
                     <div class="btn-group">
-                        <button type="button" class="btn btn-secondary" onclick="location.href='validate.php?batch_id=<?php echo $batchId; ?>'">← Back</button>
-                        <button type="submit" class="btn btn-primary">Continue to Review →</button>
+                        <button type="button" class="btn btn-secondary" onclick="location.href='add_destinations.php?batch_id=<?php echo $batchId; ?>'">← Back</button>
+                        <a href="add_source.php?batch_id=<?php echo $batchId; ?>" class="btn btn-secondary">➕ Add Source</a>
+                        <button type="submit" class="btn btn-primary" <?php echo empty($sources) ? 'disabled' : ''; ?>>
+                            Continue to Review →
+                        </button>
                     </div>
                 </form>
             </div>
@@ -284,6 +348,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 function selectSource(sourceId) {
     const radio = document.getElementById('source_' + sourceId);
     if (radio) radio.checked = true;
+    // Highlight selected
+    document.querySelectorAll('.source-option').forEach(el => el.classList.remove('selected'));
+    radio.closest('.source-option').classList.add('selected');
 }
 </script>
 </body>
