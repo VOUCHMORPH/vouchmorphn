@@ -40,43 +40,24 @@ if (!SessionManager::isAdminLoggedIn() || SessionManager::getAdminRoleId() !== 9
     exit();
 }
 
-// Initialize database connection
+// ============================================================
+// FIXED: Use DBConnection::getConnection() - the CORRECT method
+// ============================================================
 try {
-    if (isset($config['db']['swap']) && is_array($config['db']['swap'])) {
-        $dbConfig = $config['db']['swap'];
-    } else {
-        $databaseUrl = getenv('DATABASE_URL');
-        if ($databaseUrl) {
-            $db = parse_url($databaseUrl);
-            $dbConfig = [
-                'host' => $db['host'] ?? 'localhost',
-                'port' => (int)($db['port'] ?? 5432),
-                'database' => ltrim($db['path'] ?? '', '/'),
-                'username' => $db['user'] ?? 'postgres',
-                'password' => $db['pass'] ?? '',
-            ];
-        } else {
-            $dbConfig = [
-                'host' => getenv('DB_HOST') ?: 'localhost',
-                'port' => (int)(getenv('DB_PORT') ?: 5432),
-                'database' => getenv('DB_NAME') ?: 'swap_system_bw',
-                'username' => getenv('DB_USER') ?: 'postgres',
-                'password' => getenv('DB_PASSWORD') ?: '',
-            ];
-        }
+    $db = DBConnection::getConnection();
+    
+    if (!$db || !($db instanceof PDO)) {
+        throw new Exception("Database connection failed - no PDO object returned.");
     }
     
-    $dbConfig['type'] = 'pgsql';
-    $dbConfig['options'] = [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ];
-    
-    $db = DBConnection::getInstance($dbConfig);
+    // Test the connection
+    $db->query("SELECT 1");
+    error_log("[ADMIN MANAGEMENT] Database connected successfully via DBConnection::getConnection()");
     
 } catch (Throwable $e) {
     error_log("[ADMIN MANAGEMENT] DB Error: " . $e->getMessage());
-    die("Database connection failed.");
+    error_log("[ADMIN MANAGEMENT] Trace: " . $e->getTraceAsString());
+    die("Database connection failed: " . $e->getMessage());
 }
 
 // Role ID to Name mapping
@@ -110,6 +91,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
                 throw new Exception("Invalid email address.");
+            }
+            
+            if (strlen($password) < 6) {
+                throw new Exception("Password must be at least 6 characters.");
             }
             
             // Check if username or email exists
@@ -229,12 +214,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // Get all admins (excluding soft-deleted)
-$admins = $db->query("
-    SELECT admin_id, username, email, phone, full_name, role_id, country_code, mfa_enabled, created_at, updated_at 
-    FROM admins 
-    WHERE deleted_at IS NULL 
-    ORDER BY role_id DESC, created_at ASC
-")->fetchAll();
+try {
+    $admins = $db->query("
+        SELECT admin_id, username, email, phone, full_name, role_id, country_code, mfa_enabled, created_at, updated_at 
+        FROM admins 
+        WHERE deleted_at IS NULL 
+        ORDER BY role_id DESC, created_at ASC
+    ")->fetchAll();
+} catch (Throwable $e) {
+    error_log("[ADMIN MANAGEMENT] Query error: " . $e->getMessage());
+    $admins = [];
+}
 
 // Get current admin info
 $currentAdminId = SessionManager::getAdminId();
@@ -532,7 +522,7 @@ $currentAdminRole = SessionManager::getAdminRoleId();
                     </div>
                     <div class="form-group">
                         <label>PASSWORD *</label>
-                        <input type="password" id="create_password" required>
+                        <input type="password" id="create_password" required minlength="6">
                     </div>
                     <div class="form-group">
                         <label>ROLE</label>
@@ -601,6 +591,7 @@ $currentAdminRole = SessionManager::getAdminRoleId();
                         </tr>
                     </thead>
                     <tbody id="adminsTable">
+                        <?php if (!empty($admins)): ?>
                         <?php foreach ($admins as $admin): 
                             $roleClass = '';
                             if ($admin['role_id'] == 999) $roleClass = 'role-super';
@@ -625,6 +616,11 @@ $currentAdminRole = SessionManager::getAdminRoleId();
                             </td>
                         </tr>
                         <?php endforeach; ?>
+                        <?php else: ?>
+                        <tr>
+                            <td colspan="9" style="text-align: center; padding: 30px; color: #999;">No administrators found.</td>
+                        </tr>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
@@ -637,7 +633,7 @@ $currentAdminRole = SessionManager::getAdminRoleId();
                 <p id="resetUsername"></p>
                 <div class="form-group">
                     <label>New Password</label>
-                    <input type="password" id="reset_password" style="width: 100%;">
+                    <input type="password" id="reset_password" style="width: 100%;" minlength="6">
                 </div>
                 <div style="display: flex; gap: 10px; margin-top: 20px;">
                     <button class="btn btn-primary" onclick="confirmReset()">Reset Password</button>
@@ -663,12 +659,18 @@ $currentAdminRole = SessionManager::getAdminRoleId();
         document.getElementById('createAdminForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
+            const password = document.getElementById('create_password').value;
+            if (password.length < 6) {
+                showMessage('Password must be at least 6 characters.', 'error');
+                return;
+            }
+            
             const formData = new URLSearchParams();
             formData.append('action', 'create');
             formData.append('username', document.getElementById('create_username').value);
             formData.append('email', document.getElementById('create_email').value);
             formData.append('full_name', document.getElementById('create_full_name').value);
-            formData.append('password', document.getElementById('create_password').value);
+            formData.append('password', password);
             formData.append('role_id', document.getElementById('create_role_id').value);
             formData.append('country_code', document.getElementById('create_country_code').value);
             formData.append('mfa_enabled', document.getElementById('create_mfa_enabled').checked ? '1' : '0');
