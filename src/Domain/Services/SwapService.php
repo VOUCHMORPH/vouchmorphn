@@ -32,10 +32,14 @@ use Infrastructure\Crypto\AggregateSigner;
  * NOW WITH ADAPTER PATTERN - each institution has its own adapter
  * No GenericBankClient used directly - all institution communication via adapters
  * 
- * PIN POLICY:
- * - PIN is ONLY required for SOURCE operations (verify, hold, debit)
- * - DESTINATION operations (deposit, credit, transfer) do NOT require PIN
- * - This is because you're sending to someone else - you don't need their PIN
+ * PIN POLICY (UPDATED):
+ * - PIN is NO LONGER REQUIRED for wallet and account sources
+ * - Authentication is handled through:
+ *   - Hooked sources (OAuth/API tokens from user_authorized_sources)
+ *   - Access tokens from source_accounts table
+ *   - Institution-specific authentication methods
+ * - PIN is OPTIONAL - only forwarded if present (backward compatibility)
+ * - Destination operations (deposit, credit, transfer) do NOT require PIN
  */
 class SwapService
 {
@@ -2609,20 +2613,30 @@ class SwapService
     }
 
     /**
-     * Forward PIN from original payload to target payload.
+     * Forward authentication from original payload to target payload.
      * 
-     * IMPORTANT: PIN is ONLY for SOURCE operations (verify, hold, debit).
-     * Destination operations (deposit, credit, transfer) do NOT need PIN.
-     * This method should ONLY be called for SOURCE operations.
+     * PIN IS NO LONGER REQUIRED for wallet/account sources.
+     * Authentication is handled through:
+     * - Hooked sources (OAuth/API tokens from user_authorized_sources)
+     * - Access tokens from source_accounts table
+     * - Institution-specific authentication methods
      * 
-     * FIXED: Now detects voucher_pin as a valid PIN field.
+     * PIN is OPTIONAL - only forwarded if present (backward compatibility)
+     * DESTINATION operations (deposit, credit, transfer) do NOT need PIN.
      */
     private function forwardPin(array $originalPayload, array &$targetPayload): void
     {
+        // ============================================================
+        // FIX: PIN IS NO LONGER REQUIRED FOR WALLET/ACCOUNT SOURCES
+        // Authentication is handled through other methods
+        // ============================================================
+        
+        // Check if hooked source (OAuth/API token based)
         $isHooked = isset($originalPayload['_is_hooked']) && $originalPayload['_is_hooked'] === true;
         
+        // Forward access token for hooked sources
         if ($isHooked) {
-            error_log("[SwapService] Using hooked source - skipping PIN check");
+            error_log("[SwapService] Using hooked source - skipping PIN");
             if (!empty($originalPayload['access_token'])) {
                 $targetPayload['access_token'] = $originalPayload['access_token'];
             }
@@ -2633,26 +2647,37 @@ class SwapService
         }
         
         // ============================================================
-        // FIX: Detect voucher_pin as a PIN field
+        // PIN IS OPTIONAL - ONLY forward if present, never require it
+        // Wallet and Account sources use other authentication methods
         // ============================================================
-        // PIN is only for source authentication
+        
+        // Forward PIN if present (optional, for backward compatibility)
         if (!empty($originalPayload['wallet_pin'])) {
             $targetPayload['wallet_pin'] = $originalPayload['wallet_pin'];
             $targetPayload['pin'] = $originalPayload['wallet_pin'];
-            error_log("[SwapService] Forwarded wallet_pin: " . substr($originalPayload['wallet_pin'], 0, 2) . '****');
+            error_log("[SwapService] Forwarded wallet_pin (optional)");
         } elseif (!empty($originalPayload['voucher_pin'])) {
-            // ✅ FIX: Detect voucher_pin
             $targetPayload['voucher_pin'] = $originalPayload['voucher_pin'];
             $targetPayload['pin'] = $originalPayload['voucher_pin'];
-            error_log("[SwapService] Forwarded voucher_pin: " . substr($originalPayload['voucher_pin'], 0, 2) . '****');
+            error_log("[SwapService] Forwarded voucher_pin (optional)");
         } elseif (!empty($originalPayload['pin'])) {
             $targetPayload['pin'] = $originalPayload['pin'];
             $targetPayload['wallet_pin'] = $originalPayload['pin'];
-            error_log("[SwapService] Forwarded pin: " . substr($originalPayload['pin'], 0, 2) . '****');
+            error_log("[SwapService] Forwarded pin (optional)");
+        } else {
+            // No PIN provided - that's fine, use other auth methods
+            error_log("[SwapService] No PIN provided - using alternative authentication");
         }
         
-        if (!empty($originalPayload['asset_fields']) && is_array($originalPayload['asset_fields'])) {
-            $targetPayload['asset_fields'] = $originalPayload['asset_fields'];
+        // Forward any access token if present (from source_accounts)
+        if (!empty($originalPayload['access_token'])) {
+            $targetPayload['access_token'] = $originalPayload['access_token'];
+            error_log("[SwapService] Forwarded access_token for institution auth");
+        }
+        
+        // Forward source reference for institution identification
+        if (!empty($originalPayload['source_reference'])) {
+            $targetPayload['source_reference'] = $originalPayload['source_reference'];
         }
     }
 
@@ -2662,7 +2687,7 @@ class SwapService
 
     /**
      * Verify asset at institution using adapter pattern
-     * SOURCE OPERATION - Requires PIN
+     * SOURCE OPERATION - PIN is OPTIONAL (authentication via other methods)
      * 
      * FIXED: Made PUBLIC for PoolCoordinator access
      */
@@ -2686,7 +2711,7 @@ class SwapService
             'source_institution' => $institution
         ];
 
-        // SOURCE operation - forwards PIN
+        // PIN is optional - forwardPin will handle it
         $this->forwardPin($payload, $verifyPayload);
 
         if ($sourceId['has_value']) {
@@ -2706,7 +2731,7 @@ class SwapService
 
     /**
      * Place hold at institution using adapter pattern
-     * SOURCE OPERATION - Requires PIN
+     * SOURCE OPERATION - PIN is OPTIONAL (authentication via other methods)
      * 
      * FIXED: Made PUBLIC for PoolCoordinator access
      */
@@ -2731,7 +2756,7 @@ class SwapService
             'source_institution' => $institution
         ];
 
-        // SOURCE operation - forwards PIN
+        // PIN is optional - forwardPin will handle it
         $this->forwardPin($payload, $holdPayload);
 
         if ($sourceId['has_value']) {
@@ -2766,7 +2791,7 @@ class SwapService
 
     /**
      * Debit source institution using adapter pattern
-     * SOURCE OPERATION - Requires PIN
+     * SOURCE OPERATION - PIN is OPTIONAL (authentication via other methods)
      * 
      * FIXED: Made PUBLIC for PoolCoordinator access
      */
@@ -2781,7 +2806,7 @@ class SwapService
             'source_institution' => $institution
         ];
 
-        // SOURCE operation - forwards PIN
+        // PIN is optional - forwardPin will handle it
         $this->forwardPin($payload, $debitPayload);
 
         $adapter = $this->adapterFactory->getAdapter($institution);
@@ -2996,7 +3021,6 @@ class SwapService
     /**
      * Generate cashout token using adapter pattern
      * DESTINATION OPERATION - Does NOT require PIN
-     * (PIN is forwarded from source for verification, but destination doesn't need it)
      */
     private function generateCashoutToken(array $payload, string $institution, float $amount): array
     {
