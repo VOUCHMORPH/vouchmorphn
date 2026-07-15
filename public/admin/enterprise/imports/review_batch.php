@@ -6,8 +6,9 @@ require_once '../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
 // ============================================================
-// FIX: Load SwapService and dependencies directly
+// LOAD SWAPSERVICE AND DEPENDENCIES PROPERLY
 // ============================================================
+require_once '../../../../vendor/autoload.php';
 require_once '../../../../src/Domain/Services/SwapService.php';
 require_once '../../../../src/Core/Config/LoadCountry.php';
 
@@ -135,7 +136,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
         } elseif ($action === 'execute') {
             // ============================================================
-            // FIXED: Direct SwapService call - NO HTTP!
+            // FIXED: PROPER SWAPSERVICE CALL (same as API but direct)
             // ============================================================
             try {
                 // Load country configuration
@@ -143,12 +144,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $fullCountryConfig = LoadCountry::getConfig();
                 
                 error_log("[review_batch] Initializing SwapService...");
+                error_log("[review_batch] Country: " . $countryName);
                 
                 // Instantiate SwapService with 3 args
                 $swapService = new SwapService(
-                    $db, 
-                    $fullCountryConfig, 
-                    $countryName
+                    $db,                    // PDO
+                    $fullCountryConfig,     // Full country config
+                    $countryName            // Country name
                 );
                 
                 error_log("[review_batch] SwapService initialized successfully");
@@ -182,14 +184,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 
                 error_log("[review_batch] Executing multi-destination swap with " . count($destinations) . " destinations");
-                error_log("[review_batch] Payload: " . json_encode($payload));
                 
                 // Execute the swap
                 $result = $swapService->executeAtomicSwap($payload);
                 
                 error_log("[review_batch] Swap completed, status: " . ($result['status'] ?? 'unknown'));
                 
-                // Update batch status
+                // ============================================================
+                // UPDATE BATCH STATUS BASED ON RESULT
+                // ============================================================
                 $status = $result['status'] ?? 'COMPLETED';
                 $successCount = $result['successful_destinations'] ?? 0;
                 $failedCount = $result['failed_destinations'] ?? 0;
