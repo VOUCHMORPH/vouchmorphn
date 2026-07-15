@@ -317,7 +317,7 @@ class FeeService
         
         // Handle multi-source
         if ($this->context['is_multi_source'] && ($this->context['source_count'] ?? 1) > 1) {
-            $multiSourceConfig = $this->productConfig['multi_source'] ?? [];
+            $multiSourceConfig = $productConfig['multi_source'] ?? [];
             if (!empty($multiSourceConfig)) {
                 $extraFeeSlot = $multiSourceConfig['fee_type'] ?? 'F8';
                 $extraFeeAmount = $multiSourceConfig['extra_source_fee'] ?? 1.00;
@@ -460,6 +460,7 @@ class FeeService
             'active_slots' => [],
             'distribution' => [],
             'destination_split' => null,
+            'earnings_rules' => null,     // ← add this
             'product' => 'UNKNOWN',
             'context' => $this->context,
             'forex' => ['applied' => false],
@@ -483,7 +484,7 @@ class FeeService
             'gross_amount_currency' => $result['gross_amount_currency'],
             'distribution' => $result['distribution'],
             'destination_split' => $result['destination_split'],
-            'earnings_rules' => $result['earnings_rules'],
+            'earnings_rules' => $result['earnings_rules'] ?? null,
             'swap_levy' => $result['slots']['F7'] ?? 0,
             'context' => $result['context'],
             'forex' => $result['forex'],
