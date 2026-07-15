@@ -153,9 +153,9 @@ try {
         // Supervisors see approved and completed
         $statusFilter = "AND status IN ('approved', 'completed', 'executed', 'APPROVED', 'COMPLETED', 'EXECUTED')";
     } elseif ($isLoader) {
-        // FIXED: Loaders see ALL batches (read-only for others, editable for their own)
-        // Show all batches regardless of created_by
-        $statusFilter = "AND 1=1";
+        // FIXED: Loaders see ALL their batches + pending + approved + draft
+        $statusFilter = "AND (created_by = :user_id OR status IN ('pending', 'pending_approval', 'approved', 'draft'))";
+        $statusParams[':user_id'] = $userId;
     }
 
     $stmt = $pdo->prepare("
@@ -173,7 +173,7 @@ try {
                 ELSE 4
             END,
             created_at DESC 
-        LIMIT 25
+        LIMIT 15
     ");
     $stmt->execute($statusParams);
     $recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -253,17 +253,6 @@ function getRoleLabel($role) {
     ];
     return $labels[$role] ?? ucfirst(str_replace('_', ' ', $role));
 }
-
-// Helper to check if user can edit a batch
-function canEditBatch($batchCreatedBy, $currentUserId, $userRole) {
-    // Owners can edit everything
-    if ($userRole === 'owner') return true;
-    // Loaders can only edit their own batches
-    if (in_array($userRole, ['program_officer', 'department_head'])) {
-        return $batchCreatedBy == $currentUserId;
-    }
-    return false;
-}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -273,7 +262,7 @@ function canEditBatch($batchCreatedBy, $currentUserId, $userRole) {
     <title>VOUCHMORPH · Enterprise Dashboard · <?php echo safeHtml($orgName); ?></title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ... (keep all existing styles) ... */
+        /* ... (all existing styles remain the same) ... */
         * { margin:0; padding:0; box-sizing:border-box; }
         body {
             font-family: 'Inter', sans-serif;
@@ -281,7 +270,386 @@ function canEditBatch($batchCreatedBy, $currentUserId, $userRole) {
             color: #0f172a;
             min-height: 100vh;
         }
-        /* ... keep all other styles ... */
+
+        /* ===== HEADER ===== */
+        .header {
+            background: #0f172a;
+            color: #fff;
+            padding: 16px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            border-bottom: 3px solid #8A6D3B;
+        }
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .logo {
+            font-weight: 700;
+            font-size: 18px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .logo span { color: #8A6D3B; }
+        .org-name {
+            font-size: 13px;
+            color: #94a3b8;
+            padding-left: 16px;
+            border-left: 1px solid rgba(255,255,255,0.1);
+        }
+        .role-badge {
+            padding: 4px 14px;
+            background: #8A6D3B;
+            color: #0f172a;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-radius: 20px;
+        }
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .user-details {
+            text-align: right;
+        }
+        .user-name {
+            font-weight: 600;
+            color: #8A6D3B;
+            font-size: 13px;
+        }
+        .user-role {
+            font-size: 10px;
+            color: #94a3b8;
+            text-transform: uppercase;
+        }
+        .logout-btn {
+            padding: 6px 16px;
+            border: 2px solid #8A6D3B;
+            color: #8A6D3B;
+            text-decoration: none;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            border-radius: 20px;
+            transition: all 0.15s;
+        }
+        .logout-btn:hover {
+            background: #8A6D3B;
+            color: #0f172a;
+        }
+
+        /* ===== NAVIGATION ===== */
+        .nav {
+            background: #fff;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 0 32px;
+            display: flex;
+            gap: 24px;
+            flex-wrap: wrap;
+            align-items: center;
+            overflow-x: auto;
+        }
+        .nav-item {
+            padding: 12px 0;
+            color: #64748b;
+            text-decoration: none;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        .nav-item:hover { color: #0f172a; }
+        .nav-item.active {
+            color: #0f172a;
+            border-bottom-color: #8A6D3B;
+        }
+        .nav-item.primary { color: #0f172a; }
+        .nav-item.primary:hover { color: #8A6D3B; }
+        .nav-item.primary.active {
+            color: #8A6D3B;
+            border-bottom-color: #8A6D3B;
+        }
+        .nav-item .badge {
+            background: #ef4444;
+            color: #fff;
+            font-size: 9px;
+            padding: 1px 8px;
+            border-radius: 12px;
+            margin-left: 4px;
+        }
+        .nav-item .badge-gold {
+            background: #8A6D3B;
+            color: #fff;
+            font-size: 9px;
+            padding: 1px 8px;
+            border-radius: 12px;
+            margin-left: 4px;
+        }
+
+        /* ===== CONTENT ===== */
+        .content {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 24px 32px;
+        }
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .page-header h1 {
+            font-size: 24px;
+            font-weight: 700;
+        }
+        .page-header .sub {
+            color: #64748b;
+            font-size: 14px;
+        }
+        .page-header .timestamp {
+            color: #94a3b8;
+            font-size: 12px;
+        }
+
+        /* ===== METRICS ===== */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .metric-card {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 16px 20px;
+            transition: border-color 0.15s;
+        }
+        .metric-card:hover {
+            border-color: #8A6D3B;
+        }
+        .metric-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            color: #94a3b8;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #0f172a;
+            margin-top: 4px;
+        }
+        .metric-value .currency {
+            font-size: 14px;
+            color: #94a3b8;
+            font-weight: 400;
+        }
+        .metric-sub {
+            font-size: 11px;
+            color: #94a3b8;
+            margin-top: 2px;
+        }
+
+        /* ===== CARDS ===== */
+        .card {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin-bottom: 16px;
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #e2e8f0;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .card-title {
+            font-size: 15px;
+            font-weight: 700;
+        }
+        .card-badge {
+            padding: 2px 12px;
+            background: #0f172a;
+            color: #fff;
+            font-size: 10px;
+            font-weight: 600;
+            border-radius: 20px;
+        }
+        .card-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        /* ===== TABLES ===== */
+        .table-responsive { overflow-x: auto; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th {
+            background: #f8fafc;
+            color: #64748b;
+            padding: 10px 14px;
+            text-align: left;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+            border-bottom: 2px solid #e2e8f0;
+        }
+        td {
+            padding: 10px 14px;
+            border-bottom: 1px solid #e2e8f0;
+            vertical-align: middle;
+        }
+        tr:hover { background: #f8fafc; }
+
+        /* ===== STATUS BADGES ===== */
+        .status {
+            display: inline-block;
+            padding: 2px 10px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            border-radius: 20px;
+            letter-spacing: 0.04em;
+        }
+        .status-draft { background: #f1f5f9; color: #64748b; }
+        .status-pending { background: #fef3c7; color: #92400e; }
+        .status-approved { background: #dbeafe; color: #1e40af; }
+        .status-completed { background: #dcfce7; color: #166534; }
+        .status-rejected { background: #fee2e2; color: #991b1b; }
+
+        /* ===== BUTTONS ===== */
+        .btn {
+            padding: 6px 16px;
+            font-size: 12px;
+            font-weight: 600;
+            border-radius: 20px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.15s;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn:hover { opacity: 0.85; transform: translateY(-1px); }
+        .btn-primary {
+            background: #0f172a;
+            color: #fff;
+        }
+        .btn-primary:hover {
+            background: #8A6D3B;
+        }
+        .btn-success {
+            background: #166534;
+            color: #fff;
+        }
+        .btn-success:hover {
+            background: #14532d;
+        }
+        .btn-warning {
+            background: #92400e;
+            color: #fff;
+        }
+        .btn-warning:hover {
+            background: #78350f;
+        }
+        .btn-outline {
+            background: transparent;
+            border: 1px solid #e2e8f0;
+            color: #64748b;
+        }
+        .btn-outline:hover {
+            border-color: #0f172a;
+            color: #0f172a;
+        }
+        .btn-sm { padding: 4px 12px; font-size: 11px; }
+
+        /* ===== QUICK ACTIONS ===== */
+        .quick-actions {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .quick-action {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 16px 20px;
+            text-decoration: none;
+            color: #0f172a;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .quick-action:hover {
+            border-color: #8A6D3B;
+            background: #f8fafc;
+            transform: translateY(-2px);
+        }
+        .quick-action .icon { font-size: 24px; }
+        .quick-action .label {
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .quick-action .desc {
+            font-size: 11px;
+            color: #94a3b8;
+        }
+
+        /* ===== EMPTY STATE ===== */
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #94a3b8;
+        }
+        .empty-state .icon { font-size: 40px; margin-bottom: 8px; }
+        .empty-state p { font-size: 14px; }
+
+        /* ===== FOOTER ===== */
+        .footer {
+            background: #0f172a;
+            color: #94a3b8;
+            padding: 16px 32px;
+            text-align: center;
+            font-size: 11px;
+            border-top: 2px solid #8A6D3B;
+            margin-top: 24px;
+        }
+
+        /* ===== RESPONSIVE ===== */
+        @media (max-width: 768px) {
+            .header { padding: 12px 16px; }
+            .nav { padding: 0 16px; gap: 16px; }
+            .content { padding: 16px; }
+            .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+            .quick-actions { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
@@ -522,21 +890,14 @@ function canEditBatch($batchCreatedBy, $currentUserId, $userRole) {
                             <th>Destinations</th>
                             <th>Status</th>
                             <th>Created</th>
-                            <th>Created By</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($recentBatches as $batch): 
-                            $isOwnBatch = ($batch['created_by'] == $userId);
-                            $canEdit = canEditBatch($batch['created_by'], $userId, $userRole);
-                        ?>
+                        <?php foreach ($recentBatches as $batch): ?>
                         <tr>
                             <td>
                                 <strong><?php echo safeHtml($batch['batch_reference']); ?></strong>
-                                <?php if (!$isOwnBatch && $isLoader): ?>
-                                <span style="font-size:9px; background:#e2e8f0; color:#64748b; padding:1px 6px; border-radius:10px; margin-left:4px;">READ ONLY</span>
-                                <?php endif; ?>
                             </td>
                             <td><?php echo safeHtml($batch['batch_name'] ?? '—'); ?></td>
                             <td><?php echo safeHtml($batch['source_institution'] ?? '—'); ?></td>
@@ -548,13 +909,8 @@ function canEditBatch($batchCreatedBy, $currentUserId, $userRole) {
                                 </span>
                             </td>
                             <td><?php echo date('Y-m-d H:i', strtotime($batch['created_at'] ?? 'now')); ?></td>
-                            <td><?php echo $isOwnBatch ? '👤 You' : 'Other'; ?></td>
                             <td>
                                 <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>" class="btn btn-outline btn-sm">View</a>
-                                
-                                <?php if ($canEdit && strtolower($batch['status']) === 'draft'): ?>
-                                <a href="imports/add_destinations.php?batch_id=<?php echo $batch['id']; ?>" class="btn btn-primary btn-sm">✏️ Edit</a>
-                                <?php endif; ?>
                                 
                                 <?php if ($canApprove && in_array(strtolower($batch['status']), ['pending', 'pending_approval'])): ?>
                                 <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>&action=approve" class="btn btn-warning btn-sm">Approve</a>
@@ -594,7 +950,8 @@ function canEditBatch($batchCreatedBy, $currentUserId, $userRole) {
                 <span class="card-title">📤 Loader Access</span>
             </div>
             <p style="color: #64748b; font-size: 14px;">
-                You can view all batches in the system (read-only) and edit only the ones you created.
+                You can create and upload new disbursement batches. 
+                Once created, they will be sent for approval.
                 <a href="imports/source_input.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Create New Batch</a>
             </p>
         </div>
