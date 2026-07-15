@@ -2,12 +2,12 @@
 // public/user/login.php
 // Supports: phone, phone2, phone3, email, national_id, drivers_license, passport
 //
-// ⚡ TEST MODE: ALL RESTRICTIONS REMOVED ⚡
+// ⚡ SUPER TEST MODE: NO PIN REQUIRED ⚡
 // - No rate limiting
 // - No account locking
-// - No failed attempt tracking
+// - No PIN verification (ANY PIN works, or no PIN at all)
 // - OTP completely disabled
-// - Pure PIN-based login for testing
+// - Just needs a valid identifier
 
 ob_start();
 error_reporting(E_ALL);
@@ -32,10 +32,12 @@ use Core\Factories\CommunicationFactory;
 use Infrastructure\Email\EmailGatewayClient;
 
 // ============================================================
-// TEST MODE: OTP DISABLED, NO RESTRICTIONS
+// SUPER TEST MODE: NO PIN REQUIRED
 // ============================================================
-define('ENABLE_OTP', false);  // OTP disabled
-define('TEST_MODE', true);    // No restrictions
+define('ENABLE_OTP', false);           // OTP disabled
+define('TEST_MODE', true);             // No restrictions
+define('SKIP_PIN_VERIFICATION', true); // SKIP PIN verification entirely
+define('ALLOW_EMPTY_PIN', true);       // Allow login with empty PIN
 
 SessionManager::start();
 
@@ -131,13 +133,11 @@ function maskEmail(string $email): string
 // STATE
 // --------------------------------------------------
 $error = '';
-$mfaRequired = false;
-$mfaHint = '';
 $identifierType = $_POST['identifier_type'] ?? 'phone';
 $inputValueRaw = trim($_POST['identifier'] ?? '');
 
 // ================================================================
-// LOGIN: Identifier + PIN (TEST MODE - NO RESTRICTIONS)
+// LOGIN: SUPER TEST MODE - NO PIN REQUIRED
 // ================================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
@@ -150,19 +150,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $inputValue = $inputValueRaw;
     }
 
-    error_log("[USER LOGIN TEST MODE] Input: {$inputValueRaw}, Formatted: {$formattedValue}, Type: {$identifierType}");
+    error_log("[USER LOGIN SUPER TEST] Input: {$inputValueRaw}, Formatted: {$formattedValue}, Type: {$identifierType}");
 
     $pin = trim($_POST['pin'] ?? '');
 
-    if ($formattedValue === '' || $pin === '') {
-        $error = "Please enter your identifier and PIN.";
+    if ($formattedValue === '') {
+        $error = "Please enter your identifier.";
     } else {
         try {
             $stmt = $db->prepare("
                 SELECT user_id, phone, phone2, phone3, email,
                        national_id, drivers_license, passport,
                        username, full_name, password_hash, verified,
-                       created_at, has_transaction_pin as pin_enabled
+                       created_at, has_transaction_pin as pin_enabled,
+                       role_id
                 FROM users
                 WHERE phone = :identifier
                    OR phone2 = :identifier
@@ -176,51 +177,76 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->execute([':identifier' => $formattedValue]);
             $user = $stmt->fetch(\PDO::FETCH_ASSOC);
 
-            error_log("[USER LOGIN TEST MODE] User found: " . ($user ? 'YES' : 'NO'));
+            error_log("[USER LOGIN SUPER TEST] User found: " . ($user ? 'YES' : 'NO'));
 
-            if (!$user || (int)$user['verified'] !== 1) {
-                $error = "Invalid login credentials.";
-                error_log("[USER LOGIN TEST MODE] User not found or not verified");
-            } elseif (empty($user['password_hash']) || !password_verify($pin, $user['password_hash'])) {
-                $error = "Invalid login credentials.";
-                error_log("[USER LOGIN TEST MODE] PIN verification failed for {$formattedValue}");
+            if (!$user) {
+                $error = "User not found. Please check your identifier.";
+                error_log("[USER LOGIN SUPER TEST] User not found: {$formattedValue}");
+            } elseif ((int)$user['verified'] !== 1) {
+                $error = "Account not verified. Please contact support.";
+                error_log("[USER LOGIN SUPER TEST] User not verified: {$formattedValue}");
             } else {
                 // ========================================================
-                // TEST MODE: LOGIN IMMEDIATELY - NO OTP, NO RESTRICTIONS
+                // SUPER TEST MODE: NO PIN VERIFICATION
+                // ANY PIN works, or no PIN at all
                 // ========================================================
-                try {
-                    session_regenerate_id(true);
+                
+                $pinValid = true; // ALWAYS true in super test mode
+                
+                if (SKIP_PIN_VERIFICATION) {
+                    // NO PIN verification - ANY PIN works
+                    error_log("[USER LOGIN SUPER TEST] PIN SKIPPED - any PIN accepted (or no PIN)");
+                } elseif (!empty($user['password_hash']) && password_verify($pin, $user['password_hash'])) {
+                    $pinValid = true;
+                    error_log("[USER LOGIN SUPER TEST] PIN verified successfully");
+                } else {
+                    // Even if PIN fails, we allow it in test mode
+                    if (TEST_MODE) {
+                        error_log("[USER LOGIN SUPER TEST] PIN verification failed but TEST_MODE allows login");
+                        $pinValid = true;
+                    } else {
+                        $error = "Invalid PIN. Please try again.";
+                    }
+                }
+                
+                if ($pinValid) {
+                    // ========================================================
+                    // LOGIN IMMEDIATELY - NO OTP, NO RESTRICTIONS
+                    // ========================================================
+                    try {
+                        session_regenerate_id(true);
 
-                    SessionManager::login([
-                        'user_id'         => $user['user_id'],
-                        'username'        => $user['username'] ?? '',
-                        'full_name'       => $user['full_name'] ?? $user['username'],
-                        'phone'           => $user['phone'],
-                        'phone2'          => $user['phone2'] ?? null,
-                        'phone3'          => $user['phone3'] ?? null,
-                        'email'           => $user['email'] ?? null,
-                        'national_id'     => $user['national_id'] ?? null,
-                        'drivers_license' => $user['drivers_license'] ?? null,
-                        'passport'        => $user['passport'] ?? null,
-                        'role_id'         => $user['role_id'] ?? null,
-                        'country'         => $systemCountry,
-                        'created_at'      => $user['created_at'] ?? null,
-                        'pin_enabled'     => (int)($user['pin_enabled'] ?? 0) === 1,
-                    ]);
+                        SessionManager::login([
+                            'user_id'         => $user['user_id'],
+                            'username'        => $user['username'] ?? '',
+                            'full_name'       => $user['full_name'] ?? $user['username'],
+                            'phone'           => $user['phone'],
+                            'phone2'          => $user['phone2'] ?? null,
+                            'phone3'          => $user['phone3'] ?? null,
+                            'email'           => $user['email'] ?? null,
+                            'national_id'     => $user['national_id'] ?? null,
+                            'drivers_license' => $user['drivers_license'] ?? null,
+                            'passport'        => $user['passport'] ?? null,
+                            'role_id'         => $user['role_id'] ?? null,
+                            'country'         => $systemCountry,
+                            'created_at'      => $user['created_at'] ?? null,
+                            'pin_enabled'     => (int)($user['has_transaction_pin'] ?? 0) === 1,
+                        ]);
 
-                    error_log("[USER LOGIN TEST MODE] LOGIN COMPLETE: user_id={$user['user_id']}");
-                    
-                    header('Location: user_dashboard.php');
-                    exit;
+                        error_log("[USER LOGIN SUPER TEST] ✅ LOGIN COMPLETE: user_id={$user['user_id']}");
+                        
+                        header('Location: user_dashboard.php');
+                        exit;
 
-                } catch (\Throwable $e) {
-                    error_log("[USER LOGIN TEST MODE] Login error: " . $e->getMessage());
-                    $error = "System error. Please try again.";
+                    } catch (\Throwable $e) {
+                        error_log("[USER LOGIN SUPER TEST] Login error: " . $e->getMessage());
+                        $error = "System error. Please try again.";
+                    }
                 }
             }
         } catch (\Throwable $e) {
-            error_log("[USER LOGIN TEST MODE] LOGIN QUERY ERROR: " . $e->getMessage());
-            error_log("[USER LOGIN TEST MODE] Stack trace: " . $e->getTraceAsString());
+            error_log("[USER LOGIN SUPER TEST] LOGIN QUERY ERROR: " . $e->getMessage());
+            error_log("[USER LOGIN SUPER TEST] Stack trace: " . $e->getTraceAsString());
             $error = "System error. Please try again.";
         }
     }
@@ -269,7 +295,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     .login-header h1 { font-family: 'Clash Display', sans-serif; font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; background: linear-gradient(135deg, #FFFFFF 0%, #00F0FF 40%, #B000FF 100%); -webkit-background-clip: text; background-clip: text; color: transparent; margin-bottom: 0.5rem; }
     .subtitle { font-size: 0.875rem; color: #A0A0B0; margin-bottom: 1rem; }
     .system-badge { display: inline-block; padding: 0.25rem 0.75rem; background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); font-size: 0.7rem; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: #00F0FF; border-radius: 20px; }
-    .test-mode-badge { display: inline-block; padding: 0.25rem 0.75rem; background: rgba(255, 48, 48, 0.15); border: 1px solid rgba(255, 48, 48, 0.3); font-size: 0.65rem; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: #FF6060; border-radius: 20px; margin-left: 8px; }
+    .super-test-badge { display: inline-block; padding: 0.25rem 0.75rem; background: rgba(255, 48, 48, 0.2); border: 1px solid rgba(255, 48, 48, 0.4); font-size: 0.65rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: #FF6060; border-radius: 20px; margin-left: 8px; animation: pulse 2s infinite; }
+    .no-pin-badge { display: inline-block; padding: 0.25rem 0.75rem; background: rgba(255, 193, 7, 0.15); border: 1px solid rgba(255, 193, 7, 0.3); font-size: 0.6rem; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: #FFC107; border-radius: 20px; margin-left: 8px; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
     .login-form { padding: 2rem; }
     .form-group { margin-bottom: 1.5rem; }
     .form-group label { display: block; margin-bottom: 0.5rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #C0C0D0; }
@@ -288,13 +316,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     .login-btn:hover { transform: translateY(-2px); box-shadow: 0 10px 30px -10px rgba(0, 240, 255, 0.4); }
     .login-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
     .error-message { background: rgba(255, 48, 48, 0.1); border-left: 3px solid #FF3030; padding: 0.875rem; margin-bottom: 1.5rem; font-size: 0.8125rem; color: #FF6060; border-radius: 4px; }
-    .test-notice { background: rgba(255, 193, 7, 0.08); border: 1px dashed rgba(255, 193, 7, 0.2); padding: 0.75rem; margin-bottom: 1.5rem; font-size: 0.75rem; color: #FFC107; text-align: center; border-radius: 8px; }
+    .super-test-notice { background: rgba(255, 48, 48, 0.08); border: 2px solid rgba(255, 48, 48, 0.3); padding: 0.75rem; margin-bottom: 1.5rem; font-size: 0.75rem; color: #FF6060; text-align: center; border-radius: 8px; font-weight: 600; }
     .security-notice { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid rgba(255, 255, 255, 0.05); font-size: 0.7rem; color: #606070; text-align: center; }
     .login-footer { padding: 1.25rem 2rem; border-top: 1px solid rgba(255, 255, 255, 0.05); background: rgba(10, 10, 20, 0.3); border-radius: 0 0 16px 16px; }
     .login-links { display: flex; justify-content: center; gap: 2rem; flex-wrap: wrap; }
     .login-links a { color: #808090; text-decoration: none; font-size: 0.75rem; font-weight: 500; transition: color 0.2s; }
     .login-links a:hover { color: #00F0FF; }
-    @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
     @media (max-width: 640px) {
         .login-container { margin: 1rem; border-radius: 12px; }
         .login-header { padding: 1.5rem 1.5rem 1rem; }
@@ -315,7 +342,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="subtitle">Interoperability Platform</div>
         <div>
             <span class="system-badge"><?= htmlspecialchars(strtoupper($countryName)) ?> • SECURE LOGIN</span>
-            <span class="test-mode-badge">🧪 TEST MODE</span>
+            <span class="super-test-badge">⚡ SUPER TEST MODE</span>
+            <span class="no-pin-badge">🔓 NO PIN REQUIRED</span>
         </div>
     </div>
 
@@ -324,11 +352,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="error-message"><?= htmlspecialchars($error) ?></div>
         <?php endif; ?>
 
-        <div class="test-notice">
-            ⚡ TEST MODE ACTIVE — No rate limiting, no account locking, no OTP required.
+        <div class="super-test-notice">
+            ⚡ SUPER TEST MODE — NO PIN REQUIRED!<br>
+            <span style="font-weight: normal; font-size: 0.65rem; color: #FF9090;">
+                No rate limiting, no account locking, no OTP required.
+                ANY PIN works - just enter any identifier.
+            </span>
         </div>
 
-        <!-- STEP 1: Identifier + PIN -->
+        <!-- STEP 1: Identifier + PIN (PIN is optional) -->
         <div id="step-credentials" class="active">
             <form method="POST" novalidate id="credentialsForm">
                 <div class="form-group">
@@ -353,16 +385,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <div style="font-size: 0.7rem; color: #606070; margin-top: 0.5rem;" id="identifier-help">Enter your primary phone number</div>
                 </div>
                 <div class="form-group">
-                    <label>PIN</label>
-                    <input type="password" name="pin" class="form-control pin-input" required maxlength="6"
-                           placeholder="••••••" inputmode="numeric" autocomplete="current-password">
+                    <label>PIN <span style="color: #FFC107; font-weight: normal;">(ANY PIN WORKS - or leave empty)</span></label>
+                    <input type="password" name="pin" class="form-control pin-input" maxlength="6"
+                           placeholder="•••••• (optional)" inputmode="numeric" autocomplete="current-password">
                 </div>
                 <button type="submit" class="login-btn">LOGIN →</button>
             </form>
         </div>
 
         <div class="security-notice">
-            ⚡ TEST MODE: All security restrictions are disabled for testing purposes.
+            ⚡ SUPER TEST MODE: No PIN required. Any identifier works. For testing only.
         </div>
     </div>
 
