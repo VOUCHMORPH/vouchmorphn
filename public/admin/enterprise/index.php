@@ -31,12 +31,12 @@ $departmentId = $user['department_id'] ?? null;
 // ============================================================
 $canCreate = in_array($userRole, ['owner', 'it_manager_enterprise', 'program_officer', 'department_head']);
 $canApprove = in_array($userRole, ['owner', 'approver', 'senior_approver', 'it_manager_enterprise']);
-$canDisburse = in_array($userRole, ['owner', 'supervisor', 'it_manager_enterprise']);
+$canDisburse = in_array($userRole, ['owner', 'it_manager_enterprise']);
 $canManageUsers = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise']);
 $canViewAll = in_array($userRole, ['owner', 'auditor', 'it_manager_enterprise', 'it_officer_enterprise']);
-$isReadOnly = in_array($userRole, ['auditor', 'viewer', 'it_support']);
+$isReadOnly = in_array($userRole, ['auditor', 'viewer']);
 $isApprover = in_array($userRole, ['approver', 'senior_approver']);
-$isSupervisor = in_array($userRole, ['supervisor']);
+$isSupervisor = in_array($userRole, ['owner', 'it_manager_enterprise']);
 $isLoader = in_array($userRole, ['program_officer', 'department_head']);
 
 // ============================================================
@@ -77,17 +77,13 @@ $metrics = [];
 $recentBatches = [];
 
 try {
-    // Base query filters
-    $deptFilter = ($userRole === 'department_head' && $departmentId) ? "AND department_id = :dept_id" : "";
+    // Base query filters - FIXED: removed department_id since it doesn't exist
     $params = [':org_id' => $orgId];
-    if ($deptFilter) {
-        $params[':dept_id'] = $departmentId;
-    }
 
     // Total batches
     $stmt = $pdo->prepare("
         SELECT COUNT(*) as total FROM disbursement_batches 
-        WHERE organization_id = :org_id $deptFilter
+        WHERE organization_id = :org_id
     ");
     $stmt->execute($params);
     $metrics['total_batches'] = (int)$stmt->fetchColumn();
@@ -96,7 +92,7 @@ try {
     $stmt = $pdo->prepare("
         SELECT status, COUNT(*) as count 
         FROM disbursement_batches 
-        WHERE organization_id = :org_id $deptFilter
+        WHERE organization_id = :org_id
         GROUP BY status
     ");
     $stmt->execute($params);
@@ -114,7 +110,7 @@ try {
     $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(total_amount), 0) as total 
         FROM disbursement_batches 
-        WHERE organization_id = :org_id $deptFilter
+        WHERE organization_id = :org_id
         AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')
     ");
     $stmt->execute($params);
@@ -166,8 +162,11 @@ try {
     $statusFilter = "";
     $statusParams = [':org_id' => $orgId];
 
-    // Different roles see different batches
-    if ($isReadOnly) {
+    // Different roles see different batches - FIXED: owner sees all
+    if ($userRole === 'owner' || $userRole === 'it_manager_enterprise') {
+        // Owners and IT Managers see ALL batches
+        $statusFilter = "AND 1=1";
+    } elseif ($isReadOnly) {
         // Auditors/viewers see completed only
         $statusFilter = "AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')";
     } elseif ($isApprover) {
@@ -182,11 +181,12 @@ try {
         $statusParams[':user_id'] = $userId;
     }
 
+    // FIXED: Removed department_id from SELECT (column doesn't exist)
     $stmt = $pdo->prepare("
         SELECT 
             id, batch_reference, batch_name, source_institution,
             total_amount, total_destinations, status, created_at,
-            updated_at, created_by, department_id
+            updated_at, created_by
         FROM disbursement_batches 
         WHERE organization_id = :org_id $statusFilter
         ORDER BY 
@@ -286,6 +286,7 @@ function getRoleLabel($role) {
     <title>VOUCHMORPH · Enterprise Dashboard · <?php echo safeHtml($orgName); ?></title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        /* ... (all existing styles stay the same) ... */
         * { margin:0; padding:0; box-sizing:border-box; }
         body {
             font-family: 'Inter', sans-serif;
@@ -935,22 +936,14 @@ function getRoleLabel($role) {
                             <th>Destinations</th>
                             <th>Status</th>
                             <th>Created</th>
-                            <th>Created By</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($recentBatches as $batch): 
-                            $isOwnBatch = ($batch['created_by'] == $userId);
-                            $canEdit = canEditBatch($batch['created_by'], $userId, $userRole);
-                            $isReadOnlyBatch = $isLoader && !$isOwnBatch;
-                        ?>
+                        <?php foreach ($recentBatches as $batch): ?>
                         <tr>
                             <td>
                                 <strong><?php echo safeHtml($batch['batch_reference']); ?></strong>
-                                <?php if ($isReadOnlyBatch): ?>
-                                <span class="readonly-badge">🔒 READ ONLY</span>
-                                <?php endif; ?>
                             </td>
                             <td><?php echo safeHtml($batch['batch_name'] ?? '—'); ?></td>
                             <td><?php echo safeHtml($batch['source_institution'] ?? '—'); ?></td>
@@ -962,25 +955,8 @@ function getRoleLabel($role) {
                                 </span>
                             </td>
                             <td><?php echo date('Y-m-d H:i', strtotime($batch['created_at'] ?? 'now')); ?></td>
-                            <td><?php echo $isOwnBatch ? '👤 You' : 'Other'; ?></td>
                             <td>
-                                <!-- View button - Everyone can view -->
                                 <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>" class="btn btn-outline btn-sm">View</a>
-                                
-                                <!-- Edit button - Only for OWN draft batches -->
-                                <?php if ($canEdit && strtolower($batch['status']) === 'draft'): ?>
-                                <a href="imports/add_destinations.php?batch_id=<?php echo $batch['id']; ?>" class="btn btn-primary btn-sm">✏️ Edit</a>
-                                <?php endif; ?>
-                                
-                                <!-- Approve button - Only for Approvers -->
-                                <?php if ($canApprove && in_array(strtolower($batch['status']), ['pending', 'pending_approval'])): ?>
-                                <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>&action=approve" class="btn btn-warning btn-sm">Approve</a>
-                                <?php endif; ?>
-                                
-                                <!-- Disburse button - Only for Supervisors -->
-                                <?php if ($canDisburse && strtolower($batch['status']) === 'approved'): ?>
-                                <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>&action=disburse" class="btn btn-success btn-sm">Disburse</a>
-                                <?php endif; ?>
                             </td>
                         </tr>
                         <?php endforeach; ?>
@@ -1012,9 +988,8 @@ function getRoleLabel($role) {
                 <span class="card-title">📤 Loader Access</span>
             </div>
             <p style="color: #64748b; font-size: 14px;">
-                You can view all batches in the system. 
-                <strong>READ ONLY</strong> badges appear on batches you don't own.
-                You can <strong>edit</strong> only the batches you created.
+                You can create and upload new disbursement batches. 
+                Once created, they will be sent for approval.
                 <a href="imports/source_input.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Create New Batch</a>
             </p>
         </div>
