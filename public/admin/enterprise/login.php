@@ -1,6 +1,6 @@
 <?php
-// login.php - Enterprise Login
-require_once 'auth.php'; // auth.php handles session hardening BEFORE session_start() 
+// login.php - Enterprise Login with Multi-Destination Workflow Redirects
+require_once 'auth.php';
 
 $pdo = getDBConnection();
 $error = '';
@@ -10,9 +10,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $password = $_POST['password'] ?? '';
 
     try {
-        // ============================================================
-        // STEP 1: Authenticate the user
-        // ============================================================
         $stmt = $pdo->prepare("
             SELECT
                 ou.id as org_user_id,
@@ -47,9 +44,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($user && password_verify($password, $user['password_hash'])) {
 
-            // ============================================================
-            // STEP 2: Validate the role exists in organization_role_catalog
-            // ============================================================
             $roleCheck = $pdo->prepare("
                 SELECT role_code, label, default_scope 
                 FROM organization_role_catalog 
@@ -60,52 +54,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if (!$roleInfo) {
                 error_log("[SECURITY] Login attempt with invalid role: " . $user['role'] . " for user: " . $email);
-
-                try {
-                    $logStmt = $pdo->prepare("
-                        INSERT INTO organization_audit_logs
-                        (organization_id, user_id, action, entity_type, ip_address, user_agent, created_at)
-                        VALUES (NULL, NULL, 'INVALID_ROLE_ATTEMPT', 'security', :ip, :ua, NOW())
-                    ");
-                    $logStmt->execute([
-                        ':ip' => $_SERVER['REMOTE_ADDR'] ?? null,
-                        ':ua' => $_SERVER['HTTP_USER_AGENT'] ?? null
-                    ]);
-                } catch (PDOException $e) {
-                    error_log("Failed to create audit log: " . $e->getMessage());
-                }
-
                 $error = 'Invalid account configuration. Please contact your system administrator.';
             } else {
-                // ============================================================
-                // STEP 3: Validate role scoping matches department assignment
-                // ============================================================
                 $scope = $roleInfo['default_scope'];
 
                 if ($scope === 'department' && empty($user['department_id'])) {
                     error_log("[SECURITY] Department-scoped role " . $user['role'] . " has no department_id for user: " . $email);
-
                     $error = 'Your account is not fully configured. Please contact your system administrator.';
-
-                    try {
-                        $logStmt = $pdo->prepare("
-                            INSERT INTO organization_audit_logs
-                            (organization_id, user_id, action, entity_type, ip_address, user_agent, created_at)
-                            VALUES (:org_id, :user_id, 'DEPARTMENT_MISSING', 'security', :ip, :ua, NOW())
-                        ");
-                        $logStmt->execute([
-                            ':org_id' => $user['organization_id'],
-                            ':user_id' => $user['user_id'],
-                            ':ip' => $_SERVER['REMOTE_ADDR'] ?? null,
-                            ':ua' => $_SERVER['HTTP_USER_AGENT'] ?? null
-                        ]);
-                    } catch (PDOException $e) {
-                        error_log("Failed to create audit log: " . $e->getMessage());
-                    }
                 } else {
-                    // ============================================================
-                    // STEP 4: All valid - proceed with login
-                    // ============================================================
                     $_SESSION['enterprise_user'] = [
                         'id' => $user['user_id'],
                         'org_user_id' => $user['org_user_id'],
@@ -159,16 +115,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         error_log("Failed to create audit log: " . $e->getMessage());
                     }
 
+                    // ============================================================
+                    // UPDATED: Multi-Destination Workflow Redirects
+                    // ============================================================
                     $__role = $user['role'];
+
                     if (in_array($__role, ['owner', 'it_manager_enterprise', 'it_officer_enterprise'], true)) {
+                        // Super users go to dashboard with full access
                         header('Location: index.php');
-                    } elseif (in_array($__role, ['approver', 'senior_approver', 'department_head', 'auditor', 'viewer'], true)) {
-                        header('Location: imports/review.php');
-                    } elseif ($__role === 'program_officer') {
-                        header('Location: imports/upload.php');
+                        
+                    } elseif (in_array($__role, ['program_officer', 'department_head'], true)) {
+                        // Program Officers and Department Heads can create new disbursements
+                        header('Location: imports/source_input.php');
+                        
+                    } elseif (in_array($__role, ['approver', 'senior_approver'], true)) {
+                        // Approvers see pending approvals
+                        header('Location: imports/review_batch.php?status=pending_approval');
+                        
+                    } elseif ($__role === 'auditor') {
+                        // Auditors see all batches in read-only mode
+                        header('Location: imports/review_batch.php?status=all');
+                        
+                    } elseif ($__role === 'viewer') {
+                        // Viewers only see completed batches
+                        header('Location: imports/review_batch.php?status=completed');
+                        
                     } elseif ($__role === 'beneficiary_registrar') {
-                        header('Location: imports/manual_entry.php');
+                        // Beneficiary Registrars add destinations
+                        header('Location: imports/add_destinations.php');
+                        
                     } else {
+                        // Fallback
                         header('Location: index.php');
                     }
                     exit;
@@ -176,20 +153,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         } else {
             $error = 'Invalid email or password';
-
-            try {
-                $logStmt = $pdo->prepare("
-                    INSERT INTO organization_audit_logs
-                    (organization_id, user_id, action, entity_type, ip_address, user_agent, created_at)
-                    VALUES (NULL, NULL, 'LOGIN_FAILED', 'user', :ip, :ua, NOW())
-                ");
-                $logStmt->execute([
-                    ':ip' => $_SERVER['REMOTE_ADDR'] ?? null,
-                    ':ua' => $_SERVER['HTTP_USER_AGENT'] ?? null
-                ]);
-            } catch (PDOException $e) {
-                error_log("Failed to create audit log: " . $e->getMessage());
-            }
         }
     } catch (PDOException $e) {
         $error = 'Unable to sign in right now. Please try again shortly.';
@@ -203,7 +166,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VOUCHMORPH · SIGN IN</title>
-  <!-- Google Fonts – clean, sharp, Vouchmorph‑inspired -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
@@ -239,7 +201,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     body {
       font-family: var(--f-body);
-      /* Vouchmorph‑style dark gradient + subtle brass radial */
       background:
         radial-gradient(1100px 500px at 15% -10%, rgba(138,109,59,.10), transparent 60%),
         linear-gradient(160deg, #060b16 0%, var(--ink-900) 55%, #10203a 100%);
@@ -254,21 +215,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       -webkit-font-smoothing: antialiased;
     }
 
-    /* sharp focus – no rounded corners */
     :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
-    /* ============================================================
-       MODAL SIZE – wider to match Vouchmorph window (max-width: 520px)
-       ============================================================ */
     .stage {
       width: 100%;
-      max-width: 520px;          /* Vouchmorph‑style modal width */
+      max-width: 520px;
       padding: 0 16px;
     }
 
-    /* ============================================================
-       BRAND – Vouchmorph‑style sharp typography, centralized
-       ============================================================ */
     .brand {
       text-align: center;
       margin-bottom: 36px;
@@ -296,17 +250,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       display: block;
     }
 
-    /* ============================================================
-       CARD – Vouchmorph‑modal proportions, sharp edges, more padding
-       ============================================================ */
     .card {
       background: var(--panel);
       border: 1px solid var(--line);
-      padding: 48px 44px 40px;   /* increased padding for Vouchmorph feel */
+      padding: 48px 44px 40px;
       position: relative;
       border-radius: 0;
     }
-    /* brass corner accents – sharp, like Vouchmorph window */
     .card::before {
       content: "";
       position: absolute;
@@ -346,9 +296,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       font-family: var(--f-body);
     }
 
-    /* ============================================================
-       FORM FIELDS – Vouchmorph‑style sharp, no rounding
-       ============================================================ */
     .field { margin-bottom: 24px; }
     .field label {
       display: block;
@@ -382,7 +329,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       background: #fdfcf9;
       transition: border-color .15s, background .15s;
       color: var(--ink-900);
-      border-radius: 0;   /* sharp edges */
+      border-radius: 0;
     }
     .field input:focus {
       outline: none;
@@ -394,9 +341,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       opacity: 0.7;
     }
 
-    /* ============================================================
-       BUTTON – Vouchmorph‑sharp, no rounding, larger
-       ============================================================ */
     .btn {
       width: 100%;
       padding: 16px;
@@ -414,7 +358,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       align-items: center;
       justify-content: center;
       gap: 12px;
-      border-radius: 0;   /* sharp */
+      border-radius: 0;
       margin-top: 4px;
     }
     .btn:hover {
@@ -431,9 +375,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       transform: translateX(4px);
     }
 
-    /* ============================================================
-       ERROR – Vouchmorph‑style alert
-       ============================================================ */
     .error {
       display: flex;
       align-items: flex-start;
@@ -455,9 +396,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       margin-top: 1px;
     }
 
-    /* ============================================================
-       TRUST ROW – sharp, Vouchmorph‑inspired
-       ============================================================ */
     .trust-row {
       display: flex;
       justify-content: space-between;
@@ -482,9 +420,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       color: var(--brass);
     }
 
-    /* ============================================================
-       FOOTER – Vouchmorph‑style minimal, sharp
-       ============================================================ */
     .footer {
       text-align: center;
       margin-top: 34px;
@@ -504,9 +439,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       letter-spacing: 0.08em;
     }
 
-    /* ============================================================
-       RESPONSIVE – stays centralized and sharp
-       ============================================================ */
     @media (max-width: 480px) {
       .stage { max-width: 100%; padding: 0 12px; }
       .card { padding: 30px 20px 24px; }
@@ -514,7 +446,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       .trust-row { flex-wrap: wrap; gap: 8px; justify-content: center; }
     }
 
-    /* dark mode – keep Vouchmorph contrast */
     @media (prefers-color-scheme: dark) {
       .card {
         background: #1B2733;
@@ -549,22 +480,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </head>
 <body>
 <div class="stage">
-  <!-- Brand – Vouchmorph‑style centralized, sharp -->
   <div class="brand">
     <h1>Sovereign Disbursement Network</h1>
     <span class="sub">Secure · Multi-Asset · Identity-First</span>
   </div>
 
-  <!-- Card – Vouchmorph‑inspired modal, sharp edges, same colors, wider -->
   <div class="card">
     <h2>Sign in</h2>
     <p class="subtitle">Access your organization's command center</p>
 
-    <!-- error demo (optional) – matches Vouchmorph error style -->
-    <div class="error" style="display: none;">
+    <?php if ($error): ?>
+    <div class="error">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
-      <span>Invalid email or password</span>
+      <span><?php echo htmlspecialchars($error); ?></span>
     </div>
+    <?php endif; ?>
 
     <form method="POST" action="#">
       <div class="field">
@@ -587,7 +517,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       </button>
     </form>
 
-    <!-- trust row – Vouchmorph‑style sharp, same brass accents -->
     <div class="trust-row">
       <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg>Secure</span>
       <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>2FA Ready</span>
@@ -595,7 +524,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
   </div>
 
-  <!-- Footer – Vouchmorph‑style minimal, sharp -->
   <div class="footer">
     <div class="line1">SECURE ENTERPRISE MULTI-ASSET PAYMENT · DISTRIBUTION RESTRICTED · ISO 27001 · © 2026 VOUCHMORPH</div>
     <div class="line2">OWNER · VM/2026/0708-000</div>
