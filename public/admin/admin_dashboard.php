@@ -1,9 +1,7 @@
 <?php
 /**
  * admin_dashboard.php - VouchMorph Enhanced Admin Dashboard
- * Features: Role-based access, Transaction Search, Full Tracking, Reports, Debug Mode
- * 
- * UPDATED: Each table is displayed as a collapsible card showing all records line by line
+ * Features: PDF Reports, Search, Table Browsing, Role-based Access
  */
 
 declare(strict_types=1);
@@ -19,10 +17,13 @@ define('PROJECT_ROOT', dirname(__DIR__, 2));
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
+require_once PROJECT_ROOT . '/vendor/autoload.php'; // For PhpSpreadsheet
 
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
 use Application\Admin\Auth\AdminAuth;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Writer\Pdf\Mpdf;
 
 // Check if admin is logged in
 if (!SessionManager::isAdminLoggedIn()) {
@@ -39,10 +40,10 @@ $adminCountry = SessionManager::getAdminCountry();
 
 // Role definitions with permissions
 $roleDefinitions = [
-    999 => ['name' => 'Super Admin', 'permissions' => ['all'], 'level' => 100],
-    3 => ['name' => 'Regulator', 'permissions' => ['view_dashboard', 'view_reports', 'audit_logs', 'compliance_checks', 'search_transactions'], 'level' => 80],
-    4 => ['name' => 'Compliance Officer', 'permissions' => ['view_dashboard', 'view_reports', 'review_transactions', 'kyc_verification', 'search_transactions'], 'level' => 70],
-    5 => ['name' => 'Auditor', 'permissions' => ['view_dashboard', 'view_reports', 'audit_logs', 'read_only', 'search_transactions'], 'level' => 60],
+    999 => ['name' => 'Super Admin', 'permissions' => ['all', 'export_pdf'], 'level' => 100],
+    3 => ['name' => 'Regulator', 'permissions' => ['view_dashboard', 'view_reports', 'audit_logs', 'compliance_checks', 'search_transactions', 'export_pdf'], 'level' => 80],
+    4 => ['name' => 'Compliance Officer', 'permissions' => ['view_dashboard', 'view_reports', 'review_transactions', 'kyc_verification', 'search_transactions', 'export_pdf'], 'level' => 70],
+    5 => ['name' => 'Auditor', 'permissions' => ['view_dashboard', 'view_reports', 'audit_logs', 'read_only', 'search_transactions', 'export_pdf'], 'level' => 60],
     6 => ['name' => 'Support', 'permissions' => ['view_dashboard', 'search_transactions'], 'level' => 50]
 ];
 
@@ -65,10 +66,14 @@ try {
     die("Database connection failed: " . $e->getMessage());
 }
 
+// Get view and parameters
 $view = $_GET['view'] ?? 'dashboard';
 $debug = isset($_GET['debug']) && $_GET['debug'] === '1';
 $search = $_GET['search'] ?? '';
+$searchTable = $_GET['search_table'] ?? '';
 $transactionId = $_GET['id'] ?? null;
+$exportTable = $_GET['export'] ?? '';
+$exportId = $_GET['export_id'] ?? '';
 
 // Helper for safe HTML
 function safeHtml($value) {
@@ -76,12 +81,96 @@ function safeHtml($value) {
 }
 
 // ============================================================
-// FETCH ALL TABLE DATA - LINE BY LINE
+// PDF GENERATION
 // ============================================================
+if ($exportTable && hasPermission('export_pdf')) {
+    try {
+        // Get data from the specified table
+        $stmt = $db->prepare("SELECT * FROM " . $exportTable . " WHERE id = :id OR swap_id = :id");
+        $stmt->execute([':id' => $exportId]);
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        if (empty($data)) {
+            // Try with different id columns
+            $stmt = $db->prepare("SELECT * FROM " . $exportTable . " LIMIT 100");
+            $stmt->execute();
+            $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+        
+        if (!empty($data)) {
+            // Create Spreadsheet
+            $spreadsheet = new Spreadsheet();
+            $sheet = $spreadsheet->getActiveSheet();
+            
+            // Set headers
+            $columns = array_keys($data[0]);
+            foreach ($columns as $col => $colName) {
+                $sheet->setCellValue(chr(65 + $col) . '1', $colName);
+                $sheet->getStyle(chr(65 + $col) . '1')->getFont()->setBold(true);
+                $sheet->getColumnDimension(chr(65 + $col))->setAutoSize(true);
+            }
+            
+            // Add data
+            $rowNum = 2;
+            foreach ($data as $row) {
+                $colNum = 0;
+                foreach ($row as $value) {
+                    $sheet->setCellValue(chr(65 + $colNum) . $rowNum, (string)$value);
+                    $colNum++;
+                }
+                $rowNum++;
+            }
+            
+            // Generate PDF
+            $writer = new Mpdf($spreadsheet);
+            header('Content-Type: application/pdf');
+            header('Content-Disposition: attachment; filename="' . $exportTable . '_report.pdf"');
+            $writer->save('php://output');
+            exit;
+        }
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] PDF Export error: " . $e->getMessage());
+        // Fallback to HTML table export
+        header('Content-Type: text/html');
+        echo "<html><head><title>Export Error</title></head><body>";
+        echo "<h2>PDF Export Error</h2>";
+        echo "<p>" . safeHtml($e->getMessage()) . "</p>";
+        echo "</body></html>";
+        exit;
+    }
+}
 
+// ============================================================
+// CSV EXPORT
+// ============================================================
+if ($exportTable && isset($_GET['format']) && $_GET['format'] === 'csv') {
+    try {
+        $stmt = $db->prepare("SELECT * FROM " . $exportTable . " LIMIT 500");
+        $stmt->execute();
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        header('Content-Type: text/csv');
+        header('Content-Disposition: attachment; filename="' . $exportTable . '_' . date('Y-m-d') . '.csv"');
+        
+        $output = fopen('php://output', 'w');
+        if (!empty($data)) {
+            fputcsv($output, array_keys($data[0]));
+            foreach ($data as $row) {
+                fputcsv($output, array_values($row));
+            }
+        }
+        fclose($output);
+        exit;
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] CSV Export error: " . $e->getMessage());
+    }
+}
+
+// ============================================================
+// FETCH ALL TABLE DATA
+// ============================================================
 $tableData = [];
 
-// Define all tables to display
 $tablesToFetch = [
     'swap_requests' => ['label' => '📋 Swap Requests', 'order' => 'created_at DESC', 'limit' => 100],
     'hold_transactions' => ['label' => '🔒 Hold Transactions', 'order' => 'created_at DESC', 'limit' => 100],
@@ -103,10 +192,8 @@ $tablesToFetch = [
     'admins' => ['label' => '👑 Admins', 'order' => 'created_at DESC', 'limit' => 100],
 ];
 
-// Fetch each table
 foreach ($tablesToFetch as $table => $config) {
     try {
-        // Check if table exists
         $stmt = $db->prepare("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = :table");
         $stmt->execute([':table' => $table]);
         $exists = (int)$stmt->fetchColumn() > 0;
@@ -114,8 +201,21 @@ foreach ($tablesToFetch as $table => $config) {
         if ($exists) {
             $orderBy = $config['order'] ?? 'created_at DESC';
             $limit = $config['limit'] ?? 100;
-            $stmt = $db->query("SELECT * FROM {$table} ORDER BY {$orderBy} LIMIT {$limit}");
-            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // If searching, apply search filter
+            $whereClause = '';
+            if (!empty($search) && !empty($searchTable) && $searchTable === $table) {
+                $whereClause = " WHERE ";
+                $searchTerms = explode(' ', $search);
+                $conditions = [];
+                foreach ($searchTerms as $term) {
+                    $conditions[] = "CAST(" . $table . "::text ILIKE '%" . addslashes($term) . "%'";
+                }
+                $whereClause .= implode(' OR ', $conditions);
+            }
+            
+            $query = "SELECT * FROM {$table} {$whereClause} ORDER BY {$orderBy} LIMIT {$limit}";
+            $rows = $db->query($query)->fetchAll(PDO::FETCH_ASSOC);
             
             $tableData[$table] = [
                 'exists' => true,
@@ -147,35 +247,6 @@ foreach ($tablesToFetch as $table => $config) {
 }
 
 // ============================================================
-// SEARCH
-// ============================================================
-$searchResults = [];
-$searchPerformed = false;
-if (!empty($search) && hasPermission('search_transactions')) {
-    $searchPerformed = true;
-    try {
-        $stmt = $db->prepare("
-            SELECT 
-                sr.swap_id, sr.swap_uuid, sr.user_id, sr.amount, sr.status, sr.created_at,
-                sr.from_currency, sr.to_currency, sr.source_country, sr.destination_country,
-                u.full_name as user_name, u.phone as user_phone, u.email as user_email
-            FROM swap_requests sr
-            LEFT JOIN users u ON sr.user_id = u.user_id
-            WHERE 
-                sr.swap_id::text ILIKE :search OR sr.swap_uuid ILIKE :search
-                OR u.full_name ILIKE :search OR u.phone ILIKE :search
-                OR u.email ILIKE :search OR sr.status ILIKE :search
-                OR sr.from_currency ILIKE :search OR sr.to_currency ILIKE :search
-            ORDER BY sr.created_at DESC LIMIT 100
-        ");
-        $stmt->execute([':search' => '%' . $search . '%']);
-        $searchResults = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    } catch (Throwable $e) {
-        error_log("[ADMIN DASHBOARD] Search error: " . $e->getMessage());
-    }
-}
-
-// ============================================================
 // METRICS
 // ============================================================
 $metrics = [];
@@ -193,7 +264,6 @@ try {
     $stmt = $db->query("SELECT COUNT(*) FROM audit_logs");
     $metrics['total_audit_logs'] = (int)$stmt->fetchColumn();
 } catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Metrics error: " . $e->getMessage());
     $metrics = array_fill_keys(['total_users', 'total_swaps', 'total_holds', 'total_cashouts', 'total_invoices', 'total_audit_logs'], 0);
 }
 ?>
@@ -312,25 +382,39 @@ try {
             gap: 10px;
             margin-bottom: 20px;
             flex-wrap: wrap;
+            background: #fff;
+            padding: 20px;
+            border: 2px solid #001B44;
         }
         .search-bar input {
             flex: 1;
             min-width: 200px;
-            padding: 12px 16px;
-            border: 2px solid #001B44;
+            padding: 10px 14px;
+            border: 2px solid #cbd5e1;
             font-family: 'IBM Plex Mono', monospace;
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             background: #fff;
+            border-radius: 4px;
         }
-        .search-bar input:focus { outline: none; border-color: #FFDA63; }
+        .search-bar input:focus { outline: none; border-color: #001B44; }
+        .search-bar select {
+            padding: 10px 14px;
+            border: 2px solid #cbd5e1;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.85rem;
+            background: #fff;
+            border-radius: 4px;
+            min-width: 150px;
+        }
         .search-bar button {
-            padding: 12px 24px;
+            padding: 10px 24px;
             background: #001B44;
             color: #fff;
             border: 2px solid #001B44;
             font-family: 'IBM Plex Mono', monospace;
             font-weight: 600;
             cursor: pointer;
+            border-radius: 4px;
             transition: all 0.2s;
         }
         .search-bar button:hover { background: #FFDA63; color: #001B44; border-color: #FFDA63; }
@@ -358,7 +442,6 @@ try {
             margin-bottom: 5px;
         }
         .metric-value { font-size: 1.8rem; font-weight: 600; color: #001B44; line-height: 1.2; }
-        .metric-value .sub { font-size: 0.8rem; color: #666; }
         
         /* Table Card */
         .table-card {
@@ -374,33 +457,61 @@ try {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 14px 20px;
+            padding: 12px 18px;
             background: #f8fafc;
             border-bottom: 2px solid #001B44;
             cursor: pointer;
             transition: background 0.2s;
             user-select: none;
+            flex-wrap: wrap;
+            gap: 10px;
         }
         .table-card-header:hover { background: #f1f5f9; }
         .table-card-header .title {
             font-weight: 700;
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             text-transform: uppercase;
             letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
         }
         .table-card-header .badge {
             display: inline-block;
             padding: 2px 12px;
             background: #001B44;
             color: #fff;
-            font-size: 0.7rem;
+            font-size: 0.65rem;
             border-radius: 12px;
-            margin-left: 10px;
         }
-        .table-card-header .badge-empty {
-            background: #999;
-            color: #fff;
+        .table-card-header .badge-empty { background: #999; }
+        .table-card-header .actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
         }
+        .table-card-header .actions .btn {
+            padding: 4px 12px;
+            font-size: 0.6rem;
+            border: 1px solid #001B44;
+            background: #fff;
+            color: #001B44;
+            cursor: pointer;
+            font-family: 'IBM Plex Mono', monospace;
+            font-weight: 600;
+            text-transform: uppercase;
+            border-radius: 4px;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .table-card-header .actions .btn:hover { background: #001B44; color: #fff; }
+        .table-card-header .actions .btn-pdf { border-color: #dc3545; color: #dc3545; }
+        .table-card-header .actions .btn-pdf:hover { background: #dc3545; color: #fff; }
+        .table-card-header .actions .btn-csv { border-color: #28a745; color: #28a745; }
+        .table-card-header .actions .btn-csv:hover { background: #28a745; color: #fff; }
         .table-card-header .toggle-icon {
             font-size: 1.2rem;
             transition: transform 0.3s;
@@ -411,25 +522,25 @@ try {
             max-height: 0;
             overflow: hidden;
             transition: max-height 0.4s ease, padding 0.3s ease;
-            padding: 0 20px;
+            padding: 0 18px;
         }
         .table-card-body.open {
             max-height: 2000px;
-            padding: 16px 20px;
+            padding: 14px 18px;
         }
         .table-card-body .table-responsive { overflow-x: auto; }
         .table-card-body table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.75rem;
+            font-size: 0.7rem;
         }
         .table-card-body th {
             background: #001B44;
             color: #fff;
-            padding: 8px 10px;
+            padding: 6px 10px;
             font-weight: 600;
             text-align: left;
-            font-size: 0.6rem;
+            font-size: 0.55rem;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             white-space: nowrap;
@@ -438,10 +549,10 @@ try {
             z-index: 10;
         }
         .table-card-body td {
-            padding: 6px 10px;
+            padding: 5px 10px;
             border-bottom: 1px solid #eee;
-            font-size: 0.7rem;
-            max-width: 300px;
+            font-size: 0.65rem;
+            max-width: 200px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
@@ -456,8 +567,8 @@ try {
         
         .status {
             display: inline-block;
-            padding: 2px 8px;
-            font-size: 0.6rem;
+            padding: 1px 8px;
+            font-size: 0.55rem;
             font-weight: 600;
             text-transform: uppercase;
             border: 1px solid;
@@ -482,10 +593,11 @@ try {
             .metrics-grid { grid-template-columns: repeat(2, 1fr); }
             .admin-nav { padding: 0 15px; gap: 10px; }
             .admin-content { padding: 15px; }
-            .admin-header { padding: 15px; }
-            .metric-value { font-size: 1.2rem; }
+            .search-bar { flex-direction: column; }
+            .search-bar input, .search-bar select { min-width: 100%; }
             .table-card-body td { max-width: 120px; }
-            .table-card-body .table-responsive { font-size: 0.65rem; }
+            .table-card-header { flex-direction: column; align-items: stretch; }
+            .table-card-header .actions { justify-content: flex-start; }
         }
     </style>
 </head>
@@ -510,8 +622,8 @@ try {
 
     <nav class="admin-nav">
         <a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">📊 DASHBOARD</a>
-        <a href="?view=search" class="nav-item <?php echo $view === 'search' ? 'active' : ''; ?>">🔍 SEARCH</a>
         <a href="?view=tables" class="nav-item <?php echo $view === 'tables' ? 'active' : ''; ?>">📋 TABLES</a>
+        <a href="?view=search" class="nav-item <?php echo $view === 'search' ? 'active' : ''; ?>">🔍 SEARCH</a>
         <?php if ($debug): ?>
         <a href="?view=debug&debug=1" class="nav-item active debug-link">🔍 DEBUG</a>
         <?php else: ?>
@@ -556,11 +668,6 @@ try {
             </div>
         </div>
 
-        <div style="text-align: right; margin-bottom: 16px;">
-            <a href="?view=tables" style="color: #001B44; font-weight: 600; font-size: 0.8rem; text-transform: uppercase;">📋 View All Tables →</a>
-        </div>
-
-        <!-- Show top 5 tables with data -->
         <?php 
         $displayed = 0;
         foreach ($tableData as $table => $data):
@@ -573,30 +680,35 @@ try {
                     <?php echo safeHtml($data['label'] ?? $table); ?>
                     <span class="badge"><?php echo number_format($data['count']); ?> records</span>
                 </span>
-                <span class="toggle-icon" id="icon_<?php echo $table; ?>">▼</span>
+                <div class="actions">
+                    <?php if (hasPermission('export_pdf')): ?>
+                    <a href="?export=<?php echo $table; ?>&export_id=all" class="btn btn-pdf">PDF</a>
+                    <a href="?export=<?php echo $table; ?>&format=csv" class="btn btn-csv">CSV</a>
+                    <?php endif; ?>
+                    <span class="toggle-icon" id="icon_<?php echo $table; ?>">▼</span>
+                </div>
             </div>
             <div class="table-card-body" id="body_<?php echo $table; ?>">
                 <div class="table-responsive">
                     <table>
                         <thead>
                             <tr>
-                                <?php foreach (array_slice($data['columns'], 0, 8) as $col): ?>
+                                <?php foreach (array_slice($data['columns'], 0, 7) as $col): ?>
                                 <th><?php echo safeHtml($col); ?></th>
                                 <?php endforeach; ?>
-                                <?php if (count($data['columns']) > 8): ?>
+                                <?php if (count($data['columns']) > 7): ?>
                                 <th>...</th>
                                 <?php endif; ?>
                             </tr>
                         </thead>
                         <tbody>
-                            <?php foreach (array_slice($data['rows'], 0, 20) as $row): ?>
+                            <?php foreach (array_slice($data['rows'], 0, 15) as $row): ?>
                             <tr>
                                 <?php 
                                 $colCount = 0;
                                 foreach ($row as $key => $value):
-                                    if ($colCount++ >= 8) break;
+                                    if ($colCount++ >= 7) break;
                                     $display = is_string($value) ? substr($value, 0, 50) : (string)$value;
-                                    // Check if it's a status field
                                     if (strpos(strtolower($key), 'status') !== false) {
                                         $statusClass = 'info';
                                         if (stripos($value, 'complete') !== false || stripos($value, 'success') !== false) $statusClass = 'success';
@@ -608,14 +720,14 @@ try {
                                     }
                                 endforeach;
                                 ?>
-                                <?php if (count($row) > 8): ?>
-                                <td><span style="color: #999;">+<?php echo count($row) - 8; ?> more</span></td>
+                                <?php if (count($row) > 7): ?>
+                                <td><span style="color: #999;">+<?php echo count($row) - 7; ?> more</span></td>
                                 <?php endif; ?>
                             </tr>
                             <?php endforeach; ?>
-                            <?php if ($data['count'] > 20): ?>
-                            <tr><td colspan="<?php echo min(9, count($data['columns']) + 1); ?>" style="text-align:center; color:#999; font-size:0.7rem;">
-                                ... and <?php echo number_format($data['count'] - 20); ?> more records
+                            <?php if ($data['count'] > 15): ?>
+                            <tr><td colspan="<?php echo min(8, count($data['columns']) + 1); ?>" style="text-align:center; color:#999; font-size:0.65rem;">
+                                ... and <?php echo number_format($data['count'] - 15); ?> more records
                             </td></tr>
                             <?php endif; ?>
                         </tbody>
@@ -636,22 +748,41 @@ try {
         <?php endif; ?>
 
         <div style="text-align: center; margin-top: 20px;">
-            <a href="?view=tables" class="nav-item" style="padding: 10px 24px; border: 2px solid #001B44; border-radius: 4px;">📋 View All <?php echo count($tableData); ?> Tables →</a>
+            <a href="?view=tables" style="padding: 10px 24px; border: 2px solid #001B44; border-radius: 4px; text-decoration: none; color: #001B44; font-weight: 600; display: inline-block;">📋 View All <?php echo count($tableData); ?> Tables →</a>
         </div>
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- TABLES VIEW - All tables line by line -->
+        <!-- TABLES VIEW -->
         <!-- ============================================================ -->
         <?php if ($view === 'tables'): ?>
         <div class="content-header">
             <h1>📋 ALL DATABASE TABLES</h1>
             <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?></div>
-            <a href="?view=dashboard" class="nav-item" style="padding: 8px 16px; border: 2px solid #001B44; border-radius: 4px;">← Back</a>
+            <a href="?view=dashboard" style="padding: 8px 16px; border: 2px solid #001B44; border-radius: 4px; text-decoration: none; color: #001B44; font-size: 0.7rem; font-weight: 600;">← Back</a>
+        </div>
+
+        <div class="search-bar" style="margin-bottom: 20px;">
+            <form method="GET" style="display: flex; gap: 10px; flex: 1; flex-wrap: wrap; align-items: center;">
+                <input type="hidden" name="view" value="tables">
+                <select name="search_table">
+                    <option value="">All Tables</option>
+                    <?php foreach ($tablesToFetch as $table => $config): ?>
+                    <option value="<?php echo $table; ?>" <?php echo $searchTable === $table ? 'selected' : ''; ?>>
+                        <?php echo $config['label']; ?>
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+                <input type="text" name="search" placeholder="Search across selected table..." value="<?php echo safeHtml($search); ?>">
+                <button type="submit">🔍 SEARCH</button>
+                <?php if ($search): ?>
+                <a href="?view=tables" style="padding: 10px 20px; border: 2px solid #999; color: #666; text-decoration: none; border-radius: 4px;">Clear</a>
+                <?php endif; ?>
+            </form>
         </div>
 
         <?php foreach ($tableData as $table => $data): ?>
-        <div class="table-card">
+        <div class="table-card" id="table-<?php echo $table; ?>">
             <div class="table-card-header" onclick="toggleTable('<?php echo $table; ?>')">
                 <span class="title">
                     <?php echo safeHtml($data['label'] ?? $table); ?>
@@ -663,7 +794,13 @@ try {
                     <span class="badge"><?php echo number_format($data['count']); ?> records</span>
                     <?php endif; ?>
                 </span>
-                <span class="toggle-icon" id="icon_<?php echo $table; ?>">▼</span>
+                <div class="actions">
+                    <?php if (hasPermission('export_pdf') && $data['count'] > 0): ?>
+                    <a href="?export=<?php echo $table; ?>&export_id=all" class="btn btn-pdf">📄 PDF</a>
+                    <a href="?export=<?php echo $table; ?>&format=csv" class="btn btn-csv">📊 CSV</a>
+                    <?php endif; ?>
+                    <span class="toggle-icon" id="icon_<?php echo $table; ?>">▼</span>
+                </div>
             </div>
             <div class="table-card-body" id="body_<?php echo $table; ?>">
                 <?php if (!$data['exists']): ?>
@@ -731,72 +868,108 @@ try {
         <div class="content-header">
             <h1>🔍 SEARCH TRANSACTIONS</h1>
             <div class="timestamp">Search across all transaction data</div>
-            <a href="?view=dashboard" class="nav-item" style="padding: 8px 16px; border: 2px solid #001B44; border-radius: 4px;">← Back</a>
+            <a href="?view=dashboard" style="padding: 8px 16px; border: 2px solid #001B44; border-radius: 4px; text-decoration: none; color: #001B44; font-size: 0.7rem; font-weight: 600;">← Back</a>
         </div>
 
         <div class="search-bar">
-            <form method="GET" style="display: flex; gap: 10px; flex: 1; flex-wrap: wrap;">
+            <form method="GET" style="display: flex; gap: 10px; flex: 1; flex-wrap: wrap; align-items: center;">
                 <input type="hidden" name="view" value="search">
-                <input type="text" name="search" placeholder="Search by ID, User, Phone, Email, National ID, Status, Currency..." 
-                       value="<?php echo safeHtml($search); ?>"
-                       style="flex: 1; min-width: 200px; padding: 12px 16px; border: 2px solid #001B44; font-family: 'IBM Plex Mono', monospace;">
+                <select name="search_table">
+                    <option value="">All Tables</option>
+                    <?php foreach ($tablesToFetch as $table => $config): ?>
+                    <option value="<?php echo $table; ?>" <?php echo $searchTable === $table ? 'selected' : ''; ?>>
+                        <?php echo $config['label']; ?>
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+                <input type="text" name="search" placeholder="Search by ID, User, Phone, Email, Status, Currency..." 
+                       value="<?php echo safeHtml($search); ?>" style="flex: 2;">
                 <button type="submit">🔍 SEARCH</button>
                 <?php if ($search): ?>
-                <a href="?view=search" style="padding: 12px 20px; border: 2px solid #999; color: #666; text-decoration: none;">Clear</a>
+                <a href="?view=search" style="padding: 10px 20px; border: 2px solid #999; color: #666; text-decoration: none; border-radius: 4px;">Clear</a>
                 <?php endif; ?>
             </form>
         </div>
 
-        <?php if ($searchPerformed): ?>
+        <?php if ($search): ?>
+        <?php 
+        $foundAny = false;
+        foreach ($tableData as $table => $data):
+            if ($data['count'] > 0):
+                $foundAny = true;
+        ?>
         <div class="table-card">
-            <div class="table-card-header" style="cursor: default;">
+            <div class="table-card-header" onclick="toggleTable('<?php echo $table; ?>')">
                 <span class="title">
-                    Search Results for: "<?php echo safeHtml($search); ?>"
-                    <span class="badge"><?php echo count($searchResults); ?> FOUND</span>
+                    <?php echo safeHtml($data['label'] ?? $table); ?>
+                    <span class="badge"><?php echo number_format($data['count']); ?> results</span>
                 </span>
-            </div>
-            <div class="table-card-body open">
-                <?php if (empty($searchResults)): ?>
-                <div class="empty-state">
-                    <div class="icon">🔍</div>
-                    <p>No results found for "<?php echo safeHtml($search); ?>"</p>
+                <div class="actions">
+                    <?php if (hasPermission('export_pdf') && $data['count'] > 0): ?>
+                    <a href="?export=<?php echo $table; ?>&export_id=all" class="btn btn-pdf">📄 PDF</a>
+                    <a href="?export=<?php echo $table; ?>&format=csv" class="btn btn-csv">📊 CSV</a>
+                    <?php endif; ?>
+                    <span class="toggle-icon" id="icon_<?php echo $table; ?>">▼</span>
                 </div>
-                <?php else: ?>
+            </div>
+            <div class="table-card-body open" id="body_<?php echo $table; ?>">
                 <div class="table-responsive">
                     <table>
                         <thead>
                             <tr>
-                                <th>ID</th>
-                                <th>User</th>
-                                <th>Phone</th>
-                                <th>Amount</th>
-                                <th>Status</th>
-                                <th>Date</th>
+                                <?php foreach (array_slice($data['columns'], 0, 8) as $col): ?>
+                                <th><?php echo safeHtml($col); ?></th>
+                                <?php endforeach; ?>
+                                <?php if (count($data['columns']) > 8): ?>
+                                <th>...</th>
+                                <?php endif; ?>
                             </tr>
                         </thead>
                         <tbody>
-                            <?php foreach ($searchResults as $result): ?>
+                            <?php foreach (array_slice($data['rows'], 0, 50) as $row): ?>
                             <tr>
-                                <td><?php echo safeHtml(substr($result['swap_uuid'] ?? $result['swap_id'] ?? 'N/A', 0, 12)); ?></td>
-                                <td><?php echo safeHtml($result['user_name'] ?? 'N/A'); ?></td>
-                                <td><?php echo safeHtml($result['user_phone'] ?? 'N/A'); ?></td>
-                                <td><?php echo number_format((float)($result['amount'] ?? 0), 2); ?></td>
-                                <td>
-                                    <?php 
-                                    $status = strtolower($result['status'] ?? 'pending');
-                                    $class = $status === 'completed' || $status === 'success' ? 'success' : ($status === 'failed' ? 'failed' : 'pending');
-                                    ?>
-                                    <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($result['status'] ?? 'pending'); ?></span>
-                                </td>
-                                <td><?php echo date('Y-m-d H:i', strtotime($result['created_at'] ?? 'now')); ?></td>
+                                <?php 
+                                $colCount = 0;
+                                foreach ($row as $key => $value):
+                                    if ($colCount++ >= 8) break;
+                                    $display = is_string($value) ? substr($value, 0, 50) : (string)$value;
+                                    if (strpos(strtolower($key), 'status') !== false) {
+                                        $statusClass = 'info';
+                                        if (stripos($value, 'complete') !== false || stripos($value, 'success') !== false) $statusClass = 'success';
+                                        elseif (stripos($value, 'pending') !== false) $statusClass = 'pending';
+                                        elseif (stripos($value, 'fail') !== false) $statusClass = 'failed';
+                                        echo '<td><span class="status status-' . $statusClass . '">' . safeHtml($display) . '</span></td>';
+                                    } else {
+                                        echo '<td>' . safeHtml($display) . '</td>';
+                                    }
+                                endforeach;
+                                ?>
+                                <?php if (count($row) > 8): ?>
+                                <td><span style="color: #999;">+<?php echo count($row) - 8; ?> more</span></td>
+                                <?php endif; ?>
                             </tr>
                             <?php endforeach; ?>
+                            <?php if ($data['count'] > 50): ?>
+                            <tr><td colspan="9" style="text-align:center; color:#999; font-size:0.65rem;">
+                                ... and <?php echo number_format($data['count'] - 50); ?> more results
+                            </td></tr>
+                            <?php endif; ?>
                         </tbody>
                     </table>
                 </div>
-                <?php endif; ?>
             </div>
         </div>
+        <?php endif; endforeach; ?>
+        
+        <?php if (!$foundAny): ?>
+        <div class="table-card">
+            <div class="table-card-body open" style="padding: 40px; text-align: center; color: #999;">
+                <div class="icon" style="font-size: 3rem;">🔍</div>
+                <p>No results found for "<?php echo safeHtml($search); ?>"</p>
+                <p style="font-size: 0.8rem; margin-top: 8px;">Try searching in a specific table or using different keywords.</p>
+            </div>
+        </div>
+        <?php endif; ?>
         <?php endif; ?>
         <?php endif; ?>
     </main>
@@ -818,8 +991,8 @@ try {
             }
         }
 
-        // Auto-expand tables with data when in tables view
-        <?php if ($view === 'tables'): ?>
+        // Auto-expand tables with data
+        <?php if ($view === 'tables' || $view === 'search'): ?>
         document.addEventListener('DOMContentLoaded', function() {
             <?php foreach ($tableData as $table => $data): ?>
             <?php if ($data['count'] > 0): ?>
@@ -828,7 +1001,7 @@ try {
                 const icon = document.getElementById('icon_<?php echo $table; ?>');
                 if (body) body.classList.add('open');
                 if (icon) icon.classList.add('open');
-            }, 100);
+            }, 200);
             <?php endif; ?>
             <?php endforeach; ?>
         });
