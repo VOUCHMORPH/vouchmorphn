@@ -22,7 +22,7 @@ $batchId = $_GET['batch_id'] ?? 0;
 
 $error = '';
 $success = '';
-$failedDestinations = []; // Track failed destinations for display
+$failedDestinations = [];
 
 // ============================================================
 // HELPER: Check if user can edit this batch
@@ -150,7 +150,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             error_log("=== REVIEW_BATCH DEBUG: EXECUTION STARTED ===");
             
             try {
-                // Load country configuration
                 $countryName = $_ENV['VOUCHMORPH_COUNTRY'] ?? getenv('VOUCHMORPH_COUNTRY') ?? 'Botswana';
                 $fullCountryConfig = LoadCountry::getConfig();
                 
@@ -165,9 +164,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 error_log("[review_batch] SwapService initialized successfully");
                 
-                // ============================================================
-                // SPLIT: Identity recipients vs institution recipients
-                // ============================================================
                 $identityDestinations = [];
                 $institutionDestinations = [];
                 
@@ -187,11 +183,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $overallSuccess = 0;
                 $overallFailed = 0;
                 $overallPending = 0;
-                $failedDestinations = []; // Reset for this execution
+                $failedDestinations = [];
                 
-                // ============================================================
-                // 1. IDENTITY DESTINATIONS - One initiateSwapToIdentity() each
-                // ============================================================
+                // Identity destinations
                 foreach ($identityDestinations as $dest) {
                     error_log("[review_batch] Processing identity destination: " . json_encode($dest));
                     
@@ -242,7 +236,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $overallFailed++;
                         $errorMsg = $e->getMessage();
                         
-                        // STORE FAILED DESTINATION INFO
                         $failedDestinations[] = [
                             'index' => $dest['destination_index'],
                             'institution' => $dest['institution'] ?? 'IDENTITY_RECIPIENT',
@@ -268,9 +261,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
                 
-                // ============================================================
-                // 2. INSTITUTION DESTINATIONS - Always MULTI_DESTINATION
-                // ============================================================
+                // Institution destinations - MULTI_DESTINATION
                 if (!empty($institutionDestinations)) {
                     error_log("[review_batch] Processing " . count($institutionDestinations) . " institution destinations via MULTI_DESTINATION");
                     
@@ -307,14 +298,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     error_log("[review_batch] MULTI_DESTINATION result: " . json_encode($multiResult, JSON_PRETTY_PRINT));
                     
-                    // Track successes and failures
                     $multiSuccess = $multiResult['successful_destinations'] ?? 0;
                     $multiFailed = $multiResult['failed_destinations'] ?? 0;
                     
                     $overallSuccess += $multiSuccess;
                     $overallFailed += $multiFailed;
                     
-                    // Map result rows back to institutionDestinations by array position
                     foreach ($multiResult['destinations'] ?? [] as $idx => $destResult) {
                         $origDest = $institutionDestinations[$idx] ?? null;
                         if (!$origDest) continue;
@@ -322,7 +311,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $status = $destResult['status'] ?? 'FAILED';
                         $errorMsg = $destResult['error'] ?? null;
                         
-                        // If failed, store for reporting
                         if ($status !== 'SUCCESS' && $status !== 'COMPLETED') {
                             $failedDestinations[] = [
                                 'index' => $origDest['destination_index'],
@@ -358,9 +346,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ];
                 }
                 
-                // ============================================================
-                // ROLL UP BATCH STATUS
-                // ============================================================
                 $finalStatus = 'completed';
                 if ($overallFailed > 0 && $overallSuccess > 0) {
                     $finalStatus = 'partial_success';
@@ -398,9 +383,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':id' => $batchId
                 ]);
                 
-                // ============================================================
-                // BUILD DETAILED SUCCESS/ERROR MESSAGE
-                // ============================================================
                 if ($finalStatus === 'completed') {
                     $success = "✅ All $overallSuccess destinations paid successfully!";
                 } elseif ($finalStatus === 'partial_success') {
@@ -431,7 +413,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 error_log("[review_batch] Execution error: " . $e->getMessage());
                 error_log("[review_batch] Trace: " . $e->getTraceAsString());
                 
-                // Mark all destinations as FAILED on system error
                 $stmt = $db->prepare("
                     UPDATE disbursement_destinations 
                     SET status = 'FAILED',
@@ -454,9 +435,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $csrfToken = generateCsrfToken();
 $roleDisplay = strtoupper($user['role'] ?? 'USER');
 
-// ============================================================
-// PERMISSIONS
-// ============================================================
 $canSubmit = in_array($user['role'] ?? '', ['owner', 'program_officer', 'department_head']) && $canEdit;
 $canApprove = in_array($user['role'] ?? '', ['approver', 'senior_approver']);
 $canExecute = in_array($user['role'] ?? '', ['owner']);
@@ -468,32 +446,58 @@ $status = strtolower($batch['status'] ?? 'draft');
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Review & Approve · VouchMorph Enterprise</title>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <title>VOUCHMORPH · Review Batch</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        /* ============================================================
+           VOUCHMORPH STANDARD STYLE
+           Sharp corners · Centralized · Brass/Ink-900 · Appropriate font sizes
+           ============================================================ */
         :root {
-            --paper: #EEF1EF;
-            --panel: #FFFFFF;
-            --ink-900: #0F2138;
-            --ink-700: #1D3557;
-            --ink-500: #4A5A6E;
-            --ink-300: #8A96A3;
-            --line: #D3DAD6;
-            --brass: #8A6D3B;
-            --brass-tint: #F4EFE3;
-            --seal-red: #7A2118;
+            --paper:        #EEF1EF;
+            --panel:        #FFFFFF;
+            --ink-900:      #0F2138;
+            --ink-700:      #1D3557;
+            --ink-500:      #4A5A6E;
+            --ink-300:      #8A96A3;
+            --line:         #D3DAD6;
+            --line-strong:  #AEB8B2;
+            --brass:        #8A6D3B;
+            --brass-tint:   #F4EFE3;
+            --seal-red:     #7A2118;
+            --amber:        #8A5A0B;
             --ledger-green: #24513A;
+            --green-tint:   #E5EEE7;
+            --blue-tint:    #E7EEF4;
+            --danger:       #b3261e;
+            --danger-bg:    #fbeceb;
+
+            --f-body: 'IBM Plex Sans', sans-serif;
+            --f-cond: 'IBM Plex Sans Condensed', sans-serif;
+            --f-mono: 'IBM Plex Mono', monospace;
         }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
+
         body {
-            font-family: 'IBM Plex Sans', sans-serif;
+            font-family: var(--f-body);
             background: var(--paper);
             color: var(--ink-900);
             min-height: 100vh;
+            font-size: 14px;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
         }
+
+        :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
+        /* ============================================================
+           HEADER
+           ============================================================ */
         .masthead {
             background: var(--ink-900);
-            color: white;
+            color: #fff;
             padding: 14px 32px;
             display: flex;
             justify-content: space-between;
@@ -502,7 +506,12 @@ $status = strtolower($batch['status'] ?? 'draft');
             flex-wrap: wrap;
             gap: 10px;
         }
-        .masthead h1 { font-size: 18px; font-weight: 700; }
+        .masthead h1 {
+            font-family: var(--f-cond);
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+        }
         .masthead .role-pill {
             font-size: 10px;
             font-weight: 700;
@@ -510,12 +519,82 @@ $status = strtolower($batch['status'] ?? 'draft');
             border: 1px solid var(--brass);
             padding: 2px 10px;
             text-transform: uppercase;
+            font-family: var(--f-cond);
+            letter-spacing: 0.05em;
         }
-        .stage { max-width: 1100px; margin: 0 auto; padding: 30px 20px; }
+        .masthead .ref {
+            color: var(--ink-300);
+            font-size: 12px;
+            margin-left: 12px;
+            font-family: var(--f-mono);
+        }
+        .masthead .logout-link {
+            color: rgba(255,255,255,0.4);
+            text-decoration: none;
+            margin-left: 16px;
+            font-size: 11px;
+            font-family: var(--f-cond);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .masthead .logout-link:hover {
+            color: var(--brass);
+        }
+
+        /* ============================================================
+           CONTENT
+           ============================================================ */
+        .stage {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 28px 20px;
+        }
+
+        /* ============================================================
+           BACK LINK
+           ============================================================ */
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--ink-500);
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            font-family: var(--f-cond);
+            letter-spacing: 0.02em;
+        }
+        .back-link:hover { color: var(--brass); }
+
+        /* ============================================================
+           STEP INDICATOR
+           ============================================================ */
+        .step-indicator {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 28px;
+            padding: 0 8px;
+        }
+        .step {
+            flex: 1;
+            text-align: center;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--ink-300);
+            text-transform: uppercase;
+            font-family: var(--f-cond);
+            letter-spacing: 0.04em;
+        }
+        .step.active { color: var(--ink-900); }
+        .step.done { color: var(--ledger-green); }
+
+        /* ============================================================
+           CARDS
+           ============================================================ */
         .card {
             background: var(--panel);
             border: 1px solid var(--line);
-            border-radius: 12px;
             padding: 24px;
             margin-bottom: 20px;
         }
@@ -525,108 +604,106 @@ $status = strtolower($batch['status'] ?? 'draft');
             align-items: center;
             margin-bottom: 16px;
             padding-bottom: 12px;
-            border-bottom: 2px solid var(--line);
+            border-bottom: 1px solid var(--line);
             flex-wrap: wrap;
             gap: 10px;
         }
-        .card-title { font-size: 16px; font-weight: 700; text-transform: uppercase; }
-        .workflow-status {
-            padding: 6px 16px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            display: inline-block;
+        .card-title {
+            font-size: 16px;
+            font-weight: 700;
+            font-family: var(--f-cond);
+            letter-spacing: 0.02em;
         }
-        .status-draft { background: var(--line); color: var(--ink-500); }
-        .status-pending_approval { background: #fef3c7; color: #92400e; }
-        .status-approved { background: #dcfce7; color: #166534; }
-        .status-rejected { background: #fbeceb; color: var(--seal-red); }
-        .status-completed { background: #dcfce7; color: #166534; }
-        .status-failed { background: #fbeceb; color: var(--seal-red); }
-        .status-pending_identity_confirmation { background: #dbeafe; color: #1e40af; }
-        .status-partial_success { background: #fef3c7; color: #92400e; }
-        .status-success { background: #dcfce7; color: #166534; }
         .readonly-badge {
             display: inline-block;
             padding: 4px 12px;
             background: #fef3c7;
-            color: #92400e;
-            border-radius: 20px;
-            font-size: 11px;
+            color: var(--amber);
+            font-size: 10px;
             font-weight: 600;
             text-transform: uppercase;
+            font-family: var(--f-cond);
+            letter-spacing: 0.04em;
             border: 1px solid #f59e0b;
         }
-        .btn {
-            padding: 10px 24px;
-            border: none;
-            border-radius: 30px;
-            font-weight: 600;
-            font-size: 13px;
-            cursor: pointer;
-            transition: all 0.15s;
-            font-family: inherit;
-        }
-        .btn-primary { background: var(--ink-900); color: white; }
-        .btn-primary:hover { background: var(--brass); }
-        .btn-success { background: var(--ledger-green); color: white; }
-        .btn-success:hover { background: #1a3d2c; }
-        .btn-danger { background: var(--seal-red); color: white; }
-        .btn-danger:hover { background: #5a1812; }
-        .btn-secondary { background: var(--line); color: var(--ink-700); }
-        .btn-secondary:hover { background: #c0c8c4; }
-        .btn-outline { background: transparent; border: 2px solid var(--line); }
-        .btn-outline:hover { border-color: var(--brass); }
-        .btn-retry { 
-            background: #dbeafe; 
-            color: #1e40af; 
-            padding: 4px 12px;
-            font-size: 11px;
-            border-radius: 20px;
-            border: none;
-            cursor: pointer;
-        }
-        .btn-retry:hover { background: #bfdbfe; }
-        .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
-        table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        th { background: var(--ink-900); color: white; padding: 10px; text-align: left; }
-        td { padding: 10px; border-bottom: 1px solid var(--line); }
-        .actions-bar { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
-        .back-link {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            color: var(--ink-500);
-            text-decoration: none;
-            font-size: 12px;
-            font-weight: 600;
-            margin-bottom: 16px;
-        }
-        .back-link:hover { color: var(--brass); }
-        .step-indicator {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 24px;
-            padding: 0 20px;
-        }
-        .step {
-            flex: 1;
-            text-align: center;
+
+        /* ============================================================
+           STATUS
+           ============================================================ */
+        .workflow-status {
+            padding: 4px 14px;
             font-size: 11px;
             font-weight: 600;
-            color: var(--ink-300);
             text-transform: uppercase;
+            display: inline-block;
+            font-family: var(--f-cond);
+            letter-spacing: 0.04em;
         }
-        .step.active { color: var(--ink-900); }
-        .step.done { color: var(--ledger-green); }
+        .status-draft { background: var(--line); color: var(--ink-500); }
+        .status-pending_approval { background: #fef3c7; color: var(--amber); }
+        .status-approved { background: var(--blue-tint); color: #1e40af; }
+        .status-rejected { background: var(--danger-bg); color: var(--danger); }
+        .status-completed { background: var(--green-tint); color: var(--ledger-green); }
+        .status-failed { background: var(--danger-bg); color: var(--danger); }
+        .status-pending_identity_confirmation { background: var(--blue-tint); color: #1e40af; }
+        .status-partial_success { background: #fef3c7; color: var(--amber); }
+        .status-success { background: var(--green-tint); color: var(--ledger-green); }
+
+        /* ============================================================
+           GRID
+           ============================================================ */
+        .grid-3 {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 16px;
+        }
+
+        /* ============================================================
+           TABLE
+           ============================================================ */
+        .table-responsive { overflow-x: auto; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th {
+            background: var(--paper);
+            color: var(--ink-500);
+            padding: 10px 14px;
+            text-align: left;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+            border-bottom: 2px solid var(--line);
+            font-family: var(--f-cond);
+        }
+        td {
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--line);
+            vertical-align: middle;
+            font-size: 13px;
+        }
+        tr:hover { background: var(--brass-tint); }
+        .table-code {
+            font-family: var(--f-mono);
+            font-size: 11px;
+            background: var(--paper);
+            padding: 2px 6px;
+        }
+
+        /* ============================================================
+           MESSAGES
+           ============================================================ */
         .error {
-            background: #fbeceb;
-            color: var(--seal-red);
-            padding: 12px 16px;
-            border-radius: 8px;
+            background: var(--danger-bg);
+            color: var(--danger);
+            padding: 14px 18px;
             margin-bottom: 16px;
-            border-left: 3px solid var(--seal-red);
+            border-left: 3px solid var(--danger);
+            font-size: 14px;
+            line-height: 1.6;
         }
         .error .failed-item {
             margin-left: 16px;
@@ -634,50 +711,139 @@ $status = strtolower($batch['status'] ?? 'draft');
             font-size: 13px;
         }
         .error .failed-item .error-msg {
-            color: #7A2118;
+            color: var(--danger);
             font-size: 12px;
         }
         .success {
-            background: #dcfce7;
-            color: #166534;
-            padding: 12px 16px;
-            border-radius: 8px;
+            background: var(--green-tint);
+            color: var(--ledger-green);
+            padding: 14px 18px;
             margin-bottom: 16px;
-            border-left: 3px solid #10b981;
+            border-left: 3px solid var(--ledger-green);
+            font-size: 14px;
+            line-height: 1.6;
         }
         .success .failed-item {
             margin-left: 16px;
             margin-top: 4px;
             font-size: 13px;
-            color: #92400e;
+            color: var(--amber);
         }
         .success .failed-item .error-msg {
-            color: #7A2118;
+            color: var(--danger);
             font-size: 12px;
         }
+
+        /* ============================================================
+           BUTTONS
+           ============================================================ */
+        .btn {
+            padding: 8px 22px;
+            border: none;
+            font-weight: 600;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.15s;
+            font-family: var(--f-cond);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .btn:hover { opacity: 0.85; }
+        .btn-primary { background: var(--ink-900); color: #fff; }
+        .btn-primary:hover { background: var(--brass); color: var(--ink-900); }
+        .btn-success { background: var(--ledger-green); color: #fff; }
+        .btn-success:hover { background: #1a3d2c; }
+        .btn-danger { background: var(--seal-red); color: #fff; }
+        .btn-danger:hover { background: #5a1812; }
+        .btn-secondary { background: var(--line); color: var(--ink-700); }
+        .btn-secondary:hover { background: var(--line-strong); }
+        .btn-outline {
+            background: transparent;
+            border: 1px solid var(--line);
+            color: var(--ink-500);
+        }
+        .btn-outline:hover {
+            border-color: var(--brass);
+            color: var(--ink-900);
+            background: var(--brass-tint);
+        }
+        .btn-execute {
+            background: var(--seal-red);
+            color: #fff;
+            font-size: 14px;
+            padding: 10px 32px;
+        }
+        .btn-execute:hover {
+            background: #5a1812;
+        }
+        .btn-retry {
+            background: var(--blue-tint);
+            color: #1e40af;
+            padding: 4px 14px;
+            font-size: 11px;
+            border: none;
+            cursor: pointer;
+            font-family: var(--f-cond);
+            font-weight: 600;
+        }
+        .btn-retry:hover { background: #bfdbfe; }
+
+        /* ============================================================
+           ACTIONS BAR
+           ============================================================ */
+        .actions-bar {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-top: 16px;
+        }
+
+        /* ============================================================
+           REJECTION FORM
+           ============================================================ */
         .rejection-form {
             display: none;
             margin-top: 12px;
             padding: 16px;
-            background: #fbeceb;
-            border-radius: 8px;
+            background: var(--danger-bg);
         }
         .rejection-form.show { display: block; }
         .rejection-form textarea {
             width: 100%;
-            padding: 8px;
+            padding: 10px;
             border: 1px solid var(--line);
-            border-radius: 8px;
             min-height: 80px;
-            font-family: inherit;
+            font-family: var(--f-body);
+            font-size: 13px;
+            background: var(--panel);
         }
+        .rejection-form textarea:focus {
+            outline: 2px solid var(--brass);
+            outline-offset: 1px;
+        }
+        .rejection-form .form-group {
+            margin-bottom: 12px;
+        }
+        .rejection-form .form-group label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            font-family: var(--f-cond);
+            color: var(--ink-500);
+        }
+
+        /* ============================================================
+           DEBUG PANEL
+           ============================================================ */
         .debug-panel {
             background: #1e293b;
             color: #e2e8f0;
             padding: 16px;
-            border-radius: 8px;
             overflow-x: auto;
-            font-family: monospace;
+            font-family: var(--f-mono);
             font-size: 12px;
             white-space: pre-wrap;
             word-break: break-all;
@@ -685,40 +851,80 @@ $status = strtolower($batch['status'] ?? 'draft');
         }
         .debug-panel .label { color: #fbbf24; }
         .debug-panel .value { color: #4ade80; }
-        .status-badge {
-            padding: 4px 10px;
-            border-radius: 12px;
-            font-size: 11px;
-            font-weight: 600;
-        }
-        .status-badge.success { background: #dcfce7; color: #166534; }
-        .status-badge.failed { background: #fbeceb; color: #7A2118; }
-        .status-badge.pending { background: #fef3c7; color: #92400e; }
-        .status-badge.completed { background: #dcfce7; color: #166534; }
-        .status-badge.processing { background: #dbeafe; color: #1e40af; }
+
+        /* ============================================================
+           RESPONSIVE
+           ============================================================ */
         @media (max-width: 768px) {
             .grid-3 { grid-template-columns: 1fr; }
-            .masthead { flex-direction: column; text-align: center; }
+            .masthead { flex-direction: column; text-align: center; padding: 12px 16px; }
             .step-indicator { flex-wrap: wrap; gap: 8px; }
             .step { flex: 0 0 45%; }
+            .stage { padding: 16px; }
+            .card { padding: 16px; }
+            .actions-bar { flex-direction: column; }
+            .btn { width: 100%; text-align: center; }
+        }
+
+        @media (max-width: 480px) {
+            .masthead h1 { font-size: 15px; }
+            .step { font-size: 9px; }
+            table { font-size: 12px; }
+            th, td { padding: 6px 8px; }
+        }
+
+        /* ============================================================
+           DARK MODE SUPPORT
+           ============================================================ */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --paper: #1B2733;
+                --panel: #1B2733;
+                --ink-900: #ECEFF2;
+                --ink-700: #D5DCE0;
+                --ink-500: #93A2AC;
+                --ink-300: #6B7A85;
+                --line: #2C3A45;
+            }
+            .masthead { background: #0d1a26; }
+            .card { background: #1B2733; border-color: #2C3A45; }
+            .card-header { border-color: #2C3A45; }
+            th { background: #1B2733; color: #93A2AC; border-color: #2C3A45; }
+            td { border-color: #2C3A45; }
+            tr:hover { background: #22303A; }
+            .btn-primary { background: #2C3A45; color: #ECEFF2; }
+            .btn-primary:hover { background: var(--brass); color: var(--ink-900); }
+            .btn-outline { border-color: #2C3A45; color: #93A2AC; }
+            .btn-outline:hover { border-color: var(--brass); color: #ECEFF2; background: #22303A; }
+            .status-draft { background: #2C3A45; color: #93A2AC; }
+            .table-code { background: #2C3A45; color: #93A2AC; }
+            .rejection-form textarea { background: #1B2733; border-color: #2C3A45; color: #ECEFF2; }
+            .debug-panel { background: #0d1a26; }
         }
     </style>
 </head>
 <body>
+    <!-- ============================================================ -->
+    <!-- HEADER -->
+    <!-- ============================================================ -->
     <div class="masthead">
-        <h1>VouchMorph · Review Batch</h1>
-        <div>
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+            <h1>VOUCHMORPH · Review Batch</h1>
             <span class="role-pill"><?php echo $roleDisplay; ?></span>
-            <span style="color:var(--ink-300); font-size:12px; margin-left:12px;">
-                <?php echo htmlspecialchars($batch['batch_reference']); ?>
-            </span>
-            <a href="../logout.php" style="color: rgba(255,255,255,0.4); text-decoration: none; margin-left: 16px; font-size: 12px;">Logout</a>
+            <span class="ref"><?php echo htmlspecialchars($batch['batch_reference']); ?></span>
+        </div>
+        <div>
+            <a href="../logout.php" class="logout-link">Sign Out</a>
         </div>
     </div>
 
+    <!-- ============================================================ -->
+    <!-- CONTENT -->
+    <!-- ============================================================ -->
     <div class="stage">
         <a href="add_destinations.php?batch_id=<?php echo $batchId; ?>" class="back-link">← Back to Destinations</a>
 
+        <!-- Step Indicator -->
         <div class="step-indicator">
             <span class="step done">1. Select Source</span>
             <span class="step done">2. Add Destinations</span>
@@ -727,6 +933,7 @@ $status = strtolower($batch['status'] ?? 'draft');
             <span class="step">5. Execute</span>
         </div>
 
+        <!-- Messages -->
         <?php if ($error): ?>
         <div class="error">
             ⚠️ <?php echo $error; ?>
@@ -739,14 +946,14 @@ $status = strtolower($batch['status'] ?? 'draft');
         </div>
         <?php endif; ?>
 
-        <!-- READ ONLY NOTICE -->
+        <!-- Read-Only Notice -->
         <?php if ($isReadOnly && !in_array($user['role'] ?? '', ['owner', 'approver', 'senior_approver'])): ?>
-        <div class="card" style="border-left: 4px solid #f59e0b; background: #fef3c7;">
+        <div class="card" style="border-left: 3px solid #f59e0b; background: #fef3c7;">
             <div style="display:flex; align-items:center; gap:12px;">
-                <span style="font-size:24px;">🔒</span>
+                <span style="font-size:22px;">🔒</span>
                 <div>
-                    <strong style="color:#92400e;">Read-Only Mode</strong>
-                    <p style="color:#78350f; font-size:13px; margin-top:2px;">
+                    <strong style="color:var(--amber); font-family:var(--f-cond);">Read-Only Mode</strong>
+                    <p style="color:var(--ink-500); font-size:13px; margin-top:2px;">
                         This batch was created by <?php echo htmlspecialchars($batch['created_by_name'] ?? 'another user'); ?>. 
                         You can view the details but cannot make changes.
                     </p>
@@ -764,7 +971,7 @@ $status = strtolower($batch['status'] ?? 'draft');
                         <?php echo htmlspecialchars($status); ?>
                     </span>
                     <?php if ($isReadOnly): ?>
-                    <span class="readonly-badge" style="margin-left:8px;">🔒 READ ONLY</span>
+                    <span class="readonly-badge" style="margin-left:8px;">🔒 Read-Only</span>
                     <?php endif; ?>
                 </span>
             </div>
@@ -779,23 +986,28 @@ $status = strtolower($batch['status'] ?? 'draft');
                 <div><strong>Total Destinations:</strong> <?php echo $batch['total_destinations'] ?? 0; ?></div>
                 <div><strong>Created By:</strong> <?php echo htmlspecialchars($batch['created_by_name'] ?? 'N/A'); ?></div>
             </div>
+            
             <?php if ($batch['submitted_at']): ?>
-            <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
+            <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--line);">
                 <strong>Submitted:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['submitted_at'])); ?>
                 by <?php echo htmlspecialchars($batch['submitted_by_name'] ?? 'N/A'); ?>
             </div>
             <?php endif; ?>
+            
             <?php if ($batch['approved_at']): ?>
             <div>
                 <strong>Approved:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['approved_at'])); ?>
                 by <?php echo htmlspecialchars($batch['approved_by_name'] ?? 'N/A'); ?>
             </div>
             <?php endif; ?>
+            
             <?php if ($batch['rejection_reason']): ?>
-            <div style="margin-top:12px; padding:12px; background:#fbeceb; border-radius:8px;">
-                <strong>Rejection Reason:</strong> <?php echo htmlspecialchars($batch['rejection_reason']); ?>
+            <div style="margin-top:14px; padding:14px; background:var(--danger-bg);">
+                <strong style="color:var(--danger);">Rejection Reason:</strong> 
+                <span style="color:var(--danger);"><?php echo htmlspecialchars($batch['rejection_reason']); ?></span>
             </div>
             <?php endif; ?>
+            
             <?php if ($batch['executed_at']): ?>
             <div>
                 <strong>Executed:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['executed_at'])); ?>
@@ -803,13 +1015,12 @@ $status = strtolower($batch['status'] ?? 'draft');
             </div>
             <?php endif; ?>
             
-            <!-- Execution summary if partial or failed -->
             <?php if (in_array($status, ['partial_success', 'failed'])): ?>
-            <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
-                <div style="display:flex; gap:20px; flex-wrap:wrap;">
-                    <div><strong>✅ Successful:</strong> <?php echo $batch['successful_count'] ?? 0; ?></div>
-                    <div><strong>❌ Failed:</strong> <?php echo $batch['failed_count'] ?? 0; ?></div>
-                    <div><strong>⏳ Pending:</strong> <?php echo $batch['pending_count'] ?? 0; ?></div>
+            <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--line);">
+                <div style="display:flex; gap:24px; flex-wrap:wrap; font-size:14px;">
+                    <div><strong style="color:var(--ledger-green);">✅ Successful:</strong> <?php echo $batch['successful_count'] ?? 0; ?></div>
+                    <div><strong style="color:var(--danger);">❌ Failed:</strong> <?php echo $batch['failed_count'] ?? 0; ?></div>
+                    <div><strong style="color:var(--amber);">⏳ Pending:</strong> <?php echo $batch['pending_count'] ?? 0; ?></div>
                 </div>
             </div>
             <?php endif; ?>
@@ -820,7 +1031,7 @@ $status = strtolower($batch['status'] ?? 'draft');
             <div class="card-header">
                 <span class="card-title">👥 Destinations (<?php echo count($destinations); ?>)</span>
                 <?php if (in_array($status, ['partial_success', 'failed'])): ?>
-                <span style="color:#7A2118; font-weight:600;">
+                <span style="color:var(--danger); font-weight:600; font-family:var(--f-cond);">
                     ⚠️ <?php echo $batch['failed_count'] ?? 0; ?> failed
                 </span>
                 <?php endif; ?>
@@ -857,7 +1068,6 @@ $status = strtolower($batch['status'] ?? 'draft');
                                 $statusClass = strtolower($dest['status'] ?? 'PENDING');
                                 $displayStatus = $dest['status'] ?? 'PENDING';
                                 
-                                // Add emoji for better visibility
                                 if (in_array($statusClass, ['completed', 'success'])) {
                                     $displayStatus = '✅ ' . $displayStatus;
                                 } elseif ($statusClass === 'failed') {
@@ -872,14 +1082,12 @@ $status = strtolower($batch['status'] ?? 'draft');
                             </td>
                             <td>
                                 <?php if (!empty($dest['transaction_reference'])): ?>
-                                    <code style="font-size:11px; background:#f1f5f9; padding:2px 6px; border-radius:4px;">
-                                        <?php echo htmlspecialchars($dest['transaction_reference']); ?>
-                                    </code>
+                                    <code class="table-code"><?php echo htmlspecialchars($dest['transaction_reference']); ?></code>
                                 <?php else: ?>
-                                    -
+                                    —
                                 <?php endif; ?>
                             </td>
-                            <td style="color:#7A2118; font-size:12px; max-width:200px;">
+                            <td style="color:var(--danger); font-size:12px; max-width:200px;">
                                 <?php echo htmlspecialchars($dest['error_message'] ?? ''); ?>
                             </td>
                             <?php if ($user['role'] === 'owner' && in_array($status, ['partial_success', 'failed']) && strtolower($dest['status'] ?? '') === 'failed'): ?>
@@ -906,7 +1114,7 @@ $status = strtolower($batch['status'] ?? 'draft');
                 <?php endif; ?>
             </div>
             <div class="actions-bar">
-                <!-- Submit for Approval - Only for OWN batches in DRAFT -->
+                <!-- Submit for Approval -->
                 <?php if ($status === 'draft' && $canSubmit && !$isReadOnly): ?>
                 <form method="POST" style="display:inline;">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
@@ -917,7 +1125,7 @@ $status = strtolower($batch['status'] ?? 'draft');
                 </form>
                 <?php endif; ?>
 
-                <!-- Approve - Only for Approver and Senior Approver -->
+                <!-- Approve / Reject -->
                 <?php if ($status === 'pending_approval' && $canApprove): ?>
                 <form method="POST" style="display:inline;" onsubmit="return confirm('Approve this batch?')">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
@@ -930,47 +1138,45 @@ $status = strtolower($batch['status'] ?? 'draft');
                         <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
                         <input type="hidden" name="action" value="reject">
                         <div class="form-group">
-                            <label style="display:block; margin-bottom:4px; font-weight:600;">Rejection Reason</label>
+                            <label>Rejection Reason</label>
                             <textarea name="rejection_reason" required></textarea>
                         </div>
                         <button type="submit" class="btn btn-danger">Submit Rejection</button>
-                        <button type="button" class="btn btn-secondary" onclick="toggleRejection()">Cancel</button>
+                        <button type="button" class="btn btn-secondary" onclick="toggleRejection()" style="margin-left:8px;">Cancel</button>
                     </form>
                 </div>
                 <?php endif; ?>
 
-                <!-- Execute - Only for Owners -->
+                <!-- Execute - Only Owners -->
                 <?php if ($status === 'approved' && $canExecute): ?>
                 <form method="POST" style="display:inline;" onsubmit="return confirm('⚠️ EXECUTE DISBURSEMENT: This will move real funds. Only proceed if you have verified all approvals. Continue?')">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
                     <input type="hidden" name="action" value="execute">
-                    <button type="submit" class="btn btn-success" style="background: #7A2118; font-size: 15px; padding: 12px 32px;">
+                    <button type="submit" class="btn btn-execute">
                         🚀 EXECUTE DISBURSEMENT
                     </button>
                 </form>
                 <?php endif; ?>
 
-                <!-- Edit Destinations - Only for OWN batches in DRAFT -->
+                <!-- Edit Destinations - Draft only -->
                 <?php if ($status === 'draft' && $canEdit && !$isReadOnly): ?>
                 <a href="add_destinations.php?batch_id=<?php echo $batchId; ?>" class="btn btn-secondary">✏️ Edit Destinations</a>
                 <?php endif; ?>
 
-                <!-- Always show Dashboard and Batches links -->
+                <!-- Navigation -->
                 <a href="../batches/index.php" class="btn btn-outline">📋 All Batches</a>
                 <a href="../index.php" class="btn btn-outline">🏠 Dashboard</a>
             </div>
         </div>
 
-        <!-- ============================================================ -->
-        <!-- DEBUG PANEL - Shows when execution fails -->
-        <!-- ============================================================ -->
+        <!-- Debug Panel -->
         <?php if ($error && strpos($error, 'Execution failed') !== false): ?>
-        <div class="card" style="border-left: 4px solid #f59e0b; background: #fffbeb; margin-top: 20px;">
+        <div class="card" style="border-left: 3px solid #f59e0b; background: #fffbeb; margin-top: 20px;">
             <div class="card-header">
                 <span class="card-title">🔍 Debug Information</span>
-                <span class="readonly-badge">ERROR</span>
+                <span class="readonly-badge" style="background:var(--danger); color:#fff; border-color:var(--danger);">ERROR</span>
             </div>
-            <div style="font-family: monospace; font-size: 12px; background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-all;">
+            <div class="debug-panel">
                 <strong style="color: #fbbf24;">Error:</strong> <?php echo htmlspecialchars($error); ?><br><br>
                 <strong style="color: #fbbf24;">Batch ID:</strong> <?php echo $batchId; ?><br>
                 <strong style="color: #fbbf24;">Batch Reference:</strong> <?php echo htmlspecialchars($batch['batch_reference']); ?><br>
@@ -985,15 +1191,13 @@ $status = strtolower($batch['status'] ?? 'draft');
                 &nbsp;&nbsp;Identifier: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['identifier'] ?? 'NULL'); ?></span><br>
                 &nbsp;&nbsp;Amount: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['amount'] ?? 'NULL'); ?></span><br>
                 &nbsp;&nbsp;Currency: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['currency'] ?? 'NULL'); ?></span><br>
-                &nbsp;&nbsp;Asset Type: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['asset_type'] ?? 'NULL'); ?></span><br>
-                &nbsp;&nbsp;Delivery: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['delivery_method'] ?? 'NULL'); ?></span><br>
                 &nbsp;&nbsp;Identity: <span style="color: <?php echo ($dest['is_identity_recipient'] ?? false) ? '#fbbf24' : '#94a3b8'; ?>;"><?php echo ($dest['is_identity_recipient'] ?? false) ? 'YES' : 'NO'; ?></span><br>
                 &nbsp;&nbsp;Status: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['status'] ?? 'PENDING'); ?></span><br>
                 <?php endforeach; ?>
             </div>
-            <div style="margin-top: 12px;">
-                <p style="color: #64748b; font-size: 13px;">
-                    💡 Check the server logs for the full payload dump. The payload was saved to <code style="background: #1e293b; color: #4ade80; padding: 2px 6px; border-radius: 4px;">/tmp/payload_debug_*.json</code>
+            <div style="margin-top: 14px;">
+                <p style="color: var(--ink-500); font-size: 13px;">
+                    💡 Check the server logs for the full payload dump.
                 </p>
             </div>
         </div>
