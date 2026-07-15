@@ -15,9 +15,7 @@ $templates = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $error = '';
 
-// ============================================================
-// FIX: Check if user exists in organization_users before audit log
-// ============================================================
+// Check if user exists in organization_users before audit log
 $userExistsInOrg = false;
 $userId = $user['id'] ?? $user['user_id'] ?? null;
 
@@ -44,6 +42,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $originalName = $file['name'];
         $tmpPath = $file['tmp_name'];
         $extension = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+        $fileSize = $file['size'];
+        $fileHash = hash_file('sha256', $tmpPath);
 
         $allowed = ['csv', 'xlsx', 'xls', 'json', 'xml'];
         if (!in_array($extension, $allowed)) {
@@ -51,13 +51,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $format = $extension === 'xlsx' ? 'EXCEL' : strtoupper($extension);
             $batchRef = 'BATCH_' . date('Ymd_His') . '_' . strtoupper(substr(uniqid(), -6));
+            $departmentId = getUserDepartmentScope();
+            $programId = $_POST['program_id'] ?? null;
+            $paymentMode = $_POST['payment_mode'] ?? 'BULK';
+            $requiresApproval = isset($_POST['requires_approval']) ? 1 : 0;
+            $requiresDualApproval = isset($_POST['requires_dual_approval']) ? 1 : 0;
+            $scheduledDate = !empty($_POST['scheduled_date']) ? $_POST['scheduled_date'] : null;
 
             $stmt = $db->prepare("
                 INSERT INTO import_batches (
                     organization_id, batch_reference, batch_name, original_filename,
-                    source_format, status, uploaded_by, department_id, total_rows, total_amount, currency
+                    file_size, file_hash, source_format, payment_mode, scheduled_date,
+                    requires_approval, requires_dual_approval, status, execution_mode,
+                    uploaded_by, department_id, program_id, total_rows, valid_rows,
+                    warning_rows, invalid_rows, total_amount, currency, created_at, updated_at
                 ) VALUES (
-                    :org_id, :ref, :name, :filename, :format, 'UPLOADED', :user_id, :dept_id, 0, 0, 'BWP'
+                    :org_id, :ref, :name, :filename,
+                    :file_size, :file_hash, :format, :payment_mode, :scheduled_date,
+                    :requires_approval, :requires_dual_approval, 'UPLOADED', 'MANUAL',
+                    :user_id, :dept_id, :program_id, 0, 0, 0, 0, 0, 'BWP', NOW(), NOW()
                 )
             ");
             $stmt->execute([
@@ -65,9 +77,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':ref' => $batchRef,
                 ':name' => $_POST['batch_name'] ?: $originalName,
                 ':filename' => $originalName,
+                ':file_size' => $fileSize,
+                ':file_hash' => $fileHash,
                 ':format' => $format,
+                ':payment_mode' => $paymentMode,
+                ':scheduled_date' => $scheduledDate,
+                ':requires_approval' => $requiresApproval,
+                ':requires_dual_approval' => $requiresDualApproval,
                 ':user_id' => $userId,
-                ':dept_id' => getUserDepartmentScope(),
+                ':dept_id' => $departmentId,
+                ':program_id' => $programId,
             ]);
             $batchId = $db->lastInsertId();
 
@@ -87,9 +106,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            // ============================================================
-            // FIX: Only write audit log if user exists in organization_users
-            // ============================================================
+            // Only write audit log if user exists in organization_users
             if ($userExistsInOrg) {
                 try {
                     $auditStmt = $db->prepare("
@@ -109,6 +126,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'batch_reference' => $batchRef,
                             'original_filename' => $originalName,
                             'source_format' => $format,
+                            'file_size' => $fileSize,
+                            'payment_mode' => $paymentMode,
                         ]),
                         ':ip' => $_SERVER['REMOTE_ADDR'] ?? null,
                         ':ua' => $_SERVER['HTTP_USER_AGENT'] ?? null,
@@ -166,10 +185,6 @@ if ($departmentId) {
 $roleDisplay = strtoupper($user['role'] ?? 'USER');
 $orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
 $fileRef = 'VM/' . date('Y') . '/' . date('md') . '-' . str_pad((string)($stats['pending'] + 1), 3, '0', STR_PAD_LEFT);
-
-function formatCurrency($amount) {
-    return 'BWP ' . number_format($amount, 2);
-}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -227,17 +242,6 @@ function formatCurrency($amount) {
         .doc-panel::before, .doc-panel::after { content: ""; position: absolute; width: 9px; height: 9px; pointer-events: none; }
         .doc-panel::before { top: -1px; left: -1px; border-top: 2px solid var(--brass); border-left: 2px solid var(--brass); }
         .doc-panel::after  { bottom: -1px; right: -1px; border-bottom: 2px solid var(--brass); border-right: 2px solid var(--brass); }
-
-        .stamp {
-            display: inline-block; padding: 2px 8px; border: 1.5px solid currentColor;
-            transform: rotate(-2.5deg); font-family: var(--f-mono); font-size: 9px; font-weight: 600;
-            letter-spacing: 0.09em; text-transform: uppercase; white-space: nowrap;
-        }
-        .stamp.completed  { color: var(--ledger-green); }
-        .stamp.processing { color: var(--ink-700); }
-        .stamp.pending     { color: var(--amber); }
-        .stamp.failed      { color: var(--seal-red); }
-        .stamp.draft       { color: var(--ink-300); }
 
         .eyebrow { font-family: var(--f-cond); font-weight: 700; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-500); }
         .section-mark { color: var(--brass); font-weight: 700; margin-right: 5px; }
@@ -571,11 +575,6 @@ function formatCurrency($amount) {
             border-bottom-color: var(--brass);
         }
 
-        .empty-state { text-align: center; padding: 30px 12px; color: var(--ink-300); }
-        .empty-state .mark { font-family: var(--f-mono); font-size: 20px; display: block; margin-bottom: 8px; color: var(--brass); }
-        .empty-state p { font-family: var(--f-cond); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
-        .empty-state a { color: var(--ink-700); font-weight: 700; text-decoration: none; border-bottom: 1px solid var(--brass); }
-
         .page-footer { padding: 16px 0 26px; text-align: center; border-top: 1px solid var(--line); width: 100%; }
         .page-footer .notice { font-family: var(--f-cond); font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-300); }
         .page-footer .role-line { font-family: var(--f-mono); font-size: 9px; color: var(--ink-300); margin-top: 4px; text-transform: uppercase; }
@@ -741,6 +740,52 @@ function formatCurrency($amount) {
                     <div class="form-group">
                         <label>Batch Name (optional)</label>
                         <input type="text" name="batch_name" placeholder="e.g., Pensioners April 2026">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Payment Mode</label>
+                        <select name="payment_mode">
+                            <option value="BULK">BULK - Standard Bulk Payment</option>
+                            <option value="SINGLE">SINGLE - Single Payment</option>
+                            <option value="RECURRING">RECURRING - Recurring Payment</option>
+                            <option value="EMERGENCY">EMERGENCY - Emergency Disbursement</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Program (optional)</label>
+                        <select name="program_id">
+                            <option value="">— No program —</option>
+                            <?php
+                            try {
+                                $progStmt = $db->prepare("SELECT id, name FROM programs WHERE organization_id = :org_id ORDER BY name");
+                                $progStmt->execute([':org_id' => $orgId]);
+                                $programs = $progStmt->fetchAll(PDO::FETCH_ASSOC);
+                                foreach ($programs as $program) {
+                                    echo '<option value="' . $program['id'] . '">' . htmlspecialchars($program['name']) . '</option>';
+                                }
+                            } catch (PDOException $e) {
+                                // Silent fail
+                            }
+                            ?>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Scheduled Date (optional)</label>
+                        <input type="date" name="scheduled_date">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Approval Requirements</label>
+                        <div style="display: flex; gap: 20px; margin-top: 6px;">
+                            <label style="font-size: 12px; font-weight: 400; text-transform: none; display: flex; align-items: center; gap: 6px;">
+                                <input type="checkbox" name="requires_approval" value="1" checked> Requires Approval
+                            </label>
+                            <label style="font-size: 12px; font-weight: 400; text-transform: none; display: flex; align-items: center; gap: 6px;">
+                                <input type="checkbox" name="requires_dual_approval" value="1"> Dual Approval Required
+                            </label>
+                        </div>
                     </div>
 
                     <div class="form-group">
