@@ -1060,6 +1060,7 @@ class GenericBankClient implements BankAPIInterface
         
         $payload = $this->addSourceIdentifier($payload);
         
+        // PIN is optional - only include if present
         if (isset($payload['pin']) && !empty($payload['pin'])) {
             $payload['wallet_pin'] = $payload['pin'];
             error_log("[GenericBankClient] PIN found for balance check");
@@ -1389,7 +1390,7 @@ class GenericBankClient implements BankAPIInterface
     /**
      * Create a signed payload with proper certificate and signature.
      * FIXED: Preserves ALL fields, especially voucher_number and voucher_pin.
-     * FIXED: Removed asset_type clobber - keeps original asset_type.
+     * FIXED: PIN is OPTIONAL - never required.
      * FIXED: No hardcoded bank names - uses configuration.
      */
     protected function createSignedPayload(array $payload, string $requester = 'VOUCHMORPH'): array
@@ -1416,7 +1417,8 @@ class GenericBankClient implements BankAPIInterface
         }
         
         // ============================================================
-        // DETECT PIN (but DO NOT change asset_type)
+        // DETECT PIN (OPTIONAL - NEVER REQUIRED)
+        // PIN is only forwarded if present, never required
         // ============================================================
         $pinFound = false;
         
@@ -1476,22 +1478,20 @@ class GenericBankClient implements BankAPIInterface
         }
         
         // ============================================================
-        // REMOVED: The asset_type clobber - no longer setting to 'PIN'
+        // PIN IS OPTIONAL - NEVER CHANGE asset_type based on PIN
         // asset_type is preserved as-is (VOUCHER, ACCOUNT, etc.)
         // ============================================================
+        // REMOVED: The asset_type clobber that set 'PIN'
         // The following lines have been REMOVED:
         // if ($pinFound) {
         //     $payload['asset_type'] = 'PIN';
-        //     error_log("[GenericBankClient] Setting asset_type to PIN");
-        // } else {
-        //     error_log("[GenericBankClient] No PIN found in payload");
         // }
         
         // Log PIN status without modifying asset_type
         if ($pinFound) {
-            error_log("[GenericBankClient] PIN found, but asset_type remains: " . ($payload['asset_type'] ?? 'not set'));
+            error_log("[GenericBankClient] PIN found (optional), asset_type remains: " . ($payload['asset_type'] ?? 'not set'));
         } else {
-            error_log("[GenericBankClient] No PIN found in payload");
+            error_log("[GenericBankClient] No PIN found in payload - using alternative authentication");
         }
         
         // ============================================================
@@ -1512,7 +1512,7 @@ class GenericBankClient implements BankAPIInterface
         if ($voucherPin) {
             $payload['voucher_pin'] = $voucherPin;
             $payload['voucherPin'] = $voucherPin;
-            $payload['voucherPIN'] = $voucherPin;
+            $payload['voucherPIN'] = $voucherPIN;
             error_log("[GenericBankClient] Restored voucher_pin: " . substr($voucherPin, 0, 2) . '****');
         }
         
@@ -1642,8 +1642,7 @@ class GenericBankClient implements BankAPIInterface
         return $this->send('verify_asset', $signedPayload, $signedPayload['access_token'] ?? null);
     }
 
-    public function placeHoldSigned(array $payload): array
-    {
+    public function placeHoldSigned(array $payload): array    {
         error_log("=== GENERIC BANK CLIENT: placeHoldSigned ===");
         $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
         return $this->send('place_hold', $signedPayload, $signedPayload['access_token'] ?? null);
