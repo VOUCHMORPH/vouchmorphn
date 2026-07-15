@@ -1,306 +1,889 @@
 <?php
 /**
- * enterprise/settings/users.php
- *
- * The "system admin creates login profiles" screen -- IT Manager Enterprise,
- * IT Officer Enterprise, and Owner can create/deactivate organization_users
- * accounts here. Enforces the hierarchy from earlier in this conversation:
- * IT Manager can add/remove anyone; IT Officer is restricted to lower-tier
- * operational roles; IT Support gets no add/delete power at all.
- *
- * A person must have a base `users` record (their global VouchMorph
- * identity, phone+PIN login) before being granted an organization role --
- * this screen searches for that record by phone/email first, and only
- * creates a new one if nothing matches.
+ * enterprise/index.php - VouchMorph Enterprise Client Dashboard
+ * 
+ * This is the main dashboard for organizations using VouchMorph.
+ * Different roles see different views based on their permissions.
  */
+
 require_once 'auth.php';
 $user = requireEnterpriseAuth();
 $pdo = getDBConnection();
 $orgId = getOrganizationId();
 $userRole = $user['role'] ?? 'viewer';
-
-// Roles this screen is allowed to touch at all
-$canManage = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise']);
-if (!$canManage) {
-    header('HTTP/1.1 403 Forbidden');
-    die('Only an Owner, IT Manager, or IT Officer can manage user accounts.');
-}
-
-// What roles THIS user is allowed to assign to someone else, per the
-// hierarchy: IT Manager/Owner = everyone. IT Officer = operational roles
-// only, not approver/senior_approver/department_head/owner/it_manager.
-$assignableRoles = in_array($userRole, ['owner', 'it_manager_enterprise'])
-    ? ['owner', 'department_head', 'program_officer', 'approver', 'senior_approver',
-       'beneficiary_registrar', 'auditor', 'viewer',
-       'it_manager_enterprise', 'it_officer_enterprise', 'it_support']
-    : ['program_officer', 'beneficiary_registrar', 'viewer', 'it_support']; // IT Officer's ceiling
-
-$error = '';
-$success = '';
-$csrfToken = generateCsrfToken();
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    requireCsrfToken($_POST['csrf_token'] ?? null);
-    $action = $_POST['action'] ?? '';
-
-    if ($action === 'create_user') {
-        $phone = trim($_POST['phone'] ?? '');
-        $email = trim($_POST['email'] ?? '');
-        $fullName = trim($_POST['full_name'] ?? '');
-        $roleToAssign = $_POST['role'] ?? '';
-        $deptId = $_POST['department_id'] ?: null;
-
-        if (!in_array($roleToAssign, $assignableRoles)) {
-            $error = 'You are not permitted to assign that role.';
-        } elseif (empty($phone) || empty($fullName)) {
-            $error = 'Phone number and full name are required.';
-        } else {
-            try {
-                $pdo->beginTransaction();
-
-                // Does a global users record already exist for this phone?
-                $stmt = $pdo->prepare("SELECT user_id FROM users WHERE phone = :phone OR (email = :email AND :email != '')");
-                $stmt->execute([':phone' => $phone, ':email' => $email]);
-                $existingUser = $stmt->fetch(PDO::FETCH_ASSOC);
-
-                if ($existingUser) {
-                    $targetUserId = $existingUser['user_id'];
-                } else {
-                    // Create a base identity with a random PIN -- they'll
-                    // need to reset it via forgot.php on first login, since
-                    // we don't want to email/SMS a real PIN in plaintext.
-                    $tempPin = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-                    $stmt = $pdo->prepare("
-                        INSERT INTO users (username, email, phone, password_hash, full_name, verified, created_at, updated_at)
-                        VALUES (:username, :email, :phone, :hash, :name, true, NOW(), NOW())
-                        RETURNING user_id
-                    ");
-                    $stmt->execute([
-                        ':username' => $phone,
-                        ':email' => $email ?: null,
-                        ':phone' => $phone,
-                        ':hash' => password_hash($tempPin, PASSWORD_DEFAULT),
-                        ':name' => $fullName,
-                    ]);
-                    $targetUserId = $stmt->fetchColumn();
-                    $success = "New account created. Temporary PIN: {$tempPin} -- share this securely, it will not be shown again.";
-                }
-
-                // Already an org member?
-                $stmt = $pdo->prepare("SELECT id FROM organization_users WHERE organization_id = :org_id AND user_id = :user_id");
-                $stmt->execute([':org_id' => $orgId, ':user_id' => $targetUserId]);
-                if ($stmt->fetch()) {
-                    $pdo->rollBack();
-                    $error = 'This person is already a member of your organization. Edit their existing role instead of creating a new one.';
-                } else {
-                    $stmt = $pdo->prepare("
-                        INSERT INTO organization_users (organization_id, user_id, role, department_id, is_active, invited_by, invited_at, created_at, updated_at)
-                        VALUES (:org_id, :user_id, :role, :dept_id, true, :invited_by, NOW(), NOW(), NOW())
-                    ");
-                    $stmt->execute([
-                        ':org_id' => $orgId,
-                        ':user_id' => $targetUserId,
-                        ':role' => $roleToAssign,
-                        ':dept_id' => $deptId,
-                        ':invited_by' => $user['id'] ?? $user['user_id'] ?? null,
-                    ]);
-
-                    try {
-                        $auditStmt = $pdo->prepare("
-                            INSERT INTO organization_audit_logs (organization_id, user_id, action, entity_type, entity_id, new_values, ip_address, user_agent, created_at)
-                            VALUES (:org_id, :actor_id, 'USER_CREATED', 'organization_users', :entity_id, :new_values, :ip, :ua, NOW())
-                        ");
-                        $auditStmt->execute([
-                            ':org_id' => $orgId,
-                            ':actor_id' => $user['id'] ?? $user['user_id'] ?? null,
-                            ':entity_id' => $targetUserId,
-                            ':new_values' => json_encode(['role' => $roleToAssign, 'department_id' => $deptId, 'full_name' => $fullName]),
-                            ':ip' => $_SERVER['REMOTE_ADDR'] ?? null,
-                            ':ua' => $_SERVER['HTTP_USER_AGENT'] ?? null,
-                        ]);
-                    } catch (PDOException $e) {
-                        error_log("[users.php] Audit log failed: " . $e->getMessage());
-                    }
-
-                    $pdo->commit();
-                    if (!$success) $success = 'User added to your organization.';
-                }
-            } catch (PDOException $e) {
-                $pdo->rollBack();
-                error_log("[users.php] create_user failed: " . $e->getMessage());
-                $error = 'Could not create this user. Please check the details and try again.';
-            }
-        }
-    } elseif ($action === 'deactivate_user') {
-        $targetOrgUserId = (int)($_POST['org_user_id'] ?? 0);
-
-        // Fetch target's current role to enforce the hierarchy ceiling
-        $stmt = $pdo->prepare("SELECT role FROM organization_users WHERE id = :id AND organization_id = :org_id");
-        $stmt->execute([':id' => $targetOrgUserId, ':org_id' => $orgId]);
-        $target = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if (!$target) {
-            $error = 'User not found.';
-        } elseif (!in_array($target['role'], $assignableRoles)) {
-            // IT Officer trying to deactivate an approver/owner/etc: denied.
-            $error = 'You do not have permission to remove a user with that role.';
-        } else {
-            $stmt = $pdo->prepare("UPDATE organization_users SET is_active = false, updated_at = NOW() WHERE id = :id");
-            $stmt->execute([':id' => $targetOrgUserId]);
-
-            try {
-                $auditStmt = $pdo->prepare("
-                    INSERT INTO organization_audit_logs (organization_id, user_id, action, entity_type, entity_id, old_values, created_at)
-                    VALUES (:org_id, :actor_id, 'USER_DEACTIVATED', 'organization_users', :entity_id, :old_values, NOW())
-                ");
-                $auditStmt->execute([
-                    ':org_id' => $orgId,
-                    ':actor_id' => $user['id'] ?? $user['user_id'] ?? null,
-                    ':entity_id' => $targetOrgUserId,
-                    ':old_values' => json_encode(['role' => $target['role']]),
-                ]);
-            } catch (PDOException $e) {
-                error_log("[users.php] Audit log failed: " . $e->getMessage());
-            }
-            $success = 'User deactivated.';
-        }
-    }
-}
-
-$stmt = $pdo->prepare("
-    SELECT ou.id, ou.role, ou.is_active, ou.department_id, ou.created_at,
-           u.full_name, u.phone, u.email, d.name as department_name
-    FROM organization_users ou
-    JOIN users u ON ou.user_id = u.user_id
-    LEFT JOIN departments d ON ou.department_id = d.id
-    WHERE ou.organization_id = :org_id
-    ORDER BY ou.is_active DESC, ou.role, u.full_name
-");
-$stmt->execute([':org_id' => $orgId]);
-$orgUsers = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-$stmt = $pdo->prepare("SELECT id, name FROM departments WHERE organization_id = :org_id ORDER BY name");
-$stmt->execute([':org_id' => $orgId]);
-$departments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$userId = $user['user_id'] ?? $user['id'] ?? null;
+$fullName = $user['full_name'] ?? $user['username'] ?? 'User';
+$orgName = $user['organization_name'] ?? 'Organization';
+$departmentId = $user['department_id'] ?? null;
 
 // ============================================================
-// HELPER: Safe htmlspecialchars wrapper for PHP 8.1+
+// ROLE PERMISSIONS
+// ============================================================
+$canCreate = in_array($userRole, ['owner', 'it_manager_enterprise', 'program_officer', 'department_head']);
+$canApprove = in_array($userRole, ['owner', 'approver', 'senior_approver', 'it_manager_enterprise']);
+$canManageUsers = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise']);
+$canViewAll = in_array($userRole, ['owner', 'auditor', 'it_manager_enterprise', 'it_officer_enterprise']);
+$isReadOnly = in_array($userRole, ['auditor', 'viewer', 'it_support']);
+
+// ============================================================
+// FETCH DASHBOARD DATA
+// ============================================================
+
+// Organization details
+$orgData = [];
+try {
+    $stmt = $pdo->prepare("
+        SELECT id, name, tax_id, registration_number, country_code, 
+               default_currency, status, logo_url, created_at
+        FROM organizations 
+        WHERE id = :org_id
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $orgData = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+} catch (PDOException $e) {
+    error_log("[ENTERPRISE DASHBOARD] Org fetch error: " . $e->getMessage());
+}
+
+// Dashboard metrics
+$metrics = [];
+try {
+    // Total batches
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) as total FROM disbursement_batches 
+        WHERE organization_id = :org_id
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $metrics['total_batches'] = (int)$stmt->fetchColumn();
+
+    // Batches by status
+    $stmt = $pdo->prepare("
+        SELECT status, COUNT(*) as count 
+        FROM disbursement_batches 
+        WHERE organization_id = :org_id 
+        GROUP BY status
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $batchStatus = [];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $batchStatus[strtolower($row['status'])] = $row['count'];
+    }
+    $metrics['pending_batches'] = $batchStatus['pending'] ?? $batchStatus['pending_approval'] ?? 0;
+    $metrics['approved_batches'] = $batchStatus['approved'] ?? 0;
+    $metrics['executed_batches'] = $batchStatus['executed'] ?? $batchStatus['completed'] ?? 0;
+    
+    // Total disbursed amount
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(total_amount), 0) as total 
+        FROM disbursement_batches 
+        WHERE organization_id = :org_id 
+        AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $metrics['total_disbursed'] = (float)$stmt->fetchColumn();
+
+    // Total beneficiaries
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) as total 
+        FROM organization_beneficiaries 
+        WHERE organization_id = :org_id AND is_active = true
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $metrics['total_beneficiaries'] = (int)$stmt->fetchColumn();
+
+    // Total users
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) as total 
+        FROM organization_users 
+        WHERE organization_id = :org_id AND is_active = true
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $metrics['total_users'] = (int)$stmt->fetchColumn();
+
+    // Recent batches (last 30 days)
+    $stmt = $pdo->prepare("
+        SELECT 
+            id, batch_reference, batch_name, source_institution,
+            total_amount, total_destinations, status, created_at,
+            updated_at
+        FROM disbursement_batches 
+        WHERE organization_id = :org_id 
+        AND created_at >= NOW() - INTERVAL '30 days'
+        ORDER BY created_at DESC 
+        LIMIT 10
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $recentBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // If department head, filter by department
+    if ($userRole === 'department_head' && $departmentId) {
+        $stmt = $pdo->prepare("
+            SELECT COUNT(*) as total 
+            FROM disbursement_batches 
+            WHERE organization_id = :org_id 
+            AND department_id = :dept_id
+        ");
+        $stmt->execute([':org_id' => $orgId, ':dept_id' => $departmentId]);
+        $metrics['department_batches'] = (int)$stmt->fetchColumn();
+        
+        // Department total disbursed
+        $stmt = $pdo->prepare("
+            SELECT COALESCE(SUM(total_amount), 0) as total 
+            FROM disbursement_batches 
+            WHERE organization_id = :org_id 
+            AND department_id = :dept_id
+            AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')
+        ");
+        $stmt->execute([':org_id' => $orgId, ':dept_id' => $departmentId]);
+        $metrics['department_disbursed'] = (float)$stmt->fetchColumn();
+    }
+
+    // Pending approvals (for approvers)
+    if ($canApprove) {
+        $stmt = $pdo->prepare("
+            SELECT COUNT(*) as total 
+            FROM disbursement_batches 
+            WHERE organization_id = :org_id 
+            AND status IN ('pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL')
+        ");
+        $stmt->execute([':org_id' => $orgId]);
+        $metrics['pending_approvals'] = (int)$stmt->fetchColumn();
+    }
+
+} catch (PDOException $e) {
+    error_log("[ENTERPRISE DASHBOARD] Metrics error: " . $e->getMessage());
+    $metrics = array_fill_keys([
+        'total_batches', 'pending_batches', 'approved_batches', 
+        'executed_batches', 'total_disbursed', 'total_beneficiaries',
+        'total_users'
+    ], 0);
+    $recentBatches = [];
+}
+
+// ============================================================
+// HELPER FUNCTIONS
 // ============================================================
 function safeHtml($value) {
     return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+
+function formatCurrency($amount, $currency = 'BWP') {
+    return number_format((float)$amount, 2) . ' ' . $currency;
+}
+
+function getStatusClass($status) {
+    $status = strtolower($status);
+    return match($status) {
+        'draft' => 'draft',
+        'pending', 'pending_approval' => 'pending',
+        'approved' => 'approved',
+        'completed', 'executed' => 'completed',
+        'rejected' => 'rejected',
+        'cancelled' => 'rejected',
+        default => 'draft'
+    };
+}
+
+function getStatusLabel($status) {
+    $status = strtolower($status);
+    return match($status) {
+        'draft' => '📝 Draft',
+        'pending', 'pending_approval' => '⏳ Pending',
+        'approved' => '✅ Approved',
+        'completed' => '✔️ Completed',
+        'executed' => '🚀 Executed',
+        'rejected' => '❌ Rejected',
+        'cancelled' => '🚫 Cancelled',
+        default => ucfirst($status)
+    };
+}
+
+function getRoleLabel($role) {
+    $labels = [
+        'owner' => 'Owner',
+        'it_manager_enterprise' => 'IT Manager',
+        'it_officer_enterprise' => 'IT Officer',
+        'it_support' => 'IT Support',
+        'department_head' => 'Department Head',
+        'program_officer' => 'Program Officer',
+        'approver' => 'Approver',
+        'senior_approver' => 'Senior Approver',
+        'beneficiary_registrar' => 'Beneficiary Registrar',
+        'auditor' => 'Auditor',
+        'viewer' => 'Viewer'
+    ];
+    return $labels[$role] ?? ucfirst(str_replace('_', ' ', $role));
 }
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Manage Users — VouchMorph Enterprise</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<style>
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:'Inter',sans-serif; background:#f1f5f9; color:#0f172a; padding:32px; }
-.wrap { max-width:1100px; margin:0 auto; }
-h1 { font-size:22px; font-weight:700; margin-bottom:6px; }
-.sub { color:#64748b; font-size:13.5px; margin-bottom:24px; }
-.card { background:#fff; border:1px solid #e2e8f0; border-radius:14px; padding:22px; margin-bottom:24px; }
-.card h3 { font-size:15px; font-weight:700; margin-bottom:16px; }
-.field-row { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
-label { display:block; font-size:12px; font-weight:600; color:#475569; margin-bottom:5px; text-transform:uppercase; letter-spacing:.4px; }
-input, select { width:100%; padding:9px 12px; border:1px solid #cbd5e1; border-radius:8px; font-size:13.5px; }
-.btn { background:#0f172a; color:#fff; border:none; padding:11px 24px; border-radius:30px; font-weight:600; font-size:13.5px; cursor:pointer; }
-.btn-danger { background:#fee2e2; color:#991b1b; border:none; padding:6px 14px; border-radius:20px; font-weight:600; font-size:11.5px; cursor:pointer; }
-.error { background:#fef2f2; color:#dc2626; padding:12px 16px; border-radius:10px; margin-bottom:20px; font-size:13.5px; }
-.success { background:#f0fdf4; color:#166534; padding:12px 16px; border-radius:10px; margin-bottom:20px; font-size:13.5px; }
-table { width:100%; border-collapse:collapse; font-size:13px; }
-th,td { padding:11px 14px; text-align:left; border-bottom:1px solid #e2e8f0; }
-th { background:#f8fafc; font-weight:700; font-size:10.5px; text-transform:uppercase; color:#64748b; letter-spacing:.5px; }
-.role-pill { font-size:11px; font-weight:700; padding:3px 10px; border-radius:20px; background:#f1f5f9; text-transform:uppercase; }
-.inactive { opacity:.5; }
-.hierarchy-note { background:#eff6ff; border-left:3px solid #3b82f6; padding:12px 16px; border-radius:8px; font-size:12.5px; color:#1e3a8a; margin-bottom:20px; }
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VOUCHMORPH · Enterprise Dashboard · <?php echo safeHtml($orgName); ?></title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #f1f5f9;
+            color: #0f172a;
+            min-height: 100vh;
+        }
+
+        /* ===== HEADER ===== */
+        .header {
+            background: #0f172a;
+            color: #fff;
+            padding: 16px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            border-bottom: 3px solid #8A6D3B;
+        }
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .logo {
+            font-weight: 700;
+            font-size: 18px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .logo span { color: #8A6D3B; }
+        .org-name {
+            font-size: 13px;
+            color: #94a3b8;
+            padding-left: 16px;
+            border-left: 1px solid rgba(255,255,255,0.1);
+        }
+        .role-badge {
+            padding: 4px 14px;
+            background: #8A6D3B;
+            color: #0f172a;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-radius: 20px;
+        }
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .user-details {
+            text-align: right;
+        }
+        .user-name {
+            font-weight: 600;
+            color: #8A6D3B;
+            font-size: 13px;
+        }
+        .user-role {
+            font-size: 10px;
+            color: #94a3b8;
+            text-transform: uppercase;
+        }
+        .logout-btn {
+            padding: 6px 16px;
+            border: 2px solid #8A6D3B;
+            color: #8A6D3B;
+            text-decoration: none;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            border-radius: 20px;
+            transition: all 0.15s;
+        }
+        .logout-btn:hover {
+            background: #8A6D3B;
+            color: #0f172a;
+        }
+
+        /* ===== NAVIGATION ===== */
+        .nav {
+            background: #fff;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 0 32px;
+            display: flex;
+            gap: 24px;
+            flex-wrap: wrap;
+            align-items: center;
+            overflow-x: auto;
+        }
+        .nav-item {
+            padding: 12px 0;
+            color: #64748b;
+            text-decoration: none;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        .nav-item:hover { color: #0f172a; }
+        .nav-item.active {
+            color: #0f172a;
+            border-bottom-color: #8A6D3B;
+        }
+        .nav-item.primary { color: #0f172a; }
+        .nav-item.primary:hover { color: #8A6D3B; }
+        .nav-item.primary.active {
+            color: #8A6D3B;
+            border-bottom-color: #8A6D3B;
+        }
+        .nav-item .badge {
+            background: #ef4444;
+            color: #fff;
+            font-size: 9px;
+            padding: 1px 8px;
+            border-radius: 12px;
+            margin-left: 4px;
+        }
+
+        /* ===== CONTENT ===== */
+        .content {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 24px 32px;
+        }
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .page-header h1 {
+            font-size: 24px;
+            font-weight: 700;
+        }
+        .page-header .sub {
+            color: #64748b;
+            font-size: 14px;
+        }
+        .page-header .timestamp {
+            color: #94a3b8;
+            font-size: 12px;
+        }
+
+        /* ===== METRICS ===== */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .metric-card {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 16px 20px;
+            transition: border-color 0.15s;
+        }
+        .metric-card:hover {
+            border-color: #8A6D3B;
+        }
+        .metric-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            color: #94a3b8;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #0f172a;
+            margin-top: 4px;
+        }
+        .metric-value .currency {
+            font-size: 14px;
+            color: #94a3b8;
+            font-weight: 400;
+        }
+        .metric-sub {
+            font-size: 11px;
+            color: #94a3b8;
+            margin-top: 2px;
+        }
+
+        /* ===== CARDS ===== */
+        .card {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin-bottom: 16px;
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #e2e8f0;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .card-title {
+            font-size: 15px;
+            font-weight: 700;
+        }
+        .card-badge {
+            padding: 2px 12px;
+            background: #0f172a;
+            color: #fff;
+            font-size: 10px;
+            font-weight: 600;
+            border-radius: 20px;
+        }
+        .card-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        /* ===== TABLES ===== */
+        .table-responsive { overflow-x: auto; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th {
+            background: #f8fafc;
+            color: #64748b;
+            padding: 10px 14px;
+            text-align: left;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+            border-bottom: 2px solid #e2e8f0;
+        }
+        td {
+            padding: 10px 14px;
+            border-bottom: 1px solid #e2e8f0;
+            vertical-align: middle;
+        }
+        tr:hover { background: #f8fafc; }
+
+        /* ===== STATUS BADGES ===== */
+        .status {
+            display: inline-block;
+            padding: 2px 10px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            border-radius: 20px;
+            letter-spacing: 0.04em;
+        }
+        .status-draft { background: #f1f5f9; color: #64748b; }
+        .status-pending { background: #fef3c7; color: #92400e; }
+        .status-approved { background: #dcfce7; color: #166534; }
+        .status-completed { background: #dcfce7; color: #166534; }
+        .status-rejected { background: #fee2e2; color: #991b1b; }
+
+        /* ===== BUTTONS ===== */
+        .btn {
+            padding: 6px 16px;
+            font-size: 12px;
+            font-weight: 600;
+            border-radius: 20px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.15s;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn-primary {
+            background: #0f172a;
+            color: #fff;
+        }
+        .btn-primary:hover {
+            background: #8A6D3B;
+        }
+        .btn-success {
+            background: #166534;
+            color: #fff;
+        }
+        .btn-success:hover {
+            background: #14532d;
+        }
+        .btn-outline {
+            background: transparent;
+            border: 1px solid #e2e8f0;
+            color: #64748b;
+        }
+        .btn-outline:hover {
+            border-color: #0f172a;
+            color: #0f172a;
+        }
+        .btn-sm { padding: 4px 12px; font-size: 11px; }
+
+        /* ===== QUICK ACTIONS ===== */
+        .quick-actions {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .quick-action {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 16px 20px;
+            text-decoration: none;
+            color: #0f172a;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .quick-action:hover {
+            border-color: #8A6D3B;
+            background: #f8fafc;
+        }
+        .quick-action .icon { font-size: 24px; }
+        .quick-action .label {
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .quick-action .desc {
+            font-size: 11px;
+            color: #94a3b8;
+        }
+
+        /* ===== EMPTY STATE ===== */
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #94a3b8;
+        }
+        .empty-state .icon { font-size: 40px; margin-bottom: 8px; }
+        .empty-state p { font-size: 14px; }
+
+        /* ===== FOOTER ===== */
+        .footer {
+            background: #0f172a;
+            color: #94a3b8;
+            padding: 16px 32px;
+            text-align: center;
+            font-size: 11px;
+            border-top: 2px solid #8A6D3B;
+            margin-top: 24px;
+        }
+
+        /* ===== RESPONSIVE ===== */
+        @media (max-width: 768px) {
+            .header { padding: 12px 16px; }
+            .nav { padding: 0 16px; gap: 16px; }
+            .content { padding: 16px; }
+            .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+            .quick-actions { grid-template-columns: 1fr; }
+        }
+    </style>
 </head>
 <body>
-<div class="wrap">
-    <h1>Manage Users</h1>
-    <p class="sub">Signed in as <?php echo safeHtml(strtoupper($userRole)); ?> — you can assign: <?php echo safeHtml(implode(', ', $assignableRoles)); ?></p>
-
-    <?php if ($error): ?><div class="error">⚠️ <?php echo safeHtml($error); ?></div><?php endif; ?>
-    <?php if ($success): ?><div class="success">✓ <?php echo safeHtml($success); ?></div><?php endif; ?>
-
-    <div class="hierarchy-note">
-        <strong>Hierarchy in effect:</strong> IT Manager Enterprise and Owner can add or remove anyone.
-        IT Officer Enterprise can only add/remove Program Officers, Beneficiary Registrars, Viewers, and IT Support —
-        not Approvers, Senior Approvers, Department Heads, Owners, or other IT Managers.
-    </div>
-
-    <div class="card">
-        <h3>Add a user</h3>
-        <form method="POST">
-            <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
-            <input type="hidden" name="action" value="create_user">
-            <div class="field-row">
-                <div><label>Full Name</label><input type="text" name="full_name" required></div>
-                <div><label>Phone Number</label><input type="text" name="phone" required placeholder="71234567"></div>
+    <!-- ============================================================ -->
+    <!-- HEADER -->
+    <!-- ============================================================ -->
+    <header class="header">
+        <div class="header-left">
+            <div class="logo">VOUCHMORPH <span>·</span> <?php echo safeHtml($orgName); ?></div>
+            <span class="role-badge"><?php echo safeHtml(getRoleLabel($userRole)); ?></span>
+        </div>
+        <div class="user-info">
+            <div class="user-details">
+                <div class="user-name"><?php echo safeHtml($fullName); ?></div>
+                <div class="user-role"><?php echo safeHtml(getRoleLabel($userRole)); ?> · <?php echo safeHtml($orgName); ?></div>
             </div>
-            <div class="field-row">
-                <div><label>Email (optional)</label><input type="email" name="email"></div>
+            <a href="logout.php" class="logout-btn">Sign Out</a>
+        </div>
+    </header>
+
+    <!-- ============================================================ -->
+    <!-- NAVIGATION -->
+    <!-- ============================================================ -->
+    <nav class="nav">
+        <a href="index.php" class="nav-item active">📊 Dashboard</a>
+        
+        <?php if ($canCreate): ?>
+        <a href="imports/source_input.php" class="nav-item primary">➕ New Disbursement</a>
+        <?php endif; ?>
+        
+        <a href="imports/review_batch.php?status=all" class="nav-item">
+            📋 Batches
+            <?php if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0): ?>
+            <span class="badge"><?php echo $metrics['pending_approvals']; ?></span>
+            <?php endif; ?>
+        </a>
+        
+        <?php if ($canApprove): ?>
+        <a href="imports/review_batch.php?status=pending_approval" class="nav-item">⏳ Pending Approvals</a>
+        <?php endif; ?>
+        
+        <a href="beneficiaries.php" class="nav-item">👥 Beneficiaries</a>
+        
+        <?php if ($canCreate || $userRole === 'beneficiary_registrar'): ?>
+        <a href="imports/add_destinations.php" class="nav-item">📝 Add Destinations</a>
+        <?php endif; ?>
+        
+        <a href="reports.php" class="nav-item">📈 Reports</a>
+        
+        <?php if ($canManageUsers): ?>
+        <a href="settings/users.php" class="nav-item">👤 Manage Users</a>
+        <?php endif; ?>
+        
+        <a href="settings.php" class="nav-item">⚙️ Settings</a>
+    </nav>
+
+    <!-- ============================================================ -->
+    <!-- CONTENT -->
+    <!-- ============================================================ -->
+    <main class="content">
+        <!-- Page Header -->
+        <div class="page-header">
+            <div>
+                <h1>Dashboard</h1>
+                <div class="sub">Welcome back, <?php echo safeHtml($fullName); ?></div>
+            </div>
+            <div class="timestamp"><?php echo date('l, F j, Y · H:i'); ?></div>
+        </div>
+
+        <?php if ($canCreate && empty($isReadOnly)): ?>
+        <!-- Quick Actions -->
+        <div class="quick-actions">
+            <a href="imports/source_input.php" class="quick-action">
+                <span class="icon">💰</span>
                 <div>
-                    <label>Role</label>
-                    <select name="role" required>
-                        <?php foreach ($assignableRoles as $r): ?>
-                        <option value="<?php echo safeHtml($r); ?>"><?php echo safeHtml(ucwords(str_replace('_', ' ', $r))); ?></option>
-                        <?php endforeach; ?>
-                    </select>
+                    <div class="label">New Disbursement</div>
+                    <div class="desc">Create a payment batch</div>
+                </div>
+            </a>
+            <a href="imports/add_destinations.php" class="quick-action">
+                <span class="icon">👤</span>
+                <div>
+                    <div class="label">Add Beneficiaries</div>
+                    <div class="desc">Import or add recipients</div>
+                </div>
+            </a>
+            <a href="beneficiaries.php" class="quick-action">
+                <span class="icon">📋</span>
+                <div>
+                    <div class="label">Manage Beneficiaries</div>
+                    <div class="desc">View and update records</div>
+                </div>
+            </a>
+            <?php if ($canManageUsers): ?>
+            <a href="settings/users.php" class="quick-action">
+                <span class="icon">👥</span>
+                <div>
+                    <div class="label">Manage Users</div>
+                    <div class="desc">Add or remove team members</div>
+                </div>
+            </a>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
+
+        <!-- Metrics -->
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">Total Disbursed</div>
+                <div class="metric-value">
+                    <?php echo formatCurrency($metrics['total_disbursed'] ?? 0); ?>
+                </div>
+                <div class="metric-sub">Lifetime disbursements</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Total Batches</div>
+                <div class="metric-value"><?php echo number_format($metrics['total_batches'] ?? 0); ?></div>
+                <div class="metric-sub">All time</div>
+            </div>
+            <?php if (($metrics['pending_batches'] ?? 0) > 0): ?>
+            <div class="metric-card" style="border-color: #92400e;">
+                <div class="metric-label">Pending Batches</div>
+                <div class="metric-value" style="color: #92400e;"><?php echo number_format($metrics['pending_batches'] ?? 0); ?></div>
+                <div class="metric-sub">Waiting for approval</div>
+            </div>
+            <?php endif; ?>
+            <?php if (($metrics['approved_batches'] ?? 0) > 0): ?>
+            <div class="metric-card" style="border-color: #166534;">
+                <div class="metric-label">Approved</div>
+                <div class="metric-value" style="color: #166534;"><?php echo number_format($metrics['approved_batches'] ?? 0); ?></div>
+                <div class="metric-sub">Ready for execution</div>
+            </div>
+            <?php endif; ?>
+            <div class="metric-card">
+                <div class="metric-label">Beneficiaries</div>
+                <div class="metric-value"><?php echo number_format($metrics['total_beneficiaries'] ?? 0); ?></div>
+                <div class="metric-sub">Active recipients</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Team Members</div>
+                <div class="metric-value"><?php echo number_format($metrics['total_users'] ?? 0); ?></div>
+                <div class="metric-sub">Active users</div>
+            </div>
+            <?php if ($userRole === 'department_head' && isset($metrics['department_batches'])): ?>
+            <div class="metric-card" style="border-color: #3b82f6;">
+                <div class="metric-label">My Department</div>
+                <div class="metric-value" style="color: #3b82f6;"><?php echo number_format($metrics['department_batches']); ?></div>
+                <div class="metric-sub">Batches · <?php echo formatCurrency($metrics['department_disbursed'] ?? 0); ?></div>
+            </div>
+            <?php endif; ?>
+            <?php if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0): ?>
+            <div class="metric-card" style="border-color: #ef4444; background: #fef2f2;">
+                <div class="metric-label">Pending Approvals</div>
+                <div class="metric-value" style="color: #dc2626;"><?php echo number_format($metrics['pending_approvals'] ?? 0); ?></div>
+                <div class="metric-sub">Needs your attention</div>
+            </div>
+            <?php endif; ?>
+        </div>
+
+        <!-- Recent Batches -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">📋 Recent Batches</span>
+                <span class="card-badge"><?php echo count($recentBatches); ?> RECENT</span>
+                <div class="card-actions">
+                    <a href="imports/review_batch.php?status=all" class="btn btn-outline btn-sm">View All</a>
+                    <?php if ($canCreate): ?>
+                    <a href="imports/source_input.php" class="btn btn-primary btn-sm">➕ New Batch</a>
+                    <?php endif; ?>
                 </div>
             </div>
-            <div class="field-row" style="grid-template-columns:1fr;">
-                <div>
-                    <label>Department (leave blank for organization-wide roles like Owner/Auditor)</label>
-                    <select name="department_id">
-                        <option value="">— None —</option>
-                        <?php foreach ($departments as $d): ?>
-                        <option value="<?php echo $d['id']; ?>"><?php echo safeHtml($d['name']); ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
+            <?php if (empty($recentBatches)): ?>
+            <div class="empty-state">
+                <div class="icon">📭</div>
+                <p>No batches found. Create your first disbursement batch to get started.</p>
+                <?php if ($canCreate): ?>
+                <a href="imports/source_input.php" class="btn btn-primary" style="margin-top:12px;">Create First Batch</a>
+                <?php endif; ?>
             </div>
-            <button type="submit" class="btn">Create Login</button>
-        </form>
-    </div>
+            <?php else: ?>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Reference</th>
+                            <th>Name</th>
+                            <th>Source</th>
+                            <th>Amount</th>
+                            <th>Destinations</th>
+                            <th>Status</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($recentBatches as $batch): ?>
+                        <tr>
+                            <td>
+                                <strong><?php echo safeHtml($batch['batch_reference']); ?></strong>
+                            </td>
+                            <td><?php echo safeHtml($batch['batch_name'] ?? '—'); ?></td>
+                            <td><?php echo safeHtml($batch['source_institution'] ?? '—'); ?></td>
+                            <td><strong><?php echo formatCurrency($batch['total_amount'] ?? 0); ?></strong></td>
+                            <td><?php echo number_format($batch['total_destinations'] ?? 0); ?></td>
+                            <td>
+                                <span class="status status-<?php echo getStatusClass($batch['status']); ?>">
+                                    <?php echo getStatusLabel($batch['status']); ?>
+                                </span>
+                            </td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($batch['created_at'] ?? 'now')); ?></td>
+                            <td>
+                                <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>" class="btn btn-outline btn-sm">View</a>
+                                <?php if ($canApprove && in_array(strtolower($batch['status']), ['pending', 'pending_approval'])): ?>
+                                <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>&action=approve" class="btn btn-success btn-sm">Approve</a>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
+        </div>
 
-    <div class="card">
-        <h3>Current users (<?php echo count($orgUsers); ?>)</h3>
-        <table>
-            <thead><tr><th>Name</th><th>Contact</th><th>Role</th><th>Department</th><th>Status</th><th></th></tr></thead>
-            <tbody>
-                <?php foreach ($orgUsers as $ou): ?>
-                <tr class="<?php echo $ou['is_active'] ? '' : 'inactive'; ?>">
-                    <td><?php echo safeHtml($ou['full_name']); ?></td>
-                    <td>
-                        <?php echo safeHtml($ou['phone']); ?>
-                        <?php if (!empty($ou['email'])): ?>
-                        <br><small><?php echo safeHtml($ou['email']); ?></small>
-                        <?php endif; ?>
-                    </td>
-                    <td><span class="role-pill"><?php echo safeHtml(str_replace('_', ' ', $ou['role'])); ?></span></td>
-                    <td><?php echo safeHtml($ou['department_name'] ?? '—'); ?></td>
-                    <td><?php echo $ou['is_active'] ? 'Active' : 'Inactive'; ?></td>
-                    <td>
-                        <?php if ($ou['is_active'] && in_array($ou['role'], $assignableRoles)): ?>
-                        <form method="POST" style="display:inline;" onsubmit="return confirm('Deactivate this user?');">
-                            <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
-                            <input type="hidden" name="action" value="deactivate_user">
-                            <input type="hidden" name="org_user_id" value="<?php echo $ou['id']; ?>">
-                            <button type="submit" class="btn-danger">Deactivate</button>
-                        </form>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-</div>
+        <!-- Role-specific info -->
+        <?php if ($isReadOnly): ?>
+        <div class="card" style="border-left: 3px solid #8A6D3B;">
+            <div class="card-header">
+                <span class="card-title">🔍 Read-Only Access</span>
+            </div>
+            <p style="color: #64748b; font-size: 14px;">
+                You have <?php echo $userRole === 'auditor' ? 'auditor' : 'read-only'; ?> access. 
+                You can view and export data but cannot create or modify any records.
+                <?php if ($userRole === 'auditor'): ?>
+                This is for compliance and audit purposes.
+                <?php endif; ?>
+            </p>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($userRole === 'beneficiary_registrar'): ?>
+        <div class="card" style="border-left: 3px solid #166534;">
+            <div class="card-header">
+                <span class="card-title">👤 Beneficiary Registrar</span>
+            </div>
+            <p style="color: #64748b; font-size: 14px;">
+                You can add and manage beneficiaries for disbursement batches.
+                <a href="imports/add_destinations.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Add Beneficiaries</a>
+            </p>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($userRole === 'approver' || $userRole === 'senior_approver'): ?>
+        <div class="card" style="border-left: 3px solid #92400e;">
+            <div class="card-header">
+                <span class="card-title">✅ Approver Access</span>
+            </div>
+            <p style="color: #64748b; font-size: 14px;">
+                You can review and approve pending disbursement batches.
+                <?php if (($metrics['pending_approvals'] ?? 0) > 0): ?>
+                <strong><?php echo $metrics['pending_approvals']; ?> batches awaiting your review.</strong>
+                <?php endif; ?>
+                <a href="imports/review_batch.php?status=pending_approval" class="btn btn-primary btn-sm" style="margin-left:12px;">Review Now</a>
+            </p>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($userRole === 'department_head'): ?>
+        <div class="card" style="border-left: 3px solid #3b82f6;">
+            <div class="card-header">
+                <span class="card-title">🏛️ Department Head</span>
+            </div>
+            <p style="color: #64748b; font-size: 14px;">
+                You manage your department's disbursement activities.
+                <?php if (isset($metrics['department_batches'])): ?>
+                <strong><?php echo $metrics['department_batches']; ?> batches</strong> from your department.
+                <?php endif; ?>
+                <a href="imports/source_input.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Create Department Batch</a>
+            </p>
+        </div>
+        <?php endif; ?>
+    </main>
+
+    <!-- ============================================================ -->
+    <!-- FOOTER -->
+    <!-- ============================================================ -->
+    <footer class="footer">
+        <div>VOUCHMORPH · Enterprise Disbursement Platform · <?php echo date('Y'); ?></div>
+        <div style="margin-top:4px; color: rgba(255,255,255,0.2); font-size: 10px;">
+            <?php echo safeHtml($orgName); ?> · Role: <?php echo safeHtml(getRoleLabel($userRole)); ?>
+        </div>
+    </footer>
 </body>
 </html>
