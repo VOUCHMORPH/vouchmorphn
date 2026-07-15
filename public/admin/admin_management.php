@@ -8,7 +8,24 @@ session_start();
 // Define project root
 define('PROJECT_ROOT', dirname(__DIR__, 2));
 
-// Load required classes FIRST
+// Load configuration using the new system
+$configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
+if (!file_exists($configPath)) {
+    die("Configuration system not found.");
+}
+
+require_once $configPath;
+
+try {
+    $config = \Core\Config\LoadCountry::getConfig();
+    if (!is_array($config)) {
+        die("Configuration failed to load.");
+    }
+} catch (Throwable $e) {
+    die("Config error: " . $e->getMessage());
+}
+
+// Load required classes
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
@@ -17,181 +34,208 @@ use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
 use Application\Admin\Auth\AdminAuth;
 
-// Check if admin is logged in
-if (!SessionManager::isAdminLoggedIn()) {
+// Check if super admin is logged in (role_id = 999)
+if (!SessionManager::isAdminLoggedIn() || SessionManager::getAdminRoleId() !== 999) {
     header('Location: admin_login.php');
     exit();
 }
 
-// Load configuration for country data only (not database)
-$configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
-if (file_exists($configPath)) {
-    require_once $configPath;
-    try {
-        $config = \Core\Config\LoadCountry::getConfig();
-        if (!is_array($config)) {
-            $config = [];
-        }
-    } catch (Throwable $e) {
-        error_log("[ADMIN DASHBOARD] Config error: " . $e->getMessage());
-        $config = [];
-    }
-} else {
-    $config = [];
-}
-
-// Get admin info from session
-$adminId = SessionManager::getAdminId();
-$adminUsername = SessionManager::getAdminUsername();
-$adminFullName = SessionManager::get('admin_full_name');
-$adminRoleId = SessionManager::getAdminRoleId();
-$adminCountry = SessionManager::getAdminCountry();
-
-// Get role name based on role_id
-$roleNames = [
-    999 => 'Super Admin',
-    3 => 'Regulator',
-    4 => 'Compliance Officer',
-    5 => 'Auditor'
-];
-$roleName = $roleNames[$adminRoleId] ?? 'Administrator';
-
-// Initialize database connection using DBConnection (Single Source of Truth)
+// ============================================================
+// FIXED: Use DBConnection::getConnection() - the CORRECT method
+// ============================================================
 try {
     $db = DBConnection::getConnection();
     
-    if (!$db) {
-        throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
+    if (!$db || !($db instanceof PDO)) {
+        throw new Exception("Database connection failed - no PDO object returned.");
     }
     
-    // Test connection
-    $stmt = $db->query("SELECT 1");
-    $stmt->fetch();
-    error_log("[ADMIN DASHBOARD] Database connected successfully via DBConnection");
+    // Test the connection
+    $db->query("SELECT 1");
+    error_log("[ADMIN MANAGEMENT] Database connected successfully via DBConnection::getConnection()");
     
 } catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] DB Error: " . $e->getMessage());
-    die("Database connection failed. Please check configuration.");
+    error_log("[ADMIN MANAGEMENT] DB Error: " . $e->getMessage());
+    error_log("[ADMIN MANAGEMENT] Trace: " . $e->getTraceAsString());
+    die("Database connection failed: " . $e->getMessage());
 }
 
-// Get country code for display
-$countryCode = $adminCountry ?: ($config['country_code'] ?? 'BW');
-$countryName = $config['country'] ?? 'Botswana';
-$currencySymbol = $config['currency_symbol'] ?? 'BWP';
+// Role ID to Name mapping
+$roleNames = [
+    999 => 'Super Admin',
+    3 => 'Regulator (BOB)',
+    4 => 'Compliance Officer',
+    5 => 'Auditor'
+];
 
-// Load participants from config
-$participants = $config['participants'] ?? [];
-
-// Define role-based permissions
-$hasAccess = function($permission) use ($adminRoleId) {
-    $permissions = [
-        999 => ['all'], // Super Admin
-        3 => ['view_dashboard', 'view_reports', 'audit_logs', 'compliance_checks'], // Regulator
-        4 => ['view_dashboard', 'view_reports', 'manage_compliance', 'review_transactions', 'kyc_verification'], // Compliance
-        5 => ['view_dashboard', 'view_reports', 'audit_logs', 'read_only'] // Auditor
-    ];
+// Handle AJAX requests
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    header('Content-Type: application/json');
     
-    $userPerms = $permissions[$adminRoleId] ?? [];
-    return in_array('all', $userPerms) || in_array($permission, $userPerms);
-};
+    try {
+        $action = $_POST['action'] ?? '';
+        
+        if ($action === 'create') {
+            $username = trim($_POST['username'] ?? '');
+            $email = trim($_POST['email'] ?? '');
+            $password = $_POST['password'] ?? '';
+            $fullName = trim($_POST['full_name'] ?? '');
+            $roleId = (int)($_POST['role_id'] ?? 5);
+            $countryCode = trim($_POST['country_code'] ?? 'BW');
+            $mfaEnabled = isset($_POST['mfa_enabled']) ? 't' : 'f';
+            
+            // Validate
+            if (empty($username) || empty($email) || empty($password)) {
+                throw new Exception("Username, email, and password are required.");
+            }
+            
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                throw new Exception("Invalid email address.");
+            }
+            
+            if (strlen($password) < 6) {
+                throw new Exception("Password must be at least 6 characters.");
+            }
+            
+            // Check if username or email exists
+            $checkStmt = $db->prepare("SELECT COUNT(*) FROM admins WHERE username = :username OR email = :email");
+            $checkStmt->execute([':username' => $username, ':email' => $email]);
+            if ($checkStmt->fetchColumn() > 0) {
+                throw new Exception("Username or email already exists.");
+            }
+            
+            // Hash password
+            $passwordHash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+            
+            // Insert new admin
+            $stmt = $db->prepare("
+                INSERT INTO admins (username, email, password_hash, role_id, full_name, country_code, mfa_enabled, created_at, updated_at)
+                VALUES (:username, :email, :hash, :role_id, :full_name, :country_code, :mfa_enabled, NOW(), NOW())
+            ");
+            $stmt->execute([
+                ':username' => $username,
+                ':email' => $email,
+                ':hash' => $passwordHash,
+                ':role_id' => $roleId,
+                ':full_name' => $fullName,
+                ':country_code' => $countryCode,
+                ':mfa_enabled' => $mfaEnabled
+            ]);
+            
+            echo json_encode(['success' => true, 'message' => 'Admin created successfully']);
+            exit;
+            
+        } elseif ($action === 'update') {
+            $adminId = (int)($_POST['admin_id'] ?? 0);
+            $username = trim($_POST['username'] ?? '');
+            $email = trim($_POST['email'] ?? '');
+            $fullName = trim($_POST['full_name'] ?? '');
+            $roleId = (int)($_POST['role_id'] ?? 5);
+            $countryCode = trim($_POST['country_code'] ?? 'BW');
+            $mfaEnabled = isset($_POST['mfa_enabled']) ? 't' : 'f';
+            
+            // Don't allow changing super admin role
+            $checkStmt = $db->prepare("SELECT role_id FROM admins WHERE admin_id = :id");
+            $checkStmt->execute([':id' => $adminId]);
+            $currentRole = $checkStmt->fetchColumn();
+            
+            if ($currentRole == 999 && $roleId != 999) {
+                throw new Exception("Cannot change Super Admin role.");
+            }
+            
+            $stmt = $db->prepare("
+                UPDATE admins 
+                SET username = :username, 
+                    email = :email, 
+                    full_name = :full_name, 
+                    role_id = :role_id, 
+                    country_code = :country_code,
+                    mfa_enabled = :mfa_enabled, 
+                    updated_at = NOW()
+                WHERE admin_id = :admin_id
+            ");
+            $stmt->execute([
+                ':username' => $username,
+                ':email' => $email,
+                ':full_name' => $fullName,
+                ':role_id' => $roleId,
+                ':country_code' => $countryCode,
+                ':mfa_enabled' => $mfaEnabled,
+                ':admin_id' => $adminId
+            ]);
+            
+            echo json_encode(['success' => true, 'message' => 'Admin updated successfully']);
+            exit;
+            
+        } elseif ($action === 'delete') {
+            $adminId = (int)($_POST['admin_id'] ?? 0);
+            
+            // Don't allow deleting self or super admin
+            if ($adminId == SessionManager::getAdminId()) {
+                throw new Exception("Cannot delete your own account.");
+            }
+            
+            $checkStmt = $db->prepare("SELECT role_id FROM admins WHERE admin_id = :id");
+            $checkStmt->execute([':id' => $adminId]);
+            if ($checkStmt->fetchColumn() == 999) {
+                throw new Exception("Cannot delete Super Admin account.");
+            }
+            
+            $stmt = $db->prepare("UPDATE admins SET deleted_at = NOW() WHERE admin_id = :admin_id");
+            $stmt->execute([':admin_id' => $adminId]);
+            
+            echo json_encode(['success' => true, 'message' => 'Admin deleted successfully']);
+            exit;
+            
+        } elseif ($action === 'reset_password') {
+            $adminId = (int)($_POST['admin_id'] ?? 0);
+            $newPassword = $_POST['new_password'] ?? '';
+            
+            if (strlen($newPassword) < 6) {
+                throw new Exception("Password must be at least 6 characters.");
+            }
+            
+            $passwordHash = password_hash($newPassword, PASSWORD_BCRYPT, ['cost' => 12]);
+            
+            $stmt = $db->prepare("UPDATE admins SET password_hash = :hash, updated_at = NOW() WHERE admin_id = :admin_id");
+            $stmt->execute([':hash' => $passwordHash, ':admin_id' => $adminId]);
+            
+            echo json_encode(['success' => true, 'message' => 'Password reset successfully']);
+            exit;
+        }
+        
+        echo json_encode(['success' => false, 'message' => 'Invalid action']);
+        exit;
+        
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        exit;
+    }
+}
 
-// Get system metrics
-$metrics = [];
+// Get all admins (excluding soft-deleted)
 try {
-    // Get today's transaction count
-    $stmt = $db->prepare("SELECT COUNT(*) FROM swap_requests WHERE DATE(created_at) = CURRENT_DATE");
-    $stmt->execute();
-    $metrics['today_transactions'] = (int)$stmt->fetchColumn();
-    
-    // Get today's volume
-    $stmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM swap_requests WHERE DATE(created_at) = CURRENT_DATE");
-    $stmt->execute();
-    $volumeRaw = (float)$stmt->fetchColumn();
-    $metrics['today_volume_raw'] = $volumeRaw;
-    $metrics['today_volume'] = number_format($volumeRaw, 2);
-    
-    // Get active holds
-    $stmt = $db->prepare("SELECT COUNT(*) FROM hold_transactions WHERE status = 'ACTIVE'");
-    $stmt->execute();
-    $metrics['active_holds'] = (int)$stmt->fetchColumn();
-    
-    // Get pending settlements
-    $stmt = $db->prepare("SELECT COUNT(*) FROM settlement_queue WHERE status = 'PENDING'");
-    $stmt->execute();
-    $metrics['pending_settlements'] = (int)$stmt->fetchColumn();
-    
-    // Get total users
-    $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL");
-    $stmt->execute();
-    $metrics['total_users'] = (int)$stmt->fetchColumn();
-    
-    // Get total swap volume (all time)
-    $stmt = $db->prepare("SELECT COALESCE(SUM(amount), 0) FROM swap_requests");
-    $stmt->execute();
-    $totalVolumeRaw = (float)$stmt->fetchColumn();
-    $metrics['total_volume'] = number_format($totalVolumeRaw, 2);
-    
-    // Settlement outbox pending count
-    $stmt = $db->prepare("SELECT COUNT(*) FROM settlement_outbox WHERE status = 'PENDING'");
-    $stmt->execute();
-    $metrics['pending_settlements_outbox'] = (int)$stmt->fetchColumn();
-    
-    // Active net positions
-    $stmt = $db->prepare("SELECT COUNT(*) FROM net_positions WHERE amount > 0");
-    $stmt->execute();
-    $metrics['active_net_positions'] = (int)$stmt->fetchColumn();
-    
-    // Fee invoices outstanding
-    $stmt = $db->prepare("SELECT COUNT(*) FROM fee_invoices WHERE status = 'SENT'");
-    $stmt->execute();
-    $metrics['outstanding_invoices'] = (int)$stmt->fetchColumn();
-    
-    // Regulatory reports pending
-    $stmt = $db->prepare("SELECT COUNT(*) FROM regulatory_reports WHERE regulator_acknowledged = false");
-    $stmt->execute();
-    $metrics['pending_regulatory_reports'] = (int)$stmt->fetchColumn();
-    
+    $admins = $db->query("
+        SELECT admin_id, username, email, phone, full_name, role_id, country_code, mfa_enabled, created_at, updated_at 
+        FROM admins 
+        WHERE deleted_at IS NULL 
+        ORDER BY role_id DESC, created_at ASC
+    ")->fetchAll();
 } catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Metrics error: " . $e->getMessage());
-    $metrics = [
-        'today_transactions' => 0,
-        'today_volume' => '0.00',
-        'today_volume_raw' => 0,
-        'active_holds' => 0,
-        'pending_settlements' => 0,
-        'total_users' => 0,
-        'total_volume' => '0.00',
-        'pending_settlements_outbox' => 0,
-        'active_net_positions' => 0,
-        'outstanding_invoices' => 0,
-        'pending_regulatory_reports' => 0
-    ];
+    error_log("[ADMIN MANAGEMENT] Query error: " . $e->getMessage());
+    $admins = [];
 }
 
-// Get recent transactions
-$recentTransactions = [];
-try {
-    $stmt = $db->prepare("
-        SELECT swap_id, user_id, amount, status, created_at 
-        FROM swap_requests 
-        ORDER BY created_at DESC 
-        LIMIT 10
-    ");
-    $stmt->execute();
-    $recentTransactions = $stmt->fetchAll();
-} catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Recent transactions error: " . $e->getMessage());
-}
-
-// Get current view
-$view = $_GET['view'] ?? 'dashboard';
+// Get current admin info
+$currentAdminId = SessionManager::getAdminId();
+$currentAdminRole = SessionManager::getAdminRoleId();
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · ADMIN DASHBOARD · <?php echo htmlspecialchars($countryCode); ?></title>
+    <title>VOUCHMORPH · Admin Management</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * {
@@ -204,233 +248,157 @@ $view = $_GET['view'] ?? 'dashboard';
             font-family: 'IBM Plex Mono', monospace;
             background: #f7f9fc;
             color: #001B44;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
         }
 
-        .admin-header {
+        .header {
             background: #001B44;
+            padding: 20px 30px;
             border-bottom: 5px solid #FFDA63;
-            padding: 15px 30px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            color: #fff;
-            flex-wrap: wrap;
-            gap: 15px;
         }
 
-        .header-left {
-            display: flex;
-            align-items: center;
-            gap: 30px;
-            flex-wrap: wrap;
-        }
-
-        .logo {
+        .header h1 {
+            color: #FFDA63;
             font-size: 1.2rem;
-            font-weight: 700;
-            letter-spacing: 2px;
         }
 
-        .logo span {
-            color: #FFDA63;
-            margin-left: 10px;
-            font-size: 0.8rem;
-        }
-
-        .country-badge {
-            padding: 5px 15px;
-            background: rgba(255, 218, 99, 0.2);
-            border: 1px solid #FFDA63;
-            color: #FFDA63;
-            font-size: 0.8rem;
-            text-transform: uppercase;
-        }
-
-        .user-info {
-            display: flex;
-            align-items: center;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-
-        .user-details {
-            text-align: right;
-        }
-
-        .user-name {
-            font-weight: 600;
-            color: #FFDA63;
-        }
-
-        .user-role {
-            font-size: 0.7rem;
-            color: #A1B5D8;
-            text-transform: uppercase;
-        }
-
-        .logout-btn {
-            padding: 8px 16px;
-            background: transparent;
-            border: 2px solid #FFDA63;
-            color: #FFDA63;
+        .back-btn {
+            color: #fff;
             text-decoration: none;
-            font-size: 0.8rem;
-            font-weight: 600;
+            padding: 8px 16px;
+            border: 2px solid #FFDA63;
             transition: all 0.2s;
         }
 
-        .logout-btn:hover {
+        .back-btn:hover {
             background: #FFDA63;
             color: #001B44;
         }
 
-        .admin-nav {
-            background: #fff;
-            border-bottom: 2px solid #001B44;
-            padding: 0 30px;
-            display: flex;
-            gap: 30px;
-            flex-wrap: wrap;
-        }
-
-        .nav-item {
-            padding: 15px 0;
-            color: #666;
-            text-decoration: none;
-            font-size: 0.8rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            border-bottom: 3px solid transparent;
-            transition: all 0.2s;
-        }
-
-        .nav-item:hover {
-            color: #001B44;
-        }
-
-        .nav-item.active {
-            color: #001B44;
-            border-bottom-color: #FFDA63;
-        }
-
-        .admin-content {
-            flex: 1;
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
             padding: 30px;
-        }
-
-        .content-header {
-            margin-bottom: 30px;
-        }
-
-        .content-header h1 {
-            font-size: 1.5rem;
-            font-weight: 600;
-            color: #001B44;
-            margin-bottom: 5px;
-        }
-
-        .content-header .timestamp {
-            color: #666;
-            font-size: 0.8rem;
-        }
-
-        .metrics-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-
-        .metric-card {
-            background: #fff;
-            border: 2px solid #001B44;
-            padding: 20px;
-            box-shadow: 4px 4px 0 #A1B5D8;
-            transition: transform 0.2s;
-        }
-
-        .metric-card:hover {
-            transform: translateY(-2px);
-        }
-
-        .metric-label {
-            font-size: 0.7rem;
-            text-transform: uppercase;
-            color: #666;
-            letter-spacing: 1px;
-            margin-bottom: 10px;
-        }
-
-        .metric-value {
-            font-size: 2rem;
-            font-weight: 600;
-            color: #001B44;
-            line-height: 1.2;
-            word-break: break-word;
-        }
-
-        .grid-2 {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 20px;
-            margin-bottom: 30px;
         }
 
         .card {
             background: #fff;
             border: 2px solid #001B44;
-            padding: 20px;
-        }
-
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #001B44;
-            flex-wrap: wrap;
-            gap: 10px;
+            padding: 25px;
+            margin-bottom: 30px;
+            box-shadow: 6px 6px 0 #A1B5D8;
         }
 
         .card-title {
-            font-size: 1rem;
+            font-size: 1.1rem;
             font-weight: 600;
-            text-transform: uppercase;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #001B44;
+            padding-bottom: 10px;
         }
 
-        .card-badge {
-            padding: 3px 10px;
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #001B44;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.9rem;
+            background: #fff;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #FFDA63;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .checkbox-group input {
+            width: auto;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: 2px solid #001B44;
+            background: #fff;
+            cursor: pointer;
+            font-family: 'IBM Plex Mono', monospace;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
             background: #001B44;
             color: #fff;
-            font-size: 0.7rem;
         }
 
-        .table-responsive {
-            overflow-x: auto;
+        .btn-primary:hover {
+            background: #FFDA63;
+            color: #001B44;
+            border-color: #FFDA63;
+        }
+
+        .btn-danger {
+            border-color: #dc3545;
+            color: #dc3545;
+        }
+
+        .btn-danger:hover {
+            background: #dc3545;
+            color: #fff;
+        }
+
+        .btn-sm {
+            padding: 5px 10px;
+            font-size: 0.75rem;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.85rem;
         }
 
         th {
             background: #001B44;
             color: #fff;
             padding: 12px;
-            font-weight: 600;
             text-align: left;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
 
         td {
             padding: 12px;
             border-bottom: 1px solid #ddd;
+            font-size: 0.85rem;
         }
 
         tr:hover {
@@ -446,349 +414,362 @@ $view = $_GET['view'] ?? 'dashboard';
             border: 1px solid;
         }
 
-        .status-success {
+        .status-active {
             background: #d4edda;
             color: #155724;
             border-color: #c3e6cb;
         }
 
-        .status-pending {
-            background: #fff3cd;
-            color: #856404;
-            border-color: #ffeeba;
+        .status-inactive {
+            background: #f8d7da;
+            color: #721c24;
+            border-color: #f5c6cb;
         }
 
-        .admin-footer {
-            background: #001B44;
-            color: #A1B5D8;
-            padding: 20px 30px;
-            font-size: 0.7rem;
-            text-align: center;
-            border-top: 3px solid #FFDA63;
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
         }
+
+        .modal-content {
+            background: #fff;
+            border: 3px solid #001B44;
+            padding: 30px;
+            max-width: 500px;
+            margin: 100px auto;
+        }
+
+        .message {
+            padding: 15px;
+            margin-bottom: 20px;
+            border: 2px solid;
+            display: none;
+        }
+
+        .message-success {
+            background: #d4edda;
+            border-color: #28a745;
+            color: #155724;
+        }
+
+        .message-error {
+            background: #f8d7da;
+            border-color: #dc3545;
+            color: #721c24;
+        }
+
+        .table-responsive {
+            overflow-x: auto;
+        }
+
+        .role-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            border-radius: 0;
+        }
+
+        .role-super { background: #001B44; color: #FFDA63; }
+        .role-regulator { background: #28a745; color: #fff; }
+        .role-compliance { background: #17a2b8; color: #fff; }
+        .role-auditor { background: #6c757d; color: #fff; }
 
         @media (max-width: 768px) {
             .grid-2 {
                 grid-template-columns: 1fr;
             }
-            .admin-nav {
-                padding: 0 15px;
-                gap: 15px;
-            }
-            .admin-content {
+            .container {
                 padding: 20px;
             }
-            .admin-header {
-                padding: 15px;
-            }
-            .header-left {
-                gap: 15px;
-            }
-            .metric-value {
-                font-size: 1.5rem;
+            th, td {
+                padding: 8px;
             }
         }
     </style>
 </head>
 <body>
-    <header class="admin-header">
-        <div class="header-left">
-            <div class="logo">VOUCHMORPH <span>ADMIN</span></div>
-            <div class="country-badge"><?php echo htmlspecialchars($countryCode); ?> · <?php echo htmlspecialchars($countryName); ?></div>
-        </div>
-        <div class="user-info">
-            <div class="user-details">
-                <div class="user-name"><?php echo htmlspecialchars($adminFullName ?: $adminUsername); ?></div>
-                <div class="user-role"><?php echo htmlspecialchars($roleName); ?></div>
-            </div>
-            <a href="admin_logout.php" class="logout-btn">LOGOUT</a>
-        </div>
-    </header>
-
-    <nav class="admin-nav">
-        <a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">DASHBOARD</a>
+    <div class="header">
+        <h1>🔐 VOUCHMORPH · ADMIN MANAGEMENT</h1>
+        <a href="admin_dashboard.php" class="back-btn">← BACK TO DASHBOARD</a>
+    </div>
+    
+    <div class="container">
+        <div id="message" class="message"></div>
         
-        <?php if ($hasAccess('review_transactions')): ?>
-            <a href="?view=transactions" class="nav-item <?php echo $view === 'transactions' ? 'active' : ''; ?>">TRANSACTIONS</a>
-        <?php endif; ?>
-        
-        <?php if ($hasAccess('audit_logs')): ?>
-            <a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">AUDIT LOGS</a>
-        <?php endif; ?>
-        
-        <?php if ($hasAccess('view_reports')): ?>
-            <a href="?view=reports" class="nav-item <?php echo $view === 'reports' ? 'active' : ''; ?>">REPORTS</a>
-        <?php endif; ?>
-        
-        <?php if ($adminRoleId === 999): ?>
-            <a href="admin_management.php" class="nav-item">ADMINISTRATORS</a>
-            <a href="?view=config" class="nav-item <?php echo $view === 'config' ? 'active' : ''; ?>">CONFIGURATION</a>
-        <?php endif; ?>
-    </nav>
-
-    <main class="admin-content">
-        <?php if ($view === 'dashboard'): ?>
-        <div class="content-header">
-            <h1>EXECUTIVE DASHBOARD</h1>
-            <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?> · <?php echo htmlspecialchars($countryName); ?> Time</div>
-        </div>
-
-        <div class="metrics-grid">
-            <div class="metric-card">
-                <div class="metric-label">TODAY'S TRANSACTIONS</div>
-                <div class="metric-value"><?php echo number_format($metrics['today_transactions']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">TODAY'S VOLUME (<?php echo htmlspecialchars($currencySymbol); ?>)</div>
-                <div class="metric-value"><?php echo $metrics['today_volume']; ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">ACTIVE HOLDS</div>
-                <div class="metric-value"><?php echo number_format($metrics['active_holds']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">PENDING SETTLEMENTS</div>
-                <div class="metric-value"><?php echo number_format($metrics['pending_settlements']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">TOTAL USERS</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_users']); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">TOTAL VOLUME (<?php echo htmlspecialchars($currencySymbol); ?>)</div>
-                <div class="metric-value"><?php echo $metrics['total_volume']; ?></div>
-            </div>
-        </div>
-
         <div class="grid-2">
+            <!-- Add New Admin Form -->
             <div class="card">
-                <div class="card-header">
-                    <span class="card-title">PARTICIPANTS</span>
-                    <span class="card-badge"><?php echo count($participants); ?> ACTIVE</span>
-                </div>
-                <div class="table-responsive">
-                    <table>
-                        <thead>
-                            <tr><th>Provider</th><th>Type</th><th>Status</th></tr>
-                        </thead>
-                        <tbody>
-                            <?php 
-                            $count = 0;
-                            foreach ($participants as $code => $p): 
-                                if ($count++ >= 10) break;
-                                $type = $p['type'] ?? $p['category'] ?? 'Unknown';
-                                $status = $p['status'] ?? 'ACTIVE';
-                            ?>
-                            <tr>
-                                <td><?php echo htmlspecialchars($code); ?></td>
-                                <td><?php echo htmlspecialchars($type); ?></td>
-                                <td><span class="status status-success"><?php echo htmlspecialchars($status); ?></span></td>
-                            </tr>
-                            <?php endforeach; ?>
-                            <?php if (count($participants) === 0): ?>
-                                <tr><td colspan="3" style="text-align: center;">No participants configured</td></tr>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
+                <div class="card-title">➕ CREATE NEW ADMINISTRATOR</div>
+                <form id="createAdminForm">
+                    <div class="form-group">
+                        <label>USERNAME *</label>
+                        <input type="text" id="create_username" required>
+                    </div>
+                    <div class="form-group">
+                        <label>EMAIL *</label>
+                        <input type="email" id="create_email" required>
+                    </div>
+                    <div class="form-group">
+                        <label>FULL NAME</label>
+                        <input type="text" id="create_full_name">
+                    </div>
+                    <div class="form-group">
+                        <label>PASSWORD *</label>
+                        <input type="password" id="create_password" required minlength="6">
+                    </div>
+                    <div class="form-group">
+                        <label>ROLE</label>
+                        <select id="create_role_id">
+                            <option value="999">Super Admin (Global Access)</option>
+                            <option value="3">Regulator (Bank of Botswana)</option>
+                            <option value="4">Compliance Officer</option>
+                            <option value="5">Auditor</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>COUNTRY</label>
+                        <select id="create_country_code">
+                            <option value="BW">Botswana (BW)</option>
+                            <option value="NG">Nigeria (NG)</option>
+                            <option value="KE">Kenya (KE)</option>
+                            <option value="">Global (Super Admin only)</option>
+                        </select>
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <input type="checkbox" id="create_mfa_enabled" value="1">
+                        <label>Enable Two-Factor Authentication (MFA)</label>
+                    </div>
+                    <button type="submit" class="btn btn-primary">➕ CREATE ADMIN</button>
+                </form>
             </div>
-
+            
+            <!-- Role Information -->
             <div class="card">
-                <div class="card-header">
-                    <span class="card-title">RECENT TRANSACTIONS</span>
-                    <span class="card-badge">LAST 10</span>
+                <div class="card-title">📋 ROLE PERMISSIONS</div>
+                <div style="margin-bottom: 15px;">
+                    <span class="role-badge role-super">Super Admin (999)</span>
+                    <p style="margin-top: 10px; font-size: 0.85rem;">Full system access, manage all admins, all countries</p>
                 </div>
-                <div class="table-responsive">
-                    <table>
-                        <thead>
-                            <tr><th>ID</th><th>Amount</th><th>Status</th><th>Date</th></tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($recentTransactions as $tx): ?>
-                            <tr>
-                                <td><?php echo htmlspecialchars($tx['swap_id'] ?? 'N/A'); ?></td>
-                                <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
-                                <td><span class="status status-<?php echo strtolower($tx['status'] ?? 'pending') === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status'] ?? 'pending'); ?></span></td>
-                                <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'] ?? 'now')); ?></td>
-                            </tr>
-                            <?php endforeach; ?>
-                            <?php if (empty($recentTransactions)): ?>
-                                <tr><td colspan="4" style="text-align: center;">No transactions yet</td></tr>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
+                <div style="margin-bottom: 15px;">
+                    <span class="role-badge role-regulator">Regulator (3)</span>
+                    <p style="margin-top: 10px; font-size: 0.85rem;">View reports, audit logs, compliance checks (Bank of Botswana)</p>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <span class="role-badge role-compliance">Compliance Officer (4)</span>
+                    <p style="margin-top: 10px; font-size: 0.85rem;">KYC verification, transaction review, AML monitoring</p>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <span class="role-badge role-auditor">Auditor (5)</span>
+                    <p style="margin-top: 10px; font-size: 0.85rem;">Read-only access, audit trails, transaction logs</p>
                 </div>
             </div>
         </div>
-
+        
+        <!-- Admin List -->
         <div class="card">
-            <div class="card-header">
-                <span class="card-title">SYSTEM HEALTH</span>
-                <span class="card-badge">LIVE</span>
-            </div>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-                <div><strong>Country:</strong> <?php echo htmlspecialchars($countryName); ?> (<?php echo htmlspecialchars($countryCode); ?>)</div>
-                <div><strong>Environment:</strong> <?php echo htmlspecialchars(getenv('APP_ENV') ?: 'production'); ?></div>
-                <div><strong>Database:</strong> <span style="color: green;">✓ Connected</span></div>
-                <div><strong>PHP Version:</strong> <?php echo phpversion(); ?></div>
-                <div><strong>Server Time:</strong> <?php echo date('Y-m-d H:i:s'); ?></div>
-                <div><strong>Admin Role:</strong> <?php echo htmlspecialchars($roleName); ?></div>
-            </div>
-        </div>
-
-        <?php elseif ($view === 'reports'): ?>
-        <div class="content-header">
-            <h1>REGULATORY REPORTS</h1>
-            <div class="timestamp">Bank of Botswana Compliance Reports</div>
-        </div>
-        <div class="grid-2">
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Daily Settlement Report</span>
-                </div>
-                <p>End-of-day net positions and settlement amounts</p>
-                <p style="margin-top: 15px;">
-                    <a href="reports/daily_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
-                </p>
-            </div>
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Transaction Audit Log</span>
-                </div>
-                <p>7-year audit trail of all swap transactions</p>
-                <p style="margin-top: 15px;">
-                    <a href="reports/audit_trails.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
-                </p>
-            </div>
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Suspicious Activity Report</span>
-                </div>
-                <p>AML/KYC compliance and fraud monitoring</p>
-                <p style="margin-top: 15px;">
-                    <a href="reports/suspicious.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
-                </p>
-            </div>
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Monthly Reconciliation</span>
-                </div>
-                <p>Monthly financial reconciliation report</p>
-                <p style="margin-top: 15px;">
-                    <a href="reports/monthly_reconciliations.php?country=<?php echo $countryCode; ?>" target="_blank" style="color: #001B44;">Generate Report →</a>
-                </p>
-            </div>
-        </div>
-
-        <?php elseif ($view === 'config' && $adminRoleId === 999): ?>
-        <div class="content-header">
-            <h1>SYSTEM CONFIGURATION</h1>
-            <div class="timestamp">Configuration Management</div>
-        </div>
-        <div class="grid-2">
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Country Configuration</span>
-                </div>
-                <p>Current Country: <strong><?php echo htmlspecialchars($countryName); ?></strong></p>
-                <p>Currency: <strong><?php echo htmlspecialchars($currencySymbol); ?></strong></p>
-                <p>Timezone: <strong>Africa/Gaborone</strong></p>
-                <p style="margin-top: 15px;">
-                    <a href="../../src/Core/Config/Countries/<?php echo $countryCode; ?>/config.php" style="color: #001B44;">Edit Config →</a>
-                </p>
-            </div>
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">Database Status</span>
-                </div>
-                <p>Connection: <span style="color: green;">Active</span></p>
-                <p>Type: PostgreSQL</p>
-                <p>Driver: PDO_pgsql</p>
-            </div>
-        </div>
-
-        <?php elseif ($view === 'transactions' && $hasAccess('review_transactions')): ?>
-        <div class="content-header">
-            <h1>TRANSACTION MANAGEMENT</h1>
-            <div class="timestamp">Monitor and Review Transactions</div>
-        </div>
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">All Transactions</span>
-                <span class="card-badge">SWAP REQUESTS</span>
-            </div>
+            <div class="card-title">📋 ADMINISTRATORS</div>
             <div class="table-responsive">
-                <?php
-                $txStmt = $db->query("SELECT * FROM swap_requests ORDER BY created_at DESC LIMIT 50");
-                $allTransactions = $txStmt->fetchAll();
-                ?>
                 <table>
                     <thead>
-                        <tr><th>ID</th><th>User</th><th>Amount</th><th>Status</th><th>Created At</th></tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($allTransactions as $tx): ?>
                         <tr>
-                            <td><?php echo htmlspecialchars($tx['swap_id'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($tx['user_id'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($currencySymbol); ?> <?php echo number_format((float)($tx['amount'] ?? 0), 2); ?></td>
-                            <td><span class="status status-<?php echo strtolower($tx['status'] ?? 'pending') === 'completed' ? 'success' : 'pending'; ?>"><?php echo htmlspecialchars($tx['status'] ?? 'pending'); ?></span></td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($tx['created_at'] ?? 'now')); ?></td>
+                            <th>ID</th>
+                            <th>Username</th>
+                            <th>Email</th>
+                            <th>Full Name</th>
+                            <th>Role</th>
+                            <th>Country</th>
+                            <th>MFA</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="adminsTable">
+                        <?php if (!empty($admins)): ?>
+                        <?php foreach ($admins as $admin): 
+                            $roleClass = '';
+                            if ($admin['role_id'] == 999) $roleClass = 'role-super';
+                            elseif ($admin['role_id'] == 3) $roleClass = 'role-regulator';
+                            elseif ($admin['role_id'] == 4) $roleClass = 'role-compliance';
+                            elseif ($admin['role_id'] == 5) $roleClass = 'role-auditor';
+                        ?>
+                        <tr data-id="<?php echo $admin['admin_id']; ?>">
+                            <td><?php echo $admin['admin_id']; ?></td>
+                            <td><?php echo htmlspecialchars($admin['username']); ?></td>
+                            <td><?php echo htmlspecialchars($admin['email']); ?></td>
+                            <td><?php echo htmlspecialchars($admin['full_name'] ?? '-'); ?></td>
+                            <td><span class="role-badge <?php echo $roleClass; ?>"><?php echo $roleNames[$admin['role_id']] ?? 'Unknown'; ?></span></td>
+                            <td><?php echo $admin['country_code'] ?: 'Global'; ?></td>
+                            <td><span class="status <?php echo $admin['mfa_enabled'] === 't' ? 'status-active' : 'status-inactive'; ?>"><?php echo $admin['mfa_enabled'] === 't' ? 'ON' : 'OFF'; ?></span></td>
+                            <td><?php echo date('Y-m-d', strtotime($admin['created_at'])); ?></td>
+                            <td>
+                                <?php if ($admin['admin_id'] != $currentAdminId && $admin['role_id'] != 999): ?>
+                                <button class="btn btn-sm btn-danger" onclick="deleteAdmin(<?php echo $admin['admin_id']; ?>)">Delete</button>
+                                <?php endif; ?>
+                                <button class="btn btn-sm" onclick="resetPassword(<?php echo $admin['admin_id']; ?>, '<?php echo htmlspecialchars($admin['username']); ?>')">Reset PW</button>
+                            </td>
                         </tr>
                         <?php endforeach; ?>
+                        <?php else: ?>
+                        <tr>
+                            <td colspan="9" style="text-align: center; padding: 30px; color: #999;">No administrators found.</td>
+                        </tr>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
         </div>
-
-        <?php elseif ($view === 'audit' && $hasAccess('audit_logs')): ?>
-        <div class="content-header">
-            <h1>AUDIT LOGS</h1>
-            <div class="timestamp">System Audit Trail</div>
-        </div>
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">Recent Activities</span>
-                <span class="card-badge">ADMIN ACTIONS</span>
-            </div>
-            <div class="table-responsive">
-                <?php
-                $auditStmt = $db->query("SELECT * FROM admin_actions ORDER BY created_at DESC LIMIT 50");
-                $auditLogs = $auditStmt->fetchAll();
-                ?>
-                <table>
-                    <thead>
-                        <tr><th>Action</th><th>Entity</th><th>Status</th><th>Admin</th><th>Date</th></tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($auditLogs as $log): ?>
-                        <tr>
-                            <td><?php echo htmlspecialchars($log['action_type'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($log['entity_type'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($log['status'] ?? 'N/A'); ?></td>
-                            <td><?php echo htmlspecialchars($log['assigned_admin_id'] ?? 'N/A'); ?></td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($log['created_at'] ?? 'now')); ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
+        
+        <!-- Reset Password Modal -->
+        <div id="resetModal" class="modal">
+            <div class="modal-content">
+                <h3>Reset Password</h3>
+                <p id="resetUsername"></p>
+                <div class="form-group">
+                    <label>New Password</label>
+                    <input type="password" id="reset_password" style="width: 100%;" minlength="6">
+                </div>
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <button class="btn btn-primary" onclick="confirmReset()">Reset Password</button>
+                    <button class="btn" onclick="closeModal()">Cancel</button>
+                </div>
             </div>
         </div>
-
-        <?php else: ?>
-        <div class="content-header">
-            <h1><?php echo ucfirst($view); ?></h1>
-            <div class="timestamp">Module under development</div>
-        </div>
-        <div class="card">
-            <p>This module is currently being developed. Please check back later.</p>
-        </div>
-        <?php endif; ?>
-    </main>
-
-    <footer class="admin-footer">
-        <p>VOUCHMORPH · <?php echo htmlspecialchars($countryName); ?> · <?php echo date('Y'); ?></p>
-        <p style="margin-top: 5px;">Bank of Botswana Regulatory Sandbox Participant</p>
-    </footer>
+    </div>
+    
+    <script>
+        let pendingAdminId = null;
+        
+        function showMessage(msg, type) {
+            const msgDiv = document.getElementById('message');
+            msgDiv.textContent = msg;
+            msgDiv.className = 'message message-' + type;
+            msgDiv.style.display = 'block';
+            setTimeout(() => {
+                msgDiv.style.display = 'none';
+            }, 5000);
+        }
+        
+        document.getElementById('createAdminForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const password = document.getElementById('create_password').value;
+            if (password.length < 6) {
+                showMessage('Password must be at least 6 characters.', 'error');
+                return;
+            }
+            
+            const formData = new URLSearchParams();
+            formData.append('action', 'create');
+            formData.append('username', document.getElementById('create_username').value);
+            formData.append('email', document.getElementById('create_email').value);
+            formData.append('full_name', document.getElementById('create_full_name').value);
+            formData.append('password', password);
+            formData.append('role_id', document.getElementById('create_role_id').value);
+            formData.append('country_code', document.getElementById('create_country_code').value);
+            formData.append('mfa_enabled', document.getElementById('create_mfa_enabled').checked ? '1' : '0');
+            
+            try {
+                const response = await fetch(window.location.href, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData.toString()
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    showMessage(result.message, 'success');
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showMessage(result.message, 'error');
+                }
+            } catch (error) {
+                showMessage('Error creating admin: ' + error.message, 'error');
+            }
+        });
+        
+        async function deleteAdmin(adminId) {
+            if (!confirm('Are you sure you want to delete this admin?')) return;
+            
+            const formData = new URLSearchParams();
+            formData.append('action', 'delete');
+            formData.append('admin_id', adminId);
+            
+            try {
+                const response = await fetch(window.location.href, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData.toString()
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    showMessage(result.message, 'success');
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showMessage(result.message, 'error');
+                }
+            } catch (error) {
+                showMessage('Error deleting admin: ' + error.message, 'error');
+            }
+        }
+        
+        function resetPassword(adminId, username) {
+            pendingAdminId = adminId;
+            document.getElementById('resetUsername').innerHTML = `Admin: <strong>${username}</strong>`;
+            document.getElementById('reset_password').value = '';
+            document.getElementById('resetModal').style.display = 'block';
+        }
+        
+        async function confirmReset() {
+            const newPassword = document.getElementById('reset_password').value;
+            if (!newPassword || newPassword.length < 6) {
+                showMessage('Password must be at least 6 characters.', 'error');
+                return;
+            }
+            
+            const formData = new URLSearchParams();
+            formData.append('action', 'reset_password');
+            formData.append('admin_id', pendingAdminId);
+            formData.append('new_password', newPassword);
+            
+            try {
+                const response = await fetch(window.location.href, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData.toString()
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    showMessage(result.message, 'success');
+                    closeModal();
+                } else {
+                    showMessage(result.message, 'error');
+                }
+            } catch (error) {
+                showMessage('Error resetting password: ' + error.message, 'error');
+            }
+        }
+        
+        function closeModal() {
+            document.getElementById('resetModal').style.display = 'none';
+            pendingAdminId = null;
+        }
+        
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('resetModal');
+            if (event.target == modal) {
+                closeModal();
+            }
+        }
+    </script>
 </body>
 </html>
