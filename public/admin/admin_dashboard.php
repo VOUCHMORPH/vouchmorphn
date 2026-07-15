@@ -340,7 +340,7 @@ if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
 }
 
 // ============================================================
-// FETCH TABLE DATA
+// FETCH TABLE DATA - SHOW ALL TABLES WITH DATA
 // ============================================================
 $tableData = [];
 $tablesToFetch = [
@@ -353,10 +353,13 @@ $tablesToFetch = [
     'audit_logs' => ['label' => '📝 Audit Logs', 'order' => 'performed_at DESC', 'limit' => 100],
     'swap_fee_collections' => ['label' => '💳 Fee Collections', 'order' => 'created_at DESC', 'limit' => 100],
     'net_positions' => ['label' => '⚖️ Net Positions', 'order' => 'created_at DESC', 'limit' => 100],
+    'participants' => ['label' => '🏛️ Participants', 'order' => 'provider_code ASC', 'limit' => 100],
+    'users' => ['label' => '👤 Users', 'order' => 'created_at DESC', 'limit' => 100],
 ];
 
 foreach ($tablesToFetch as $table => $config) {
     try {
+        // Check if table exists
         $stmt = $db->prepare("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = :table");
         $stmt->execute([':table' => $table]);
         $exists = (int)$stmt->fetchColumn() > 0;
@@ -364,20 +367,45 @@ foreach ($tablesToFetch as $table => $config) {
         if ($exists) {
             $orderBy = $config['order'] ?? 'created_at DESC';
             $limit = $config['limit'] ?? 100;
-            $rows = $db->query("SELECT * FROM {$table} ORDER BY {$orderBy} LIMIT {$limit}")->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Get column names first
+            $colStmt = $db->query("SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = '{$table}' ORDER BY ordinal_position");
+            $columns = $colStmt->fetchAll(PDO::FETCH_COLUMN);
+            
+            // Get data
+            $dataStmt = $db->query("SELECT * FROM {$table} ORDER BY {$orderBy} LIMIT {$limit}");
+            $rows = $dataStmt->fetchAll(PDO::FETCH_ASSOC);
             
             $tableData[$table] = [
                 'exists' => true,
                 'rows' => $rows,
                 'count' => count($rows),
                 'label' => $config['label'],
-                'columns' => !empty($rows) ? array_keys($rows[0]) : []
+                'columns' => $columns
             ];
+            
+            error_log("[ADMIN DASHBOARD] Fetched {$table}: " . count($rows) . " rows");
         } else {
-            $tableData[$table] = ['exists' => false, 'rows' => [], 'count' => 0, 'label' => $config['label'], 'columns' => []];
+            $tableData[$table] = [
+                'exists' => false, 
+                'rows' => [], 
+                'count' => 0, 
+                'label' => $config['label'], 
+                'columns' => [],
+                'error' => 'Table does not exist'
+            ];
+            error_log("[ADMIN DASHBOARD] Table {$table} does not exist");
         }
     } catch (Throwable $e) {
-        $tableData[$table] = ['exists' => false, 'rows' => [], 'count' => 0, 'label' => $config['label'], 'columns' => [], 'error' => $e->getMessage()];
+        error_log("[ADMIN DASHBOARD] Error fetching {$table}: " . $e->getMessage());
+        $tableData[$table] = [
+            'exists' => false, 
+            'rows' => [], 
+            'count' => 0, 
+            'label' => $config['label'], 
+            'columns' => [],
+            'error' => $e->getMessage()
+        ];
     }
 }
 
@@ -639,9 +667,13 @@ try {
             text-transform: uppercase;
             letter-spacing: 0.5px;
             white-space: nowrap;
+            position: sticky;
+            top: 0;
+            z-index: 10;
         }
         td { padding: 5px 10px; border-bottom: 1px solid #eee; font-size: 0.65rem; }
         tr:hover { background: #f5f5f5; }
+        tr:nth-child(even) { background: #fafafa; }
         
         .status {
             display: inline-block;
@@ -711,11 +743,27 @@ try {
             margin-top: 24px;
         }
         
+        .debug-info {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 12px;
+            font-size: 0.7rem;
+            margin-bottom: 16px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        .debug-info code {
+            background: #e9ecef;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        
         @media (max-width: 768px) {
             .metrics-grid { grid-template-columns: repeat(2, 1fr); }
             .admin-nav { padding: 0 12px; gap: 10px; }
             .admin-content { padding: 12px; }
             .admin-header { padding: 12px; }
+            th, td { font-size: 0.55rem; padding: 4px 6px; }
         }
     </style>
 </head>
@@ -1259,9 +1307,99 @@ try {
         <?php endif; ?>
 
         <!-- ============================================================ -->
+        <!-- ALL TABLES VIEW - SHOWS ALL DATA -->
+        <!-- ============================================================ -->
+        <?php if ($view === 'all_tables' && $isSuperAdmin): ?>
+        <div class="content-header">
+            <h1>📋 ALL DATABASE TABLES</h1>
+            <div class="timestamp">Complete database view · <?php echo date('Y-m-d H:i:s'); ?></div>
+            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back to Dashboard</a>
+        </div>
+
+        <!-- Debug info -->
+        <div class="debug-info">
+            <strong>📊 Database Status:</strong>
+            <code>Connected</code> · 
+            <strong>Tables:</strong> <?php echo count(array_filter($tableData, function($t) { return $t['exists']; })); ?> found
+            <?php if (!empty($tableData)): ?>
+            · <strong>Total Records:</strong> <?php echo array_sum(array_column($tableData, 'count')); ?>
+            <?php endif; ?>
+        </div>
+
+        <?php foreach ($tableData as $tableName => $data): ?>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title"><?php echo $data['label'] ?? $tableName; ?></span>
+                <span class="card-badge"><?php echo $data['count']; ?> RECORDS</span>
+                <?php if ($data['exists'] && hasPermission('export')): ?>
+                <a href="?export=<?php echo $tableName; ?>&export_id=all" class="btn btn-primary">📄 Export</a>
+                <?php endif; ?>
+            </div>
+            
+            <?php if (!$data['exists']): ?>
+            <div class="empty-state">
+                <div class="icon">📭</div>
+                <p>Table <code><?php echo $tableName; ?></code> does not exist</p>
+                <?php if (!empty($data['error'])): ?>
+                <p style="color:#dc3545; font-size:0.7rem; margin-top:4px;">Error: <?php echo safeHtml($data['error']); ?></p>
+                <?php endif; ?>
+            </div>
+            <?php elseif (empty($data['rows'])): ?>
+            <div class="empty-state">
+                <div class="icon">📭</div>
+                <p>No records found in <code><?php echo $tableName; ?></code></p>
+            </div>
+            <?php else: ?>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <?php foreach ($data['columns'] as $col): ?>
+                            <th><?php echo safeHtml($col); ?></th>
+                            <?php endforeach; ?>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($data['rows'] as $row): ?>
+                        <tr>
+                            <?php foreach ($data['columns'] as $col): ?>
+                            <td>
+                                <?php 
+                                $value = $row[$col] ?? '';
+                                if (is_null($value)) {
+                                    echo '<span style="color:#999;">NULL</span>';
+                                } elseif (is_string($value) && strlen($value) > 100) {
+                                    echo safeHtml(substr($value, 0, 100)) . '...';
+                                } elseif (is_numeric($value) && strpos($col, 'amount') !== false) {
+                                    echo number_format((float)$value, 2);
+                                } elseif (is_string($value) && in_array($col, ['status', 'type', 'action'])) {
+                                    $statusClass = match(strtolower($value)) {
+                                        'completed', 'success', 'paid', 'active' => 'success',
+                                        'pending', 'sent', 'pending_cashout' => 'pending',
+                                        'failed', 'error', 'expired' => 'failed',
+                                        default => 'info'
+                                    };
+                                    echo '<span class="status status-' . $statusClass . '">' . safeHtml($value) . '</span>';
+                                } else {
+                                    echo safeHtml($value);
+                                }
+                                ?>
+                            </td>
+                            <?php endforeach; ?>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
+        </div>
+        <?php endforeach; ?>
+        <?php endif; ?>
+
+        <!-- ============================================================ -->
         <!-- ACCESS DENIED -->
         <!-- ============================================================ -->
-        <?php if (!canView($view) && $view !== 'dashboard'): ?>
+        <?php if (!canView($view) && $view !== 'dashboard' && $view !== 'all_tables'): ?>
         <div class="card">
             <div class="empty-state">
                 <div class="icon">🚫</div>
