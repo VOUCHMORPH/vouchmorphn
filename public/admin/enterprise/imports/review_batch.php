@@ -147,7 +147,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
         } elseif ($action === 'execute') {
             // ============================================================
-            // FIXED: PROPER MULTI-DESTINATION PAYLOAD
+            // FIXED: Split identity vs institution destinations
             // ============================================================
             error_log("=== REVIEW_BATCH DEBUG: EXECUTION STARTED ===");
             
@@ -168,88 +168,181 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 error_log("[review_batch] SwapService initialized successfully");
                 
                 // ============================================================
-                // BUILD PAYLOAD - ENSURE MULTI_DESTINATION FORMAT
+                // SPLIT: Identity recipients vs institution recipients
                 // ============================================================
-                $payload = [
-                    'swap_type' => 'MULTI_DESTINATION',
-                    'reference' => $batch['batch_reference'],
-                    'from_institution' => $batch['source_institution'],
-                    'source_institution' => $batch['source_institution'],
-                    'asset_type' => $batch['source_asset_type'] ?? 'ACCOUNT',
-                    'source_identifier' => $batch['source_identifier'],
-                    'amount' => (float)$batch['total_amount'],
-                    'currency' => $batch['currency'] ?? 'BWP',
-                    'destinations' => []
-                ];
+                $identityDestinations = [];
+                $institutionDestinations = [];
                 
-                error_log("[review_batch] Base Payload: " . json_encode($payload, JSON_PRETTY_PRINT));
+                foreach ($destinations as $dest) {
+                    $isIdentity = ($dest['is_identity_recipient'] ?? false) || ($dest['institution'] ?? '') === 'IDENTITY_RECIPIENT';
+                    if ($isIdentity) {
+                        $identityDestinations[] = $dest;
+                    } else {
+                        $institutionDestinations[] = $dest;
+                    }
+                }
+                
+                error_log("[review_batch] Identity destinations: " . count($identityDestinations));
+                error_log("[review_batch] Institution destinations: " . count($institutionDestinations));
+                
+                $allResults = [];
+                $overallSuccess = 0;
+                $overallFailed = 0;
+                $overallPending = 0;
                 
                 // ============================================================
-                // BUILD DESTINATIONS - WITH PROPER FIELDS
+                // 1. IDENTITY DESTINATIONS - One initiateSwapToIdentity() each
                 // ============================================================
-                foreach ($destinations as $idx => $dest) {
-                    error_log("[review_batch] Processing destination $idx: " . json_encode($dest));
+                foreach ($identityDestinations as $dest) {
+                    error_log("[review_batch] Processing identity destination: " . json_encode($dest));
                     
-                    // Determine institution
-                    $institution = $dest['institution'] ?? 'UNKNOWN';
-                    $assetType = $dest['asset_type'] ?? 'WALLET';
-                    $isIdentity = ($dest['is_identity_recipient'] ?? false) || $institution === 'IDENTITY_RECIPIENT';
-                    
-                    // Build destination payload
-                    $destPayload = [
-                        'to_institution' => $isIdentity ? 'VOUCHMORPH' : $institution,
-                        'destination_institution' => $isIdentity ? 'VOUCHMORPH' : $institution,
-                        'destination_asset_type' => $isIdentity ? 'IDENTITY' : $assetType,
-                        'destination_identifier' => $dest['identifier'],
-                        'destination_identifier_type' => $dest['identifier_type'] ?? 'account',
+                    $identityPayload = [
+                        'swap_type' => 'IDENTITY',
+                        'reference' => $batch['batch_reference'] . '_ID_' . $dest['destination_index'],
+                        'from_institution' => $batch['source_institution'],
+                        'source_institution' => $batch['source_institution'],
+                        'asset_type' => $batch['source_asset_type'] ?? 'ACCOUNT',
+                        'source_identifier' => $batch['source_identifier'],
                         'amount' => (float)$dest['amount'],
-                        'currency' => $dest['currency'] ?? 'BWP',
-                        'delivery_method' => $dest['delivery_method'] ?? 'DEPOSIT',
-                        'beneficiary_phone' => $dest['beneficiary_phone'] ?? null,
-                        'beneficiary_name' => $dest['beneficiary_name'] ?? null
+                        'currency' => $dest['currency'] ?? $batch['currency'] ?? 'BWP',
+                        'identity_type' => $dest['identity_type'] ?? 'national_id',
+                        'identity_value' => $dest['identity_value'] ?? $dest['identifier'],
                     ];
                     
-                    // Add identity-specific fields
-                    if ($isIdentity) {
-                        $destPayload['identity_type'] = $dest['identity_type'] ?? 'national_id';
-                        $destPayload['identity_value'] = $dest['identity_value'] ?? $dest['identifier'];
-                        $destPayload['is_identity_recipient'] = true;
-                        error_log("[review_batch] Destination $idx is IDENTITY recipient");
+                    if (!empty($dest['beneficiary_phone'])) {
+                        $identityPayload['notification_phone'] = $dest['beneficiary_phone'];
                     }
                     
-                    $payload['destinations'][] = $destPayload;
-                    error_log("[review_batch] Destination $idx payload: " . json_encode($destPayload));
+                    error_log("[review_batch] Identity payload: " . json_encode($identityPayload));
+                    
+                    try {
+                        $idResult = $swapService->executeAtomicSwap($identityPayload);
+                        $overallPending++;  // Identity swaps go to pending confirmation
+                        
+                        $stmt = $db->prepare("
+                            UPDATE disbursement_destinations
+                            SET status = 'PENDING_IDENTITY_CONFIRMATION',
+                                hold_reference = :hold_ref
+                            WHERE batch_id = :batch_id AND destination_index = :idx
+                        ");
+                        $stmt->execute([
+                            ':hold_ref' => $idResult['hold_reference'] ?? null,
+                            ':batch_id' => $batchId,
+                            ':idx' => $dest['destination_index'],
+                        ]);
+                        
+                        $allResults[] = [
+                            'destination_index' => $dest['destination_index'],
+                            'type' => 'identity',
+                            'result' => $idResult
+                        ];
+                        
+                        error_log("[review_batch] Identity destination {$dest['destination_index']} placed on hold");
+                        
+                    } catch (Exception $e) {
+                        $overallFailed++;
+                        error_log("[review_batch] Identity destination {$dest['destination_index']} failed: " . $e->getMessage());
+                        
+                        $stmt = $db->prepare("
+                            UPDATE disbursement_destinations
+                            SET status = 'FAILED',
+                                error_message = :error
+                            WHERE batch_id = :batch_id AND destination_index = :idx
+                        ");
+                        $stmt->execute([
+                            ':error' => $e->getMessage(),
+                            ':batch_id' => $batchId,
+                            ':idx' => $dest['destination_index'],
+                        ]);
+                    }
                 }
                 
                 // ============================================================
-                // FINAL PAYLOAD DEBUG
+                // 2. INSTITUTION DESTINATIONS - Always MULTI_DESTINATION
+                //    Works for 1 or more destinations
                 // ============================================================
-                error_log("=== REVIEW_BATCH DEBUG: FINAL PAYLOAD ===");
-                error_log("Destinations in payload: " . count($payload['destinations']));
-                error_log("Full Payload: " . json_encode($payload, JSON_PRETTY_PRINT));
-                
-                // Save payload to file for inspection
-                $debugFile = '/tmp/payload_debug_' . date('Ymd_His') . '.json';
-                file_put_contents($debugFile, json_encode($payload, JSON_PRETTY_PRINT));
-                error_log("Payload saved to: " . $debugFile);
+                if (!empty($institutionDestinations)) {
+                    error_log("[review_batch] Processing " . count($institutionDestinations) . " institution destinations via MULTI_DESTINATION");
+                    
+                    $multiPayload = [
+                        'swap_type' => 'MULTI_DESTINATION',
+                        'reference' => $batch['batch_reference'],
+                        'from_institution' => $batch['source_institution'],
+                        'source_institution' => $batch['source_institution'],
+                        'asset_type' => $batch['source_asset_type'] ?? 'ACCOUNT',
+                        'source_identifier' => $batch['source_identifier'],
+                        'amount' => array_sum(array_column($institutionDestinations, 'amount')),
+                        'currency' => $batch['currency'] ?? 'BWP',
+                        'destinations' => [],
+                    ];
+                    
+                    foreach ($institutionDestinations as $dest) {
+                        $multiPayload['destinations'][] = [
+                            'to_institution' => $dest['institution'],
+                            'destination_institution' => $dest['institution'],
+                            'destination_asset_type' => $dest['asset_type'] ?? 'WALLET',
+                            'destination_identifier' => $dest['identifier'],
+                            'destination_identifier_type' => $dest['identifier_type'] ?? 'account',
+                            'amount' => (float)$dest['amount'],
+                            'currency' => $dest['currency'] ?? 'BWP',
+                            'delivery_method' => $dest['delivery_method'] ?? 'DEPOSIT',
+                            'beneficiary_phone' => $dest['beneficiary_phone'] ?? null,
+                            'beneficiary_name' => $dest['beneficiary_name'] ?? null,
+                        ];
+                    }
+                    
+                    error_log("[review_batch] MULTI_DESTINATION payload: " . json_encode($multiPayload, JSON_PRETTY_PRINT));
+                    
+                    $multiResult = $swapService->executeAtomicSwap($multiPayload);
+                    
+                    error_log("[review_batch] MULTI_DESTINATION result: " . json_encode($multiResult, JSON_PRETTY_PRINT));
+                    
+                    $overallSuccess += $multiResult['successful_destinations'] ?? 0;
+                    $overallFailed += $multiResult['failed_destinations'] ?? 0;
+                    
+                    // Map result rows back to institutionDestinations by array position
+                    // executeMultiDestinationSwap() preserves input order in results
+                    foreach ($multiResult['destinations'] ?? [] as $idx => $destResult) {
+                        $origDest = $institutionDestinations[$idx] ?? null;
+                        if (!$origDest) continue;
+                        
+                        $stmt = $db->prepare("
+                            UPDATE disbursement_destinations
+                            SET status = :status,
+                                hold_reference = :hold_ref,
+                                transaction_reference = :tx_ref,
+                                error_message = :error
+                            WHERE batch_id = :batch_id AND destination_index = :idx
+                        ");
+                        $stmt->execute([
+                            ':status' => $destResult['status'] ?? 'FAILED',
+                            ':hold_ref' => $destResult['hold_reference'] ?? null,
+                            ':tx_ref' => $destResult['transaction_reference'] ?? null,
+                            ':error' => $destResult['error'] ?? null,
+                            ':batch_id' => $batchId,
+                            ':idx' => $origDest['destination_index'],
+                        ]);
+                    }
+                    
+                    $allResults[] = [
+                        'type' => 'multi_destination',
+                        'result' => $multiResult
+                    ];
+                }
                 
                 // ============================================================
-                // EXECUTE SWAP
+                // ROLL UP BATCH STATUS
                 // ============================================================
-                error_log("[review_batch] Executing multi-destination swap with " . count($payload['destinations']) . " destinations");
+                $finalStatus = 'completed';
+                if ($overallFailed > 0 && $overallSuccess > 0) {
+                    $finalStatus = 'partial_success';
+                } elseif ($overallFailed > 0 && $overallPending == 0 && $overallSuccess == 0) {
+                    $finalStatus = 'failed';
+                } elseif ($overallPending > 0) {
+                    $finalStatus = 'pending_identity_confirmation';
+                }
                 
-                $result = $swapService->executeAtomicSwap($payload);
-                
-                error_log("[review_batch] Swap completed, status: " . ($result['status'] ?? 'unknown'));
-                error_log("[review_batch] Result: " . json_encode($result, JSON_PRETTY_PRINT));
-                
-                // ============================================================
-                // UPDATE BATCH STATUS
-                // ============================================================
-                $status = $result['status'] ?? 'COMPLETED';
-                $successCount = $result['successful_destinations'] ?? 0;
-                $failedCount = $result['failed_destinations'] ?? 0;
-                $pendingCount = $result['pending_count'] ?? 0;
+                error_log("[review_batch] Final status: $finalStatus (success: $overallSuccess, failed: $overallFailed, pending: $overallPending)");
                 
                 $stmt = $db->prepare("
                     UPDATE disbursement_batches 
@@ -261,49 +354,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         executed_at = NOW(),
                         results_payload = :results::jsonb,
                         completed_at = CASE 
-                            WHEN LOWER(:status) IN ('completed', 'success') THEN NOW() 
+                            WHEN :status IN ('completed', 'partial_success') THEN NOW() 
                             ELSE completed_at 
                         END,
                         updated_at = NOW()
                     WHERE id = :id
                 ");
                 $stmt->execute([
-                    ':status' => $status,
-                    ':success' => $successCount,
-                    ':failed' => $failedCount,
-                    ':pending' => $pendingCount,
+                    ':status' => $finalStatus,
+                    ':success' => $overallSuccess,
+                    ':failed' => $overallFailed,
+                    ':pending' => $overallPending,
                     ':user_id' => $userId,
-                    ':results' => json_encode($result),
+                    ':results' => json_encode($allResults),
                     ':id' => $batchId
                 ]);
                 
-                // ============================================================
-                // UPDATE DESTINATION STATUSES
-                // ============================================================
-                if (isset($result['destinations']) && is_array($result['destinations'])) {
-                    foreach ($result['destinations'] as $idx => $destResult) {
-                        $destIndex = $destResult['index'] ?? $idx;
-                        $stmt = $db->prepare("
-                            UPDATE disbursement_destinations 
-                            SET status = :status,
-                                hold_reference = :hold_ref,
-                                transaction_reference = :tx_ref,
-                                error_message = :error
-                            WHERE batch_id = :batch_id AND destination_index = :idx
-                        ");
-                        $stmt->execute([
-                            ':status' => $destResult['status'] ?? ($destResult['success'] ? 'SUCCESS' : 'FAILED'),
-                            ':hold_ref' => $destResult['hold_reference'] ?? null,
-                            ':tx_ref' => $destResult['transaction_reference'] ?? null,
-                            ':error' => $destResult['error'] ?? $destResult['message'] ?? null,
-                            ':batch_id' => $batchId,
-                            ':idx' => $destIndex + 1
-                        ]);
-                    }
-                }
-                
-                $success = "Batch executed successfully! $successCount succeeded, $failedCount failed.";
-                $batch['status'] = $status;
+                $success = "Batch executed! $overallSuccess succeeded, $overallFailed failed, $overallPending pending identity confirmation.";
+                $batch['status'] = $finalStatus;
                 
             } catch (Exception $e) {
                 error_log("[review_batch] Execution error: " . $e->getMessage());
@@ -413,6 +481,8 @@ $status = strtolower($batch['status'] ?? 'draft');
         .status-rejected { background: #fbeceb; color: var(--seal-red); }
         .status-completed { background: #dcfce7; color: #166534; }
         .status-failed { background: #fbeceb; color: var(--seal-red); }
+        .status-pending_identity_confirmation { background: #dbeafe; color: #1e40af; }
+        .status-partial_success { background: #fef3c7; color: #92400e; }
         .readonly-badge {
             display: inline-block;
             padding: 4px 12px;
