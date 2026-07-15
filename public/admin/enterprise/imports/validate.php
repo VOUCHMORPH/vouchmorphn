@@ -3,7 +3,6 @@ require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
-use PhpOffice\PhpSpreadsheet\IOFactory;  // <-- MOVED THIS TO THE TOP
 
 $db = DBConnection::getConnection();
 $orgId = getOrganizationId();
@@ -146,114 +145,6 @@ if (file_exists($filePath)) {
             }
         }
         fclose($handle);
-    } elseif ($extension === 'xlsx' || $extension === 'xls') {
-        // Excel processing with PhpSpreadsheet
-        try {
-            require_once '../../../../vendor/autoload.php';
-            // use PhpOffice\PhpSpreadsheet\IOFactory; // <-- REMOVED THIS LINE FROM HERE
-            
-            $spreadsheet = IOFactory::load($filePath);
-            $worksheet = $spreadsheet->getActiveSheet();
-            $rows = $worksheet->toArray();
-            $headers = array_shift($rows);
-            
-            foreach ($rows as $row) {
-                $rowNumber++;
-                $mapped = [];
-                $errors = [];
-                $warnings = [];
-                
-                foreach ($headers as $idx => $header) {
-                    $systemField = $mapping[$header] ?? null;
-                    if ($systemField && isset($row[$idx])) {
-                        $mapped[$systemField] = trim($row[$idx]);
-                    }
-                }
-                
-                // Same validation logic as CSV
-                if (empty($mapped['amount']) || $mapped['amount'] <= 0) {
-                    $errors[] = 'Invalid or missing amount';
-                } else {
-                    $totalAmount += floatval($mapped['amount']);
-                }
-                
-                if (empty($mapped['phone']) && empty($mapped['account_number']) && empty($mapped['wallet_id'])) {
-                    $errors[] = 'No destination identifier (phone/account/wallet)';
-                }
-                
-                if (empty($mapped['full_name']) && empty($mapped['first_name'])) {
-                    $warnings[] = 'Missing recipient name';
-                }
-                
-                // Phone validation
-                if (!empty($mapped['phone'])) {
-                    $phone = preg_replace('/[^0-9]/', '', $mapped['phone']);
-                    if (strlen($phone) === 8) {
-                        $mapped['phone'] = '+267' . $phone;
-                        $warnings[] = 'Phone number normalized to +267 format';
-                    } elseif (strlen($phone) === 9 && substr($phone, 0, 1) === '0') {
-                        $mapped['phone'] = '+267' . substr($phone, 1);
-                        $warnings[] = 'Phone number normalized to +267 format';
-                    }
-                }
-                
-                $rowData = [
-                    'batch_id' => $batchId,
-                    'row_number' => $rowNumber,
-                    'raw_data' => json_encode($row),
-                    'mapped_data' => json_encode($mapped),
-                    'recipient_name' => $mapped['full_name'] ?? ($mapped['first_name'] . ' ' . ($mapped['last_name'] ?? '')),
-                    'recipient_phone' => $mapped['phone'] ?? null,
-                    'recipient_national_id' => $mapped['national_id'] ?? null,
-                    'amount' => floatval($mapped['amount'] ?? 0),
-                    'currency' => $mapped['currency'] ?? 'BWP',
-                    'destination_type' => $mapped['destination_type'] ?? ($mapped['wallet_id'] ? 'WALLET' : ($mapped['account_number'] ? 'ACCOUNT' : 'PHONE')),
-                    'destination_provider' => $mapped['destination_provider'] ?? null,
-                    'destination_value' => $mapped['phone'] ?? $mapped['account_number'] ?? $mapped['wallet_id'] ?? null,
-                    'validation_status' => empty($errors) ? 'VALID' : 'INVALID',
-                    'validation_errors' => json_encode($errors),
-                    'validation_warnings' => json_encode($warnings)
-                ];
-                
-                $insertStmt = $db->prepare("
-                    INSERT INTO import_rows (
-                        batch_id, row_number, raw_data, mapped_data, recipient_name, recipient_phone,
-                        recipient_national_id, amount, currency, destination_type, destination_provider,
-                        destination_value, validation_status, validation_errors, validation_warnings
-                    ) VALUES (
-                        :batch_id, :row_number, :raw_data, :mapped_data, :recipient_name, :recipient_phone,
-                        :recipient_national_id, :amount, :currency, :destination_type, :destination_provider,
-                        :destination_value, :validation_status, :validation_errors, :validation_warnings
-                    )
-                ");
-                
-                $insertStmt->execute([
-                    ':batch_id' => $batchId,
-                    ':row_number' => $rowNumber,
-                    ':raw_data' => $rowData['raw_data'],
-                    ':mapped_data' => $rowData['mapped_data'],
-                    ':recipient_name' => $rowData['recipient_name'],
-                    ':recipient_phone' => $rowData['recipient_phone'],
-                    ':recipient_national_id' => $rowData['recipient_national_id'],
-                    ':amount' => $rowData['amount'],
-                    ':currency' => $rowData['currency'],
-                    ':destination_type' => $rowData['destination_type'],
-                    ':destination_provider' => $rowData['destination_provider'],
-                    ':destination_value' => $rowData['destination_value'],
-                    ':validation_status' => $rowData['validation_status'],
-                    ':validation_errors' => $rowData['validation_errors'],
-                    ':validation_warnings' => $rowData['validation_warnings']
-                ]);
-                
-                if (empty($errors)) {
-                    $validRows[] = $rowData;
-                } else {
-                    $invalidRows[] = $rowData;
-                }
-            }
-        } catch (Exception $e) {
-            error_log("Excel parsing error: " . $e->getMessage());
-        }
     } elseif ($extension === 'json') {
         $content = file_get_contents($filePath);
         $data = json_decode($content, true);
@@ -348,6 +239,9 @@ if (file_exists($filePath)) {
                 $invalidRows[] = $rowData;
             }
         }
+    } else {
+        // Unsupported file type
+        die("Unsupported file type: " . $extension . ". Please upload CSV or JSON files.");
     }
 }
 
