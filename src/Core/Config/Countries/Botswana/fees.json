@@ -11,6 +11,12 @@
         "description": "Swap levy (government regulatory fee)"
       }
     },
+    "multi_source": {
+      "fee_type": "F8",
+      "extra_source_fee": 1.00,
+      "max_total_fee": 15.00,
+      "description": "Extra P1 fee per additional source beyond the first, capped at P15 total"
+    },
     "distribution": {
       "apply_after_fees": ["F7"],
       "base_distribution_amount": "F1 - F7",
@@ -72,6 +78,12 @@
         "description": "Swap levy (government regulatory fee)"
       }
     },
+    "multi_source": {
+      "fee_type": "F8",
+      "extra_source_fee": 1.00,
+      "max_total_fee": 15.00,
+      "description": "Extra P1 fee per additional source beyond the first, capped at P15 total"
+    },
     "distribution": {
       "apply_after_fees": ["F7"],
       "base_distribution_amount": "F1 - F7",
@@ -122,6 +134,18 @@
       "owner": "VOUCHMORPH",
       "type": "flat",
       "description": "Government-mandated transaction levy collected by VouchMorph"
+    },
+    "F8": {
+      "name": "Multi-Source Fee",
+      "owner": "VOUCHMORPH",
+      "type": "flat_per_extra_source",
+      "description": "Extra fee per additional source account beyond the first, in a multi-source swap"
+    },
+    "F10": {
+      "name": "Retry Fee",
+      "owner": "VOUCHMORPH",
+      "type": "flat",
+      "description": "Reduced fee charged on a retried swap attempt (generate-code fee only)"
     },
     "F81": {
       "name": "VAT",
