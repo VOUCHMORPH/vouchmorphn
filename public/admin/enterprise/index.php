@@ -126,7 +126,7 @@ try {
         $metrics['approved_for_disbursement'] = (int)$stmt->fetchColumn();
     }
 
-    // For approvers - pending approvals (FIXED: show all pending, not just for approvers)
+    // For approvers - pending approvals (show all pending)
     $stmt = $pdo->prepare("
         SELECT COUNT(*) as total 
         FROM disbursement_batches 
@@ -147,14 +147,14 @@ try {
         // Auditors/viewers see completed only
         $statusFilter = "AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')";
     } elseif ($isApprover) {
-        // Approvers see pending and approved
-        $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')";
+        // Approvers see pending, approved, and draft
+        $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')";
     } elseif ($isSupervisor) {
         // Supervisors see approved and completed
         $statusFilter = "AND status IN ('approved', 'completed', 'executed', 'APPROVED', 'COMPLETED', 'EXECUTED')";
     } elseif ($isLoader) {
-        // FIXED: Loaders see ALL their batches + pending batches
-        $statusFilter = "AND (created_by = :user_id OR status IN ('pending', 'pending_approval', 'approved'))";
+        // FIXED: Loaders see ALL their batches + pending + approved + draft
+        $statusFilter = "AND (created_by = :user_id OR status IN ('pending', 'pending_approval', 'approved', 'draft'))";
         $statusParams[':user_id'] = $userId;
     }
 
@@ -169,7 +169,8 @@ try {
             CASE 
                 WHEN status IN ('pending', 'pending_approval') THEN 1
                 WHEN status = 'approved' THEN 2
-                ELSE 3
+                WHEN status = 'draft' THEN 3
+                ELSE 4
             END,
             created_at DESC 
         LIMIT 15
@@ -261,6 +262,7 @@ function getRoleLabel($role) {
     <title>VOUCHMORPH · Enterprise Dashboard · <?php echo safeHtml($orgName); ?></title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        /* ... (all existing styles remain the same) ... */
         * { margin:0; padding:0; box-sizing:border-box; }
         body {
             font-family: 'Inter', sans-serif;
