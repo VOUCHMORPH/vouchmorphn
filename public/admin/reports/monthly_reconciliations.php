@@ -7,7 +7,7 @@
 // Simple session check
 session_start();
 if (!isset($_SESSION['admin_id']) && !isset($_SESSION['admin_username'])) {
-    header('Location: admin_login.php');
+    header('Location: ../admin_login.php');
     exit();
 }
 
@@ -251,6 +251,9 @@ $totalRetries = isset($retryStats['total_retries']) ? (int)$retryStats['total_re
 $freeRetries = isset($retryStats['free_retries']) ? (int)$retryStats['free_retries'] : 0;
 $paidRetries = isset($retryStats['paid_retries']) ? (int)$retryStats['paid_retries'] : 0;
 
+// Check if current month
+$isCurrentMonth = ($year === date('Y') && $month === date('m'));
+
 // CSV Export
 if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     header('Content-Type: text/csv');
@@ -276,6 +279,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     fputcsv($output, array('Total VAT', number_format($totalVat, 2)));
     fputcsv($output, array('Total Retries', $totalRetries));
     fputcsv($output, array('Free Retries', $freeRetries));
+    fputcsv($output, array('Paid Retries', $paidRetries));
     
     fclose($output);
     exit;
@@ -493,17 +497,6 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
             border-color: #1e7e34;
         }
 
-        .btn-secondary {
-            background: #6c757d;
-            color: white;
-            border: 2px solid #6c757d;
-        }
-
-        .btn-secondary:hover {
-            background: #545b62;
-            border-color: #545b62;
-        }
-
         .btn-outline {
             background: transparent;
             color: #001B44;
@@ -513,6 +506,17 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
         .btn-outline:hover {
             background: #001B44;
             color: #fff;
+        }
+
+        .btn-current {
+            background: #FFDA63;
+            color: #001B44;
+            border: 2px solid #FFDA63;
+        }
+
+        .btn-current:hover {
+            background: #f5c842;
+            border-color: #f5c842;
         }
 
         .month-nav {
@@ -546,6 +550,15 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
             color: #001B44;
             font-size: 0.9rem;
             font-weight: 600;
+        }
+
+        .current-indicator {
+            padding: 4px 12px;
+            background: #28a745;
+            color: #fff;
+            font-size: 0.7rem;
+            font-weight: 600;
+            border-radius: 4px;
         }
 
         .stats-grid {
@@ -698,6 +711,10 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
             text-align: right;
         }
 
+        .text-center {
+            text-align: center;
+        }
+
         .admin-footer {
             background: #001B44;
             color: #A1B5D8;
@@ -746,36 +763,43 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                 <div class="user-name"><?php echo $_SESSION['admin_full_name'] ?? $_SESSION['admin_username'] ?? 'Administrator'; ?></div>
                 <div class="user-role"><?php echo $_SESSION['admin_role'] ?? 'Admin'; ?></div>
             </div>
-            <a href="admin_logout.php" class="logout-btn">LOGOUT</a>
+            <a href="../admin_logout.php" class="logout-btn">LOGOUT</a>
         </div>
     </header>
 
     <nav class="admin-nav">
-        <a href="admin_dashboard.php" class="nav-item">DASHBOARD</a>
-        <a href="?view=reports" class="nav-item active">MONTHLY REPORT</a>
-        <a href="#" class="nav-item">TRANSACTIONS</a>
-        <a href="#" class="nav-item">AUDIT</a>
+        <a href="../admin_dashboard.php" class="nav-item">DASHBOARD</a>
+        <a href="daily_reconciliations.php" class="nav-item">DAILY REPORT</a>
+        <a href="monthly_reconciliations.php" class="nav-item active">MONTHLY REPORT</a>
+        <a href="audit_trails.php" class="nav-item">AUDIT</a>
+        <a href="suspicious_activity_report.php" class="nav-item">SUSPICIOUS</a>
         <?php if (isset($_SESSION['admin_role_id']) && $_SESSION['admin_role_id'] == 999): ?>
-            <a href="#" class="nav-item">CONFIGURATION</a>
+            <a href="../admin_management.php" class="nav-item">ADMIN</a>
         <?php endif; ?>
-        <a href="admin_dashboard.php" class="dashboard-link">← Back to Dashboard</a>
+        <a href="../admin_dashboard.php" class="dashboard-link">← Back to Dashboard</a>
     </nav>
 
     <main class="admin-content">
         <div class="content-header">
             <div>
                 <h1>📆 Monthly Reconciliation Report</h1>
-                <div class="timestamp"><?php echo $monthName; ?> · Generated: <?php echo date('Y-m-d H:i:s'); ?></div>
+                <div class="timestamp">
+                    <?php echo $monthName; ?>
+                    <?php if ($isCurrentMonth): ?>
+                        <span class="current-indicator">CURRENT</span>
+                    <?php endif; ?>
+                    · Generated: <?php echo date('Y-m-d H:i:s'); ?>
+                </div>
             </div>
             <div class="report-actions">
                 <div class="month-nav">
                     <a href="?year=<?php echo explode('-', $prevMonth)[0]; ?>&month=<?php echo explode('-', $prevMonth)[1]; ?>" class="nav-btn">←</a>
                     <div class="month-badge"><?php echo $monthName; ?></div>
                     <a href="?year=<?php echo explode('-', $nextMonth)[0]; ?>&month=<?php echo explode('-', $nextMonth)[1]; ?>" class="nav-btn">→</a>
-                    <a href="?year=<?php echo date('Y'); ?>&month=<?php echo date('m'); ?>" class="nav-btn">TODAY</a>
+                    <a href="?year=<?php echo date('Y'); ?>&month=<?php echo date('m'); ?>" class="btn btn-current">CURRENT</a>
                 </div>
                 <a href="?<?php echo http_build_query(array_merge($_GET, array('export' => 'csv'))); ?>" class="btn btn-success">📥 CSV</a>
-                <a href="admin_dashboard.php" class="btn btn-outline">⬅ BACK</a>
+                <a href="../admin_dashboard.php" class="btn btn-outline">⬅ BACK</a>
             </div>
         </div>
 
@@ -804,6 +828,29 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                     <span class="badge-status badge-warning">P: <?php echo number_format($pending); ?></span>
                 </div>
                 <div class="sub">Cancelled: <?php echo number_format($cancelled); ?></div>
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Min Amount</h3>
+                <div class="value"><?php echo number_format($minAmount, 2); ?></div>
+                <div class="sub">Smallest transaction</div>
+            </div>
+            <div class="stat-card">
+                <h3>Max Amount</h3>
+                <div class="value"><?php echo number_format($maxAmount, 2); ?></div>
+                <div class="sub">Largest transaction</div>
+            </div>
+            <div class="stat-card">
+                <h3>Total Retries</h3>
+                <div class="value"><?php echo number_format($totalRetries); ?></div>
+                <div class="sub">Free: <?php echo number_format($freeRetries); ?> · Paid: <?php echo number_format($paidRetries); ?></div>
+            </div>
+            <div class="stat-card">
+                <h3>Days Active</h3>
+                <div class="value"><?php echo count($dailyBreakdown); ?></div>
+                <div class="sub">Days with transactions</div>
             </div>
         </div>
 
@@ -948,38 +995,6 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                         <?php else: ?>
                             <tr><td colspan="5" style="text-align:center;">No corridor activity</td></tr>
                         <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- Retry Statistics -->
-        <div class="section">
-            <div class="section-header">
-                <h2>🔄 Cashout Retry Statistics</h2>
-                <span class="badge">From cashout_retry_tracking</span>
-            </div>
-            <div class="section-content">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Metric</th>
-                            <th class="text-right">Value</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td><strong>Total Retries</strong></td>
-                            <td class="text-right"><?php echo number_format($totalRetries); ?></td>
-                        </tr>
-                        <tr>
-                            <td><strong>Free Retries Used</strong></td>
-                            <td class="text-right"><?php echo number_format($freeRetries); ?></td>
-                        </tr>
-                        <tr>
-                            <td><strong>Paid Retries</strong></td>
-                            <td class="text-right"><?php echo number_format($paidRetries); ?></td>
-                        </tr>
                     </tbody>
                 </table>
             </div>
