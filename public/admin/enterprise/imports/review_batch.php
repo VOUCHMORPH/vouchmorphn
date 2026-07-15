@@ -331,7 +331,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 
                 // ============================================================
-                // ROLL UP BATCH STATUS
+                // ROLL UP BATCH STATUS - FIXED: No ambiguous parameter
                 // ============================================================
                 $finalStatus = 'completed';
                 if ($overallFailed > 0 && $overallSuccess > 0) {
@@ -342,8 +342,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $finalStatus = 'pending_identity_confirmation';
                 }
                 
+                // Determine if status is terminal (completed/success) - FIXED: use PHP, not SQL
+                $isTerminal = in_array($finalStatus, ['completed', 'success', 'COMPLETED']);
+                
                 error_log("[review_batch] Final status: $finalStatus (success: $overallSuccess, failed: $overallFailed, pending: $overallPending)");
                 
+                // FIXED: Each parameter appears ONCE to avoid type ambiguity
                 $stmt = $db->prepare("
                     UPDATE disbursement_batches 
                     SET status = :status,
@@ -353,10 +357,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         executed_by = :user_id,
                         executed_at = NOW(),
                         results_payload = :results::jsonb,
-                        completed_at = CASE 
-                            WHEN :status IN ('completed', 'partial_success') THEN NOW() 
-                            ELSE completed_at 
-                        END,
+                        completed_at = CASE WHEN :is_terminal::boolean THEN NOW() ELSE completed_at END,
                         updated_at = NOW()
                     WHERE id = :id
                 ");
@@ -367,6 +368,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':pending' => $overallPending,
                     ':user_id' => $userId,
                     ':results' => json_encode($allResults),
+                    ':is_terminal' => $isTerminal ? 't' : 'f',
                     ':id' => $batchId
                 ]);
                 
