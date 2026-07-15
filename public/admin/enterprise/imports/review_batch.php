@@ -86,34 +86,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($action === 'submit_for_approval') {
             $stmt = $db->prepare("
                 UPDATE disbursement_batches 
-                SET status = 'PENDING_APPROVAL',
+                SET status = 'pending_approval',
                     submitted_by = :user_id,
                     submitted_at = NOW(),
                     updated_at = NOW()
-                WHERE id = :id AND status = 'DRAFT'
+                WHERE id = :id AND LOWER(status) = 'draft'
             ");
             $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
             $success = "Batch submitted for approval.";
-            $batch['status'] = 'PENDING_APPROVAL';
+            $batch['status'] = 'pending_approval';
             
         } elseif ($action === 'approve') {
             $stmt = $db->prepare("
                 UPDATE disbursement_batches 
-                SET status = 'APPROVED',
+                SET status = 'approved',
                     approved_by = :user_id,
                     approved_at = NOW(),
                     updated_at = NOW()
-                WHERE id = :id AND status = 'PENDING_APPROVAL'
+                WHERE id = :id AND LOWER(status) = 'pending_approval'
             ");
             $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
             $success = "Batch approved.";
-            $batch['status'] = 'APPROVED';
+            $batch['status'] = 'approved';
             
         } elseif ($action === 'reject') {
             $reason = $_POST['rejection_reason'] ?? 'No reason provided';
             $stmt = $db->prepare("
                 UPDATE disbursement_batches 
-                SET status = 'REJECTED',
+                SET status = 'rejected',
                     rejection_reason = :reason,
                     reviewed_by = :user_id,
                     reviewed_at = NOW(),
@@ -122,7 +122,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ");
             $stmt->execute([':reason' => $reason, ':user_id' => $userId, ':id' => $batchId]);
             $success = "Batch rejected.";
-            $batch['status'] = 'REJECTED';
+            $batch['status'] = 'rejected';
             
         } elseif ($action === 'execute') {
             // Execute the multi-destination swap
@@ -220,7 +220,7 @@ $roleDisplay = strtoupper($user['role'] ?? 'USER');
 $canSubmit = in_array($user['role'] ?? '', ['owner', 'program_officer', 'department_head']) && $canEdit;
 $canApprove = in_array($user['role'] ?? '', ['owner', 'approver', 'senior_approver']);
 $canExecute = in_array($user['role'] ?? '', ['owner']);
-$status = $batch['status'] ?? 'DRAFT';
+$status = strtolower($batch['status'] ?? 'draft');  // FIXED: always lowercase for comparison
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -230,7 +230,7 @@ $status = $batch['status'] ?? 'DRAFT';
     <title>Review & Approve · VouchMorph Enterprise</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ... (keep existing styles) ... */
+        /* ... (keep all existing styles - they're fine) ... */
         :root {
             --paper: #EEF1EF;
             --panel: #FFFFFF;
@@ -298,14 +298,12 @@ $status = $batch['status'] ?? 'DRAFT';
             text-transform: uppercase;
             display: inline-block;
         }
-        .status-DRAFT { background: var(--line); color: var(--ink-500); }
-        .status-PENDING_APPROVAL { background: #fef3c7; color: #92400e; }
-        .status-APPROVED { background: #dcfce7; color: #166534; }
-        .status-REJECTED { background: #fbeceb; color: var(--seal-red); }
-        .status-READY { background: #dbeafe; color: #1e40af; }
-        .status-PROCESSING { background: #e0e7ff; color: #3730a3; }
-        .status-COMPLETED { background: #dcfce7; color: #166534; }
-        .status-FAILED { background: #fbeceb; color: var(--seal-red); }
+        .status-draft { background: var(--line); color: var(--ink-500); }
+        .status-pending_approval { background: #fef3c7; color: #92400e; }
+        .status-approved { background: #dcfce7; color: #166534; }
+        .status-rejected { background: #fbeceb; color: var(--seal-red); }
+        .status-completed { background: #dcfce7; color: #166534; }
+        .status-failed { background: #fbeceb; color: var(--seal-red); }
         .readonly-badge {
             display: inline-block;
             padding: 4px 12px;
@@ -337,7 +335,6 @@ $status = $batch['status'] ?? 'DRAFT';
         .btn-secondary:hover { background: var(--line-strong); }
         .btn-outline { background: transparent; border: 2px solid var(--line); }
         .btn-outline:hover { border-color: var(--brass); }
-        .btn-disabled { opacity: 0.5; cursor: not-allowed; }
         .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
         th { background: var(--ink-900); color: white; padding: 10px; text-align: left; }
@@ -554,7 +551,7 @@ $status = $batch['status'] ?? 'DRAFT';
             </div>
             <div class="actions-bar">
                 <!-- Submit for Approval - Only for OWN batches in DRAFT -->
-                <?php if ($status === 'DRAFT' && $canSubmit && !$isReadOnly): ?>
+                <?php if ($status === 'draft' && $canSubmit && !$isReadOnly): ?>
                 <form method="POST" style="display:inline;">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
                     <input type="hidden" name="action" value="submit_for_approval">
@@ -564,8 +561,10 @@ $status = $batch['status'] ?? 'DRAFT';
                 </form>
                 <?php endif; ?>
 
-                <!-- Approve - For Approvers -->
-                <?php if ($status === 'PENDING_APPROVAL' && $canApprove): ?>
+                <!-- ============================================================ -->
+                <!-- APPROVE BUTTON - FIXED: Check for lowercase status -->
+                <!-- ============================================================ -->
+                <?php if ($status === 'pending_approval' && $canApprove): ?>
                 <form method="POST" style="display:inline;" onsubmit="return confirm('Approve this batch?')">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
                     <input type="hidden" name="action" value="approve">
@@ -587,7 +586,7 @@ $status = $batch['status'] ?? 'DRAFT';
                 <?php endif; ?>
 
                 <!-- Execute - For Owners -->
-                <?php if ($status === 'APPROVED' && $canExecute): ?>
+                <?php if ($status === 'approved' && $canExecute): ?>
                 <form method="POST" style="display:inline;" onsubmit="return confirm('Execute this multi-destination swap? This will move real funds.')">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
                     <input type="hidden" name="action" value="execute">
@@ -596,7 +595,7 @@ $status = $batch['status'] ?? 'DRAFT';
                 <?php endif; ?>
 
                 <!-- Edit Destinations - Only for OWN batches in DRAFT -->
-                <?php if ($status === 'DRAFT' && $canEdit && !$isReadOnly): ?>
+                <?php if ($status === 'draft' && $canEdit && !$isReadOnly): ?>
                 <a href="add_destinations.php?batch_id=<?php echo $batchId; ?>" class="btn btn-secondary">✏️ Edit Destinations</a>
                 <?php endif; ?>
 
