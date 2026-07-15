@@ -7,7 +7,7 @@
 // Simple session check
 session_start();
 if (!isset($_SESSION['admin_id']) && !isset($_SESSION['admin_username'])) {
-    header('Location: ../admin_login.php');
+    header('Location: admin_login.php');
     exit();
 }
 
@@ -291,65 +291,495 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Monthly Reconciliation - VouchMorph</title>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5; color: #333; padding: 20px; }
-        .container { max-width: 1400px; margin: 0 auto; }
-        .header { background: #1a1a2e; color: white; padding: 20px 30px; border-radius: 12px; margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; }
-        .header h1 { font-size: 24px; }
-        .header p { opacity: 0.8; font-size: 14px; }
-        .month-nav { display: flex; gap: 15px; align-items: center; flex-wrap: wrap; }
-        .month-nav .nav-btn { background: rgba(255,255,255,0.2); padding: 8px 20px; border-radius: 8px; text-decoration: none; color: white; }
-        .month-nav .nav-btn:hover { background: rgba(255,255,255,0.3); }
-        .month-badge { background: rgba(255,255,255,0.2); padding: 8px 20px; border-radius: 20px; font-size: 16px; font-weight: 600; }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 20px; margin-bottom: 25px; }
-        .stat-card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
-        .stat-card h3 { font-size: 14px; color: #666; margin-bottom: 10px; }
-        .stat-card .value { font-size: 28px; font-weight: bold; color: #1a1a2e; }
-        .stat-card .sub { font-size: 12px; color: #999; margin-top: 5px; }
-        .section { background: white; border-radius: 12px; margin-bottom: 25px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .section-header { background: #f8f9fa; padding: 15px 20px; border-bottom: 1px solid #e9ecef; display: flex; justify-content: space-between; align-items: center; }
-        .section-header h2 { font-size: 18px; font-weight: 600; }
-        .section-content { padding: 20px; overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; font-size: 14px; }
-        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; }
-        th { background: #f8f9fa; font-weight: 600; color: #495057; }
-        tr:hover { background: #f8f9fa; }
-        .badge { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
-        .badge-success { background: #d4edda; color: #155724; }
-        .badge-danger { background: #f8d7da; color: #721c24; }
-        .badge-warning { background: #fff3cd; color: #856404; }
-        .badge-info { background: #cce5ff; color: #004085; }
-        .badge-secondary { background: #e2e3e5; color: #383d41; }
-        .text-right { text-align: right; }
-        .btn { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s; text-decoration: none; display: inline-block; }
-        .btn-success { background: #28a745; color: white; }
-        .btn-success:hover { background: #1e7e34; }
-        .btn-secondary { background: #6c757d; color: white; }
-        .btn-secondary:hover { background: #545b62; }
-        .flex { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'IBM Plex Mono', monospace;
+            background: #f7f9fc;
+            color: #001B44;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .admin-header {
+            background: #001B44;
+            border-bottom: 5px solid #FFDA63;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: #fff;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 30px;
+            flex-wrap: wrap;
+        }
+
+        .logo {
+            font-size: 1.2rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+        }
+
+        .logo span {
+            color: #FFDA63;
+            margin-left: 10px;
+            font-size: 0.8rem;
+        }
+
+        .country-badge {
+            padding: 5px 15px;
+            background: rgba(255, 218, 99, 0.2);
+            border: 1px solid #FFDA63;
+            color: #FFDA63;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .user-details {
+            text-align: right;
+        }
+
+        .user-name {
+            font-weight: 600;
+            color: #FFDA63;
+        }
+
+        .user-role {
+            font-size: 0.7rem;
+            color: #A1B5D8;
+            text-transform: uppercase;
+        }
+
+        .logout-btn {
+            padding: 8px 16px;
+            background: transparent;
+            border: 2px solid #FFDA63;
+            color: #FFDA63;
+            text-decoration: none;
+            font-size: 0.8rem;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .logout-btn:hover {
+            background: #FFDA63;
+            color: #001B44;
+        }
+
+        .admin-nav {
+            background: #fff;
+            border-bottom: 2px solid #001B44;
+            padding: 0 30px;
+            display: flex;
+            gap: 30px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .nav-item {
+            padding: 15px 0;
+            color: #666;
+            text-decoration: none;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .nav-item:hover {
+            color: #001B44;
+        }
+
+        .nav-item.active {
+            color: #001B44;
+            border-bottom-color: #FFDA63;
+        }
+
+        .dashboard-link {
+            padding: 8px 16px;
+            background: #FFDA63;
+            color: #001B44;
+            text-decoration: none;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+
+        .dashboard-link:hover {
+            background: #f5c842;
+            transform: translateY(-1px);
+        }
+
+        .admin-content {
+            flex: 1;
+            padding: 30px;
+        }
+
+        .content-header {
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .content-header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #001B44;
+        }
+
+        .content-header .timestamp {
+            color: #666;
+            font-size: 0.8rem;
+        }
+
+        .report-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-block;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn-success {
+            background: #28a745;
+            color: white;
+            border: 2px solid #28a745;
+        }
+
+        .btn-success:hover {
+            background: #1e7e34;
+            border-color: #1e7e34;
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+            border: 2px solid #6c757d;
+        }
+
+        .btn-secondary:hover {
+            background: #545b62;
+            border-color: #545b62;
+        }
+
+        .btn-outline {
+            background: transparent;
+            color: #001B44;
+            border: 2px solid #001B44;
+        }
+
+        .btn-outline:hover {
+            background: #001B44;
+            color: #fff;
+        }
+
+        .month-nav {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .month-nav .nav-btn {
+            padding: 8px 16px;
+            background: #001B44;
+            color: #fff;
+            border: 2px solid #001B44;
+            text-decoration: none;
+            font-size: 0.8rem;
+            font-weight: 600;
+            transition: all 0.2s;
+            font-family: 'IBM Plex Mono', monospace;
+        }
+
+        .month-nav .nav-btn:hover {
+            background: #FFDA63;
+            color: #001B44;
+            border-color: #FFDA63;
+        }
+
+        .month-badge {
+            padding: 8px 20px;
+            background: #FFDA63;
+            color: #001B44;
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: #fff;
+            border: 2px solid #001B44;
+            padding: 20px;
+            box-shadow: 4px 4px 0 #A1B5D8;
+            transition: transform 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+        }
+
+        .stat-card h3 {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            color: #666;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+
+        .stat-card .value {
+            font-size: 2rem;
+            font-weight: 600;
+            color: #001B44;
+            line-height: 1.2;
+            word-break: break-word;
+        }
+
+        .stat-card .sub {
+            font-size: 0.7rem;
+            color: #666;
+            margin-top: 8px;
+        }
+
+        .section {
+            background: #fff;
+            border: 2px solid #001B44;
+            margin-bottom: 25px;
+            overflow: hidden;
+        }
+
+        .section-header {
+            background: #001B44;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .section-header h2 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #FFDA63;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .section-header .badge {
+            padding: 4px 12px;
+            background: rgba(255, 218, 99, 0.2);
+            color: #FFDA63;
+            font-size: 0.7rem;
+            font-weight: 600;
+            border: 1px solid #FFDA63;
+        }
+
+        .section-content {
+            padding: 20px;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+
+        th {
+            background: #f8f9fa;
+            padding: 12px;
+            font-weight: 600;
+            color: #001B44;
+            text-align: left;
+            border-bottom: 2px solid #001B44;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        tr:hover {
+            background: #f8f9fa;
+        }
+
+        .badge-status {
+            display: inline-block;
+            padding: 3px 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            border: 1px solid;
+        }
+
+        .badge-success {
+            background: #d4edda;
+            color: #155724;
+            border-color: #c3e6cb;
+        }
+
+        .badge-danger {
+            background: #f8d7da;
+            color: #721c24;
+            border-color: #f5c6cb;
+        }
+
+        .badge-warning {
+            background: #fff3cd;
+            color: #856404;
+            border-color: #ffeeba;
+        }
+
+        .badge-info {
+            background: #cce5ff;
+            color: #004085;
+            border-color: #b8daff;
+        }
+
+        .badge-secondary {
+            background: #e2e3e5;
+            color: #383d41;
+            border-color: #d6d8db;
+        }
+
+        .text-right {
+            text-align: right;
+        }
+
+        .admin-footer {
+            background: #001B44;
+            color: #A1B5D8;
+            padding: 20px 30px;
+            font-size: 0.7rem;
+            text-align: center;
+            border-top: 3px solid #FFDA63;
+            margin-top: 30px;
+        }
+
         @media (max-width: 768px) {
-            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .admin-nav {
+                padding: 0 15px;
+                gap: 15px;
+            }
+            .admin-content {
+                padding: 20px;
+            }
+            .admin-header {
+                padding: 15px;
+            }
+            .header-left {
+                gap: 15px;
+            }
+            .content-header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .stat-card .value {
+                font-size: 1.5rem;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
+    <header class="admin-header">
+        <div class="header-left">
+            <div class="logo">VOUCHMORPH <span>ADMIN</span></div>
+            <div class="country-badge">BW · BOTSWANA</div>
+        </div>
+        <div class="user-info">
+            <div class="user-details">
+                <div class="user-name"><?php echo $_SESSION['admin_full_name'] ?? $_SESSION['admin_username'] ?? 'Administrator'; ?></div>
+                <div class="user-role"><?php echo $_SESSION['admin_role'] ?? 'Admin'; ?></div>
+            </div>
+            <a href="admin_logout.php" class="logout-btn">LOGOUT</a>
+        </div>
+    </header>
+
+    <nav class="admin-nav">
+        <a href="admin_dashboard.php" class="nav-item">DASHBOARD</a>
+        <a href="?view=reports" class="nav-item active">MONTHLY REPORT</a>
+        <a href="#" class="nav-item">TRANSACTIONS</a>
+        <a href="#" class="nav-item">AUDIT</a>
+        <?php if (isset($_SESSION['admin_role_id']) && $_SESSION['admin_role_id'] == 999): ?>
+            <a href="#" class="nav-item">CONFIGURATION</a>
+        <?php endif; ?>
+        <a href="admin_dashboard.php" class="dashboard-link">← Back to Dashboard</a>
+    </nav>
+
+    <main class="admin-content">
+        <div class="content-header">
             <div>
                 <h1>📆 Monthly Reconciliation Report</h1>
-                <p><?php echo $monthName; ?> · Botswana</p>
+                <div class="timestamp"><?php echo $monthName; ?> · Generated: <?php echo date('Y-m-d H:i:s'); ?></div>
             </div>
-            <div class="month-nav">
-                <a href="?year=<?php echo explode('-', $prevMonth)[0]; ?>&month=<?php echo explode('-', $prevMonth)[1]; ?>" class="nav-btn">←</a>
-                <div class="month-badge"><?php echo $monthName; ?></div>
-                <a href="?year=<?php echo explode('-', $nextMonth)[0]; ?>&month=<?php echo explode('-', $nextMonth)[1]; ?>" class="nav-btn">→</a>
-                <a href="?year=<?php echo date('Y'); ?>&month=<?php echo date('m'); ?>" class="nav-btn">Today</a>
+            <div class="report-actions">
+                <div class="month-nav">
+                    <a href="?year=<?php echo explode('-', $prevMonth)[0]; ?>&month=<?php echo explode('-', $prevMonth)[1]; ?>" class="nav-btn">←</a>
+                    <div class="month-badge"><?php echo $monthName; ?></div>
+                    <a href="?year=<?php echo explode('-', $nextMonth)[0]; ?>&month=<?php echo explode('-', $nextMonth)[1]; ?>" class="nav-btn">→</a>
+                    <a href="?year=<?php echo date('Y'); ?>&month=<?php echo date('m'); ?>" class="nav-btn">TODAY</a>
+                </div>
                 <a href="?<?php echo http_build_query(array_merge($_GET, array('export' => 'csv'))); ?>" class="btn btn-success">📥 CSV</a>
+                <a href="admin_dashboard.php" class="btn btn-outline">⬅ BACK</a>
             </div>
         </div>
-        
-        <!-- Summary -->
+
+        <!-- Summary Stats -->
         <div class="stats-grid">
             <div class="stat-card">
                 <h3>Total Swaps</h3>
@@ -368,20 +798,20 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
             </div>
             <div class="stat-card">
                 <h3>Status</h3>
-                <div class="value" style="font-size: 18px;">
-                    <span class="badge badge-success">C: <?php echo number_format($completed); ?></span>
-                    <span class="badge badge-danger">F: <?php echo number_format($failed); ?></span>
-                    <span class="badge badge-warning">P: <?php echo number_format($pending); ?></span>
+                <div class="value" style="font-size: 1.1rem;">
+                    <span class="badge-status badge-success">C: <?php echo number_format($completed); ?></span>
+                    <span class="badge-status badge-danger">F: <?php echo number_format($failed); ?></span>
+                    <span class="badge-status badge-warning">P: <?php echo number_format($pending); ?></span>
                 </div>
                 <div class="sub">Cancelled: <?php echo number_format($cancelled); ?></div>
             </div>
         </div>
-        
+
         <!-- Daily Breakdown -->
         <div class="section">
             <div class="section-header">
                 <h2>📊 Daily Breakdown</h2>
-                <span class="badge badge-info"><?php echo count($dailyBreakdown); ?> days</span>
+                <span class="badge"><?php echo count($dailyBreakdown); ?> days</span>
             </div>
             <div class="section-content">
                 <table>
@@ -402,24 +832,24 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                                     <td class="text-right"><?php echo number_format($row['volume'], 2); ?></td>
                                     <td>
                                         <?php foreach ($row['status'] as $status => $count): ?>
-                                            <span class="badge badge-info"><?php echo ucfirst($status); ?>: <?php echo $count; ?></span>
+                                            <span class="badge-status badge-info"><?php echo ucfirst($status); ?>: <?php echo $count; ?></span>
                                         <?php endforeach; ?>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="4" style="text-align:center;">No data</td></tr>
+                            <tr><td colspan="4" style="text-align:center;">No data available</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
             </div>
         </div>
-        
+
         <!-- Fee Breakdown -->
         <div class="section">
             <div class="section-header">
                 <h2>💰 Fee Breakdown</h2>
-                <span class="badge badge-info"><?php echo count($fees); ?> types</span>
+                <span class="badge"><?php echo count($fees); ?> types</span>
             </div>
             <div class="section-content">
                 <table>
@@ -444,18 +874,18 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="5" style="text-align:center;">No fee data</td></tr>
+                            <tr><td colspan="5" style="text-align:center;">No fee data available</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
             </div>
         </div>
-        
+
         <!-- Cross Border Activity -->
         <div class="section">
             <div class="section-header">
                 <h2>🌍 Cross Border Activity</h2>
-                <span class="badge badge-info">From cross_border_messages</span>
+                <span class="badge">From cross_border_messages</span>
             </div>
             <div class="section-content">
                 <table>
@@ -472,8 +902,8 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                         <?php if (!empty($crossBorder)): ?>
                             <?php foreach ($crossBorder as $cb): ?>
                                 <tr>
-                                    <td><span class="badge badge-info"><?php echo isset($cb['source_country']) ? htmlspecialchars($cb['source_country']) : 'N/A'; ?></span></td>
-                                    <td><span class="badge badge-info"><?php echo isset($cb['destination_country']) ? htmlspecialchars($cb['destination_country']) : 'N/A'; ?></span></td>
+                                    <td><span class="badge-status badge-info"><?php echo isset($cb['source_country']) ? htmlspecialchars($cb['source_country']) : 'N/A'; ?></span></td>
+                                    <td><span class="badge-status badge-info"><?php echo isset($cb['destination_country']) ? htmlspecialchars($cb['destination_country']) : 'N/A'; ?></span></td>
                                     <td class="text-right"><?php echo isset($cb['count']) ? number_format($cb['count']) : 0; ?></td>
                                     <td class="text-right"><?php echo isset($cb['volume']) ? number_format((float)$cb['volume'], 2) : '0.00'; ?></td>
                                     <td><?php echo isset($cb['source_currency']) ? htmlspecialchars($cb['source_currency']) : 'N/A'; ?></td>
@@ -486,12 +916,12 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                 </table>
             </div>
         </div>
-        
+
         <!-- Corridor Activity -->
         <div class="section">
             <div class="section-header">
                 <h2>🔄 Corridor Activity</h2>
-                <span class="badge badge-info">From corridor_settlement_ledger</span>
+                <span class="badge">From corridor_settlement_ledger</span>
             </div>
             <div class="section-content">
                 <table>
@@ -508,8 +938,8 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                         <?php if (!empty($corridors)): ?>
                             <?php foreach ($corridors as $c): ?>
                                 <tr>
-                                    <td><span class="badge badge-info"><?php echo isset($c['source_country']) ? htmlspecialchars($c['source_country']) : 'N/A'; ?></span></td>
-                                    <td><span class="badge badge-info"><?php echo isset($c['destination_country']) ? htmlspecialchars($c['destination_country']) : 'N/A'; ?></span></td>
+                                    <td><span class="badge-status badge-info"><?php echo isset($c['source_country']) ? htmlspecialchars($c['source_country']) : 'N/A'; ?></span></td>
+                                    <td><span class="badge-status badge-info"><?php echo isset($c['destination_country']) ? htmlspecialchars($c['destination_country']) : 'N/A'; ?></span></td>
                                     <td class="text-right"><?php echo isset($c['count']) ? number_format($c['count']) : 0; ?></td>
                                     <td class="text-right"><?php echo isset($c['volume']) ? number_format((float)$c['volume'], 2) : '0.00'; ?></td>
                                     <td><?php echo isset($c['source_currency']) ? htmlspecialchars($c['source_currency']) : 'N/A'; ?></td>
@@ -522,12 +952,12 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                 </table>
             </div>
         </div>
-        
+
         <!-- Retry Statistics -->
         <div class="section">
             <div class="section-header">
                 <h2>🔄 Cashout Retry Statistics</h2>
-                <span class="badge badge-info">From cashout_retry_tracking</span>
+                <span class="badge">From cashout_retry_tracking</span>
             </div>
             <div class="section-content">
                 <table>
@@ -539,27 +969,27 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                     </thead>
                     <tbody>
                         <tr>
-                            <td>Total Retries</td>
+                            <td><strong>Total Retries</strong></td>
                             <td class="text-right"><?php echo number_format($totalRetries); ?></td>
                         </tr>
                         <tr>
-                            <td>Free Retries Used</td>
+                            <td><strong>Free Retries Used</strong></td>
                             <td class="text-right"><?php echo number_format($freeRetries); ?></td>
                         </tr>
                         <tr>
-                            <td>Paid Retries</td>
+                            <td><strong>Paid Retries</strong></td>
                             <td class="text-right"><?php echo number_format($paidRetries); ?></td>
                         </tr>
                     </tbody>
                 </table>
             </div>
         </div>
-        
+
         <!-- Settlement Status -->
         <div class="section">
             <div class="section-header">
                 <h2>📤 Settlement Status</h2>
-                <span class="badge badge-info">From settlement_queue</span>
+                <span class="badge">From settlement_queue</span>
             </div>
             <div class="section-content">
                 <table>
@@ -574,7 +1004,7 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                         <?php if (!empty($settlements)): ?>
                             <?php foreach ($settlements as $s): ?>
                                 <tr>
-                                    <td><span class="badge badge-info"><?php echo isset($s['status']) ? htmlspecialchars($s['status']) : 'N/A'; ?></span></td>
+                                    <td><span class="badge-status badge-info"><?php echo isset($s['status']) ? htmlspecialchars($s['status']) : 'N/A'; ?></span></td>
                                     <td class="text-right"><?php echo isset($s['count']) ? number_format($s['count']) : 0; ?></td>
                                     <td class="text-right"><?php echo isset($s['total']) ? number_format((float)$s['total'], 2) : '0.00'; ?></td>
                                 </tr>
@@ -586,12 +1016,12 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                 </table>
             </div>
         </div>
-        
+
         <!-- Settlement Outbox -->
         <div class="section">
             <div class="section-header">
                 <h2>📤 Settlement Outbox</h2>
-                <span class="badge badge-info">From settlement_outbox</span>
+                <span class="badge">From settlement_outbox</span>
             </div>
             <div class="section-content">
                 <table>
@@ -606,7 +1036,7 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                         <?php if (!empty($outboxStatus)): ?>
                             <?php foreach ($outboxStatus as $o): ?>
                                 <tr>
-                                    <td><span class="badge badge-info"><?php echo isset($o['status']) ? htmlspecialchars($o['status']) : 'N/A'; ?></span></td>
+                                    <td><span class="badge-status badge-info"><?php echo isset($o['status']) ? htmlspecialchars($o['status']) : 'N/A'; ?></span></td>
                                     <td class="text-right"><?php echo isset($o['count']) ? number_format($o['count']) : 0; ?></td>
                                     <td class="text-right"><?php echo isset($o['total']) ? number_format((float)$o['total'], 2) : '0.00'; ?></td>
                                 </tr>
@@ -618,12 +1048,12 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                 </table>
             </div>
         </div>
-        
+
         <!-- Cashout Authorizations -->
         <div class="section">
             <div class="section-header">
                 <h2>🏧 Cashout Authorizations</h2>
-                <span class="badge badge-info">From cashout_authorizations</span>
+                <span class="badge">From cashout_authorizations</span>
             </div>
             <div class="section-content">
                 <table>
@@ -638,7 +1068,7 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                         <?php if (!empty($cashouts)): ?>
                             <?php foreach ($cashouts as $c): ?>
                                 <tr>
-                                    <td><span class="badge badge-info"><?php echo isset($c['status']) ? htmlspecialchars($c['status']) : 'N/A'; ?></span></td>
+                                    <td><span class="badge-status badge-info"><?php echo isset($c['status']) ? htmlspecialchars($c['status']) : 'N/A'; ?></span></td>
                                     <td class="text-right"><?php echo isset($c['count']) ? number_format($c['count']) : 0; ?></td>
                                     <td class="text-right"><?php echo isset($c['total']) ? number_format((float)$c['total'], 2) : '0.00'; ?></td>
                                 </tr>
@@ -650,12 +1080,12 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                 </table>
             </div>
         </div>
-        
+
         <!-- Deposit Transactions -->
         <div class="section">
             <div class="section-header">
                 <h2>💰 Deposit Transactions</h2>
-                <span class="badge badge-info">From deposit_transactions</span>
+                <span class="badge">From deposit_transactions</span>
             </div>
             <div class="section-content">
                 <table>
@@ -670,7 +1100,7 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                         <?php if (!empty($deposits)): ?>
                             <?php foreach ($deposits as $d): ?>
                                 <tr>
-                                    <td><span class="badge badge-info"><?php echo isset($d['status']) ? htmlspecialchars($d['status']) : 'N/A'; ?></span></td>
+                                    <td><span class="badge-status badge-info"><?php echo isset($d['status']) ? htmlspecialchars($d['status']) : 'N/A'; ?></span></td>
                                     <td class="text-right"><?php echo isset($d['count']) ? number_format($d['count']) : 0; ?></td>
                                     <td class="text-right"><?php echo isset($d['total']) ? number_format((float)$d['total'], 2) : '0.00'; ?></td>
                                 </tr>
@@ -682,10 +1112,11 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
                 </table>
             </div>
         </div>
-        
-        <div style="text-align:center; padding: 20px; color: #999; font-size: 12px; border-top: 1px solid #ddd;">
-            VouchMorph Monthly Reconciliation Report · <?php echo date('Y-m-d H:i:s'); ?> · Botswana
-        </div>
-    </div>
+    </main>
+
+    <footer class="admin-footer">
+        <p>VOUCHMORPH · BOTSWANA · <?php echo date('Y'); ?></p>
+        <p style="margin-top: 5px;">Bank of Botswana Regulatory Sandbox Participant · Monthly Reconciliation Report</p>
+    </footer>
 </body>
 </html>
