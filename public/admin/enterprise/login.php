@@ -141,7 +141,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         
                     // APPROVERS - See pending approvals
                     } elseif (in_array($__role, ['approver', 'senior_approver'], true)) {
-                        header('Location: imports/review_batch.php?status=pending_approval');
+                        header('Location: index.php');
                         
                     // SUPERVISORS - Can disburse funds after approval
                     } elseif (in_array($__role, ['supervisor'], true)) {
