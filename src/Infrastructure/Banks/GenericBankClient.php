@@ -1501,6 +1501,7 @@ class GenericBankClient implements BankAPIInterface
         
         // ============================================================
         // CRITICAL: RESTORE VOUCHER FIELDS AFTER ALL PROCESSING
+        // These MUST be present BEFORE signing
         // ============================================================
         if ($voucherNumber) {
             $payload['voucher_number'] = $voucherNumber;
@@ -1512,86 +1513,28 @@ class GenericBankClient implements BankAPIInterface
         if ($voucherPin) {
             $payload['voucher_pin'] = $voucherPin;
             $payload['voucherPin'] = $voucherPin;
-            $payload['voucherPIN'] = $voucherPIN;
+            $payload['voucherPIN'] = $voucherPin;
             error_log("[GenericBankClient] Restored voucher_pin: " . substr($voucherPin, 0, 2) . '****');
         }
         
         // ============================================================
-        // Now sign the payload
+        // SIGN THE PAYLOAD - ALL FIELDS MUST BE PRESENT BEFORE SIGNING
+        // DO NOT MODIFY AFTER SIGNING - THAT BREAKS THE SIGNATURE!
         // ============================================================
         if ($this->certManager && $this->certManager->isConfigured()) {
             error_log("[GenericBankClient] Using CertificateManager for signing ({$requester})");
             $result = $this->certManager->createSignedRequest($payload, $requester);
             
-            // ============================================================
-            // DOUBLE-CHECK: Ensure voucher fields survived CertificateManager
-            // ============================================================
-            if ($voucherNumber) {
-                if (!isset($result['voucher_number']) || empty($result['voucher_number'])) {
-                    $result['voucher_number'] = $voucherNumber;
-                    error_log("[GenericBankClient] Re-inserted voucher_number after CertificateManager: $voucherNumber");
-                }
-                if (!isset($result['voucherNumber'])) {
-                    $result['voucherNumber'] = $voucherNumber;
-                }
-                if (!isset($result['voucher_no'])) {
-                    $result['voucher_no'] = $voucherNumber;
-                }
-                if (!isset($result['voucherId'])) {
-                    $result['voucherId'] = $voucherNumber;
-                }
-            }
-            if ($voucherPin) {
-                if (!isset($result['voucher_pin']) || empty($result['voucher_pin'])) {
-                    $result['voucher_pin'] = $voucherPin;
-                    error_log("[GenericBankClient] Re-inserted voucher_pin after CertificateManager: " . substr($voucherPin, 0, 2) . '****');
-                }
-                if (!isset($result['voucherPin'])) {
-                    $result['voucherPin'] = $voucherPin;
-                }
-                if (!isset($result['voucherPIN'])) {
-                    $result['voucherPIN'] = $voucherPin;
-                }
-            }
-            
+            // IMPORTANT: Do NOT modify $result after signing.
+            // The voucher fields were already in $payload before signing,
+            // and CertificateManager preserves them in the signed payload.
+            // Any modification after signing would invalidate the signature.
             return $result;
         }
         
         if ($this->signer) {
             error_log("[GenericBankClient] Using MessageSigner for signing ({$requester})");
             $result = $this->signer->createSignedRequest($payload, $requester);
-            
-            // ============================================================
-            // DOUBLE-CHECK: Ensure voucher fields survived MessageSigner
-            // ============================================================
-            if ($voucherNumber) {
-                if (!isset($result['voucher_number']) || empty($result['voucher_number'])) {
-                    $result['voucher_number'] = $voucherNumber;
-                    error_log("[GenericBankClient] Re-inserted voucher_number after MessageSigner: $voucherNumber");
-                }
-                if (!isset($result['voucherNumber'])) {
-                    $result['voucherNumber'] = $voucherNumber;
-                }
-                if (!isset($result['voucher_no'])) {
-                    $result['voucher_no'] = $voucherNumber;
-                }
-                if (!isset($result['voucherId'])) {
-                    $result['voucherId'] = $voucherNumber;
-                }
-            }
-            if ($voucherPin) {
-                if (!isset($result['voucher_pin']) || empty($result['voucher_pin'])) {
-                    $result['voucher_pin'] = $voucherPin;
-                    error_log("[GenericBankClient] Re-inserted voucher_pin after MessageSigner: " . substr($voucherPin, 0, 2) . '****');
-                }
-                if (!isset($result['voucherPin'])) {
-                    $result['voucherPin'] = $voucherPin;
-                }
-                if (!isset($result['voucherPIN'])) {
-                    $result['voucherPIN'] = $voucherPin;
-                }
-            }
-            
             return $result;
         }
         
@@ -1603,33 +1546,6 @@ class GenericBankClient implements BankAPIInterface
             $payloadJson = json_encode($payload);
             $signature = base64_encode(hash_hmac('sha256', $payloadJson, $privateKey, true));
             $payload['signature'] = $signature;
-        }
-        
-        // Ensure voucher fields are in the final payload for fallback
-        if ($voucherNumber) {
-            if (!isset($payload['voucher_number'])) {
-                $payload['voucher_number'] = $voucherNumber;
-            }
-            if (!isset($payload['voucherNumber'])) {
-                $payload['voucherNumber'] = $voucherNumber;
-            }
-            if (!isset($payload['voucher_no'])) {
-                $payload['voucher_no'] = $voucherNumber;
-            }
-            if (!isset($payload['voucherId'])) {
-                $payload['voucherId'] = $voucherNumber;
-            }
-        }
-        if ($voucherPin) {
-            if (!isset($payload['voucher_pin'])) {
-                $payload['voucher_pin'] = $voucherPin;
-            }
-            if (!isset($payload['voucherPin'])) {
-                $payload['voucherPin'] = $voucherPin;
-            }
-            if (!isset($payload['voucherPIN'])) {
-                $payload['voucherPIN'] = $voucherPin;
-            }
         }
         
         return $payload;
