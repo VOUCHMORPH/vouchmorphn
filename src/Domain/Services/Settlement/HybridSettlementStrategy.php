@@ -475,18 +475,24 @@ class HybridSettlementStrategy
         $reportId = $this->generateReportId();
         $cycleId = 'CYCLE_' . date('Ymd') . '_' . uniqid();
         
-        // Get all settlements in date range
+        // Get all settlements AND fees in date range (split by type)
         $settlements = $this->getSettlementsInRange($startDate, $endDate);
+        $feeInvoices = $this->getFeeInvoicesInRange($startDate, $endDate);
         
-        // Calculate net positions
+        // Split settlements by actual status so the report is honest about
+        // what's confirmed vs merely dispatched.
+        $confirmedSettlements = array_values(array_filter($settlements, fn($s) => in_array($s['status'], ['COMPLETED', 'ACKNOWLEDGED'])));
+        $unconfirmedSettlements = array_values(array_filter($settlements, fn($s) => !in_array($s['status'], ['COMPLETED', 'ACKNOWLEDGED'])));
+        
+        // Calculate net positions from ALL settlements (confirmed + unconfirmed)
         $netPositions = $this->calculateNetPositionsForReport($settlements);
         
         // Participant breakdown
         $participantBreakdown = $this->getParticipantBreakdown($settlements);
         
         // Calculate totals
-        $totalAmount = array_sum(array_column($settlements, 'amount'));
-        $totalSettlements = count($settlements);
+        $totalSettlementAmount = array_sum(array_column($settlements, 'amount'));
+        $totalFeeAmount = array_sum(array_column($feeInvoices, 'amount'));
         
         // Generate BISS (Bank of International Settlements) reference
         $bissReferences = $this->generateBISSReferences($settlements);
@@ -498,8 +504,8 @@ class HybridSettlementStrategy
         $this->storeSettlementReport(
             $reportId,
             $cycleId,
-            $totalSettlements,
-            $totalAmount,
+            count($settlements),
+            $totalSettlementAmount,
             $netPositions,
             $participantBreakdown,
             $bissReferences,
@@ -524,21 +530,34 @@ class HybridSettlementStrategy
             'report_id' => $reportId,
             'cycle_id' => $cycleId,
             'date_range' => ['start' => $startDate, 'end' => $endDate],
-            'total_settlements' => $totalSettlements,
-            'total_amount' => $totalAmount,
+            'total_settlements' => count($settlements),
+            'confirmed_settlements' => count($confirmedSettlements),
+            'unconfirmed_settlements' => count($unconfirmedSettlements),
+            'total_settlement_amount' => $totalSettlementAmount,
+            'total_fee_invoices' => count($feeInvoices),
+            'total_fee_amount' => $totalFeeAmount,
             'currency' => $currency,
             'net_positions' => $netPositions,
             'participant_breakdown' => $participantBreakdown,
             'biss_references' => $bissReferences,
             'report_hash' => $reportHash,
             'generated_at' => date('Y-m-d H:i:s'),
-            'regulator_ready' => true,
-            'settlements' => $settlements
+            'regulator_ready' => count($unconfirmedSettlements) === 0,
+            'reconciliation_warning' => count($unconfirmedSettlements) > 0
+                ? count($unconfirmedSettlements) . " of " . count($settlements) . " settlement instructions have not been acknowledged by both counterparties. Figures include unconfirmed obligations."
+                : null,
+            'settlements' => $settlements,
+            'fee_invoices' => $feeInvoices
         ];
     }
     
     /**
-     * Get all settlements in date range
+     * Get all settlements in date range (ALL statuses, not just completed)
+     * NOTE: As of now, nothing in the system ever calls acknowledgeSettlement(),
+     * so no row has ever reached COMPLETED/ACKNOWLEDGED. Reporting only on those
+     * statuses returns zero rows even with real settlement activity present.
+     * Until a reconciliation/acknowledgement trigger exists, report on
+     * PENDING/SENT too, clearly labeled as "unconfirmed".
      */
     private function getSettlementsInRange(string $startDate, string $endDate): array
     {
@@ -551,7 +570,26 @@ class HybridSettlementStrategy
             LEFT JOIN settlement_queue sq ON so.swap_reference = sq.reference
             LEFT JOIN net_positions np ON so.source_institution = np.debtor AND so.destination_institution = np.creditor
             WHERE so.created_at BETWEEN :start AND :end
-            AND so.status IN ('COMPLETED', 'ACKNOWLEDGED')
+            AND so.message_type = 'SETTLEMENT_INSTRUCTION'
+            ORDER BY so.created_at
+        ");
+        $stmt->execute([':start' => $startDate, ':end' => $endDate]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+    
+    /**
+     * Get fee invoices in date range
+     */
+    private function getFeeInvoicesInRange(string $startDate, string $endDate): array
+    {
+        $stmt = $this->db->prepare("
+            SELECT 
+                so.*,
+                sq.amount as queue_amount
+            FROM settlement_outbox so
+            LEFT JOIN settlement_queue sq ON so.swap_reference = sq.reference
+            WHERE so.created_at BETWEEN :start AND :end
+            AND so.message_type = 'FEE_INVOICE'
             ORDER BY so.created_at
         ");
         $stmt->execute([':start' => $startDate, ':end' => $endDate]);
