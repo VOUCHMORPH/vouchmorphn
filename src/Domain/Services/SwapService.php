@@ -1161,25 +1161,25 @@ class SwapService
             // 3. Process identity (create identity hold record using existing hold)
             // ============================================================
             $identityPayload = $payload;
-            $identityPayload['swap_type'] = 'IDENTITY';
-            $identityPayload['amount'] = $amount;
-            $identityPayload['identity_type'] = $identityType;
-            $identityPayload['identity_value'] = $identityValue;
-            $identityPayload['beneficiary_phone'] = $beneficiaryPhone;
-            $identityPayload['currency'] = $currency;
-            $identityPayload['reference'] = $subRef;
-            $identityPayload['delivery_method'] = $deliveryMethod;
-            $identityPayload['from_institution'] = $sourceInstitution;
-            $identityPayload['source_institution'] = $sourceInstitution;
-            $identityPayload['_skip_hold'] = true;  // Skip hold because we already placed it
-            $identityPayload['hold_reference'] = $destHoldRef;
-            
-            $originalHoldRef = $this->currentHoldReference;
-            $originalHoldId = $this->currentHoldId;
-            $this->currentHoldReference = $destHoldRef;
-            $this->currentHoldId = $destHoldId;
-            
-            $identityResult = $this->initiateSwapToIdentity($identityPayload);
+$identityPayload['swap_type'] = 'IDENTITY';
+$identityPayload['amount'] = $amount;
+$identityPayload['identity_type'] = $identityType;
+$identityPayload['identity_value'] = $identityValue;
+$identityPayload['beneficiary_phone'] = $beneficiaryPhone;
+$identityPayload['currency'] = $currency;
+$identityPayload['reference'] = $subRef;
+$identityPayload['delivery_method'] = $deliveryMethod;
+$identityPayload['from_institution'] = $sourceInstitution;
+$identityPayload['source_institution'] = $sourceInstitution;
+$identityPayload['_skip_hold'] = true;  // ✅ Skip hold because we already placed it
+$identityPayload['hold_reference'] = $destHoldRef;  // ✅ Use existing hold
+
+$originalHoldRef = $this->currentHoldReference;
+$originalHoldId = $this->currentHoldId;
+$this->currentHoldReference = $destHoldRef;
+$this->currentHoldId = $destHoldId;
+
+$identityResult = $this->initiateSwapToIdentity($identityPayload);
             
             $this->currentHoldReference = $originalHoldRef;
             $this->currentHoldId = $originalHoldId;
