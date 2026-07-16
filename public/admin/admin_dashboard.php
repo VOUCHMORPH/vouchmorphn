@@ -521,25 +521,26 @@ function generateReport($type, $dateFrom, $dateTo, $format = 'html') {
             break;
             
         case 'aml':
-            $reportTitle = 'AML Monitoring Report';
-            $stmt = $db->prepare("
-                SELECT 
-                    performed_at,
-                    result,
-                    score,
-                    flagged_reasons,
-                    entity_id,
-                    entity_type
-                FROM aml_checks
-                WHERE performed_at BETWEEN :date_from AND :date_to
-                AND result = 'FLAGGED'
-                ORDER BY score DESC
-                LIMIT 200
-            ");
-            $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
-            $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $columns = ['Date', 'Result', 'Score', 'Reasons', 'Entity ID', 'Entity Type'];
-            break;
+    $reportTitle = 'AML Monitoring Report';
+    $stmt = $db->prepare("
+        SELECT 
+            performed_at,
+            status as result,
+            risk_score as score,
+            findings as flagged_reasons,
+            user_id as entity_id,
+            check_type as entity_type,
+            check_reference
+        FROM aml_checks
+        WHERE performed_at BETWEEN :date_from AND :date_to
+        AND status = 'FLAGGED'
+        ORDER BY risk_score DESC
+        LIMIT 200
+    ");
+    $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
+    $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $columns = ['Date', 'Result', 'Score', 'Reasons', 'Entity ID', 'Entity Type'];
+    break;
             
         default:
             return ['error' => 'Unsupported report type: ' . $type];
@@ -669,10 +670,29 @@ if ($isSettlementOfficer || $isSuperAdmin) {
     $roleMetrics['settlement_volume'] = (float)$db->query("SELECT COALESCE(SUM(amount), 0) FROM settlement_queue WHERE status = 'PENDING'")->fetchColumn();
 }
 if ($isCompliance || $isComplianceAuditor || $isSuperAdmin) {
-    $roleMetrics['flagged_transactions'] = (int)$db->query("SELECT COUNT(*) FROM aml_checks WHERE result = 'FLAGGED' AND performed_at >= NOW() - INTERVAL '7 days'")->fetchColumn();
-    $roleMetrics['pending_reviews'] = (int)$db->query("SELECT COUNT(*) FROM swap_requests WHERE status = 'PENDING_REVIEW'")->fetchColumn();
+    // FIX: Use 'status' column instead of 'result'
+    try {
+        $roleMetrics['flagged_transactions'] = (int)$db->query("
+            SELECT COUNT(*) 
+            FROM aml_checks 
+            WHERE status = 'FLAGGED' 
+            AND performed_at >= NOW() - INTERVAL '7 days'
+        ")->fetchColumn();
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] AML flagged count error: " . $e->getMessage());
+        $roleMetrics['flagged_transactions'] = 0;
+    }
+    
+    try {
+        $roleMetrics['pending_reviews'] = (int)$db->query("
+            SELECT COUNT(*) 
+            FROM swap_requests 
+            WHERE status = 'PENDING_REVIEW'
+        ")->fetchColumn();
+    } catch (Throwable $e) {
+        $roleMetrics['pending_reviews'] = 0;
+    }
 }
-
 // ============================================================
 // HANDLE REPORT GENERATION REQUEST
 // ============================================================
