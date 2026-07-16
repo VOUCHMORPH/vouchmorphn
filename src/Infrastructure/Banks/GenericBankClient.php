@@ -1524,17 +1524,14 @@ class GenericBankClient implements BankAPIInterface
         if ($this->certManager && $this->certManager->isConfigured()) {
             error_log("[GenericBankClient] Using CertificateManager for signing ({$requester})");
             $result = $this->certManager->createSignedRequest($payload, $requester);
-            
-            // IMPORTANT: Do NOT modify $result after signing.
-            // The voucher fields were already in $payload before signing,
-            // and CertificateManager preserves them in the signed payload.
-            // Any modification after signing would invalidate the signature.
+            $this->assertSigningIntegrity($result, $voucherNumber, $voucherPin, 'CertificateManager');
             return $result;
         }
         
         if ($this->signer) {
             error_log("[GenericBankClient] Using MessageSigner for signing ({$requester})");
             $result = $this->signer->createSignedRequest($payload, $requester);
+            $this->assertSigningIntegrity($result, $voucherNumber, $voucherPin, 'MessageSigner');
             return $result;
         }
         
@@ -1549,6 +1546,42 @@ class GenericBankClient implements BankAPIInterface
         }
         
         return $payload;
+    }
+
+    /**
+     * Verify a signer did not silently drop fields that were present in the
+     * payload before signing. Deliberately does NOT restore missing fields:
+     * mutating a signed result would desynchronize it from what was actually
+     * signed - the exact bug the "no modification after signing" rule exists
+     * to prevent. Instead, if something critical is missing post-sign, fail
+     * loudly here rather than let an incomplete signed payload go out to the
+     * bank, or let downstream code treat this as a whole, trustworthy result.
+     *
+     * @throws \RuntimeException if the signer dropped a required field
+     */
+    protected function assertSigningIntegrity(
+        array $result,
+        ?string $voucherNumber,
+        ?string $voucherPin,
+        string $signerName
+    ): void {
+        $missing = [];
+
+        if ($voucherNumber && empty($result['voucher_number'])) {
+            $missing[] = 'voucher_number';
+        }
+        if ($voucherPin && empty($result['voucher_pin'])) {
+            $missing[] = 'voucher_pin';
+        }
+        if (empty($result['signature']) && empty($result['certificate'])) {
+            $missing[] = 'signature/certificate';
+        }
+
+        if (!empty($missing)) {
+            $msg = "[GenericBankClient] {$signerName} dropped required field(s) during signing: " . implode(', ', $missing);
+            error_log($msg);
+            throw new \RuntimeException($msg);
+        }
     }
 
     public function verifyAssetSigned(array $payload): array
