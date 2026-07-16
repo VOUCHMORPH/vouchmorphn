@@ -1237,12 +1237,27 @@ if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
         </div>
 
         <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));">
-            <div class="metric-card"><div class="metric-label">Total (24h)</div><div class="metric-value"><?php echo number_format($liveStats['total'] ?? 0); ?></div></div>
-            <div class="metric-card" style="border-color:#28a745;"><div class="metric-label">✅ Completed</div><div class="metric-value" style="color:#28a745;"><?php echo number_format($liveStats['completed'] ?? 0); ?></div></div>
-            <div class="metric-card" style="border-color:#856404;"><div class="metric-label">⏳ Pending</div><div class="metric-value" style="color:#856404;"><?php echo number_format($liveStats['pending'] ?? 0); ?></div></div>
-            <div class="metric-card" style="border-color:#dc3545;"><div class="metric-label">❌ Failed</div><div class="metric-value" style="color:#dc3545;"><?php echo number_format($liveStats['failed'] ?? 0); ?></div></div>
-            <div class="metric-card" style="border-color:#17a2b8;"><div class="metric-label">💰 Volume</div><div class="metric-value"><?php echo number_format($liveStats['total_amount'] ?? 0, 2); ?></div></div>
-        </div>
+    <div class="metric-card">
+        <div class="metric-label">Total (24h)</div>
+        <div class="metric-value"><?php echo number_format((int)($liveStats['total'] ?? 0)); ?></div>
+    </div>
+    <div class="metric-card" style="border-color:#28a745;">
+        <div class="metric-label">✅ Completed</div>
+        <div class="metric-value" style="color:#28a745;"><?php echo number_format((int)($liveStats['completed'] ?? 0)); ?></div>
+    </div>
+    <div class="metric-card" style="border-color:#856404;">
+        <div class="metric-label">⏳ Pending</div>
+        <div class="metric-value" style="color:#856404;"><?php echo number_format((int)($liveStats['pending'] ?? 0)); ?></div>
+    </div>
+    <div class="metric-card" style="border-color:#dc3545;">
+        <div class="metric-label">❌ Failed</div>
+        <div class="metric-value" style="color:#dc3545;"><?php echo number_format((int)($liveStats['failed'] ?? 0)); ?></div>
+    </div>
+    <div class="metric-card" style="border-color:#17a2b8;">
+        <div class="metric-label">💰 Volume</div>
+        <div class="metric-value"><?php echo number_format((float)($liveStats['total_amount'] ?? 0), 2); ?></div>
+    </div>
+</div>
 
         <div class="card">
             <div class="card-header">
