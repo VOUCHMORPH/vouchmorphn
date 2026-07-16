@@ -274,6 +274,65 @@ foreach ($assets as $assetKey => $assetConfig) {
 if (empty($assetTypes)) {
     error_log("[DASHBOARD] No assets loaded for country: " . $userCountry);
 }
+
+// ============================================================
+// DEBUG: Log what was loaded
+// ============================================================
+error_log("[DASHBOARD DEBUG] ========================================");
+error_log("[DASHBOARD DEBUG] Country: " . $userCountry);
+error_log("[DASHBOARD DEBUG] Participants loaded: " . count($participants));
+error_log("[DASHBOARD DEBUG] Assets loaded: " . count($assets));
+error_log("[DASHBOARD DEBUG] Available Countries: " . implode(', ', $availableCountries));
+error_log("[DASHBOARD DEBUG] Participants keys: " . implode(', ', array_keys($participants)));
+error_log("[DASHBOARD DEBUG] Assets keys: " . implode(', ', array_keys($assets)));
+
+// If no participants, check if the file exists and dump content
+if (empty($participants)) {
+    $participantsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/participants.yaml';
+    error_log("[DASHBOARD DEBUG] Participants file exists? " . (file_exists($participantsPath) ? 'YES' : 'NO'));
+    if (file_exists($participantsPath)) {
+        $content = file_get_contents($participantsPath);
+        error_log("[DASHBOARD DEBUG] Participants file content length: " . strlen($content));
+        error_log("[DASHBOARD DEBUG] Participants file first 200 chars: " . substr($content, 0, 200));
+        // Try to parse and log the result
+        $parsed = dashboard_yaml_parse_file($participantsPath);
+        error_log("[DASHBOARD DEBUG] Parsed participants result: " . json_encode($parsed));
+    } else {
+        error_log("[DASHBOARD DEBUG] Participants file path: " . $participantsPath);
+        error_log("[DASHBOARD DEBUG] Current directory: " . __DIR__);
+    }
+}
+
+// If no assets, check if the file exists and dump content
+if (empty($assets)) {
+    $assetsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/assets.yaml';
+    error_log("[DASHBOARD DEBUG] Assets file exists? " . (file_exists($assetsPath) ? 'YES' : 'NO'));
+    if (file_exists($assetsPath)) {
+        $content = file_get_contents($assetsPath);
+        error_log("[DASHBOARD DEBUG] Assets file content length: " . strlen($content));
+        error_log("[DASHBOARD DEBUG] Assets file first 200 chars: " . substr($content, 0, 200));
+        // Try to parse and log the result
+        $parsed = dashboard_yaml_parse_file($assetsPath);
+        error_log("[DASHBOARD DEBUG] Parsed assets result: " . json_encode($parsed));
+    } else {
+        error_log("[DASHBOARD DEBUG] Assets file path: " . $assetsPath);
+        error_log("[DASHBOARD DEBUG] Current directory: " . __DIR__);
+    }
+}
+
+// If participants loaded but are empty, check structure
+if (!empty($participants) && empty($participants['participants'])) {
+    error_log("[DASHBOARD DEBUG] Participants loaded but key 'participants' not found. Keys: " . implode(', ', array_keys($participants)));
+    // Try to use the parsed data directly if it's already the participants array
+    if (isset($participants['ZURUBANK']) || isset($participants['SACCUSSALIS'])) {
+        error_log("[DASHBOARD DEBUG] Participants appear to be at root level, using as-is.");
+        $participants = $participants;
+    }
+}
+
+error_log("[DASHBOARD DEBUG] FINAL - Participants count: " . count($participants));
+error_log("[DASHBOARD DEBUG] FINAL - Assets count: " . count($assets));
+error_log("[DASHBOARD DEBUG] ========================================");
 ?>
 <!DOCTYPE html>
 <html lang="en">
