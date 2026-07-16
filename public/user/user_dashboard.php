@@ -41,7 +41,8 @@ if (file_exists($countryConfigPath)) {
 $participants = [];
 $participantsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/participants.yaml';
 if (file_exists($participantsPath)) {
-    $parsed = yaml_parse_file($participantsPath);
+-    $parsed = yaml_parse_file($participantsPath);
++    $parsed = SimpleYamlParser::parseFile($participantsPath);
     $participants = $parsed['participants'] ?? [];
 } else {
     error_log("[DASHBOARD] Participants file not found: " . $participantsPath);
@@ -51,7 +52,8 @@ if (file_exists($participantsPath)) {
 $assets = [];
 $assetsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/assets.yaml';
 if (file_exists($assetsPath)) {
-    $assets = yaml_parse_file($assetsPath) ?? [];
+-    $assets = yaml_parse_file($assetsPath) ?? [];
++    $assets = SimpleYamlParser::parseFile($assetsPath);
 } else {
     error_log("[DASHBOARD] Assets file not found: " . $assetsPath);
 }
