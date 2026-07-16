@@ -48,16 +48,39 @@ if (!function_exists('dashboard_yaml_parse_file')) {
             return null;
         }
 
-        if ($v[0] !== '"' && $v[0] !== "'") {
-            $hashPos = strpos($v, ' #');
-            if ($hashPos !== false) {
-                $v = trim(substr($v, 0, $hashPos));
+        // ============================================================
+        // Quoted values: find the ACTUAL closing quote by scanning the
+        // string (skipping backslash-escaped characters), rather than
+        // requiring $v to literally end with a quote. This correctly
+        // handles a quoted value followed by a trailing inline comment,
+        // e.g.  pattern: "^\\+?[0-9]{10,15}$"  # some comment
+        // The old version required str_ends_with($v, '"'), which failed
+        // here because the line ends with the comment text, not the
+        // quote - so the whole quotes+comment blob was returned as-is
+        // and corrupted downstream HTML rendering.
+        // ============================================================
+        if ($v[0] === '"' || $v[0] === "'") {
+            $quote = $v[0];
+            $len = strlen($v);
+            for ($i = 1; $i < $len; $i++) {
+                if ($v[$i] === '\\' && $i + 1 < $len) {
+                    $i++; // skip escaped character, don't treat it as a delimiter
+                    continue;
+                }
+                if ($v[$i] === $quote) {
+                    return substr($v, 1, $i - 1);
+                }
             }
+            // No closing quote found - malformed line, but don't throw;
+            // just return the trimmed raw value so parsing can continue.
+            error_log("[dashboard_yaml_parse_file] Unterminated quoted value: {$v}");
+            return $v;
         }
 
-        if ((str_starts_with($v, '"') && str_ends_with($v, '"') && strlen($v) >= 2) ||
-            (str_starts_with($v, "'") && str_ends_with($v, "'") && strlen($v) >= 2)) {
-            return substr($v, 1, -1);
+        // Unquoted values: strip a trailing inline comment if present.
+        $hashPos = strpos($v, ' #');
+        if ($hashPos !== false) {
+            $v = trim(substr($v, 0, $hashPos));
         }
 
         $lower = strtolower($v);
