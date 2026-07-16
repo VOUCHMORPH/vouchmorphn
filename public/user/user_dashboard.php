@@ -305,7 +305,7 @@ if (empty($participants)) {
 
 // If no assets, check if the file exists and dump content
 if (empty($assets)) {
-    $assetsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/assets.yaml';
+    $assetsPath = __DIR__ . '/../../src/Core/Config/assets.yaml';
     error_log("[DASHBOARD DEBUG] Assets file exists? " . (file_exists($assetsPath) ? 'YES' : 'NO'));
     if (file_exists($assetsPath)) {
         $content = file_get_contents($assetsPath);
@@ -368,7 +368,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--text-dim); border-radius: 4px; }
 
-.container { max-width: 560px; margin: 0 auto; }
+.container { max-width: 1040px; margin: 0 auto; }
 
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
 .logo { font-size: 22px; font-weight: 800; background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
@@ -394,6 +394,45 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .section { margin-bottom: 4px; }
 .section-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 12px; }
 .section-title .n { width: 20px; height: 20px; border-radius: 50%; background: var(--gradient); color: #000; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+
+/* ============================================================
+   SIDE-BY-SIDE LAYOUT
+   From/To sit in two columns on wide viewports so choosing an
+   institution/asset doesn't push the review button (and the
+   dropdown you just opened) down the page. Collapses back to a
+   single stacked column on narrow/mobile viewports.
+   ============================================================ */
+.swap-columns { display: flex; align-items: flex-start; gap: 28px; }
+.swap-columns > .section { flex: 1 1 0; min-width: 0; }
+.swap-columns > .swap-divider {
+    flex-direction: column;
+    align-self: stretch;
+    margin: 0;
+    padding-top: 28px;
+}
+.swap-columns > .swap-divider::before,
+.swap-columns > .swap-divider::after {
+    width: 1px;
+    height: auto;
+}
+.swap-columns > .swap-divider .icon { transform: rotate(90deg); display: inline-block; }
+
+@media (max-width: 860px) {
+    .container { max-width: 560px; }
+    .swap-columns { flex-direction: column; }
+    .swap-columns > .swap-divider {
+        flex-direction: row;
+        align-self: stretch;
+        margin: 20px 0;
+        padding-top: 0;
+    }
+    .swap-columns > .swap-divider::before,
+    .swap-columns > .swap-divider::after {
+        width: auto;
+        height: 1px;
+    }
+    .swap-columns > .swap-divider .icon { transform: none; }
+}
 
 .swap-divider { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 20px 0; color: var(--text-dim); }
 .swap-divider::before, .swap-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
@@ -514,6 +553,7 @@ details.raw-json-wrap summary { cursor: pointer; font-size: 11px; color: var(--t
 <div id="mainMessage" class="message"></div>
 
 <div class="card">
+    <div class="swap-columns">
     <div class="section" id="fromSection">
         <div class="section-title"><span class="n">1</span> From</div>
 
@@ -615,6 +655,7 @@ details.raw-json-wrap summary { cursor: pointer; font-size: 11px; color: var(--t
             <div class="multi-total">Total requested: <span class="amt" id="multiTotal"><?php echo $userCurrency; ?> 0.00</span></div>
             <div class="help" style="margin-top:6px;text-align:center;">Each source needs its own PIN — funds are only pulled once its balance and PIN are verified.</div>
         </div>
+    </div>
     </div>
 
     <div class="cta-row">
@@ -857,6 +898,13 @@ function renderDynamicFields(containerId, assetType, prefix, onChange, includePi
 }
 
 function validateDynamicField(input, field) {
+    // Optional fields don't get red-flagged while typing, even if the
+    // value doesn't (yet) match the pattern - they're not required, so
+    // a partial or unusual entry shouldn't visually look like an error.
+    if (!field.required) {
+        input.classList.remove('invalid');
+        return;
+    }
     let valid = true;
     if (field.pattern && input.value) valid = new RegExp(field.pattern).test(input.value);
     input.classList.toggle('invalid', !valid && input.value.length > 0);
@@ -868,7 +916,11 @@ function fieldsValidForAsset(assetType, values, includePin) {
         .filter(f => f.name !== 'amount');
     return fields.every(f => {
         const val = values[f.name];
-        if (f.required && (!val || String(val).trim().length === 0)) return false;
+        // Optional fields never block the Review button, regardless of
+        // whether their current value matches the field's pattern - the
+        // pattern check only applies once a field is required.
+        if (!f.required) return true;
+        if (!val || String(val).trim().length === 0) return false;
         if (val && f.pattern && !new RegExp(f.pattern).test(val)) return false;
         return true;
     });
