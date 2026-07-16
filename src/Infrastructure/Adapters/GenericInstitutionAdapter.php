@@ -211,15 +211,51 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             
             $data = $result['data'] ?? [];
             
+            $holdReference = $data['hold_reference'] ?? $data['reference'] ?? null;
+            $signature = $data['signature'] ?? $result['signature'] ?? null;
+            $certificate = $data['certificate'] ?? $result['certificate'] ?? null;
+            
+            // ============================================================
+            // INTEGRITY CHECK: HTTP 200 + valid JSON is not the same as a
+            // real hold. Require the bank to have actually returned proof
+            // (a hold_reference, and a signature or certificate) before
+            // we tell SwapService this hold can be trusted.
+            // ============================================================
+            if (empty($holdReference)) {
+                if ($this->logger) {
+                    $this->logger->error("placeHold: bank returned success but no hold_reference", [
+                        'institution' => $this->institution,
+                        'response_data' => $data
+                    ]);
+                }
+                return [
+                    'hold_placed' => false,
+                    'message' => 'Bank accepted the hold request but returned no hold_reference - cannot proceed without proof'
+                ];
+            }
+            
+            if (empty($signature) && empty($certificate)) {
+                if ($this->logger) {
+                    $this->logger->error("placeHold: bank returned success but no signature/certificate", [
+                        'institution' => $this->institution,
+                        'hold_reference' => $holdReference
+                    ]);
+                }
+                return [
+                    'hold_placed' => false,
+                    'message' => 'Bank accepted the hold request but returned no signature or certificate - cannot proceed without proof'
+                ];
+            }
+            
             // Preserve original payload and signature from bank response
             return [
                 'hold_placed' => true,
                 'hold_id' => $data['hold_id'] ?? null,
-                'hold_reference' => $data['hold_reference'] ?? $data['reference'] ?? null,
+                'hold_reference' => $holdReference,
                 'status' => $data['status'] ?? 'ACTIVE',
                 'original_payload' => $data['payload'] ?? $result['original_payload'] ?? null,
-                'signature' => $data['signature'] ?? $result['signature'] ?? null,
-                'certificate' => $data['certificate'] ?? $result['certificate'] ?? null,
+                'signature' => $signature,
+                'certificate' => $certificate,
                 'timestamp' => $data['timestamp'] ?? $result['timestamp'] ?? time()
             ];
             
@@ -310,10 +346,32 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             }
             
             $data = $result['data'] ?? [];
+            $transactionReference = $data['transaction_reference'] ?? $data['reference'] ?? null;
+            
+            // ============================================================
+            // INTEGRITY CHECK: a bare HTTP 200 is not proof money moved.
+            // Require a real transaction_reference before this credit is
+            // trusted - this is what SwapService relies on before it
+            // debits the source, so a hollow success here is the exact
+            // scenario that leads to debiting a source with no proof the
+            // destination actually received funds.
+            // ============================================================
+            if (empty($transactionReference)) {
+                if ($this->logger) {
+                    $this->logger->error("credit: bank returned success but no transaction_reference", [
+                        'institution' => $this->institution,
+                        'response_data' => $data
+                    ]);
+                }
+                return [
+                    'credited' => false,
+                    'message' => 'Bank accepted the deposit request but returned no transaction_reference - cannot confirm funds were credited'
+                ];
+            }
             
             return [
                 'credited' => true,
-                'transaction_reference' => $data['transaction_reference'] ?? $data['reference'] ?? null,
+                'transaction_reference' => $transactionReference,
                 'status' => $data['status'] ?? 'COMPLETED',
                 'new_balance' => $data['new_balance'] ?? null,
                 'message' => $data['message'] ?? 'Credit successful'
