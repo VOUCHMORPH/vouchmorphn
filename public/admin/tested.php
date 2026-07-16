@@ -1,419 +1,360 @@
 <?php
-// ============================================================
-// BULK SWAP TEST - Run this on VouchMorph server
-// Tests all swap types and reports which files need fixing
-// ============================================================
+/**
+ * PAYLOAD STRUCTURE METADATA EXTRACTOR
+ * Extracts expected payload fields from each endpoint PHP file
+ * Compares with VouchMorph's actual payload structure
+ */
 
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-
-// Configuration
-$config = [
-    'base_url' => 'https://vouchmorphn-production.up.railway.app/api/v1/swap/execute.php',
-    'api_key' => 'vouchmorph_live_1aB2cD3eF4gH5iJ6',
-    'test_data' => [
-        'voucher_number' => '625448346',
-        'voucher_pin' => '005442',
-        'account_number' => '10000001',
-        'phone' => '+26770000037',
-        'identity_value' => '1234567890',
-        'ewallet_pin' => '174165',
-        'amount' => 100
+// ============================================================
+// CONFIGURATION
+// ============================================================
+$baseDir = __DIR__; // Current directory
+$banks = [
+    'zurubank' => [
+        'path' => 'zurubank/Backend/api/v1/',
+        'files' => [
+            'verify_asset.php' => 'ZURUBANK verify_asset.php',
+            'hold.php' => 'ZURUBANK hold.php',
+            'atm/generate_code.php' => 'ZURUBANK generate_code.php',
+            'settlement/notify_debit.php' => 'ZURUBANK notify_debit.php'
+        ]
+    ],
+    'saccussalis' => [
+        'path' => 'saccussalis/backend/api/v1/',
+        'files' => [
+            'verify_asset.php' => 'SACCUSSALIS verify_asset.php',
+            'hold.php' => 'SACCUSSALIS hold.php',
+            'transaction/credit_funds.php' => 'SACCUSSALIS credit_funds.php',
+            'verify_account.php' => 'SACCUSSALIS verify_account.php'
+        ]
+    ],
+    'cazacom' => [
+        'path' => 'cazacom/backend/api/v1/mno/',
+        'files' => [
+            'verify_wallet.php' => 'CAZACOM verify_wallet.php'
+        ]
     ]
 ];
 
 // ============================================================
-// TEST DEFINITIONS - All swap types
+// VOUCHMORPH PAYLOAD STRUCTURES
 // ============================================================
-$tests = [
-    'VOUCHER_TO_ACCOUNT' => [
-        'description' => 'ZURUBANK Voucher → SACCUSSALIS Account',
-        'payload' => [
-            'swap_type' => 'DEPOSIT',
-            'from_institution' => 'ZURUBANK',
-            'source_institution' => 'ZURUBANK',
-            'asset_type' => 'VOUCHER',
-            'source_identifier' => $config['test_data']['voucher_number'],
-            'voucher_number' => $config['test_data']['voucher_number'],
-            'voucher_pin' => $config['test_data']['voucher_pin'],
-            'amount' => $config['test_data']['amount'],
-            'currency' => 'BWP',
-            'to_institution' => 'SACCUSSALIS',
-            'destination_institution' => 'SACCUSSALIS',
-            'destination_asset_type' => 'ACCOUNT',
-            'destination_identifier' => $config['test_data']['account_number'],
-            'destination_identifier_type' => 'account',
-            'reference' => 'TEST_VOUCHER_ACCOUNT_' . time(),
-            'country_code' => 'Botswana'
-        ],
-        'expected_success' => true,
-        'files_to_check' => [
-            'ZURUBANK' => ['/api/v1/verify_asset.php', '/api/v1/hold.php'],
-            'SACCUSSALIS' => ['/api/v1/verify_account.php', '/api/v1/transaction/credit_funds.php'],
-            'VOUCHMORPH' => ['src/Domain/Services/SwapService.php']
-        ]
+$vouchmorphPayloads = [
+    'DEPOSIT' => [
+        'swap_type' => 'string (DEPOSIT)',
+        'from_institution' => 'string (ZURUBANK)',
+        'source_institution' => 'string (ZURUBANK)',
+        'asset_type' => 'string (VOUCHER, ACCOUNT, WALLET)',
+        'source_identifier' => 'string',
+        'amount' => 'number',
+        'currency' => 'string (BWP)',
+        'to_institution' => 'string (SACCUSSALIS)',
+        'destination_institution' => 'string (SACCUSSALIS)',
+        'destination_asset_type' => 'string (ACCOUNT, WALLET)',
+        'destination_identifier' => 'string',
+        'destination_identifier_type' => 'string (account, phone)',
+        'reference' => 'string',
+        'country_code' => 'string (Botswana)',
+        'wallet_pin' => 'string (optional)',
+        'pin' => 'string (optional)',
+        'voucher_number' => 'string (optional)',
+        'voucher_pin' => 'string (optional)'
     ],
-    
-    'ACCOUNT_TO_VOUCHER' => [
-        'description' => 'SACCUSSALIS Account → ZURUBANK Voucher',
-        'payload' => [
-            'swap_type' => 'DEPOSIT',
-            'from_institution' => 'SACCUSSALIS',
-            'source_institution' => 'SACCUSSALIS',
-            'asset_type' => 'ACCOUNT',
-            'source_identifier' => $config['test_data']['account_number'],
-            'amount' => 50,
-            'currency' => 'BWP',
-            'to_institution' => 'ZURUBANK',
-            'destination_institution' => 'ZURUBANK',
-            'destination_asset_type' => 'VOUCHER',
-            'destination_identifier' => $config['test_data']['phone'],
-            'destination_identifier_type' => 'phone',
-            'reference' => 'TEST_ACCOUNT_VOUCHER_' . time(),
-            'country_code' => 'Botswana'
-        ],
-        'expected_success' => true,
-        'files_to_check' => [
-            'SACCUSSALIS' => ['/api/v1/verify_asset.php', '/api/v1/hold.php'],
-            'ZURUBANK' => ['/api/v1/verify_account.php', '/api/v1/transaction/credit_funds.php'],
-            'VOUCHMORPH' => ['src/Domain/Services/SwapService.php']
-        ]
+    'CASHOUT' => [
+        'swap_type' => 'string (CASHOUT)',
+        'from_institution' => 'string (ZURUBANK)',
+        'source_institution' => 'string (ZURUBANK)',
+        'asset_type' => 'string (VOUCHER, ACCOUNT)',
+        'source_identifier' => 'string',
+        'amount' => 'number',
+        'currency' => 'string (BWP)',
+        'to_institution' => 'string (ATM)',
+        'destination_institution' => 'string (ATM)',
+        'delivery_method' => 'string (ATM, AGENT)',
+        'beneficiary_phone' => 'string',
+        'reference' => 'string',
+        'country_code' => 'string (Botswana)'
     ],
-    
-    'ACCOUNT_TO_ACCOUNT' => [
-        'description' => 'SACCUSSALIS Account → ZURUBANK Account',
-        'payload' => [
-            'swap_type' => 'DEPOSIT',
-            'from_institution' => 'SACCUSSALIS',
-            'source_institution' => 'SACCUSSALIS',
-            'asset_type' => 'ACCOUNT',
-            'source_identifier' => $config['test_data']['account_number'],
-            'amount' => 75,
-            'currency' => 'BWP',
-            'to_institution' => 'ZURUBANK',
-            'destination_institution' => 'ZURUBANK',
-            'destination_asset_type' => 'ACCOUNT',
-            'destination_identifier' => $config['test_data']['account_number'],
-            'destination_identifier_type' => 'account',
-            'reference' => 'TEST_ACCOUNT_ACCOUNT_' . time(),
-            'country_code' => 'Botswana'
-        ],
-        'expected_success' => true,
-        'files_to_check' => [
-            'SACCUSSALIS' => ['/api/v1/verify_asset.php', '/api/v1/hold.php'],
-            'ZURUBANK' => ['/api/v1/verify_account.php', '/api/v1/transaction/credit_funds.php']
-        ]
+    'IDENTITY' => [
+        'swap_type' => 'string (IDENTITY)',
+        'from_institution' => 'string (ZURUBANK)',
+        'source_institution' => 'string (ZURUBANK)',
+        'asset_type' => 'string (VOUCHER, ACCOUNT)',
+        'source_identifier' => 'string',
+        'amount' => 'number',
+        'currency' => 'string (BWP)',
+        'identity_type' => 'string (national_id, phone, email)',
+        'identity_value' => 'string',
+        'reference' => 'string',
+        'country_code' => 'string (Botswana)'
     ],
-    
-    'VOUCHER_TO_VOUCHER' => [
-        'description' => 'ZURUBANK Voucher → ZURUBANK Voucher',
-        'payload' => [
-            'swap_type' => 'DEPOSIT',
-            'from_institution' => 'ZURUBANK',
-            'source_institution' => 'ZURUBANK',
-            'asset_type' => 'VOUCHER',
-            'source_identifier' => $config['test_data']['voucher_number'],
-            'voucher_number' => $config['test_data']['voucher_number'],
-            'voucher_pin' => $config['test_data']['voucher_pin'],
-            'amount' => $config['test_data']['amount'],
-            'currency' => 'BWP',
-            'to_institution' => 'ZURUBANK',
-            'destination_institution' => 'ZURUBANK',
-            'destination_asset_type' => 'VOUCHER',
-            'destination_identifier' => $config['test_data']['phone'],
-            'destination_identifier_type' => 'phone',
-            'reference' => 'TEST_VOUCHER_VOUCHER_' . time(),
-            'country_code' => 'Botswana'
-        ],
-        'expected_success' => true,
-        'files_to_check' => [
-            'ZURUBANK' => ['/api/v1/verify_asset.php', '/api/v1/hold.php', '/api/v1/voucher/issue.php']
-        ]
-    ],
-    
-    'IDENTITY_SWAP' => [
-        'description' => 'Voucher → Identity (National ID)',
-        'payload' => [
-            'swap_type' => 'IDENTITY',
-            'from_institution' => 'ZURUBANK',
-            'source_institution' => 'ZURUBANK',
-            'asset_type' => 'VOUCHER',
-            'source_identifier' => $config['test_data']['voucher_number'],
-            'voucher_number' => $config['test_data']['voucher_number'],
-            'voucher_pin' => $config['test_data']['voucher_pin'],
-            'amount' => $config['test_data']['amount'],
-            'currency' => 'BWP',
-            'identity_type' => 'national_id',
-            'identity_value' => $config['test_data']['identity_value'],
-            'reference' => 'TEST_IDENTITY_SWAP_' . time(),
-            'country_code' => 'Botswana'
-        ],
-        'expected_success' => true,
-        'files_to_check' => [
-            'ZURUBANK' => ['/api/v1/verify_asset.php', '/api/v1/hold.php'],
-            'VOUCHMORPH' => ['src/Domain/Services/SwapService.php', 'src/Domain/Services/IdentityResolver.php']
-        ]
-    ],
-    
-    'CASHOUT_VOUCHER_TO_ATM' => [
-        'description' => 'Voucher → ATM Cashout Code',
-        'payload' => [
-            'swap_type' => 'CASHOUT',
-            'from_institution' => 'ZURUBANK',
-            'source_institution' => 'ZURUBANK',
-            'asset_type' => 'VOUCHER',
-            'source_identifier' => $config['test_data']['voucher_number'],
-            'voucher_number' => $config['test_data']['voucher_number'],
-            'voucher_pin' => $config['test_data']['voucher_pin'],
-            'amount' => $config['test_data']['amount'],
-            'currency' => 'BWP',
-            'to_institution' => 'ATM',
-            'destination_institution' => 'ATM',
-            'delivery_method' => 'ATM',
-            'beneficiary_phone' => $config['test_data']['phone'],
-            'reference' => 'TEST_CASHOUT_' . time(),
-            'country_code' => 'Botswana'
-        ],
-        'expected_success' => true,
-        'files_to_check' => [
-            'ZURUBANK' => ['/api/v1/verify_asset.php', '/api/v1/hold.php', '/api/v1/cashout/generate.php']
-        ]
-    ],
-    
     'MULTI_SOURCE' => [
-        'description' => 'Multi-Source (2 sources → 1 destination)',
-        'payload' => [
-            'swap_type' => 'MULTI_SOURCE',
-            'sources' => [
-                [
-                    'institution' => 'ZURUBANK',
-                    'asset_type' => 'VOUCHER',
-                    'identifier' => $config['test_data']['voucher_number'],
-                    'voucher_number' => $config['test_data']['voucher_number'],
-                    'voucher_pin' => $config['test_data']['voucher_pin'],
-                    'amount' => 50,
-                    'asset_fields' => [
-                        'voucher_number' => $config['test_data']['voucher_number'],
-                        'voucher_pin' => $config['test_data']['voucher_pin']
-                    ]
-                ],
-                [
-                    'institution' => 'SACCUSSALIS',
-                    'asset_type' => 'ACCOUNT',
-                    'identifier' => $config['test_data']['account_number'],
-                    'amount' => 50,
-                    'asset_fields' => [
-                        'account_number' => $config['test_data']['account_number']
-                    ]
-                ]
-            ],
-            'to_institution' => 'ZURUBANK',
-            'destination_institution' => 'ZURUBANK',
-            'destination_asset_type' => 'ACCOUNT',
-            'destination_identifier' => $config['test_data']['account_number'],
-            'destination_identifier_type' => 'account',
-            'amount' => 100,
-            'currency' => 'BWP',
-            'reference' => 'TEST_MULTI_SOURCE_' . time(),
-            'country_code' => 'Botswana'
-        ],
-        'expected_success' => true,
-        'files_to_check' => [
-            'ZURUBANK' => ['/api/v1/verify_asset.php', '/api/v1/hold.php'],
-            'SACCUSSALIS' => ['/api/v1/verify_asset.php', '/api/v1/hold.php'],
-            'VOUCHMORPH' => ['src/Domain/Services/MultiSource/MultiSourceSwapOrchestrator.php']
-        ]
+        'swap_type' => 'string (MULTI_SOURCE)',
+        'sources' => 'array of source objects',
+        'to_institution' => 'string',
+        'destination_institution' => 'string',
+        'destination_asset_type' => 'string',
+        'destination_identifier' => 'string',
+        'destination_identifier_type' => 'string',
+        'amount' => 'number',
+        'currency' => 'string',
+        'reference' => 'string',
+        'country_code' => 'string (Botswana)'
     ],
-    
     'MULTI_DESTINATION' => [
-        'description' => 'Multi-Destination (1 source → 2 destinations)',
-        'payload' => [
-            'swap_type' => 'MULTI_DESTINATION',
-            'from_institution' => 'ZURUBANK',
-            'source_institution' => 'ZURUBANK',
-            'asset_type' => 'VOUCHER',
-            'source_identifier' => $config['test_data']['voucher_number'],
-            'voucher_number' => $config['test_data']['voucher_number'],
-            'voucher_pin' => $config['test_data']['voucher_pin'],
-            'currency' => 'BWP',
-            'destinations' => [
-                [
-                    'to_institution' => 'SACCUSSALIS',
-                    'destination_institution' => 'SACCUSSALIS',
-                    'destination_asset_type' => 'ACCOUNT',
-                    'destination_identifier' => $config['test_data']['account_number'],
-                    'destination_identifier_type' => 'account',
-                    'amount' => 50
-                ],
-                [
-                    'to_institution' => 'ZURUBANK',
-                    'destination_institution' => 'ZURUBANK',
-                    'destination_asset_type' => 'ACCOUNT',
-                    'destination_identifier' => $config['test_data']['account_number'],
-                    'destination_identifier_type' => 'account',
-                    'amount' => 50
-                ]
-            ],
-            'reference' => 'TEST_MULTI_DEST_' . time(),
-            'country_code' => 'Botswana'
-        ],
-        'expected_success' => true,
-        'files_to_check' => [
-            'ZURUBANK' => ['/api/v1/verify_asset.php', '/api/v1/hold.php'],
-            'SACCUSSALIS' => ['/api/v1/verify_account.php', '/api/v1/transaction/credit_funds.php'],
-            'VOUCHMORPH' => ['src/Domain/Services/SwapService.php']
-        ]
-    ],
-    
-    'EWALLET_PIN_TO_ACCOUNT' => [
-        'description' => 'E-Wallet PIN → Account',
-        'payload' => [
-            'swap_type' => 'DEPOSIT',
-            'from_institution' => 'SACCUSSALIS',
-            'source_institution' => 'SACCUSSALIS',
-            'asset_type' => 'EWALLET_PIN',
-            'source_identifier' => $config['test_data']['ewallet_pin'],
-            'pin' => $config['test_data']['ewallet_pin'],
-            'amount' => 80,
-            'currency' => 'BWP',
-            'to_institution' => 'ZURUBANK',
-            'destination_institution' => 'ZURUBANK',
-            'destination_asset_type' => 'ACCOUNT',
-            'destination_identifier' => $config['test_data']['account_number'],
-            'destination_identifier_type' => 'account',
-            'reference' => 'TEST_EWALLET_ACCOUNT_' . time(),
-            'country_code' => 'Botswana'
-        ],
-        'expected_success' => true,
-        'files_to_check' => [
-            'SACCUSSALIS' => ['/api/v1/verify_asset.php', '/api/v1/hold.php'],
-            'ZURUBANK' => ['/api/v1/verify_account.php', '/api/v1/transaction/credit_funds.php']
-        ]
-    ],
-    
-    'ACCOUNT_TO_CASHOUT' => [
-        'description' => 'Account → ATM Cashout',
-        'payload' => [
-            'swap_type' => 'CASHOUT',
-            'from_institution' => 'SACCUSSALIS',
-            'source_institution' => 'SACCUSSALIS',
-            'asset_type' => 'ACCOUNT',
-            'source_identifier' => $config['test_data']['account_number'],
-            'amount' => 50,
-            'currency' => 'BWP',
-            'to_institution' => 'ATM',
-            'destination_institution' => 'ATM',
-            'delivery_method' => 'ATM',
-            'beneficiary_phone' => $config['test_data']['phone'],
-            'reference' => 'TEST_ACCOUNT_CASHOUT_' . time(),
-            'country_code' => 'Botswana'
-        ],
-        'expected_success' => true,
-        'files_to_check' => [
-            'SACCUSSALIS' => ['/api/v1/verify_asset.php', '/api/v1/hold.php', '/api/v1/cashout/generate.php']
-        ]
+        'swap_type' => 'string (MULTI_DESTINATION)',
+        'from_institution' => 'string',
+        'source_institution' => 'string',
+        'asset_type' => 'string',
+        'source_identifier' => 'string',
+        'currency' => 'string',
+        'destinations' => 'array of destination objects',
+        'reference' => 'string',
+        'country_code' => 'string (Botswana)'
     ]
 ];
 
 // ============================================================
-// RUN TESTS
+// HELPER FUNCTIONS
 // ============================================================
 
-$results = [];
-$passCount = 0;
-$failCount = 0;
+/**
+ * Extract payload fields from a PHP file
+ */
+function extractPayloadFields($filePath) {
+    if (!file_exists($filePath)) {
+        return ['error' => 'File not found: ' . $filePath];
+    }
+    
+    $content = file_get_contents($filePath);
+    $fields = [
+        'required' => [],
+        'optional' => [],
+        'post' => [],
+        'get' => []
+    ];
+    
+    // Extract all $input['field'] patterns
+    preg_match_all('/\$input\[\''([^\']+)\'\]/', $content, $matches);
+    $inputFields = array_unique($matches[1]);
+    
+    foreach ($inputFields as $field) {
+        // Check if field is required (has empty() or !isset() check)
+        if (preg_match('/empty\(\$input\[\'' . preg_quote($field, '/') . '\'\]\)|!isset\(\$input\[\'' . preg_quote($field, '/') . '\'\]\)/', $content)) {
+            $fields['required'][] = $field;
+        } else {
+            $fields['optional'][] = $field;
+        }
+    }
+    
+    // Extract $_POST fields
+    preg_match_all('/\$_POST\[\''([^\']+)\'\]/', $content, $matches);
+    $fields['post'] = array_unique($matches[1]);
+    
+    // Extract $_GET fields
+    preg_match_all('/\$_GET\[\''([^\']+)\'\]/', $content, $matches);
+    $fields['get'] = array_unique($matches[1]);
+    
+    return $fields;
+}
+
+/**
+ * Check if VouchMorph payload matches endpoint expectations
+ */
+function comparePayload($endpointFields, $vouchmorphFields) {
+    $results = [
+        'matched' => [],
+        'missing' => [],
+        'extra' => []
+    ];
+    
+    $endpointRequired = array_merge($endpointFields['required'], $endpointFields['post']);
+    $endpointAll = array_merge($endpointRequired, $endpointFields['optional']);
+    $vouchmorphKeys = array_keys($vouchmorphFields);
+    
+    foreach ($endpointRequired as $field) {
+        if (in_array($field, $vouchmorphKeys)) {
+            $results['matched'][] = $field;
+        } else {
+            $results['missing'][] = $field;
+        }
+    }
+    
+    foreach ($vouchmorphKeys as $field) {
+        if (!in_array($field, $endpointAll) && $field !== 'swap_type') {
+            $results['extra'][] = $field;
+        }
+    }
+    
+    return $results;
+}
+
+// ============================================================
+// RUN EXTRACTION
+// ============================================================
 
 echo "==========================================\n";
-echo "VOUCHMORPH BULK SWAP TEST\n";
+echo "PAYLOAD STRUCTURE METADATA EXTRACTOR\n";
 echo "==========================================\n";
 echo "Started: " . date('Y-m-d H:i:s') . "\n";
 echo "==========================================\n\n";
 
-foreach ($tests as $testName => $test) {
-    echo "Testing: " . $testName . "\n";
-    echo "  Description: " . $test['description'] . "\n";
-    echo "  Expected: " . ($test['expected_success'] ? 'SUCCESS' : 'FAILURE') . "\n";
+$allResults = [];
+
+foreach ($banks as $bankName => $bank) {
+    echo "==========================================\n";
+    echo strtoupper($bankName) . " ENDPOINTS\n";
+    echo "==========================================\n\n";
     
-    $payload = $test['payload'];
-    $payloadJson = json_encode($payload);
-    
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $config['base_url']);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $payloadJson);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'Content-Type: application/json',
-        'X-API-Key: ' . $config['api_key']
-    ]);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 60);
-    
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curlError = curl_error($ch);
-    curl_close($ch);
-    
-    $responseData = json_decode($response, true);
-    
-    $status = 'UNKNOWN';
-    $error = '';
-    $details = [];
-    
-    if ($curlError) {
-        $status = 'CURL_ERROR';
-        $error = $curlError;
-    } elseif ($httpCode >= 200 && $httpCode < 300) {
-        if ($responseData && isset($responseData['success'])) {
-            if ($responseData['success'] === true) {
-                $status = 'PASSED';
-                $passCount++;
-            } else {
-                $status = 'FAILED';
-                $failCount++;
-                $error = $responseData['error'] ?? 'Unknown error';
-                $details = $responseData['debug'] ?? [];
-            }
-        } else {
-            $status = 'FAILED';
-            $failCount++;
-            $error = 'Invalid response format';
-            $details = ['raw_response' => substr($response, 0, 500)];
+    foreach ($bank['files'] as $file => $label) {
+        $fullPath = $bank['path'] . $file;
+        $absolutePath = $baseDir . '/' . $fullPath;
+        
+        echo "📁 " . $label . "\n";
+        echo "📄 File: " . $fullPath . "\n";
+        echo "\n";
+        
+        $fields = extractPayloadFields($absolutePath);
+        
+        if (isset($fields['error'])) {
+            echo "❌ " . $fields['error'] . "\n";
+            echo "\n";
+            continue;
         }
-    } else {
-        $status = 'HTTP_ERROR';
-        $failCount++;
-        $error = 'HTTP ' . $httpCode;
-        $details = ['response' => substr($response, 0, 500)];
+        
+        echo "Expected payload fields:\n";
+        echo "----------------------------------------\n";
+        
+        if (!empty($fields['required'])) {
+            echo "🔴 REQUIRED:\n";
+            foreach ($fields['required'] as $field) {
+                echo "   - " . $field . "\n";
+            }
+            echo "\n";
+        }
+        
+        if (!empty($fields['optional'])) {
+            echo "🟢 OPTIONAL:\n";
+            foreach ($fields['optional'] as $field) {
+                echo "   - " . $field . "\n";
+            }
+            echo "\n";
+        }
+        
+        if (!empty($fields['post'])) {
+            echo "🟡 FROM \$_POST:\n";
+            foreach ($fields['post'] as $field) {
+                echo "   - " . $field . "\n";
+            }
+            echo "\n";
+        }
+        
+        if (!empty($fields['get'])) {
+            echo "🔵 FROM \$_GET:\n";
+            foreach ($fields['get'] as $field) {
+                echo "   - " . $field . "\n";
+            }
+            echo "\n";
+        }
+        
+        $allResults[$label] = $fields;
+        echo "----------------------------------------\n\n";
     }
-    
-    echo "  Result: " . $status . "\n";
-    if ($error) {
-        echo "  Error: " . $error . "\n";
-    }
-    
-    $results[$testName] = [
-        'status' => $status,
-        'error' => $error,
-        'details' => $details,
-        'files_to_check' => $test['files_to_check'] ?? [],
-        'response' => $responseData
-    ];
-    
-    echo "  ---\n\n";
 }
 
 // ============================================================
-// GENERATE REPORT
+// COMPARISON WITH VOUCHMORPH PAYLOADS
 // ============================================================
 
 echo "==========================================\n";
-echo "TEST SUMMARY\n";
-echo "==========================================\n";
-echo "Total Tests: " . count($tests) . "\n";
-echo "Passed: " . $passCount . "\n";
-echo "Failed: " . $failCount . "\n";
-echo "Pass Rate: " . round(($passCount / count($tests)) * 100, 2) . "%\n";
+echo "VOUCHMORPH PAYLOAD STRUCTURES\n";
 echo "==========================================\n\n";
+
+foreach ($vouchmorphPayloads as $type => $fields) {
+    echo "📦 " . $type . " payload:\n";
+    echo "----------------------------------------\n";
+    foreach ($fields as $field => $type) {
+        echo "   " . $field . " => " . $type . "\n";
+    }
+    echo "\n";
+}
+
+// ============================================================
+// COMPARISON TABLE
+// ============================================================
+
+echo "==========================================\n";
+echo "PAYLOAD COMPARISON TABLE\n";
+echo "==========================================\n\n";
+
+echo "| Endpoint | Required Fields | Optional Fields | Match |\n";
+echo "|----------|----------------|-----------------|--------|\n";
+
+$comparisons = [];
+
+foreach ($allResults as $endpoint => $fields) {
+    // Determine which VouchMorph payload type to compare with
+    $matchType = 'DEPOSIT';
+    if (strpos($endpoint, 'cashout') !== false || strpos($endpoint, 'CASHOUT') !== false) {
+        $matchType = 'CASHOUT';
+    } elseif (strpos($endpoint, 'identity') !== false || strpos($endpoint, 'IDENTITY') !== false) {
+        $matchType = 'IDENTITY';
+    }
+    
+    $vouchFields = $vouchmorphPayloads[$matchType] ?? [];
+    $comparison = comparePayload($fields, $vouchFields);
+    $comparisons[$endpoint] = $comparison;
+    
+    $requiredStr = implode(', ', array_slice($fields['required'], 0, 5));
+    if (count($fields['required']) > 5) {
+        $requiredStr .= ', ...';
+    }
+    
+    $optionalStr = implode(', ', array_slice($fields['optional'], 0, 5));
+    if (count($fields['optional']) > 5) {
+        $optionalStr .= ', ...';
+    }
+    
+    $matchStatus = '✅';
+    if (!empty($comparison['missing'])) {
+        $matchStatus = '❌';
+    } elseif (!empty($comparison['extra'])) {
+        $matchStatus = '⚠️';
+    }
+    
+    echo "| " . $endpoint . " | " . ($requiredStr ?: 'none') . " | " . ($optionalStr ?: 'none') . " | " . $matchStatus . " |\n";
+}
+
+echo "\n";
+
+// ============================================================
+// ISSUES FOUND
+// ============================================================
+
+echo "==========================================\n";
+echo "ISSUES FOUND\n";
+echo "==========================================\n\n";
+
+$issues = [];
+
+foreach ($comparisons as $endpoint => $comparison) {
+    if (!empty($comparison['missing'])) {
+        $issues[] = "❌ " . $endpoint . " expects these fields that VouchMorph doesn't send: " . implode(', ', $comparison['missing']);
+    }
+    if (!empty($comparison['extra'])) {
+        $issues[] = "⚠️ " . $endpoint . " doesn't expect these fields that VouchMorph sends: " . implode(', ', $comparison['extra']);
+    }
+}
+
+if (empty($issues)) {
+    echo "✅ All payloads match!\n";
+} else {
+    foreach ($issues as $issue) {
+        echo $issue . "\n";
+    }
+}
+
+echo "\n";
 
 // ============================================================
 // FILES THAT NEED FIXING
@@ -423,96 +364,18 @@ echo "==========================================\n";
 echo "FILES THAT NEED FIXING\n";
 echo "==========================================\n\n";
 
-$filesToFix = [];
-foreach ($results as $testName => $result) {
-    if ($result['status'] !== 'PASSED' && !empty($result['files_to_check'])) {
-        foreach ($result['files_to_check'] as $institution => $files) {
-            foreach ($files as $file) {
-                $key = $institution . ':' . $file;
-                if (!isset($filesToFix[$key])) {
-                    $filesToFix[$key] = [
-                        'institution' => $institution,
-                        'file' => $file,
-                        'tests' => []
-                    ];
-                }
-                $filesToFix[$key]['tests'][] = $testName . ' (' . $result['error'] . ')';
-            }
-        }
-    }
-}
-
-if (empty($filesToFix)) {
-    echo "✅ All tests passed! No files need fixing.\n";
-} else {
-    foreach ($filesToFix as $key => $info) {
-        echo "📁 " . $info['institution'] . ":" . $info['file'] . "\n";
-        echo "   Failed tests:\n";
-        foreach ($info['tests'] as $test) {
-            echo "     - " . $test . "\n";
-        }
-        echo "\n";
-    }
-}
-
-// ============================================================
-// DETAILED ERROR REPORT BY INSTITUTION
-// ============================================================
-
-echo "==========================================\n";
-echo "DETAILED ERROR REPORT BY INSTITUTION\n";
-echo "==========================================\n\n";
-
-$institutionErrors = [];
-foreach ($results as $testName => $result) {
-    if ($result['status'] !== 'PASSED' && !empty($result['files_to_check'])) {
-        foreach ($result['files_to_check'] as $institution => $files) {
-            if (!isset($institutionErrors[$institution])) {
-                $institutionErrors[$institution] = [];
-            }
-            $institutionErrors[$institution][] = [
-                'test' => $testName,
-                'error' => $result['error'],
-                'files' => $files
-            ];
-        }
-    }
-}
-
-foreach ($institutionErrors as $institution => $errors) {
-    echo "🏦 " . $institution . "\n";
-    echo "---\n";
-    foreach ($errors as $error) {
-        echo "  Test: " . $error['test'] . "\n";
-        echo "  Error: " . $error['error'] . "\n";
-        echo "  Files: " . implode(', ', $error['files']) . "\n";
-        echo "\n";
-    }
-}
-
-// ============================================================
-// RAW JSON OUTPUT FOR LOGGING
-// ============================================================
-
-echo "==========================================\n";
-echo "RAW JSON OUTPUT (for Railway logs)\n";
-echo "==========================================\n\n";
-
-$logOutput = [
-    'timestamp' => date('Y-m-d H:i:s'),
-    'summary' => [
-        'total' => count($tests),
-        'passed' => $passCount,
-        'failed' => $failCount,
-        'pass_rate' => round(($passCount / count($tests)) * 100, 2) . '%'
-    ],
-    'results' => $results,
-    'files_to_fix' => $filesToFix,
-    'institution_errors' => $institutionErrors
+$fixes = [
+    'CAZACOM verify_wallet.php' => 'Add \'source_identifier\' to phone extraction: $phone = $input[\'source_identifier\'] ?? ...',
+    'SACCUSSALIS hold.php' => 'Add require_once __DIR__ . \'/../../helpers/crypto.php\';',
+    'ZURUBANK generate_code.php' => 'Fix hold_reference extraction from source_hold array',
+    'ZURUBANK verify_asset.php' => 'Remove \'is_frozen\' from SELECT (already done)'
 ];
 
-echo json_encode($logOutput, JSON_PRETTY_PRINT) . "\n";
+foreach ($fixes as $file => $fix) {
+    echo "📁 " . $file . "\n";
+    echo "   🔧 " . $fix . "\n\n";
+}
 
-echo "\n==========================================\n";
+echo "==========================================\n";
 echo "Test completed: " . date('Y-m-d H:i:s') . "\n";
 echo "==========================================\n";
