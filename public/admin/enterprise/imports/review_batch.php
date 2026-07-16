@@ -64,11 +64,45 @@ if (!$batch) {
 }
 
 // ============================================================
-// CHECK PERMISSIONS
+// CHECK PERMISSIONS - EXPLICIT ROLE-BASED
 // ============================================================
+$role = $user['role'] ?? 'viewer';
 $isOwnBatch = ($batch['created_by'] == $userId);
-$canEdit = canEditBatch($batch['created_by'], $userId, $user['role'] ?? 'viewer');
+$canEdit = canEditBatch($batch['created_by'], $userId, $role);
 $isReadOnly = !$canEdit;
+
+// ============================================================
+// EXPLICIT ROLE PERMISSIONS - CLEAR AND UNAMBIGUOUS
+// ============================================================
+// Submit: Owner, Program Officer, Department Head (own batches)
+$canSubmit = in_array($role, ['owner', 'program_officer', 'department_head']) && $canEdit;
+
+// Approve: Approver or Senior Approver ONLY
+$canApprove = in_array($role, ['approver', 'senior_approver']);
+
+// Execute/DISBURSE: OWNER ONLY - NO EXCEPTIONS
+$canExecute = ($role === 'owner');
+
+// SAFETY: Double-check that approvers cannot execute under any circumstances
+if ($role === 'approver' || $role === 'senior_approver') {
+    $canExecute = false;
+    $canApprove = true; // Approvers CAN approve
+}
+
+// ============================================================
+// EXPLICIT BLOCK: Approvers CANNOT execute/disburse
+// ============================================================
+$isApprover = ($role === 'approver' || $role === 'senior_approver');
+$executeDisabled = !$canExecute;
+$executeDisabledReason = '';
+
+if ($isApprover) {
+    $executeDisabledReason = 'Approvers cannot execute disbursements. Only Owners can disburse funds.';
+} elseif ($role === 'program_officer' || $role === 'department_head') {
+    $executeDisabledReason = 'Program Officers and Department Heads cannot execute disbursements. Only Owners can disburse funds.';
+} elseif ($role === 'viewer') {
+    $executeDisabledReason = 'Viewers cannot execute disbursements.';
+}
 
 // ============================================================
 // GET DESTINATIONS
@@ -90,6 +124,8 @@ error_log("Batch ID: " . $batchId);
 error_log("Batch Reference: " . ($batch['batch_reference'] ?? 'NULL'));
 error_log("Source Institution: " . ($batch['source_institution'] ?? 'NULL'));
 error_log("Destinations Count: " . count($destinations));
+error_log("User Role: " . $role);
+error_log("Can Execute: " . ($canExecute ? 'YES' : 'NO'));
 
 foreach ($destinations as $idx => $dest) {
     error_log("Destination $idx: " . json_encode($dest));
@@ -102,7 +138,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     requireCsrfToken($_POST['csrf_token'] ?? null);
     $action = $_POST['action'] ?? '';
     
-    if ($isReadOnly && !in_array($action, ['approve', 'reject', 'execute'])) {
+    // ============================================================
+    // SECURITY: Explicitly block execute for non-owners
+    // ============================================================
+    if ($action === 'execute' && !$canExecute) {
+        $error = "🚫 SECURITY BLOCK: You do not have permission to execute this disbursement. Only Owners can disburse funds.";
+        error_log("[SECURITY] User " . ($userId ?? 'unknown') . " (role: $role) attempted to execute batch $batchId without permission");
+        // Don't proceed with any further processing
+    } elseif ($isReadOnly && !in_array($action, ['approve', 'reject', 'execute'])) {
         $error = "You cannot modify this batch. It was created by another user.";
     } else {
         if ($action === 'submit_for_approval') {
@@ -147,6 +190,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $batch['status'] = 'rejected';
             
         } elseif ($action === 'execute') {
+            // This will only run if $canExecute is true (owner only)
             error_log("=== REVIEW_BATCH DEBUG: EXECUTION STARTED ===");
             
             try {
@@ -433,13 +477,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $csrfToken = generateCsrfToken();
-$roleDisplay = strtoupper($user['role'] ?? 'USER');
-
-$canSubmit = in_array($user['role'] ?? '', ['owner', 'program_officer', 'department_head']) && $canEdit;
-$canApprove = in_array($user['role'] ?? '', ['approver', 'senior_approver']);
-$canExecute = in_array($user['role'] ?? '', ['owner']);
-
+$roleDisplay = strtoupper($role);
 $status = strtolower($batch['status'] ?? 'draft');
+
+// ============================================================
+// FINAL SAFETY CHECK: Approvers should NEVER see Execute button
+// ============================================================
+$showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -521,6 +565,14 @@ $status = strtolower($batch['status'] ?? 'draft');
             text-transform: uppercase;
             font-family: var(--f-cond);
             letter-spacing: 0.05em;
+        }
+        .masthead .role-pill.approver {
+            border-color: #f59e0b;
+            color: #f59e0b;
+        }
+        .masthead .role-pill.owner {
+            border-color: var(--ledger-green);
+            color: var(--ledger-green);
         }
         .masthead .ref {
             color: var(--ink-300);
@@ -776,6 +828,11 @@ $status = strtolower($batch['status'] ?? 'draft');
         .btn-execute:hover {
             background: #5a1812;
         }
+        .btn-execute:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            background: var(--ink-300);
+        }
         .btn-retry {
             background: var(--blue-tint);
             color: #1e40af;
@@ -787,6 +844,23 @@ $status = strtolower($batch['status'] ?? 'draft');
             font-weight: 600;
         }
         .btn-retry:hover { background: #bfdbfe; }
+        
+        .btn-approver-locked {
+            background: #fef3c7;
+            color: var(--amber);
+            border: 1px solid #f59e0b;
+            padding: 8px 22px;
+            font-weight: 600;
+            font-size: 12px;
+            cursor: not-allowed;
+            font-family: var(--f-cond);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            opacity: 0.7;
+        }
+        .btn-approver-locked:hover {
+            opacity: 0.7;
+        }
 
         /* ============================================================
            ACTIONS BAR
@@ -833,6 +907,25 @@ $status = strtolower($batch['status'] ?? 'draft');
             letter-spacing: 0.04em;
             font-family: var(--f-cond);
             color: var(--ink-500);
+        }
+
+        /* ============================================================
+           SECURITY NOTICE
+           ============================================================ */
+        .security-notice {
+            background: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            padding: 12px 16px;
+            margin-top: 12px;
+            font-size: 13px;
+            color: var(--amber);
+        }
+        .security-notice strong {
+            color: var(--amber);
+        }
+        .security-notice .lock-icon {
+            font-size: 18px;
+            margin-right: 8px;
         }
 
         /* ============================================================
@@ -900,6 +993,8 @@ $status = strtolower($batch['status'] ?? 'draft');
             .table-code { background: #2C3A45; color: #93A2AC; }
             .rejection-form textarea { background: #1B2733; border-color: #2C3A45; color: #ECEFF2; }
             .debug-panel { background: #0d1a26; }
+            .security-notice { background: #1e293b; border-left-color: #f59e0b; color: #fbbf24; }
+            .btn-approver-locked { background: #1e293b; border-color: #f59e0b; color: #fbbf24; }
         }
     </style>
 </head>
@@ -910,7 +1005,9 @@ $status = strtolower($batch['status'] ?? 'draft');
     <div class="masthead">
         <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
             <h1>VOUCHMORPH · Review Batch</h1>
-            <span class="role-pill"><?php echo $roleDisplay; ?></span>
+            <span class="role-pill <?php echo $role === 'owner' ? 'owner' : ($isApprover ? 'approver' : ''); ?>">
+                <?php echo $roleDisplay; ?>
+            </span>
             <span class="ref"><?php echo htmlspecialchars($batch['batch_reference']); ?></span>
         </div>
         <div>
@@ -947,7 +1044,7 @@ $status = strtolower($batch['status'] ?? 'draft');
         <?php endif; ?>
 
         <!-- Read-Only Notice -->
-        <?php if ($isReadOnly && !in_array($user['role'] ?? '', ['owner', 'approver', 'senior_approver'])): ?>
+        <?php if ($isReadOnly && !in_array($role, ['owner', 'approver', 'senior_approver'])): ?>
         <div class="card" style="border-left: 3px solid #f59e0b; background: #fef3c7;">
             <div style="display:flex; align-items:center; gap:12px;">
                 <span style="font-size:22px;">🔒</span>
@@ -1049,7 +1146,7 @@ $status = strtolower($batch['status'] ?? 'draft');
                             <th>Status</th>
                             <th>Transaction Ref</th>
                             <th>Error Message</th>
-                            <?php if ($user['role'] === 'owner' && in_array($status, ['partial_success', 'failed'])): ?>
+                            <?php if ($role === 'owner' && in_array($status, ['partial_success', 'failed'])): ?>
                             <th>Action</th>
                             <?php endif; ?>
                         </tr>
@@ -1090,7 +1187,7 @@ $status = strtolower($batch['status'] ?? 'draft');
                             <td style="color:var(--danger); font-size:12px; max-width:200px;">
                                 <?php echo htmlspecialchars($dest['error_message'] ?? ''); ?>
                             </td>
-                            <?php if ($user['role'] === 'owner' && in_array($status, ['partial_success', 'failed']) && strtolower($dest['status'] ?? '') === 'failed'): ?>
+                            <?php if ($role === 'owner' && in_array($status, ['partial_success', 'failed']) && strtolower($dest['status'] ?? '') === 'failed'): ?>
                             <td>
                                 <a href="retry_destination.php?batch_id=<?php echo $batchId; ?>&dest_idx=<?php echo $dest['destination_index']; ?>" 
                                    class="btn-retry">
@@ -1111,6 +1208,11 @@ $status = strtolower($batch['status'] ?? 'draft');
                 <span class="card-title">⚡ Actions</span>
                 <?php if ($isReadOnly): ?>
                 <span class="readonly-badge">🔒 Read-Only</span>
+                <?php endif; ?>
+                <?php if ($isApprover): ?>
+                <span class="readonly-badge" style="background: #fef3c7; border-color: #f59e0b; color: var(--amber);">
+                    🔑 Approver Mode
+                </span>
                 <?php endif; ?>
             </div>
             <div class="actions-bar">
@@ -1147,15 +1249,37 @@ $status = strtolower($batch['status'] ?? 'draft');
                 </div>
                 <?php endif; ?>
 
-                <!-- Execute - Only Owners -->
-                <?php if ($status === 'approved' && $canExecute): ?>
-                <form method="POST" style="display:inline;" onsubmit="return confirm('⚠️ EXECUTE DISBURSEMENT: This will move real funds. Only proceed if you have verified all approvals. Continue?')">
-                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                    <input type="hidden" name="action" value="execute">
-                    <button type="submit" class="btn btn-execute">
-                        🚀 EXECUTE DISBURSEMENT
-                    </button>
-                </form>
+                <!-- ============================================================ -->
+                <!-- EXECUTE / DISBURSE BUTTON - STRICTLY CONTROLLED                -->
+                <!-- APPROVERS CANNOT SEE OR USE THIS BUTTON                       -->
+                <!-- ============================================================ -->
+                <?php if ($status === 'approved'): ?>
+                    <?php if ($showExecuteButton): ?>
+                        <!-- Owner only - Execute button visible -->
+                        <form method="POST" style="display:inline;" onsubmit="return confirm('⚠️ EXECUTE DISBURSEMENT: This will move real funds. Only proceed if you have verified all approvals. Continue?')">
+                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
+                            <input type="hidden" name="action" value="execute">
+                            <button type="submit" class="btn btn-execute">
+                                🚀 EXECUTE DISBURSEMENT
+                            </button>
+                        </form>
+                    <?php else: ?>
+                        <!-- Non-Owner (Approver, Program Officer, Viewer) - Show locked button -->
+                        <button class="btn-approver-locked" disabled style="cursor:not-allowed;">
+                            🔒 DISBURSEMENT LOCKED
+                        </button>
+                        <span style="font-size:12px; color:var(--ink-500); margin-left:4px;">
+                            <?php echo $executeDisabledReason ?: 'Only Owners can execute disbursements'; ?>
+                        </span>
+                        
+                        <?php if ($isApprover): ?>
+                        <div class="security-notice" style="margin-top:8px; width:100%;">
+                            <span class="lock-icon">🔑</span>
+                            <strong>Approver Notice:</strong> You have approved this batch. The disbursement will be executed by an 
+                            <strong>Owner</strong> after final review. You do not have permission to disburse funds.
+                        </div>
+                        <?php endif; ?>
+                    <?php endif; ?>
                 <?php endif; ?>
 
                 <!-- Edit Destinations - Draft only -->
