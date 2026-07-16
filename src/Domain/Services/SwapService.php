@@ -647,133 +647,150 @@ class SwapService
         return $this->executeAtomicSwap($multiPayload);
     }
 
-    // ============================================================================
-    // PUBLIC EXECUTE ATOMIC SWAP (MAIN ENTRY POINT)
-    // ============================================================================
-
     public function executeAtomicSwap(array $payload): array
-    {
-        error_log("[SwapService] executeAtomicSwap called");
-        error_log("[SwapService] Payload keys: " . implode(', ', array_keys($payload)));
-        
-        if (isset($payload['original_payload'])) {
-            error_log("[SwapService] Signed envelope detected, extracting original_payload");
-            $this->signedPayloads['envelope'] = [
-                'signature' => $payload['signature'] ?? null,
-                'timestamp' => $payload['timestamp'] ?? null
-            ];
-            $payload = $payload['original_payload'];
-        }
-        
-        $swapType = $payload['swap_type'] ?? 'STANDARD';
-        
-        // Check if multi-source
-        $isMultiSource = isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0;
-        $isMultiDestination = isset($payload['destinations']) && is_array($payload['destinations']) && count($payload['destinations']) >= 1;
-        
+{
+    error_log("[SwapService] executeAtomicSwap called");
+    error_log("[SwapService] Payload keys: " . implode(', ', array_keys($payload)));
+    
+    if (isset($payload['original_payload'])) {
+        error_log("[SwapService] Signed envelope detected, extracting original_payload");
+        $this->signedPayloads['envelope'] = [
+            'signature' => $payload['signature'] ?? null,
+            'timestamp' => $payload['timestamp'] ?? null
+        ];
+        $payload = $payload['original_payload'];
+    }
+    
+    $swapType = $payload['swap_type'] ?? 'STANDARD';
+    
+    // Check if multi-source
+    $isMultiSource = isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0;
+    $isMultiDestination = isset($payload['destinations']) && is_array($payload['destinations']) && count($payload['destinations']) >= 1;
+    
+    if ($isMultiSource) {
+        $swapType = 'MULTI_SOURCE';
+        error_log("[SwapService] MULTI-SOURCE DETECTED: " . count($payload['sources']) . " sources");
+    }
+    
+    if ($isMultiDestination) {
+        $swapType = 'MULTI_DESTINATION';
+        error_log("[SwapService] MULTI-DESTINATION DETECTED: " . count($payload['destinations']) . " destinations");
+    }
+    
+    // ============================================================
+    // FIX: Validate institutions with identity support
+    // ============================================================
+    if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY') {
         if ($isMultiSource) {
-            $swapType = 'MULTI_SOURCE';
-            error_log("[SwapService] MULTI-SOURCE DETECTED: " . count($payload['sources']) . " sources");
+            foreach ($payload['sources'] as $idx => $source) {
+                if (empty($source['institution'])) {
+                    throw new RuntimeException("Source institution required for source at index {$idx}");
+                }
+                error_log("[SwapService] Multi-source source {$idx}: {$source['institution']}");
+            }
         }
         
         if ($isMultiDestination) {
-            $swapType = 'MULTI_DESTINATION';
-            error_log("[SwapService] MULTI-DESTINATION DETECTED: " . count($payload['destinations']) . " destinations");
-        }
-        
-        // Validate institutions for non-identity flows
-        if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY') {
-            if ($isMultiSource) {
-                foreach ($payload['sources'] as $idx => $source) {
-                    if (empty($source['institution'])) {
-                        throw new RuntimeException("Source institution required for source at index {$idx}");
+            foreach ($payload['destinations'] as $idx => $dest) {
+                // ============================================================
+                // FIX: Check if this is an identity destination FIRST
+                // ============================================================
+                $isIdentity = isset($dest['identity_type']) && !empty($dest['identity_value']);
+                
+                if ($isIdentity) {
+                    // ✅ Identity destination - validate identity fields
+                    $identityType = strtolower($dest['identity_type'] ?? '');
+                    if (!in_array($identityType, ['national_id', 'phone', 'email'])) {
+                        throw new RuntimeException("Invalid identity_type for destination at index {$idx}. Must be: national_id, phone, or email");
                     }
-                    error_log("[SwapService] Multi-source source {$idx}: {$source['institution']}");
-                }
-            }
-            
-            if ($isMultiDestination) {
-                foreach ($payload['destinations'] as $idx => $dest) {
+                    if (empty($dest['identity_value'])) {
+                        throw new RuntimeException("identity_value required for identity destination at index {$idx}");
+                    }
+                    error_log("[SwapService] Multi-destination dest {$idx}: IDENTITY ({$identityType}={$dest['identity_value']})");
+                    
+                } else {
+                    // ✅ Bank destination - require institution
                     if (empty($dest['to_institution']) && empty($dest['destination_institution'])) {
                         throw new RuntimeException("Destination institution required for destination at index {$idx}");
                     }
-                    error_log("[SwapService] Multi-destination dest {$idx}: " . ($dest['to_institution'] ?? $dest['destination_institution']));
-                }
-            }
-            
-            if (!$isMultiSource && !$isMultiDestination) {
-                $this->validateInstitutions($payload, $swapType !== 'DEPOSIT');
-                
-                $sourceInst = $this->extractSourceInstitution($payload);
-                error_log("[SwapService] Source: {$sourceInst}, Type: {$swapType}");
-                
-                if ($swapType !== 'DEPOSIT') {
-                    $destInst = $this->extractDestinationInstitution($payload);
-                    error_log("[SwapService] Destination: {$destInst}");
+                    error_log("[SwapService] Multi-destination dest {$idx}: BANK (" . ($dest['to_institution'] ?? $dest['destination_institution']) . ")");
                 }
             }
         }
         
-        $ref = $payload['reference'] ?? $this->generateReference();
-        $idempotencyKey = $payload['idempotency_key'] ?? $payload['idempotencyKey'] ?? null;
-        
-        if ($idempotencyKey) {
-            $cached = $this->checkIdempotency($idempotencyKey);
-            if ($cached) {
-                $this->logger->info("Idempotency cache hit", ['key' => $idempotencyKey]);
-                return $cached;
+        if (!$isMultiSource && !$isMultiDestination) {
+            $this->validateInstitutions($payload, $swapType !== 'DEPOSIT');
+            
+            $sourceInst = $this->extractSourceInstitution($payload);
+            error_log("[SwapService] Source: {$sourceInst}, Type: {$swapType}");
+            
+            if ($swapType !== 'DEPOSIT') {
+                $destInst = $this->extractDestinationInstitution($payload);
+                error_log("[SwapService] Destination: {$destInst}");
             }
-        }
-        
-        $this->beginAtomicSwap($ref);
-        
-        try {
-            $result = match($swapType) {
-                'MULTI_SOURCE' => $this->executeMultiSourceSwap($payload),
-                'MULTI_DESTINATION' => $this->executeMultiDestinationSwap($payload),
-                'CASHOUT' => $this->executeSignedCashout($payload),
-                'DEPOSIT' => $this->executeSignedDeposit($payload),
-                'IDENTITY' => $this->initiateSwapToIdentity($payload),
-                'CONFIRM_IDENTITY' => $this->confirmAndFinalizeIdentitySwap($payload),
-                'CARD_ISSUE' => $this->executeCardIssuance($payload),
-                'VERIFY_CASHOUT' => $this->verifyCashout($payload),
-                'CONFIRM_CASHOUT' => $this->confirmCashout($payload),
-                default => $this->executeSignedStandardSwap($payload),
-            };
-            
-            if (!empty($this->feeCalculationDetails)) {
-                $result['fee_calculation_details'] = $this->feeCalculationDetails;
-            }
-            
-            $commitResult = $this->commitAtomicSwap();
-            $result = array_merge($result, ['atomic_commit' => $commitResult]);
-            
-            if ($idempotencyKey) {
-                $this->storeIdempotencyResult($idempotencyKey, $result);
-            }
-            
-            return $result;
-            
-        } catch (Exception $e) {
-            $this->logger->error("Atomic swap failed", [
-                'reference' => $ref,
-                'step' => $this->getLastStep(),
-                'error' => $e->getMessage()
-            ]);
-            
-            $rollbackResult = $this->rollbackAtomicSwap($e->getMessage());
-            
-            if ($idempotencyKey) {
-                $this->storeIdempotencyResult($idempotencyKey, [
-                    'status' => 'failed',
-                    'reference' => $ref,
-                    'error' => $e->getMessage()
-                ]);
-            }
-            
-            throw new RuntimeException("Swap failed: " . $e->getMessage(), 0, $e);
         }
     }
+    
+    $ref = $payload['reference'] ?? $this->generateReference();
+    $idempotencyKey = $payload['idempotency_key'] ?? $payload['idempotencyKey'] ?? null;
+    
+    if ($idempotencyKey) {
+        $cached = $this->checkIdempotency($idempotencyKey);
+        if ($cached) {
+            $this->logger->info("Idempotency cache hit", ['key' => $idempotencyKey]);
+            return $cached;
+        }
+    }
+    
+    $this->beginAtomicSwap($ref);
+    
+    try {
+        $result = match($swapType) {
+            'MULTI_SOURCE' => $this->executeMultiSourceSwap($payload),
+            'MULTI_DESTINATION' => $this->executeMultiDestinationSwap($payload),
+            'CASHOUT' => $this->executeSignedCashout($payload),
+            'DEPOSIT' => $this->executeSignedDeposit($payload),
+            'IDENTITY' => $this->initiateSwapToIdentity($payload),
+            'CONFIRM_IDENTITY' => $this->confirmAndFinalizeIdentitySwap($payload),
+            'CARD_ISSUE' => $this->executeCardIssuance($payload),
+            'VERIFY_CASHOUT' => $this->verifyCashout($payload),
+            'CONFIRM_CASHOUT' => $this->confirmCashout($payload),
+            default => $this->executeSignedStandardSwap($payload),
+        };
+        
+        if (!empty($this->feeCalculationDetails)) {
+            $result['fee_calculation_details'] = $this->feeCalculationDetails;
+        }
+        
+        $commitResult = $this->commitAtomicSwap();
+        $result = array_merge($result, ['atomic_commit' => $commitResult]);
+        
+        if ($idempotencyKey) {
+            $this->storeIdempotencyResult($idempotencyKey, $result);
+        }
+        
+        return $result;
+        
+    } catch (Exception $e) {
+        $this->logger->error("Atomic swap failed", [
+            'reference' => $ref,
+            'step' => $this->getLastStep(),
+            'error' => $e->getMessage()
+        ]);
+        
+        $rollbackResult = $this->rollbackAtomicSwap($e->getMessage());
+        
+        if ($idempotencyKey) {
+            $this->storeIdempotencyResult($idempotencyKey, [
+                'status' => 'failed',
+                'reference' => $ref,
+                'error' => $e->getMessage()
+            ]);
+        }
+        
+        throw new RuntimeException("Swap failed: " . $e->getMessage(), 0, $e);
+    }
+}
 
    public function executeMultiDestinationSwap(array $payload): array
 {
