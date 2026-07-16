@@ -576,6 +576,33 @@ const PARTICIPANTS = <?php echo json_encode($participants); ?>;
 const ASSETS = <?php echo json_encode($assetTypes); ?>;
 
 // ============================================================
+// CASE/WHITESPACE-SAFE ASSET LOOKUP
+// participants.yaml and assets.yaml are separate files. If an
+// asset_types entry in participants.yaml doesn't match a key in
+// assets.yaml EXACTLY (case, stray whitespace), ASSETS[type]
+// silently returns undefined and the asset-specific form fields
+// just don't render - no error, nothing in the console. This
+// normalizes the lookup and logs loudly the moment that happens,
+// so a config mismatch is visible instead of looking like a
+// missing/broken form.
+// ============================================================
+const ASSET_KEY_MAP = {};
+Object.keys(ASSETS).forEach(k => { ASSET_KEY_MAP[k.trim().toUpperCase()] = k; });
+
+function getAssetConfig(type) {
+    if (!type) return null;
+    if (ASSETS[type]) return ASSETS[type];
+    const normalized = String(type).trim().toUpperCase();
+    const realKey = ASSET_KEY_MAP[normalized];
+    if (realKey) {
+        console.warn(`[assets] "${type}" only matched "${realKey}" after case/whitespace normalization - check that this asset_type is spelled identically in participants.yaml and assets.yaml.`);
+        return ASSETS[realKey];
+    }
+    console.error(`[assets] No asset config found for type "${type}". Available in assets.yaml: ${Object.keys(ASSETS).join(', ') || '(none loaded)'}`);
+    return null;
+}
+
+// ============================================================
 // STATE
 // ============================================================
 let state = {
@@ -684,7 +711,7 @@ function selectFromInst(code) {
     const sel = document.getElementById('fromAssetSelect');
     const assetTypes = inst.asset_types || [];
     sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => 
-        `<option value="${t}">${ASSETS[t]?.icon || '📦'} ${ASSETS[t]?.label || t}</option>`
+        `<option value="${t}">${getAssetConfig(t)?.icon || '📦'} ${getAssetConfig(t)?.label || t}</option>`
     ).join('');
     assetGroup.style.display = 'block';
     document.getElementById('fromCurrencyLabel').textContent = inst.limits?.currency || CONFIG.CURRENCY;
@@ -697,7 +724,9 @@ function selectFromInst(code) {
 function selectFromAsset(type) {
     state.fromAsset = type || null;
     state.fromFields = {};
-    if (!type) { document.getElementById('fromFields').innerHTML = ''; refreshUI(); return; }
+    const box = document.getElementById('fromFields');
+    if (!type) { box.style.display = 'none'; box.innerHTML = ''; refreshUI(); return; }
+    box.style.display = 'block';
     renderDynamicFields('fromFields', type, 'fromField_', updateFromField, true);
     refreshUI();
 }
@@ -709,12 +738,12 @@ function setAmount(val) { document.getElementById('fromAmount').value = val; sta
 // SHARED: dynamic asset field rendering - FROM CONFIG
 // ============================================================
 function assetHasAmountField(assetType) {
-    return (ASSETS[assetType]?.fields || []).some(f => f.name === 'amount');
+    return (getAssetConfig(assetType)?.fields || []).some(f => f.name === 'amount');
 }
 
 function renderDynamicFields(containerId, assetType, prefix, onChange, includePin) {
     const container = document.getElementById(containerId);
-    const fields = (ASSETS[assetType]?.fields || [])
+    const fields = (getAssetConfig(assetType)?.fields || [])
         .filter(f => includePin || f.vault_field !== 'pin')
         .filter(f => f.name !== 'amount');
     if (!fields || fields.length === 0) { container.innerHTML = ''; return; }
@@ -752,7 +781,7 @@ function validateDynamicField(input, field) {
 }
 
 function fieldsValidForAsset(assetType, values, includePin) {
-    const fields = (ASSETS[assetType]?.fields || [])
+    const fields = (getAssetConfig(assetType)?.fields || [])
         .filter(f => includePin || f.vault_field !== 'pin')
         .filter(f => f.name !== 'amount');
     return fields.every(f => {
@@ -764,7 +793,7 @@ function fieldsValidForAsset(assetType, values, includePin) {
 }
 
 function extractPinFromFields(assetType, values) {
-    const pinField = (ASSETS[assetType]?.fields || []).find(f => f.vault_field === 'pin');
+    const pinField = (getAssetConfig(assetType)?.fields || []).find(f => f.vault_field === 'pin');
     return pinField ? (values[pinField.name] || '') : '';
 }
 
@@ -789,7 +818,7 @@ function selectToInst(code) {
         if (!inst) { showMessage('Institution not found: ' + code, 'error'); return; }
         const assetTypes = inst.asset_types || [];
         sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => 
-            `<option value="${t}">${ASSETS[t]?.icon || '📦'} ${ASSETS[t]?.label || t}</option>`
+            `<option value="${t}">${getAssetConfig(t)?.icon || '📦'} ${getAssetConfig(t)?.label || t}</option>`
         ).join('');
         group.style.display = 'block';
         if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectToAsset(assetTypes[0]); }
@@ -877,10 +906,10 @@ function renderMultiSourceRows() {
                 <label>Asset Type</label>
                 <select onchange="setMultiSourceAsset(${src.id}, this.value)">
                     <option value="">Select asset type</option>
-                    ${(PARTICIPANTS[src.institution]?.asset_types || []).map(t => `<option value="${t}" ${src.assetType === t ? 'selected' : ''}>${ASSETS[t]?.label || t}</option>`).join('')}
+                    ${(PARTICIPANTS[src.institution]?.asset_types || []).map(t => `<option value="${t}" ${src.assetType === t ? 'selected' : ''}>${getAssetConfig(t)?.label || t}</option>`).join('')}
                 </select>
             </div>` : ''}
-            ${src.assetType ? (ASSETS[src.assetType]?.fields || []).filter(f => f.name !== 'amount').map(f => `
+            ${src.assetType ? (getAssetConfig(src.assetType)?.fields || []).filter(f => f.name !== 'amount').map(f => `
                 <div class="field-group">
                     <label>${f.label} ${f.required ? '*' : ''}</label>
                     <input type="${f.type === 'select' ? 'text' : f.type}" value="${src.fields[f.name] || ''}"
@@ -932,7 +961,7 @@ function multiSourcesValid() {
     return state.multiSources.every(s => {
         if (!s.institution || !s.assetType || !(s.amount > 0)) return false;
         const pin = extractPinFromFields(s.assetType, s.fields);
-        const needsPin = ASSETS[s.assetType]?.fields?.some(f => f.vault_field === 'pin');
+        const needsPin = getAssetConfig(s.assetType)?.fields?.some(f => f.vault_field === 'pin');
         if (needsPin && pin.length < 4) return false;
         return fieldsValidForAsset(s.assetType, s.fields, true);
     });
