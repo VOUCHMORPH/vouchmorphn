@@ -240,7 +240,7 @@ if (file_exists($participantsPath)) {
 
 // Load assets dynamically based on country
 $assets = [];
-$assetsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/assets.yaml';
+$assetsPath = __DIR__ . '/../../src/Core/Config/assets.yaml';
 if (file_exists($assetsPath)) {
     $assets = dashboard_yaml_parse_file($assetsPath);
 } else {
