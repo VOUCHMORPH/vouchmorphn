@@ -895,6 +895,14 @@ if (empty($destinations)) {
                     throw new RuntimeException("Hold failed for destination " . ($idx + 1) . ": " . ($holdResult['message'] ?? 'Unknown error'));
                 }
                 
+                // Integrity check for hold in multi-destination
+                $this->assertStepIntegrity(
+                    $holdResult,
+                    'hold_placed',
+                    ['hold_reference', 'signature'],
+                    'PLACE_HOLD_SIGNED_DEST_' . $idx
+                );
+                
                 $destHoldRef = $holdResult['hold_reference'];
                 $destHoldId = $holdResult['local_hold_id'];
                 $totalHeld += ($destAmount + $feeAmount);
@@ -1294,6 +1302,14 @@ if (empty($destinations)) {
             return ['success' => false, 'message' => $result['message'] ?? 'Deposit failed'];
         }
 
+        // Integrity check for multi-destination deposit credit
+        $this->assertStepIntegrity(
+            $result,
+            'credited',
+            ['transaction_reference'],
+            'PROCESS_DEPOSIT_WITH_PROOF_DEST_' . ($dest['_destination_index'] ?? 0)
+        );
+
         return [
             'success' => true,
             'transaction_reference' => $result['transaction_reference'] ?? null,
@@ -1345,6 +1361,15 @@ if (empty($destinations)) {
         }
         
         $data = $result['data'] ?? [];
+        
+        // Integrity check for voucher generation - require some proof
+        if (empty($data['voucher_code']) && empty($data['transaction_reference'])) {
+            $this->logger->error("Voucher generation returned success but no proof", [
+                'institution' => $institution,
+                'data' => $data
+            ]);
+            return ['success' => false, 'message' => 'Voucher generated but no voucher_code returned'];
+        }
         
         $beneficiaryPhone = $dest['beneficiary_phone'] ?? $dest['client_phone'] ?? null;
         if ($beneficiaryPhone && isset($data['voucher_code']) && $this->smsService) {
@@ -1424,6 +1449,14 @@ if (empty($destinations)) {
                 error_log("[SwapService] HOLD FAILED: {$errorMessage}");
                 throw new RuntimeException("Hold failed: {$errorMessage}");
             }
+            
+            // Integrity check for cashout hold
+            $this->assertStepIntegrity(
+                $holdResult,
+                'hold_placed',
+                $isHooked ? ['hold_reference'] : ['hold_reference', 'signature'],
+                'PLACE_HOLD_SIGNED'
+            );
             
             $this->signedPayloads['hold'] = [
                 'payload' => $holdResult['original_payload'],
@@ -1587,6 +1620,14 @@ if (empty($destinations)) {
                 throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown error'));
             }
             
+            // INTEGRITY CHECK: Require real proof before trusting this hold
+            $this->assertStepIntegrity(
+                $holdResult,
+                'hold_placed',
+                $isHooked ? ['hold_reference'] : ['hold_reference', 'signature'],
+                'PLACE_HOLD_SIGNED'
+            );
+            
             $this->signedPayloads['hold'] = [
                 'payload' => $holdResult['original_payload'],
                 'signature' => $holdResult['signature'],
@@ -1619,6 +1660,16 @@ if (empty($destinations)) {
         if (!($depositResult['credited'] ?? false)) {
             throw new RuntimeException("Deposit failed: " . ($depositResult['message'] ?? 'Unknown error'));
         }
+        
+        // INTEGRITY CHECK: Don't debit the source on a hollow credit.
+        // This is the highest-stakes check: once debitSource() runs, money leaves.
+        // Require proof the destination actually received funds first.
+        $this->assertStepIntegrity(
+            $depositResult,
+            'credited',
+            ['transaction_reference'],
+            'PROCESS_DEPOSIT_WITH_PROOF'
+        );
         
         // STEP 6: Debit source
         $debitResult = $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution) {
@@ -1722,6 +1773,14 @@ if (empty($destinations)) {
             if (!($holdResult['hold_placed'] ?? false)) {
                 throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown'));
             }
+            
+            // Integrity check for identity hold
+            $this->assertStepIntegrity(
+                $holdResult,
+                'hold_placed',
+                ['hold_reference', 'signature'],
+                'PLACE_HOLD_SIGNED'
+            );
             
             $this->signedPayloads['hold'] = [
                 'payload' => $holdResult['original_payload'],
@@ -2405,6 +2464,15 @@ if (empty($destinations)) {
             throw new RuntimeException("Hold failed");
         }
         
+        // Integrity check for standard swap hold
+        $isHooked = isset($payload['_is_hooked']) && $payload['_is_hooked'] === true;
+        $this->assertStepIntegrity(
+            $holdResult,
+            'hold_placed',
+            $isHooked ? ['hold_reference'] : ['hold_reference', 'signature'],
+            'PLACE_HOLD_SIGNED'
+        );
+        
         $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
         
         $feeBreakdown = $this->calculateFeesWithDetails('SWAP', $amount, $payload);
@@ -2414,6 +2482,14 @@ if (empty($destinations)) {
         if (!($destinationResult['credited'] ?? false)) {
             throw new RuntimeException("Destination processing failed");
         }
+        
+        // Integrity check: require proof destination received funds
+        $this->assertStepIntegrity(
+            $destinationResult,
+            'credited',
+            ['transaction_reference'],
+            'PROCESS_DESTINATION_WITH_PROOF'
+        );
         
         $debitResult = $this->debitSource($payload, $sourceInstitution);
         if (!($debitResult['debited'] ?? false)) {
@@ -3010,6 +3086,14 @@ if (empty($destinations)) {
         if (!($result['credited'] ?? false)) {
             return ['success' => false, 'message' => $result['message'] ?? 'Pool credit failed'];
         }
+
+        // Integrity check for pool credit
+        $this->assertStepIntegrity(
+            $result,
+            'credited',
+            ['transaction_reference'],
+            'CREDIT_DESTINATION'
+        );
 
         return [
             'success' => true,
@@ -3667,6 +3751,39 @@ if (empty($destinations)) {
         if (empty($this->executedSteps)) return 'none';
         $last = end($this->executedSteps);
         return $last['step'];
+    }
+
+    // ============================================================================
+    // INTEGRITY CHECK - NEW PRIVATE HELPER
+    // ============================================================================
+
+    /**
+     * Assert that a step's success flag is backed by real evidence, not just
+     * a truthy boolean. Call this immediately after a step's own success
+     * check passes, and before its output is trusted/stored/acted on by
+     * later steps. Throws to force the same rollback path as any other
+     * step failure.
+     *
+     * @param array $result The step's return array
+     * @param string $successKey The boolean key that was already checked (for the error message)
+     * @param array $requiredFields Fields that must be non-empty in $result for this to count as real
+     * @param string $stepName Human-readable name for logging
+     */
+    private function assertStepIntegrity(array $result, string $successKey, array $requiredFields, string $stepName): void
+    {
+        $missing = [];
+        foreach ($requiredFields as $field) {
+            if (empty($result[$field])) {
+                $missing[] = $field;
+            }
+        }
+
+        if (!empty($missing)) {
+            $msg = "{$stepName} reported {$successKey}=true but is missing required proof field(s): " . implode(', ', $missing);
+            error_log("[SwapService] INTEGRITY CHECK FAILED: {$msg}");
+            $this->logger->error($msg, ['step' => $stepName, 'result' => $result]);
+            throw new RuntimeException($msg);
+        }
     }
 
     // ============================================================================
