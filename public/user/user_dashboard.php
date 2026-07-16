@@ -29,6 +29,174 @@ $apiBase = getenv('API_BASE_URL') ?: '';
 $isTestMode = empty($apiKey);
 
 // ============================================================
+// FIX 2: Local YAML-subset parser - NO dependency on the `yaml`
+// PHP extension (yaml_parse_file), and NO separate file to require.
+// This is intentionally self-contained in user_dashboard.php so
+// there's no path/autoload issue to debug.
+//
+// Supports: nested maps, lists of scalars, lists of maps, quoted/
+// unquoted scalars, booleans, numbers, inline [a, b, c] lists,
+// and # comments. Does NOT support anchors/aliases, block scalars
+// (| or >), or flow maps ({a: 1}).
+// ============================================================
+if (!function_exists('dashboard_yaml_parse_file')) {
+
+    function dashboard_yaml_castScalar(string $v)
+    {
+        $v = trim($v);
+        if ($v === '') {
+            return null;
+        }
+
+        if ($v[0] !== '"' && $v[0] !== "'") {
+            $hashPos = strpos($v, ' #');
+            if ($hashPos !== false) {
+                $v = trim(substr($v, 0, $hashPos));
+            }
+        }
+
+        if ((str_starts_with($v, '"') && str_ends_with($v, '"') && strlen($v) >= 2) ||
+            (str_starts_with($v, "'") && str_ends_with($v, "'") && strlen($v) >= 2)) {
+            return substr($v, 1, -1);
+        }
+
+        $lower = strtolower($v);
+        if ($lower === 'true' || $lower === 'yes') {
+            return true;
+        }
+        if ($lower === 'false' || $lower === 'no') {
+            return false;
+        }
+        if ($lower === 'null' || $v === '~') {
+            return null;
+        }
+        if (is_numeric($v)) {
+            return $v + 0;
+        }
+
+        if ($v[0] === '[' && str_ends_with($v, ']')) {
+            $inner = trim(substr($v, 1, -1));
+            if ($inner === '') {
+                return [];
+            }
+            return array_map(
+                fn($x) => dashboard_yaml_castScalar(trim($x)),
+                explode(',', $inner)
+            );
+        }
+
+        return $v;
+    }
+
+    function dashboard_yaml_tokenize(string $content): array
+    {
+        $raw = explode("\n", str_replace("\r\n", "\n", $content));
+        $lines = [];
+        foreach ($raw as $line) {
+            $trimmedRight = rtrim($line);
+            if ($trimmedRight === '') {
+                continue;
+            }
+            $stripped = ltrim($trimmedRight);
+            if ($stripped === '' || $stripped[0] === '#') {
+                continue;
+            }
+            if (preg_match('/^---\s*$/', $stripped) || preg_match('/^\.\.\.\s*$/', $stripped)) {
+                continue;
+            }
+            $indent = strlen($trimmedRight) - strlen($stripped);
+            $lines[] = [$indent, $stripped];
+        }
+        return array_values($lines);
+    }
+
+    function dashboard_yaml_parseBlock(array &$lines, int &$idx, int $blockIndent): array
+    {
+        $result = [];
+
+        while ($idx < count($lines)) {
+            [$indent, $content] = $lines[$idx];
+
+            if ($blockIndent === -1) {
+                $blockIndent = $indent;
+            }
+
+            if ($indent < $blockIndent) {
+                break;
+            }
+
+            if ($indent > $blockIndent) {
+                $idx++;
+                continue;
+            }
+
+            if (str_starts_with($content, '- ')) {
+                $itemContent = trim(substr($content, 2));
+
+                if ($itemContent !== '' && preg_match('/^([A-Za-z0-9_\.\-]+):\s*(.*)$/', $itemContent, $m)) {
+                    $lines[$idx] = [$indent + 2, $itemContent];
+                    $item = dashboard_yaml_parseBlock($lines, $idx, $indent + 2);
+                } elseif ($itemContent === '') {
+                    $idx++;
+                    $item = dashboard_yaml_parseBlock($lines, $idx, -1);
+                } else {
+                    $item = dashboard_yaml_castScalar($itemContent);
+                    $idx++;
+                }
+
+                $result[] = $item;
+                continue;
+            }
+
+            if (preg_match('/^([^:]+):\s*(.*)$/', $content, $m)) {
+                $key = trim($m[1]);
+                $value = $m[2];
+                $idx++;
+
+                if ($value === '') {
+                    if ($idx < count($lines) && $lines[$idx][0] > $indent) {
+                        $result[$key] = dashboard_yaml_parseBlock($lines, $idx, -1);
+                    } else {
+                        $result[$key] = null;
+                    }
+                } else {
+                    $result[$key] = dashboard_yaml_castScalar($value);
+                }
+                continue;
+            }
+
+            error_log("[dashboard_yaml_parse_file] Skipping unrecognized line: {$content}");
+            $idx++;
+        }
+
+        return $result;
+    }
+
+    function dashboard_yaml_parse_file(string $path): array
+    {
+        if (!file_exists($path)) {
+            error_log("[dashboard_yaml_parse_file] File not found: {$path}");
+            return [];
+        }
+
+        $content = file_get_contents($path);
+        if ($content === false) {
+            error_log("[dashboard_yaml_parse_file] Failed to read file: {$path}");
+            return [];
+        }
+
+        try {
+            $lines = dashboard_yaml_tokenize($content);
+            $idx = 0;
+            return dashboard_yaml_parseBlock($lines, $idx, -1);
+        } catch (\Throwable $e) {
+            error_log("[dashboard_yaml_parse_file] Failed to parse {$path}: " . $e->getMessage());
+            return [];
+        }
+    }
+}
+
+// ============================================================
 // LOAD COUNTRY CONFIGURATION - NO HARDCODED BANKS
 // ============================================================
 $countryConfig = [];
@@ -41,8 +209,7 @@ if (file_exists($countryConfigPath)) {
 $participants = [];
 $participantsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/participants.yaml';
 if (file_exists($participantsPath)) {
--    $parsed = yaml_parse_file($participantsPath);
-+    $parsed = SimpleYamlParser::parseFile($participantsPath);
+    $parsed = dashboard_yaml_parse_file($participantsPath);
     $participants = $parsed['participants'] ?? [];
 } else {
     error_log("[DASHBOARD] Participants file not found: " . $participantsPath);
@@ -52,8 +219,7 @@ if (file_exists($participantsPath)) {
 $assets = [];
 $assetsPath = __DIR__ . '/../../src/Core/Config/Countries/' . $userCountry . '/assets.yaml';
 if (file_exists($assetsPath)) {
--    $assets = yaml_parse_file($assetsPath) ?? [];
-+    $assets = SimpleYamlParser::parseFile($assetsPath);
+    $assets = dashboard_yaml_parse_file($assetsPath);
 } else {
     error_log("[DASHBOARD] Assets file not found: " . $assetsPath);
 }
