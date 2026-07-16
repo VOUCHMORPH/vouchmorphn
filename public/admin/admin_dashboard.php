@@ -673,8 +673,16 @@ try {
     ");
     $dailyStats = $stmt->fetch(PDO::FETCH_ASSOC);
     
+    // Cast dailyStats values to proper types
+    if ($dailyStats) {
+        $dailyStats['total_amount'] = (float)$dailyStats['total_amount'];
+        $dailyStats['transaction_count'] = (int)$dailyStats['transaction_count'];
+        $dailyStats['completed_count'] = (int)$dailyStats['completed_count'];
+    }
+    
 } catch (Throwable $e) {
     error_log("[ADMIN DASHBOARD] Fee data error: " . $e->getMessage());
+    $dailyStats = ['total_amount' => 0, 'transaction_count' => 0, 'completed_count' => 0];
 }
 
 // ============================================================
@@ -741,6 +749,15 @@ try {
     $metrics['total_card_transactions'] = (int)$db->query("
         SELECT COUNT(*) FROM card_transactions
     ")->fetchColumn();
+    
+    // Cast all metrics to proper types
+    foreach ($metrics as $key => $value) {
+        if (strpos($key, 'total_fees') !== false || strpos($key, 'total_amount') !== false) {
+            $metrics[$key] = (float)$value;
+        } else {
+            $metrics[$key] = (int)$value;
+        }
+    }
     
 } catch (Throwable $e) {
     $metrics = array_fill_keys([
@@ -1135,69 +1152,69 @@ try {
             <?php if (hasPermission('view_all') || $isSuperAdmin): ?>
             <div class="metric-card">
                 <div class="metric-label">Total Users</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_users']); ?></div>
+                <div class="metric-value"><?php echo number_format((int)($metrics['total_users'] ?? 0)); ?></div>
             </div>
             <?php endif; ?>
             <div class="metric-card">
                 <div class="metric-label">Total Swaps</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_swaps']); ?></div>
+                <div class="metric-value"><?php echo number_format((int)($metrics['total_swaps'] ?? 0)); ?></div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">Active Holds</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_holds']); ?></div>
+                <div class="metric-value"><?php echo number_format((int)($metrics['total_holds'] ?? 0)); ?></div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">Cashouts</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_cashouts']); ?></div>
+                <div class="metric-value"><?php echo number_format((int)($metrics['total_cashouts'] ?? 0)); ?></div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">Total Invoices</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_invoices']); ?></div>
+                <div class="metric-value"><?php echo number_format((int)($metrics['total_invoices'] ?? 0)); ?></div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">Total Fees (BWP)</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_fees'], 2); ?></div>
+                <div class="metric-value"><?php echo number_format((float)($metrics['total_fees'] ?? 0), 2); ?></div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">Fee Collections</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_fee_collections']); ?></div>
+                <div class="metric-value"><?php echo number_format((int)($metrics['total_fee_collections'] ?? 0)); ?></div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">Audit Logs</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_audit_logs']); ?></div>
+                <div class="metric-value"><?php echo number_format((int)($metrics['total_audit_logs'] ?? 0)); ?></div>
             </div>
             <?php if ($isSuperAdmin || $isSettlementOfficer): ?>
             <div class="metric-card">
                 <div class="metric-label">Pending Settlements</div>
-                <div class="metric-value"><?php echo number_format($metrics['pending_settlements']); ?></div>
+                <div class="metric-value"><?php echo number_format((int)($metrics['pending_settlements'] ?? 0)); ?></div>
             </div>
             <?php endif; ?>
             <div class="metric-card">
                 <div class="metric-label">24h Swaps</div>
-                <div class="metric-value"><?php echo number_format($metrics['recent_swaps_24h']); ?></div>
+                <div class="metric-value"><?php echo number_format((int)($metrics['recent_swaps_24h'] ?? 0)); ?></div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">7d Swaps</div>
-                <div class="metric-value"><?php echo number_format($metrics['recent_swaps_7d']); ?></div>
+                <div class="metric-value"><?php echo number_format((int)($metrics['recent_swaps_7d'] ?? 0)); ?></div>
             </div>
             <?php if ($isSuperAdmin || $isFinanceManager): ?>
             <div class="metric-card">
                 <div class="metric-label">Swap Transactions</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_swap_transactions']); ?></div>
+                <div class="metric-value"><?php echo number_format((int)($metrics['total_swap_transactions'] ?? 0)); ?></div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">Cross-Border</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_cross_border']); ?></div>
+                <div class="metric-value"><?php echo number_format((int)($metrics['total_cross_border'] ?? 0)); ?></div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">Card TXNs</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_card_transactions']); ?></div>
+                <div class="metric-value"><?php echo number_format((int)($metrics['total_card_transactions'] ?? 0)); ?></div>
             </div>
             <?php endif; ?>
-            <?php if ($metrics['failed_transactions_24h'] > 0): ?>
+            <?php if (($metrics['failed_transactions_24h'] ?? 0) > 0): ?>
             <div class="metric-card" style="border-color: #dc3545;">
                 <div class="metric-label">⚠️ Failed (24h)</div>
-                <div class="metric-value" style="color: #dc3545;"><?php echo number_format($metrics['failed_transactions_24h']); ?></div>
+                <div class="metric-value" style="color: #dc3545;"><?php echo number_format((int)($metrics['failed_transactions_24h'] ?? 0)); ?></div>
             </div>
             <?php endif; ?>
         </div>
@@ -1206,12 +1223,12 @@ try {
         <div class="fee-box">
             <div class="title">💰 Financial Summary</div>
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px; margin-top:8px;">
-                <div><strong>Today's Volume:</strong> <?php echo number_format($dailyStats['total_amount'] ?? 0, 2); ?> BWP</div>
-                <div><strong>Today's Transactions:</strong> <?php echo number_format($dailyStats['transaction_count'] ?? 0); ?></div>
-                <div><strong>Completed Today:</strong> <?php echo number_format($dailyStats['completed_count'] ?? 0); ?></div>
-                <div><strong>Total Fees Collected:</strong> <?php echo number_format($metrics['total_fees'] ?? 0, 2); ?> BWP</div>
-                <div><strong>24h Swap Volume:</strong> <?php echo number_format($metrics['recent_swaps_24h'] ?? 0); ?> TXNs</div>
-                <div><strong>Pending Settlements:</strong> <?php echo number_format($metrics['pending_settlements'] ?? 0); ?></div>
+                <div><strong>Today's Volume:</strong> <?php echo number_format((float)($dailyStats['total_amount'] ?? 0), 2); ?> BWP</div>
+                <div><strong>Today's Transactions:</strong> <?php echo number_format((int)($dailyStats['transaction_count'] ?? 0)); ?></div>
+                <div><strong>Completed Today:</strong> <?php echo number_format((int)($dailyStats['completed_count'] ?? 0)); ?></div>
+                <div><strong>Total Fees Collected:</strong> <?php echo number_format((float)($metrics['total_fees'] ?? 0), 2); ?> BWP</div>
+                <div><strong>24h Swap Volume:</strong> <?php echo number_format((int)($metrics['recent_swaps_24h'] ?? 0)); ?> TXNs</div>
+                <div><strong>Pending Settlements:</strong> <?php echo number_format((int)($metrics['pending_settlements'] ?? 0)); ?></div>
             </div>
         </div>
 
@@ -1477,9 +1494,9 @@ try {
                         <tr>
                             <td><?php echo safeHtml($fee['fee_type']); ?></td>
                             <td><?php echo number_format($fee['count']); ?></td>
-                            <td><?php echo number_format($fee['total_fee'], 2); ?> BWP</td>
-                            <td><?php echo number_format($fee['total_vat'] ?? 0, 2); ?> BWP</td>
-                            <td><strong><?php echo number_format($fee['total_with_vat'], 2); ?> BWP</strong></td>
+                            <td><?php echo number_format((float)($fee['total_fee'] ?? 0), 2); ?> BWP</td>
+                            <td><?php echo number_format((float)($fee['total_vat'] ?? 0), 2); ?> BWP</td>
+                            <td><strong><?php echo number_format((float)($fee['total_with_vat'] ?? 0), 2); ?> BWP</strong></td>
                             <td>
                                 <?php 
                                 $status = strtolower($fee['status'] ?? 'pending');
@@ -1539,9 +1556,9 @@ try {
                             <td><strong><?php echo safeHtml($row['source_institution']); ?></strong></td>
                             <td><?php echo safeHtml($row['fee_type']); ?></td>
                             <td><?php echo number_format($row['invoice_count']); ?></td>
-                            <td><?php echo number_format($row['total_fee'], 2); ?> BWP</td>
-                            <td><?php echo number_format($row['total_vat'], 2); ?> BWP</td>
-                            <td><strong><?php echo number_format($row['total_amount'], 2); ?> BWP</strong></td>
+                            <td><?php echo number_format((float)($row['total_fee'] ?? 0), 2); ?> BWP</td>
+                            <td><?php echo number_format((float)($row['total_vat'] ?? 0), 2); ?> BWP</td>
+                            <td><strong><?php echo number_format((float)($row['total_amount'] ?? 0), 2); ?> BWP</strong></td>
                             <td><?php echo number_format($row['paid_count'] ?? 0); ?></td>
                             <td><?php echo number_format($row['pending_count'] ?? 0); ?></td>
                         </tr>
@@ -1594,9 +1611,9 @@ try {
                         <tr>
                             <td><strong><?php echo safeHtml($row['source_institution']); ?></strong></td>
                             <td><?php echo number_format($row['transaction_count']); ?></td>
-                            <td><?php echo number_format($row['total_fee'], 2); ?> BWP</td>
-                            <td><?php echo number_format($row['total_vat'] ?? 0, 2); ?> BWP</td>
-                            <td><strong><?php echo number_format($row['total_revenue'], 2); ?> BWP</strong></td>
+                            <td><?php echo number_format((float)($row['total_fee'] ?? 0), 2); ?> BWP</td>
+                            <td><?php echo number_format((float)($row['total_vat'] ?? 0), 2); ?> BWP</td>
+                            <td><strong><?php echo number_format((float)($row['total_revenue'] ?? 0), 2); ?> BWP</strong></td>
                             <td><?php echo number_format($percentage, 1); ?>%</td>
                             <td><?php echo number_format($row['paid_count'] ?? 0); ?></td>
                         </tr>
@@ -1607,7 +1624,7 @@ try {
             </div>
             <?php if ($totalRevenue > 0): ?>
             <div style="padding:12px; background:#f8f9fa; margin-top:12px; border-top:2px solid #001B44;">
-                <strong>Total Revenue:</strong> <?php echo number_format($totalRevenue, 2); ?> BWP
+                <strong>Total Revenue:</strong> <?php echo number_format((float)$totalRevenue, 2); ?> BWP
             </div>
             <?php endif; ?>
         </div>
@@ -1650,7 +1667,7 @@ try {
         <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));">
             <div class="metric-card">
                 <div class="metric-label">Total Outstanding</div>
-                <div class="metric-value"><?php echo number_format($netPositionsTotal, 2); ?></div>
+                <div class="metric-value"><?php echo number_format((float)$netPositionsTotal, 2); ?></div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">Open Obligations</div>
@@ -1688,10 +1705,10 @@ try {
                         ?>
                         <tr>
                             <td><strong><?php echo safeHtml($inst); ?></strong></td>
-                            <td><?php echo number_format($owes, 2); ?></td>
-                            <td><?php echo number_format($owed, 2); ?></td>
+                            <td><?php echo number_format((float)$owes, 2); ?></td>
+                            <td><?php echo number_format((float)$owed, 2); ?></td>
                             <td style="color: <?php echo $net >= 0 ? '#28a745' : '#dc3545'; ?>; font-weight:700;">
-                                <?php echo ($net >= 0 ? '+' : '') . number_format($net, 2); ?>
+                                <?php echo ($net >= 0 ? '+' : '') . number_format((float)$net, 2); ?>
                                 <?php echo $net >= 0 ? '(is owed)' : '(owes net)'; ?>
                             </td>
                         </tr>
@@ -1778,7 +1795,7 @@ try {
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px; margin-bottom:16px;">
                 <div><strong>Period:</strong> <?php echo safeHtml($generatedReport['date_range']['start']); ?> → <?php echo safeHtml($generatedReport['date_range']['end']); ?></div>
                 <div><strong>Total Settlements:</strong> <?php echo number_format($generatedReport['total_settlements']); ?></div>
-                <div><strong>Total Amount:</strong> <?php echo number_format($generatedReport['total_amount'], 2); ?> <?php echo safeHtml($generatedReport['currency']); ?></div>
+                <div><strong>Total Amount:</strong> <?php echo number_format((float)($generatedReport['total_amount'] ?? 0), 2); ?> <?php echo safeHtml($generatedReport['currency']); ?></div>
                 <div><strong>Report Hash:</strong> <code style="font-size:0.6rem;"><?php echo safeHtml(substr($generatedReport['report_hash'], 0, 16)); ?>…</code></div>
             </div>
 
@@ -1794,7 +1811,7 @@ try {
                         <tr>
                             <td><?php echo safeHtml($pos['debtor']); ?></td>
                             <td><?php echo safeHtml($pos['creditor']); ?></td>
-                            <td><?php echo number_format($pos['gross_amount'], 2); ?></td>
+                            <td><?php echo number_format((float)($pos['gross_amount'] ?? 0), 2); ?></td>
                             <td><?php echo $pos['settlement_count']; ?></td>
                         </tr>
                         <?php endforeach; ?>
@@ -1811,8 +1828,8 @@ try {
                         <?php foreach ($generatedReport['participant_breakdown'] as $inst => $data): ?>
                         <tr>
                             <td><?php echo safeHtml($inst); ?></td>
-                            <td><?php echo number_format($data['total_sent'], 2); ?></td>
-                            <td><?php echo number_format($data['total_received'], 2); ?></td>
+                            <td><?php echo number_format((float)($data['total_sent'] ?? 0), 2); ?></td>
+                            <td><?php echo number_format((float)($data['total_received'] ?? 0), 2); ?></td>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -1856,7 +1873,7 @@ try {
                             <td><?php echo safeHtml($r['settlement_report_id']); ?></td>
                             <td><?php echo safeHtml($r['cycle_id']); ?></td>
                             <td><?php echo number_format($r['total_settlements']); ?></td>
-                            <td><?php echo number_format($r['total_amount'], 2); ?></td>
+                            <td><?php echo number_format((float)($r['total_amount'] ?? 0), 2); ?></td>
                             <td><?php echo date('Y-m-d H:i', strtotime($r['generated_at'])); ?></td>
                         </tr>
                         <?php endforeach; ?>
@@ -1879,14 +1896,14 @@ try {
         <div class="regulatory-box" style="background:#fdf6f6; border:2px solid #8B0000; padding:16px; margin-bottom:16px; border-left:6px solid #8B0000;">
             <div class="title" style="font-weight:700; color:#8B0000; font-size:0.9rem; margin-bottom:8px;">🏛️ Central Bank Regulatory Dashboard</div>
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:16px; margin-top:12px;">
-                <div><strong>Daily Volume:</strong> <?php echo number_format($dailyStats['total_amount'] ?? 0, 2); ?> BWP</div>
-                <div><strong>Total Fees Collected:</strong> <?php echo number_format($metrics['total_fees'] ?? 0, 2); ?> BWP</div>
-                <div><strong>Total Invoices:</strong> <?php echo number_format($metrics['total_invoices'] ?? 0); ?></div>
-                <div><strong>Fee Collections:</strong> <?php echo number_format($metrics['total_fee_collections'] ?? 0); ?></div>
-                <div><strong>Pending Settlements:</strong> <?php echo number_format($metrics['pending_settlements'] ?? 0); ?></div>
-                <div><strong>Total Transactions:</strong> <?php echo number_format($metrics['total_swaps'] ?? 0); ?></div>
-                <div><strong>Cross-Border:</strong> <?php echo number_format($metrics['total_cross_border'] ?? 0); ?></div>
-                <div><strong>24h Failed:</strong> <?php echo number_format($metrics['failed_transactions_24h'] ?? 0); ?></div>
+                <div><strong>Daily Volume:</strong> <?php echo number_format((float)($dailyStats['total_amount'] ?? 0), 2); ?> BWP</div>
+                <div><strong>Total Fees Collected:</strong> <?php echo number_format((float)($metrics['total_fees'] ?? 0), 2); ?> BWP</div>
+                <div><strong>Total Invoices:</strong> <?php echo number_format((int)($metrics['total_invoices'] ?? 0)); ?></div>
+                <div><strong>Fee Collections:</strong> <?php echo number_format((int)($metrics['total_fee_collections'] ?? 0)); ?></div>
+                <div><strong>Pending Settlements:</strong> <?php echo number_format((int)($metrics['pending_settlements'] ?? 0)); ?></div>
+                <div><strong>Total Transactions:</strong> <?php echo number_format((int)($metrics['total_swaps'] ?? 0)); ?></div>
+                <div><strong>Cross-Border:</strong> <?php echo number_format((int)($metrics['total_cross_border'] ?? 0)); ?></div>
+                <div><strong>24h Failed:</strong> <?php echo number_format((int)($metrics['failed_transactions_24h'] ?? 0)); ?></div>
             </div>
         </div>
 
@@ -2370,9 +2387,9 @@ try {
                 <span class="card-badge">End of Day</span>
             </div>
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:16px; padding:8px 0;">
-                <div><strong>Today's Volume:</strong> <?php echo number_format($dailyStats['total_amount'] ?? 0, 2); ?> BWP</div>
+                <div><strong>Today's Volume:</strong> <?php echo number_format((float)($dailyStats['total_amount'] ?? 0), 2); ?> BWP</div>
                 <div><strong>Fee Rate:</strong> 1.5%</div>
-                <div><strong>Estimated Fee:</strong> <?php echo number_format(($dailyStats['total_amount'] ?? 0) * 0.015, 2); ?> BWP</div>
+                <div><strong>Estimated Fee:</strong> <?php echo number_format(((float)($dailyStats['total_amount'] ?? 0)) * 0.015, 2); ?> BWP</div>
             </div>
             <div style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
                 <a href="?action=generate_invoice" class="btn btn-success" onclick="return confirm('Generate end-of-day invoice?')">📄 Generate Daily Invoice</a>
