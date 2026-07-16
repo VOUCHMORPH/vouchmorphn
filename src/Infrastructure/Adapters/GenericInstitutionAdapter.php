@@ -144,9 +144,12 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             $result = $this->bankClient->verifyAssetSigned($verifyPayload);
             
             if (!$result['success']) {
+                // FIXED: Proper curl_error handling with HTTP status fallback
                 return [
                     'verified' => false,
-                    'message' => $result['curl_error'] ?? 'Verification failed',
+                    'message' => !empty($result['curl_error']) 
+                        ? $result['curl_error'] 
+                        : 'Verification failed (HTTP ' . ($result['status_code'] ?? 'unknown') . ', bank returned no reason)',
                     'account_id' => $payload['account_id'] ?? $payload['source_identifier'] ?? null
                 ];
             }
@@ -203,9 +206,12 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             $result = $this->bankClient->placeHoldSigned($holdPayload);
             
             if (!$result['success']) {
+                // FIXED: Proper curl_error handling with HTTP status fallback
                 return [
                     'hold_placed' => false,
-                    'message' => $result['curl_error'] ?? 'Hold failed'
+                    'message' => !empty($result['curl_error']) 
+                        ? $result['curl_error'] 
+                        : 'Hold failed (HTTP ' . ($result['status_code'] ?? 'unknown') . ', bank returned no reason)'
                 ];
             }
             
@@ -293,9 +299,12 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             $result = $this->bankClient->debitFunds($debitPayload);
             
             if (!$result['success']) {
+                // FIXED: Proper curl_error handling with HTTP status fallback
                 return [
                     'debited' => false,
-                    'message' => $result['curl_error'] ?? 'Debit failed'
+                    'message' => !empty($result['curl_error']) 
+                        ? $result['curl_error'] 
+                        : 'Debit failed (HTTP ' . ($result['status_code'] ?? 'unknown') . ', bank returned no reason)'
                 ];
             }
             
@@ -339,9 +348,12 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             $result = $this->bankClient->processDepositWithProof($creditPayload);
             
             if (!$result['success']) {
+                // FIXED: Proper curl_error handling with HTTP status fallback
                 return [
                     'credited' => false,
-                    'message' => $result['curl_error'] ?? 'Credit failed'
+                    'message' => !empty($result['curl_error']) 
+                        ? $result['curl_error'] 
+                        : 'Credit failed (HTTP ' . ($result['status_code'] ?? 'unknown') . ', bank returned no reason)'
                 ];
             }
             
@@ -442,9 +454,12 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
                 $result = $this->bankClient->releaseHold($releasePayload);
                 
                 if (!$result['success']) {
+                    // FIXED: Proper curl_error handling with HTTP status fallback
                     return [
                         'released' => false,
-                        'message' => $result['curl_error'] ?? 'Release failed',
+                        'message' => !empty($result['curl_error']) 
+                            ? $result['curl_error'] 
+                            : 'Release failed (HTTP ' . ($result['status_code'] ?? 'unknown') . ', bank returned no reason)',
                         'hold_reference' => $holdReference
                     ];
                 }
@@ -527,9 +542,12 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             $result = $this->bankClient->generateTokenWithProof($tokenPayload);
             
             if (!$result['success']) {
+                // FIXED: Proper curl_error handling with HTTP status fallback
                 return [
                     'success' => false,
-                    'message' => $result['curl_error'] ?? 'Token generation failed'
+                    'message' => !empty($result['curl_error']) 
+                        ? $result['curl_error'] 
+                        : 'Token generation failed (HTTP ' . ($result['status_code'] ?? 'unknown') . ', bank returned no reason)'
                 ];
             }
             
@@ -570,9 +588,12 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             $result = $this->bankClient->verifyToken($verifyPayload);
             
             if (!$result['success']) {
+                // FIXED: Proper curl_error handling with HTTP status fallback
                 return [
                     'verified' => false,
-                    'message' => $result['curl_error'] ?? 'Verification failed'
+                    'message' => !empty($result['curl_error']) 
+                        ? $result['curl_error'] 
+                        : 'Verification failed (HTTP ' . ($result['status_code'] ?? 'unknown') . ', bank returned no reason)'
                 ];
             }
             
@@ -609,9 +630,12 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             $result = $this->bankClient->confirmCashout($confirmPayload);
             
             if (!$result['success']) {
+                // FIXED: Proper curl_error handling with HTTP status fallback
                 return [
                     'confirmed' => false,
-                    'message' => $result['curl_error'] ?? 'Confirmation failed'
+                    'message' => !empty($result['curl_error']) 
+                        ? $result['curl_error'] 
+                        : 'Confirmation failed (HTTP ' . ($result['status_code'] ?? 'unknown') . ', bank returned no reason)'
                 ];
             }
             
@@ -650,9 +674,12 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             $result = $this->bankClient->verifyAccount($verifyPayload);
             
             if (!$result['success']) {
+                // FIXED: Proper curl_error handling with HTTP status fallback
                 return [
                     'verified' => false,
-                    'message' => $result['curl_error'] ?? 'Account verification failed'
+                    'message' => !empty($result['curl_error']) 
+                        ? $result['curl_error'] 
+                        : 'Account verification failed (HTTP ' . ($result['status_code'] ?? 'unknown') . ', bank returned no reason)'
                 ];
             }
             
@@ -697,9 +724,12 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             $result = $this->bankClient->transferWithProof($transferPayload);
             
             if (!$result['success']) {
+                // FIXED: Proper curl_error handling with HTTP status fallback
                 return [
                     'success' => false,
-                    'message' => $result['curl_error'] ?? 'Transfer failed'
+                    'message' => !empty($result['curl_error']) 
+                        ? $result['curl_error'] 
+                        : 'Transfer failed (HTTP ' . ($result['status_code'] ?? 'unknown') . ', bank returned no reason)'
                 ];
             }
             
