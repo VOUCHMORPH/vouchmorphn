@@ -59,7 +59,8 @@ $roleDefinitions = [
             'revenue_split', 'participant_fees', 'financial_dashboard',
             'settlement_analysis', 'forex_fees', 'corridor_fees',
             'recent_swaps', 'swap_transactions', 'cross_border',
-            'settlements', 'payment_instructions', 'card_transactions'
+            'settlements', 'payment_instructions', 'card_transactions',
+            'net_positions', 'regulatory_reports'
         ],
         'actions' => [
             'create', 'edit', 'delete', 'export', 'approve', 
@@ -85,7 +86,8 @@ $roleDefinitions = [
             'dashboard', 'regulatory', 'audit', 'reports', 
             'transactions_readonly', 'all_tables_readonly',
             'fee_breakdown', 'revenue_split', 'financial_dashboard',
-            'recent_swaps', 'cross_border'
+            'recent_swaps', 'cross_border', 'net_positions',
+            'regulatory_reports'
         ],
         'actions' => [
             'view', 'export', 'approve_regulatory', 
@@ -128,7 +130,8 @@ $roleDefinitions = [
         'view' => [
             'dashboard', 'audit', 'reports', 
             'transactions_readonly', 'all_tables_readonly',
-            'fee_breakdown', 'revenue_split', 'recent_swaps'
+            'fee_breakdown', 'revenue_split', 'recent_swaps',
+            'net_positions'
         ],
         'actions' => ['view', 'export'],
         'label' => '🔍 Auditor',
@@ -152,7 +155,8 @@ $roleDefinitions = [
             'participant_fees', 'revenue_split',
             'financial_dashboard', 'settlement_analysis',
             'reports', 'forex_fees', 'recent_swaps',
-            'swap_transactions', 'settlements'
+            'swap_transactions', 'settlements', 'net_positions',
+            'regulatory_reports'
         ],
         'actions' => [
             'view', 'export', 'generate_invoice', 
@@ -177,7 +181,7 @@ $roleDefinitions = [
         'view' => [
             'dashboard', 'settlements', 'net_positions',
             'corridor_fees', 'reports', 'settlement_analysis',
-            'recent_swaps', 'cross_border'
+            'recent_swaps', 'cross_border', 'regulatory_reports'
         ],
         'actions' => ['view', 'process', 'export', 'acknowledge_settlement'],
         'label' => '🏦 Settlement Officer',
@@ -292,56 +296,63 @@ function safeHtml($value) {
 }
 
 // ============================================================
-// INVOICE GENERATION
+// INVOICE GENERATION - FIXED
 // ============================================================
 if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
     try {
-        $invoiceDate = date('Y-m-d');
-        $invoiceRef = 'INV-' . date('Ymd') . '-' . strtoupper(substr(uniqid(), -6));
+        require_once PROJECT_ROOT . '/src/Domain/Services/Settlement/HybridSettlementStrategy.php';
         
-        $stmt = $db->prepare("
-            SELECT 
-                COALESCE(SUM(amount), 0) as total_amount,
-                COUNT(*) as transaction_count,
-                COUNT(CASE WHEN status IN ('COMPLETED', 'success') THEN 1 END) as completed_count
-            FROM swap_requests 
-            WHERE DATE(created_at) = CURRENT_DATE
+        // Get today's volume from the unified view
+        $stmt = $db->query("
+            SELECT COALESCE(SUM(amount), 0) as total_amount, COUNT(*) as transaction_count
+            FROM vw_all_swaps
+            WHERE created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL '1 day'
         ");
-        $stmt->execute();
-        $dailyStats = $stmt->fetch(PDO::FETCH_ASSOC);
+        $dailyStatsForInvoice = $stmt->fetch(PDO::FETCH_ASSOC);
         
         $feeRate = 0.015;
-        $totalAmount = (float)($dailyStats['total_amount'] ?? 0);
+        $totalAmount = (float)($dailyStatsForInvoice['total_amount'] ?? 0);
         $feeAmount = $totalAmount * $feeRate;
         
-        $stmt = $db->prepare("
-            INSERT INTO fee_invoices (
-                invoice_uuid, swap_reference, source_institution, 
-                fee_type, fee_amount, currency, total_amount, 
-                vat_amount, status, created_at
-            ) VALUES (
-                :uuid, :ref, :source,
-                :fee_type, :fee_amount, :currency, :total,
-                :vat, 'SENT', NOW()
-            ) RETURNING invoice_uuid
-        ");
-        $stmt->execute([
-            ':uuid' => $invoiceRef,
-            ':ref' => 'DAILY_SETTLEMENT_' . date('Ymd'),
-            ':source' => 'VOUCHMORPH_SYSTEM',
-            ':fee_type' => 'DAILY_SETTLEMENT_FEE',
-            ':fee_amount' => $feeAmount,
-            ':currency' => 'BWP',
-            ':total' => $totalAmount,
-            ':vat' => $feeAmount * 0.14
-        ]);
+        // Use the real settlement service to create the invoice
+        $settlement = new \Domain\Services\Settlement\HybridSettlementStrategy($db);
         
-        $success = "Invoice {$invoiceRef} generated successfully for " . date('Y-m-d');
-        error_log("[ADMIN DASHBOARD] Invoice generated: {$invoiceRef}");
+        $invoiceUuid = $settlement->invoiceFee(
+            'DAILY_SETTLEMENT_' . date('Ymd'),
+            'VOUCHMORPH_SYSTEM',
+            0,  // participant ID (0 = system)
+            'DAILY_SETTLEMENT_FEE',
+            $feeAmount,
+            'BWP'
+        );
+        
+        $success = "Invoice {$invoiceUuid} generated successfully for " . date('Y-m-d');
+        error_log("[ADMIN DASHBOARD] Invoice generated: {$invoiceUuid}");
         
     } catch (Throwable $e) {
         error_log("[ADMIN DASHBOARD] Invoice generation error: " . $e->getMessage());
         $error = "Failed to generate invoice: " . $e->getMessage();
+    }
+}
+
+// ============================================================
+// GENERATE REGULATOR REPORT
+// ============================================================
+$generatedReport = null;
+if ($action === 'generate_regulatory_report' && ($isRegulator || $isSuperAdmin || $isFinanceManager)) {
+    try {
+        $startDate = $_GET['start_date'] ?? date('Y-m-d', strtotime('-30 days'));
+        $endDate = $_GET['end_date'] ?? date('Y-m-d 23:59:59');
+
+        require_once PROJECT_ROOT . '/src/Domain/Services/Settlement/HybridSettlementStrategy.php';
+        $settlement = new \Domain\Services\Settlement\HybridSettlementStrategy($db);
+
+        $generatedReport = $settlement->generateRegulatorReport($startDate, $endDate, 'BWP');
+        $success = "Regulatory report {$generatedReport['report_id']} generated for {$startDate} to {$endDate}";
+
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] Regulatory report error: " . $e->getMessage());
+        $error = "Failed to generate regulatory report: " . $e->getMessage();
     }
 }
 
@@ -537,61 +548,31 @@ foreach ($tablesToFetch as $table => $config) {
 }
 
 // ============================================================
-// RECENT SWAPS WITH DETAILS - COMBINED VIEW
+// RECENT SWAPS WITH DETAILS - FIXED to use vw_all_swaps
 // ============================================================
 $recentSwaps = [];
 $swapDetails = [];
 
 try {
-    // Get recent swaps with related data from multiple tables
+    // Get recent swaps from unified view
     $stmt = $db->prepare("
         SELECT 
-            sr.swap_id,
-            sr.swap_uuid,
-            sr.amount,
-            sr.from_currency,
-            sr.to_currency,
-            sr.status as swap_status,
-            sr.created_at,
-            sr.source_country,
-            sr.destination_country,
-            sr.forex_rate,
-            sr.expected_to_amount,
-            sr.forex_fee_percent,
-            sr.forex_fee_amount,
-            sr.source_details,
-            sr.destination_details,
-            sr.fee_breakdown,
-            sr.trade_metadata,
-            p.name as participant_name,
-            p.provider_code,
-            p.type as participant_type,
-            st.swap_transaction_id,
-            st.status as tx_status,
-            st.error_message,
-            st.retry_count,
-            fi.invoice_uuid,
-            fi.total_amount as fee_amount,
-            fi.fee_type,
-            fi.status as invoice_status,
-            ht.hold_reference,
-            ht.amount as hold_amount,
-            ht.status as hold_status,
-            sq.status as settlement_status,
-            sq.reference as settlement_reference,
-            cbm.status as cross_border_status,
-            cbm.source_institution,
-            cbm.destination_institution,
-            cbm.corridor_fee
-        FROM swap_requests sr
-        LEFT JOIN participants p ON sr.source_details->>'institution' = p.name
-        LEFT JOIN swap_transactions st ON sr.swap_id = st.swap_id
-        LEFT JOIN fee_invoices fi ON sr.swap_uuid = fi.swap_reference
-        LEFT JOIN hold_transactions ht ON sr.swap_reference = ht.swap_reference
-        LEFT JOIN settlement_queue sq ON sr.swap_reference = sq.reference
-        LEFT JOIN cross_border_messages cbm ON sr.swap_reference = cbm.swap_reference
-        WHERE sr.created_at >= NOW() - INTERVAL '30 days'
-        ORDER BY sr.created_at DESC
+            vs.reference,
+            vs.swap_reference,
+            vs.swap_type,
+            vs.source_institution,
+            vs.destination_institution,
+            vs.amount,
+            vs.currency,
+            vs.status,
+            vs.fee_amount,
+            vs.created_at,
+            vs.updated_at,
+            EXISTS(SELECT 1 FROM settlement_queue sq WHERE sq.reference = vs.swap_reference) AS has_settlement,
+            EXISTS(SELECT 1 FROM cross_border_messages cbm WHERE cbm.swap_reference = vs.swap_reference) AS is_cross_border
+        FROM vw_all_swaps vs
+        WHERE vs.created_at >= NOW() - INTERVAL '30 days'
+        ORDER BY vs.created_at DESC
         LIMIT 50
     ");
     $stmt->execute();
@@ -608,12 +589,8 @@ try {
             st.retry_count,
             st.created_at,
             st.metadata,
-            sr.swap_uuid,
-            sr.amount as swap_amount,
-            sr.status as swap_status,
-            sr.created_at as swap_created_at
+            st.swap_reference
         FROM swap_transactions st
-        LEFT JOIN swap_requests sr ON st.swap_id = sr.swap_id
         ORDER BY st.created_at DESC
         LIMIT 100
     ");
@@ -627,7 +604,7 @@ try {
 }
 
 // ============================================================
-// FEE BREAKDOWN DATA
+// FEE BREAKDOWN DATA - FIXED to use settlement_outbox
 // ============================================================
 $feeBreakdown = [];
 $revenueSplit = [];
@@ -635,17 +612,18 @@ $participantFees = [];
 $dailyStats = [];
 
 try {
-    // Fee breakdown by type
+    // Fee breakdown by type - from settlement_outbox JSONB
     $stmt = $db->query("
         SELECT 
-            fee_type,
+            message_payload->>'fee_type' as fee_type,
             COUNT(*) as count,
-            SUM(fee_amount) as total_fee,
-            SUM(total_amount) as total_with_vat,
-            SUM(vat_amount) as total_vat,
+            SUM((message_payload->>'fee_amount')::numeric) as total_fee,
+            SUM((message_payload->>'total_amount')::numeric) as total_with_vat,
+            SUM((message_payload->>'vat_amount')::numeric) as total_vat,
             status
-        FROM fee_invoices 
-        GROUP BY fee_type, status
+        FROM settlement_outbox
+        WHERE message_type = 'FEE_INVOICE'
+        GROUP BY message_payload->>'fee_type', status
         ORDER BY total_fee DESC
     ");
     $feeBreakdown = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -655,11 +633,12 @@ try {
         SELECT 
             source_institution,
             COUNT(*) as transaction_count,
-            SUM(fee_amount) as total_fee,
-            SUM(total_amount) as total_revenue,
-            SUM(vat_amount) as total_vat,
-            COUNT(CASE WHEN status = 'PAID' THEN 1 END) as paid_count
-        FROM fee_invoices 
+            SUM((message_payload->>'fee_amount')::numeric) as total_fee,
+            SUM((message_payload->>'total_amount')::numeric) as total_revenue,
+            SUM((message_payload->>'vat_amount')::numeric) as total_vat,
+            COUNT(CASE WHEN status = 'ACKNOWLEDGED' THEN 1 END) as paid_count
+        FROM settlement_outbox
+        WHERE message_type = 'FEE_INVOICE'
         GROUP BY source_institution
         ORDER BY total_revenue DESC
     ");
@@ -668,28 +647,29 @@ try {
     // Participant fee breakdown
     $stmt = $db->query("
         SELECT 
-            fi.source_institution,
-            fi.fee_type,
-            COUNT(fi.id) as invoice_count,
-            SUM(fi.fee_amount) as total_fee,
-            SUM(fi.vat_amount) as total_vat,
-            SUM(fi.total_amount) as total_amount,
-            COUNT(CASE WHEN fi.status = 'PAID' THEN 1 END) as paid_count,
-            COUNT(CASE WHEN fi.status = 'SENT' THEN 1 END) as pending_count
-        FROM fee_invoices fi
-        GROUP BY fi.source_institution, fi.fee_type
+            source_institution,
+            message_payload->>'fee_type' as fee_type,
+            COUNT(*) as invoice_count,
+            SUM((message_payload->>'fee_amount')::numeric) as total_fee,
+            SUM((message_payload->>'vat_amount')::numeric) as total_vat,
+            SUM((message_payload->>'total_amount')::numeric) as total_amount,
+            COUNT(CASE WHEN status = 'ACKNOWLEDGED' THEN 1 END) as paid_count,
+            COUNT(CASE WHEN status IN ('PENDING', 'SENT') THEN 1 END) as pending_count
+        FROM settlement_outbox
+        WHERE message_type = 'FEE_INVOICE'
+        GROUP BY source_institution, message_payload->>'fee_type'
         ORDER BY total_amount DESC
     ");
     $participantFees = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
-    // Daily stats
+    // Daily stats - using vw_all_swaps
     $stmt = $db->query("
         SELECT 
             COALESCE(SUM(amount), 0) as total_amount,
             COUNT(*) as transaction_count,
-            COUNT(CASE WHEN status IN ('COMPLETED', 'success') THEN 1 END) as completed_count
-        FROM swap_requests 
-        WHERE DATE(created_at) = CURRENT_DATE
+            COUNT(CASE WHEN status ILIKE ANY (ARRAY['%completed%','%success%','%debited%']) THEN 1 END) as completed_count
+        FROM vw_all_swaps
+        WHERE created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL '1 day'
     ");
     $dailyStats = $stmt->fetch(PDO::FETCH_ASSOC);
     
@@ -698,27 +678,39 @@ try {
 }
 
 // ============================================================
-// METRICS - Enhanced with recent activity
+// METRICS - FIXED
 // ============================================================
 $metrics = [];
 try {
     $metrics['total_users'] = (int)$db->query("SELECT COUNT(*) FROM users")->fetchColumn();
-    $metrics['total_swaps'] = (int)$db->query("SELECT COUNT(*) FROM swap_requests")->fetchColumn();
+    
+    // Fix: Use vw_all_swaps instead of swap_requests
+    $metrics['total_swaps'] = (int)$db->query("SELECT COUNT(*) FROM vw_all_swaps")->fetchColumn();
     $metrics['total_holds'] = (int)$db->query("SELECT COUNT(*) FROM hold_transactions")->fetchColumn();
     $metrics['total_cashouts'] = (int)$db->query("SELECT COUNT(*) FROM cashout_authorizations")->fetchColumn();
-    $metrics['total_invoices'] = (int)$db->query("SELECT COUNT(*) FROM fee_invoices")->fetchColumn();
+    
+    // Fix: Use settlement_outbox for fee invoices
+    $metrics['total_invoices'] = (int)$db->query("
+        SELECT COUNT(*) FROM settlement_outbox WHERE message_type = 'FEE_INVOICE'
+    ")->fetchColumn();
+    
     $metrics['total_audit_logs'] = (int)$db->query("SELECT COUNT(*) FROM audit_logs")->fetchColumn();
     $metrics['total_fee_collections'] = (int)$db->query("SELECT COUNT(*) FROM swap_fee_collections")->fetchColumn();
-    $metrics['total_fees'] = (float)$db->query("SELECT COALESCE(SUM(fee_amount), 0) FROM fee_invoices")->fetchColumn();
     
-    // Recent activity metrics
+    // Fix: Parse fee_amount from JSONB
+    $metrics['total_fees'] = (float)$db->query("
+        SELECT COALESCE(SUM((message_payload->>'fee_amount')::numeric), 0)
+        FROM settlement_outbox WHERE message_type = 'FEE_INVOICE'
+    ")->fetchColumn();
+    
+    // Fix: Use vw_all_swaps for recent activity
     $metrics['recent_swaps_24h'] = (int)$db->query("
-        SELECT COUNT(*) FROM swap_requests 
+        SELECT COUNT(*) FROM vw_all_swaps 
         WHERE created_at >= NOW() - INTERVAL '24 hours'
     ")->fetchColumn();
     
     $metrics['recent_swaps_7d'] = (int)$db->query("
-        SELECT COUNT(*) FROM swap_requests 
+        SELECT COUNT(*) FROM vw_all_swaps 
         WHERE created_at >= NOW() - INTERVAL '7 days'
     ")->fetchColumn();
     
@@ -727,9 +719,10 @@ try {
         WHERE status = 'PENDING'
     ")->fetchColumn();
     
+    // Fix: Use ILIKE ANY for status matching across different tables
     $metrics['failed_transactions_24h'] = (int)$db->query("
-        SELECT COUNT(*) FROM swap_requests 
-        WHERE status IN ('FAILED', 'error') 
+        SELECT COUNT(*) FROM vw_all_swaps 
+        WHERE status ILIKE ANY (ARRAY['%failed%','%error%','%rejected%','%expired%'])
         AND created_at >= NOW() - INTERVAL '24 hours'
     ")->fetchColumn();
     
@@ -1079,6 +1072,14 @@ try {
         <a href="?view=settlements" class="nav-item <?php echo $view === 'settlements' ? 'active' : ''; ?>">📤 SETTLEMENTS</a>
         <?php endif; ?>
         
+        <?php if (canView('net_positions')): ?>
+        <a href="?view=net_positions" class="nav-item <?php echo $view === 'net_positions' ? 'active' : ''; ?>">⚖️ NET POSITIONS</a>
+        <?php endif; ?>
+        
+        <?php if (canView('regulatory_reports')): ?>
+        <a href="?view=regulatory_reports" class="nav-item regulator <?php echo $view === 'regulatory_reports' ? 'active' : ''; ?>">📑 REG REPORTS</a>
+        <?php endif; ?>
+        
         <?php if (canView('invoices') && hasPermission('generate_invoice')): ?>
         <a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">💰 INVOICES</a>
         <?php endif; ?>
@@ -1214,7 +1215,7 @@ try {
             </div>
         </div>
 
-        <!-- Recent Swaps Quick View -->
+        <!-- Recent Swaps Quick View - FIXED -->
         <div class="card">
             <div class="card-header">
                 <span class="card-title">🔄 Recent Swaps (Last 30 Days)</span>
@@ -1225,11 +1226,11 @@ try {
                 <table>
                     <thead>
                         <tr>
-                            <th>ID</th>
+                            <th>Reference</th>
                             <th>Amount</th>
-                            <th>From/To</th>
+                            <th>Type</th>
                             <th>Status</th>
-                            <th>Participant</th>
+                            <th>Source</th>
                             <th>Fee</th>
                             <th>Created</th>
                         </tr>
@@ -1240,24 +1241,23 @@ try {
                         <?php else: ?>
                         <?php foreach (array_slice($recentSwaps, 0, 20) as $row): ?>
                         <tr>
-                            <td><?php echo safeHtml(substr($row['swap_uuid'] ?? 'N/A', 0, 12)); ?></td>
+                            <td><?php echo safeHtml(substr($row['swap_reference'] ?? 'N/A', 0, 12)); ?></td>
                             <td><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></td>
-                            <td><?php echo safeHtml($row['from_currency'] ?? '') . ' → ' . safeHtml($row['to_currency'] ?? ''); ?></td>
+                            <td><span class="status status-info"><?php echo safeHtml($row['swap_type'] ?? 'N/A'); ?></span></td>
                             <td>
                                 <?php 
-                                $status = strtolower($row['swap_status'] ?? 'pending');
-                                $class = match($status) {
-                                    'completed', 'success', 'paid' => 'success',
-                                    'pending', 'sent', 'pending_cashout' => 'pending',
-                                    'failed', 'error', 'expired' => 'failed',
-                                    'processing' => 'processing',
+                                $status = strtolower($row['status'] ?? 'pending');
+                                $class = match(true) {
+                                    str_contains($status, 'complet'), str_contains($status, 'success'), str_contains($status, 'debited') => 'success',
+                                    str_contains($status, 'pending'), str_contains($status, 'sent') => 'pending',
+                                    str_contains($status, 'fail'), str_contains($status, 'error'), str_contains($status, 'expired') => 'failed',
                                     default => 'info'
                                 };
                                 ?>
-                                <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['swap_status'] ?? 'pending'); ?></span>
+                                <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span>
                             </td>
-                            <td><?php echo safeHtml($row['participant_name'] ?? $row['provider_code'] ?? 'N/A'); ?></td>
-                            <td><?php echo number_format((float)($row['fee_amount'] ?? $row['forex_fee_amount'] ?? 0), 2); ?></td>
+                            <td><?php echo safeHtml($row['source_institution'] ?? 'N/A'); ?></td>
+                            <td><?php echo number_format((float)($row['fee_amount'] ?? 0), 2); ?></td>
                             <td><?php echo date('Y-m-d H:i', strtotime($row['created_at'] ?? 'now')); ?></td>
                         </tr>
                         <?php endforeach; ?>
@@ -1269,7 +1269,7 @@ try {
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- RECENT SWAPS VIEW -->
+        <!-- RECENT SWAPS VIEW - FIXED -->
         <!-- ============================================================ -->
         <?php if ($view === 'recent_swaps' && canView('recent_swaps')): ?>
         <div class="content-header">
@@ -1288,7 +1288,7 @@ try {
                 <div class="metric-label">Completed</div>
                 <div class="metric-value" style="color:#28a745;">
                     <?php echo count(array_filter($recentSwaps, function($s) { 
-                        return in_array(strtolower($s['swap_status'] ?? ''), ['completed', 'success']); 
+                        return in_array(strtolower($s['status'] ?? ''), ['completed', 'success', 'debited']); 
                     })); ?>
                 </div>
             </div>
@@ -1296,7 +1296,7 @@ try {
                 <div class="metric-label">Pending</div>
                 <div class="metric-value" style="color:#856404;">
                     <?php echo count(array_filter($recentSwaps, function($s) { 
-                        return in_array(strtolower($s['swap_status'] ?? ''), ['pending', 'processing']); 
+                        return in_array(strtolower($s['status'] ?? ''), ['pending', 'processing', 'sent']); 
                     })); ?>
                 </div>
             </div>
@@ -1304,7 +1304,7 @@ try {
                 <div class="metric-label">Failed</div>
                 <div class="metric-value" style="color:#dc3545;">
                     <?php echo count(array_filter($recentSwaps, function($s) { 
-                        return in_array(strtolower($s['swap_status'] ?? ''), ['failed', 'error', 'expired']); 
+                        return in_array(strtolower($s['status'] ?? ''), ['failed', 'error', 'expired', 'rejected']); 
                     })); ?>
                 </div>
             </div>
@@ -1329,62 +1329,48 @@ try {
                 <table>
                     <thead>
                         <tr>
-                            <th>Swap UUID</th>
+                            <th>Reference</th>
+                            <th>Swap Type</th>
                             <th>Amount</th>
-                            <th>From/To</th>
+                            <th>Currency</th>
                             <th>Status</th>
-                            <th>Participant</th>
-                            <th>FX Rate</th>
-                            <th>Expected To</th>
-                            <th>Fee %</th>
-                            <th>Fee Amount</th>
+                            <th>Source</th>
+                            <th>Fee</th>
                             <th>Created</th>
-                            <th>Details</th>
+                            <th>Flags</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($recentSwaps)): ?>
-                        <tr><td colspan="11" class="empty-state">No swaps found</td></tr>
+                        <tr><td colspan="9" class="empty-state">No swaps found</td></tr>
                         <?php else: ?>
                         <?php foreach ($recentSwaps as $row): ?>
                         <tr>
-                            <td><?php echo safeHtml(substr($row['swap_uuid'] ?? 'N/A', 0, 12)) . '…'; ?></td>
+                            <td><?php echo safeHtml(substr($row['swap_reference'] ?? 'N/A', 0, 12)) . '…'; ?></td>
+                            <td><span class="status status-info"><?php echo safeHtml($row['swap_type']); ?></span></td>
                             <td><strong><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></strong></td>
-                            <td><?php echo safeHtml($row['from_currency'] ?? '') . ' → ' . safeHtml($row['to_currency'] ?? ''); ?></td>
+                            <td><?php echo safeHtml($row['currency'] ?? 'BWP'); ?></td>
                             <td>
                                 <?php 
-                                $status = strtolower($row['swap_status'] ?? 'pending');
-                                $class = match($status) {
-                                    'completed', 'success', 'paid' => 'success',
-                                    'pending', 'sent', 'pending_cashout' => 'pending',
-                                    'failed', 'error', 'expired' => 'failed',
-                                    'processing' => 'processing',
+                                $status = strtolower($row['status'] ?? 'pending');
+                                $class = match(true) {
+                                    str_contains($status, 'complet'), str_contains($status, 'success'), str_contains($status, 'debited') => 'success',
+                                    str_contains($status, 'pending'), str_contains($status, 'sent') => 'pending',
+                                    str_contains($status, 'fail'), str_contains($status, 'error'), str_contains($status, 'expired') => 'failed',
                                     default => 'info'
                                 };
                                 ?>
-                                <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['swap_status'] ?? 'pending'); ?></span>
-                                <?php if (!empty($row['tx_status']) && $row['tx_status'] !== $row['swap_status']): ?>
-                                <br><small style="color:#666;">TX: <?php echo safeHtml($row['tx_status']); ?></small>
-                                <?php endif; ?>
+                                <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span>
                             </td>
-                            <td><?php echo safeHtml($row['participant_name'] ?? $row['provider_code'] ?? $row['source_institution'] ?? 'N/A'); ?></td>
-                            <td><?php echo number_format((float)($row['forex_rate'] ?? 1), 4); ?></td>
-                            <td><?php echo number_format((float)($row['expected_to_amount'] ?? 0), 2); ?></td>
-                            <td><?php echo number_format((float)($row['forex_fee_percent'] ?? 0), 2); ?>%</td>
-                            <td><?php echo number_format((float)($row['forex_fee_amount'] ?? $row['fee_amount'] ?? 0), 2); ?></td>
+                            <td><?php echo safeHtml($row['source_institution'] ?? 'N/A'); ?></td>
+                            <td><?php echo number_format((float)($row['fee_amount'] ?? 0), 2); ?></td>
                             <td><?php echo date('Y-m-d H:i', strtotime($row['created_at'] ?? 'now')); ?></td>
                             <td>
-                                <?php if (!empty($row['hold_reference'])): ?>
-                                <span class="status status-info">🔒 Hold</span>
+                                <?php if (!empty($row['has_settlement'])): ?>
+                                <span class="status status-pending" title="Settlement queued">📤</span>
                                 <?php endif; ?>
-                                <?php if (!empty($row['cross_border_status'])): ?>
-                                <span class="status status-processing">🌍 CB</span>
-                                <?php endif; ?>
-                                <?php if (!empty($row['settlement_status'])): ?>
-                                <span class="status status-pending">📤 Settle</span>
-                                <?php endif; ?>
-                                <?php if (!empty($row['error_message'])): ?>
-                                <span class="status status-failed" title="<?php echo safeHtml($row['error_message']); ?>">⚠️</span>
+                                <?php if (!empty($row['is_cross_border'])): ?>
+                                <span class="status status-processing" title="Cross-border">🌍</span>
                                 <?php endif; ?>
                             </td>
                         </tr>
@@ -1421,15 +1407,15 @@ try {
                         <?php foreach (array_slice($swapDetails, 0, 30) as $row): ?>
                         <tr class="<?php echo !empty($row['error_message']) ? 'swap-detail-row' : ''; ?>">
                             <td><?php echo safeHtml(substr($row['swap_transaction_id'] ?? 'N/A', 0, 10)); ?></td>
-                            <td><?php echo safeHtml(substr($row['swap_uuid'] ?? $row['swap_id'] ?? 'N/A', 0, 12)); ?></td>
-                            <td><?php echo number_format((float)($row['amount'] ?? $row['swap_amount'] ?? 0), 2); ?></td>
+                            <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['swap_id'] ?? 'N/A', 0, 12)); ?></td>
+                            <td><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></td>
                             <td>
                                 <?php 
                                 $status = strtolower($row['status'] ?? 'pending');
-                                $class = match($status) {
-                                    'completed', 'success' => 'success',
-                                    'pending', 'processing' => 'pending',
-                                    'failed', 'error' => 'failed',
+                                $class = match(true) {
+                                    str_contains($status, 'complet'), str_contains($status, 'success') => 'success',
+                                    str_contains($status, 'pending'), str_contains($status, 'processing') => 'pending',
+                                    str_contains($status, 'fail'), str_contains($status, 'error') => 'failed',
                                     default => 'info'
                                 };
                                 ?>
@@ -1454,7 +1440,7 @@ try {
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- FEE BREAKDOWN VIEW -->
+        <!-- FEE BREAKDOWN VIEW - FIXED -->
         <!-- ============================================================ -->
         <?php if ($view === 'fee_breakdown' && hasFinancialAccess()): ?>
         <div class="content-header">
@@ -1497,7 +1483,12 @@ try {
                             <td>
                                 <?php 
                                 $status = strtolower($fee['status'] ?? 'pending');
-                                $class = $status === 'paid' ? 'success' : ($status === 'sent' ? 'pending' : 'info');
+                                $class = match($status) {
+                                    'acknowledged', 'completed', 'paid' => 'success',
+                                    'sent' => 'pending',
+                                    'failed' => 'failed',
+                                    default => 'info'
+                                };
                                 ?>
                                 <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($fee['status'] ?? 'pending'); ?></span>
                             </td>
@@ -1619,6 +1610,260 @@ try {
                 <strong>Total Revenue:</strong> <?php echo number_format($totalRevenue, 2); ?> BWP
             </div>
             <?php endif; ?>
+        </div>
+        <?php endif; ?>
+
+        <!-- ============================================================ -->
+        <!-- NET POSITIONS VIEW -->
+        <!-- ============================================================ -->
+        <?php if ($view === 'net_positions' && canView('net_positions')): ?>
+        <div class="content-header">
+            <h1>⚖️ NET SETTLEMENT POSITIONS</h1>
+            <div class="timestamp">Who owes whom — live obligations between participants</div>
+            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
+        </div>
+
+        <?php
+        $netPositionsData = [];
+        $netPositionsTotal = 0;
+        try {
+            $stmt = $db->query("
+                SELECT debtor, creditor, amount, currency_code, updated_at
+                FROM net_positions
+                WHERE amount > 0.01
+                ORDER BY amount DESC
+            ");
+            $netPositionsData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $netPositionsTotal = array_sum(array_column($netPositionsData, 'amount'));
+        } catch (Throwable $e) {
+            error_log("[ADMIN DASHBOARD] Net positions error: " . $e->getMessage());
+        }
+
+        // Per-institution summary: total owed vs total owed-to
+        $institutionSummary = [];
+        foreach ($netPositionsData as $pos) {
+            $institutionSummary[$pos['debtor']]['owes'] = ($institutionSummary[$pos['debtor']]['owes'] ?? 0) + $pos['amount'];
+            $institutionSummary[$pos['creditor']]['owed'] = ($institutionSummary[$pos['creditor']]['owed'] ?? 0) + $pos['amount'];
+        }
+        ?>
+
+        <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));">
+            <div class="metric-card">
+                <div class="metric-label">Total Outstanding</div>
+                <div class="metric-value"><?php echo number_format($netPositionsTotal, 2); ?></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Open Obligations</div>
+                <div class="metric-value"><?php echo count($netPositionsData); ?></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Institutions Involved</div>
+                <div class="metric-value"><?php echo count($institutionSummary); ?></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">📊 Per-Institution Net Position</span>
+                <span class="card-badge"><?php echo count($institutionSummary); ?> INSTITUTIONS</span>
+            </div>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Institution</th>
+                            <th>Owes Others</th>
+                            <th>Owed by Others</th>
+                            <th>Net Position</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($institutionSummary)): ?>
+                        <tr><td colspan="4" class="empty-state">No open obligations — all settled</td></tr>
+                        <?php else: ?>
+                        <?php foreach ($institutionSummary as $inst => $sums): 
+                            $owes = $sums['owes'] ?? 0;
+                            $owed = $sums['owed'] ?? 0;
+                            $net = $owed - $owes;
+                        ?>
+                        <tr>
+                            <td><strong><?php echo safeHtml($inst); ?></strong></td>
+                            <td><?php echo number_format($owes, 2); ?></td>
+                            <td><?php echo number_format($owed, 2); ?></td>
+                            <td style="color: <?php echo $net >= 0 ? '#28a745' : '#dc3545'; ?>; font-weight:700;">
+                                <?php echo ($net >= 0 ? '+' : '') . number_format($net, 2); ?>
+                                <?php echo $net >= 0 ? '(is owed)' : '(owes net)'; ?>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">📋 Individual Obligations (Debtor → Creditor)</span>
+                <span class="card-badge"><?php echo count($netPositionsData); ?> RECORDS</span>
+                <?php if (hasPermission('export')): ?>
+                <a href="?export=net_positions&export_id=all" class="btn btn-finance">📄 Export</a>
+                <?php endif; ?>
+            </div>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Debtor (owes)</th>
+                            <th>Creditor (is owed)</th>
+                            <th>Amount</th>
+                            <th>Currency</th>
+                            <th>Last Updated</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($netPositionsData)): ?>
+                        <tr><td colspan="5" class="empty-state">No outstanding obligations</td></tr>
+                        <?php else: ?>
+                        <?php foreach ($netPositionsData as $pos): ?>
+                        <tr>
+                            <td><?php echo safeHtml($pos['debtor']); ?></td>
+                            <td><?php echo safeHtml($pos['creditor']); ?></td>
+                            <td><strong><?php echo number_format((float)$pos['amount'], 2); ?></strong></td>
+                            <td><?php echo safeHtml($pos['currency_code'] ?? 'BWP'); ?></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($pos['updated_at'] ?? 'now')); ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <!-- ============================================================ -->
+        <!-- REGULATORY REPORTS VIEW -->
+        <!-- ============================================================ -->
+        <?php if ($view === 'regulatory_reports' && ($isRegulator || $isSuperAdmin || $isFinanceManager)): ?>
+        <div class="content-header">
+            <h1>📑 REGULATORY SETTLEMENT REPORTS</h1>
+            <div class="timestamp">BISS-referenced, hash-verified settlement reports</div>
+            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🔧 Generate New Report</span>
+            </div>
+            <form method="GET" style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end;">
+                <input type="hidden" name="view" value="regulatory_reports">
+                <input type="hidden" name="action" value="generate_regulatory_report">
+                <div>
+                    <label style="display:block; font-size:0.6rem; text-transform:uppercase; margin-bottom:4px; color:#666;">Start Date</label>
+                    <input type="date" name="start_date" value="<?php echo date('Y-m-d', strtotime('-30 days')); ?>" style="padding:6px; border:2px solid #001B44; font-family:inherit;">
+                </div>
+                <div>
+                    <label style="display:block; font-size:0.6rem; text-transform:uppercase; margin-bottom:4px; color:#666;">End Date</label>
+                    <input type="date" name="end_date" value="<?php echo date('Y-m-d'); ?>" style="padding:6px; border:2px solid #001B44; font-family:inherit;">
+                </div>
+                <button type="submit" class="btn btn-regulator">📑 Generate Report</button>
+            </form>
+        </div>
+
+        <?php if ($generatedReport): ?>
+        <div class="card" style="border-left: 6px solid #8B0000;">
+            <div class="card-header">
+                <span class="card-title">✅ Generated Report: <?php echo safeHtml($generatedReport['report_id']); ?></span>
+            </div>
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px; margin-bottom:16px;">
+                <div><strong>Period:</strong> <?php echo safeHtml($generatedReport['date_range']['start']); ?> → <?php echo safeHtml($generatedReport['date_range']['end']); ?></div>
+                <div><strong>Total Settlements:</strong> <?php echo number_format($generatedReport['total_settlements']); ?></div>
+                <div><strong>Total Amount:</strong> <?php echo number_format($generatedReport['total_amount'], 2); ?> <?php echo safeHtml($generatedReport['currency']); ?></div>
+                <div><strong>Report Hash:</strong> <code style="font-size:0.6rem;"><?php echo safeHtml(substr($generatedReport['report_hash'], 0, 16)); ?>…</code></div>
+            </div>
+
+            <h3 style="font-size:0.8rem; margin-bottom:8px;">Net Positions in This Period</h3>
+            <div class="table-responsive">
+                <table>
+                    <thead><tr><th>Debtor</th><th>Creditor</th><th>Gross Amount</th><th>Settlements</th></tr></thead>
+                    <tbody>
+                        <?php if (empty($generatedReport['net_positions'])): ?>
+                        <tr><td colspan="4" class="empty-state">No settlements in this period</td></tr>
+                        <?php else: ?>
+                        <?php foreach ($generatedReport['net_positions'] as $pos): ?>
+                        <tr>
+                            <td><?php echo safeHtml($pos['debtor']); ?></td>
+                            <td><?php echo safeHtml($pos['creditor']); ?></td>
+                            <td><?php echo number_format($pos['gross_amount'], 2); ?></td>
+                            <td><?php echo $pos['settlement_count']; ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3 style="font-size:0.8rem; margin: 16px 0 8px;">Participant Breakdown</h3>
+            <div class="table-responsive">
+                <table>
+                    <thead><tr><th>Institution</th><th>Total Sent</th><th>Total Received</th></tr></thead>
+                    <tbody>
+                        <?php foreach ($generatedReport['participant_breakdown'] as $inst => $data): ?>
+                        <tr>
+                            <td><?php echo safeHtml($inst); ?></td>
+                            <td><?php echo number_format($data['total_sent'], 2); ?></td>
+                            <td><?php echo number_format($data['total_received'], 2); ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <details style="margin-top:12px;">
+                <summary style="cursor:pointer; font-size:0.7rem; color:#666;">Raw report JSON (for archival/audit)</summary>
+                <pre style="background:#1e293b; color:#4ade80; padding:12px; font-size:0.6rem; overflow-x:auto; margin-top:8px; max-height:300px; overflow-y:auto;"><?php echo safeHtml(json_encode($generatedReport, JSON_PRETTY_PRINT)); ?></pre>
+            </details>
+        </div>
+        <?php endif; ?>
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">📚 Previously Generated Reports</span>
+            </div>
+            <?php
+            $priorReports = [];
+            try {
+                $stmt = $db->query("
+                    SELECT settlement_report_id, report_date, cycle_id, total_settlements, total_amount, generated_at
+                    FROM settlement_reports
+                    ORDER BY generated_at DESC
+                    LIMIT 20
+                ");
+                $priorReports = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            } catch (Throwable $e) {
+                error_log("[ADMIN DASHBOARD] Prior reports error: " . $e->getMessage());
+            }
+            ?>
+            <div class="table-responsive">
+                <table>
+                    <thead><tr><th>Report ID</th><th>Cycle</th><th>Settlements</th><th>Total Amount</th><th>Generated</th></tr></thead>
+                    <tbody>
+                        <?php if (empty($priorReports)): ?>
+                        <tr><td colspan="5" class="empty-state">No reports generated yet</td></tr>
+                        <?php else: ?>
+                        <?php foreach ($priorReports as $r): ?>
+                        <tr>
+                            <td><?php echo safeHtml($r['settlement_report_id']); ?></td>
+                            <td><?php echo safeHtml($r['cycle_id']); ?></td>
+                            <td><?php echo number_format($r['total_settlements']); ?></td>
+                            <td><?php echo number_format($r['total_amount'], 2); ?></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($r['generated_at'])); ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
         <?php endif; ?>
 
@@ -1795,15 +2040,15 @@ try {
                         <?php foreach ($stRows as $row): ?>
                         <tr>
                             <td><?php echo safeHtml(substr($row['swap_transaction_id'] ?? 'N/A', 0, 10)); ?></td>
-                            <td><?php echo safeHtml(substr($row['swap_id'] ?? 'N/A', 0, 10)); ?></td>
+                            <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['swap_id'] ?? 'N/A', 0, 10)); ?></td>
                             <td><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></td>
                             <td>
                                 <?php 
                                 $status = strtolower($row['status'] ?? 'pending');
-                                $class = match($status) {
-                                    'completed', 'success' => 'success',
-                                    'pending', 'processing' => 'pending',
-                                    'failed', 'error' => 'failed',
+                                $class = match(true) {
+                                    str_contains($status, 'complet'), str_contains($status, 'success') => 'success',
+                                    str_contains($status, 'pending'), str_contains($status, 'processing') => 'pending',
+                                    str_contains($status, 'fail'), str_contains($status, 'error') => 'failed',
                                     default => 'info'
                                 };
                                 ?>
@@ -1877,10 +2122,10 @@ try {
                             <td>
                                 <?php 
                                 $status = strtolower($row['status'] ?? 'pending');
-                                $class = match($status) {
-                                    'completed', 'success' => 'success',
-                                    'pending', 'processing' => 'pending',
-                                    'failed', 'error' => 'failed',
+                                $class = match(true) {
+                                    str_contains($status, 'complet'), str_contains($status, 'success') => 'success',
+                                    str_contains($status, 'pending'), str_contains($status, 'processing') => 'pending',
+                                    str_contains($status, 'fail'), str_contains($status, 'error') => 'failed',
                                     default => 'info'
                                 };
                                 ?>
@@ -2110,7 +2355,7 @@ try {
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- INVOICES VIEW -->
+        <!-- INVOICES VIEW - FIXED -->
         <!-- ============================================================ -->
         <?php if ($view === 'invoices' && hasPermission('generate_invoice')): ?>
         <div class="content-header">
@@ -2138,12 +2383,17 @@ try {
                 ✅ <?php echo safeHtml($success); ?>
             </div>
             <?php endif; ?>
+            <?php if (!empty($error)): ?>
+            <div style="margin-top:12px; padding:12px; background:#f8d7da; color:#721c24; border:2px solid #f5c6cb; border-radius:4px;">
+                ❌ <?php echo safeHtml($error); ?>
+            </div>
+            <?php endif; ?>
         </div>
 
         <div class="card">
             <div class="card-header">
                 <span class="card-title">📋 Recent Invoices</span>
-                <span class="card-badge"><?php echo count($tableData['fee_invoices']['rows'] ?? []); ?> RECORDS</span>
+                <span class="card-badge">Last 20</span>
             </div>
             <div class="table-responsive">
                 <table>
@@ -2157,11 +2407,31 @@ try {
                         </tr>
                     </thead>
                     <tbody>
-                        <?php $invRows = array_slice($tableData['fee_invoices']['rows'] ?? [], 0, 20); ?>
-                        <?php if (empty($invRows)): ?>
+                        <?php 
+                        // Fetch from settlement_outbox instead of fee_invoices
+                        $recentInvoices = [];
+                        try {
+                            $stmt = $db->query("
+                                SELECT 
+                                    message_uuid as invoice_uuid,
+                                    message_payload->>'fee_type' as fee_type,
+                                    (message_payload->>'total_amount')::numeric as total_amount,
+                                    status,
+                                    created_at
+                                FROM settlement_outbox
+                                WHERE message_type = 'FEE_INVOICE'
+                                ORDER BY created_at DESC
+                                LIMIT 20
+                            ");
+                            $recentInvoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                        } catch (Throwable $e) {
+                            error_log("[ADMIN DASHBOARD] Recent invoices error: " . $e->getMessage());
+                        }
+                        ?>
+                        <?php if (empty($recentInvoices)): ?>
                         <tr><td colspan="5" class="empty-state">No invoices found</td></tr>
                         <?php else: ?>
-                        <?php foreach ($invRows as $row): ?>
+                        <?php foreach ($recentInvoices as $row): ?>
                         <tr>
                             <td><?php echo safeHtml(substr($row['invoice_uuid'] ?? 'N/A', 0, 12)); ?></td>
                             <td><?php echo safeHtml($row['fee_type'] ?? 'N/A'); ?></td>
@@ -2169,7 +2439,12 @@ try {
                             <td>
                                 <?php 
                                 $status = strtolower($row['status'] ?? 'pending');
-                                $class = $status === 'paid' ? 'success' : ($status === 'sent' ? 'pending' : 'info');
+                                $class = match($status) {
+                                    'acknowledged', 'completed' => 'success',
+                                    'sent' => 'pending',
+                                    'failed' => 'failed',
+                                    default => 'info'
+                                };
                                 ?>
                                 <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span>
                             </td>
@@ -2435,7 +2710,7 @@ try {
                                     echo number_format((float)$value, 2);
                                 } elseif (is_string($value) && in_array($col, ['status', 'type', 'action'])) {
                                     $statusClass = match(strtolower($value)) {
-                                        'completed', 'success', 'paid', 'active', 'approved', 'settled' => 'success',
+                                        'completed', 'success', 'paid', 'active', 'approved', 'settled', 'acknowledged' => 'success',
                                         'pending', 'sent', 'pending_cashout', 'processing', 'reserved' => 'pending',
                                         'failed', 'error', 'expired', 'declined' => 'failed',
                                         default => 'info'
