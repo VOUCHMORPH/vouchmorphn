@@ -1757,7 +1757,7 @@ if (!empty($generatedReport['data'])) {
                                 WHERE message_type = 'FEE_INVOICE'
                                 GROUP BY message_payload->>'fee_type', status
                                 ORDER BY total_fee DESC
-                            ");
+                            "); 
                             $feeBreakdown = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         } catch (Throwable $e) {
                             error_log("[ADMIN DASHBOARD] Fee breakdown error: " . $e->getMessage());
