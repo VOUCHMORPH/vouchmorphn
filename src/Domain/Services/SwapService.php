@@ -73,6 +73,7 @@ class SwapService
     private ?string $currentSwapRef = null;
     private ?int $currentHoldId = null;
     private ?string $currentHoldReference = null;
+    private ?string $currentHoldInstitution = null;  // ADDED: tracks which institution holds the current hold
     private array $executedSteps = [];
     private array $stepResults = [];
     private array $signedPayloads = [];
@@ -667,7 +668,7 @@ class SwapService
         $swapType = $payload['swap_type'] ?? 'STANDARD';
         
         // Check if multi-source
-        $isMultiSource = isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) ;
+        $isMultiSource = isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0;
         $isMultiDestination = isset($payload['destinations']) && is_array($payload['destinations']) && count($payload['destinations']) >= 1;
         
         if ($isMultiSource) {
@@ -784,10 +785,10 @@ class SwapService
         
         $sourceInstitution = $this->extractSourceInstitution($payload);
         
-       $destinations = $payload['destinations'] ?? [];
-if (empty($destinations)) {
-    throw new RuntimeException("At least 1 destination required for multi-destination swap");
-}
+        $destinations = $payload['destinations'] ?? [];
+        if (empty($destinations)) {
+            throw new RuntimeException("At least 1 destination required for multi-destination swap");
+        }
         
         $currency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
         $sourceIdentifier = $this->extractSourceIdentifier($payload);
@@ -1407,6 +1408,18 @@ if (empty($destinations)) {
         $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
         $deliveryMethod = strtoupper($payload['delivery_method'] ?? 'ATM');
         
+        // ============================================================
+        // CURRENCY: request it explicitly at both source and destination.
+        // For CASHOUT, "destination" is physical cash dispensed by an
+        // ATM/agent - that's whatever atm_notes.json is configured in,
+        // not the source asset's currency. Default it here if the caller
+        // didn't set one, rather than silently assuming source==destination.
+        // ============================================================
+        if (empty($payload['destination_currency'])) {
+            $payload['destination_currency'] = $this->config['currency'] ?? 'BWP';
+            error_log("[SwapService] No destination_currency provided for CASHOUT - defaulting to ATM currency: {$payload['destination_currency']}");
+        }
+        
         $isHooked = isset($payload['_is_hooked']) && $payload['_is_hooked'] === true;
         $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
         
@@ -1476,7 +1489,11 @@ if (empty($destinations)) {
         $remainderAtSource = $feeBreakdown['remainder_balance'];
         $netAmount = $feeBreakdown['net_amount'];
         
-        $currency = $payload['currency'] ?? 'BWP';
+        // Use destination_currency for ATM notes lookup
+        $currency = $feeBreakdown['destination_currency']
+            ?? $payload['destination_currency']
+            ?? $payload['currency']
+            ?? 'BWP';
         $notes = $this->atmNotes[$currency] ?? [];
         
         if (empty($notes)) {
@@ -1568,6 +1585,19 @@ if (empty($destinations)) {
         $destinationInstitution = $this->extractDestinationInstitution($payload);
         $destinationIdentifier = $this->extractDestinationIdentifier($payload);
         $destinationAssetType = $this->extractDestinationAssetType($payload);
+        
+        // ============================================================
+        // CURRENCY: for DEPOSIT, default destination_currency from the
+        // destination institution's own configured currency, not from the
+        // source asset's currency. Only falls back to source currency if
+        // the destination institution has no currency configured.
+        // ============================================================
+        if (empty($payload['destination_currency'])) {
+            $destParticipant = $this->participants[$destinationInstitution] ?? null;
+            $payload['destination_currency'] = $destParticipant['limits']['currency']
+                ?? ($payload['currency'] ?? 'BWP');
+            error_log("[SwapService] No destination_currency provided for DEPOSIT - defaulting from destination institution config: {$payload['destination_currency']}");
+        }
         
         $isHooked = isset($payload['_is_hooked']) && $payload['_is_hooked'] === true;
         $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
@@ -2860,6 +2890,8 @@ if (empty($destinations)) {
 
         $holdId = $this->createLocalHold($payload, $institution, $result['hold_reference'] ?? null);
         $this->currentHoldId = $holdId;
+        $this->currentHoldReference = $result['hold_reference'] ?? $this->currentHoldReference;
+        $this->currentHoldInstitution = $institution;   // ADDED: needed so rollback knows who to call
         $result['local_hold_id'] = $holdId;
 
         return $result;
@@ -3710,18 +3742,114 @@ if (empty($destinations)) {
         return $result;
     }
 
+    /**
+     * Rollback atomic swap with proper hold release
+     * 
+     * CRITICAL FIX: Releases the REAL hold at the institution BEFORE rolling back
+     * the local transaction. Also writes audit trail AFTER rollback so it survives.
+     */
     private function rollbackAtomicSwap(string $reason): array
     {
-        if ($this->currentHoldId) {
-            $this->updateHoldStatus($this->currentHoldId, 'RELEASED');
+        $holdReference = $this->currentHoldReference;
+        $holdInstitution = $this->currentHoldInstitution;
+        $swapRef = $this->currentSwapRef;
+
+        // ============================================================
+        // CRITICAL: release the REAL hold at the institution BEFORE
+        // rolling back the local transaction. The old version only
+        // updated hold_transactions.status locally - and since that
+        // UPDATE ran inside the same transaction being rolled back, it
+        // was itself undone by rollBack() a line later. Net effect: the
+        // bank-side hold was never released, and there wasn't even a
+        // local record that it needed to be. This is what left holds
+        // stuck in HELD status indefinitely.
+        // ============================================================
+        $releaseResult = null;
+        if ($holdReference && $holdInstitution) {
+            try {
+                $adapter = $this->adapterFactory->getAdapter($holdInstitution);
+                $releaseResult = $adapter->releaseHold([
+                    'hold_reference' => $holdReference,
+                    'action' => 'RELEASE_HOLD',
+                    'reason' => 'Atomic swap rolled back: ' . $reason
+                ], [
+                    'swap_reference' => $swapRef,
+                    'institution' => $holdInstitution
+                ]);
+
+                $this->logger->info("Released real hold during rollback", [
+                    'reference' => $swapRef,
+                    'hold_reference' => $holdReference,
+                    'institution' => $holdInstitution,
+                    'release_success' => $releaseResult['released'] ?? false
+                ]);
+            } catch (Exception $releaseError) {
+                // Don't swallow this - log loudly so a stuck hold is visible
+                // rather than silently disappearing, but still proceed with
+                // the local rollback regardless.
+                $this->logger->error("Failed to release real hold during rollback - hold may be stuck at institution", [
+                    'reference' => $swapRef,
+                    'hold_reference' => $holdReference,
+                    'institution' => $holdInstitution,
+                    'release_error' => $releaseError->getMessage()
+                ]);
+            }
+        } elseif ($this->currentHoldId) {
+            $this->logger->warning("Rollback has a local hold_id but no hold_reference/institution to release externally", [
+                'reference' => $swapRef,
+                'hold_id' => $this->currentHoldId
+            ]);
         }
-        
+
+        // Undo local DB changes made during this swap attempt.
         $this->swapDB->rollBack();
-        
+
+        // ============================================================
+        // Write the rollback record AFTER rollBack(), not before - a
+        // write made before rollBack() gets erased by it, same bug as
+        // the old updateHoldStatus() call. This table is the durable
+        // trail: which swaps failed, whether the real hold was released,
+        // and whether that release itself succeeded.
+        // ============================================================
+        if ($holdReference) {
+            try {
+                $this->swapDB->exec("
+                    CREATE TABLE IF NOT EXISTS swap_rollback_log (
+                        id BIGSERIAL PRIMARY KEY,
+                        swap_reference VARCHAR(255),
+                        hold_reference VARCHAR(255),
+                        institution VARCHAR(100),
+                        reason TEXT,
+                        release_attempted BOOLEAN DEFAULT FALSE,
+                        release_succeeded BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                ");
+                $stmt = $this->swapDB->prepare("
+                    INSERT INTO swap_rollback_log
+                        (swap_reference, hold_reference, institution, reason, release_attempted, release_succeeded)
+                    VALUES
+                        (:swap_ref, :hold_ref, :institution, :reason, :attempted, :succeeded)
+                ");
+                $stmt->execute([
+                    ':swap_ref' => $swapRef,
+                    ':hold_ref' => $holdReference,
+                    ':institution' => $holdInstitution,
+                    ':reason' => $reason,
+                    ':attempted' => $releaseResult !== null ? 1 : 0,
+                    ':succeeded' => ($releaseResult['released'] ?? false) ? 1 : 0
+                ]);
+            } catch (Exception $logError) {
+                error_log("[SwapService] Failed to write rollback audit log: " . $logError->getMessage());
+            }
+        }
+
         $result = [
             'status' => 'rolled_back',
-            'reference' => $this->currentSwapRef,
-            'reason' => $reason
+            'reference' => $swapRef,
+            'reason' => $reason,
+            'hold_released' => $releaseResult['released'] ?? null,
+            'hold_reference' => $holdReference
         ];
         
         $this->logger->warning("Atomic swap rolled back", $result);
@@ -3735,6 +3863,7 @@ if (empty($destinations)) {
         $this->currentSwapRef = null;
         $this->currentHoldId = null;
         $this->currentHoldReference = null;
+        $this->currentHoldInstitution = null;   // ADDED: reset institution
         $this->executedSteps = [];
         $this->stepResults = [];
         $this->signedPayloads = [];
@@ -3953,22 +4082,22 @@ if (empty($destinations)) {
         throw new RuntimeException("Participant not found: {$institution}");
     }
 
-   public function getParticipantId(string $institution): int
-{
-    foreach ($this->participants as $code => $participant) {
-        if (strtoupper($code) === strtoupper($institution)) {
-            $id = $participant['id'] ?? 0;
-            // The 'id' field is a SWIFT/BIC code (string)
-            // We need to generate a numeric ID or hash it
-            if (is_string($id) && !is_numeric($id)) {
-                // Convert the SWIFT code to a numeric ID
-                return abs(crc32($id) % 1000000);
+    public function getParticipantId(string $institution): int
+    {
+        foreach ($this->participants as $code => $participant) {
+            if (strtoupper($code) === strtoupper($institution)) {
+                $id = $participant['id'] ?? 0;
+                // The 'id' field is a SWIFT/BIC code (string)
+                // We need to generate a numeric ID or hash it
+                if (is_string($id) && !is_numeric($id)) {
+                    // Convert the SWIFT code to a numeric ID
+                    return abs(crc32($id) % 1000000);
+                }
+                return (int)$id;
             }
-            return (int)$id;
         }
+        return 0;
     }
-    return 0;
-}
 
     public function getHoldStatus(int $holdId): ?array
     {
