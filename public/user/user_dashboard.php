@@ -22,6 +22,18 @@ $userCurrency = $userData['currency'] ?? getenv('VOUCHMORPH_CURRENCY') ?: 'BWP';
 $userRole = $userData['role'] ?? 'user';
 $userId = $userData['id'] ?? 0;
 
+// ============================================================
+// FIX: Warn loudly if the session doesn't actually carry a user id.
+// Previously $userId silently defaulted to 0 with no visibility,
+// which meant the swap history endpoint would always search for
+// "user_id":0 in the DB and (correctly) find nothing — this looked
+// exactly like a broken history feature when it was really a
+// missing session field.
+// ============================================================
+if (empty($userId)) {
+    error_log("[DASHBOARD] WARNING: Session user data has no 'id' field. Session keys: " . implode(', ', array_keys($userData ?? [])) . " — swap history will not be able to find this user's swaps.");
+}
+
 // Get API configuration from environment
 $apiKey = getenv('VOUCHMORPH_API_KEY') ?: '';
 $apiBase = getenv('API_BASE_URL') ?: '';
@@ -684,6 +696,10 @@ const CONFIG = {
     IS_TEST_MODE: <?php echo $isTestMode ? 'true' : 'false'; ?>,
     PREVIEW_ENDPOINT: '<?php echo $apiBase; ?>/api/v1/swap/preview.php',
     EXECUTE_ENDPOINT: '<?php echo $apiBase; ?>/api/v1/swap/execute.php',
+    // FIX: exposed so the JS can tell the user *why* history came
+    // back empty instead of just showing a generic "no swaps" state
+    // when the real cause is that the session has no user id.
+    USER_ID: <?php echo json_encode($userId); ?>,
 };
 
 // ============================================================
@@ -1229,6 +1245,7 @@ function buildPayload() {
         
         const payload = {
             swap_type: 'MULTI_SOURCE', reference, idempotency_key: idempotencyKey,
+            user_id: CONFIG.USER_ID,
             amount: totalAmount, currency: CONFIG.CURRENCY,
             destination_currency: destCurrency,
             contribution_strategy: 'USER_SPECIFIED',
@@ -1249,6 +1266,7 @@ function buildPayload() {
     
     const payload = {
         swap_type: state.swapType, reference, idempotency_key: idempotencyKey,
+        user_id: CONFIG.USER_ID,
         from_institution: state.fromInst, source_institution: state.fromInst,
         asset_type: state.fromAsset, amount: state.fromAmount,
         currency: sourceCurrency,
@@ -1642,19 +1660,36 @@ function useSavedIdentity(idx) {
 // ============================================================
 async function openSwapHistory() {
     openModal('Swap History', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading swaps...</div>');
-    
+
+    // FIX: previously this called history.php with whatever CONFIG.USER_ID
+    // resolved to (including 0) and any resulting "no swaps" state looked
+    // identical whether the user genuinely had none or the session simply
+    // never carried an id. Surface the real cause instead of guessing.
+    if (!CONFIG.USER_ID) {
+        document.getElementById('modalBody').innerHTML = `
+            <div style="text-align:center;padding:30px;color:var(--danger);">
+                <div style="font-size:48px;margin-bottom:12px;">⚠️</div>
+                <div style="font-size:16px;font-weight:600;">Could not identify your account</div>
+                <div style="font-size:13px;margin-top:8px;color:var(--text-muted);">
+                    Your session doesn't have a user ID attached, so we can't look up your swap history.
+                    Try logging out and back in — if this keeps happening, contact support.
+                </div>
+            </div>
+        `;
+        console.error('[HISTORY] CONFIG.USER_ID is missing/falsy — session likely has no "id" field. Cannot query swap history.');
+        return;
+    }
+
     try {
-        const userId = <?php echo json_encode($userId); ?>;
-        
         const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/history.php', {
-            user_id: userId,
+            user_id: CONFIG.USER_ID,
             limit: 50
         });
         
         if (!result.ok) {
             document.getElementById('modalBody').innerHTML = `
                 <div style="text-align:center;padding:20px;color:var(--danger);">
-                    ❌ Failed to load swap history
+                    ❌ Failed to load swap history${result.error ? ': ' + escapeHtml(result.error) : ''}
                 </div>
             `;
             return;
@@ -1701,6 +1736,9 @@ function renderSwapHistory(data) {
                           swap.status === 'pending' || swap.status === 'pending_cashout' ? '⏳' :
                           '❌';
         
+        // FIX: fall back to the logged-in user's own currency (CONFIG.CURRENCY)
+        // instead of a hardcoded 'BWP' literal, so non-BWP countries display
+        // correctly when a row's currency is somehow missing.
         historyHtml += `
             <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
                 <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
@@ -1718,7 +1756,7 @@ function renderSwapHistory(data) {
                     </div>
                     <div style="text-align:right;">
                         <div style="font-weight:700;font-size:16px;color:var(--primary-dark);">
-                            ${swap.amount || 0} ${swap.currency || 'BWP'}
+                            ${swap.amount || 0} ${swap.currency || CONFIG.CURRENCY}
                         </div>
                         <div style="font-size:11px;color:${statusColor};margin-top:2px;">
                             ${statusIcon} ${swap.status || 'unknown'}
@@ -1727,7 +1765,7 @@ function renderSwapHistory(data) {
                 </div>
                 ${swap.fee ? `
                 <div style="font-size:11px;color:var(--text-muted);margin-top:6px;border-top:1px solid var(--border);padding-top:6px;">
-                    Fee: ${swap.fee} ${swap.currency || 'BWP'}
+                    Fee: ${swap.fee} ${swap.currency || CONFIG.CURRENCY}
                     ${swap.destination_currency && swap.destination_currency !== swap.currency ? ` | 💱 ${swap.destination_currency}` : ''}
                 </div>` : ''}
                 ${swap.created_at ? `
@@ -1754,7 +1792,7 @@ async function viewSwapDetail(reference) {
         if (!result.ok) {
             document.getElementById('modalBody').innerHTML = `
                 <div style="text-align:center;padding:20px;color:var(--danger);">
-                    ❌ Failed to load swap details
+                    ❌ Failed to load swap details${result.error ? ': ' + escapeHtml(result.error) : ''}
                 </div>
             `;
             return;
@@ -1774,6 +1812,8 @@ async function viewSwapDetail(reference) {
 function renderSwapDetail(data) {
     const swap = data.swap || data.data || {};
     
+    // FIX: fall back to CONFIG.CURRENCY instead of a hardcoded 'BWP' literal
+    // in both places below.
     let detailsHtml = `
         <div style="max-height:70vh;overflow-y:auto;">
             <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:16px;margin-bottom:12px;">
@@ -1798,7 +1838,7 @@ function renderSwapDetail(data) {
                 </div>
                 <div style="background:rgba(0,0,0,0.02);border-radius:var(--radius-sm);padding:12px;">
                     <div style="font-size:11px;color:var(--text-muted);">Amount</div>
-                    <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || 'BWP'}</div>
+                    <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || CONFIG.CURRENCY}</div>
                 </div>
             </div>
             
@@ -1839,7 +1879,7 @@ function renderSwapDetail(data) {
                 <div style="font-size:11px;color:var(--text-muted);">💰 Fees</div>
                 <div style="display:flex;justify-content:space-between;">
                     <span>Total Fee</span>
-                    <span style="font-weight:600;">${swap.fee} ${swap.currency || 'BWP'}</span>
+                    <span style="font-weight:600;">${swap.fee} ${swap.currency || CONFIG.CURRENCY}</span>
                 </div>
             </div>` : ''}
             
