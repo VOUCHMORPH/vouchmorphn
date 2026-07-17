@@ -912,7 +912,20 @@ class SwapService
         $destHoldId = null;
         
         try {
-            $feeBreakdown = $this->calculateFeesWithDetails('MULTI_DESTINATION', $destAmount, array_merge($payload, $dest));
+            // ============================================================
+            // FIX: Determine fee type based on destination type
+            // ============================================================
+            $feeType = 'DEPOSIT';
+            
+            if ($deliveryMethod === 'ATM' || $deliveryMethod === 'AGENT' || $deliveryMethod === 'CASHOUT') {
+                $feeType = 'CASHOUT';
+            } elseif (isset($dest['identity_type']) || isset($dest['identity_value'])) {
+                $feeType = 'DEPOSIT';
+            } elseif ($dest['destination_asset_type'] === 'CARD') {
+                $feeType = 'CARD_LOAD';
+            }
+            
+            $feeBreakdown = $this->calculateFeesWithDetails($feeType, $destAmount, array_merge($payload, $dest));
             $netAmount = $feeBreakdown['net_amount'] ?? $destAmount;
             $feeAmount = $feeBreakdown['total_fee'] ?? 0;
             
@@ -1112,23 +1125,19 @@ class SwapService
         $destHoldRef = null;
         $destHoldId = null;
         
-       try {
-    // ============================================================
-    // FIX: Determine fee type per destination
-    // ============================================================
-    $feeType = 'DEPOSIT';
-    
-    if ($deliveryMethod === 'ATM' || $deliveryMethod === 'AGENT' || $deliveryMethod === 'CASHOUT') {
-        $feeType = 'CASHOUT';
-    } elseif (isset($dest['identity_type']) || isset($dest['identity_value'])) {
-        $feeType = 'DEPOSIT';
-    } elseif ($dest['destination_asset_type'] === 'CARD') {
-        $feeType = 'CARD_LOAD';
-    }
-    
-    $feeBreakdown = $this->calculateFeesWithDetails($feeType, $destAmount, array_merge($payload, $dest));
-    $netAmount = $feeBreakdown['net_amount'] ?? $destAmount;
-    $feeAmount = $feeBreakdown['total_fee'] ?? 0;
+        try {
+            // ============================================================
+            // FIX: Determine fee type per identity destination
+            // ============================================================
+            $feeType = 'DEPOSIT';
+            
+            if ($deliveryMethod === 'ATM' || $deliveryMethod === 'AGENT' || $deliveryMethod === 'CASHOUT') {
+                $feeType = 'CASHOUT';
+            }
+            
+            $feeBreakdown = $this->calculateFeesWithDetails($feeType, $amount, array_merge($payload, $identityDest['original']));
+            $netAmount = $feeBreakdown['net_amount'] ?? $amount;
+            $feeAmount = $feeBreakdown['total_fee'] ?? 0;
             
             // ============================================================
             // 2. Place hold for THIS identity (same as bank)
@@ -1171,25 +1180,25 @@ class SwapService
             // 3. Process identity (create identity hold record using existing hold)
             // ============================================================
             $identityPayload = $payload;
-$identityPayload['swap_type'] = 'IDENTITY';
-$identityPayload['amount'] = $amount;
-$identityPayload['identity_type'] = $identityType;
-$identityPayload['identity_value'] = $identityValue;
-$identityPayload['beneficiary_phone'] = $beneficiaryPhone;
-$identityPayload['currency'] = $currency;
-$identityPayload['reference'] = $subRef;
-$identityPayload['delivery_method'] = $deliveryMethod;
-$identityPayload['from_institution'] = $sourceInstitution;
-$identityPayload['source_institution'] = $sourceInstitution;
-$identityPayload['_skip_hold'] = true;  // ✅ Skip hold because we already placed it
-$identityPayload['hold_reference'] = $destHoldRef;  // ✅ Use existing hold
-
-$originalHoldRef = $this->currentHoldReference;
-$originalHoldId = $this->currentHoldId;
-$this->currentHoldReference = $destHoldRef;
-$this->currentHoldId = $destHoldId;
-
-$identityResult = $this->initiateSwapToIdentity($identityPayload);
+            $identityPayload['swap_type'] = 'IDENTITY';
+            $identityPayload['amount'] = $amount;
+            $identityPayload['identity_type'] = $identityType;
+            $identityPayload['identity_value'] = $identityValue;
+            $identityPayload['beneficiary_phone'] = $beneficiaryPhone;
+            $identityPayload['currency'] = $currency;
+            $identityPayload['reference'] = $subRef;
+            $identityPayload['delivery_method'] = $deliveryMethod;
+            $identityPayload['from_institution'] = $sourceInstitution;
+            $identityPayload['source_institution'] = $sourceInstitution;
+            $identityPayload['_skip_hold'] = true;
+            $identityPayload['hold_reference'] = $destHoldRef;
+            
+            $originalHoldRef = $this->currentHoldReference;
+            $originalHoldId = $this->currentHoldId;
+            $this->currentHoldReference = $destHoldRef;
+            $this->currentHoldId = $destHoldId;
+            
+            $identityResult = $this->initiateSwapToIdentity($identityPayload);
             
             $this->currentHoldReference = $originalHoldRef;
             $this->currentHoldId = $originalHoldId;
