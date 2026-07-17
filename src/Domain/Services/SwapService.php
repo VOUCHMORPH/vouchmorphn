@@ -631,7 +631,7 @@ class SwapService
     }
 
     // ============================================================================
-    // TABLE POPULATION METHODS - ADDED
+    // TABLE POPULATION METHODS - UPDATED WITH FIXES
     // ============================================================================
 
     /**
@@ -642,20 +642,21 @@ class SwapService
     {
         $swapType = $swapData['swap_type'] ?? 'STANDARD';
         $swapRef = $swapData['reference'] ?? $this->currentSwapRef;
+        $userId = $details['user_id'] ?? $swapData['user_id'] ?? null;
         
         try {
             // 1. Always populate swap_requests
-            $this->populateSwapRequest($swapRef, $swapData, $details);
+            $this->populateSwapRequest($swapRef, $swapData, $details, $userId);
             
             // 2. Always populate swap_transactions
-            $this->populateSwapTransaction($swapRef, $swapData, $details);
+            $this->populateSwapTransaction($swapRef, $swapData, $details, $userId);
             
             // 3. Populate type-specific tables
             if ($swapType === 'CASHOUT') {
-                $this->populateCashoutAuthorization($swapRef, $swapData, $details, $destResponse);
-                $this->populateMessageOutbox($swapRef, $swapData, $details, $destResponse);
+                $this->populateCashoutAuthorization($swapRef, $swapData, $details, $destResponse, $userId);
+                $this->populateMessageOutbox($swapRef, $swapData, $details, $destResponse, $userId);
             } elseif ($swapType === 'DEPOSIT') {
-                $this->populateDepositTransaction($swapRef, $swapData, $details);
+                $this->populateDepositTransaction($swapRef, $swapData, $details, $userId);
             }
             
             $this->logger->info("Tracking tables populated", ['reference' => $swapRef, 'type' => $swapType]);
@@ -670,8 +671,9 @@ class SwapService
 
     /**
      * Populate swap_requests table
+     * FIX: Removed updated_at = NOW() from ON CONFLICT since column doesn't exist
      */
-    private function populateSwapRequest(string $swapRef, array $swapData, array $details): void
+    private function populateSwapRequest(string $swapRef, array $swapData, array $details, ?int $userId = null): void
     {
         $sql = "
             INSERT INTO swap_requests (
@@ -703,8 +705,7 @@ class SwapService
                 :metadata::jsonb,
                 0
             ) ON CONFLICT (swap_uuid) DO UPDATE SET
-                status = EXCLUDED.status,
-                updated_at = NOW()
+                status = EXCLUDED.status
         ";
         
         $status = $swapData['status'] ?? 'pending';
@@ -733,7 +734,8 @@ class SwapService
                 ':metadata' => json_encode([
                     'hold_id' => $this->currentHoldId,
                     'swap_type' => $swapData['swap_type'] ?? 'STANDARD',
-                    'source_institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null
+                    'source_institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
+                    'user_id' => $userId
                 ])
             ]);
             
@@ -746,8 +748,9 @@ class SwapService
 
     /**
      * Populate swap_transactions table
+     * FIX: Removed ON CONFLICT entirely since swap_id is not unique
      */
-    private function populateSwapTransaction(string $swapRef, array $swapData, array $details): void
+    private function populateSwapTransaction(string $swapRef, array $swapData, array $details, ?int $userId = null): void
     {
         $sql = "
             INSERT INTO swap_transactions (
@@ -768,9 +771,7 @@ class SwapService
                 :created_at,
                 :updated_at,
                 :metadata::jsonb
-            ) ON CONFLICT (swap_id) DO UPDATE SET
-                status = EXCLUDED.status,
-                updated_at = NOW()
+            )
         ";
         
         $status = $swapData['status'] ?? 'pending';
@@ -798,7 +799,8 @@ class SwapService
                 ':updated_at' => date('Y-m-d H:i:s'),
                 ':metadata' => json_encode([
                     'hold_id' => $this->currentHoldId,
-                    'swap_type' => $swapData['swap_type'] ?? 'STANDARD'
+                    'swap_type' => $swapData['swap_type'] ?? 'STANDARD',
+                    'user_id' => $userId
                 ])
             ]);
             
@@ -811,8 +813,9 @@ class SwapService
 
     /**
      * Populate cashout_authorization table
+     * FIX: Added userId to metadata
      */
-    private function populateCashoutAuthorization(string $swapRef, array $swapData, array $details, ?array $destResponse): void
+    private function populateCashoutAuthorization(string $swapRef, array $swapData, array $details, ?array $destResponse, ?int $userId = null): void
     {
         if (!$destResponse) {
             return;
@@ -887,7 +890,8 @@ class SwapService
                 ':metadata' => json_encode([
                     'source' => 'swap_service',
                     'hold_id' => $this->currentHoldId,
-                    'destination_response' => $destResponse
+                    'destination_response' => $destResponse,
+                    'user_id' => $userId
                 ])
             ]);
             
@@ -900,8 +904,9 @@ class SwapService
 
     /**
      * Populate deposit_transactions table
+     * FIX: Added userId to metadata
      */
-    private function populateDepositTransaction(string $swapRef, array $swapData, array $details): void
+    private function populateDepositTransaction(string $swapRef, array $swapData, array $details, ?int $userId = null): void
     {
         $sql = "
             INSERT INTO deposit_transactions (
@@ -968,7 +973,8 @@ class SwapService
                 ':updated_at' => date('Y-m-d H:i:s'),
                 ':metadata' => json_encode([
                     'source' => 'swap_service',
-                    'hold_id' => $this->currentHoldId
+                    'hold_id' => $this->currentHoldId,
+                    'user_id' => $userId
                 ])
             ]);
             
@@ -982,7 +988,7 @@ class SwapService
     /**
      * Populate message_outbox table
      */
-    private function populateMessageOutbox(string $swapRef, array $swapData, array $details, ?array $destResponse): void
+    private function populateMessageOutbox(string $swapRef, array $swapData, array $details, ?array $destResponse, ?int $userId = null): void
     {
         if (!$destResponse || empty($destResponse['cashout_code'])) {
             return;
@@ -1039,6 +1045,7 @@ class SwapService
                     'amount' => $amount,
                     'currency' => $currency,
                     'expiry' => $expiry,
+                    'user_id' => $userId,
                     'api_response' => [
                         'success' => true,
                         'message' => 'SMS queued from swap_service'
@@ -2175,7 +2182,8 @@ class SwapService
                 'currency' => $payload['currency'] ?? 'BWP',
                 'status' => 'pending_cashout',
                 'from_institution' => $sourceInstitution,
-                'to_institution' => $destinationInstitution
+                'to_institution' => $destinationInstitution,
+                'user_id' => $payload['user_id'] ?? null
             ],
             $payload,
             $generateResult
@@ -2353,7 +2361,8 @@ class SwapService
                 'currency' => $payload['currency'] ?? 'BWP',
                 'status' => 'completed',
                 'from_institution' => $sourceInstitution,
-                'to_institution' => $destinationInstitution
+                'to_institution' => $destinationInstitution,
+                'user_id' => $payload['user_id'] ?? null
             ],
             $payload,
             null
