@@ -3655,6 +3655,7 @@ class SwapService
             'source_type' => 'VIRTUAL_POOL',
             'pool_id' => $payload['pool_id'] ?? null,
             'master_signature' => $payload['master_signature'] ?? null,
+            'user_id' => $payload['user_id'] ?? 0, 
         ];
 
         if ($destId['has_value']) {
