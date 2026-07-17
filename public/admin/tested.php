@@ -58,7 +58,6 @@ function testTable($db, $table) {
         $stmt = $db->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '$table'");
         $count = (int)$stmt->fetchColumn();
         if ($count > 0) {
-            // Get actual record count
             $stmt2 = $db->query("SELECT COUNT(*) FROM $table");
             $records = (int)$stmt2->fetchColumn();
             return ['exists' => true, 'records' => $records];
@@ -103,6 +102,10 @@ function getAdminInfo() {
         'role_id' => SessionManager::getAdminRoleId() ?? $_SESSION['admin_role_id'] ?? null,
         'username' => SessionManager::getAdminUsername() ?? $_SESSION['admin_username'] ?? 'Unknown'
     ];
+}
+
+function safeHtml($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
 }
 
 // ============================================================
@@ -156,6 +159,75 @@ if ($dbConnected) {
 // GENERATE REPORT
 // ============================================================
 
+// Calculate summary stats
+$totalTables = count($results['tables']);
+$existingTables = 0;
+$totalRecords = 0;
+foreach ($results['tables'] as $table) {
+    if ($table['exists']) {
+        $existingTables++;
+        $totalRecords += $table['records'];
+    }
+}
+
+// Test sections
+$baseUrl = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP_HOST'] . '/admin/admin_dashboard.php';
+$sessionCookie = session_name() . '=' . session_id();
+
+$sections = [
+    'dashboard' => 'Dashboard',
+    'live_transactions' => 'Live Transactions',
+    'multi_destination' => 'Multi-Destination',
+    'recent_swaps' => 'Recent Swaps',
+    'settlements' => 'Settlements',
+    'regulatory' => 'Regulatory',
+    'audit' => 'Audit',
+    'fee_breakdown' => 'Fee Breakdown',
+    'invoices' => 'Invoices'
+];
+
+foreach ($sections as $section => $name) {
+    $url = $baseUrl . '?view=' . $section;
+    
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_COOKIE, $sessionCookie);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    $hasFatal = strpos($response, 'Fatal error') !== false;
+    $hasWarning = strpos($response, 'Warning:') !== false;
+    $hasEmpty = strpos($response, 'No .* found') !== false || strpos($response, 'empty-state') !== false;
+    $hasData = strpos($response, 'RECORDS') !== false && !$hasEmpty;
+    
+    if ($hasFatal) {
+        $status = 'fail';
+        $statusText = '❌ Fatal Error';
+        $statusClass = 'fail';
+    } elseif ($hasWarning) {
+        $status = 'warning';
+        $statusText = '⚠️ Warnings';
+        $statusClass = 'empty';
+    } elseif ($hasEmpty) {
+        $status = 'empty';
+        $statusText = '📭 Empty (no data)';
+        $statusClass = 'empty';
+    } elseif ($hasData) {
+        $status = 'pass';
+        $statusText = '✅ Data Found';
+        $statusClass = 'pass';
+    } else {
+        $status = 'unknown';
+        $statusText = '⚠️ Unknown';
+        $statusClass = 'empty';
+    }
+    $results['sections'][$section] = ['status' => $status, 'http' => $httpCode];
+}
+
 // HTML Output
 ?>
 <!DOCTYPE html>
@@ -205,6 +277,7 @@ if ($dbConnected) {
         .badge-success { background: rgba(0,230,118,0.2); color: #00e676; border: 1px solid rgba(0,230,118,0.3); }
         .badge-failed { background: rgba(255,82,82,0.2); color: #ff5252; border: 1px solid rgba(255,82,82,0.3); }
         .badge-warning { background: rgba(255,193,7,0.2); color: #ffc107; border: 1px solid rgba(255,193,7,0.3); }
+        .badge-info { background: rgba(0,240,255,0.2); color: #00f0ff; border: 1px solid rgba(0,240,255,0.3); }
         
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
         @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
@@ -280,17 +353,6 @@ if ($dbConnected) {
 
     <!-- Summary -->
     <div class="summary-box">
-        <?php
-        $totalTables = count($results['tables']);
-        $existingTables = 0;
-        $totalRecords = 0;
-        foreach ($results['tables'] as $table) {
-            if ($table['exists']) {
-                $existingTables++;
-                $totalRecords += $table['records'];
-            }
-        }
-        ?>
         <div class="summary-item">
             <div class="number" style="color: <?php echo $dbConnected ? '#00e676' : '#ff5252'; ?>">
                 <?php echo $dbConnected ? '✅' : '❌'; ?>
@@ -466,63 +528,25 @@ if ($dbConnected) {
             <span class="badge badge-info">FUNCTIONALITY TEST</span>
         </div>
         
-        <?php
-        // Test each section by actually fetching the page
-        $sections = [
-            'dashboard' => 'Dashboard',
-            'live_transactions' => 'Live Transactions',
-            'multi_destination' => 'Multi-Destination',
-            'recent_swaps' => 'Recent Swaps',
-            'settlements' => 'Settlements',
-            'regulatory' => 'Regulatory',
-            'audit' => 'Audit',
-            'fee_breakdown' => 'Fee Breakdown',
-            'invoices' => 'Invoices'
-        ];
+        <?php foreach ($sections as $section => $name): ?>
+        <?php 
+        $info = $results['sections'][$section] ?? ['status' => 'unknown', 'http' => 0];
+        $status = $info['status'];
+        $httpCode = $info['http'];
         
-        $baseUrl = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP_HOST'] . '/admin/admin_dashboard.php';
-        $sessionCookie = session_name() . '=' . session_id();
-        
-        foreach ($sections as $section => $name):
-            $url = $baseUrl . '?view=' . $section;
-            
-            // Use curl to test the page
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, $url);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_COOKIE, $sessionCookie);
-            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-            
-            $hasFatal = strpos($response, 'Fatal error') !== false;
-            $hasWarning = strpos($response, 'Warning:') !== false;
-            $hasEmpty = strpos($response, 'No .* found') !== false || strpos($response, 'empty-state') !== false;
-            $hasData = strpos($response, 'RECORDS') !== false && !$hasEmpty;
-            
-            $status = 'pass';
+        if ($status === 'pass') {
             $statusText = '✅ Working';
             $statusClass = 'pass';
-            if ($hasFatal) {
-                $status = 'fail';
-                $statusText = '❌ Fatal Error';
-                $statusClass = 'fail';
-            } elseif ($hasWarning) {
-                $status = 'warning';
-                $statusText = '⚠️ Warnings';
-                $statusClass = 'empty';
-            } elseif ($hasEmpty) {
-                $status = 'empty';
-                $statusText = '📭 Empty (no data)';
-                $statusClass = 'empty';
-            } elseif ($hasData) {
-                $status = 'pass';
-                $statusText = '✅ Data Found';
-                $statusClass = 'pass';
-            }
-            $results['sections'][$section] = ['status' => $status, 'http' => $httpCode];
+        } elseif ($status === 'fail') {
+            $statusText = '❌ Fatal Error';
+            $statusClass = 'fail';
+        } elseif ($status === 'empty') {
+            $statusText = '📭 Empty (no data)';
+            $statusClass = 'empty';
+        } else {
+            $statusText = '⚠️ Unknown';
+            $statusClass = 'empty';
+        }
         ?>
         <div class="stat-row">
             <span class="label"><?php echo safeHtml($name); ?></span>
@@ -565,7 +589,6 @@ if ($dbConnected) {
             $issues[] = '⚠️ hold_transactions table is empty - no hold data';
         }
         
-        // Check section failures
         foreach ($results['sections'] as $section => $info) {
             if ($info['status'] === 'fail') {
                 $issues[] = '❌ ' . ucfirst(str_replace('_', ' ', $section)) . ' section has fatal errors';
@@ -609,11 +632,5 @@ if ($dbConnected) {
     </div>
 </div>
 
-<?php
-// Helper function
-function safeHtml($value) {
-    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
-}
-?>
 </body>
 </html>
