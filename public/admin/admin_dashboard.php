@@ -252,18 +252,17 @@ function safeHtml($value) {
 }
 
 // ============================================================
-// FIXED: LIVE TRANSACTIONS DATA
+// LIVE TRANSACTIONS - NO LIMIT
 // ============================================================
 $liveTransactions = [];
 $liveStats = ['total' => 0, 'completed' => 0, 'pending' => 0, 'failed' => 0, 'total_amount' => 0];
 
 try {
-    // Check if vw_all_swaps exists
     $checkStmt = $db->query("SELECT to_regclass('vw_all_swaps')");
     $viewExists = $checkStmt->fetchColumn();
     
     if ($viewExists) {
-        // Get live transactions
+        // NO LIMIT - show ALL transactions
         $stmt = $db->query("
             SELECT 
                 swap_reference,
@@ -277,12 +276,10 @@ try {
                 fee_amount,
                 created_at
             FROM vw_all_swaps 
-            ORDER BY created_at DESC 
-            LIMIT 50
+            ORDER BY created_at DESC
         ");
         $liveTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
-        // Get live stats
         $statStmt = $db->query("
             SELECT 
                 COUNT(*) as total,
@@ -302,15 +299,13 @@ try {
             $liveStats['failed'] = (int)($liveStats['failed'] ?? 0);
             $liveStats['total_amount'] = (float)($liveStats['total_amount'] ?? 0);
         }
-    } else {
-        error_log("[ADMIN DASHBOARD] vw_all_swaps view does not exist");
     }
 } catch (Throwable $e) {
     error_log("[ADMIN DASHBOARD] Live transactions error: " . $e->getMessage());
 }
 
 // ============================================================
-// FIXED: RECENT SWAPS
+// RECENT SWAPS - NO LIMIT
 // ============================================================
 $recentSwaps = [];
 try {
@@ -318,6 +313,7 @@ try {
     $viewExists = $checkStmt->fetchColumn();
     
     if ($viewExists) {
+        // NO LIMIT - show ALL swaps
         $stmt = $db->query("
             SELECT 
                 swap_reference,
@@ -331,8 +327,7 @@ try {
                 fee_amount,
                 created_at
             FROM vw_all_swaps 
-            ORDER BY created_at DESC 
-            LIMIT 100
+            ORDER BY created_at DESC
         ");
         $recentSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -341,10 +336,11 @@ try {
 }
 
 // ============================================================
-// FIXED: MULTI-DESTINATION SWAPS
+// MULTI-DESTINATION SWAPS - NO LIMIT
 // ============================================================
 $multiDestinationSwaps = [];
 try {
+    // NO LIMIT - show ALL multi-destination swaps
     $stmt = $db->query("
         SELECT 
             id,
@@ -363,8 +359,7 @@ try {
             created_at,
             updated_at
         FROM multi_destination_swaps 
-        ORDER BY created_at DESC 
-        LIMIT 20
+        ORDER BY created_at DESC
     ");
     $multiDestinationSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) {
@@ -372,7 +367,7 @@ try {
 }
 
 // ============================================================
-// FIXED: METRICS
+// METRICS
 // ============================================================
 $metrics = [];
 try {
@@ -388,9 +383,7 @@ try {
     $metrics = array_fill_keys(['total_users', 'total_swaps', 'pending_settlements', 'total_fees', 'recent_swaps_24h', 'multi_destination_count', 'multi_source_count', 'identity_swaps_pending'], 0);
 }
 
-// ============================================================
-// FIXED: ERROR HANDLING - ensure variables exist
-// ============================================================
+// Ensure variables exist
 if (!isset($liveTransactions)) $liveTransactions = [];
 if (!isset($liveStats)) $liveStats = ['total' => 0, 'completed' => 0, 'pending' => 0, 'failed' => 0, 'total_amount' => 0];
 if (!isset($recentSwaps)) $recentSwaps = [];
@@ -802,7 +795,7 @@ if (!isset($metrics)) $metrics = [];
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- LIVE TRANSACTIONS VIEW -->
+        <!-- LIVE TRANSACTIONS VIEW - NO LIMIT -->
         <!-- ============================================================ -->
         <?php if ($view === 'live_transactions' && canView('live_transactions')): ?>
         <div class="content-header">
@@ -968,19 +961,19 @@ if (!isset($metrics)) $metrics = [];
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- RECENT SWAPS VIEW -->
+        <!-- RECENT SWAPS VIEW - NO LIMIT -->
         <!-- ============================================================ -->
         <?php if ($view === 'recent_swaps' && canView('recent_swaps')): ?>
         <div class="content-header">
             <h1>🔄 RECENT SWAPS</h1>
-            <div class="timestamp">Detailed swap transactions</div>
+            <div class="timestamp">All swap transactions - complete history</div>
             <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
         </div>
 
         <div class="card">
             <div class="card-header">
                 <span class="card-title">All Swaps</span>
-                <span class="card-badge"><?php echo count($recentSwaps); ?> RECORDS</span>
+                <span class="card-badge"><?php echo count($recentSwaps); ?> TOTAL RECORDS</span>
             </div>
             <div class="table-responsive">
                 <table>
@@ -1042,6 +1035,151 @@ if (!isset($metrics)) $metrics = [];
                 </table>
             </div>
         </div>
+        <?php endif; ?>
+
+        <!-- ============================================================ -->
+        <!-- MULTI-DESTINATION VIEW - NO LIMIT -->
+        <!-- ============================================================ -->
+        <?php if ($view === 'multi_destination' && canView('multi_destination')): ?>
+        <div class="content-header">
+            <h1>🎯 MULTI-DESTINATION SWAPS</h1>
+            <div class="timestamp">All multi-destination swaps - complete history</div>
+            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
+        </div>
+
+        <?php if (empty($multiDestinationSwaps)): ?>
+        <div class="card">
+            <div class="empty-state">
+                <div class="icon">📭</div>
+                <p>No multi-destination swaps found</p>
+            </div>
+        </div>
+        <?php else: ?>
+        <?php foreach ($multiDestinationSwaps as $swap): 
+            $destinations = json_decode($swap['destinations_payload'] ?? '[]', true);
+            $results = json_decode($swap['results_payload'] ?? '[]', true);
+        ?>
+        <div class="card" style="border-left: 6px solid <?php echo $swap['status'] === 'completed' ? '#28a745' : ($swap['status'] === 'partial' ? '#856404' : '#dc3545'); ?>;">
+            <div class="card-header">
+                <span class="card-title">
+                    <?php echo safeHtml($swap['reference']); ?>
+                    <span style="font-size:0.55rem; font-weight:400; color:#666;">
+                        <?php echo date('Y-m-d H:i', strtotime($swap['created_at'])); ?>
+                    </span>
+                </span>
+                <span class="card-badge <?php echo $swap['status'] === 'completed' ? 'success' : ($swap['status'] === 'partial' ? 'warning' : 'danger'); ?>">
+                    <?php echo strtoupper($swap['status'] ?? 'UNKNOWN'); ?>
+                </span>
+            </div>
+            
+            <!-- Summary -->
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:12px; font-size:0.65rem; background:#f8f9fa; padding:10px; border-radius:4px;">
+                <div><strong>Source:</strong> <?php echo safeHtml($swap['source_institution']); ?></div>
+                <div><strong>Total:</strong> <?php echo number_format((float)($swap['total_amount'] ?? 0), 2); ?> BWP</div>
+                <div><strong>Fees:</strong> <?php echo number_format((float)($swap['total_fees'] ?? 0), 2); ?> BWP</div>
+                <div><strong>Delivered:</strong> <?php echo number_format((float)($swap['total_delivered'] ?? 0), 2); ?> BWP</div>
+                <div><strong>✅ Success:</strong> <?php echo $swap['successful_count'] ?? 0; ?></div>
+                <div><strong>❌ Failed:</strong> <?php echo $swap['failed_count'] ?? 0; ?></div>
+                <div><strong>📦 Destinations:</strong> <?php echo $swap['total_destinations']; ?></div>
+            </div>
+
+            <!-- Destinations Table -->
+            <?php if (!empty($destinations)): ?>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Type</th>
+                            <th>Institution</th>
+                            <th>Identifier</th>
+                            <th>Amount</th>
+                            <th>Fee</th>
+                            <th>Net</th>
+                            <th>Status</th>
+                            <th>Hold Ref</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($destinations as $idx => $dest):
+                            $result = $results[$idx] ?? [];
+                            $status = $result['status'] ?? 'pending';
+                            $error = $result['error'] ?? null;
+                            $isIdentity = isset($dest['identity_type']) || isset($dest['identity_value']);
+                            $isCashout = isset($dest['delivery_method']) && $dest['delivery_method'] === 'ATM';
+                            $fee = (float)($result['fee'] ?? 0);
+                            $net = (float)($result['net_amount'] ?? $dest['amount'] ?? 0);
+                        ?>
+                        <tr>
+                            <td><?php echo $idx + 1; ?></td>
+                            <td>
+                                <?php if ($isIdentity): ?>
+                                <span class="status status-identity">IDENTITY</span>
+                                <?php elseif ($isCashout): ?>
+                                <span class="status status-warning">CASHOUT</span>
+                                <?php else: ?>
+                                <span class="status status-info">DEPOSIT</span>
+                                <?php endif; ?>
+                            </td>
+                            <td><?php echo safeHtml($dest['to_institution'] ?? $dest['destination_institution'] ?? ($isIdentity ? 'IDENTITY' : 'N/A')); ?></td>
+                            <td>
+                                <?php 
+                                if ($isIdentity) {
+                                    echo safeHtml($dest['identity_type'] ?? 'national_id') . ': ' . safeHtml($dest['identity_value'] ?? 'N/A');
+                                } elseif ($isCashout) {
+                                    echo safeHtml($dest['beneficiary_phone'] ?? 'N/A');
+                                } else {
+                                    echo safeHtml($dest['destination_identifier'] ?? 'N/A');
+                                }
+                                ?>
+                            </td>
+                            <td><strong><?php echo number_format((float)($dest['amount'] ?? 0), 2); ?></strong></td>
+                            <td style="color:#dc3545;"><?php echo number_format($fee, 2); ?></td>
+                            <td style="color:#28a745;"><?php echo number_format($net, 2); ?></td>
+                            <td>
+                                <?php 
+                                $statusClass = match($status) {
+                                    'success', 'completed' => 'success',
+                                    'failed' => 'failed',
+                                    'pending', 'pending_identity_confirmation' => 'pending',
+                                    default => 'info'
+                                };
+                                $statusLabel = $status === 'pending_identity_confirmation' ? 'PENDING_ID' : ($status ?: 'PENDING');
+                                ?>
+                                <span class="status status-<?php echo $statusClass; ?>"><?php echo safeHtml(strtoupper($statusLabel)); ?></span>
+                                <?php if ($error): ?>
+                                <span style="color:#dc3545; font-size:0.55rem; display:block;" title="<?php echo safeHtml($error); ?>">⚠️ <?php echo safeHtml(substr($error, 0, 30)); ?></span>
+                                <?php endif; ?>
+                            </td>
+                            <td><?php echo safeHtml(substr($result['hold_reference'] ?? 'N/A', 0, 10)); ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
+            
+            <!-- Raw JSON -->
+            <details style="margin-top:12px;">
+                <summary style="cursor:pointer; font-size:0.6rem; color:#666;">📄 Raw JSON</summary>
+                <pre style="background:#1e293b; color:#4ade80; padding:12px; font-size:0.55rem; overflow-x:auto; max-height:300px; overflow-y:auto; margin-top:8px;"><?php 
+                    $fullData = [
+                        'summary' => [
+                            'reference' => $swap['reference'],
+                            'source_institution' => $swap['source_institution'],
+                            'status' => $swap['status'],
+                            'total_amount' => $swap['total_amount'],
+                            'total_fees' => $swap['total_fees']
+                        ],
+                        'destinations' => $destinations,
+                        'results' => $results
+                    ];
+                    echo safeHtml(json_encode($fullData, JSON_PRETTY_PRINT)); 
+                ?></pre>
+            </details>
+        </div>
+        <?php endforeach; ?>
+        <?php endif; ?>
         <?php endif; ?>
 
         <!-- ============================================================ -->
