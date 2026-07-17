@@ -20,6 +20,7 @@ $userName = $userData['full_name'] ?? $userData['username'] ?? 'User';
 $userCountry = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
 $userCurrency = $userData['currency'] ?? getenv('VOUCHMORPH_CURRENCY') ?: 'BWP';
 $userRole = $userData['role'] ?? 'user';
+$userId = $userData['id'] ?? 0;
 
 // Get API configuration from environment
 $apiKey = getenv('VOUCHMORPH_API_KEY') ?: '';
@@ -48,36 +49,22 @@ if (!function_exists('dashboard_yaml_parse_file')) {
             return null;
         }
 
-        // ============================================================
-        // Quoted values: find the ACTUAL closing quote by scanning the
-        // string (skipping backslash-escaped characters), rather than
-        // requiring $v to literally end with a quote. This correctly
-        // handles a quoted value followed by a trailing inline comment,
-        // e.g.  pattern: "^\\+?[0-9]{10,15}$"  # some comment
-        // The old version required str_ends_with($v, '"'), which failed
-        // here because the line ends with the comment text, not the
-        // quote - so the whole quotes+comment blob was returned as-is
-        // and corrupted downstream HTML rendering.
-        // ============================================================
         if ($v[0] === '"' || $v[0] === "'") {
             $quote = $v[0];
             $len = strlen($v);
             for ($i = 1; $i < $len; $i++) {
                 if ($v[$i] === '\\' && $i + 1 < $len) {
-                    $i++; // skip escaped character, don't treat it as a delimiter
+                    $i++;
                     continue;
                 }
                 if ($v[$i] === $quote) {
                     return substr($v, 1, $i - 1);
                 }
             }
-            // No closing quote found - malformed line, but don't throw;
-            // just return the trimmed raw value so parsing can continue.
             error_log("[dashboard_yaml_parse_file] Unterminated quoted value: {$v}");
             return $v;
         }
 
-        // Unquoted values: strip a trailing inline comment if present.
         $hashPos = strpos($v, ' #');
         if ($hashPos !== false) {
             $v = trim(substr($v, 0, $hashPos));
@@ -294,7 +281,6 @@ if (empty($participants)) {
         $content = file_get_contents($participantsPath);
         error_log("[DASHBOARD DEBUG] Participants file content length: " . strlen($content));
         error_log("[DASHBOARD DEBUG] Participants file first 200 chars: " . substr($content, 0, 200));
-        // Try to parse and log the result
         $parsed = dashboard_yaml_parse_file($participantsPath);
         error_log("[DASHBOARD DEBUG] Parsed participants result: " . json_encode($parsed));
     } else {
@@ -311,7 +297,6 @@ if (empty($assets)) {
         $content = file_get_contents($assetsPath);
         error_log("[DASHBOARD DEBUG] Assets file content length: " . strlen($content));
         error_log("[DASHBOARD DEBUG] Assets file first 200 chars: " . substr($content, 0, 200));
-        // Try to parse and log the result
         $parsed = dashboard_yaml_parse_file($assetsPath);
         error_log("[DASHBOARD DEBUG] Parsed assets result: " . json_encode($parsed));
     } else {
@@ -323,7 +308,6 @@ if (empty($assets)) {
 // If participants loaded but are empty, check structure
 if (!empty($participants) && empty($participants['participants'])) {
     error_log("[DASHBOARD DEBUG] Participants loaded but key 'participants' not found. Keys: " . implode(', ', array_keys($participants)));
-    // Try to use the parsed data directly if it's already the participants array
     if (isset($participants['ZURUBANK']) || isset($participants['SACCUSSALIS'])) {
         error_log("[DASHBOARD DEBUG] Participants appear to be at root level, using as-is.");
         $participants = $participants;
@@ -401,13 +385,6 @@ body {
 .section-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 12px; }
 .section-title .n { width: 20px; height: 20px; border-radius: 50%; background: var(--gradient); color: #fff; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 
-/* ============================================================
-   SIDE-BY-SIDE LAYOUT
-   From/To sit in two columns on wide viewports so choosing an
-   institution/asset doesn't push the review button (and the
-   dropdown you just opened) down the page. Collapses back to a
-   single stacked column on narrow/mobile viewports.
-   ============================================================ */
 .swap-columns { display: flex; align-items: flex-start; gap: 28px; }
 .swap-columns > .section { flex: 1 1 0; min-width: 0; }
 .swap-columns > .swap-divider {
@@ -451,7 +428,6 @@ body {
 .field-group label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 4px; }
 .field-group input, .field-group select {
     width: 100%; padding: 12px 14px; background: #fff; border: 1px solid var(--border);
-    /* font-size 16px avoids iOS Safari auto-zoom-on-focus for inputs under 16px */
     border-radius: var(--radius-sm); color: var(--text); font-size: 16px; font-family: var(--font); transition: var(--transition);
     appearance: none; -webkit-appearance: none;
 }
@@ -507,14 +483,6 @@ body {
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; vertical-align: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ============================================================
-   MODAL CONTRAST FIX
-   The modal previously reused the same cream --bg as the page, so
-   once the blurred backdrop dimmed everything behind it, the modal
-   itself barely read as a distinct surface. It's now pure white
-   with its own border and a real shadow, so it visibly sits ABOVE
-   the dimmed/blurred backdrop rather than blending into it.
-   ============================================================ */
 .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(20,15,5,0.55); backdrop-filter: blur(6px); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
 .modal-overlay.active { display: flex; }
 .modal {
@@ -571,6 +539,7 @@ details.raw-json-wrap summary { cursor: pointer; font-size: 12px; color: var(--t
             </option>
             <?php endforeach; ?>
         </select>
+        <span class="quick-link" onclick="openSwapHistory()">📋 History</span>
         <span class="quick-link muted" onclick="openProfileModal()">👤 My Profile</span>
         <a href="logout.php" class="logout-btn">Logout</a>
     </div>
@@ -1666,6 +1635,235 @@ function useSavedIdentity(idx) {
     updateIdentityHelp();
     refreshUI();
     showMessage(`Using saved ${IDENTITY_TYPE_LABELS[id.type] || id.type}: ${id.value}`, 'success');
+}
+
+// ============================================================
+// SWAP HISTORY - View past swaps
+// ============================================================
+async function openSwapHistory() {
+    openModal('Swap History', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading swaps...</div>');
+    
+    try {
+        const userId = <?php echo json_encode($userId); ?>;
+        
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/history.php', {
+            user_id: userId,
+            limit: 50
+        });
+        
+        if (!result.ok) {
+            document.getElementById('modalBody').innerHTML = `
+                <div style="text-align:center;padding:20px;color:var(--danger);">
+                    ❌ Failed to load swap history
+                </div>
+            `;
+            return;
+        }
+        
+        renderSwapHistory(result.body);
+        
+    } catch (error) {
+        document.getElementById('modalBody').innerHTML = `
+            <div style="text-align:center;padding:20px;color:var(--danger);">
+                ❌ Error loading swap history
+            </div>
+        `;
+    }
+}
+
+function renderSwapHistory(data) {
+    const swaps = data.data || data.swaps || [];
+    
+    if (swaps.length === 0) {
+        document.getElementById('modalBody').innerHTML = `
+            <div style="text-align:center;padding:30px;color:var(--text-muted);">
+                <div style="font-size:48px;margin-bottom:12px;">📭</div>
+                <div style="font-size:16px;font-weight:600;">No swaps found</div>
+                <div style="font-size:13px;margin-top:8px;">Your swap history will appear here once you make a swap.</div>
+            </div>
+        `;
+        return;
+    }
+    
+    let historyHtml = `
+        <div style="max-height:60vh;overflow-y:auto;">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
+                Showing ${swaps.length} swap(s)
+            </div>
+    `;
+    
+    swaps.forEach((swap) => {
+        const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' :
+                           swap.status === 'pending' || swap.status === 'pending_cashout' ? 'var(--warning)' :
+                           'var(--danger)';
+        
+        const statusIcon = swap.status === 'completed' || swap.status === 'success' ? '✅' :
+                          swap.status === 'pending' || swap.status === 'pending_cashout' ? '⏳' :
+                          '❌';
+        
+        historyHtml += `
+            <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
+                    <div>
+                        <div style="font-weight:600;font-size:14px;">
+                            ${swap.swap_type || 'SWAP'} 
+                            <span style="font-size:11px;color:var(--text-muted);font-weight:400;">
+                                ${swap.reference || swap.swap_reference || ''}
+                            </span>
+                        </div>
+                        <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
+                            ${swap.source_institution || swap.from_institution || 'Unknown'} 
+                            → ${swap.destination_institution || swap.to_institution || 'Unknown'}
+                        </div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div style="font-weight:700;font-size:16px;color:var(--primary-dark);">
+                            ${swap.amount || 0} ${swap.currency || 'BWP'}
+                        </div>
+                        <div style="font-size:11px;color:${statusColor};margin-top:2px;">
+                            ${statusIcon} ${swap.status || 'unknown'}
+                        </div>
+                    </div>
+                </div>
+                ${swap.fee ? `
+                <div style="font-size:11px;color:var(--text-muted);margin-top:6px;border-top:1px solid var(--border);padding-top:6px;">
+                    Fee: ${swap.fee} ${swap.currency || 'BWP'}
+                    ${swap.destination_currency && swap.destination_currency !== swap.currency ? ` | 💱 ${swap.destination_currency}` : ''}
+                </div>` : ''}
+                ${swap.created_at ? `
+                <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">
+                    ${new Date(swap.created_at).toLocaleString()}
+                </div>` : ''}
+            </div>
+        `;
+    });
+    
+    historyHtml += `</div>`;
+    
+    document.getElementById('modalBody').innerHTML = historyHtml;
+}
+
+async function viewSwapDetail(reference) {
+    openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
+    
+    try {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', {
+            reference: reference
+        });
+        
+        if (!result.ok) {
+            document.getElementById('modalBody').innerHTML = `
+                <div style="text-align:center;padding:20px;color:var(--danger);">
+                    ❌ Failed to load swap details
+                </div>
+            `;
+            return;
+        }
+        
+        renderSwapDetail(result.body);
+        
+    } catch (error) {
+        document.getElementById('modalBody').innerHTML = `
+            <div style="text-align:center;padding:20px;color:var(--danger);">
+                ❌ Error loading swap details
+            </div>
+        `;
+    }
+}
+
+function renderSwapDetail(data) {
+    const swap = data.swap || data.data || {};
+    
+    let detailsHtml = `
+        <div style="max-height:70vh;overflow-y:auto;">
+            <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:16px;margin-bottom:12px;">
+                <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                    <div>
+                        <div style="font-size:12px;color:var(--text-muted);">Reference</div>
+                        <div style="font-weight:600;">${swap.reference || swap.swap_reference || 'N/A'}</div>
+                    </div>
+                    <div>
+                        <div style="font-size:12px;color:var(--text-muted);">Status</div>
+                        <div style="font-weight:600;color:${swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)'}">
+                            ${swap.status || 'unknown'}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+                <div style="background:rgba(0,0,0,0.02);border-radius:var(--radius-sm);padding:12px;">
+                    <div style="font-size:11px;color:var(--text-muted);">Swap Type</div>
+                    <div style="font-weight:600;">${swap.swap_type || 'N/A'}</div>
+                </div>
+                <div style="background:rgba(0,0,0,0.02);border-radius:var(--radius-sm);padding:12px;">
+                    <div style="font-size:11px;color:var(--text-muted);">Amount</div>
+                    <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || 'BWP'}</div>
+                </div>
+            </div>
+            
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+                <div style="background:rgba(0,0,0,0.02);border-radius:var(--radius-sm);padding:12px;">
+                    <div style="font-size:11px;color:var(--text-muted);">Source</div>
+                    <div style="font-weight:600;">${swap.source_institution || swap.from_institution || 'N/A'}</div>
+                    ${swap.source_identifier ? `<div style="font-size:11px;color:var(--text-dim);">${swap.source_identifier}</div>` : ''}
+                </div>
+                <div style="background:rgba(0,0,0,0.02);border-radius:var(--radius-sm);padding:12px;">
+                    <div style="font-size:11px;color:var(--text-muted);">Destination</div>
+                    <div style="font-weight:600;">${swap.destination_institution || swap.to_institution || 'N/A'}</div>
+                    ${swap.destination_identifier ? `<div style="font-size:11px;color:var(--text-dim);">${swap.destination_identifier}</div>` : ''}
+                </div>
+            </div>
+            
+            ${swap.destination_currency && swap.destination_currency !== swap.currency ? `
+            <div style="background:rgba(0,160,173,0.08);border-radius:var(--radius-sm);padding:12px;margin-bottom:12px;">
+                <div style="font-size:11px;color:var(--text-muted);">💱 Forex Conversion</div>
+                <div style="display:flex;justify-content:space-between;">
+                    <span>Destination Currency</span>
+                    <span style="font-weight:600;">${swap.destination_currency}</span>
+                </div>
+                ${swap.exchange_rate ? `
+                <div style="display:flex;justify-content:space-between;font-size:13px;">
+                    <span>Rate</span>
+                    <span>1 ${swap.currency} = ${swap.exchange_rate} ${swap.destination_currency}</span>
+                </div>` : ''}
+                ${swap.net_amount_destination ? `
+                <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;color:var(--primary-dark);">
+                    <span>Net Amount</span>
+                    <span>${swap.net_amount_destination} ${swap.destination_currency}</span>
+                </div>` : ''}
+            </div>` : ''}
+            
+            ${swap.fee ? `
+            <div style="background:rgba(211,47,47,0.06);border-radius:var(--radius-sm);padding:12px;margin-bottom:12px;">
+                <div style="font-size:11px;color:var(--text-muted);">💰 Fees</div>
+                <div style="display:flex;justify-content:space-between;">
+                    <span>Total Fee</span>
+                    <span style="font-weight:600;">${swap.fee} ${swap.currency || 'BWP'}</span>
+                </div>
+            </div>` : ''}
+            
+            ${swap.swap_code || swap.atm_code ? `
+            <div style="background:rgba(0,160,173,0.08);border:2px solid var(--primary);border-radius:var(--radius-sm);padding:16px;margin-bottom:12px;text-align:center;">
+                <div style="font-size:11px;color:var(--text-muted);">Cashout Code</div>
+                <div style="font-size:24px;font-weight:700;font-family:monospace;letter-spacing:4px;color:var(--primary-dark);">
+                    ${swap.swap_code || swap.atm_code || ''}
+                </div>
+                ${swap.code_expiry ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Expires: ${new Date(swap.code_expiry).toLocaleString()}</div>` : ''}
+            </div>` : ''}
+            
+            ${swap.created_at ? `
+            <div style="font-size:11px;color:var(--text-dim);text-align:center;border-top:1px solid var(--border);padding-top:8px;">
+                Created: ${new Date(swap.created_at).toLocaleString()}
+            </div>` : ''}
+            
+            <div style="margin-top:12px;">
+                <button class="btn btn-secondary" onclick="openSwapHistory()" style="width:100%;">← Back to History</button>
+            </div>
+        </div>
+    `;
+    
+    document.getElementById('modalBody').innerHTML = detailsHtml;
 }
 
 // ============================================================
