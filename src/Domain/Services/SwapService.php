@@ -746,70 +746,94 @@ class SwapService
         }
     }
 
-    /**
-     * Populate swap_transactions table
-     * FIX: Removed ON CONFLICT entirely since swap_id is not unique
-     */
-    private function populateSwapTransaction(string $swapRef, array $swapData, array $details, ?int $userId = null): void
-    {
-        $sql = "
-            INSERT INTO swap_transactions (
-                swap_id,
-                from_account_details,
-                to_account_details,
-                amount,
-                status,
-                created_at,
-                updated_at,
-                metadata
-            ) VALUES (
-                :swap_id,
-                :from_account_details::jsonb,
-                :to_account_details::jsonb,
-                :amount,
-                :status,
-                :created_at,
-                :updated_at,
-                :metadata::jsonb
-            )
-        ";
-        
-        $status = $swapData['status'] ?? 'pending';
-        if (isset($details['status'])) {
-            $status = $details['status'];
-        }
-        
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':swap_id' => $swapRef,
-                ':from_account_details' => json_encode([
-                    'institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
-                    'identifier' => $details['source_identifier'] ?? null,
-                    'asset_type' => $details['asset_type'] ?? null
-                ]),
-                ':to_account_details' => json_encode([
-                    'institution' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
-                    'identifier' => $details['destination_identifier'] ?? null,
-                    'asset_type' => $details['destination_asset_type'] ?? null
-                ]),
-                ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
-                ':status' => strtolower($status),
-                ':created_at' => date('Y-m-d H:i:s'),
-                ':updated_at' => date('Y-m-d H:i:s'),
-                ':metadata' => json_encode([
-                    'hold_id' => $this->currentHoldId,
-                    'swap_type' => $swapData['swap_type'] ?? 'STANDARD',
-                    'user_id' => $userId
-                ])
-            ]);
-            
-            $this->logger->debug("swap_transactions populated", ['swap_id' => $swapRef]);
-            
-        } catch (PDOException $e) {
-            $this->logger->error("Failed to populate swap_transactions", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
-        }
+   /**
+ * Get numeric swap_request_id from swap_uuid
+ */
+private function getSwapRequestId(string $swapRef): ?int
+{
+    $sql = "SELECT swap_request_id FROM swap_requests WHERE swap_uuid = :swap_uuid";
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([':swap_uuid' => $swapRef]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ? (int)$row['swap_request_id'] : null;
+    } catch (PDOException $e) {
+        $this->logger->error("Failed to get swap_request_id", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
+        return null;
     }
+}
+
+/**
+ * Populate swap_transactions table
+ * FIX: Uses numeric swap_id from swap_requests, not string reference
+ */
+private function populateSwapTransaction(string $swapRef, array $swapData, array $details, ?int $userId = null): void
+{
+    // Get the numeric swap_id from swap_requests
+    $swapId = $this->getSwapRequestId($swapRef);
+    if (!$swapId) {
+        $this->logger->warning("No swap_request found for reference, skipping swap_transactions", ['swap_ref' => $swapRef]);
+        return;
+    }
+    
+    $sql = "
+        INSERT INTO swap_transactions (
+            swap_id,
+            from_account_details,
+            to_account_details,
+            amount,
+            status,
+            created_at,
+            updated_at,
+            metadata
+        ) VALUES (
+            :swap_id,
+            :from_account_details::jsonb,
+            :to_account_details::jsonb,
+            :amount,
+            :status,
+            :created_at,
+            :updated_at,
+            :metadata::jsonb
+        )
+    ";
+    
+    $status = $swapData['status'] ?? 'pending';
+    if (isset($details['status'])) {
+        $status = $details['status'];
+    }
+    
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':swap_id' => $swapId,  // Now using integer ID
+            ':from_account_details' => json_encode([
+                'institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
+                'identifier' => $details['source_identifier'] ?? null,
+                'asset_type' => $details['asset_type'] ?? null
+            ]),
+            ':to_account_details' => json_encode([
+                'institution' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
+                'identifier' => $details['destination_identifier'] ?? null,
+                'asset_type' => $details['destination_asset_type'] ?? null
+            ]),
+            ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
+            ':status' => strtolower($status),
+            ':created_at' => date('Y-m-d H:i:s'),
+            ':updated_at' => date('Y-m-d H:i:s'),
+            ':metadata' => json_encode([
+                'hold_id' => $this->currentHoldId,
+                'swap_type' => $swapData['swap_type'] ?? 'STANDARD',
+                'user_id' => $userId
+            ])
+        ]);
+        
+        $this->logger->debug("swap_transactions populated", ['swap_id' => $swapId, 'swap_ref' => $swapRef]);
+        
+    } catch (PDOException $e) {
+        $this->logger->error("Failed to populate swap_transactions", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
+    }
+}
 
     /**
      * Populate cashout_authorization table
