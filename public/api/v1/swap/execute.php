@@ -2,8 +2,18 @@
 declare(strict_types=1);
 
 /**
- * VouchMorphn - Swap Execution API
+ * VouchMorph - Swap Execution API
  * ZERO HARDCODING - Routes to SwapService
+ *
+ * PATCHED:
+ *  - Exact API key comparison via hash_equals() instead of scraping
+ *    every env var 32+ chars long as a "valid" key.
+ *  - Refuses to fake a success response if SwapService is missing
+ *    (previously silently returned success:true with a fabricated
+ *    reference and never touched the DB).
+ *  - Refuses to silently fall back to the default country's config
+ *    when X-Country-Code doesn't resolve (previously executed the
+ *    swap under whatever the registry's default_country was).
  */
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 
@@ -31,34 +41,48 @@ error_reporting(E_ALL);
 error_log("[EXECUTE] Checking psr/log: " . (interface_exists('Psr\Log\LoggerInterface') ? 'FOUND' : 'MISSING'));
 
 // ============================================
-// 2. DYNAMIC API KEY LOADER
+// 2. API KEY VALIDATION (exact match, not env-scraping)
 // ============================================
 
-function getAllApiKeysFromEnvironment(): array {
-    $keys = [];
-    
-    $allVars = array_merge($_ENV, $_SERVER, getenv());
-    
-    foreach ($allVars as $name => $value) {
-        if (is_string($value) && !empty($value)) {
-            if (preg_match('/KEY|API|TOKEN|SECRET/i', $name) || strlen($value) >= 32) {
-                $keys[] = $value;
-            }
-        }
+/**
+ * Validates the provided key against the single configured
+ * VOUCHMORPH_API_KEY using a constant-time comparison.
+ *
+ * Previously this compared against *every* environment variable
+ * whose name matched /KEY|API|TOKEN|SECRET/i OR whose value was
+ * >= 32 characters — which meant DB passwords, session secrets,
+ * JWT signing keys, etc. were all silently accepted as valid API
+ * keys. That is not acceptable in a regulated environment.
+ */
+function isValidApiKey(?string $providedKey): bool {
+    $validKey = getenv('VOUCHMORPH_API_KEY') ?: '';
+
+    if ($validKey === '') {
+        // No key configured server-side. Fail closed — do NOT treat
+        // this as "no auth required". If you need a deliberate
+        // no-auth mode for local dev, gate it behind an explicit,
+        // separately-named flag (e.g. VOUCHMORPH_ALLOW_NO_AUTH=1)
+        // that is never set in any regulated environment.
+        error_log("[EXECUTE] CRITICAL: VOUCHMORPH_API_KEY is not configured in this environment");
+        return false;
     }
-    
-    return array_unique(array_filter($keys));
+
+    if ($providedKey === null || $providedKey === '') {
+        return false;
+    }
+
+    return hash_equals($validKey, $providedKey);
 }
 
 function getApiKeyFromRequest(): ?string {
     $headers = getallheaders();
     if ($headers) {
         $headersLower = array_change_key_case($headers, CASE_LOWER);
-        
+
         if (isset($headersLower['x-api-key']) && !empty($headersLower['x-api-key'])) {
             return $headersLower['x-api-key'];
         }
-        
+
         if (isset($headersLower['authorization']) && !empty($headersLower['authorization'])) {
             $auth = $headersLower['authorization'];
             if (strpos($auth, 'Bearer ') === 0) {
@@ -67,11 +91,11 @@ function getApiKeyFromRequest(): ?string {
             return $auth;
         }
     }
-    
+
     if (isset($_SERVER['HTTP_X_API_KEY']) && !empty($_SERVER['HTTP_X_API_KEY'])) {
         return $_SERVER['HTTP_X_API_KEY'];
     }
-    
+
     if (isset($_SERVER['HTTP_AUTHORIZATION']) && !empty($_SERVER['HTTP_AUTHORIZATION'])) {
         $auth = $_SERVER['HTTP_AUTHORIZATION'];
         if (strpos($auth, 'Bearer ') === 0) {
@@ -79,7 +103,7 @@ function getApiKeyFromRequest(): ?string {
         }
         return $auth;
     }
-    
+
     return null;
 }
 
@@ -96,11 +120,10 @@ try {
         ]);
         exit();
     }
-    
+
     $providedKey = getApiKeyFromRequest();
-    $validKeys = getAllApiKeysFromEnvironment();
-    
-    if (!empty($validKeys) && !in_array($providedKey, $validKeys, true)) {
+
+    if (!isValidApiKey($providedKey)) {
         http_response_code(401);
         echo json_encode([
             'success' => false,
@@ -108,106 +131,124 @@ try {
         ]);
         exit();
     }
-    
+
     $input = json_decode(file_get_contents('php://input'), true);
     if (!$input) {
         throw new Exception('Invalid JSON payload', 400);
     }
-    
+
     $headers = getallheaders();
     $headersLower = array_change_key_case($headers ?: [], CASE_LOWER);
     $countryCode = $headersLower['x-country-code'] ?? $headersLower['x-country'] ?? $input['country'] ?? null;
-    
+
     $registryFile = ROOT_PATH . '/src/Core/Config/countries_registry.json';
     if (!file_exists($registryFile)) {
         throw new Exception('Country registry not found', 500);
     }
-    
+
     $registry = json_decode(file_get_contents($registryFile), true);
     $countryConfig = null;
-    
+
     if ($countryCode) {
         foreach ($registry['countries'] as $name => $config) {
-            if (strtolower($name) === strtolower($countryCode) || 
+            if (strtolower($name) === strtolower($countryCode) ||
                 strtolower($config['code']) === strtolower($countryCode)) {
                 $countryConfig = $config;
                 break;
             }
         }
     }
-    
+
     if (!$countryConfig) {
-        $default = $registry['default_country'] ?? array_key_first($registry['countries']);
-        $countryConfig = $registry['countries'][$default];
+        // PATCHED: previously fell back to the registry's default
+        // country and executed the swap under that country's
+        // participants/fees/currency without telling anyone. That
+        // means a missing or mistyped X-Country-Code header could
+        // execute a swap under the wrong country's rules entirely.
+        // This must be a hard error, not a silent substitution.
+        error_log("[EXECUTE] CRITICAL: Could not resolve country for code '" . ($countryCode ?? 'null') . "' — refusing to fall back to a default");
+        throw new Exception(
+            $countryCode
+                ? "Unknown country code: {$countryCode}"
+                : 'Missing X-Country-Code header — country could not be resolved',
+            400
+        );
     }
-    
+
     // ============================================================
     // DATABASE CONNECTION - Using DBConnection class
     // ============================================================
     require_once ROOT_PATH . '/src/Core/Database/DBConnection.php';
-    
+
     try {
         $db = DBConnection::getConnection();
-        
+
         if (!$db) {
             throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
         }
-        
+
         $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         error_log("[EXECUTE] Database connected successfully via DBConnection");
-        
+
     } catch (Throwable $e) {
         error_log("[EXECUTE] DB ERROR: " . $e->getMessage());
         throw new Exception("Database connection failed: " . $e->getMessage());
     }
-    
+
     $composerPath = ROOT_PATH . '/vendor/autoload.php';
     if (file_exists($composerPath)) {
         require_once $composerPath;
     }
-    
-    if (class_exists('Domain\Services\SwapService')) {
-        // ============================================================
-        // LOAD FULL COUNTRY CONFIG USING LoadCountry
-        // ============================================================
-        $fullCountryConfig = \Core\Config\LoadCountry::getConfig();
-        
-        $countryName = $countryConfig['name'] ?? 'Botswana';
-        
-        error_log("[EXECUTE] Using country name: {$countryName}");
-        error_log("[EXECUTE] Country config keys: " . implode(', ', array_keys($fullCountryConfig)));
-        
-        $swapService = new \Domain\Services\SwapService(
-            $db,                    // PDO
-            $fullCountryConfig,     // Full country config (NOT $settings)
-            $countryName            // string country (name, not code)
-        );
-        
-        $result = $swapService->executeAtomicSwap($input);
-       
-        echo json_encode([
-            'success' => true,
-            'status' => $result['status'] ?? 'completed',
-            'swap_reference' => $result['reference'] ?? $result['swap_reference'] ?? null,
-            'data' => $result
-        ]);
-    } else {
-        echo json_encode([
-            'success' => true,
-            'status' => 'validated',
-            'message' => 'Request validated successfully',
-            'swap_reference' => 'VM-' . strtoupper(bin2hex(random_bytes(4))) . '-' . date('YmdHis')
-        ]);
+
+    // PATCHED: previously, if SwapService wasn't loaded, this branch
+    // returned success:true with a freshly generated fake reference
+    // and never touched the database. That means a broken deploy or
+    // autoload misconfiguration would silently report every swap as
+    // completed while moving zero funds. This is now a hard failure.
+    if (!class_exists('Domain\Services\SwapService')) {
+        error_log("[EXECUTE] CRITICAL: Domain\\Services\\SwapService class not found — refusing to fabricate a success response");
+        throw new Exception('Swap execution service unavailable. No funds were moved.', 503);
     }
-    
+
+    // ============================================================
+    // LOAD FULL COUNTRY CONFIG USING LoadCountry
+    // ============================================================
+    $fullCountryConfig = \Core\Config\LoadCountry::getConfig();
+
+    $countryName = $countryConfig['name'] ?? null;
+    if (!$countryName) {
+        // Do not silently default to "Botswana" here either — this
+        // must match whatever country was actually resolved above.
+        error_log("[EXECUTE] CRITICAL: Resolved country config has no 'name' field: " . json_encode($countryConfig));
+        throw new Exception('Country configuration is missing a name field', 500);
+    }
+
+    error_log("[EXECUTE] Using country name: {$countryName}");
+    error_log("[EXECUTE] Country config keys: " . implode(', ', array_keys($fullCountryConfig)));
+
+    $swapService = new \Domain\Services\SwapService(
+        $db,                    // PDO
+        $fullCountryConfig,     // Full country config (NOT $settings)
+        $countryName            // string country (name, not code)
+    );
+
+    $result = $swapService->executeAtomicSwap($input);
+
+    echo json_encode([
+        'success' => true,
+        'status' => $result['status'] ?? 'completed',
+        'swap_reference' => $result['reference'] ?? $result['swap_reference'] ?? null,
+        'data' => $result
+    ]);
+
 } catch (Exception $e) {
     $code = $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 400;
     http_response_code($code);
-    
+
     echo json_encode([
         'success' => false,
         'error' => $e->getMessage()
     ]);
-    
+
     error_log("[Execute] Error: " . $e->getMessage());
 }
