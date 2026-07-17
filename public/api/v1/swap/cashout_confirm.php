@@ -26,13 +26,16 @@ function respond(int $httpCode, array $body): void
 }
 
 // ============================================================
-// BOOTSTRAP - FIXED PATHS
+// BOOTSTRAP - CORRECT PATHS
 // ============================================================
 
-$baseDir = dirname(__DIR__, 3); // /var/www/html
+// File is at: /var/www/html/public/api/v1/swap/cashout_confirm.php
+// __DIR__ = /var/www/html/public/api/v1/swap
+// dirname(__DIR__, 4) = /var/www/html
+$baseDir = dirname(__DIR__, 4);
 
-// Load autoloader
 $autoloadFile = $baseDir . '/vendor/autoload.php';
+
 if (!file_exists($autoloadFile)) {
     respond(500, ['status' => 'ERROR', 'message' => 'Autoloader not found at: ' . $autoloadFile]);
 }
@@ -90,7 +93,7 @@ if (!isset($data['voucher_number'])) {
 error_log("[CashoutConfirmWebhook] Received: " . json_encode($data));
 
 // ============================================================
-// BUILD PAYLOAD
+// BUILD PAYLOAD - IDENTIFIERS ONLY
 // ============================================================
 
 $confirmPayload = [
