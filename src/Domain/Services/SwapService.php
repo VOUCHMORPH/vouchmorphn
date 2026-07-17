@@ -3467,7 +3467,8 @@ class SwapService
             'expiry' => date('Y-m-d H:i:s', strtotime('+24 hours')),
             'timestamp' => $timestamp,
             'from_institution' => $institution,
-            'source_institution' => $institution
+            'source_institution' => $institution,
+            'user_id' => $payload['user_id'] ?? 0
         ];
 
         $this->forwardPin($payload, $holdPayload);
