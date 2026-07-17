@@ -2255,7 +2255,7 @@ class SwapService
                 'reference' => $this->currentSwapRef,
                 'amount' => $amountToSend,
                 'currency' => $payload['currency'] ?? 'BWP',
-                'status' => 'pending_cashout',
+                'status' => 'pending',
                 'from_institution' => $sourceInstitution,
                 'to_institution' => $destinationInstitution,
                 'user_id' => $payload['user_id'] ?? null
