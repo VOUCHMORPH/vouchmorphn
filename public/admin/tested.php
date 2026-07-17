@@ -72,7 +72,7 @@ $limit = isset($_GET['limit']) ? max(1, (int)$_GET['limit']) : null;
 $candidates = [];
 try {
     $stmt = $db->query("
-        SELECT hold_reference, swap_reference, status, amount, currency, asset_type, created_at
+        SELECT hold_reference, swap_reference, status, amount, currency, asset_type, created_at, metadata
         FROM hold_transactions
         WHERE source_institution = 'SACCUSSALIS'
           AND status IN ('RELEASED', 'DEBITED')
@@ -86,6 +86,25 @@ try {
 if ($limit !== null) {
     $candidates = array_slice($candidates, 0, $limit);
 }
+
+// ============================================================
+// FIX: hold_transactions.hold_reference is VOUCHMORPH's OWN internal
+// bookkeeping label ('HOLD_' . swap_reference) - it was never sent to
+// SACCUSSALIS. The reference SACCUSSALIS actually knows the hold by is
+// swap_reference (what SwapService::createLocalHold() stores alongside
+// it), with metadata->>'external_hold_reference' as a cross-check in
+// case any row was created through a different path.
+// ============================================================
+foreach ($candidates as &$cand) {
+    $metaExternal = null;
+    if (!empty($cand['metadata'])) {
+        $meta = json_decode($cand['metadata'], true);
+        $metaExternal = $meta['external_hold_reference'] ?? null;
+    }
+    $cand['primary_ref'] = $cand['swap_reference'];
+    $cand['fallback_ref'] = ($metaExternal && $metaExternal !== $cand['swap_reference']) ? $metaExternal : null;
+}
+unset($cand);
 
 function callSaccussalisHold(string $action, string $holdReference, float $amount): array {
     $payload = [
@@ -121,29 +140,48 @@ function callSaccussalisHold(string $action, string $holdReference, float $amoun
     return ['ok' => true, 'response' => $decoded];
 }
 
+function classifyOutcome(array $resp): array {
+    $msg = strtolower($resp['message'] ?? '');
+    if (($resp['status'] ?? '') === 'SUCCESS') {
+        return ['outcome' => 'FIXED', 'detail' => 'Was actually still ACTIVE at SACCUSSALIS - now corrected. ' . ($resp['message'] ?? '')];
+    }
+    if (str_contains($msg, 'not active')) {
+        return ['outcome' => 'ALREADY_OK', 'detail' => 'Already resolved at SACCUSSALIS - no action was needed.'];
+    }
+    if (str_contains($msg, 'no hold found')) {
+        return ['outcome' => 'NOT_FOUND', 'detail' => 'No matching hold at SACCUSSALIS.'];
+    }
+    return ['outcome' => 'ERROR', 'detail' => $resp['message'] ?? json_encode($resp)];
+}
+
 $results = [];
 if ($confirm) {
     foreach ($candidates as $c) {
         $action = $c['status'] === 'DEBITED' ? 'DEBIT' : 'RELEASE_HOLD';
-        $outcome = callSaccussalisHold($action, $c['hold_reference'], (float)$c['amount']);
+        $refUsed = $c['primary_ref'];
+        $outcome = callSaccussalisHold($action, $refUsed, (float)$c['amount']);
 
         if (!$outcome['ok']) {
-            $results[] = ['hold_reference' => $c['hold_reference'], 'action' => $action, 'outcome' => 'CALL_FAILED', 'detail' => $outcome['message']];
+            $results[] = ['hold_reference' => $refUsed, 'action' => $action, 'outcome' => 'CALL_FAILED', 'detail' => $outcome['message']];
             continue;
         }
 
-        $resp = $outcome['response'];
-        $msg = strtolower($resp['message'] ?? '');
+        $classified = classifyOutcome($outcome['response']);
 
-        if (($resp['status'] ?? '') === 'SUCCESS') {
-            $results[] = ['hold_reference' => $c['hold_reference'], 'action' => $action, 'outcome' => 'FIXED', 'detail' => 'Was actually still ACTIVE at SACCUSSALIS - now corrected. ' . ($resp['message'] ?? '')];
-        } elseif (str_contains($msg, 'not active')) {
-            $results[] = ['hold_reference' => $c['hold_reference'], 'action' => $action, 'outcome' => 'ALREADY_OK', 'detail' => 'Already resolved at SACCUSSALIS - no action was needed.'];
-        } elseif (str_contains($msg, 'no hold found')) {
-            $results[] = ['hold_reference' => $c['hold_reference'], 'action' => $action, 'outcome' => 'NOT_FOUND', 'detail' => 'No matching hold exists at SACCUSSALIS at all - worth checking manually.'];
-        } else {
-            $results[] = ['hold_reference' => $c['hold_reference'], 'action' => $action, 'outcome' => 'ERROR', 'detail' => $resp['message'] ?? json_encode($resp)];
+        // If the primary reference (swap_reference) wasn't found and there's
+        // a distinct fallback from metadata, automatically try that before
+        // giving up - avoids a second manual pass for the rare row that was
+        // created through a different code path.
+        if ($classified['outcome'] === 'NOT_FOUND' && !empty($c['fallback_ref'])) {
+            $refUsed = $c['fallback_ref'];
+            $retryOutcome = callSaccussalisHold($action, $refUsed, (float)$c['amount']);
+            if ($retryOutcome['ok']) {
+                $classified = classifyOutcome($retryOutcome['response']);
+                $classified['detail'] = '[retried with metadata external_hold_reference] ' . $classified['detail'];
+            }
         }
+
+        $results[] = ['hold_reference' => $refUsed, 'action' => $action, 'outcome' => $classified['outcome'], 'detail' => $classified['detail']];
     }
 }
 
@@ -183,12 +221,12 @@ foreach ($results as $r) { $counts[$r['outcome']]++; }
 <div class="section">
     <div class="table-responsive">
     <table>
-        <thead><tr><th>Hold Reference</th><th>Swap Reference</th><th>Central Status</th><th>Would Call</th><th>Amount</th><th>Created</th></tr></thead>
+        <thead><tr><th>VOUCHMORPH's Internal Label</th><th>Reference Actually Sent to SACCUSSALIS</th><th>Central Status</th><th>Would Call</th><th>Amount</th><th>Created</th></tr></thead>
         <tbody>
         <?php foreach ($candidates as $c): ?>
         <tr>
-            <td><?php echo h($c['hold_reference']); ?></td>
-            <td><?php echo h($c['swap_reference']); ?></td>
+            <td style="color:#999;"><?php echo h($c['hold_reference']); ?></td>
+            <td><strong><?php echo h($c['primary_ref']); ?></strong><?php if ($c['fallback_ref']): ?><br><span style="color:#856404;">fallback: <?php echo h($c['fallback_ref']); ?></span><?php endif; ?></td>
             <td><?php echo h($c['status']); ?></td>
             <td><strong><?php echo $c['status'] === 'DEBITED' ? 'DEBIT' : 'RELEASE_HOLD'; ?></strong></td>
             <td><?php echo number_format((float)$c['amount'], 2); ?> <?php echo h($c['currency'] ?? 'BWP'); ?></td>
