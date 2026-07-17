@@ -729,31 +729,71 @@ private function getSwapRequestId(string $swapRef): ?int
 }
 
 /**
- * Populate swap_transactions table
- * FIX: Uses numeric swap_id from swap_requests (the primary key), not string reference
+ * Populate swap_requests table and return the ID
+ * FIX: Uses 'swap_id' as the primary key, includes forex fields
  */
-private function populateSwapTransaction(int $swapId, array $swapData, array $details, ?int $userId = null): void
+private function populateSwapRequest(string $swapRef, array $swapData, array $details, ?int $userId = null): ?int
 {
+    // Extract forex data from feeCalculationDetails
+    $forexRate = $this->feeCalculationDetails['exchange_rate'] ?? null;
+    $forexFeePercent = $this->feeCalculationDetails['forex_fee_percent'] ?? null;
+    $forexFeeAmount = $this->feeCalculationDetails['forex_fee_amount'] ?? null;
+    $totalForexFee = $this->feeCalculationDetails['total_forex_fee'] ?? null;
+    $expectedToAmount = $this->feeCalculationDetails['net_amount_destination_currency'] ?? null;
+    
     $sql = "
-        INSERT INTO swap_transactions (
-            swap_id,
-            from_account_details,
-            to_account_details,
+        INSERT INTO swap_requests (
+            swap_uuid,
+            from_currency,
+            to_currency,
             amount,
+            source_details,
+            destination_details,
             status,
             created_at,
-            updated_at,
-            metadata
+            source_country,
+            destination_country,
+            fee_breakdown,
+            metadata,
+            retry_count,
+            forex_rate,
+            forex_fee_percent,
+            forex_fee_amount,
+            total_forex_fee,
+            expected_to_amount,
+            trade_metadata,
+            original_swap_ref
         ) VALUES (
-            :swap_id,
-            :from_account_details::jsonb,
-            :to_account_details::jsonb,
+            :swap_uuid,
+            :from_currency,
+            :to_currency,
             :amount,
+            :source_details::jsonb,
+            :destination_details::jsonb,
             :status,
             :created_at,
-            :updated_at,
-            :metadata::jsonb
-        )
+            :source_country,
+            :destination_country,
+            :fee_breakdown::jsonb,
+            :metadata::jsonb,
+            0,
+            :forex_rate,
+            :forex_fee_percent,
+            :forex_fee_amount,
+            :total_forex_fee,
+            :expected_to_amount,
+            :trade_metadata::jsonb,
+            :original_swap_ref
+        ) ON CONFLICT (swap_uuid) DO UPDATE SET
+            status = EXCLUDED.status,
+            forex_rate = EXCLUDED.forex_rate,
+            forex_fee_percent = EXCLUDED.forex_fee_percent,
+            forex_fee_amount = EXCLUDED.forex_fee_amount,
+            total_forex_fee = EXCLUDED.total_forex_fee,
+            expected_to_amount = EXCLUDED.expected_to_amount,
+            trade_metadata = EXCLUDED.trade_metadata,
+            fee_breakdown = EXCLUDED.fee_breakdown
+        RETURNING swap_id
     ";
     
     $status = $swapData['status'] ?? 'pending';
@@ -764,125 +804,52 @@ private function populateSwapTransaction(int $swapId, array $swapData, array $de
     try {
         $stmt = $this->swapDB->prepare($sql);
         $stmt->execute([
-            ':swap_id' => $swapId,  // Now using integer primary key from swap_requests
-            ':from_account_details' => json_encode([
-                'institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
-                'identifier' => $details['source_identifier'] ?? null,
-                'asset_type' => $details['asset_type'] ?? null
-            ]),
-            ':to_account_details' => json_encode([
+            ':swap_uuid' => $swapRef,
+            ':from_currency' => $details['currency'] ?? $swapData['currency'] ?? 'BWP',
+            ':to_currency' => $details['destination_currency'] ?? $swapData['destination_currency'] ?? $details['currency'] ?? 'BWP',
+            ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
+            ':source_details' => json_encode($details),
+            ':destination_details' => json_encode([
                 'institution' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
                 'identifier' => $details['destination_identifier'] ?? null,
                 'asset_type' => $details['destination_asset_type'] ?? null
             ]),
-            ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
             ':status' => strtolower($status),
             ':created_at' => date('Y-m-d H:i:s'),
-            ':updated_at' => date('Y-m-d H:i:s'),
+            ':source_country' => $details['source_country'] ?? 'BW',
+            ':destination_country' => $details['destination_country'] ?? 'BW',
+            ':fee_breakdown' => json_encode($details['fee_breakdown'] ?? $this->feeCalculationDetails ?? []),
             ':metadata' => json_encode([
                 'hold_id' => $this->currentHoldId,
                 'swap_type' => $swapData['swap_type'] ?? 'STANDARD',
+                'source_institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
                 'user_id' => $userId
-            ])
+            ]),
+            ':forex_rate' => $forexRate,
+            ':forex_fee_percent' => $forexFeePercent,
+            ':forex_fee_amount' => $forexFeeAmount,
+            ':total_forex_fee' => $totalForexFee,
+            ':expected_to_amount' => $expectedToAmount,
+            ':trade_metadata' => json_encode([
+                'user_id' => $userId,
+                'request_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+                'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? null
+            ]),
+            ':original_swap_ref' => $swapData['original_swap_ref'] ?? null
         ]);
         
-        $this->logger->debug("swap_transactions populated", ['swap_id' => $swapId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $swapId = $row ? (int)($row['swap_id'] ?? 0) : 0;
+        
+        $this->logger->debug("swap_requests populated", ['swap_uuid' => $swapRef, 'swap_id' => $swapId]);
+        
+        return $swapId > 0 ? $swapId : null;
         
     } catch (PDOException $e) {
-        $this->logger->error("Failed to populate swap_transactions", ['error' => $e->getMessage(), 'swap_id' => $swapId]);
+        $this->logger->error("Failed to populate swap_requests", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
+        return null;
     }
 }
-
-    /**
-     * Populate cashout_authorization table
-     * FIX: Added userId to metadata
-     */
-    private function populateCashoutAuthorization(string $swapRef, array $swapData, array $details, ?array $destResponse, ?int $userId = null): void
-    {
-        if (!$destResponse) {
-            return;
-        }
-        
-        $sql = "
-            INSERT INTO cashout_authorization (
-                swap_reference,
-                client_phone,
-                source_institution,
-                source_wallet,
-                amount,
-                currency,
-                fee_amount,
-                swap_code,
-                pin_code,
-                code_expiry,
-                cashout_point,
-                cashout_provider,
-                status,
-                created_at,
-                updated_at,
-                metadata
-            ) VALUES (
-                :swap_ref,
-                :client_phone,
-                :source_inst,
-                :source_wallet,
-                :amount,
-                :currency,
-                :fee_amount,
-                :swap_code,
-                :pin_code,
-                :code_expiry,
-                :cashout_point,
-                :cashout_provider,
-                :status,
-                :created_at,
-                :updated_at,
-                :metadata::jsonb
-            ) ON CONFLICT (swap_reference) DO UPDATE SET
-                status = EXCLUDED.status,
-                updated_at = NOW(),
-                completed_at = CASE WHEN EXCLUDED.status = 'COMPLETED' THEN NOW() ELSE completed_at END
-        ";
-        
-        $status = 'PENDING';
-        if (isset($destResponse['status'])) {
-            $status = strtoupper($destResponse['status']);
-        } elseif (isset($swapData['status'])) {
-            $status = strtoupper($swapData['status']);
-        }
-        
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':swap_ref' => $swapRef,
-                ':client_phone' => $details['beneficiary_phone'] ?? $details['client_phone'] ?? null,
-                ':source_inst' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
-                ':source_wallet' => $details['source_identifier'] ?? null,
-                ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
-                ':currency' => $swapData['currency'] ?? $details['currency'] ?? 'BWP',
-                ':fee_amount' => $details['fee_amount'] ?? 0,
-                ':swap_code' => $destResponse['cashout_code'] ?? $destResponse['swap_code'] ?? null,
-                ':pin_code' => $destResponse['pin_code'] ?? null,
-                ':code_expiry' => $destResponse['expiry'] ?? null,
-                ':cashout_point' => $details['delivery_method'] ?? $swapData['delivery_method'] ?? 'ATM',
-                ':cashout_provider' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
-                ':status' => $status,
-                ':created_at' => date('Y-m-d H:i:s'),
-                ':updated_at' => date('Y-m-d H:i:s'),
-                ':metadata' => json_encode([
-                    'source' => 'swap_service',
-                    'hold_id' => $this->currentHoldId,
-                    'destination_response' => $destResponse,
-                    'user_id' => $userId
-                ])
-            ]);
-            
-            $this->logger->debug("cashout_authorization populated", ['swap_ref' => $swapRef]);
-            
-        } catch (PDOException $e) {
-            $this->logger->error("Failed to populate cashout_authorization", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
-        }
-    }
 
     /**
      * Populate deposit_transactions table
