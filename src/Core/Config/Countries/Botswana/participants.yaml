@@ -81,6 +81,7 @@ participants:
         - BWP
         - ZAR
         - EUR
+        - USD
       settlement_cycles:
         BWP: "T+0"
         ZAR: "T+1"
