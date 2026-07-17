@@ -252,67 +252,96 @@ function safeHtml($value) {
 }
 
 // ============================================================
-// LIVE TRANSACTIONS DATA
+// FIXED: LIVE TRANSACTIONS DATA
 // ============================================================
 $liveTransactions = [];
-$liveStats = [];
+$liveStats = ['total' => 0, 'completed' => 0, 'pending' => 0, 'failed' => 0, 'total_amount' => 0];
 
 try {
-    // Try to get live transactions from vw_all_swaps
-    $stmt = $db->query("
-        SELECT 
-            swap_reference,
-            reference,
-            swap_type,
-            source_institution,
-            destination_institution,
-            amount,
-            currency,
-            status,
-            fee_amount,
-            created_at,
-            CASE 
-                WHEN swap_type IN ('MULTI_DESTINATION') THEN 'MULTI_DEST'
-                WHEN swap_type IN ('MULTI_SOURCE') THEN 'MULTI_SRC'
-                WHEN swap_type IN ('IDENTITY') THEN 'IDENTITY'
-                ELSE swap_type
-            END as display_type
-        FROM vw_all_swaps 
-        ORDER BY created_at DESC 
-        LIMIT 50
-    ");
-    $liveTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    // Check if vw_all_swaps exists
+    $checkStmt = $db->query("SELECT to_regclass('vw_all_swaps')");
+    $viewExists = $checkStmt->fetchColumn();
     
-    // Get live stats for the last 24 hours
-    $statStmt = $db->query("
-        SELECT 
-            COUNT(*) as total,
-            COUNT(CASE WHEN status ILIKE '%completed%' OR status ILIKE '%success%' THEN 1 END) as completed,
-            COUNT(CASE WHEN status ILIKE '%pending%' OR status ILIKE '%processing%' OR status ILIKE '%confirmation%' THEN 1 END) as pending,
-            COUNT(CASE WHEN status ILIKE '%failed%' OR status ILIKE '%error%' THEN 1 END) as failed,
-            COALESCE(SUM(amount), 0) as total_amount
-        FROM vw_all_swaps
-        WHERE created_at >= NOW() - INTERVAL '24 hours'
-    ");
-    $liveStats = $statStmt->fetch(PDO::FETCH_ASSOC);
-    
-    // Cast values
-    if ($liveStats) {
-        $liveStats['total'] = (int)($liveStats['total'] ?? 0);
-        $liveStats['completed'] = (int)($liveStats['completed'] ?? 0);
-        $liveStats['pending'] = (int)($liveStats['pending'] ?? 0);
-        $liveStats['failed'] = (int)($liveStats['failed'] ?? 0);
-        $liveStats['total_amount'] = (float)($liveStats['total_amount'] ?? 0);
+    if ($viewExists) {
+        // Get live transactions
+        $stmt = $db->query("
+            SELECT 
+                swap_reference,
+                reference,
+                swap_type,
+                source_institution,
+                destination_institution,
+                amount,
+                currency,
+                status,
+                fee_amount,
+                created_at
+            FROM vw_all_swaps 
+            ORDER BY created_at DESC 
+            LIMIT 50
+        ");
+        $liveTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Get live stats
+        $statStmt = $db->query("
+            SELECT 
+                COUNT(*) as total,
+                COUNT(CASE WHEN status ILIKE '%completed%' OR status ILIKE '%success%' THEN 1 END) as completed,
+                COUNT(CASE WHEN status ILIKE '%pending%' OR status ILIKE '%processing%' OR status ILIKE '%confirmation%' THEN 1 END) as pending,
+                COUNT(CASE WHEN status ILIKE '%failed%' OR status ILIKE '%error%' THEN 1 END) as failed,
+                COALESCE(SUM(amount), 0) as total_amount
+            FROM vw_all_swaps
+            WHERE created_at >= NOW() - INTERVAL '24 hours'
+        ");
+        $liveStats = $statStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($liveStats) {
+            $liveStats['total'] = (int)($liveStats['total'] ?? 0);
+            $liveStats['completed'] = (int)($liveStats['completed'] ?? 0);
+            $liveStats['pending'] = (int)($liveStats['pending'] ?? 0);
+            $liveStats['failed'] = (int)($liveStats['failed'] ?? 0);
+            $liveStats['total_amount'] = (float)($liveStats['total_amount'] ?? 0);
+        }
+    } else {
+        error_log("[ADMIN DASHBOARD] vw_all_swaps view does not exist");
     }
-    
 } catch (Throwable $e) {
     error_log("[ADMIN DASHBOARD] Live transactions error: " . $e->getMessage());
-    $liveTransactions = [];
-    $liveStats = ['total' => 0, 'completed' => 0, 'pending' => 0, 'failed' => 0, 'total_amount' => 0];
 }
 
 // ============================================================
-// FETCH MULTI-DESTINATION SWAPS
+// FIXED: RECENT SWAPS
+// ============================================================
+$recentSwaps = [];
+try {
+    $checkStmt = $db->query("SELECT to_regclass('vw_all_swaps')");
+    $viewExists = $checkStmt->fetchColumn();
+    
+    if ($viewExists) {
+        $stmt = $db->query("
+            SELECT 
+                swap_reference,
+                reference,
+                swap_type,
+                source_institution,
+                destination_institution,
+                amount,
+                currency,
+                status,
+                fee_amount,
+                created_at
+            FROM vw_all_swaps 
+            ORDER BY created_at DESC 
+            LIMIT 100
+        ");
+        $recentSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+} catch (Throwable $e) {
+    error_log("[ADMIN DASHBOARD] Recent swaps error: " . $e->getMessage());
+}
+
+// ============================================================
+// FIXED: MULTI-DESTINATION SWAPS
 // ============================================================
 $multiDestinationSwaps = [];
 try {
@@ -343,7 +372,7 @@ try {
 }
 
 // ============================================================
-// METRICS
+// FIXED: METRICS
 // ============================================================
 $metrics = [];
 try {
@@ -358,6 +387,15 @@ try {
 } catch (Throwable $e) {
     $metrics = array_fill_keys(['total_users', 'total_swaps', 'pending_settlements', 'total_fees', 'recent_swaps_24h', 'multi_destination_count', 'multi_source_count', 'identity_swaps_pending'], 0);
 }
+
+// ============================================================
+// FIXED: ERROR HANDLING - ensure variables exist
+// ============================================================
+if (!isset($liveTransactions)) $liveTransactions = [];
+if (!isset($liveStats)) $liveStats = ['total' => 0, 'completed' => 0, 'pending' => 0, 'failed' => 0, 'total_amount' => 0];
+if (!isset($recentSwaps)) $recentSwaps = [];
+if (!isset($multiDestinationSwaps)) $multiDestinationSwaps = [];
+if (!isset($metrics)) $metrics = [];
 
 ?>
 <!DOCTYPE html>
@@ -597,20 +635,6 @@ try {
             margin-top: 24px;
         }
         
-        .destination-detail {
-            background: #f8f9fa;
-            padding: 8px 12px;
-            margin: 4px 0;
-            border-left: 3px solid #001B44;
-            font-size: 0.6rem;
-        }
-        .destination-detail .label { color: #666; font-weight: 600; }
-        .destination-detail .value { color: #001B44; }
-        .destination-detail.failed { border-left-color: #dc3545; background: #f8d7da; }
-        .destination-detail.success { border-left-color: #28a745; background: #d4edda; }
-        .destination-detail.pending { border-left-color: #856404; background: #fff3cd; }
-        .destination-detail.identity { border-left-color: #6f42c1; background: #e8d5f5; }
-        
         .live-indicator {
             display: inline-block;
             width: 10px;
@@ -848,10 +872,10 @@ try {
                             <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['reference'] ?? 'N/A', 0, 12)); ?></td>
                             <td>
                                 <?php 
-                                $type = $row['display_type'] ?? $row['swap_type'] ?? 'STANDARD';
+                                $type = $row['swap_type'] ?? 'STANDARD';
                                 $typeClass = match($type) {
-                                    'MULTI_DEST', 'MULTI_DESTINATION' => 'status-info',
-                                    'MULTI_SRC', 'MULTI_SOURCE' => 'status-processing',
+                                    'MULTI_DESTINATION' => 'status-info',
+                                    'MULTI_SOURCE' => 'status-processing',
                                     'IDENTITY' => 'status-identity',
                                     'CASHOUT' => 'status-warning',
                                     default => 'status-info'
@@ -913,12 +937,12 @@ try {
                                     if (status.includes('complet') || status.includes('success')) cls = 'success';
                                     else if (status.includes('pending') || status.includes('processing')) cls = 'pending';
                                     else if (status.includes('fail') || status.includes('error')) cls = 'failed';
-                                    const type = row.display_type || row.swap_type || 'STANDARD';
+                                    const type = row.swap_type || 'STANDARD';
                                     let typeClass = 'status-info';
-                                    if (type.includes('MULTI_DEST')) typeClass = 'status-info';
-                                    else if (type.includes('MULTI_SRC')) typeClass = 'status-processing';
-                                    else if (type.includes('IDENTITY')) typeClass = 'status-identity';
-                                    else if (type.includes('CASHOUT')) typeClass = 'status-warning';
+                                    if (type === 'MULTI_DESTINATION') typeClass = 'status-info';
+                                    else if (type === 'MULTI_SOURCE') typeClass = 'status-processing';
+                                    else if (type === 'IDENTITY') typeClass = 'status-identity';
+                                    else if (type === 'CASHOUT') typeClass = 'status-warning';
                                     html += `<tr>
                                         <td>${i+1}</td>
                                         <td>${(row.swap_reference || row.reference || 'N/A').substring(0,12)}</td>
@@ -941,141 +965,6 @@ try {
             }
             startAutoRefresh();
         </script>
-        <?php endif; ?>
-
-        <!-- ============================================================ -->
-        <!-- MULTI-DESTINATION VIEW -->
-        <!-- ============================================================ -->
-        <?php if ($view === 'multi_destination' && canView('multi_destination')): ?>
-        <div class="content-header">
-            <h1>🎯 MULTI-DESTINATION SWAPS</h1>
-            <div class="timestamp">Detailed multi-destination swap reports</div>
-            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
-        </div>
-
-        <?php foreach ($multiDestinationSwaps as $swap): 
-            $destinations = json_decode($swap['destinations_payload'] ?? '[]', true);
-            $results = json_decode($swap['results_payload'] ?? '[]', true);
-        ?>
-        <div class="card" style="border-left: 6px solid <?php echo $swap['status'] === 'completed' ? '#28a745' : ($swap['status'] === 'partial' ? '#856404' : '#dc3545'); ?>;">
-            <div class="card-header">
-                <span class="card-title">
-                    <?php echo safeHtml($swap['reference']); ?>
-                    <span style="font-size:0.55rem; font-weight:400; color:#666;">
-                        <?php echo date('Y-m-d H:i', strtotime($swap['created_at'])); ?>
-                    </span>
-                </span>
-                <span class="card-badge <?php echo $swap['status'] === 'completed' ? 'success' : ($swap['status'] === 'partial' ? 'warning' : 'danger'); ?>">
-                    <?php echo strtoupper($swap['status'] ?? 'UNKNOWN'); ?>
-                </span>
-            </div>
-            
-            <!-- Summary -->
-            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:12px; font-size:0.65rem; background:#f8f9fa; padding:10px; border-radius:4px;">
-                <div><strong>Source:</strong> <?php echo safeHtml($swap['source_institution']); ?></div>
-                <div><strong>Total:</strong> <?php echo number_format((float)($swap['total_amount'] ?? 0), 2); ?> BWP</div>
-                <div><strong>Fees:</strong> <?php echo number_format((float)($swap['total_fees'] ?? 0), 2); ?> BWP</div>
-                <div><strong>Delivered:</strong> <?php echo number_format((float)($swap['total_delivered'] ?? 0), 2); ?> BWP</div>
-                <div><strong>✅ Success:</strong> <?php echo $swap['successful_count'] ?? 0; ?></div>
-                <div><strong>❌ Failed:</strong> <?php echo $swap['failed_count'] ?? 0; ?></div>
-            </div>
-
-            <!-- Destinations Table -->
-            <?php if (!empty($destinations)): ?>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>#</th>
-                            <th>Type</th>
-                            <th>Institution</th>
-                            <th>Identifier</th>
-                            <th>Amount</th>
-                            <th>Fee</th>
-                            <th>Net</th>
-                            <th>Status</th>
-                            <th>Hold Ref</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($destinations as $idx => $dest):
-                            $result = $results[$idx] ?? [];
-                            $status = $result['status'] ?? 'pending';
-                            $error = $result['error'] ?? null;
-                            $isIdentity = isset($dest['identity_type']) || isset($dest['identity_value']);
-                            $isCashout = isset($dest['delivery_method']) && $dest['delivery_method'] === 'ATM';
-                            $fee = (float)($result['fee'] ?? 0);
-                            $net = (float)($result['net_amount'] ?? $dest['amount'] ?? 0);
-                        ?>
-                        <tr>
-                            <td><?php echo $idx + 1; ?></td>
-                            <td>
-                                <?php if ($isIdentity): ?>
-                                <span class="status status-identity">IDENTITY</span>
-                                <?php elseif ($isCashout): ?>
-                                <span class="status status-warning">CASHOUT</span>
-                                <?php else: ?>
-                                <span class="status status-info">DEPOSIT</span>
-                                <?php endif; ?>
-                            </td>
-                            <td><?php echo safeHtml($dest['to_institution'] ?? $dest['destination_institution'] ?? ($isIdentity ? 'IDENTITY' : 'N/A')); ?></td>
-                            <td>
-                                <?php 
-                                if ($isIdentity) {
-                                    echo safeHtml($dest['identity_type'] ?? 'national_id') . ': ' . safeHtml($dest['identity_value'] ?? 'N/A');
-                                } elseif ($isCashout) {
-                                    echo safeHtml($dest['beneficiary_phone'] ?? 'N/A');
-                                } else {
-                                    echo safeHtml($dest['destination_identifier'] ?? 'N/A');
-                                }
-                                ?>
-                            </td>
-                            <td><strong><?php echo number_format((float)($dest['amount'] ?? 0), 2); ?></strong></td>
-                            <td style="color:#dc3545;"><?php echo number_format($fee, 2); ?></td>
-                            <td style="color:#28a745;"><?php echo number_format($net, 2); ?></td>
-                            <td>
-                                <?php 
-                                $statusClass = match($status) {
-                                    'success', 'completed' => 'success',
-                                    'failed' => 'failed',
-                                    'pending', 'pending_identity_confirmation' => 'pending',
-                                    default => 'info'
-                                };
-                                $statusLabel = $status === 'pending_identity_confirmation' ? 'PENDING_ID' : ($status ?: 'PENDING');
-                                ?>
-                                <span class="status status-<?php echo $statusClass; ?>"><?php echo safeHtml(strtoupper($statusLabel)); ?></span>
-                                <?php if ($error): ?>
-                                <span style="color:#dc3545; font-size:0.55rem; display:block;" title="<?php echo safeHtml($error); ?>">⚠️ <?php echo safeHtml(substr($error, 0, 30)); ?></span>
-                                <?php endif; ?>
-                            </td>
-                            <td><?php echo safeHtml(substr($result['hold_reference'] ?? 'N/A', 0, 10)); ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-            <?php endif; ?>
-            
-            <!-- Raw JSON -->
-            <details style="margin-top:12px;">
-                <summary style="cursor:pointer; font-size:0.6rem; color:#666;">📄 Raw JSON</summary>
-                <pre style="background:#1e293b; color:#4ade80; padding:12px; font-size:0.55rem; overflow-x:auto; max-height:300px; overflow-y:auto; margin-top:8px;"><?php 
-                    $fullData = [
-                        'summary' => [
-                            'reference' => $swap['reference'],
-                            'source_institution' => $swap['source_institution'],
-                            'status' => $swap['status'],
-                            'total_amount' => $swap['total_amount'],
-                            'total_fees' => $swap['total_fees']
-                        ],
-                        'destinations' => $destinations,
-                        'results' => $results
-                    ];
-                    echo safeHtml(json_encode($fullData, JSON_PRETTY_PRINT)); 
-                ?></pre>
-            </details>
-        </div>
-        <?php endforeach; ?>
         <?php endif; ?>
 
         <!-- ============================================================ -->
@@ -1117,10 +1006,10 @@ try {
                             <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['reference'] ?? 'N/A', 0, 16)); ?></td>
                             <td>
                                 <?php 
-                                $type = $row['display_type'] ?? $row['swap_type'] ?? 'STANDARD';
+                                $type = $row['swap_type'] ?? 'STANDARD';
                                 $typeClass = match($type) {
-                                    'MULTI_DEST', 'MULTI_DESTINATION' => 'status-info',
-                                    'MULTI_SRC', 'MULTI_SOURCE' => 'status-processing',
+                                    'MULTI_DESTINATION' => 'status-info',
+                                    'MULTI_SOURCE' => 'status-processing',
                                     'IDENTITY' => 'status-identity',
                                     'CASHOUT' => 'status-warning',
                                     default => 'status-info'
@@ -1158,7 +1047,7 @@ try {
         <!-- ============================================================ -->
         <!-- ACCESS DENIED -->
         <!-- ============================================================ -->
-        <?php if (!canView($view) && $view !== 'dashboard' && $view !== 'all_tables' && $view !== 'multi_destination' && $view !== 'live_transactions'): ?>
+        <?php if (!canView($view) && $view !== 'dashboard' && $view !== 'all_tables' && $view !== 'multi_destination' && $view !== 'live_transactions' && $view !== 'recent_swaps'): ?>
         <div class="card">
             <div class="empty-state">
                 <div class="icon">🚫</div>
