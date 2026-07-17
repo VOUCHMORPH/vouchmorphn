@@ -13,6 +13,7 @@ class FeeService
     private array $regulatoryConfig = [];
     private array $context = [];
     private string $defaultCurrency;
+    private string $baseCurrency;              // NEW
     private array $participants = [];
     private array $calculatedFees = [];
     private ?ForexService $forexService = null;
@@ -30,7 +31,7 @@ class FeeService
         if (isset($countryConfig['products'])) {
             $this->productConfig = $countryConfig['products'];
         } else {
-            $excludeKeys = ['regulatory', 'currency', 'country_code', 'country', 'currency_symbol', 'fee_structure', 'revenue_split', 'destination_fees'];
+            $excludeKeys = ['regulatory', 'currency', 'country_code', 'country', 'currency_symbol', 'fee_structure', 'revenue_split', 'destination_fees', 'base_currency'];
             $this->productConfig = [];
             foreach ($countryConfig as $key => $value) {
                 if (!in_array($key, $excludeKeys) && is_array($value) && (isset($value['fee_components']) || isset($value['distribution']))) {
@@ -41,8 +42,29 @@ class FeeService
         
         $this->regulatoryConfig = $countryConfig['regulatory'] ?? [];
         $this->defaultCurrency = $defaultCurrency ?? ($countryConfig['currency'] ?? 'BWP');
+
+        // ============================================================
+        // NEW: fee amounts in fees.json (F1, F7, F8, F10...) are
+        // authored in ONE currency - previously undeclared, meaning the
+        // same "10.00" silently became 10 BWP or 10 USD depending on
+        // whatever source_currency the transaction happened to resolve
+        // to. Checks feeRegistry first (fees.json itself), then
+        // countryConfig, falling back to defaultCurrency only if
+        // neither declares it - so existing deployments that haven't
+        // added the key yet don't break, they just get a log warning.
+        // ============================================================
+        $this->baseCurrency = strtoupper(
+            $feeRegistry['base_currency']
+            ?? $countryConfig['base_currency']
+            ?? $countryConfig['fees']['base_currency']
+            ?? $this->defaultCurrency
+        );
+
+        if (empty($feeRegistry['base_currency']) && empty($countryConfig['base_currency'])) {
+            error_log("[FeeService] WARNING: fees.json has no declared base_currency - assuming {$this->baseCurrency}. Add \"base_currency\": \"BWP\" to fees.json to make this explicit.");
+        }
         
-        error_log("[FeeService] Loaded " . count($this->productConfig) . " products: " . implode(', ', array_keys($this->productConfig)));
+        error_log("[FeeService] Loaded " . count($this->productConfig) . " products: " . implode(', ', array_keys($this->productConfig)) . " | base_currency={$this->baseCurrency}");
     }
     
     public function setForexService(ForexService $forexService): void
@@ -75,15 +97,27 @@ class FeeService
         $sourceSupportedCurrencies = $this->getParticipantSupportedCurrencies($sourceInst);
         $destSupportedCurrencies = $this->getParticipantSupportedCurrencies($destInst);
         
-        // Validate that requested currencies are supported
+        // ============================================================
+        // Validate that requested currencies are supported.
+        // FIX: previously only logged a warning and let the swap proceed
+        // with an unsupported currency anyway. Now throws - same
+        // treatment as every other integrity check in this system.
+        // Institutions with NO declared supported_currencies list are
+        // left permissive (unknown = allowed), matching prior behavior
+        // for configs that haven't been updated with cross_border yet.
+        // ============================================================
         if (!empty($sourceSupportedCurrencies) && !in_array($sourceCurrency, $sourceSupportedCurrencies)) {
-            error_log("[FeeService] Warning: {$sourceInst} does not support {$sourceCurrency}");
-            error_log("  Supported: " . implode(', ', $sourceSupportedCurrencies));
+            throw new \RuntimeException(
+                "Institution {$sourceInst} does not support currency {$sourceCurrency}. " .
+                "Supported: " . implode(', ', $sourceSupportedCurrencies)
+            );
         }
         
         if (!empty($destSupportedCurrencies) && !in_array($destinationCurrency, $destSupportedCurrencies)) {
-            error_log("[FeeService] Warning: {$destInst} does not support {$destinationCurrency}");
-            error_log("  Supported: " . implode(', ', $destSupportedCurrencies));
+            throw new \RuntimeException(
+                "Institution {$destInst} does not support currency {$destinationCurrency}. " .
+                "Supported: " . implode(', ', $destSupportedCurrencies)
+            );
         }
         
         $this->context = [
@@ -341,6 +375,32 @@ class FeeService
             }
             $slotAmounts[$retrySlot] = $retryAmount;
         }
+
+        // ============================================================
+        // NEW: every amount built above is denominated in $this->baseCurrency
+        // (whatever fees.json declares, e.g. BWP) - NOT necessarily the
+        // currency this specific swap is running in. Convert before use
+        // if they differ, so a "10.00" fee means 10 BWP everywhere,
+        // converted to the transaction's actual currency, rather than
+        // silently being treated as 10 of whatever currency happened
+        // to be in context.
+        // ============================================================
+        $feeConversion = ['applied' => false, 'rate' => 1.0];
+        if ($this->context['source_currency'] !== $this->baseCurrency) {
+            $feeConversion = $this->applyForex(
+                1.0,
+                $this->baseCurrency,
+                $this->context['source_currency'],
+                $this->context['client_tier']
+            );
+            $feeRate = $feeConversion['rate'];
+            foreach ($slotAmounts as $slot => $value) {
+                if ($value > 0) {
+                    $slotAmounts[$slot] = round($value * $feeRate, 2);
+                }
+            }
+            error_log("[FeeService] Converted fee amounts from {$this->baseCurrency} to {$this->context['source_currency']} at rate {$feeRate}");
+        }
         
         // Calculate totals in source currency
         $totalFees = $slotAmounts['F1'] + $slotAmounts['F7'];
@@ -374,7 +434,8 @@ class FeeService
             'earnings_rules' => $productConfig['earnings_rules'] ?? null,
             'product' => $product,
             'context' => $this->context,
-            'forex' => $forexResult
+            'forex' => $forexResult,
+            'fee_currency_conversion' => $feeConversion   // NEW
         ];
         
         error_log("[FeeService] Product: {$product}");
@@ -460,10 +521,11 @@ class FeeService
             'active_slots' => [],
             'distribution' => [],
             'destination_split' => null,
-            'earnings_rules' => null,     // ← add this
+            'earnings_rules' => null,
             'product' => 'UNKNOWN',
             'context' => $this->context,
             'forex' => ['applied' => false],
+            'fee_currency_conversion' => ['applied' => false, 'rate' => 1.0],   // NEW
             'warning' => 'No fee configuration found'
         ];
     }
@@ -488,6 +550,7 @@ class FeeService
             'swap_levy' => $result['slots']['F7'] ?? 0,
             'context' => $result['context'],
             'forex' => $result['forex'],
+            'fee_currency_conversion' => $result['fee_currency_conversion'] ?? ['applied' => false, 'rate' => 1.0],   // NEW
             'fees' => $result
         ];
     }
