@@ -4410,6 +4410,7 @@ class SwapService
         $sourceId = $this->extractSourceIdentifier($payload);
         
         $sourceDetails = [
+            'user_id' => $payload['user_id'] ?? 0, 
             'source_identifier' => $sourceId['identifier'],
             'source_identifier_type' => $sourceId['type'],
             'source_institution' => $institution,
