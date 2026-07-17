@@ -3258,7 +3258,7 @@ class SwapService
             'action' => 'DEBIT_FUNDS'
         ];
 
-        $debitResult = $sourceAdapter->debitFunds($debitPayload);
+        $debitResult = $sourceAdapter->debit($debitPayload);
 
         if (!($debitResult['success'] ?? false)) {
             $errorMsg = $debitResult['data']['message'] ?? $debitResult['message'] ?? 'Unknown';
