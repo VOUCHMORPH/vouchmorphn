@@ -4,6 +4,13 @@ declare(strict_types=1);
 /**
  * VouchMorph - Swap Details API
  * Returns detailed information for a specific swap
+ *
+ * PATCHED:
+ *  - Exact API key comparison via hash_equals() instead of scraping
+ *    every env var 32+ chars long as a "valid" key.
+ *  - No more silent '?? "BWP"' currency fallback — if a swap row
+ *    somehow has no currency and the country config has none either,
+ *    that's an error worth surfacing, not a silent BWP default.
  */
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 require_once __DIR__ . '/../../../../src/bootstrap.php';
@@ -24,30 +31,34 @@ ini_set('display_errors', 0);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
 
-function getAllApiKeysFromEnvironment(): array {
-    $keys = [];
-    $allVars = array_merge($_ENV, $_SERVER, getenv());
-    
-    foreach ($allVars as $name => $value) {
-        if (is_string($value) && !empty($value)) {
-            if (preg_match('/KEY|API|TOKEN|SECRET/i', $name) || strlen($value) >= 32) {
-                $keys[] = $value;
-            }
-        }
+/**
+ * Validates the provided key against the single configured
+ * VOUCHMORPH_API_KEY using a constant-time comparison.
+ */
+function isValidApiKey(?string $providedKey): bool {
+    $validKey = getenv('VOUCHMORPH_API_KEY') ?: '';
+
+    if ($validKey === '') {
+        error_log("[DETAILS] CRITICAL: VOUCHMORPH_API_KEY is not configured in this environment");
+        return false;
     }
-    
-    return array_unique(array_filter($keys));
+
+    if ($providedKey === null || $providedKey === '') {
+        return false;
+    }
+
+    return hash_equals($validKey, $providedKey);
 }
 
 function getApiKeyFromRequest(): ?string {
     $headers = getallheaders();
     if ($headers) {
         $headersLower = array_change_key_case($headers, CASE_LOWER);
-        
+
         if (isset($headersLower['x-api-key']) && !empty($headersLower['x-api-key'])) {
             return $headersLower['x-api-key'];
         }
-        
+
         if (isset($headersLower['authorization']) && !empty($headersLower['authorization'])) {
             $auth = $headersLower['authorization'];
             if (strpos($auth, 'Bearer ') === 0) {
@@ -56,11 +67,11 @@ function getApiKeyFromRequest(): ?string {
             return $auth;
         }
     }
-    
+
     if (isset($_SERVER['HTTP_X_API_KEY']) && !empty($_SERVER['HTTP_X_API_KEY'])) {
         return $_SERVER['HTTP_X_API_KEY'];
     }
-    
+
     if (isset($_SERVER['HTTP_AUTHORIZATION']) && !empty($_SERVER['HTTP_AUTHORIZATION'])) {
         $auth = $_SERVER['HTTP_AUTHORIZATION'];
         if (strpos($auth, 'Bearer ') === 0) {
@@ -68,7 +79,7 @@ function getApiKeyFromRequest(): ?string {
         }
         return $auth;
     }
-    
+
     return null;
 }
 
@@ -78,39 +89,38 @@ try {
         echo json_encode(['success' => false, 'error' => 'Method not allowed. Use POST.']);
         exit();
     }
-    
+
     $providedKey = getApiKeyFromRequest();
-    $validKeys = getAllApiKeysFromEnvironment();
-    
-    if (!empty($validKeys) && !in_array($providedKey, $validKeys, true)) {
+
+    if (!isValidApiKey($providedKey)) {
         http_response_code(401);
         echo json_encode(['success' => false, 'error' => 'Invalid API key']);
         exit();
     }
-    
+
     $input = json_decode(file_get_contents('php://input'), true);
     if (!$input) {
         throw new Exception('Invalid JSON payload', 400);
     }
-    
+
     $reference = $input['reference'] ?? null;
-    
+
     if (!$reference) {
         throw new Exception('reference required', 400);
     }
-    
+
     $db = DBConnection::getConnection();
     if (!$db) {
         throw new Exception("Database connection failed");
     }
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    
+
     $countryConfig = \Core\Config\LoadCountry::getConfig();
-    $currency = $countryConfig['currency'] ?? 'BWP';
-    
+    $countryDefaultCurrency = $countryConfig['currency'] ?? null;
+
     // Get swap details
     $sql = "
-        SELECT 
+        SELECT
             ht.hold_id,
             ht.swap_reference,
             ht.participant_name as source_institution,
@@ -138,24 +148,39 @@ try {
         LEFT JOIN cashout_authorizations ca ON ht.swap_reference = ca.swap_reference
         WHERE ht.swap_reference = :reference
     ";
-    
+
     $stmt = $db->prepare($sql);
     $stmt->execute([':reference' => $reference]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    
+
     if (!$row) {
         throw new Exception("Swap not found: {$reference}", 404);
     }
-    
+
     $metadata = json_decode($row['metadata'] ?? '{}', true);
     $sourceDetails = json_decode($row['source_details'] ?? '{}', true);
-    
+
+    // PATCHED: previously '?? "BWP"'. Prefer the row's own currency;
+    // fall back to the country default only if the country config
+    // actually has one, and log loudly either way so a missing
+    // currency on a real transaction doesn't disappear silently.
+    $rowCurrency = $row['currency'] ?? null;
+    if (!$rowCurrency) {
+        if ($countryDefaultCurrency) {
+            error_log("[DETAILS] Warning: swap {$reference} has no currency on the row, using country default {$countryDefaultCurrency}");
+            $rowCurrency = $countryDefaultCurrency;
+        } else {
+            error_log("[DETAILS] Warning: swap {$reference} has no currency on the row AND no country default is configured");
+            $rowCurrency = 'UNKNOWN';
+        }
+    }
+
     $swap = [
         'reference' => $row['swap_reference'],
         'source_institution' => $row['source_institution'],
         'destination_institution' => $row['destination_institution'],
         'amount' => (float)$row['amount'],
-        'currency' => $row['currency'] ?? $currency,
+        'currency' => $rowCurrency,
         'status' => $row['status'] ?? 'unknown',
         'created_at' => $row['created_at'],
         'updated_at' => $row['updated_at'],
@@ -164,7 +189,7 @@ try {
         'source_identifier' => $sourceDetails['source_identifier'] ?? null,
         'swap_type' => $metadata['swap_type'] ?? null,
     ];
-    
+
     // Add destination details
     if (isset($metadata['destination_currency'])) {
         $swap['destination_currency'] = $metadata['destination_currency'];
@@ -172,7 +197,7 @@ try {
     if (isset($metadata['destination_identifier'])) {
         $swap['destination_identifier'] = $metadata['destination_identifier'];
     }
-    
+
     // Add fee details
     if (isset($row['fee_amount'])) {
         $swap['fee'] = (float)$row['fee_amount'];
@@ -180,7 +205,7 @@ try {
     if (isset($metadata['fee_breakdown'])) {
         $swap['fee_breakdown'] = $metadata['fee_breakdown'];
     }
-    
+
     // Add forex details
     if (isset($metadata['exchange_rate'])) {
         $swap['exchange_rate'] = $metadata['exchange_rate'];
@@ -194,7 +219,7 @@ try {
     if (isset($metadata['forex_profit'])) {
         $swap['forex_profit'] = $metadata['forex_profit'];
     }
-    
+
     // Add cashout details
     if (isset($row['swap_code'])) {
         $swap['swap_code'] = $row['swap_code'];
@@ -211,7 +236,7 @@ try {
     if (isset($row['cashout_provider'])) {
         $swap['cashout_provider'] = $row['cashout_provider'];
     }
-    
+
     // Add distribution details
     if (isset($metadata['distribution'])) {
         $swap['distribution'] = $metadata['distribution'];
@@ -219,20 +244,20 @@ try {
     if (isset($metadata['destination_split'])) {
         $swap['destination_split'] = $metadata['destination_split'];
     }
-    
+
     echo json_encode([
         'success' => true,
         'swap' => $swap
     ]);
-    
+
 } catch (Exception $e) {
     $code = $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 400;
     http_response_code($code);
-    
+
     echo json_encode([
         'success' => false,
         'error' => $e->getMessage()
     ]);
-    
+
     error_log("[DETAILS] Error: " . $e->getMessage());
 }
