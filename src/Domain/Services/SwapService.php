@@ -638,36 +638,40 @@ class SwapService
      * Populate all tracking tables from swap data
      * Called after successful swap completion
      */
-    private function populateTrackingTables(array $swapData, array $details, ?array $destResponse = null): void
-    {
-        $swapType = $swapData['swap_type'] ?? 'STANDARD';
-        $swapRef = $swapData['reference'] ?? $this->currentSwapRef;
-        $userId = $details['user_id'] ?? $swapData['user_id'] ?? null;
+  private function populateTrackingTables(array $swapData, array $details, ?array $destResponse = null): void
+{
+    $swapType = $swapData['swap_type'] ?? 'STANDARD';
+    $swapRef = $swapData['reference'] ?? $this->currentSwapRef;
+    $userId = $details['user_id'] ?? $swapData['user_id'] ?? null;
+    
+    try {
+        // 1. Always populate swap_requests - capture the ID
+        $swapId = $this->populateSwapRequest($swapRef, $swapData, $details, $userId);
         
-        try {
-            // 1. Always populate swap_requests
-            $this->populateSwapRequest($swapRef, $swapData, $details, $userId);
-            
-            // 2. Always populate swap_transactions
-            $this->populateSwapTransaction($swapRef, $swapData, $details, $userId);
-            
-            // 3. Populate type-specific tables
-            if ($swapType === 'CASHOUT') {
-                $this->populateCashoutAuthorization($swapRef, $swapData, $details, $destResponse, $userId);
-                $this->populateMessageOutbox($swapRef, $swapData, $details, $destResponse, $userId);
-            } elseif ($swapType === 'DEPOSIT') {
-                $this->populateDepositTransaction($swapRef, $swapData, $details, $userId);
-            }
-            
-            $this->logger->info("Tracking tables populated", ['reference' => $swapRef, 'type' => $swapType]);
-            
-        } catch (Exception $e) {
-            $this->logger->error("Failed to populate tracking tables", [
-                'reference' => $swapRef,
-                'error' => $e->getMessage()
-            ]);
+        // 2. Always populate swap_transactions - pass the ID
+        if ($swapId) {
+            $this->populateSwapTransaction($swapId, $swapData, $details, $userId);
+        } else {
+            $this->logger->warning("No swap_id available, skipping swap_transactions", ['swap_ref' => $swapRef]);
         }
+        
+        // 3. Populate type-specific tables
+        if ($swapType === 'CASHOUT') {
+            $this->populateCashoutAuthorization($swapRef, $swapData, $details, $destResponse, $userId);
+            $this->populateMessageOutbox($swapRef, $swapData, $details, $destResponse, $userId);
+        } elseif ($swapType === 'DEPOSIT') {
+            $this->populateDepositTransaction($swapRef, $swapData, $details, $userId);
+        }
+        
+        $this->logger->info("Tracking tables populated", ['reference' => $swapRef, 'type' => $swapType]);
+        
+    } catch (Exception $e) {
+        $this->logger->error("Failed to populate tracking tables", [
+            'reference' => $swapRef,
+            'error' => $e->getMessage()
+        ]);
     }
+}
 
     /**
  * Populate swap_requests table and return the ID
