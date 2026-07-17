@@ -697,7 +697,6 @@ class SwapService
         $forexFeePercent = $this->feeCalculationDetails['forex_fee_percent'] ?? null;
         $forexFeeAmount = $this->feeCalculationDetails['forex_fee_amount'] ?? null;
         $totalForexFee = $this->feeCalculationDetails['total_forex_fee'] ?? null;
-        $expectedToAmount = $this->feeCalculationDetails['net_amount_destination_currency'] ?? null;
         
         $sql = "
             INSERT INTO swap_requests (
@@ -718,7 +717,6 @@ class SwapService
                 forex_fee_percent,
                 forex_fee_amount,
                 total_forex_fee,
-                expected_to_amount,
                 trade_metadata,
                 original_swap_ref,
                 user_id
@@ -740,7 +738,6 @@ class SwapService
                 :forex_fee_percent,
                 :forex_fee_amount,
                 :total_forex_fee,
-                :expected_to_amount,
                 :trade_metadata::jsonb,
                 :original_swap_ref,
                 :user_id
@@ -750,7 +747,6 @@ class SwapService
                 forex_fee_percent = EXCLUDED.forex_fee_percent,
                 forex_fee_amount = EXCLUDED.forex_fee_amount,
                 total_forex_fee = EXCLUDED.total_forex_fee,
-                expected_to_amount = EXCLUDED.expected_to_amount,
                 trade_metadata = EXCLUDED.trade_metadata,
                 fee_breakdown = EXCLUDED.fee_breakdown,
                 user_id = EXCLUDED.user_id
