@@ -3258,8 +3258,8 @@ class SwapService
             'action' => 'DEBIT_FUNDS'
         ];
 
-        $debitResult = $sourceAdapter->debit($debitPayload);
-
+    $debitResult = $sourceAdapter->debit($debitPayload, []);
+        
         if (!($debitResult['success'] ?? false)) {
             $errorMsg = $debitResult['data']['message'] ?? $debitResult['message'] ?? 'Unknown';
             error_log("[SwapService] Debit failed: " . $errorMsg);
