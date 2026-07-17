@@ -602,6 +602,10 @@ details.raw-json-wrap summary { cursor: pointer; font-size: 12px; color: var(--t
             <input type="number" id="fromAmount" placeholder="0.00" step="0.01" min="0.01">
             <span class="currency-suffix" id="fromCurrencyLabel"><?php echo htmlspecialchars($userCurrency); ?></span>
             <div class="help" id="fromLimitsHelp"></div>
+            <!-- ============================================================
+                 NEW: Currency info display
+                 ============================================================ -->
+            <div class="help" id="fromCurrencyInfo" style="font-size:11px;color:var(--text-dim);margin-top:2px;"></div>
         </div>
     </div>
 
@@ -776,6 +780,42 @@ let state = {
 let savedIdentities = [];
 
 // ============================================================
+// CURRENCY DISPLAY HELPERS
+// ============================================================
+function getInstitutionCurrency(instCode) {
+    if (!instCode) return CONFIG.CURRENCY;
+    const inst = PARTICIPANTS[instCode];
+    return inst?.limits?.currency || CONFIG.CURRENCY;
+}
+
+function updateCurrencyDisplay() {
+    // Update source currency label
+    const fromCurrency = getInstitutionCurrency(state.fromInst);
+    const fromLabel = document.getElementById('fromCurrencyLabel');
+    if (fromLabel) fromLabel.textContent = fromCurrency;
+    
+    // Show currency info for source
+    const fromInfo = document.getElementById('fromCurrencyInfo');
+    if (fromInfo && state.fromInst) {
+        fromInfo.textContent = `💰 Source currency: ${fromCurrency}`;
+    } else if (fromInfo) {
+        fromInfo.textContent = '';
+    }
+    
+    // For CASHOUT, show destination currency info if destination is selected
+    if (state.swapType === 'CASHOUT' && state.toInst) {
+        const toCurrency = getInstitutionCurrency(state.toInst);
+        console.log(`[currency] CASHOUT destination: ${state.toInst} uses currency: ${toCurrency}`);
+    }
+    
+    // For DEPOSIT, show destination currency info if destination is selected
+    if (state.swapType === 'DEPOSIT' && state.toInst) {
+        const toCurrency = getInstitutionCurrency(state.toInst);
+        console.log(`[currency] DEPOSIT destination: ${state.toInst} uses currency: ${toCurrency}`);
+    }
+}
+
+// ============================================================
 // COUNTRY SWITCH
 // ============================================================
 function switchCountry(country) {
@@ -875,7 +915,11 @@ function selectFromInst(code) {
     document.getElementById('fromLimitsHelp').textContent = inst.limits
         ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
     if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectFromAsset(assetTypes[0]); }
-    else { document.getElementById('fromFields').innerHTML = ''; refreshUI(); }
+    else { document.getElementById('fromFields').innerHTML = ''; }
+    
+    // NEW: Update currency display
+    updateCurrencyDisplay();
+    refreshUI();
 }
 
 function selectFromAsset(type) {
@@ -990,10 +1034,12 @@ function selectToInst(code) {
         ).join('');
         group.style.display = 'block';
         if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectToAsset(assetTypes[0]); }
-        else { document.getElementById('toFields').style.display = 'none'; refreshUI(); }
-    } else {
-        refreshUI();
+        else { document.getElementById('toFields').style.display = 'none'; }
+        
+        // NEW: Update currency display
+        updateCurrencyDisplay();
     }
+    refreshUI();
 }
 
 function selectToAsset(type) {
@@ -1032,6 +1078,9 @@ function setSwapType(type) {
     if (isIdentity) {
         updateIdentityHelp();
     }
+
+    // Update currency display when swap type changes
+    updateCurrencyDisplay();
 
     if (isMulti && state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
     refreshUI();
@@ -1206,14 +1255,17 @@ function buildPayload() {
         const destFields = { ...state.toFields };
         if (assetHasAmountField(state.toAsset)) destFields.amount = totalAmount;
         const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        
+        // ============================================================
+        // FIX: destination_currency comes from the destination institution's
+        // own configured currency, not just the source currency.
+        // ============================================================
+        const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency || CONFIG.CURRENCY;
+        
         const payload = {
             swap_type: 'MULTI_SOURCE', reference, idempotency_key: idempotencyKey,
             amount: totalAmount, currency: CONFIG.CURRENCY,
-            // CURRENCY: destination_currency comes from the destination
-            // institution's own configured currency, not just re-using
-            // the aggregate source currency, so cross-currency pools are
-            // handled correctly by the server's forex logic.
-            destination_currency: PARTICIPANTS[state.toInst]?.limits?.currency || CONFIG.CURRENCY,
+            destination_currency: destCurrency,
             contribution_strategy: 'USER_SPECIFIED',
             sources, to_institution: state.toInst, destination_institution: state.toInst,
             destination_asset_type: state.toAsset, asset_type: state.toAsset,
@@ -1227,7 +1279,16 @@ function buildPayload() {
     const pin = extractPinFromFields(state.fromAsset, state.fromFields);
     const sourceAssetFields = { ...state.fromFields };
     if (assetHasAmountField(state.fromAsset)) sourceAssetFields.amount = state.fromAmount;
+    
+    // ============================================================
+    // FIX: Source currency must come from the institution's own
+    // configured currency, not the user's session/country currency.
+    // This is what triggers forex conversion when source and
+    // destination currencies differ.
+    // ============================================================
     const sourceCurrency = PARTICIPANTS[state.fromInst]?.limits?.currency || CONFIG.CURRENCY;
+    console.log(`[currency] Source: ${state.fromInst} uses currency: ${sourceCurrency}`);
+    
     const payload = {
         swap_type: state.swapType, reference, idempotency_key: idempotencyKey,
         from_institution: state.fromInst, source_institution: state.fromInst,
@@ -1252,18 +1313,29 @@ function buildPayload() {
         payload.destination_institution = state.toInst;
         payload.delivery_method = state.deliveryMethod;
         if (state.beneficiaryPhone) { payload.beneficiary_phone = state.beneficiaryPhone; payload.client_phone = state.beneficiaryPhone; }
-        // CURRENCY: a CASHOUT's "destination" is physical cash out of an
-        // ATM/agent, in the country's own currency - not necessarily the
-        // source asset's currency (e.g. a USD voucher cashed out as BWP notes).
-        payload.destination_currency = CONFIG.CURRENCY;
+        // ============================================================
+        // FIX: destination_currency for CASHOUT should be the destination
+        // institution's currency (what they dispense), not the user's
+        // session currency. If the destination institution doesn't have
+        // a currency configured, fall back to the country's currency.
+        // ============================================================
+        const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency || CONFIG.CURRENCY;
+        payload.destination_currency = destCurrency;
+        console.log(`[currency] CASHOUT destination: ${state.toInst} uses currency: ${destCurrency}`);
     } else {
         payload.to_institution = state.toInst;
         payload.destination_institution = state.toInst;
         payload.destination_asset_type = state.toAsset;
-        // CURRENCY: default from the destination institution's own
-        // configured currency, falling back to the source currency only
-        // if the destination institution has none configured.
-        payload.destination_currency = PARTICIPANTS[state.toInst]?.limits?.currency || sourceCurrency;
+        // ============================================================
+        // FIX: destination_currency must come from the destination
+        // institution's own configured currency. Only fall back to
+        // source currency if the destination institution has no
+        // currency configured at all.
+        // ============================================================
+        const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency || sourceCurrency;
+        payload.destination_currency = destCurrency;
+        console.log(`[currency] DEPOSIT destination: ${state.toInst} uses currency: ${destCurrency}`);
+        
         const destFields = { ...state.toFields };
         if (assetHasAmountField(state.toAsset)) destFields.amount = state.fromAmount;
         payload.destination_asset_fields = destFields;
