@@ -20,7 +20,7 @@ $userName = $userData['full_name'] ?? $userData['username'] ?? 'User';
 $userCountry = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
 $userCurrency = $userData['currency'] ?? getenv('VOUCHMORPH_CURRENCY') ?: 'BWP';
 $userRole = $userData['role'] ?? 'user';
-$userId = $userData['id'] ?? 0;
+$userId = $userData['id'] ?? $userData['user_id'] ?? 0;
 
 // ============================================================
 // FIX: Warn loudly if the session doesn't actually carry a user id.
