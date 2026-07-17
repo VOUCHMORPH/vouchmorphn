@@ -3255,12 +3255,13 @@ class SwapService
 
     $debitResult = $sourceAdapter->debit($debitPayload, []);
         
-        if (!($debitResult['success'] ?? false)) {
-            $errorMsg = $debitResult['data']['message'] ?? $debitResult['message'] ?? 'Unknown';
-            error_log("[SwapService] Debit failed: " . $errorMsg);
-            $this->updateCashoutAuthorizationStatus($authId, 'DEBIT_FAILED', $cashoutPoint);
-            throw new RuntimeException("Debit failed: " . $errorMsg);
-        }
+        $debitSuccess = ($debitResult['success'] ?? false) || ($debitResult['debited'] ?? false);
+if (!$debitSuccess) {
+    $errorMsg = $debitResult['data']['message'] ?? $debitResult['message'] ?? 'Unknown';
+    error_log("[SwapService] Debit failed: " . $errorMsg);
+    $this->updateCashoutAuthorizationStatus($authId, 'DEBIT_FAILED', $cashoutPoint);
+    throw new RuntimeException("Debit failed: " . $errorMsg);
+}
 
         error_log("[SwapService] Debit successful");
 
