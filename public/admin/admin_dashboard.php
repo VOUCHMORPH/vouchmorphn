@@ -256,12 +256,28 @@ function safeHtml($value) {
 }
 
 // ============================================================
-// FETCH MULTI-DESTINATION SWAPS
+// FETCH MULTI-DESTINATION SWAPS WITH FULL DETAILS
 // ============================================================
 $multiDestinationSwaps = [];
 try {
     $stmt = $db->query("
-        SELECT * FROM multi_destination_swaps 
+        SELECT 
+            id,
+            reference,
+            source_institution,
+            total_destinations,
+            successful_count,
+            failed_count,
+            total_amount,
+            total_fees,
+            total_delivered,
+            total_held,
+            status,
+            destinations_payload,
+            results_payload,
+            created_at,
+            updated_at
+        FROM multi_destination_swaps 
         ORDER BY created_at DESC 
         LIMIT 20
     ");
@@ -745,7 +761,7 @@ try {
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- MULTI-DESTINATION VIEW - DETAILED -->
+        <!-- MULTI-DESTINATION VIEW - FULL DETAILS -->
         <!-- ============================================================ -->
         <?php if ($view === 'multi_destination' && canView('multi_destination')): ?>
         <div class="content-header">
@@ -754,7 +770,23 @@ try {
             <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
         </div>
 
-        <?php foreach ($multiDestinationSwaps as $swap): ?>
+        <?php foreach ($multiDestinationSwaps as $swap): 
+            $destinations = json_decode($swap['destinations_payload'] ?? '[]', true);
+            $results = json_decode($swap['results_payload'] ?? '[]', true);
+            $feeBreakdowns = array_column($results, 'fee_breakdown');
+            $totalFeeBreakdown = [];
+            foreach ($feeBreakdowns as $fb) {
+                if (!empty($fb['breakdown'])) {
+                    foreach ($fb['breakdown'] as $item) {
+                        $key = $item['slot'] ?? $item['name'] ?? 'unknown';
+                        if (!isset($totalFeeBreakdown[$key])) {
+                            $totalFeeBreakdown[$key] = ['amount' => 0, 'owner' => $item['owner'] ?? 'UNKNOWN'];
+                        }
+                        $totalFeeBreakdown[$key]['amount'] += $item['amount'];
+                    }
+                }
+            }
+        ?>
         <div class="card" style="border-left: 6px solid <?php echo $swap['status'] === 'completed' ? '#28a745' : ($swap['status'] === 'partial' ? '#856404' : '#dc3545'); ?>;">
             <div class="card-header">
                 <span class="card-title">
@@ -768,39 +800,54 @@ try {
                 </span>
             </div>
             
-            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin-bottom:12px; font-size:0.65rem;">
+            <!-- Summary Stats -->
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:12px; font-size:0.65rem; background:#f8f9fa; padding:10px; border-radius:4px;">
                 <div><strong>Source:</strong> <?php echo safeHtml($swap['source_institution']); ?></div>
-                <div><strong>Total:</strong> <?php echo number_format((float)($swap['total_amount'] ?? 0), 2); ?></div>
-                <div><strong>Destinations:</strong> <?php echo $swap['total_destinations']; ?></div>
+                <div><strong>Total Amount:</strong> <?php echo number_format((float)($swap['total_amount'] ?? 0), 2); ?> BWP</div>
+                <div><strong>Total Fees:</strong> <?php echo number_format((float)($swap['total_fees'] ?? 0), 2); ?> BWP</div>
+                <div><strong>Total Delivered:</strong> <?php echo number_format((float)($swap['total_delivered'] ?? 0), 2); ?> BWP</div>
                 <div><strong>✅ Success:</strong> <?php echo $swap['successful_count'] ?? 0; ?></div>
                 <div><strong>❌ Failed:</strong> <?php echo $swap['failed_count'] ?? 0; ?></div>
-                <div><strong>💰 Fees:</strong> <?php echo number_format((float)($swap['total_fees'] ?? 0), 2); ?></div>
-                <div><strong>📦 Delivered:</strong> <?php echo number_format((float)($swap['total_delivered'] ?? 0), 2); ?></div>
+                <div><strong>📦 Destinations:</strong> <?php echo $swap['total_destinations']; ?></div>
             </div>
-            
+
+            <!-- Fee Breakdown Summary -->
+            <?php if (!empty($totalFeeBreakdown)): ?>
+            <div style="margin-bottom:12px; padding:8px; background:#f0fdf4; border:1px solid #28a745; border-radius:4px;">
+                <div style="font-size:0.6rem; font-weight:600; color:#28a745; margin-bottom:4px;">💰 Total Fee Breakdown (All Destinations)</div>
+                <div style="display:flex; flex-wrap:wrap; gap:12px; font-size:0.6rem;">
+                    <?php foreach ($totalFeeBreakdown as $key => $item): ?>
+                    <div>
+                        <span style="color:#666;"><?php echo safeHtml($key); ?>:</span>
+                        <span style="font-weight:600; color:#001B44;"><?php echo number_format($item['amount'], 2); ?> BWP</span>
+                        <span style="color:#666; font-size:0.55rem;">(<?php echo safeHtml($item['owner']); ?>)</span>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+            <?php endif; ?>
+
+            <!-- Per-Destination Details -->
             <div style="font-size:0.6rem; color:#666; margin-bottom:8px;">
-                <strong>Destinations Payload:</strong>
+                <strong>📋 Destination Details:</strong>
             </div>
-            
-            <?php 
-            $destinations = json_decode($swap['destinations_payload'] ?? '[]', true);
-            $results = json_decode($swap['results_payload'] ?? '[]', true);
-            
-            if (!empty($destinations)):
-            ?>
+
+            <?php if (!empty($destinations)): ?>
             <div class="table-responsive">
                 <table>
                     <thead>
                         <tr>
                             <th>#</th>
                             <th>Type</th>
-                            <th>Amount</th>
                             <th>Institution</th>
                             <th>Identifier</th>
+                            <th>Requested</th>
+                            <th>Fee</th>
+                            <th>Net</th>
+                            <th>Delivered</th>
                             <th>Status</th>
                             <th>Hold Ref</th>
-                            <th>Fee</th>
-                            <th>Error</th>
+                            <th>Details</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -811,6 +858,9 @@ try {
                             $isIdentity = isset($dest['identity_type']) || isset($dest['identity_value']);
                             $isCashout = isset($dest['delivery_method']) && $dest['delivery_method'] === 'ATM';
                             $isBank = isset($dest['to_institution']) && !$isIdentity && !$isCashout;
+                            $fee = (float)($result['fee'] ?? 0);
+                            $net = (float)($result['net_amount'] ?? $dest['amount'] ?? 0);
+                            $delivered = (float)($result['deliverable_amount'] ?? $net);
                         ?>
                         <tr class="<?php echo $status === 'failed' ? 'failed' : ''; ?>">
                             <td><?php echo $idx + 1; ?></td>
@@ -825,7 +875,6 @@ try {
                                 <span class="status status-info">UNKNOWN</span>
                                 <?php endif; ?>
                             </td>
-                            <td><strong><?php echo number_format((float)($dest['amount'] ?? 0), 2); ?></strong></td>
                             <td><?php echo safeHtml($dest['to_institution'] ?? $dest['destination_institution'] ?? ($isIdentity ? 'IDENTITY' : 'N/A')); ?></td>
                             <td>
                                 <?php 
@@ -838,6 +887,10 @@ try {
                                 }
                                 ?>
                             </td>
+                            <td><strong><?php echo number_format((float)($dest['amount'] ?? 0), 2); ?></strong></td>
+                            <td style="color:#dc3545;"><?php echo number_format($fee, 2); ?></td>
+                            <td style="color:#28a745;"><?php echo number_format($net, 2); ?></td>
+                            <td><?php echo number_format($delivered, 2); ?></td>
                             <td>
                                 <?php 
                                 $statusClass = match($status) {
@@ -850,13 +903,16 @@ try {
                                 ?>
                                 <span class="status status-<?php echo $statusClass; ?>"><?php echo safeHtml(strtoupper($statusLabel)); ?></span>
                             </td>
-                            <td><?php echo safeHtml(substr($result['hold_reference'] ?? 'N/A', 0, 12)); ?>…</td>
-                            <td><?php echo number_format((float)($result['fee'] ?? 0), 2); ?></td>
+                            <td><?php echo safeHtml(substr($result['hold_reference'] ?? 'N/A', 0, 10)); ?></td>
                             <td>
                                 <?php if ($error): ?>
-                                <span style="color:#dc3545; font-size:0.55rem;"><?php echo safeHtml(substr($error, 0, 60)); ?></span>
+                                <span style="color:#dc3545; font-size:0.55rem; cursor:help;" title="<?php echo safeHtml($error); ?>">⚠️ Error</span>
+                                <?php elseif ($isIdentity && $status === 'pending_identity_confirmation'): ?>
+                                <span style="color:#6f42c1; font-size:0.55rem;">⏳ Awaiting Claim</span>
+                                <?php elseif ($isCashout && $status === 'pending'): ?>
+                                <span style="color:#856404; font-size:0.55rem;">⏳ Awaiting Cashout</span>
                                 <?php else: ?>
-                                <span style="color:#999;">—</span>
+                                <span style="color:#28a745; font-size:0.55rem;">✅ Completed</span>
                                 <?php endif; ?>
                             </td>
                         </tr>
@@ -866,10 +922,114 @@ try {
             </div>
             <?php endif; ?>
             
+            <!-- Fee Breakdown Details per Destination -->
+            <?php 
+            $hasFeeDetails = false;
+            foreach ($results as $result) {
+                if (!empty($result['fee_breakdown']['breakdown'])) {
+                    $hasFeeDetails = true;
+                    break;
+                }
+            }
+            if ($hasFeeDetails): 
+            ?>
+            <details style="margin-top:12px;">
+                <summary style="cursor:pointer; font-size:0.6rem; color:#666;">💰 Fee Breakdown per Destination</summary>
+                <?php foreach ($results as $idx => $result): 
+                    $fb = $result['fee_breakdown'] ?? [];
+                    if (empty($fb['breakdown'])) continue;
+                    $dest = $destinations[$idx] ?? [];
+                    $label = $dest['to_institution'] ?? $dest['destination_institution'] ?? $dest['identity_value'] ?? 'Destination ' . ($idx + 1);
+                ?>
+                <div style="margin:8px 0; padding:8px; background:#f8f9fa; border-left:3px solid #28a745; border-radius:2px;">
+                    <div style="font-size:0.6rem; font-weight:600; color:#001B44;">
+                        <?php echo safeHtml($label); ?> — <?php echo number_format($fb['total_fee'] ?? 0, 2); ?> BWP fee
+                    </div>
+                    <div style="display:flex; flex-wrap:wrap; gap:8px; font-size:0.55rem; color:#666;">
+                        <?php foreach ($fb['breakdown'] as $item): ?>
+                        <span>
+                            <?php echo safeHtml($item['slot'] ?? $item['name'] ?? ''); ?>:
+                            <span style="font-weight:600; color:#001B44;"><?php echo number_format($item['amount'], 2); ?> BWP</span>
+                            <?php if (!empty($item['owner']) && $item['owner'] !== 'UNKNOWN'): ?>
+                            <span style="color:#666;">(<?php echo safeHtml($item['owner']); ?>)</span>
+                            <?php endif; ?>
+                        </span>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php if (!empty($fb['mathematical_formulas'])): ?>
+                    <div style="font-size:0.5rem; color:#999; margin-top:4px;">
+                        Formula: <?php echo safeHtml(json_encode($fb['mathematical_formulas'])); ?>
+                    </div>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
+            </details>
+            <?php endif; ?>
+
+            <!-- Settlement Details -->
+            <?php 
+            $settlements = $swap['settlement'] ?? [];
+            if (!empty($settlements)):
+            ?>
+            <details style="margin-top:12px;">
+                <summary style="cursor:pointer; font-size:0.6rem; color:#666;">📤 Settlement Details</summary>
+                <?php foreach ($settlements as $settlement): ?>
+                <div style="margin:4px 0; padding:4px 8px; background:#e8f4fd; border-left:3px solid #17a2b8; font-size:0.55rem;">
+                    <span style="font-weight:600;"><?php echo safeHtml($settlement['destination_institution'] ?? 'Unknown'); ?></span>
+                    — <?php echo number_format((float)($settlement['amount'] ?? 0), 2); ?> BWP
+                    (Fee: <?php echo number_format((float)($settlement['fee'] ?? 0), 2); ?> BWP)
+                    <span style="color:#666;">Hold: <?php echo safeHtml(substr($settlement['hold_reference'] ?? 'N/A', 0, 12)); ?></span>
+                </div>
+                <?php endforeach; ?>
+            </details>
+            <?php endif; ?>
+
+            <!-- Identity Access Methods -->
+            <?php 
+            $identityDetails = [];
+            foreach ($results as $result) {
+                if (!empty($result['result']['access_methods'])) {
+                    $identityDetails[] = $result['result']['access_methods'];
+                }
+            }
+            if (!empty($identityDetails)):
+            ?>
+            <details style="margin-top:12px;">
+                <summary style="cursor:pointer; font-size:0.6rem; color:#666;">🔑 Identity Access Methods</summary>
+                <?php foreach ($identityDetails as $methods): ?>
+                <div style="margin:4px 0; padding:4px 8px; background:#e8d5f5; border-left:3px solid #6f42c1; font-size:0.55rem;">
+                    <?php foreach ($methods as $method): ?>
+                    <div>
+                        <span style="font-weight:600;"><?php echo safeHtml($method['type'] ?? 'Unknown'); ?></span>
+                        — <?php echo safeHtml($method['requires'] ?? ''); ?>
+                        <?php if (!empty($method['verification'])): ?>
+                        <span style="color:#666;">(<?php echo safeHtml($method['verification']); ?>)</span>
+                        <?php endif; ?>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+                <?php endforeach; ?>
+            </details>
+            <?php endif; ?>
+            
             <!-- Raw JSON details (collapsible) -->
             <details style="margin-top:12px;">
-                <summary style="cursor:pointer; font-size:0.6rem; color:#666;">📄 Raw JSON details</summary>
-                <pre style="background:#1e293b; color:#4ade80; padding:12px; font-size:0.55rem; overflow-x:auto; max-height:300px; overflow-y:auto; margin-top:8px;"><?php echo safeHtml(json_encode(json_decode($swap['destinations_payload'] ?? '[]', true), JSON_PRETTY_PRINT)); ?></pre>
+                <summary style="cursor:pointer; font-size:0.6rem; color:#666;">📄 Raw JSON</summary>
+                <pre style="background:#1e293b; color:#4ade80; padding:12px; font-size:0.55rem; overflow-x:auto; max-height:300px; overflow-y:auto; margin-top:8px;"><?php 
+                    $fullData = [
+                        'summary' => [
+                            'reference' => $swap['reference'],
+                            'source_institution' => $swap['source_institution'],
+                            'status' => $swap['status'],
+                            'total_amount' => $swap['total_amount'],
+                            'total_fees' => $swap['total_fees'],
+                            'total_delivered' => $swap['total_delivered']
+                        ],
+                        'destinations' => $destinations,
+                        'results' => $results
+                    ];
+                    echo safeHtml(json_encode($fullData, JSON_PRETTY_PRINT)); 
+                ?></pre>
             </details>
         </div>
         <?php endforeach; ?>
