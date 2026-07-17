@@ -4498,13 +4498,13 @@ class SwapService
     private function updateCashoutAuthorizationStatus(int $authId, string $status, ?string $cashoutPoint = null): void
     {
         $sql = "
-            UPDATE cashout_authorizations 
-            SET status = :status,
-                updated_at = NOW(),
-                completed_at = CASE WHEN :status = 'COMPLETED' THEN NOW() ELSE completed_at END,
-                cashout_point = COALESCE(:cashout_point, cashout_point)
-            WHERE auth_id = :auth_id
-        ";
+    UPDATE cashout_authorizations 
+    SET status = :status::text,
+        updated_at = NOW(),
+        completed_at = CASE WHEN :status::text = 'COMPLETED' THEN NOW() ELSE completed_at END,
+        cashout_point = COALESCE(:cashout_point, cashout_point)
+    WHERE auth_id = :auth_id
+";
         
         try {
             $stmt = $this->swapDB->prepare($sql);
