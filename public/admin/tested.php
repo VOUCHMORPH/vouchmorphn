@@ -146,10 +146,16 @@ function classifyOutcome(array $resp): array {
         return ['outcome' => 'FIXED', 'detail' => 'Was actually still ACTIVE at SACCUSSALIS - now corrected. ' . ($resp['message'] ?? '')];
     }
     if (str_contains($msg, 'not active')) {
-        return ['outcome' => 'ALREADY_OK', 'detail' => 'Already resolved at SACCUSSALIS - no action was needed.'];
+        // Preserve the ACTUAL status SACCUSSALIS reported, e.g.
+        // "Hold is not active (status: DEBITED)" vs "(status: RELEASED)" -
+        // these are both "not active" but only one of them is the status
+        // this call was trying to confirm. Surface the real message so a
+        // RELEASED-when-should-be-DEBITED mismatch doesn't get buried
+        // under a reassuring generic label.
+        return ['outcome' => 'ALREADY_OK', 'detail' => $resp['message'] ?? 'Already resolved at SACCUSSALIS.'];
     }
     if (str_contains($msg, 'no hold found')) {
-        return ['outcome' => 'NOT_FOUND', 'detail' => 'No matching hold at SACCUSSALIS.'];
+        return ['outcome' => 'NOT_FOUND', 'detail' => 'No matching hold at SACCUSSALIS for this reference.'];
     }
     return ['outcome' => 'ERROR', 'detail' => $resp['message'] ?? json_encode($resp)];
 }
@@ -167,17 +173,30 @@ if ($confirm) {
         }
 
         $classified = classifyOutcome($outcome['response']);
+        $fallbackTried = false;
 
-        // If the primary reference (swap_reference) wasn't found and there's
-        // a distinct fallback from metadata, automatically try that before
-        // giving up - avoids a second manual pass for the rare row that was
-        // created through a different code path.
         if ($classified['outcome'] === 'NOT_FOUND' && !empty($c['fallback_ref'])) {
+            $fallbackTried = true;
             $refUsed = $c['fallback_ref'];
             $retryOutcome = callSaccussalisHold($action, $refUsed, (float)$c['amount']);
             if ($retryOutcome['ok']) {
                 $classified = classifyOutcome($retryOutcome['response']);
-                $classified['detail'] = '[retried with metadata external_hold_reference] ' . $classified['detail'];
+            }
+        }
+
+        if ($classified['outcome'] === 'NOT_FOUND') {
+            $classified['detail'] .= $fallbackTried
+                ? ' Also tried metadata.external_hold_reference - still not found. This hold likely never existed at SACCUSSALIS; check manually whether the original PLACE_HOLD for this reference actually succeeded.'
+                : ' No fallback reference available in metadata to retry with. Check manually whether the original PLACE_HOLD for this reference actually succeeded.';
+        }
+
+        // For ALREADY_OK, flag explicitly if the confirmed status doesn't
+        // match what a DEBIT/RELEASE call was expecting to confirm.
+        if ($classified['outcome'] === 'ALREADY_OK') {
+            $expectedStatus = $action === 'DEBIT' ? 'DEBITED' : 'RELEASED';
+            if (stripos($classified['detail'], $expectedStatus) === false) {
+                $classified['outcome'] = 'STATUS_MISMATCH';
+                $classified['detail'] = "Expected {$expectedStatus} but SACCUSSALIS reports a different status - " . $classified['detail'];
             }
         }
 
@@ -185,7 +204,7 @@ if ($confirm) {
     }
 }
 
-$counts = ['FIXED' => 0, 'ALREADY_OK' => 0, 'NOT_FOUND' => 0, 'ERROR' => 0, 'CALL_FAILED' => 0];
+$counts = ['FIXED' => 0, 'ALREADY_OK' => 0, 'STATUS_MISMATCH' => 0, 'NOT_FOUND' => 0, 'ERROR' => 0, 'CALL_FAILED' => 0];
 foreach ($results as $r) { $counts[$r['outcome']]++; }
 ?>
 <!DOCTYPE html>
@@ -202,6 +221,7 @@ foreach ($results as $r) { $counts[$r['outcome']]++; }
     .outcome { padding:2px 8px; border-radius:4px; font-weight:700; font-size:0.65rem; }
     .FIXED { background:#d4edda; color:#155724; }
     .ALREADY_OK { background:#e2e3e5; color:#41464b; }
+    .STATUS_MISMATCH { background:#ffe0b2; color:#8a4b00; }
     .NOT_FOUND { background:#fff3cd; color:#856404; }
     .ERROR, .CALL_FAILED { background:#f8d7da; color:#721c24; }
     .btn { display:inline-block; padding:10px 20px; background:#dc3545; color:#fff; text-decoration:none; border-radius:4px; font-weight:700; margin-right:8px; margin-top:12px; }
@@ -211,6 +231,7 @@ foreach ($results as $r) { $counts[$r['outcome']]++; }
 </head>
 <body>
 <h1>🔧 SACCUSSALIS Backlog Reconciliation</h1>
+<p style="font-size:0.7rem; color:#20c997; font-weight:700;">SCRIPT VERSION: 2 (uses swap_reference, not the internal HOLD_ prefixed hold_reference) — if you don't see this line, the old file is still what's running.</p>
 <p style="font-size:0.8rem; color:#666;">Found <?php echo count($candidates); ?> candidate hold(s) VOUCHMORPH believes are RELEASED/DEBITED for SACCUSSALIS<?php echo $limit ? " (showing first {$limit})" : ''; ?>.</p>
 
 <?php if (!$confirm): ?>
@@ -244,6 +265,7 @@ foreach ($results as $r) { $counts[$r['outcome']]++; }
 <div class="summary">
     <div style="background:#d4edda;color:#155724;">✅ Fixed: <?php echo $counts['FIXED']; ?></div>
     <div style="background:#e2e3e5;color:#41464b;">➖ Already OK: <?php echo $counts['ALREADY_OK']; ?></div>
+    <div style="background:#ffe0b2;color:#8a4b00;">⚠️ Status Mismatch: <?php echo $counts['STATUS_MISMATCH']; ?></div>
     <div style="background:#fff3cd;color:#856404;">❓ Not Found: <?php echo $counts['NOT_FOUND']; ?></div>
     <div style="background:#f8d7da;color:#721c24;">❌ Errors: <?php echo $counts['ERROR'] + $counts['CALL_FAILED']; ?></div>
 </div>
