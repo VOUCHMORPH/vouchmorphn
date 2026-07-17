@@ -2265,7 +2265,7 @@ class SwapService
         );
         
         return [
-            'status' => 'pending_cashout',
+            'status' => 'pending',
             'reference' => $this->currentSwapRef,
             'hold_reference' => $this->currentHoldReference,
             'auth_id' => $authId,
