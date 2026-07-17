@@ -670,81 +670,87 @@ class SwapService
     }
 
     /**
-     * Populate swap_requests table
-     * FIX: Removed updated_at = NOW() from ON CONFLICT since column doesn't exist
-     */
-    private function populateSwapRequest(string $swapRef, array $swapData, array $details, ?int $userId = null): void
-    {
-        $sql = "
-            INSERT INTO swap_requests (
-                swap_uuid,
-                from_currency,
-                to_currency,
-                amount,
-                source_details,
-                destination_details,
-                status,
-                created_at,
-                source_country,
-                destination_country,
-                fee_breakdown,
-                metadata,
-                retry_count
-            ) VALUES (
-                :swap_uuid,
-                :from_currency,
-                :to_currency,
-                :amount,
-                :source_details::jsonb,
-                :destination_details::jsonb,
-                :status,
-                :created_at,
-                :source_country,
-                :destination_country,
-                :fee_breakdown::jsonb,
-                :metadata::jsonb,
-                0
-            ) ON CONFLICT (swap_uuid) DO UPDATE SET
-                status = EXCLUDED.status
-        ";
-        
-        $status = $swapData['status'] ?? 'pending';
-        if (isset($details['status'])) {
-            $status = $details['status'];
-        }
-        
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':swap_uuid' => $swapRef,
-                ':from_currency' => $details['currency'] ?? $swapData['currency'] ?? 'BWP',
-                ':to_currency' => $details['destination_currency'] ?? $swapData['destination_currency'] ?? $details['currency'] ?? 'BWP',
-                ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
-                ':source_details' => json_encode($details),
-                ':destination_details' => json_encode([
-                    'institution' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
-                    'identifier' => $details['destination_identifier'] ?? null,
-                    'asset_type' => $details['destination_asset_type'] ?? null
-                ]),
-                ':status' => strtolower($status),
-                ':created_at' => date('Y-m-d H:i:s'),
-                ':source_country' => $details['source_country'] ?? 'BW',
-                ':destination_country' => $details['destination_country'] ?? 'BW',
-                ':fee_breakdown' => json_encode($details['fee_breakdown'] ?? $this->feeCalculationDetails ?? []),
-                ':metadata' => json_encode([
-                    'hold_id' => $this->currentHoldId,
-                    'swap_type' => $swapData['swap_type'] ?? 'STANDARD',
-                    'source_institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
-                    'user_id' => $userId
-                ])
-            ]);
-            
-            $this->logger->debug("swap_requests populated", ['swap_uuid' => $swapRef]);
-            
-        } catch (PDOException $e) {
-            $this->logger->error("Failed to populate swap_requests", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
-        }
+ * Populate swap_requests table and return the ID
+ */
+private function populateSwapRequest(string $swapRef, array $swapData, array $details, ?int $userId = null): ?int
+{
+    $sql = "
+        INSERT INTO swap_requests (
+            swap_uuid,
+            from_currency,
+            to_currency,
+            amount,
+            source_details,
+            destination_details,
+            status,
+            created_at,
+            source_country,
+            destination_country,
+            fee_breakdown,
+            metadata,
+            retry_count
+        ) VALUES (
+            :swap_uuid,
+            :from_currency,
+            :to_currency,
+            :amount,
+            :source_details::jsonb,
+            :destination_details::jsonb,
+            :status,
+            :created_at,
+            :source_country,
+            :destination_country,
+            :fee_breakdown::jsonb,
+            :metadata::jsonb,
+            0
+        ) ON CONFLICT (swap_uuid) DO UPDATE SET
+            status = EXCLUDED.status
+        RETURNING swap_id
+    ";
+    
+    $status = $swapData['status'] ?? 'pending';
+    if (isset($details['status'])) {
+        $status = $details['status'];
     }
+    
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':swap_uuid' => $swapRef,
+            ':from_currency' => $details['currency'] ?? $swapData['currency'] ?? 'BWP',
+            ':to_currency' => $details['destination_currency'] ?? $swapData['destination_currency'] ?? $details['currency'] ?? 'BWP',
+            ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
+            ':source_details' => json_encode($details),
+            ':destination_details' => json_encode([
+                'institution' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
+                'identifier' => $details['destination_identifier'] ?? null,
+                'asset_type' => $details['destination_asset_type'] ?? null
+            ]),
+            ':status' => strtolower($status),
+            ':created_at' => date('Y-m-d H:i:s'),
+            ':source_country' => $details['source_country'] ?? 'BW',
+            ':destination_country' => $details['destination_country'] ?? 'BW',
+            ':fee_breakdown' => json_encode($details['fee_breakdown'] ?? $this->feeCalculationDetails ?? []),
+            ':metadata' => json_encode([
+                'hold_id' => $this->currentHoldId,
+                'swap_type' => $swapData['swap_type'] ?? 'STANDARD',
+                'source_institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
+                'user_id' => $userId
+            ])
+        ]);
+        
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $swapId = $row ? (int)($row['swap_id'] ?? 0) : 0;
+        
+        $this->logger->debug("swap_requests populated", ['swap_uuid' => $swapRef, 'swap_id' => $swapId]);
+        
+        return $swapId > 0 ? $swapId : null;
+        
+    } catch (PDOException $e) {
+        $this->logger->error("Failed to populate swap_requests", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
+        return null;
+    }
+}
 
    /**
  * Get numeric swap_request_id from swap_uuid
