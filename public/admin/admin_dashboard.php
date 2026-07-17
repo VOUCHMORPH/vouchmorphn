@@ -54,7 +54,7 @@ $roleDefinitions = [
             'settlement_analysis', 'forex_fees', 'corridor_fees',
             'recent_swaps', 'swap_transactions', 'cross_border',
             'settlements', 'net_positions', 'regulatory_reports',
-            'generate_reports', 'role_reports'
+            'generate_reports', 'role_reports', 'multi_destination'
         ],
         'actions' => [
             'create', 'edit', 'delete', 'export', 'approve', 'reject', 
@@ -74,7 +74,7 @@ $roleDefinitions = [
             'dashboard', 'regulatory', 'audit', 'reports', 'transactions_readonly',
             'fee_breakdown', 'revenue_split', 'financial_dashboard',
             'recent_swaps', 'cross_border', 'net_positions',
-            'regulatory_reports', 'generate_reports'
+            'regulatory_reports', 'generate_reports', 'multi_destination'
         ],
         'actions' => ['view', 'export', 'approve_regulatory', 'generate_regulatory_report'],
         'report_types' => ['regulatory', 'compliance', 'audit', 'net_positions', 'cross_border'],
@@ -256,387 +256,80 @@ function safeHtml($value) {
 }
 
 // ============================================================
-// REPORT GENERATION ENGINE
+// FETCH MULTI-DESTINATION SWAPS
 // ============================================================
-function generateReport($type, $dateFrom, $dateTo, $format = 'html') {
-    global $db;
-    
-    $reportData = [];
-    $reportTitle = '';
-    $columns = [];
-    
-    switch ($type) {
-        case 'financial':
-            $reportTitle = 'Financial Report';
-            $stmt = $db->prepare("
-                SELECT 
-                    DATE(created_at) as date,
-                    COUNT(*) as transaction_count,
-                    COALESCE(SUM(amount), 0) as total_amount,
-                    COALESCE(SUM(fee_amount), 0) as total_fees,
-                    COUNT(CASE WHEN status ILIKE '%completed%' THEN 1 END) as completed_count,
-                    COUNT(CASE WHEN status ILIKE '%failed%' THEN 1 END) as failed_count
-                FROM vw_all_swaps
-                WHERE created_at BETWEEN :date_from AND :date_to
-                GROUP BY DATE(created_at)
-                ORDER BY date DESC
-            ");
-            $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
-            $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $columns = ['Date', 'Transactions', 'Total Amount', 'Total Fees', 'Completed', 'Failed'];
-            break;
-            
-        case 'regulatory':
-            $reportTitle = 'Regulatory Settlement Report';
-            $stmt = $db->prepare("
-                SELECT 
-                    swap_reference,
-                    source_institution,
-                    destination_institution,
-                    amount,
-                    currency,
-                    fee_amount,
-                    status,
-                    created_at,
-                    CASE 
-                        WHEN source_institution != destination_institution THEN 'CROSS_BORDER'
-                        ELSE 'DOMESTIC'
-                    END as transaction_type
-                FROM vw_all_swaps
-                WHERE created_at BETWEEN :date_from AND :date_to
-                ORDER BY created_at DESC
-            ");
-            $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
-            $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $columns = ['Reference', 'Source', 'Destination', 'Amount', 'Currency', 'Fee', 'Status', 'Type', 'Date'];
-            break;
-            
-        case 'settlement':
-            $reportTitle = 'Settlement Report';
-            $stmt = $db->prepare("
-                SELECT 
-                    reference,
-                    debtor,
-                    creditor,
-                    amount,
-                    currency,
-                    status,
-                    created_at,
-                    updated_at
-                FROM settlement_queue
-                WHERE created_at BETWEEN :date_from AND :date_to
-                ORDER BY created_at DESC
-            ");
-            $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
-            $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $columns = ['Reference', 'Debtor', 'Creditor', 'Amount', 'Currency', 'Status', 'Created', 'Updated'];
-            break;
-            
-        case 'revenue':
-            $reportTitle = 'Revenue Report';
-            $stmt = $db->prepare("
-                SELECT 
-                    source_institution,
-                    COUNT(*) as transaction_count,
-                    COALESCE(SUM(amount), 0) as total_volume,
-                    COALESCE(SUM(fee_amount), 0) as total_fees,
-                    COALESCE(AVG(fee_amount), 0) as avg_fee,
-                    MAX(created_at) as last_transaction
-                FROM vw_all_swaps
-                WHERE created_at BETWEEN :date_from AND :date_to
-                GROUP BY source_institution
-                ORDER BY total_fees DESC
-            ");
-            $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
-            $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $columns = ['Institution', 'Transactions', 'Total Volume', 'Total Fees', 'Avg Fee', 'Last Activity'];
-            break;
-            
-        case 'compliance':
-            $reportTitle = 'Compliance Report';
-            $stmt = $db->prepare("
-                SELECT 
-                    reference,
-                    source_institution,
-                    amount,
-                    currency,
-                    status,
-                    created_at,
-                    CASE 
-                        WHEN amount > 10000 THEN 'HIGH'
-                        WHEN amount > 5000 THEN 'MEDIUM'
-                        ELSE 'LOW'
-                    END as risk_level
-                FROM vw_all_swaps
-                WHERE created_at BETWEEN :date_from AND :date_to
-                ORDER BY amount DESC
-                LIMIT 500
-            ");
-            $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
-            $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $columns = ['Reference', 'Source', 'Amount', 'Currency', 'Status', 'Date', 'Risk Level'];
-            break;
-            
-        case 'audit':
-            $reportTitle = 'Audit Report';
-            $stmt = $db->prepare("
-                SELECT 
-                    audit_id,
-                    action,
-                    entity_type,
-                    performed_by_type,
-                    performed_by_id,
-                    details,
-                    performed_at,
-                    ip_address
-                FROM audit_logs
-                WHERE performed_at BETWEEN :date_from AND :date_to
-                ORDER BY performed_at DESC
-                LIMIT 1000
-            ");
-            $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
-            $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $columns = ['ID', 'Action', 'Entity', 'Performed By', 'Details', 'Date', 'IP'];
-            break;
-            
-        case 'net_positions':
-            $reportTitle = 'Net Positions Report';
-            $stmt = $db->query("
-                SELECT debtor, creditor, amount, currency_code, updated_at
-                FROM net_positions
-                WHERE amount > 0.01
-                ORDER BY amount DESC
-            ");
-            $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $columns = ['Debtor', 'Creditor', 'Amount', 'Currency', 'Updated'];
-            break;
-            
-        case 'cross_border':
-            $reportTitle = 'Cross-Border Report';
-            $stmt = $db->prepare("
-                SELECT 
-                    swap_reference,
-                    source_institution,
-                    destination_institution,
-                    amount,
-                    currency,
-                    exchange_rate,
-                    corridor_fee,
-                    status,
-                    created_at
-                FROM cross_border_messages
-                WHERE created_at BETWEEN :date_from AND :date_to
-                ORDER BY created_at DESC
-            ");
-            $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
-            $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $columns = ['Reference', 'Source', 'Destination', 'Amount', 'Currency', 'Rate', 'Corridor Fee', 'Status', 'Date'];
-            break;
-            
-        case 'forex':
-            $reportTitle = 'Forex Report';
-            $stmt = $db->prepare("
-                SELECT 
-                    base_currency,
-                    quote_currency,
-                    bid_rate,
-                    ask_rate,
-                    mid_rate,
-                    source,
-                    created_at
-                FROM fx_rates
-                WHERE created_at BETWEEN :date_from AND :date_to
-                ORDER BY created_at DESC
-                LIMIT 500
-            ");
-            $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
-            $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $columns = ['Base', 'Quote', 'Bid', 'Ask', 'Mid', 'Source', 'Date'];
-            break;
-            
-        case 'invoice':
-            $reportTitle = 'Invoice Report';
-            $stmt = $db->prepare("
-                SELECT 
-                    message_uuid as invoice_uuid,
-                    message_payload->>'fee_type' as fee_type,
-                    (message_payload->>'total_amount')::numeric as total_amount,
-                    (message_payload->>'fee_amount')::numeric as fee_amount,
-                    (message_payload->>'vat_amount')::numeric as vat_amount,
-                    status,
-                    created_at
-                FROM settlement_outbox
-                WHERE message_type = 'FEE_INVOICE'
-                AND created_at BETWEEN :date_from AND :date_to
-                ORDER BY created_at DESC
-            ");
-            $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
-            $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $columns = ['Invoice', 'Fee Type', 'Fee Amount', 'VAT', 'Total', 'Status', 'Date'];
-            break;
-            
-        case 'fee':
-        case 'participant':
-            $reportTitle = 'Participant Fee Report';
-            $stmt = $db->prepare("
-                SELECT 
-                    source_institution,
-                    message_payload->>'fee_type' as fee_type,
-                    COUNT(*) as invoice_count,
-                    SUM((message_payload->>'fee_amount')::numeric) as total_fee,
-                    SUM((message_payload->>'vat_amount')::numeric) as total_vat,
-                    SUM((message_payload->>'total_amount')::numeric) as total_amount,
-                    COUNT(CASE WHEN status = 'ACKNOWLEDGED' THEN 1 END) as paid_count
-                FROM settlement_outbox
-                WHERE message_type = 'FEE_INVOICE'
-                AND created_at BETWEEN :date_from AND :date_to
-                GROUP BY source_institution, message_payload->>'fee_type'
-                ORDER BY total_amount DESC
-            ");
-            $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
-            $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $columns = ['Institution', 'Fee Type', 'Invoices', 'Total Fee', 'VAT', 'Total Amount', 'Paid'];
-            break;
-            
-        case 'transaction':
-            $reportTitle = 'Transaction Report';
-            $stmt = $db->prepare("
-                SELECT 
-                    swap_reference,
-                    source_institution,
-                    destination_institution,
-                    amount,
-                    currency,
-                    fee_amount,
-                    status,
-                    created_at
-                FROM vw_all_swaps
-                WHERE created_at BETWEEN :date_from AND :date_to
-                ORDER BY created_at DESC
-                LIMIT 1000
-            ");
-            $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
-            $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $columns = ['Reference', 'Source', 'Destination', 'Amount', 'Currency', 'Fee', 'Status', 'Date'];
-            break;
-            
-        case 'aml':
-    $reportTitle = 'AML Monitoring Report';
-    $stmt = $db->prepare("
-        SELECT 
-            performed_at,
-            status as result,
-            risk_score as score,
-            findings as flagged_reasons,
-            user_id as entity_id,
-            check_type as entity_type,
-            check_reference
-        FROM aml_checks
-        WHERE performed_at BETWEEN :date_from AND :date_to
-        AND status = 'FLAGGED'
-        ORDER BY risk_score DESC
-        LIMIT 200
-    ");
-    $stmt->execute([':date_from' => $dateFrom . ' 00:00:00', ':date_to' => $dateTo . ' 23:59:59']);
-    $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    $columns = ['Date', 'Result', 'Score', 'Reasons', 'Entity ID', 'Entity Type'];
-    break;
-            
-        default:
-            return ['error' => 'Unsupported report type: ' . $type];
-    }
-    
-    return [
-        'title' => $reportTitle,
-        'data' => $reportData,
-        'columns' => $columns,
-        'date_from' => $dateFrom,
-        'date_to' => $dateTo,
-        'generated_at' => date('Y-m-d H:i:s'),
-        'count' => count($reportData)
-    ];
-}
-
-// ============================================================
-// LIVE TRANSACTIONS DATA
-// ============================================================
-$liveTransactions = [];
-$liveStats = [];
-
+$multiDestinationSwaps = [];
 try {
-    $possibleTables = ['vw_all_swaps', 'swap_requests', 'swap_transactions'];
-    $liveTable = null;
-    
-    foreach ($possibleTables as $table) {
-        try {
-            $stmt = $db->prepare("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = :table");
-            $stmt->execute([':table' => $table]);
-            if ((int)$stmt->fetchColumn() > 0) {
-                $liveTable = $table;
-                break;
-            }
-        } catch (Throwable $e) {}
-    }
-    
-    if ($liveTable) {
-        $query = "SELECT * FROM {$liveTable} ORDER BY created_at DESC LIMIT 50";
-        $stmt = $db->query($query);
-        $liveTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        $statStmt = $db->query("
-            SELECT 
-                COUNT(*) as total,
-                COUNT(CASE WHEN status ILIKE '%completed%' OR status ILIKE '%success%' THEN 1 END) as completed,
-                COUNT(CASE WHEN status ILIKE '%pending%' OR status ILIKE '%processing%' THEN 1 END) as pending,
-                COUNT(CASE WHEN status ILIKE '%failed%' OR status ILIKE '%error%' THEN 1 END) as failed,
-                COALESCE(SUM(amount), 0) as total_amount
-            FROM {$liveTable}
-            WHERE created_at >= NOW() - INTERVAL '24 hours'
-        ");
-        $liveStats = $statStmt->fetch(PDO::FETCH_ASSOC);
-    }
+    $stmt = $db->query("
+        SELECT * FROM multi_destination_swaps 
+        ORDER BY created_at DESC 
+        LIMIT 20
+    ");
+    $multiDestinationSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) {
-    error_log("[ADMIN DASHBOARD] Live transactions error: " . $e->getMessage());
+    error_log("[ADMIN DASHBOARD] Multi-destination fetch error: " . $e->getMessage());
 }
 
 // ============================================================
-// FETCH TABLE DATA
+// FETCH MULTI-SOURCE SWAPS
 // ============================================================
-$tableData = [];
-$tablesToFetch = [
-    'swap_requests' => ['label' => '📋 Swap Requests', 'order' => 'created_at DESC', 'limit' => 100],
-    'swap_transactions' => ['label' => '🔄 Swap Transactions', 'order' => 'created_at DESC', 'limit' => 100],
-    'settlement_queue' => ['label' => '📤 Settlement Queue', 'order' => 'created_at DESC', 'limit' => 100],
-    'audit_logs' => ['label' => '📝 Audit Logs', 'order' => 'performed_at DESC', 'limit' => 100],
-];
+$multiSourceSwaps = [];
+try {
+    $stmt = $db->query("
+        SELECT * FROM multi_source_swaps 
+        ORDER BY created_at DESC 
+        LIMIT 20
+    ");
+    $multiSourceSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    error_log("[ADMIN DASHBOARD] Multi-source fetch error: " . $e->getMessage());
+}
 
-foreach ($tablesToFetch as $table => $config) {
-    try {
-        $stmt = $db->prepare("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = :table");
-        $stmt->execute([':table' => $table]);
-        $exists = (int)$stmt->fetchColumn() > 0;
-        
-        if ($exists) {
-            $orderBy = $config['order'] ?? 'created_at DESC';
-            $limit = $config['limit'] ?? 100;
-            $dataStmt = $db->query("SELECT * FROM {$table} ORDER BY {$orderBy} LIMIT {$limit}");
-            $rows = $dataStmt->fetchAll(PDO::FETCH_ASSOC);
-            $colStmt = $db->query("SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = '{$table}' ORDER BY ordinal_position");
-            $columns = $colStmt->fetchAll(PDO::FETCH_COLUMN);
-            
-            $tableData[$table] = [
-                'exists' => true,
-                'rows' => $rows,
-                'count' => count($rows),
-                'label' => $config['label'],
-                'columns' => $columns
-            ];
-        } else {
-            $tableData[$table] = ['exists' => false, 'rows' => [], 'count' => 0, 'label' => $config['label'], 'columns' => []];
-        }
-    } catch (Throwable $e) {
-        $tableData[$table] = ['exists' => false, 'rows' => [], 'count' => 0, 'label' => $config['label'], 'columns' => []];
-    }
+// ============================================================
+// FETCH RECENT IDENTITY SWAPS
+// ============================================================
+$identitySwaps = [];
+try {
+    $stmt = $db->query("
+        SELECT * FROM identity_swap_holds 
+        ORDER BY created_at DESC 
+        LIMIT 20
+    ");
+    $identitySwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    error_log("[ADMIN DASHBOARD] Identity swaps fetch error: " . $e->getMessage());
+}
+
+// ============================================================
+// FETCH RECENT SWAPS FROM vw_all_swaps
+// ============================================================
+$recentSwaps = [];
+try {
+    $stmt = $db->query("
+        SELECT 
+            reference,
+            swap_reference,
+            swap_type,
+            source_institution,
+            destination_institution,
+            amount,
+            currency,
+            status,
+            fee_amount,
+            created_at,
+            CASE 
+                WHEN swap_type IN ('MULTI_DESTINATION') THEN 'MULTI_DEST'
+                WHEN swap_type IN ('MULTI_SOURCE') THEN 'MULTI_SRC'
+                WHEN swap_type IN ('IDENTITY') THEN 'IDENTITY'
+                ELSE swap_type
+            END as display_type
+        FROM vw_all_swaps 
+        ORDER BY created_at DESC 
+        LIMIT 100
+    ");
+    $recentSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    error_log("[ADMIN DASHBOARD] Recent swaps fetch error: " . $e->getMessage());
 }
 
 // ============================================================
@@ -649,92 +342,11 @@ try {
     $metrics['pending_settlements'] = (int)$db->query("SELECT COUNT(*) FROM settlement_queue WHERE status = 'PENDING'")->fetchColumn();
     $metrics['total_fees'] = (float)$db->query("SELECT COALESCE(SUM((message_payload->>'fee_amount')::numeric), 0) FROM settlement_outbox WHERE message_type = 'FEE_INVOICE'")->fetchColumn();
     $metrics['recent_swaps_24h'] = (int)$db->query("SELECT COUNT(*) FROM vw_all_swaps WHERE created_at >= NOW() - INTERVAL '24 hours'")->fetchColumn();
+    $metrics['multi_destination_count'] = (int)$db->query("SELECT COUNT(*) FROM multi_destination_swaps")->fetchColumn();
+    $metrics['multi_source_count'] = (int)$db->query("SELECT COUNT(*) FROM multi_source_swaps")->fetchColumn();
+    $metrics['identity_swaps_pending'] = (int)$db->query("SELECT COUNT(*) FROM identity_swap_holds WHERE status = 'pending'")->fetchColumn();
 } catch (Throwable $e) {
-    $metrics = array_fill_keys(['total_users', 'total_swaps', 'pending_settlements', 'total_fees', 'recent_swaps_24h'], 0);
-}
-
-// ============================================================
-// METRICS FOR ROLE-SPECIFIC DASHBOARD
-// ============================================================
-$roleMetrics = [];
-if ($isRegulator || $isSuperAdmin) {
-    $roleMetrics['regulatory_volume'] = (float)$db->query("SELECT COALESCE(SUM(amount), 0) FROM vw_all_swaps WHERE created_at >= NOW() - INTERVAL '7 days'")->fetchColumn();
-    $roleMetrics['cross_border_count'] = (int)$db->query("SELECT COUNT(*) FROM cross_border_messages WHERE created_at >= NOW() - INTERVAL '7 days'")->fetchColumn();
-}
-if ($isFinanceManager || $isSuperAdmin) {
-    $roleMetrics['outstanding_invoices'] = (int)$db->query("SELECT COUNT(*) FROM settlement_outbox WHERE message_type = 'FEE_INVOICE' AND status != 'ACKNOWLEDGED'")->fetchColumn();
-    $roleMetrics['total_revenue'] = (float)$db->query("SELECT COALESCE(SUM((message_payload->>'total_amount')::numeric), 0) FROM settlement_outbox WHERE message_type = 'FEE_INVOICE'")->fetchColumn();
-}
-if ($isSettlementOfficer || $isSuperAdmin) {
-    $roleMetrics['pending_settlements'] = (int)$db->query("SELECT COUNT(*) FROM settlement_queue WHERE status = 'PENDING'")->fetchColumn();
-    $roleMetrics['settlement_volume'] = (float)$db->query("SELECT COALESCE(SUM(amount), 0) FROM settlement_queue WHERE status = 'PENDING'")->fetchColumn();
-}
-if ($isCompliance || $isComplianceAuditor || $isSuperAdmin) {
-    // FIX: Use 'status' column instead of 'result'
-    try {
-        $roleMetrics['flagged_transactions'] = (int)$db->query("
-            SELECT COUNT(*) 
-            FROM aml_checks 
-            WHERE status = 'FLAGGED' 
-            AND performed_at >= NOW() - INTERVAL '7 days'
-        ")->fetchColumn();
-    } catch (Throwable $e) {
-        error_log("[ADMIN DASHBOARD] AML flagged count error: " . $e->getMessage());
-        $roleMetrics['flagged_transactions'] = 0;
-    }
-    
-    try {
-        $roleMetrics['pending_reviews'] = (int)$db->query("
-            SELECT COUNT(*) 
-            FROM swap_requests 
-            WHERE status = 'PENDING_REVIEW'
-        ")->fetchColumn();
-    } catch (Throwable $e) {
-        $roleMetrics['pending_reviews'] = 0;
-    }
-}
-// ============================================================
-// HANDLE REPORT GENERATION REQUEST
-// ============================================================
-$generatedReport = null;
-$reportError = null;
-
-if ($action === 'generate_report' && !empty($reportType) && canGenerateReport($reportType)) {
-    try {
-        $generatedReport = generateReport($reportType, $dateFrom, $dateTo, $format);
-        if (isset($generatedReport['error'])) {
-            $reportError = $generatedReport['error'];
-            $generatedReport = null;
-        }
-    } catch (Throwable $e) {
-        $reportError = "Failed to generate report: " . $e->getMessage();
-    }
-}
-
-// ============================================================
-// HANDLE INVOICE GENERATION
-// ============================================================
-if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
-    try {
-        require_once PROJECT_ROOT . '/src/Domain/Services/Settlement/HybridSettlementStrategy.php';
-        $stmt = $db->query("SELECT COALESCE(SUM(amount), 0) as total_amount FROM vw_all_swaps WHERE created_at >= CURRENT_DATE");
-        $dailyStats = $stmt->fetch(PDO::FETCH_ASSOC);
-        $totalAmount = (float)($dailyStats['total_amount'] ?? 0);
-        $feeAmount = $totalAmount * 0.015;
-        
-        $settlement = new \Domain\Services\Settlement\HybridSettlementStrategy($db);
-        $invoiceUuid = $settlement->invoiceFee(
-            'DAILY_SETTLEMENT_' . date('Ymd'),
-            'VOUCHMORPH_SYSTEM',
-            0,
-            'DAILY_SETTLEMENT_FEE',
-            $feeAmount,
-            'BWP'
-        );
-        $success = "Invoice {$invoiceUuid} generated successfully for " . date('Y-m-d');
-    } catch (Throwable $e) {
-        $error = "Failed to generate invoice: " . $e->getMessage();
-    }
+    $metrics = array_fill_keys(['total_users', 'total_swaps', 'pending_settlements', 'total_fees', 'recent_swaps_24h', 'multi_destination_count', 'multi_source_count', 'identity_swaps_pending'], 0);
 }
 
 ?>
@@ -865,6 +477,7 @@ if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
         }
         .metric-value { font-size: 1.5rem; font-weight: 600; color: #001B44; }
         .metric-value .sub { font-size: 0.8rem; color: #666; }
+        .metric-value .small { font-size: 0.9rem; }
         
         .card {
             background: #fff;
@@ -891,6 +504,10 @@ if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
             font-size: 0.6rem;
             border-radius: 12px;
         }
+        .card-badge.success { background: #28a745; }
+        .card-badge.warning { background: #856404; }
+        .card-badge.danger { background: #dc3545; }
+        .card-badge.info { background: #17a2b8; }
         
         .table-responsive { overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; font-size: 0.7rem; }
@@ -925,6 +542,9 @@ if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
         .status-pending { background: #fff3cd; color: #856404; border-color: #ffeeba; }
         .status-failed { background: #f8d7da; color: #721c24; border-color: #f5c6cb; }
         .status-info { background: #cce5ff; color: #004085; border-color: #b8daff; }
+        .status-warning { background: #fff3cd; color: #856404; border-color: #ffeeba; }
+        .status-processing { background: #cce5ff; color: #004085; border-color: #b8daff; }
+        .status-identity { background: #e8d5f5; color: #6f42c1; border-color: #d4b8e8; }
         
         .btn {
             padding: 6px 14px;
@@ -954,32 +574,6 @@ if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
         .btn-finance:hover { background: #28a745; color: #fff; }
         .btn-sm { padding: 2px 8px; font-size: 0.55rem; }
         
-        .report-filter {
-            background: #f8f9fa;
-            padding: 16px;
-            border: 2px solid #001B44;
-            margin-bottom: 16px;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            align-items: flex-end;
-        }
-        .report-filter label {
-            font-size: 0.6rem;
-            text-transform: uppercase;
-            color: #666;
-            display: block;
-            margin-bottom: 4px;
-        }
-        .report-filter select, .report-filter input {
-            padding: 6px 10px;
-            border: 2px solid #001B44;
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 0.7rem;
-            background: #fff;
-        }
-        .report-filter .btn { margin-left: auto; }
-        
         .empty-state { text-align: center; padding: 30px; color: #999; }
         .empty-state .icon { font-size: 2rem; margin-bottom: 8px; }
         
@@ -993,42 +587,31 @@ if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
             margin-top: 24px;
         }
         
-        .live-indicator {
-            display: inline-block;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: #28a745;
-            animation: pulse 1.5s ease-in-out infinite;
-            margin-right: 8px;
+        .destination-detail {
+            background: #f8f9fa;
+            padding: 8px 12px;
+            margin: 4px 0;
+            border-left: 3px solid #001B44;
+            font-size: 0.6rem;
         }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.3; }
-        }
-        .auto-refresh-toggle {
-            cursor: pointer;
-            padding: 4px 12px;
-            border-radius: 4px;
-            border: 2px solid #001B44;
-            font-size: 0.65rem;
-            font-weight: 600;
-            background: #fff;
-            color: #001B44;
-            transition: all 0.2s;
-        }
-        .auto-refresh-toggle.active {
-            background: #28a745;
-            color: #fff;
-            border-color: #28a745;
-        }
+        .destination-detail .label { color: #666; font-weight: 600; }
+        .destination-detail .value { color: #001B44; }
+        .destination-detail.failed { border-left-color: #dc3545; background: #f8d7da; }
+        .destination-detail.success { border-left-color: #28a745; background: #d4edda; }
+        .destination-detail.pending { border-left-color: #856404; background: #fff3cd; }
+        .destination-detail.identity { border-left-color: #6f42c1; background: #e8d5f5; }
         
-        .role-specific-metrics {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 12px;
-            margin-bottom: 16px;
+        .fee-breakdown-detail {
+            font-size: 0.55rem;
+            color: #666;
+            margin-top: 4px;
         }
+        .fee-breakdown-detail .amount { color: #28a745; font-weight: 600; }
+        
+        .expandable { cursor: pointer; }
+        .expandable:hover { background: #f0f0f0; }
+        .expand-content { display: none; padding: 8px; background: #f8f9fa; border-top: 1px solid #eee; }
+        .expand-content.show { display: block; }
         
         @media (max-width: 768px) {
             .metrics-grid { grid-template-columns: repeat(2, 1fr); }
@@ -1036,7 +619,6 @@ if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
             .admin-content { padding: 12px; }
             .admin-header { padding: 12px; }
             th, td { font-size: 0.55rem; padding: 4px 6px; }
-            .report-filter { flex-direction: column; align-items: stretch; }
         }
     </style>
 </head>
@@ -1063,12 +645,8 @@ if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
         <a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">📊 DASHBOARD</a>
         <?php endif; ?>
         
-        <?php if (canView('live_transactions')): ?>
-        <a href="?view=live_transactions" class="nav-item <?php echo $view === 'live_transactions' ? 'active' : ''; ?>">🔴 LIVE TXNS</a>
-        <?php endif; ?>
-        
-        <?php if (canView('generate_reports')): ?>
-        <a href="?view=generate_reports" class="nav-item <?php echo $view === 'generate_reports' ? 'active' : ''; ?>">📄 REPORTS</a>
+        <?php if (canView('multi_destination')): ?>
+        <a href="?view=multi_destination" class="nav-item <?php echo $view === 'multi_destination' ? 'active' : ''; ?>">🎯 MULTI-DEST</a>
         <?php endif; ?>
         
         <?php if (canView('recent_swaps')): ?>
@@ -1102,7 +680,7 @@ if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
 
     <main class="admin-content">
         <!-- ============================================================ -->
-        <!-- DASHBOARD VIEW - ROLE SPECIFIC -->
+        <!-- DASHBOARD VIEW -->
         <!-- ============================================================ -->
         <?php if ($view === 'dashboard'): ?>
         <div class="content-header">
@@ -1110,61 +688,6 @@ if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
             <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?></div>
         </div>
 
-        <!-- Role-specific metrics -->
-        <?php if (!empty($roleMetrics)): ?>
-        <div class="role-specific-metrics">
-            <?php if (isset($roleMetrics['regulatory_volume'])): ?>
-            <div class="metric-card" style="border-color: #8B0000;">
-                <div class="metric-label">🏛️ 7-Day Regulatory Volume</div>
-                <div class="metric-value"><?php echo number_format($roleMetrics['regulatory_volume'], 2); ?> BWP</div>
-            </div>
-            <?php endif; ?>
-            <?php if (isset($roleMetrics['cross_border_count'])): ?>
-            <div class="metric-card" style="border-color: #17a2b8;">
-                <div class="metric-label">🌍 Cross-Border (7d)</div>
-                <div class="metric-value"><?php echo number_format($roleMetrics['cross_border_count']); ?></div>
-            </div>
-            <?php endif; ?>
-            <?php if (isset($roleMetrics['outstanding_invoices'])): ?>
-            <div class="metric-card" style="border-color: #28a745;">
-                <div class="metric-label">💰 Outstanding Invoices</div>
-                <div class="metric-value"><?php echo number_format($roleMetrics['outstanding_invoices']); ?></div>
-            </div>
-            <?php endif; ?>
-            <?php if (isset($roleMetrics['total_revenue'])): ?>
-            <div class="metric-card" style="border-color: #ffc107;">
-                <div class="metric-label">📈 Total Revenue</div>
-                <div class="metric-value"><?php echo number_format($roleMetrics['total_revenue'], 2); ?> BWP</div>
-            </div>
-            <?php endif; ?>
-            <?php if (isset($roleMetrics['pending_settlements'])): ?>
-            <div class="metric-card" style="border-color: #856404;">
-                <div class="metric-label">⏳ Pending Settlements</div>
-                <div class="metric-value"><?php echo number_format($roleMetrics['pending_settlements']); ?></div>
-            </div>
-            <?php endif; ?>
-            <?php if (isset($roleMetrics['settlement_volume'])): ?>
-            <div class="metric-card" style="border-color: #17a2b8;">
-                <div class="metric-label">💰 Settlement Volume</div>
-                <div class="metric-value"><?php echo number_format($roleMetrics['settlement_volume'], 2); ?> BWP</div>
-            </div>
-            <?php endif; ?>
-            <?php if (isset($roleMetrics['flagged_transactions'])): ?>
-            <div class="metric-card" style="border-color: #dc3545;">
-                <div class="metric-label">🚨 Flagged Transactions</div>
-                <div class="metric-value" style="color:#dc3545;"><?php echo number_format($roleMetrics['flagged_transactions']); ?></div>
-            </div>
-            <?php endif; ?>
-            <?php if (isset($roleMetrics['pending_reviews'])): ?>
-            <div class="metric-card" style="border-color: #6f42c1;">
-                <div class="metric-label">📋 Pending Reviews</div>
-                <div class="metric-value"><?php echo number_format($roleMetrics['pending_reviews']); ?></div>
-            </div>
-            <?php endif; ?>
-        </div>
-        <?php endif; ?>
-
-        <!-- General Metrics -->
         <div class="metrics-grid">
             <div class="metric-card">
                 <div class="metric-label">Total Swaps</div>
@@ -1186,20 +709,26 @@ if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
                 <div class="metric-label">24h Swaps</div>
                 <div class="metric-value"><?php echo number_format($metrics['recent_swaps_24h'] ?? 0); ?></div>
             </div>
+            <div class="metric-card" style="border-color: #6f42c1;">
+                <div class="metric-label">Multi-Destination</div>
+                <div class="metric-value"><?php echo number_format($metrics['multi_destination_count'] ?? 0); ?></div>
+            </div>
+            <div class="metric-card" style="border-color: #17a2b8;">
+                <div class="metric-label">Multi-Source</div>
+                <div class="metric-value"><?php echo number_format($metrics['multi_source_count'] ?? 0); ?></div>
+            </div>
+            <div class="metric-card" style="border-color: #8B0000;">
+                <div class="metric-label">Pending Identity</div>
+                <div class="metric-value"><?php echo number_format($metrics['identity_swaps_pending'] ?? 0); ?></div>
+            </div>
         </div>
 
-        <!-- Quick action links -->
+        <!-- Quick actions -->
         <div class="card">
             <div class="card-header">
                 <span class="card-title">⚡ Quick Actions</span>
             </div>
             <div style="display:flex; gap:12px; flex-wrap:wrap;">
-                <?php if (canView('live_transactions')): ?>
-                <a href="?view=live_transactions" class="btn btn-primary">🔴 View Live Transactions</a>
-                <?php endif; ?>
-                <?php if (canView('generate_reports')): ?>
-                <a href="?view=generate_reports" class="btn btn-success">📄 Generate Reports</a>
-                <?php endif; ?>
                 <?php if (hasPermission('generate_invoice')): ?>
                 <a href="?action=generate_invoice" class="btn btn-finance">💰 Generate Invoice</a>
                 <?php endif; ?>
@@ -1212,694 +741,226 @@ if ($action === 'generate_invoice' && hasPermission('generate_invoice')) {
                 ✅ <?php echo safeHtml($success); ?>
             </div>
             <?php endif; ?>
-            <?php if (!empty($error)): ?>
-            <div style="margin-top:12px; padding:12px; background:#f8d7da; color:#721c24; border:2px solid #f5c6cb; border-radius:4px;">
-                ❌ <?php echo safeHtml($error); ?>
-            </div>
-            <?php endif; ?>
         </div>
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- LIVE TRANSACTIONS VIEW -->
+        <!-- MULTI-DESTINATION VIEW - DETAILED -->
         <!-- ============================================================ -->
-        <?php if ($view === 'live_transactions' && canView('live_transactions')): ?>
+        <?php if ($view === 'multi_destination' && canView('multi_destination')): ?>
         <div class="content-header">
-            <h1><span class="live-indicator"></span> 🔴 LIVE TRANSACTIONS</h1>
-            <div class="timestamp">
-                <?php echo date('Y-m-d H:i:s'); ?>
-                <span style="margin-left:16px; font-size:0.65rem; color:#666;">
-                    <?php echo count($liveTransactions); ?> transactions
+            <h1>🎯 MULTI-DESTINATION SWAPS</h1>
+            <div class="timestamp">Detailed multi-destination swap reports</div>
+            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
+        </div>
+
+        <?php foreach ($multiDestinationSwaps as $swap): ?>
+        <div class="card" style="border-left: 6px solid <?php echo $swap['status'] === 'completed' ? '#28a745' : ($swap['status'] === 'partial' ? '#856404' : '#dc3545'); ?>;">
+            <div class="card-header">
+                <span class="card-title">
+                    <?php echo safeHtml($swap['reference']); ?>
+                    <span style="font-size:0.55rem; font-weight:400; color:#666;">
+                        <?php echo date('Y-m-d H:i', strtotime($swap['created_at'])); ?>
+                    </span>
                 </span>
-                <button class="auto-refresh-toggle active" onclick="toggleAutoRefresh()" id="refreshToggle">🔄 AUTO-REFRESH ON</button>
-            </div>
-            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
-        </div>
-
-        <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));">
-    <div class="metric-card">
-        <div class="metric-label">Total (24h)</div>
-        <div class="metric-value"><?php echo number_format((int)($liveStats['total'] ?? 0)); ?></div>
-    </div>
-    <div class="metric-card" style="border-color:#28a745;">
-        <div class="metric-label">✅ Completed</div>
-        <div class="metric-value" style="color:#28a745;"><?php echo number_format((int)($liveStats['completed'] ?? 0)); ?></div>
-    </div>
-    <div class="metric-card" style="border-color:#856404;">
-        <div class="metric-label">⏳ Pending</div>
-        <div class="metric-value" style="color:#856404;"><?php echo number_format((int)($liveStats['pending'] ?? 0)); ?></div>
-    </div>
-    <div class="metric-card" style="border-color:#dc3545;">
-        <div class="metric-label">❌ Failed</div>
-        <div class="metric-value" style="color:#dc3545;"><?php echo number_format((int)($liveStats['failed'] ?? 0)); ?></div>
-    </div>
-    <div class="metric-card" style="border-color:#17a2b8;">
-        <div class="metric-label">💰 Volume</div>
-        <div class="metric-value"><?php echo number_format((float)($liveStats['total_amount'] ?? 0), 2); ?></div>
-    </div>
-</div>
-
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">📋 Live Transaction Feed</span>
-                <span class="card-badge" id="liveCount"><?php echo count($liveTransactions); ?> RECORDS</span>
-            </div>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr><th>#</th><th>Reference</th><th>Amount</th><th>Currency</th><th>Type</th><th>Status</th><th>Source</th><th>Destination</th><th>Fee</th><th>Created</th></tr>
-                    </thead>
-                    <tbody id="liveTransactionsBody">
-                        <?php if (empty($liveTransactions)): ?>
-                        <tr><td colspan="10" class="empty-state">No live transactions found</td></tr>
-                        <?php else: ?>
-                        <?php foreach ($liveTransactions as $index => $row): ?>
-                        <tr>
-                            <td><?php echo $index + 1; ?></td>
-                            <td><?php echo safeHtml(substr($row['reference'] ?? $row['swap_reference'] ?? 'N/A', 0, 12)); ?></td>
-                            <td><strong><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></strong></td>
-                            <td><?php echo safeHtml($row['currency'] ?? 'BWP'); ?></td>
-                            <td><span class="status status-info"><?php echo safeHtml($row['swap_type'] ?? $row['type'] ?? 'SWAP'); ?></span></td>
-                            <td>
-                                <?php 
-                                $status = strtolower($row['status'] ?? 'pending');
-                                $class = match(true) {
-                                    str_contains($status, 'complet'), str_contains($status, 'success'), str_contains($status, 'debited') => 'success',
-                                    str_contains($status, 'pending'), str_contains($status, 'sent'), str_contains($status, 'processing') => 'pending',
-                                    str_contains($status, 'fail'), str_contains($status, 'error'), str_contains($status, 'expired') => 'failed',
-                                    default => 'info'
-                                };
-                                ?>
-                                <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span>
-                            </td>
-                            <td><?php echo safeHtml($row['source_institution'] ?? $row['source'] ?? 'N/A'); ?></td>
-                            <td><?php echo safeHtml($row['destination_institution'] ?? $row['destination'] ?? 'N/A'); ?></td>
-                            <td><?php echo number_format((float)($row['fee_amount'] ?? $row['fee'] ?? 0), 2); ?></td>
-                            <td><?php echo date('Y-m-d H:i:s', strtotime($row['created_at'] ?? 'now')); ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <script>
-            let autoRefresh = true;
-            let refreshInterval = null;
-            
-            function toggleAutoRefresh() {
-                autoRefresh = !autoRefresh;
-                const toggle = document.getElementById('refreshToggle');
-                toggle.textContent = autoRefresh ? '🔄 AUTO-REFRESH ON' : '🔄 AUTO-REFRESH OFF';
-                if (autoRefresh) { startAutoRefresh(); } 
-                else { clearInterval(refreshInterval); }
-            }
-            
-            function startAutoRefresh() {
-                clearInterval(refreshInterval);
-                refreshInterval = setInterval(function() {
-                    fetch(window.location.href + '&ajax=1')
-                        .then(response => response.json())
-                        .then(data => {
-                            if (data.transactions) {
-                                const tbody = document.getElementById('liveTransactionsBody');
-                                let html = '';
-                                data.transactions.forEach((row, i) => {
-                                    const status = (row.status || 'pending').toLowerCase();
-                                    let cls = 'info';
-                                    if (status.includes('complet') || status.includes('success')) cls = 'success';
-                                    else if (status.includes('pending') || status.includes('processing')) cls = 'pending';
-                                    else if (status.includes('fail') || status.includes('error')) cls = 'failed';
-                                    html += `<tr>
-                                        <td>${i+1}</td>
-                                        <td>${(row.reference || row.swap_reference || 'N/A').substring(0,12)}</td>
-                                        <td><strong>${Number(row.amount || 0).toFixed(2)}</strong></td>
-                                        <td>${row.currency || 'BWP'}</td>
-                                        <td><span class="status status-info">${row.swap_type || row.type || 'SWAP'}</span></td>
-                                        <td><span class="status status-${cls}">${row.status || 'pending'}</span></td>
-                                        <td>${row.source_institution || row.source || 'N/A'}</td>
-                                        <td>${row.destination_institution || row.destination || 'N/A'}</td>
-                                        <td>${Number(row.fee_amount || row.fee || 0).toFixed(2)}</td>
-                                        <td>${new Date(row.created_at).toLocaleString()}</td>
-                                    </tr>`;
-                                });
-                                tbody.innerHTML = html;
-                                document.getElementById('liveCount').textContent = data.transactions.length;
-                            }
-                        })
-                        .catch(e => console.error('Refresh failed:', e));
-                }, 5000);
-            }
-            startAutoRefresh();
-        </script>
-        <?php endif; ?>
-
-        <!-- ============================================================ -->
-        <!-- GENERATE REPORTS VIEW - ROLE SPECIFIC -->
-        <!-- ============================================================ -->
-        <?php if ($view === 'generate_reports' && canView('generate_reports')): ?>
-        <div class="content-header">
-            <h1>📄 GENERATE REPORTS</h1>
-            <div class="timestamp">Role: <?php echo safeHtml($roleName); ?></div>
-            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
-        </div>
-
-        <!-- Report Generation Form -->
-        <div class="report-filter">
-            <div>
-                <label>Report Type</label>
-                <select name="report_type" id="reportType" onchange="updateReportFields()">
-                    <option value="">-- Select Report --</option>
-                    <?php 
-                    $reportOptions = [
-                        'financial' => '💰 Financial Report',
-                        'regulatory' => '🏛️ Regulatory Report',
-                        'settlement' => '📤 Settlement Report',
-                        'revenue' => '📈 Revenue Report',
-                        'compliance' => '📋 Compliance Report',
-                        'audit' => '📝 Audit Report',
-                        'net_positions' => '⚖️ Net Positions Report',
-                        'cross_border' => '🌍 Cross-Border Report',
-                        'forex' => '💱 Forex Report',
-                        'invoice' => '📄 Invoice Report',
-                        'fee' => '💲 Fee Report',
-                        'transaction' => '🔄 Transaction Report',
-                        'aml' => '🛡️ AML Report'
-                    ];
-                    foreach ($reportOptions as $key => $label):
-                        if (canGenerateReport($key) || $isSuperAdmin):
-                    ?>
-                    <option value="<?php echo $key; ?>" <?php echo $reportType === $key ? 'selected' : ''; ?>>
-                        <?php echo $label; ?>
-                    </option>
-                    <?php endif; endforeach; ?>
-                </select>
-            </div>
-            <div>
-                <label>Date From</label>
-                <input type="date" name="date_from" id="dateFrom" value="<?php echo $dateFrom; ?>">
-            </div>
-            <div>
-                <label>Date To</label>
-                <input type="date" name="date_to" id="dateTo" value="<?php echo $dateTo; ?>">
-            </div>
-            <div>
-                <label>Format</label>
-                <select name="format" id="format">
-                    <option value="html">📄 HTML</option>
-                    <option value="csv">📊 CSV</option>
-                    <option value="json">📋 JSON</option>
-                </select>
-            </div>
-            <button class="btn btn-primary" onclick="generateReport()">📄 Generate Report</button>
-        </div>
-
-        <!-- Report Results -->
-        <?php if ($generatedReport && !isset($generatedReport['error'])): ?>
-        <div class="card" style="border-left: 6px solid #28a745;">
-            <div class="card-header">
-                <span class="card-title">✅ <?php echo safeHtml($generatedReport['title']); ?></span>
-                <span class="card-badge"><?php echo $generatedReport['count']; ?> RECORDS</span>
-                <span style="font-size:0.6rem; color:#666;">
-                    <?php echo $generatedReport['date_from']; ?> → <?php echo $generatedReport['date_to']; ?>
-                    · Generated: <?php echo $generatedReport['generated_at']; ?>
+                <span class="card-badge <?php echo $swap['status'] === 'completed' ? 'success' : ($swap['status'] === 'partial' ? 'warning' : 'danger'); ?>">
+                    <?php echo strtoupper($swap['status'] ?? 'UNKNOWN'); ?>
                 </span>
             </div>
             
-            <?php if ($format === 'csv'): ?>
-            <div class="table-responsive">
-                <pre style="background:#1e293b; color:#4ade80; padding:12px; font-size:0.6rem; overflow-x:auto; max-height:400px; overflow-y:auto;">
-<?php 
-// CSV output
-if (!empty($generatedReport['data'])) {
-    echo implode(',', $generatedReport['columns']) . "\n";
-    foreach ($generatedReport['data'] as $row) {
-        $values = [];
-        foreach ($generatedReport['columns'] as $col) {
-            $values[] = '"' . str_replace('"', '""', (string)($row[$col] ?? '')) . '"';
-        }
-        echo implode(',', $values) . "\n";
-    }
-}
-?>
-                </pre>
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin-bottom:12px; font-size:0.65rem;">
+                <div><strong>Source:</strong> <?php echo safeHtml($swap['source_institution']); ?></div>
+                <div><strong>Total:</strong> <?php echo number_format((float)($swap['total_amount'] ?? 0), 2); ?></div>
+                <div><strong>Destinations:</strong> <?php echo $swap['total_destinations']; ?></div>
+                <div><strong>✅ Success:</strong> <?php echo $swap['successful_count'] ?? 0; ?></div>
+                <div><strong>❌ Failed:</strong> <?php echo $swap['failed_count'] ?? 0; ?></div>
+                <div><strong>💰 Fees:</strong> <?php echo number_format((float)($swap['total_fees'] ?? 0), 2); ?></div>
+                <div><strong>📦 Delivered:</strong> <?php echo number_format((float)($swap['total_delivered'] ?? 0), 2); ?></div>
             </div>
-            <?php elseif ($format === 'json'): ?>
-            <pre style="background:#1e293b; color:#4ade80; padding:12px; font-size:0.6rem; overflow-x:auto; max-height:400px; overflow-y:auto;"><?php echo safeHtml(json_encode($generatedReport['data'], JSON_PRETTY_PRINT)); ?></pre>
-            <?php else: ?>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <?php foreach ($generatedReport['columns'] as $col): ?>
-                            <th><?php echo safeHtml($col); ?></th>
-                            <?php endforeach; ?>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php if (empty($generatedReport['data'])): ?>
-                        <tr><td colspan="<?php echo count($generatedReport['columns']); ?>" class="empty-state">No data found</td></tr>
-                        <?php else: ?>
-                        <?php foreach ($generatedReport['data'] as $row): ?>
-                        <tr>
-                            <?php foreach ($generatedReport['columns'] as $col): ?>
-                            <td>
-                                <?php 
-                                $value = $row[$col] ?? '';
-                                if (is_null($value)) echo '<span style="color:#999;">NULL</span>';
-                                elseif (is_numeric($value) && (strpos($col, 'amount') !== false || strpos($col, 'fee') !== false || strpos($col, 'rate') !== false)) {
-                                    echo number_format((float)$value, 2);
-                                } elseif (is_string($value) && in_array($col, ['status', 'type', 'action'])) {
-                                    $statusClass = match(strtolower($value)) {
-                                        'completed', 'success', 'paid', 'active', 'approved', 'settled', 'acknowledged' => 'success',
-                                        'pending', 'sent', 'processing', 'reserved' => 'pending',
-                                        'failed', 'error', 'expired', 'declined' => 'failed',
-                                        default => 'info'
-                                    };
-                                    echo '<span class="status status-' . $statusClass . '">' . safeHtml($value) . '</span>';
-                                } else {
-                                    echo safeHtml(substr((string)$value, 0, 100));
-                                }
-                                ?>
-                            </td>
-                            <?php endforeach; ?>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-            <?php endif; ?>
             
-            <div style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
-                <button class="btn btn-success" onclick="exportReport('csv')">📊 Export CSV</button>
-                <button class="btn btn-primary" onclick="exportReport('json')">📋 Export JSON</button>
-                <button class="btn" onclick="window.print()">🖨️ Print</button>
+            <div style="font-size:0.6rem; color:#666; margin-bottom:8px;">
+                <strong>Destinations Payload:</strong>
             </div>
-        </div>
-        <?php elseif ($reportError): ?>
-        <div class="card" style="border-left: 6px solid #dc3545;">
-            <div class="card-header">
-                <span class="card-title">❌ Error</span>
-            </div>
-            <div style="padding:16px; color:#dc3545;">
-                <?php echo safeHtml($reportError); ?>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <script>
-            function generateReport() {
-                const type = document.getElementById('reportType').value;
-                const dateFrom = document.getElementById('dateFrom').value;
-                const dateTo = document.getElementById('dateTo').value;
-                const format = document.getElementById('format').value;
-                
-                if (!type) {
-                    alert('Please select a report type');
-                    return;
-                }
-                
-                window.location.href = '?view=generate_reports&action=generate_report&report_type=' + type + 
-                    '&date_from=' + dateFrom + '&date_to=' + dateTo + '&format=' + format;
-            }
             
-            function exportReport(format) {
-                const type = document.getElementById('reportType').value;
-                const dateFrom = document.getElementById('dateFrom').value;
-                const dateTo = document.getElementById('dateTo').value;
-                window.location.href = '?view=generate_reports&action=generate_report&report_type=' + type + 
-                    '&date_from=' + dateFrom + '&date_to=' + dateTo + '&format=' + format;
-            }
+            <?php 
+            $destinations = json_decode($swap['destinations_payload'] ?? '[]', true);
+            $results = json_decode($swap['results_payload'] ?? '[]', true);
             
-            function updateReportFields() {
-                const type = document.getElementById('reportType').value;
-                // Show/hide date fields based on report type
-                const dateFields = document.querySelectorAll('.report-filter input[type="date"]');
-                const hideFor = ['net_positions'];
-                if (hideFor.includes(type)) {
-                    dateFields.forEach(f => f.closest('div').style.opacity = '0.5');
-                } else {
-                    dateFields.forEach(f => f.closest('div').style.opacity = '1');
-                }
-            }
-        </script>
-        <?php endif; ?>
-
-        <!-- ============================================================ -->
-        <!-- REGULATORY VIEW -->
-        <!-- ============================================================ -->
-        <?php if ($view === 'regulatory' && ($isRegulator || $isSuperAdmin)): ?>
-        <div class="content-header">
-            <h1>🏛️ REGULATORY OVERSIGHT</h1>
-            <div class="timestamp">Bank of Botswana · <?php echo date('Y-m-d H:i:s'); ?></div>
-        </div>
-
-        <div class="card" style="border-left:6px solid #8B0000;">
-            <div class="card-header">
-                <span class="card-title">📊 Regulatory Summary</span>
-            </div>
-            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:16px;">
-                <div><strong>Total Volume (7d):</strong> <?php echo number_format($roleMetrics['regulatory_volume'] ?? 0, 2); ?> BWP</div>
-                <div><strong>Cross-Border (7d):</strong> <?php echo number_format($roleMetrics['cross_border_count'] ?? 0); ?></div>
-                <div><strong>Total Swaps:</strong> <?php echo number_format($metrics['total_swaps'] ?? 0); ?></div>
-                <div><strong>Pending Settlements:</strong> <?php echo number_format($metrics['pending_settlements'] ?? 0); ?></div>
-                <div><strong>Total Fees:</strong> <?php echo number_format($metrics['total_fees'] ?? 0, 2); ?> BWP</div>
-            </div>
-            <div style="margin-top:16px;">
-                <a href="?view=generate_reports&report_type=regulatory" class="btn btn-regulator">📄 Generate Regulatory Report</a>
-                <a href="?view=generate_reports&report_type=net_positions" class="btn btn-regulator">⚖️ View Net Positions</a>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <!-- ============================================================ -->
-        <!-- TRANSACTIONS VIEW -->
-        <!-- ============================================================ -->
-        <?php if ($view === 'transactions' && (canView('transactions') || canView('transactions_readonly'))): ?>
-        <div class="content-header">
-            <h1>📋 TRANSACTIONS</h1>
-            <div class="timestamp">All swap transactions</div>
-            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
-        </div>
-
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">All Transactions</span>
-                <span class="card-badge"><?php echo count($tableData['swap_requests']['rows'] ?? []); ?> RECORDS</span>
-                <?php if (hasPermission('export')): ?>
-                <a href="?export=swap_requests&export_id=all" class="btn btn-primary">📄 Export</a>
-                <?php endif; ?>
-            </div>
+            if (!empty($destinations)):
+            ?>
             <div class="table-responsive">
                 <table>
                     <thead>
-                        <tr><th>ID</th><th>Amount</th><th>Status</th><th>Date</th></tr>
-                    </thead>
-                    <tbody>
-                        <?php $txRows = $tableData['swap_requests']['rows'] ?? []; ?>
-                        <?php if (empty($txRows)): ?>
-                        <tr><td colspan="4" class="empty-state">No transactions found</td></tr>
-                        <?php else: ?>
-                        <?php foreach ($txRows as $row): ?>
                         <tr>
-                            <td><?php echo safeHtml(substr($row['swap_uuid'] ?? $row['swap_id'] ?? 'N/A', 0, 12)); ?></td>
-                            <td><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></td>
-                            <td>
-                                <?php 
-                                $status = strtolower($row['status'] ?? 'pending');
-                                $class = match($status) {
-                                    'completed', 'success' => 'success',
-                                    'pending', 'processing' => 'pending',
-                                    'failed', 'error' => 'failed',
-                                    default => 'info'
-                                };
-                                ?>
-                                <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span>
-                            </td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($row['created_at'] ?? 'now')); ?></td>
+                            <th>#</th>
+                            <th>Type</th>
+                            <th>Amount</th>
+                            <th>Institution</th>
+                            <th>Identifier</th>
+                            <th>Status</th>
+                            <th>Hold Ref</th>
+                            <th>Fee</th>
+                            <th>Error</th>
                         </tr>
-                        <?php endforeach; ?>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <!-- ============================================================ -->
-        <!-- SETTLEMENTS VIEW -->
-        <!-- ============================================================ -->
-        <?php if ($view === 'settlements' && canView('settlements')): ?>
-        <div class="content-header">
-            <h1>📤 SETTLEMENTS</h1>
-            <div class="timestamp">Settlement queue</div>
-            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
-        </div>
-
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">Settlement Queue</span>
-                <span class="card-badge"><?php echo count($tableData['settlement_queue']['rows'] ?? []); ?> RECORDS</span>
-            </div>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr><th>Debtor</th><th>Creditor</th><th>Amount</th><th>Status</th><th>Created</th></tr>
                     </thead>
                     <tbody>
-                        <?php $sqRows = $tableData['settlement_queue']['rows'] ?? []; ?>
-                        <?php if (empty($sqRows)): ?>
-                        <tr><td colspan="5" class="empty-state">No settlements found</td></tr>
-                        <?php else: ?>
-                        <?php foreach ($sqRows as $row): ?>
-                        <tr>
-                            <td><?php echo safeHtml($row['debtor'] ?? 'N/A'); ?></td>
-                            <td><?php echo safeHtml($row['creditor'] ?? 'N/A'); ?></td>
-                            <td><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></td>
-                            <td>
-                                <?php 
-                                $status = strtolower($row['status'] ?? 'pending');
-                                $class = match($status) {
-                                    'completed', 'settled' => 'success',
-                                    'pending', 'processing' => 'pending',
-                                    'failed', 'error' => 'failed',
-                                    default => 'info'
-                                };
-                                ?>
-                                <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span>
-                            </td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($row['created_at'] ?? 'now')); ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <!-- ============================================================ -->
-        <!-- AUDIT VIEW -->
-        <!-- ============================================================ -->
-        <?php if ($view === 'audit' && canView('audit')): ?>
-        <div class="content-header">
-            <h1>📝 AUDIT LOGS</h1>
-            <div class="timestamp">System audit trail</div>
-            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
-        </div>
-
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">Audit Records</span>
-                <span class="card-badge"><?php echo count($tableData['audit_logs']['rows'] ?? []); ?> RECORDS</span>
-            </div>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr><th>Time</th><th>Action</th><th>Entity</th><th>User</th><th>IP</th></tr>
-                    </thead>
-                    <tbody>
-                        <?php $auditRows = $tableData['audit_logs']['rows'] ?? []; ?>
-                        <?php if (empty($auditRows)): ?>
-                        <tr><td colspan="5" class="empty-state">No audit records found</td></tr>
-                        <?php else: ?>
-                        <?php foreach (array_slice($auditRows, 0, 50) as $row): ?>
-                        <tr>
-                            <td><?php echo date('Y-m-d H:i', strtotime($row['performed_at'] ?? 'now')); ?></td>
-                            <td><?php echo safeHtml($row['action'] ?? 'N/A'); ?></td>
-                            <td><?php echo safeHtml($row['entity_type'] ?? 'N/A'); ?></td>
-                            <td><?php echo safeHtml($row['performed_by_id'] ?? 'N/A'); ?></td>
-                            <td><?php echo safeHtml($row['ip_address'] ?? 'N/A'); ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <!-- ============================================================ -->
-        <!-- FEE BREAKDOWN VIEW -->
-        <!-- ============================================================ -->
-        <?php if ($view === 'fee_breakdown' && hasFinancialAccess()): ?>
-        <div class="content-header">
-            <h1>📊 FEE BREAKDOWN</h1>
-            <div class="timestamp">Fee analysis by type</div>
-            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
-        </div>
-
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">💰 Fee Breakdown</span>
-                <span class="card-badge">Fee Analysis</span>
-            </div>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr><th>Fee Type</th><th>Count</th><th>Total Fee</th><th>VAT</th><th>Total with VAT</th><th>Status</th></tr>
-                    </thead>
-                    <tbody>
-                        <?php
-                        $feeBreakdown = [];
-                        try {
-                            $stmt = $db->query("
-                                SELECT 
-                                    message_payload->>'fee_type' as fee_type,
-                                    COUNT(*) as count,
-                                    SUM((message_payload->>'fee_amount')::numeric) as total_fee,
-                                    SUM((message_payload->>'vat_amount')::numeric) as total_vat,
-                                    SUM((message_payload->>'total_amount')::numeric) as total_with_vat,
-                                    status
-                                FROM settlement_outbox
-                                WHERE message_type = 'FEE_INVOICE'
-                                GROUP BY message_payload->>'fee_type', status
-                                ORDER BY total_fee DESC
-                            "); 
-                            $feeBreakdown = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                        } catch (Throwable $e) {
-                            error_log("[ADMIN DASHBOARD] Fee breakdown error: " . $e->getMessage());
-                        }
+                        <?php foreach ($destinations as $idx => $dest):
+                            $result = $results[$idx] ?? [];
+                            $status = $result['status'] ?? 'pending';
+                            $error = $result['error'] ?? null;
+                            $isIdentity = isset($dest['identity_type']) || isset($dest['identity_value']);
+                            $isCashout = isset($dest['delivery_method']) && $dest['delivery_method'] === 'ATM';
+                            $isBank = isset($dest['to_institution']) && !$isIdentity && !$isCashout;
                         ?>
-                        <?php if (empty($feeBreakdown)): ?>
-                        <tr><td colspan="6" class="empty-state">No fee records found</td></tr>
-                        <?php else: ?>
-                        <?php foreach ($feeBreakdown as $fee): ?>
-                        <tr>
-                            <td><?php echo safeHtml($fee['fee_type'] ?? 'N/A'); ?></td>
-                            <td><?php echo number_format($fee['count'] ?? 0); ?></td>
-                            <td><?php echo number_format((float)($fee['total_fee'] ?? 0), 2); ?></td>
-                            <td><?php echo number_format((float)($fee['total_vat'] ?? 0), 2); ?></td>
-                            <td><strong><?php echo number_format((float)($fee['total_with_vat'] ?? 0), 2); ?></strong></td>
+                        <tr class="<?php echo $status === 'failed' ? 'failed' : ''; ?>">
+                            <td><?php echo $idx + 1; ?></td>
                             <td>
-                                <?php 
-                                $status = strtolower($fee['status'] ?? 'pending');
-                                $class = match($status) {
-                                    'acknowledged', 'completed', 'paid' => 'success',
-                                    'sent' => 'pending',
-                                    'failed' => 'failed',
-                                    default => 'info'
-                                };
-                                ?>
-                                <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($fee['status'] ?? 'pending'); ?></span>
+                                <?php if ($isIdentity): ?>
+                                <span class="status status-identity">IDENTITY</span>
+                                <?php elseif ($isCashout): ?>
+                                <span class="status status-warning">CASHOUT</span>
+                                <?php elseif ($isBank): ?>
+                                <span class="status status-info">DEPOSIT</span>
+                                <?php else: ?>
+                                <span class="status status-info">UNKNOWN</span>
+                                <?php endif; ?>
                             </td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <!-- ============================================================ -->
-        <!-- INVOICES VIEW -->
-        <!-- ============================================================ -->
-        <?php if ($view === 'invoices' && hasPermission('generate_invoice')): ?>
-        <div class="content-header">
-            <h1>💰 INVOICE MANAGEMENT</h1>
-            <div class="timestamp">Fee invoices</div>
-            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
-        </div>
-
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">📄 Generate Invoice</span>
-            </div>
-            <div style="display:flex; gap:12px; flex-wrap:wrap;">
-                <a href="?action=generate_invoice" class="btn btn-success" onclick="return confirm('Generate daily invoice?')">📄 Generate Daily Invoice</a>
-            </div>
-            <?php if (!empty($success)): ?>
-            <div style="margin-top:12px; padding:12px; background:#d4edda; color:#155724; border:2px solid #c3e6cb; border-radius:4px;">
-                ✅ <?php echo safeHtml($success); ?>
-            </div>
-            <?php endif; ?>
-            <?php if (!empty($error)): ?>
-            <div style="margin-top:12px; padding:12px; background:#f8d7da; color:#721c24; border:2px solid #f5c6cb; border-radius:4px;">
-                ❌ <?php echo safeHtml($error); ?>
-            </div>
-            <?php endif; ?>
-        </div>
-        <?php endif; ?>
-
-        <!-- ============================================================ -->
-        <!-- ALL TABLES VIEW -->
-        <!-- ============================================================ -->
-        <?php if ($view === 'all_tables' && $isSuperAdmin): ?>
-        <div class="content-header">
-            <h1>📋 ALL DATABASE TABLES</h1>
-            <div class="timestamp">Complete database view · <?php echo date('Y-m-d H:i:s'); ?></div>
-            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
-        </div>
-
-        <?php foreach ($tableData as $tableName => $data): ?>
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title"><?php echo $data['label'] ?? $tableName; ?></span>
-                <span class="card-badge"><?php echo $data['count']; ?> RECORDS</span>
-            </div>
-            <?php if (!$data['exists']): ?>
-            <div class="empty-state">Table <code><?php echo $tableName; ?></code> does not exist</div>
-            <?php elseif (empty($data['rows'])): ?>
-            <div class="empty-state">No records found</div>
-            <?php else: ?>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <?php foreach ($data['columns'] as $col): ?>
-                            <th><?php echo safeHtml($col); ?></th>
-                            <?php endforeach; ?>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($data['rows'] as $row): ?>
-                        <tr>
-                            <?php foreach ($data['columns'] as $col): ?>
+                            <td><strong><?php echo number_format((float)($dest['amount'] ?? 0), 2); ?></strong></td>
+                            <td><?php echo safeHtml($dest['to_institution'] ?? $dest['destination_institution'] ?? ($isIdentity ? 'IDENTITY' : 'N/A')); ?></td>
                             <td>
                                 <?php 
-                                $value = $row[$col] ?? '';
-                                if (is_null($value)) echo '<span style="color:#999;">NULL</span>';
-                                elseif (is_string($value) && strlen($value) > 100) echo safeHtml(substr($value, 0, 100)) . '...';
-                                elseif (is_numeric($value) && strpos($col, 'amount') !== false) echo number_format((float)$value, 2);
-                                elseif (is_string($value) && in_array($col, ['status', 'type'])) {
-                                    $statusClass = match(strtolower($value)) {
-                                        'completed', 'success', 'paid', 'active' => 'success',
-                                        'pending', 'sent', 'processing' => 'pending',
-                                        'failed', 'error' => 'failed',
-                                        default => 'info'
-                                    };
-                                    echo '<span class="status status-' . $statusClass . '">' . safeHtml($value) . '</span>';
-                                } elseif (is_array($value) || is_object($value)) {
-                                    echo '<pre style="font-size:0.55rem; max-height:50px; overflow:auto;">' . safeHtml(json_encode($value, JSON_PRETTY_PRINT)) . '</pre>';
+                                if ($isIdentity) {
+                                    echo safeHtml($dest['identity_type'] ?? 'national_id') . ': ' . safeHtml($dest['identity_value'] ?? 'N/A');
+                                } elseif ($isCashout) {
+                                    echo safeHtml($dest['beneficiary_phone'] ?? 'N/A');
                                 } else {
-                                    echo safeHtml($value);
+                                    echo safeHtml($dest['destination_identifier'] ?? 'N/A');
                                 }
                                 ?>
                             </td>
-                            <?php endforeach; ?>
+                            <td>
+                                <?php 
+                                $statusClass = match($status) {
+                                    'success', 'completed' => 'success',
+                                    'failed' => 'failed',
+                                    'pending', 'pending_identity_confirmation' => 'pending',
+                                    default => 'info'
+                                };
+                                $statusLabel = $status === 'pending_identity_confirmation' ? 'PENDING_ID' : ($status ?: 'PENDING');
+                                ?>
+                                <span class="status status-<?php echo $statusClass; ?>"><?php echo safeHtml(strtoupper($statusLabel)); ?></span>
+                            </td>
+                            <td><?php echo safeHtml(substr($result['hold_reference'] ?? 'N/A', 0, 12)); ?>…</td>
+                            <td><?php echo number_format((float)($result['fee'] ?? 0), 2); ?></td>
+                            <td>
+                                <?php if ($error): ?>
+                                <span style="color:#dc3545; font-size:0.55rem;"><?php echo safeHtml(substr($error, 0, 60)); ?></span>
+                                <?php else: ?>
+                                <span style="color:#999;">—</span>
+                                <?php endif; ?>
+                            </td>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>
                 </table>
             </div>
             <?php endif; ?>
+            
+            <!-- Raw JSON details (collapsible) -->
+            <details style="margin-top:12px;">
+                <summary style="cursor:pointer; font-size:0.6rem; color:#666;">📄 Raw JSON details</summary>
+                <pre style="background:#1e293b; color:#4ade80; padding:12px; font-size:0.55rem; overflow-x:auto; max-height:300px; overflow-y:auto; margin-top:8px;"><?php echo safeHtml(json_encode(json_decode($swap['destinations_payload'] ?? '[]', true), JSON_PRETTY_PRINT)); ?></pre>
+            </details>
         </div>
         <?php endforeach; ?>
         <?php endif; ?>
 
         <!-- ============================================================ -->
+        <!-- RECENT SWAPS VIEW - DETAILED -->
+        <!-- ============================================================ -->
+        <?php if ($view === 'recent_swaps' && canView('recent_swaps')): ?>
+        <div class="content-header">
+            <h1>🔄 RECENT SWAPS</h1>
+            <div class="timestamp">Detailed swap transactions</div>
+            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">All Swaps</span>
+                <span class="card-badge"><?php echo count($recentSwaps); ?> RECORDS</span>
+            </div>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Reference</th>
+                            <th>Type</th>
+                            <th>Amount</th>
+                            <th>Currency</th>
+                            <th>Status</th>
+                            <th>Source</th>
+                            <th>Destination</th>
+                            <th>Fee</th>
+                            <th>Created</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($recentSwaps)): ?>
+                        <tr><td colspan="9" class="empty-state">No swaps found</td></tr>
+                        <?php else: ?>
+                        <?php foreach ($recentSwaps as $row): ?>
+                        <tr>
+                            <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['reference'] ?? 'N/A', 0, 16)); ?></td>
+                            <td>
+                                <?php 
+                                $type = $row['display_type'] ?? $row['swap_type'] ?? 'STANDARD';
+                                $typeClass = match($type) {
+                                    'MULTI_DEST', 'MULTI_DESTINATION' => 'status-info',
+                                    'MULTI_SRC', 'MULTI_SOURCE' => 'status-processing',
+                                    'IDENTITY' => 'status-identity',
+                                    'CASHOUT' => 'status-warning',
+                                    default => 'status-info'
+                                };
+                                ?>
+                                <span class="status <?php echo $typeClass; ?>"><?php echo safeHtml($type); ?></span>
+                            </td>
+                            <td><strong><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></strong></td>
+                            <td><?php echo safeHtml($row['currency'] ?? 'BWP'); ?></td>
+                            <td>
+                                <?php 
+                                $status = strtolower($row['status'] ?? 'pending');
+                                $class = match(true) {
+                                    str_contains($status, 'complet') || str_contains($status, 'success') => 'success',
+                                    str_contains($status, 'pending') || str_contains($status, 'processing') || str_contains($status, 'confirmation') => 'pending',
+                                    str_contains($status, 'fail') || str_contains($status, 'error') || str_contains($status, 'expired') => 'failed',
+                                    default => 'info'
+                                };
+                                ?>
+                                <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span>
+                            </td>
+                            <td><?php echo safeHtml($row['source_institution'] ?? 'N/A'); ?></td>
+                            <td><?php echo safeHtml($row['destination_institution'] ?? 'N/A'); ?></td>
+                            <td><?php echo number_format((float)($row['fee_amount'] ?? 0), 2); ?></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($row['created_at'] ?? 'now')); ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <!-- ============================================================ -->
         <!-- ACCESS DENIED -->
         <!-- ============================================================ -->
-        <?php if (!canView($view) && $view !== 'dashboard' && $view !== 'all_tables' && $view !== 'live_transactions' && $view !== 'generate_reports'): ?>
+        <?php if (!canView($view) && $view !== 'dashboard' && $view !== 'all_tables' && $view !== 'multi_destination'): ?>
         <div class="card">
             <div class="empty-state">
                 <div class="icon">🚫</div>
                 <h2>Access Denied</h2>
                 <p>You do not have permission to view this page.</p>
-                <p style="font-size:0.8rem; color:#666; margin-top:8px;">Contact your administrator for access.</p>
                 <a href="?view=dashboard" class="btn" style="margin-top:16px;">Return to Dashboard</a>
             </div>
         </div>
