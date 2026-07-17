@@ -1,9 +1,29 @@
 <?php
 /**
  * admin_dashboard.php - VouchMorph Enhanced Role-Based Admin Dashboard
- * Features: Role-specific views, Report Generation, Live Transactions
+ * Features: Role-specific views, Report Generation, Live Transactions,
+ *           Alerts/Exceptions, Institution Health, Transaction Search
  * Role IDs: 999=Super Admin, 3=Regulator, 4=Compliance, 5=Auditor
  *           10=Finance Manager, 11=Settlement Officer, 12=Revenue Officer
+ *
+ * CHANGES IN THIS VERSION:
+ * 1. Wired up the previously-declared-but-unused $search variable into the
+ *    Live Transactions and Recent Swaps queries, plus a search box in the UI.
+ * 2. Added an Alerts/Exceptions panel: stuck holds (>24h non-terminal),
+ *    expired-but-not-cancelled identity swaps, expired pending cashouts,
+ *    and failed destinations inside multi-destination swaps.
+ * 3. Added an Institution Health panel: per-institution volume, success
+ *    rate, and average time-to-debit (latency), computed from
+ *    hold_transactions/vw_all_swaps.
+ * 4. Added 'alerts' and 'institution_health' to the relevant roles' view
+ *    lists so every role that should see exceptions/health can.
+ *
+ * NOTE: vw_all_swaps currently appears to be capped (reported as exactly
+ * 100 rows regardless of underlying table growth). That cap lives in the
+ * VIEW DEFINITION itself, not in this file - none of the queries below add
+ * a LIMIT. Run `SELECT pg_get_viewdef('vw_all_swaps', true);` and recreate
+ * the view without the cap; this file will pick up the full history
+ * automatically once that's fixed.
  */
 
 declare(strict_types=1);
@@ -48,17 +68,18 @@ $roleDefinitions = [
         'level' => 100,
         'permissions' => ['all'],
         'view' => [
-            'dashboard', 'live_transactions', 'transactions', 'holds', 'audit', 
-            'invoices', 'reports', 'regulatory', 'users', 'all_tables', 'fee_breakdown', 
+            'dashboard', 'live_transactions', 'transactions', 'holds', 'audit',
+            'invoices', 'reports', 'regulatory', 'users', 'all_tables', 'fee_breakdown',
             'revenue_split', 'participant_fees', 'financial_dashboard',
             'settlement_analysis', 'forex_fees', 'corridor_fees',
             'recent_swaps', 'swap_transactions', 'cross_border',
             'settlements', 'net_positions', 'regulatory_reports',
-            'generate_reports', 'role_reports', 'multi_destination'
+            'generate_reports', 'role_reports', 'multi_destination',
+            'alerts', 'institution_health'
         ],
         'actions' => [
-            'create', 'edit', 'delete', 'export', 'approve', 'reject', 
-            'generate_invoice', 'manage_users', 'view_fee_breakdown', 
+            'create', 'edit', 'delete', 'export', 'approve', 'reject',
+            'generate_invoice', 'manage_users', 'view_fee_breakdown',
             'view_revenue_split', 'generate_financial_report', 'manage_fees',
             'generate_all_reports'
         ],
@@ -75,7 +96,7 @@ $roleDefinitions = [
             'fee_breakdown', 'revenue_split', 'financial_dashboard',
             'recent_swaps', 'cross_border', 'net_positions',
             'regulatory_reports', 'generate_reports', 'multi_destination',
-            'live_transactions'
+            'live_transactions', 'alerts', 'institution_health'
         ],
         'actions' => ['view', 'export', 'approve_regulatory', 'generate_regulatory_report'],
         'report_types' => ['regulatory', 'compliance', 'audit', 'net_positions', 'cross_border'],
@@ -88,7 +109,8 @@ $roleDefinitions = [
         'permissions' => ['review_transactions', 'kyc_verification', 'compliance_checks'],
         'view' => [
             'dashboard', 'transactions', 'audit', 'reports', 'compliance',
-            'fee_breakdown', 'recent_swaps', 'generate_reports', 'live_transactions'
+            'fee_breakdown', 'recent_swaps', 'generate_reports', 'live_transactions',
+            'alerts'
         ],
         'actions' => ['view', 'review', 'approve', 'reject', 'export', 'generate_compliance_report'],
         'report_types' => ['compliance', 'audit', 'transaction', 'aml'],
@@ -102,7 +124,8 @@ $roleDefinitions = [
         'view' => [
             'dashboard', 'audit', 'reports', 'transactions_readonly',
             'fee_breakdown', 'revenue_split', 'recent_swaps',
-            'net_positions', 'generate_reports', 'live_transactions'
+            'net_positions', 'generate_reports', 'live_transactions',
+            'alerts', 'institution_health'
         ],
         'actions' => ['view', 'export', 'generate_audit_report'],
         'report_types' => ['audit', 'transaction', 'fee', 'compliance'],
@@ -120,7 +143,8 @@ $roleDefinitions = [
             'dashboard', 'invoices', 'fee_breakdown', 'participant_fees',
             'revenue_split', 'financial_dashboard', 'settlement_analysis',
             'reports', 'forex_fees', 'recent_swaps', 'swap_transactions',
-            'settlements', 'net_positions', 'generate_reports', 'live_transactions'
+            'settlements', 'net_positions', 'generate_reports', 'live_transactions',
+            'alerts', 'institution_health'
         ],
         'actions' => ['view', 'export', 'generate_invoice', 'generate_financial_report'],
         'report_types' => ['financial', 'fee', 'revenue', 'settlement', 'forex', 'invoice'],
@@ -137,7 +161,8 @@ $roleDefinitions = [
         'view' => [
             'dashboard', 'settlements', 'net_positions',
             'corridor_fees', 'reports', 'settlement_analysis',
-            'recent_swaps', 'cross_border', 'generate_reports', 'live_transactions'
+            'recent_swaps', 'cross_border', 'generate_reports', 'live_transactions',
+            'alerts', 'institution_health'
         ],
         'actions' => ['view', 'process', 'export', 'acknowledge_settlement', 'generate_settlement_report'],
         'report_types' => ['settlement', 'net_positions', 'corridor', 'cross_border'],
@@ -154,7 +179,8 @@ $roleDefinitions = [
         'view' => [
             'dashboard', 'revenue', 'fee_collections',
             'participant_revenue', 'forex_fees', 'reports',
-            'revenue_breakdown', 'recent_swaps', 'generate_reports', 'live_transactions'
+            'revenue_breakdown', 'recent_swaps', 'generate_reports', 'live_transactions',
+            'institution_health'
         ],
         'actions' => ['view', 'export', 'generate_report', 'generate_revenue_report'],
         'report_types' => ['revenue', 'fee', 'participant', 'forex'],
@@ -171,7 +197,7 @@ $roleDefinitions = [
         'view' => [
             'dashboard', 'compliance', 'audit', 'transactions_readonly',
             'reports', 'aml_monitoring', 'fee_compliance', 'recent_swaps',
-            'generate_reports', 'live_transactions'
+            'generate_reports', 'live_transactions', 'alerts'
         ],
         'actions' => ['view', 'export', 'generate_compliance_report', 'flag_suspicious'],
         'report_types' => ['compliance', 'aml', 'audit', 'fee_compliance'],
@@ -238,7 +264,7 @@ try {
 
 // Get view and parameters
 $view = $_GET['view'] ?? 'dashboard';
-$search = $_GET['search'] ?? '';
+$search = trim($_GET['search'] ?? '');
 $exportTable = $_GET['export'] ?? '';
 $action = $_GET['action'] ?? '';
 $reportType = $_GET['report_type'] ?? '';
@@ -252,7 +278,7 @@ function safeHtml($value) {
 }
 
 // ============================================================
-// LIVE TRANSACTIONS - NO LIMIT
+// LIVE TRANSACTIONS - NO LIMIT, SEARCHABLE
 // ============================================================
 $liveTransactions = [];
 $liveStats = ['total' => 0, 'completed' => 0, 'pending' => 0, 'failed' => 0, 'total_amount' => 0];
@@ -260,11 +286,13 @@ $liveStats = ['total' => 0, 'completed' => 0, 'pending' => 0, 'failed' => 0, 'to
 try {
     $checkStmt = $db->query("SELECT to_regclass('vw_all_swaps')");
     $viewExists = $checkStmt->fetchColumn();
-    
+
     if ($viewExists) {
-        // NO LIMIT - show ALL transactions
-        $stmt = $db->query("
-            SELECT 
+        // Search box filters reference/institution/status. An empty $search
+        // produces '%%' which matches every row, so the WHERE clause is
+        // always safe to apply.
+        $stmt = $db->prepare("
+            SELECT
                 swap_reference,
                 reference,
                 swap_type,
@@ -275,15 +303,28 @@ try {
                 status,
                 fee_amount,
                 created_at
-            FROM vw_all_swaps 
+            FROM vw_all_swaps
+            WHERE swap_reference ILIKE :search1
+               OR reference ILIKE :search2
+               OR source_institution ILIKE :search3
+               OR destination_institution ILIKE :search4
+               OR status ILIKE :search5
             ORDER BY created_at DESC
         ");
+        $likeSearch = '%' . $search . '%';
+        $stmt->execute([
+            ':search1' => $likeSearch,
+            ':search2' => $likeSearch,
+            ':search3' => $likeSearch,
+            ':search4' => $likeSearch,
+            ':search5' => $likeSearch,
+        ]);
         $liveTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
+
         $statStmt = $db->query("
-            SELECT 
+            SELECT
                 COUNT(*) as total,
-                COUNT(CASE WHEN status ILIKE '%completed%' OR status ILIKE '%success%' THEN 1 END) as completed,
+                COUNT(CASE WHEN status ILIKE '%completed%' OR status ILIKE '%success%' OR status ILIKE '%debited%' THEN 1 END) as completed,
                 COUNT(CASE WHEN status ILIKE '%pending%' OR status ILIKE '%processing%' OR status ILIKE '%confirmation%' THEN 1 END) as pending,
                 COUNT(CASE WHEN status ILIKE '%failed%' OR status ILIKE '%error%' THEN 1 END) as failed,
                 COALESCE(SUM(amount), 0) as total_amount
@@ -291,7 +332,7 @@ try {
             WHERE created_at >= NOW() - INTERVAL '24 hours'
         ");
         $liveStats = $statStmt->fetch(PDO::FETCH_ASSOC);
-        
+
         if ($liveStats) {
             $liveStats['total'] = (int)($liveStats['total'] ?? 0);
             $liveStats['completed'] = (int)($liveStats['completed'] ?? 0);
@@ -305,17 +346,16 @@ try {
 }
 
 // ============================================================
-// RECENT SWAPS - NO LIMIT
+// RECENT SWAPS - NO LIMIT, SEARCHABLE
 // ============================================================
 $recentSwaps = [];
 try {
     $checkStmt = $db->query("SELECT to_regclass('vw_all_swaps')");
     $viewExists = $checkStmt->fetchColumn();
-    
+
     if ($viewExists) {
-        // NO LIMIT - show ALL swaps
-        $stmt = $db->query("
-            SELECT 
+        $stmt = $db->prepare("
+            SELECT
                 swap_reference,
                 reference,
                 swap_type,
@@ -326,9 +366,22 @@ try {
                 status,
                 fee_amount,
                 created_at
-            FROM vw_all_swaps 
+            FROM vw_all_swaps
+            WHERE swap_reference ILIKE :search1
+               OR reference ILIKE :search2
+               OR source_institution ILIKE :search3
+               OR destination_institution ILIKE :search4
+               OR status ILIKE :search5
             ORDER BY created_at DESC
         ");
+        $likeSearch = '%' . $search . '%';
+        $stmt->execute([
+            ':search1' => $likeSearch,
+            ':search2' => $likeSearch,
+            ':search3' => $likeSearch,
+            ':search4' => $likeSearch,
+            ':search5' => $likeSearch,
+        ]);
         $recentSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 } catch (Throwable $e) {
@@ -340,9 +393,8 @@ try {
 // ============================================================
 $multiDestinationSwaps = [];
 try {
-    // NO LIMIT - show ALL multi-destination swaps
     $stmt = $db->query("
-        SELECT 
+        SELECT
             id,
             reference,
             source_institution,
@@ -357,12 +409,182 @@ try {
             results_payload,
             created_at,
             updated_at
-        FROM multi_destination_swaps 
+        FROM multi_destination_swaps
         ORDER BY created_at DESC
     ");
     $multiDestinationSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) {
     error_log("[ADMIN DASHBOARD] Multi-destination fetch error: " . $e->getMessage());
+}
+
+// ============================================================
+// ALERTS / EXCEPTIONS
+// Surfaces the things ops/compliance actually need to act on,
+// rather than making everyone scroll raw tables to spot them.
+// ============================================================
+$alerts = [
+    'stuck_holds' => [],
+    'expired_identity_swaps' => [],
+    'stuck_cashouts' => [],
+    'failed_destinations' => [],
+];
+
+try {
+    // Holds sitting in a non-terminal state for more than 24h.
+    // Terminal states are DEBITED / RELEASED / CANCELLED / FAILED.
+    $stmt = $db->query("
+        SELECT hold_id, hold_reference, swap_reference, participant_name AS institution,
+               asset_type, amount, currency, status, created_at
+        FROM hold_transactions
+        WHERE status IN ('ACTIVE','HELD','PENDING_CASHOUT','PENDING_IDENTITY')
+          AND created_at < NOW() - INTERVAL '24 hours'
+        ORDER BY created_at ASC
+        LIMIT 300
+    ");
+    $alerts['stuck_holds'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    error_log("[ADMIN DASHBOARD] stuck_holds alert error: " . $e->getMessage());
+}
+
+try {
+    // Identity swaps whose 24h confirmation window has passed but that
+    // were never picked up by the expiry-cancellation job.
+    $stmt = $db->query("
+        SELECT hold_id, swap_reference, source_institution, identity_type, identity_value,
+               amount, currency, hold_expires_at, status, created_at
+        FROM identity_swap_holds
+        WHERE status = 'pending'
+          AND hold_expires_at < NOW()
+        ORDER BY hold_expires_at ASC
+        LIMIT 300
+    ");
+    $alerts['expired_identity_swaps'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    error_log("[ADMIN DASHBOARD] expired_identity_swaps alert error: " . $e->getMessage());
+}
+
+try {
+    // Cashout codes that expired without the recipient ever cashing out.
+    $stmt = $db->query("
+        SELECT auth_id, swap_reference, client_phone, source_institution, cashout_provider,
+               amount, currency, code_expiry, status, created_at
+        FROM cashout_authorizations
+        WHERE status = 'PENDING'
+          AND code_expiry < NOW()
+        ORDER BY code_expiry ASC
+        LIMIT 300
+    ");
+    $alerts['stuck_cashouts'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    error_log("[ADMIN DASHBOARD] stuck_cashouts alert error: " . $e->getMessage());
+}
+
+try {
+    // Individual failed legs inside otherwise-partial-success multi-destination
+    // swaps - these are easy to miss because the parent swap still shows
+    // "partial_success" rather than a hard failure.
+    $stmt = $db->query("
+        SELECT id, reference, source_institution, created_at, results_payload
+        FROM multi_destination_swaps
+        WHERE failed_count > 0
+        ORDER BY created_at DESC
+        LIMIT 150
+    ");
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($rows as $row) {
+        $results = json_decode($row['results_payload'] ?? '[]', true) ?: [];
+        foreach ($results as $r) {
+            if (($r['status'] ?? '') === 'failed') {
+                $alerts['failed_destinations'][] = [
+                    'reference' => $row['reference'],
+                    'source_institution' => $row['source_institution'],
+                    'created_at' => $row['created_at'],
+                    'type' => $r['type'] ?? 'bank',
+                    'identity_value' => $r['identity_value'] ?? null,
+                    'destination_institution' => $r['destination_institution'] ?? null,
+                    'amount' => $r['amount'] ?? $r['requested_amount'] ?? 0,
+                    'error' => $r['error'] ?? 'Unknown error',
+                ];
+            }
+        }
+    }
+} catch (Throwable $e) {
+    error_log("[ADMIN DASHBOARD] failed_destinations alert error: " . $e->getMessage());
+}
+
+$alertCounts = [
+    'stuck_holds' => count($alerts['stuck_holds']),
+    'expired_identity_swaps' => count($alerts['expired_identity_swaps']),
+    'stuck_cashouts' => count($alerts['stuck_cashouts']),
+    'failed_destinations' => count($alerts['failed_destinations']),
+];
+$totalAlerts = array_sum($alertCounts);
+
+// ============================================================
+// INSTITUTION HEALTH
+// Volume + success rate from vw_all_swaps (institution appears as
+// either source or destination). Latency is a separate query against
+// hold_transactions since that's the only table with both a start
+// (created_at) and completion (debited_at) timestamp.
+// ============================================================
+$institutionHealth = [];
+try {
+    $stmt = $db->query("
+        SELECT
+            inst AS institution,
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE status ILIKE '%debited%' OR status ILIKE '%completed%' OR status ILIKE '%success%') AS successful,
+            COUNT(*) FILTER (WHERE status ILIKE '%fail%' OR status ILIKE '%error%') AS failed,
+            COUNT(*) FILTER (WHERE status ILIKE '%pending%' OR status ILIKE '%confirmation%') AS pending,
+            COALESCE(SUM(amount), 0) AS volume
+        FROM (
+            SELECT source_institution AS inst, status, amount
+            FROM vw_all_swaps
+            WHERE source_institution IS NOT NULL AND source_institution <> 'N/A'
+            UNION ALL
+            SELECT destination_institution AS inst, status, amount
+            FROM vw_all_swaps
+            WHERE destination_institution IS NOT NULL AND destination_institution <> 'N/A'
+        ) combined
+        GROUP BY inst
+        ORDER BY total DESC
+    ");
+    $institutionHealth = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($institutionHealth as &$row) {
+        $row['success_rate'] = $row['total'] > 0 ? round(($row['successful'] / $row['total']) * 100, 1) : 0.0;
+        $row['avg_latency_seconds'] = null;
+        $row['debited_sample_size'] = 0;
+    }
+    unset($row);
+} catch (Throwable $e) {
+    error_log("[ADMIN DASHBOARD] institution health error: " . $e->getMessage());
+}
+
+try {
+    $stmt = $db->query("
+        SELECT source_institution AS institution,
+               AVG(EXTRACT(EPOCH FROM (debited_at - created_at))) AS avg_seconds,
+               COUNT(*) AS debited_count
+        FROM hold_transactions
+        WHERE debited_at IS NOT NULL
+          AND source_institution IS NOT NULL
+        GROUP BY source_institution
+    ");
+    $latencyRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $latencyByInstitution = [];
+    foreach ($latencyRows as $lr) {
+        $latencyByInstitution[$lr['institution']] = $lr;
+    }
+    foreach ($institutionHealth as &$row) {
+        $inst = $row['institution'];
+        if (isset($latencyByInstitution[$inst])) {
+            $row['avg_latency_seconds'] = round((float)$latencyByInstitution[$inst]['avg_seconds'], 1);
+            $row['debited_sample_size'] = (int)$latencyByInstitution[$inst]['debited_count'];
+        }
+    }
+    unset($row);
+} catch (Throwable $e) {
+    error_log("[ADMIN DASHBOARD] institution latency error: " . $e->getMessage());
 }
 
 // ============================================================
@@ -388,6 +610,10 @@ if (!isset($liveStats)) $liveStats = ['total' => 0, 'completed' => 0, 'pending' 
 if (!isset($recentSwaps)) $recentSwaps = [];
 if (!isset($multiDestinationSwaps)) $multiDestinationSwaps = [];
 if (!isset($metrics)) $metrics = [];
+if (!isset($alerts)) $alerts = ['stuck_holds' => [], 'expired_identity_swaps' => [], 'stuck_cashouts' => [], 'failed_destinations' => []];
+if (!isset($alertCounts)) $alertCounts = ['stuck_holds' => 0, 'expired_identity_swaps' => 0, 'stuck_cashouts' => 0, 'failed_destinations' => 0];
+if (!isset($totalAlerts)) $totalAlerts = 0;
+if (!isset($institutionHealth)) $institutionHealth = [];
 
 ?>
 <!DOCTYPE html>
@@ -454,7 +680,7 @@ if (!isset($metrics)) $metrics = [];
             border-radius: 4px;
         }
         .logout-btn:hover { background: #FFDA63; color: #001B44; }
-        
+
         .admin-nav {
             background: #fff;
             border-bottom: 2px solid #001B44;
@@ -476,6 +702,9 @@ if (!isset($metrics)) $metrics = [];
             border-bottom: 3px solid transparent;
             transition: all 0.2s;
             white-space: nowrap;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
         }
         .nav-item:hover { color: #001B44; }
         .nav-item.active { color: #001B44; border-bottom-color: #FFDA63; }
@@ -483,7 +712,17 @@ if (!isset($metrics)) $metrics = [];
         .nav-item.finance.active { border-bottom-color: #28a745; }
         .nav-item.regulator { color: #8B0000; }
         .nav-item.regulator.active { border-bottom-color: #8B0000; }
-        
+        .nav-item.alerts { color: #dc3545; }
+        .nav-item.alerts.active { border-bottom-color: #dc3545; }
+        .nav-badge {
+            background: #dc3545;
+            color: #fff;
+            font-size: 0.55rem;
+            padding: 1px 6px;
+            border-radius: 10px;
+            font-weight: 700;
+        }
+
         .admin-content { padding: 24px; max-width: 1600px; margin: 0 auto; }
         .content-header {
             margin-bottom: 24px;
@@ -495,7 +734,7 @@ if (!isset($metrics)) $metrics = [];
         }
         .content-header h1 { font-size: 1.3rem; font-weight: 600; color: #001B44; }
         .content-header .timestamp { color: #666; font-size: 0.7rem; }
-        
+
         .metrics-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -518,7 +757,7 @@ if (!isset($metrics)) $metrics = [];
         .metric-value { font-size: 1.5rem; font-weight: 600; color: #001B44; }
         .metric-value .sub { font-size: 0.8rem; color: #666; }
         .metric-value .small { font-size: 0.9rem; }
-        
+
         .card {
             background: #fff;
             border: 2px solid #001B44;
@@ -548,7 +787,21 @@ if (!isset($metrics)) $metrics = [];
         .card-badge.warning { background: #856404; }
         .card-badge.danger { background: #dc3545; }
         .card-badge.info { background: #17a2b8; }
-        
+
+        .search-box {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .search-box input[type=text] {
+            font-family: 'IBM Plex Mono', monospace;
+            padding: 6px 10px;
+            border: 2px solid #001B44;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            min-width: 220px;
+        }
+
         .table-responsive { overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; font-size: 0.7rem; }
         th {
@@ -568,7 +821,7 @@ if (!isset($metrics)) $metrics = [];
         td { padding: 5px 10px; border-bottom: 1px solid #eee; font-size: 0.65rem; }
         tr:hover { background: #f5f5f5; }
         tr:nth-child(even) { background: #fafafa; }
-        
+
         .status {
             display: inline-block;
             padding: 1px 8px;
@@ -585,7 +838,8 @@ if (!isset($metrics)) $metrics = [];
         .status-warning { background: #fff3cd; color: #856404; border-color: #ffeeba; }
         .status-processing { background: #cce5ff; color: #004085; border-color: #b8daff; }
         .status-identity { background: #e8d5f5; color: #6f42c1; border-color: #d4b8e8; }
-        
+        .status-danger { background: #f8d7da; color: #721c24; border-color: #f5c6cb; }
+
         .btn {
             padding: 6px 14px;
             font-size: 0.65rem;
@@ -613,10 +867,10 @@ if (!isset($metrics)) $metrics = [];
         .btn-finance { border-color: #28a745; color: #28a745; }
         .btn-finance:hover { background: #28a745; color: #fff; }
         .btn-sm { padding: 2px 8px; font-size: 0.55rem; }
-        
+
         .empty-state { text-align: center; padding: 30px; color: #999; }
         .empty-state .icon { font-size: 2rem; margin-bottom: 8px; }
-        
+
         .admin-footer {
             background: #001B44;
             color: #A1B5D8;
@@ -626,7 +880,7 @@ if (!isset($metrics)) $metrics = [];
             border-top: 3px solid #FFDA63;
             margin-top: 24px;
         }
-        
+
         .live-indicator {
             display: inline-block;
             width: 10px;
@@ -640,7 +894,7 @@ if (!isset($metrics)) $metrics = [];
             0%, 100% { opacity: 1; }
             50% { opacity: 0.3; }
         }
-        
+
         .auto-refresh-toggle {
             cursor: pointer;
             padding: 4px 12px;
@@ -657,7 +911,32 @@ if (!isset($metrics)) $metrics = [];
             color: #fff;
             border-color: #28a745;
         }
-        
+
+        .alert-section { margin-bottom: 20px; }
+        .alert-section-title {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .health-bar-track {
+            background: #eee;
+            border-radius: 4px;
+            height: 10px;
+            width: 100%;
+            overflow: hidden;
+        }
+        .health-bar-fill {
+            height: 100%;
+            background: #28a745;
+        }
+        .health-bar-fill.warn { background: #856404; }
+        .health-bar-fill.bad { background: #dc3545; }
+
         @media (max-width: 768px) {
             .metrics-grid { grid-template-columns: repeat(2, 1fr); }
             .admin-nav { padding: 0 12px; gap: 10px; }
@@ -689,39 +968,50 @@ if (!isset($metrics)) $metrics = [];
         <?php if (canView('dashboard')): ?>
         <a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">📊 DASHBOARD</a>
         <?php endif; ?>
-        
+
+        <?php if (canView('alerts')): ?>
+        <a href="?view=alerts" class="nav-item alerts <?php echo $view === 'alerts' ? 'active' : ''; ?>">
+            🚨 ALERTS
+            <?php if ($totalAlerts > 0): ?><span class="nav-badge"><?php echo $totalAlerts; ?></span><?php endif; ?>
+        </a>
+        <?php endif; ?>
+
         <?php if (canView('live_transactions')): ?>
         <a href="?view=live_transactions" class="nav-item <?php echo $view === 'live_transactions' ? 'active' : ''; ?>">🔴 LIVE TXNS</a>
         <?php endif; ?>
-        
+
         <?php if (canView('multi_destination')): ?>
         <a href="?view=multi_destination" class="nav-item <?php echo $view === 'multi_destination' ? 'active' : ''; ?>">🎯 MULTI-DEST</a>
         <?php endif; ?>
-        
+
         <?php if (canView('recent_swaps')): ?>
         <a href="?view=recent_swaps" class="nav-item <?php echo $view === 'recent_swaps' ? 'active' : ''; ?>">🔄 SWAPS</a>
         <?php endif; ?>
-        
+
+        <?php if (canView('institution_health')): ?>
+        <a href="?view=institution_health" class="nav-item <?php echo $view === 'institution_health' ? 'active' : ''; ?>">🏦 INSTITUTIONS</a>
+        <?php endif; ?>
+
         <?php if (canView('settlements')): ?>
         <a href="?view=settlements" class="nav-item <?php echo $view === 'settlements' ? 'active' : ''; ?>">📤 SETTLEMENTS</a>
         <?php endif; ?>
-        
+
         <?php if (canView('regulatory')): ?>
         <a href="?view=regulatory" class="nav-item regulator <?php echo $view === 'regulatory' ? 'active' : ''; ?>">🏛️ REGULATORY</a>
         <?php endif; ?>
-        
+
         <?php if (canView('audit')): ?>
         <a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">📝 AUDIT</a>
         <?php endif; ?>
-        
+
         <?php if (canView('fee_breakdown') && hasFinancialAccess()): ?>
         <a href="?view=fee_breakdown" class="nav-item finance <?php echo $view === 'fee_breakdown' ? 'active' : ''; ?>">📊 FEES</a>
         <?php endif; ?>
-        
+
         <?php if (canView('invoices') && hasPermission('generate_invoice')): ?>
         <a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">💰 INVOICES</a>
         <?php endif; ?>
-        
+
         <?php if (canView('all_tables') && $isSuperAdmin): ?>
         <a href="?view=all_tables" class="nav-item <?php echo $view === 'all_tables' ? 'active' : ''; ?>">📋 TABLES</a>
         <?php endif; ?>
@@ -736,6 +1026,21 @@ if (!isset($metrics)) $metrics = [];
             <h1>📊 <?php echo safeHtml($roleName); ?> DASHBOARD</h1>
             <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?></div>
         </div>
+
+        <?php if ($totalAlerts > 0 && canView('alerts')): ?>
+        <div class="card" style="border-color:#dc3545;">
+            <div class="card-header">
+                <span class="card-title" style="color:#dc3545;">🚨 <?php echo $totalAlerts; ?> item<?php echo $totalAlerts === 1 ? '' : 's'; ?> need attention</span>
+                <a href="?view=alerts" class="btn btn-danger btn-sm">VIEW ALERTS</a>
+            </div>
+            <div style="font-size:0.65rem; color:#666;">
+                <?php echo $alertCounts['stuck_holds']; ?> stuck holds ·
+                <?php echo $alertCounts['expired_identity_swaps']; ?> expired identity swaps ·
+                <?php echo $alertCounts['stuck_cashouts']; ?> stuck cashouts ·
+                <?php echo $alertCounts['failed_destinations']; ?> failed destinations
+            </div>
+        </div>
+        <?php endif; ?>
 
         <div class="metrics-grid">
             <div class="metric-card">
@@ -784,6 +1089,12 @@ if (!isset($metrics)) $metrics = [];
                 <?php if (canView('all_tables') && $isSuperAdmin): ?>
                 <a href="?view=all_tables" class="btn">📋 View All Tables</a>
                 <?php endif; ?>
+                <?php if (canView('alerts')): ?>
+                <a href="?view=alerts" class="btn btn-danger">🚨 View Alerts</a>
+                <?php endif; ?>
+                <?php if (canView('institution_health')): ?>
+                <a href="?view=institution_health" class="btn">🏦 Institution Health</a>
+                <?php endif; ?>
             </div>
             <?php if (!empty($success)): ?>
             <div style="margin-top:12px; padding:12px; background:#d4edda; color:#155724; border:2px solid #c3e6cb; border-radius:4px;">
@@ -794,7 +1105,203 @@ if (!isset($metrics)) $metrics = [];
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- LIVE TRANSACTIONS VIEW - NO LIMIT -->
+        <!-- ALERTS / EXCEPTIONS VIEW -->
+        <!-- ============================================================ -->
+        <?php if ($view === 'alerts' && canView('alerts')): ?>
+        <div class="content-header">
+            <h1>🚨 ALERTS &amp; EXCEPTIONS</h1>
+            <div class="timestamp">Things that need a human to look at them, not just raw rows</div>
+            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
+        </div>
+
+        <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
+            <div class="metric-card" style="border-color:#dc3545;">
+                <div class="metric-label">Stuck Holds (&gt;24h)</div>
+                <div class="metric-value" style="color:#dc3545;"><?php echo number_format($alertCounts['stuck_holds']); ?></div>
+            </div>
+            <div class="metric-card" style="border-color:#856404;">
+                <div class="metric-label">Expired Identity Swaps</div>
+                <div class="metric-value" style="color:#856404;"><?php echo number_format($alertCounts['expired_identity_swaps']); ?></div>
+            </div>
+            <div class="metric-card" style="border-color:#856404;">
+                <div class="metric-label">Stuck Cashouts</div>
+                <div class="metric-value" style="color:#856404;"><?php echo number_format($alertCounts['stuck_cashouts']); ?></div>
+            </div>
+            <div class="metric-card" style="border-color:#dc3545;">
+                <div class="metric-label">Failed Destinations</div>
+                <div class="metric-value" style="color:#dc3545;"><?php echo number_format($alertCounts['failed_destinations']); ?></div>
+            </div>
+        </div>
+
+        <?php if ($totalAlerts === 0): ?>
+        <div class="card">
+            <div class="empty-state">
+                <div class="icon">✅</div>
+                <p>Nothing needs attention right now.</p>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <?php if (!empty($alerts['stuck_holds'])): ?>
+        <div class="card alert-section">
+            <div class="card-header">
+                <span class="card-title" style="color:#dc3545;">🔒 Stuck Holds (non-terminal &gt;24h)</span>
+                <span class="card-badge danger"><?php echo count($alerts['stuck_holds']); ?></span>
+            </div>
+            <div class="table-responsive">
+                <table>
+                    <thead><tr><th>Hold Ref</th><th>Swap Ref</th><th>Institution</th><th>Asset</th><th>Amount</th><th>Status</th><th>Age</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($alerts['stuck_holds'] as $h): ?>
+                        <tr>
+                            <td><?php echo safeHtml(substr($h['hold_reference'] ?? '', 0, 20)); ?></td>
+                            <td><?php echo safeHtml(substr($h['swap_reference'] ?? '', 0, 20)); ?></td>
+                            <td><?php echo safeHtml($h['institution'] ?? 'N/A'); ?></td>
+                            <td><?php echo safeHtml($h['asset_type'] ?? ''); ?></td>
+                            <td><?php echo number_format((float)($h['amount'] ?? 0), 2); ?> <?php echo safeHtml($h['currency'] ?? 'BWP'); ?></td>
+                            <td><span class="status status-warning"><?php echo safeHtml($h['status'] ?? ''); ?></span></td>
+                            <td><?php
+                                $ageHours = (time() - strtotime($h['created_at'] ?? 'now')) / 3600;
+                                echo round($ageHours, 1) . 'h';
+                            ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <?php if (!empty($alerts['expired_identity_swaps'])): ?>
+        <div class="card alert-section">
+            <div class="card-header">
+                <span class="card-title" style="color:#856404;">🪪 Expired Identity Swaps (not yet cancelled)</span>
+                <span class="card-badge warning"><?php echo count($alerts['expired_identity_swaps']); ?></span>
+            </div>
+            <div class="table-responsive">
+                <table>
+                    <thead><tr><th>Swap Ref</th><th>Institution</th><th>Identity</th><th>Amount</th><th>Expired At</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($alerts['expired_identity_swaps'] as $s): ?>
+                        <tr>
+                            <td><?php echo safeHtml(substr($s['swap_reference'] ?? '', 0, 20)); ?></td>
+                            <td><?php echo safeHtml($s['source_institution'] ?? 'N/A'); ?></td>
+                            <td><?php echo safeHtml($s['identity_type'] ?? ''); ?>: <?php echo safeHtml($s['identity_value'] ?? ''); ?></td>
+                            <td><?php echo number_format((float)($s['amount'] ?? 0), 2); ?> <?php echo safeHtml($s['currency'] ?? 'BWP'); ?></td>
+                            <td><?php echo safeHtml($s['hold_expires_at'] ?? ''); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <?php if (!empty($alerts['stuck_cashouts'])): ?>
+        <div class="card alert-section">
+            <div class="card-header">
+                <span class="card-title" style="color:#856404;">💵 Expired, Unclaimed Cashouts</span>
+                <span class="card-badge warning"><?php echo count($alerts['stuck_cashouts']); ?></span>
+            </div>
+            <div class="table-responsive">
+                <table>
+                    <thead><tr><th>Swap Ref</th><th>Source</th><th>Provider</th><th>Phone</th><th>Amount</th><th>Expired</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($alerts['stuck_cashouts'] as $c): ?>
+                        <tr>
+                            <td><?php echo safeHtml(substr($c['swap_reference'] ?? '', 0, 20)); ?></td>
+                            <td><?php echo safeHtml($c['source_institution'] ?? 'N/A'); ?></td>
+                            <td><?php echo safeHtml($c['cashout_provider'] ?? 'N/A'); ?></td>
+                            <td><?php echo safeHtml($c['client_phone'] ?? 'N/A'); ?></td>
+                            <td><?php echo number_format((float)($c['amount'] ?? 0), 2); ?> <?php echo safeHtml($c['currency'] ?? 'BWP'); ?></td>
+                            <td><?php echo safeHtml($c['code_expiry'] ?? ''); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <?php if (!empty($alerts['failed_destinations'])): ?>
+        <div class="card alert-section">
+            <div class="card-header">
+                <span class="card-title" style="color:#dc3545;">❌ Failed Destinations (inside multi-destination swaps)</span>
+                <span class="card-badge danger"><?php echo count($alerts['failed_destinations']); ?></span>
+            </div>
+            <div class="table-responsive">
+                <table>
+                    <thead><tr><th>Parent Ref</th><th>Source</th><th>Type</th><th>Target</th><th>Amount</th><th>Error</th><th>When</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($alerts['failed_destinations'] as $f): ?>
+                        <tr>
+                            <td><?php echo safeHtml(substr($f['reference'] ?? '', 0, 20)); ?></td>
+                            <td><?php echo safeHtml($f['source_institution'] ?? 'N/A'); ?></td>
+                            <td><span class="status <?php echo $f['type'] === 'identity' ? 'status-identity' : 'status-info'; ?>"><?php echo safeHtml(strtoupper($f['type'])); ?></span></td>
+                            <td><?php echo safeHtml($f['identity_value'] ?? $f['destination_institution'] ?? 'N/A'); ?></td>
+                            <td><?php echo number_format((float)($f['amount'] ?? 0), 2); ?></td>
+                            <td style="color:#dc3545; max-width:280px;"><?php echo safeHtml($f['error']); ?></td>
+                            <td><?php echo safeHtml(date('Y-m-d H:i', strtotime($f['created_at'] ?? 'now'))); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <?php endif; ?>
+        <?php endif; ?>
+
+        <!-- ============================================================ -->
+        <!-- INSTITUTION HEALTH VIEW -->
+        <!-- ============================================================ -->
+        <?php if ($view === 'institution_health' && canView('institution_health')): ?>
+        <div class="content-header">
+            <h1>🏦 INSTITUTION HEALTH</h1>
+            <div class="timestamp">Volume, success rate, and average time-to-debit per institution</div>
+            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
+        </div>
+
+        <?php if (empty($institutionHealth)): ?>
+        <div class="card"><div class="empty-state"><div class="icon">📭</div><p>No institution data yet</p></div></div>
+        <?php else: ?>
+        <?php foreach ($institutionHealth as $inst):
+            $rate = (float)$inst['success_rate'];
+            $barClass = $rate >= 90 ? '' : ($rate >= 70 ? 'warn' : 'bad');
+        ?>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title"><?php echo safeHtml($inst['institution']); ?></span>
+                <span class="card-badge <?php echo $rate >= 90 ? 'success' : ($rate >= 70 ? 'warning' : 'danger'); ?>"><?php echo $rate; ?>% SUCCESS</span>
+            </div>
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:12px; margin-bottom:12px; font-size:0.7rem;">
+                <div><strong>Total Txns:</strong> <?php echo number_format($inst['total']); ?></div>
+                <div style="color:#28a745;"><strong>Successful:</strong> <?php echo number_format($inst['successful']); ?></div>
+                <div style="color:#856404;"><strong>Pending:</strong> <?php echo number_format($inst['pending']); ?></div>
+                <div style="color:#dc3545;"><strong>Failed:</strong> <?php echo number_format($inst['failed']); ?></div>
+                <div><strong>Volume:</strong> <?php echo number_format((float)$inst['volume'], 2); ?></div>
+                <div>
+                    <strong>Avg time-to-debit:</strong>
+                    <?php
+                        if ($inst['avg_latency_seconds'] !== null) {
+                            $secs = $inst['avg_latency_seconds'];
+                            echo $secs < 60 ? round($secs, 1) . 's' : round($secs / 60, 1) . 'm';
+                            echo ' (n=' . $inst['debited_sample_size'] . ')';
+                        } else {
+                            echo 'n/a';
+                        }
+                    ?>
+                </div>
+            </div>
+            <div class="health-bar-track">
+                <div class="health-bar-fill <?php echo $barClass; ?>" style="width: <?php echo min(100, $rate); ?>%;"></div>
+            </div>
+        </div>
+        <?php endforeach; ?>
+        <?php endif; ?>
+        <?php endif; ?>
+
+        <!-- ============================================================ -->
+        <!-- LIVE TRANSACTIONS VIEW - NO LIMIT, SEARCHABLE -->
         <!-- ============================================================ -->
         <?php if ($view === 'live_transactions' && canView('live_transactions')): ?>
         <div class="content-header">
@@ -808,6 +1315,15 @@ if (!isset($metrics)) $metrics = [];
             </div>
             <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
         </div>
+
+        <form method="get" class="search-box" style="margin-bottom:16px;">
+            <input type="hidden" name="view" value="live_transactions">
+            <input type="text" name="search" placeholder="Search reference, institution, status..." value="<?php echo safeHtml($search); ?>">
+            <button type="submit" class="btn btn-primary btn-sm">SEARCH</button>
+            <?php if ($search !== ''): ?>
+            <a href="?view=live_transactions" class="btn btn-sm">CLEAR</a>
+            <?php endif; ?>
+        </form>
 
         <!-- Live Stats -->
         <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));">
@@ -856,14 +1372,14 @@ if (!isset($metrics)) $metrics = [];
                     </thead>
                     <tbody id="liveTransactionsBody">
                         <?php if (empty($liveTransactions)): ?>
-                        <tr><td colspan="10" class="empty-state">No live transactions found</td></tr>
+                        <tr><td colspan="10" class="empty-state">No live transactions found<?php echo $search !== '' ? ' for "' . safeHtml($search) . '"' : ''; ?></td></tr>
                         <?php else: ?>
                         <?php foreach ($liveTransactions as $index => $row): ?>
                         <tr>
                             <td><?php echo $index + 1; ?></td>
                             <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['reference'] ?? 'N/A', 0, 12)); ?></td>
                             <td>
-                                <?php 
+                                <?php
                                 $type = $row['swap_type'] ?? 'STANDARD';
                                 $typeClass = match($type) {
                                     'MULTI_DESTINATION' => 'status-info',
@@ -878,7 +1394,7 @@ if (!isset($metrics)) $metrics = [];
                             <td><strong><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></strong></td>
                             <td><?php echo safeHtml($row['currency'] ?? 'BWP'); ?></td>
                             <td>
-                                <?php 
+                                <?php
                                 $status = strtolower($row['status'] ?? 'pending');
                                 $class = match(true) {
                                     str_contains($status, 'complet') || str_contains($status, 'success') || str_contains($status, 'debited') => 'success',
@@ -904,20 +1420,20 @@ if (!isset($metrics)) $metrics = [];
         <script>
             let autoRefresh = true;
             let refreshInterval = null;
-            
+
             function toggleAutoRefresh() {
                 autoRefresh = !autoRefresh;
                 const toggle = document.getElementById('refreshToggle');
                 toggle.textContent = autoRefresh ? '🔄 AUTO-REFRESH ON' : '🔄 AUTO-REFRESH OFF';
                 toggle.classList.toggle('active');
-                if (autoRefresh) { startAutoRefresh(); } 
+                if (autoRefresh) { startAutoRefresh(); }
                 else { clearInterval(refreshInterval); }
             }
-            
+
             function startAutoRefresh() {
                 clearInterval(refreshInterval);
                 refreshInterval = setInterval(function() {
-                    fetch(window.location.href + '&ajax=1')
+                    fetch(window.location.href + (window.location.href.includes('?') ? '&' : '?') + 'ajax=1')
                         .then(response => response.json())
                         .then(data => {
                             if (data.transactions) {
@@ -926,7 +1442,7 @@ if (!isset($metrics)) $metrics = [];
                                 data.transactions.forEach((row, i) => {
                                     const status = (row.status || 'pending').toLowerCase();
                                     let cls = 'info';
-                                    if (status.includes('complet') || status.includes('success')) cls = 'success';
+                                    if (status.includes('complet') || status.includes('success') || status.includes('debited')) cls = 'success';
                                     else if (status.includes('pending') || status.includes('processing')) cls = 'pending';
                                     else if (status.includes('fail') || status.includes('error')) cls = 'failed';
                                     const type = row.swap_type || 'STANDARD';
@@ -960,7 +1476,7 @@ if (!isset($metrics)) $metrics = [];
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- RECENT SWAPS VIEW - NO LIMIT -->
+        <!-- RECENT SWAPS VIEW - NO LIMIT, SEARCHABLE -->
         <!-- ============================================================ -->
         <?php if ($view === 'recent_swaps' && canView('recent_swaps')): ?>
         <div class="content-header">
@@ -968,6 +1484,15 @@ if (!isset($metrics)) $metrics = [];
             <div class="timestamp">All swap transactions - complete history</div>
             <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
         </div>
+
+        <form method="get" class="search-box" style="margin-bottom:16px;">
+            <input type="hidden" name="view" value="recent_swaps">
+            <input type="text" name="search" placeholder="Search reference, institution, status..." value="<?php echo safeHtml($search); ?>">
+            <button type="submit" class="btn btn-primary btn-sm">SEARCH</button>
+            <?php if ($search !== ''): ?>
+            <a href="?view=recent_swaps" class="btn btn-sm">CLEAR</a>
+            <?php endif; ?>
+        </form>
 
         <div class="card">
             <div class="card-header">
@@ -991,13 +1516,13 @@ if (!isset($metrics)) $metrics = [];
                     </thead>
                     <tbody>
                         <?php if (empty($recentSwaps)): ?>
-                        <tr><td colspan="9" class="empty-state">No swaps found</td></tr>
+                        <tr><td colspan="9" class="empty-state">No swaps found<?php echo $search !== '' ? ' for "' . safeHtml($search) . '"' : ''; ?></td></tr>
                         <?php else: ?>
                         <?php foreach ($recentSwaps as $row): ?>
                         <tr>
                             <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['reference'] ?? 'N/A', 0, 16)); ?></td>
                             <td>
-                                <?php 
+                                <?php
                                 $type = $row['swap_type'] ?? 'STANDARD';
                                 $typeClass = match($type) {
                                     'MULTI_DESTINATION' => 'status-info',
@@ -1012,7 +1537,7 @@ if (!isset($metrics)) $metrics = [];
                             <td><strong><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></strong></td>
                             <td><?php echo safeHtml($row['currency'] ?? 'BWP'); ?></td>
                             <td>
-                                <?php 
+                                <?php
                                 $status = strtolower($row['status'] ?? 'pending');
                                 $class = match(true) {
                                     str_contains($status, 'complet') || str_contains($status, 'success') => 'success',
@@ -1054,7 +1579,7 @@ if (!isset($metrics)) $metrics = [];
             </div>
         </div>
         <?php else: ?>
-        <?php foreach ($multiDestinationSwaps as $swap): 
+        <?php foreach ($multiDestinationSwaps as $swap):
             $destinations = json_decode($swap['destinations_payload'] ?? '[]', true);
             $results = json_decode($swap['results_payload'] ?? '[]', true);
         ?>
@@ -1070,7 +1595,7 @@ if (!isset($metrics)) $metrics = [];
                     <?php echo strtoupper($swap['status'] ?? 'UNKNOWN'); ?>
                 </span>
             </div>
-            
+
             <!-- Summary -->
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:12px; font-size:0.65rem; background:#f8f9fa; padding:10px; border-radius:4px;">
                 <div><strong>Source:</strong> <?php echo safeHtml($swap['source_institution']); ?></div>
@@ -1122,7 +1647,7 @@ if (!isset($metrics)) $metrics = [];
                             </td>
                             <td><?php echo safeHtml($dest['to_institution'] ?? $dest['destination_institution'] ?? ($isIdentity ? 'IDENTITY' : 'N/A')); ?></td>
                             <td>
-                                <?php 
+                                <?php
                                 if ($isIdentity) {
                                     echo safeHtml($dest['identity_type'] ?? 'national_id') . ': ' . safeHtml($dest['identity_value'] ?? 'N/A');
                                 } elseif ($isCashout) {
@@ -1136,7 +1661,7 @@ if (!isset($metrics)) $metrics = [];
                             <td style="color:#dc3545;"><?php echo number_format($fee, 2); ?></td>
                             <td style="color:#28a745;"><?php echo number_format($net, 2); ?></td>
                             <td>
-                                <?php 
+                                <?php
                                 $statusClass = match($status) {
                                     'success', 'completed' => 'success',
                                     'failed' => 'failed',
@@ -1157,11 +1682,11 @@ if (!isset($metrics)) $metrics = [];
                 </table>
             </div>
             <?php endif; ?>
-            
+
             <!-- Raw JSON -->
             <details style="margin-top:12px;">
                 <summary style="cursor:pointer; font-size:0.6rem; color:#666;">📄 Raw JSON</summary>
-                <pre style="background:#1e293b; color:#4ade80; padding:12px; font-size:0.55rem; overflow-x:auto; max-height:300px; overflow-y:auto; margin-top:8px;"><?php 
+                <pre style="background:#1e293b; color:#4ade80; padding:12px; font-size:0.55rem; overflow-x:auto; max-height:300px; overflow-y:auto; margin-top:8px;"><?php
                     $fullData = [
                         'summary' => [
                             'reference' => $swap['reference'],
@@ -1173,7 +1698,7 @@ if (!isset($metrics)) $metrics = [];
                         'destinations' => $destinations,
                         'results' => $results
                     ];
-                    echo safeHtml(json_encode($fullData, JSON_PRETTY_PRINT)); 
+                    echo safeHtml(json_encode($fullData, JSON_PRETTY_PRINT));
                 ?></pre>
             </details>
         </div>
@@ -1184,7 +1709,10 @@ if (!isset($metrics)) $metrics = [];
         <!-- ============================================================ -->
         <!-- ACCESS DENIED -->
         <!-- ============================================================ -->
-        <?php if (!canView($view) && $view !== 'dashboard' && $view !== 'all_tables' && $view !== 'multi_destination' && $view !== 'live_transactions' && $view !== 'recent_swaps'): ?>
+        <?php
+        $knownViews = ['dashboard', 'all_tables', 'multi_destination', 'live_transactions', 'recent_swaps', 'alerts', 'institution_health'];
+        if (!canView($view) && !in_array($view, $knownViews)):
+        ?>
         <div class="card">
             <div class="empty-state">
                 <div class="icon">🚫</div>
