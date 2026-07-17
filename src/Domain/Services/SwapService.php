@@ -4557,23 +4557,6 @@ class SwapService
             return $result;
         }
 
-        // If not found and we have a voucher number, try instant_money_vouchers
-        if ($voucherNumber) {
-            $stmt = $this->swapDB->prepare("
-                SELECT
-                    reference as swap_reference,
-                    source_institution,
-                    amount,
-                    currency,
-                    created_by as user_id,
-                    source_hold_reference as hold_reference,
-                    status
-                FROM instant_money_vouchers
-                WHERE voucher_number = :voucher_number
-            ");
-            $stmt->execute([':voucher_number' => $voucherNumber]);
-            $voucher = $stmt->fetch(PDO::FETCH_ASSOC);
-
             if ($voucher) {
                 // Create a minimal authorization record
                 $authId = $this->storeCashoutAuthorization(
