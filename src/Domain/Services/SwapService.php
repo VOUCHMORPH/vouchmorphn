@@ -4529,68 +4529,30 @@ class SwapService
     // ============================================================================
 
     /**
-     * Find authorization by swap reference, auth_id, or voucher number
-     * Source of truth for amount/institution - NOT from webhook payload
-     */
-    private function findAuthorization(string $swapReference = null, int $authId = null, string $voucherNumber = null): ?array
-    {
-        $sql = "SELECT * FROM cashout_authorizations WHERE 1=1";
-        $params = [];
+ * Find authorization by swap reference, auth_id, or voucher number
+ * Source of truth for amount/institution - NOT from webhook payload
+ */
+private function findAuthorization(string $swapReference = null, int $authId = null, string $voucherNumber = null): ?array
+{
+    $sql = "SELECT * FROM cashout_authorizations WHERE 1=1";
+    $params = [];
 
-        if ($authId) {
-            $sql .= " AND auth_id = :auth_id";
-            $params[':auth_id'] = $authId;
-        } elseif ($swapReference) {
-            $sql .= " AND swap_reference = :swap_ref";
-            $params[':swap_ref'] = $swapReference;
-        } elseif ($voucherNumber) {
-            $sql .= " AND swap_code = :voucher";
-            $params[':voucher'] = $voucherNumber;
-        }
-
-        $sql .= " ORDER BY created_at DESC LIMIT 1";
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute($params);
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($result) {
-            return $result;
-        }
-
-            if ($voucher) {
-                // Create a minimal authorization record
-                $authId = $this->storeCashoutAuthorization(
-                    $voucher['swap_reference'] ?? 'SWAP_' . time(),
-                    null,
-                    $voucher['source_institution'] ?? 'UNKNOWN',
-                    'ATM',
-                    $voucher['amount'] ?? 0,
-                    0,
-                    $voucherNumber,
-                    null,
-                    date('Y-m-d H:i:s', strtotime('+24 hours'))
-                );
-
-                return [
-                    'auth_id' => $authId,
-                    'swap_reference' => $voucher['swap_reference'],
-                    'source_institution' => $voucher['source_institution'],
-                    'destination_institution' => 'ATM',
-                    'amount' => $voucher['amount'],
-                    'currency' => $voucher['currency'] ?? 'BWP',
-                    'fee_amount' => 0,
-                    'swap_code' => $voucherNumber,
-                    'pin_code' => null,
-                    'status' => 'PENDING',
-                    'user_id' => $voucher['user_id'],
-                    'hold_reference' => $voucher['hold_reference'],
-                    'created_at' => date('Y-m-d H:i:s')
-                ];
-            }
-        }
-
-        return null;
+    if ($authId) {
+        $sql .= " AND auth_id = :auth_id";
+        $params[':auth_id'] = $authId;
+    } elseif ($swapReference) {
+        $sql .= " AND swap_reference = :swap_ref";
+        $params[':swap_ref'] = $swapReference;
+    } elseif ($voucherNumber) {
+        $sql .= " AND swap_code = :voucher";
+        $params[':voucher'] = $voucherNumber;
     }
+
+    $sql .= " ORDER BY created_at DESC LIMIT 1";
+    $stmt = $this->swapDB->prepare($sql);
+    $stmt->execute($params);
+    return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+}
 
     /**
      * Update hold status for a swap
