@@ -1112,13 +1112,23 @@ class SwapService
         $destHoldRef = null;
         $destHoldId = null;
         
-        try {
-            // ============================================================
-            // 1. Calculate fees for THIS identity (same as bank)
-            // ============================================================
-            $feeBreakdown = $this->calculateFeesWithDetails('MULTI_DESTINATION', $amount, array_merge($payload, $identityDest['original']));
-            $netAmount = $feeBreakdown['net_amount'] ?? $amount;
-            $feeAmount = $feeBreakdown['total_fee'] ?? 0;
+       try {
+    // ============================================================
+    // FIX: Determine fee type per destination
+    // ============================================================
+    $feeType = 'DEPOSIT';
+    
+    if ($deliveryMethod === 'ATM' || $deliveryMethod === 'AGENT' || $deliveryMethod === 'CASHOUT') {
+        $feeType = 'CASHOUT';
+    } elseif (isset($dest['identity_type']) || isset($dest['identity_value'])) {
+        $feeType = 'DEPOSIT';
+    } elseif ($dest['destination_asset_type'] === 'CARD') {
+        $feeType = 'CARD_LOAD';
+    }
+    
+    $feeBreakdown = $this->calculateFeesWithDetails($feeType, $destAmount, array_merge($payload, $dest));
+    $netAmount = $feeBreakdown['net_amount'] ?? $destAmount;
+    $feeAmount = $feeBreakdown['total_fee'] ?? 0;
             
             // ============================================================
             // 2. Place hold for THIS identity (same as bank)
