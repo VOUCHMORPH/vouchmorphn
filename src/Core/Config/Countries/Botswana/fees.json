@@ -1,4 +1,5 @@
 {
+  "base_currency": "BWP",
   "CASHOUT": {
     "description": "Cashout swap fee - client pays P10 upfront",
     "fee_components": {
