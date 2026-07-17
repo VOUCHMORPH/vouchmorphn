@@ -352,7 +352,6 @@ try {
             total_amount,
             total_fees,
             total_delivered,
-            total_held,
             status,
             destinations_payload,
             results_payload,
