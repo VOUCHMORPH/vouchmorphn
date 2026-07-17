@@ -1,34 +1,37 @@
 <?php
 /**
- * fix_vw_all_swaps.php
+ * reconcile_saccussalis_backlog.php
  *
- * Diagnoses WHY the LIMIT fix isn't sticking, then fixes it - using the
- * SAME database connection the live app uses (DBConnection::getConnection()),
- * so there is zero ambiguity about which database is actually being touched.
+ * Fixes the SACCUSSALIS held-funds backlog left behind by the historical
+ * hold.php bug where RELEASE_HOLD/DEBIT never actually executed - every
+ * hold VOUCHMORPH believed was "released" or "debited" was, in reality,
+ * still ACTIVE at SACCUSSALIS, still reserving held_balance.
  *
- * "I ran the SQL and nothing changed, over and over" is almost always one
- * of these, in order of likelihood on Railway specifically:
- *   1. The SQL was run against a different Postgres instance/URL than the
- *      one this app connects to (very common when a project has both an
- *      internal and public DB URL, or multiple Postgres services).
- *   2. The DB user running the manual SQL doesn't have DROP/CREATE
- *      privileges, and the tool used to run it swallowed the error.
- *   3. vw_all_swaps isn't actually a plain view (e.g. it's a table, or a
-     * materialized view that was never refreshed), so "CREATE VIEW" fails
- *      silently against a same-named object.
- *   4. Something else depends on vw_all_swaps, so a DROP...CASCADE is
- *      quietly taking out other objects too (or being blocked).
+ * PREREQUISITE: the FIXED SACCUSSALIS hold.php (the one with real action
+ * dispatch for RELEASE_HOLD/DEBIT) must already be deployed and live at
+ * https://saccussalis-production.up.railway.app/backend/api/v1/hold.php
+ * before running this with ?confirm=1. If it's not deployed yet, every
+ * row below will come back ERROR ("Missing required field") - that
+ * itself is a useful signal the deploy hasn't gone out.
+ *
+ * HOW IT WORKS:
+ *   1. Reads every hold_transactions row sourced from SACCUSSALIS that
+ *      VOUCHMORPH's central records say is RELEASED or DEBITED.
+ *   2. For each, calls the live SACCUSSALIS hold.php with the matching
+ *      action - exactly the call SwapService itself would have made.
+ *   3. Idempotent-safe: if the hold at SACCUSSALIS is ALREADY resolved
+ *      there too, the endpoint returns "Hold is not active" and nothing
+ *      changes - logged as ALREADY_OK, not an error. If it's still
+ *      ACTIVE (the real backlog), this call is what finally fixes it.
  *
  * USAGE:
- *   Step 1 - visit this file with NO query string. It only reads, never
- *            writes. It reports which database it's actually connected
- *            to, what vw_all_swaps currently IS (view/table/matview),
- *            its live row count and definition, permission check, and
- *            any objects that depend on it.
- *   Step 2 - once you've confirmed the diagnosis, visit again with
- *            ?confirm=1 to actually run the DROP + CREATE, inside a
- *            transaction, with the real Postgres error surfaced if it
- *            fails (instead of being swallowed).
+ *   No query string        -> DRY RUN. Lists every candidate row and
+ *                              what action WOULD be called. No network
+ *                              calls to SACCUSSALIS happen.
+ *   ?confirm=1              -> LIVE RUN. Actually calls SACCUSSALIS for
+ *                              every row and reports the real outcome.
+ *   ?confirm=1&limit=5      -> Test on just the first 5 rows before
+ *                              committing to the full batch.
  */
 
 declare(strict_types=1);
@@ -49,6 +52,8 @@ if (!SessionManager::isAdminLoggedIn()) {
 
 function h($v): string { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
 
+const SACCUSSALIS_HOLD_URL = 'https://saccussalis-production.up.railway.app/backend/api/v1/hold.php';
+
 try {
     $db = DBConnection::getConnection();
     if (!$db) throw new Exception("no connection object returned");
@@ -58,261 +63,174 @@ try {
 }
 
 $confirm = isset($_GET['confirm']) && $_GET['confirm'] === '1';
-
-$report = [];
-function add(&$report, $label, $value, $ok = null) {
-    $report[] = ['label' => $label, 'value' => $value, 'ok' => $ok];
-}
+$limit = isset($_GET['limit']) ? max(1, (int)$_GET['limit']) : null;
 
 // ============================================================
-// 1. WHICH DATABASE IS THIS, EXACTLY?
-// This is the number one thing to compare against whatever tool you've
-// been running the manual SQL through.
+// 1. Every SACCUSSALIS-sourced hold VOUCHMORPH believes is resolved.
+// These are the reconciliation candidates.
 // ============================================================
-try {
-    $identity = $db->query("
-        SELECT current_database() as db,
-               current_user as usr,
-               inet_server_addr() as host,
-               inet_server_port() as port,
-               version() as pg_version
-    ")->fetch(PDO::FETCH_ASSOC);
-    add($report, 'Connected database', $identity['db']);
-    add($report, 'Connected as user', $identity['usr']);
-    add($report, 'Server address', ($identity['host'] ?: 'local socket / not exposed') . ':' . $identity['port']);
-    add($report, 'Postgres version', $identity['pg_version']);
-} catch (Throwable $e) {
-    add($report, 'Connection identity check failed', $e->getMessage(), false);
-}
-
-// ============================================================
-// 2. WHAT IS vw_all_swaps, ACTUALLY? (view / table / matview / missing)
-// ============================================================
-$relKind = null;
+$candidates = [];
 try {
     $stmt = $db->query("
-        SELECT c.relkind, n.nspname as schema
-        FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE c.relname = 'vw_all_swaps'
+        SELECT hold_reference, swap_reference, status, amount, currency, asset_type, created_at
+        FROM hold_transactions
+        WHERE source_institution = 'SACCUSSALIS'
+          AND status IN ('RELEASED', 'DEBITED')
+        ORDER BY created_at ASC
     ");
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    if (empty($rows)) {
-        add($report, 'vw_all_swaps object type', 'DOES NOT EXIST in any schema', false);
-    } else {
-        foreach ($rows as $r) {
-            $kindMap = ['v' => 'VIEW', 'r' => 'TABLE', 'm' => 'MATERIALIZED VIEW', 'f' => 'FOREIGN TABLE'];
-            $kind = $kindMap[$r['relkind']] ?? $r['relkind'];
-            $relKind = $r['relkind'];
-            add($report, "vw_all_swaps found in schema \"{$r['schema']}\"", "Type: {$kind}" . ($kind !== 'VIEW' ? '  <-- THIS IS LIKELY THE PROBLEM: a CREATE VIEW cannot silently replace a ' . $kind : ''), $kind === 'VIEW');
-        }
+    $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    die("<pre style='color:#dc3545;font-family:monospace;'>Failed to read hold_transactions: " . h($e->getMessage()) . "</pre>");
+}
+
+if ($limit !== null) {
+    $candidates = array_slice($candidates, 0, $limit);
+}
+
+function callSaccussalisHold(string $action, string $holdReference, float $amount): array {
+    $payload = [
+        'action' => $action,
+        'hold_reference' => $holdReference,
+        'reference' => 'reconcile_' . bin2hex(random_bytes(6)),
+        'amount' => $amount,
+        'requester' => 'VOUCHMORPH_RECONCILE',
+    ];
+
+    $ch = curl_init(SACCUSSALIS_HOLD_URL);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($payload),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+
+    if ($curlError) {
+        return ['ok' => false, 'message' => 'Network error calling SACCUSSALIS: ' . $curlError];
     }
-} catch (Throwable $e) {
-    add($report, 'Object type check failed', $e->getMessage(), false);
-}
 
-// ============================================================
-// 3. CURRENT ROW COUNT AND DEFINITION, RIGHT NOW, ON THIS CONNECTION
-// ============================================================
-try {
-    $count = (int)$db->query("SELECT COUNT(*) FROM vw_all_swaps")->fetchColumn();
-    add($report, 'Current row count (this connection, right now)', $count, $count > 100 ? true : null);
-} catch (Throwable $e) {
-    add($report, 'Row count query failed', $e->getMessage(), false);
-}
-
-try {
-    $def = $db->query("SELECT pg_get_viewdef('vw_all_swaps', true)")->fetchColumn();
-    $hasLimit = stripos($def, 'limit') !== false;
-    add($report, 'Has LIMIT clause right now', $hasLimit ? 'YES - still present' : 'No', !$hasLimit);
-    if ($hasLimit) {
-        preg_match_all('/.{0,60}LIMIT.{0,60}/i', $def, $m);
-        add($report, 'LIMIT context', implode(' | ', $m[0]));
+    $decoded = json_decode($response, true);
+    if ($decoded === null) {
+        return ['ok' => false, 'message' => 'Non-JSON response (HTTP ' . $httpCode . '): ' . substr((string)$response, 0, 200)];
     }
-} catch (Throwable $e) {
-    add($report, 'View definition check failed (expected if it is not a view)', $e->getMessage(), null);
+
+    return ['ok' => true, 'response' => $decoded];
 }
 
-// ============================================================
-// 4. WHAT DEPENDS ON IT? (a CASCADE drop would take these down too)
-// ============================================================
-$dependents = [];
-try {
-    $stmt = $db->query("
-        SELECT DISTINCT dependent_ns.nspname as dependent_schema,
-               dependent_view.relname as dependent_object,
-               dependent_view.relkind
-        FROM pg_depend
-        JOIN pg_rewrite ON pg_depend.objid = pg_rewrite.oid
-        JOIN pg_class as dependent_view ON pg_rewrite.ev_class = dependent_view.oid
-        JOIN pg_class as source_table ON pg_depend.refobjid = source_table.oid
-        JOIN pg_namespace dependent_ns ON dependent_ns.oid = dependent_view.relnamespace
-        WHERE source_table.relname = 'vw_all_swaps'
-          AND dependent_view.relname != 'vw_all_swaps'
-    ");
-    $dependents = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    if (empty($dependents)) {
-        add($report, 'Dependent objects (would be affected by CASCADE)', 'None found - safe to drop', true);
-    } else {
-        foreach ($dependents as $d) {
-            add($report, 'DEPENDENT OBJECT FOUND', "{$d['dependent_schema']}.{$d['dependent_object']} (kind: {$d['relkind']}) - CASCADE will drop this too", false);
-        }
-    }
-} catch (Throwable $e) {
-    add($report, 'Dependency check failed', $e->getMessage(), null);
-}
-
-// ============================================================
-// 5. CAN THIS USER ACTUALLY CREATE/DROP OBJECTS HERE?
-// ============================================================
-try {
-    $canCreate = $db->query("SELECT has_schema_privilege(current_user, 'public', 'CREATE')")->fetchColumn();
-    add($report, 'Current user has CREATE privilege on schema "public"', $canCreate === 't' || $canCreate === true ? 'Yes' : 'NO - this is likely why nothing sticks', $canCreate === 't' || $canCreate === true);
-} catch (Throwable $e) {
-    add($report, 'Privilege check failed', $e->getMessage(), null);
-}
-
-// ============================================================
-// 6. IF ?confirm=1, ACTUALLY RUN THE FIX - with real errors surfaced.
-// Only proceeds if it's a plain VIEW or missing (won't blindly nuke a
-// TABLE named vw_all_swaps).
-// ============================================================
-$fixOutcome = null;
+$results = [];
 if ($confirm) {
-    if ($relKind !== null && $relKind !== 'v') {
-        $fixOutcome = ['status' => 'ABORTED', 'message' => 'vw_all_swaps is not a plain view (it is a ' . ($relKind === 'r' ? 'TABLE' : $relKind) . '). Refusing to auto-drop it - this needs a manual decision, not an automated CASCADE.'];
-    } else {
-        try {
-            $db->beginTransaction();
+    foreach ($candidates as $c) {
+        $action = $c['status'] === 'DEBITED' ? 'DEBIT' : 'RELEASE_HOLD';
+        $outcome = callSaccussalisHold($action, $c['hold_reference'], (float)$c['amount']);
 
-            $db->exec("DROP VIEW IF EXISTS vw_all_swaps CASCADE");
+        if (!$outcome['ok']) {
+            $results[] = ['hold_reference' => $c['hold_reference'], 'action' => $action, 'outcome' => 'CALL_FAILED', 'detail' => $outcome['message']];
+            continue;
+        }
 
-            $db->exec("
-                CREATE VIEW vw_all_swaps AS
-                SELECT
-                    hold_transactions.hold_reference AS reference,
-                    hold_transactions.swap_reference,
-                    'HOLD'::text AS swap_type,
-                    hold_transactions.source_institution,
-                    hold_transactions.destination_institution,
-                    hold_transactions.amount,
-                    hold_transactions.currency,
-                    hold_transactions.status,
-                    NULL::numeric AS fee_amount,
-                    hold_transactions.created_at,
-                    hold_transactions.updated_at
-                FROM hold_transactions
+        $resp = $outcome['response'];
+        $msg = strtolower($resp['message'] ?? '');
 
-                UNION ALL
-
-                SELECT
-                    NULL::character varying AS reference,
-                    multi_destination_swaps.reference AS swap_reference,
-                    'MULTI_DESTINATION'::text AS swap_type,
-                    multi_destination_swaps.source_institution,
-                    NULL::character varying AS destination_institution,
-                    multi_destination_swaps.total_amount AS amount,
-                    COALESCE((multi_destination_swaps.destinations_payload -> 0) ->> 'currency'::text, 'BWP'::text) AS currency,
-                    multi_destination_swaps.status,
-                    multi_destination_swaps.total_fees AS fee_amount,
-                    multi_destination_swaps.created_at,
-                    multi_destination_swaps.updated_at
-                FROM multi_destination_swaps
-
-                UNION ALL
-
-                SELECT
-                    identity_swap_holds.hold_reference AS reference,
-                    identity_swap_holds.swap_reference,
-                    'IDENTITY'::text AS swap_type,
-                    identity_swap_holds.source_institution,
-                    NULL::character varying AS destination_institution,
-                    identity_swap_holds.amount,
-                    identity_swap_holds.currency,
-                    identity_swap_holds.status,
-                    NULL::numeric AS fee_amount,
-                    identity_swap_holds.created_at,
-                    identity_swap_holds.created_at AS updated_at
-                FROM identity_swap_holds
-
-                UNION ALL
-
-                SELECT
-                    cashout_authorizations.swap_code AS reference,
-                    cashout_authorizations.swap_reference,
-                    'CASHOUT'::text AS swap_type,
-                    cashout_authorizations.source_institution,
-                    cashout_authorizations.cashout_provider AS destination_institution,
-                    cashout_authorizations.amount,
-                    cashout_authorizations.currency,
-                    cashout_authorizations.status,
-                    cashout_authorizations.fee_amount,
-                    cashout_authorizations.created_at,
-                    cashout_authorizations.updated_at
-                FROM cashout_authorizations
-            ");
-
-            $db->commit();
-
-            $newCount = (int)$db->query("SELECT COUNT(*) FROM vw_all_swaps")->fetchColumn();
-            $newDef = $db->query("SELECT pg_get_viewdef('vw_all_swaps', true)")->fetchColumn();
-            $stillHasLimit = stripos($newDef, 'limit') !== false;
-
-            $fixOutcome = [
-                'status' => $stillHasLimit ? 'RAN BUT STILL HAS LIMIT - something is very wrong, see below' : 'SUCCESS',
-                'message' => "New row count: {$newCount}" . ($stillHasLimit ? '. LIMIT is STILL present after recreation - this points to a second view/proxy layer, or the app is not actually reading this schema/database at all.' : '. LIMIT clause confirmed gone.'),
-            ];
-
-        } catch (Throwable $e) {
-            if ($db->inTransaction()) $db->rollBack();
-            $fixOutcome = ['status' => 'FAILED', 'message' => 'Postgres error (this is the real reason, not a guess): ' . $e->getMessage()];
+        if (($resp['status'] ?? '') === 'SUCCESS') {
+            $results[] = ['hold_reference' => $c['hold_reference'], 'action' => $action, 'outcome' => 'FIXED', 'detail' => 'Was actually still ACTIVE at SACCUSSALIS - now corrected. ' . ($resp['message'] ?? '')];
+        } elseif (str_contains($msg, 'not active')) {
+            $results[] = ['hold_reference' => $c['hold_reference'], 'action' => $action, 'outcome' => 'ALREADY_OK', 'detail' => 'Already resolved at SACCUSSALIS - no action was needed.'];
+        } elseif (str_contains($msg, 'no hold found')) {
+            $results[] = ['hold_reference' => $c['hold_reference'], 'action' => $action, 'outcome' => 'NOT_FOUND', 'detail' => 'No matching hold exists at SACCUSSALIS at all - worth checking manually.'];
+        } else {
+            $results[] = ['hold_reference' => $c['hold_reference'], 'action' => $action, 'outcome' => 'ERROR', 'detail' => $resp['message'] ?? json_encode($resp)];
         }
     }
 }
+
+$counts = ['FIXED' => 0, 'ALREADY_OK' => 0, 'NOT_FOUND' => 0, 'ERROR' => 0, 'CALL_FAILED' => 0];
+foreach ($results as $r) { $counts[$r['outcome']]++; }
 ?>
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<title>vw_all_swaps Fix</title>
+<title>SACCUSSALIS Backlog Reconciliation</title>
 <style>
-    body { font-family:'IBM Plex Mono',monospace; background:#f7f9fc; color:#001B44; padding:24px; max-width:1000px; margin:0 auto; }
-    .row { display:flex; gap:12px; padding:8px 0; border-bottom:1px solid #eee; font-size:0.8rem; align-items:flex-start; }
-    .label { min-width:340px; font-weight:600; }
-    .value { color:#333; word-break:break-word; }
-    .ok { color:#28a745; }
-    .bad { color:#dc3545; font-weight:700; }
+    body { font-family:'IBM Plex Mono',monospace; background:#f7f9fc; color:#001B44; padding:24px; max-width:1100px; margin:0 auto; }
     .section { background:#fff; border:2px solid #001B44; border-radius:6px; padding:16px; margin-bottom:16px; }
-    .btn { display:inline-block; padding:10px 20px; background:#dc3545; color:#fff; text-decoration:none; border-radius:4px; font-weight:700; margin-top:12px; }
-    .outcome { padding:16px; border-radius:6px; margin-bottom:16px; font-weight:600; }
-    .outcome.success { background:#d4edda; color:#155724; }
-    .outcome.failed { background:#f8d7da; color:#721c24; }
+    table { width:100%; border-collapse:collapse; font-size:0.75rem; }
+    th { background:#001B44; color:#fff; padding:6px 10px; text-align:left; }
+    td { padding:5px 10px; border-bottom:1px solid #eee; }
+    .outcome { padding:2px 8px; border-radius:4px; font-weight:700; font-size:0.65rem; }
+    .FIXED { background:#d4edda; color:#155724; }
+    .ALREADY_OK { background:#e2e3e5; color:#41464b; }
+    .NOT_FOUND { background:#fff3cd; color:#856404; }
+    .ERROR, .CALL_FAILED { background:#f8d7da; color:#721c24; }
+    .btn { display:inline-block; padding:10px 20px; background:#dc3545; color:#fff; text-decoration:none; border-radius:4px; font-weight:700; margin-right:8px; margin-top:12px; }
+    .btn.secondary { background:#856404; }
+    .summary div { display:inline-block; padding:8px 16px; margin-right:8px; margin-bottom:8px; border-radius:6px; font-weight:700; }
 </style>
 </head>
 <body>
-<h1>🔧 vw_all_swaps Diagnosis <?php echo $confirm ? '+ Fix Attempt' : '(read-only)'; ?></h1>
-
-<?php if ($fixOutcome): ?>
-<div class="outcome <?php echo $fixOutcome['status'] === 'SUCCESS' ? 'success' : 'failed'; ?>">
-    <?php echo h($fixOutcome['status']); ?><br>
-    <?php echo h($fixOutcome['message']); ?>
-</div>
-<?php endif; ?>
-
-<div class="section">
-<?php foreach ($report as $r): ?>
-    <div class="row">
-        <span class="label"><?php echo h($r['label']); ?></span>
-        <span class="value <?php echo $r['ok'] === true ? 'ok' : ($r['ok'] === false ? 'bad' : ''); ?>">
-            <?php echo h(is_bool($r['value']) ? ($r['value'] ? 'true' : 'false') : $r['value']); ?>
-        </span>
-    </div>
-<?php endforeach; ?>
-</div>
+<h1>🔧 SACCUSSALIS Backlog Reconciliation</h1>
+<p style="font-size:0.8rem; color:#666;">Found <?php echo count($candidates); ?> candidate hold(s) VOUCHMORPH believes are RELEASED/DEBITED for SACCUSSALIS<?php echo $limit ? " (showing first {$limit})" : ''; ?>.</p>
 
 <?php if (!$confirm): ?>
-<p>Review the rows above marked in red first - especially "object type" and "dependent objects." If everything looks clear, run the fix:</p>
-<a href="?confirm=1" class="btn">RUN THE FIX NOW</a>
+<div class="section">
+    <p><strong>This is a dry run — nothing has been called yet.</strong> Review the list below, then run with <code>?confirm=1</code> to actually call SACCUSSALIS for each one.</p>
+    <p style="margin-top:8px;">Recommended: test on a handful first before committing to the full batch.</p>
+</div>
+<div class="section">
+    <div class="table-responsive">
+    <table>
+        <thead><tr><th>Hold Reference</th><th>Swap Reference</th><th>Central Status</th><th>Would Call</th><th>Amount</th><th>Created</th></tr></thead>
+        <tbody>
+        <?php foreach ($candidates as $c): ?>
+        <tr>
+            <td><?php echo h($c['hold_reference']); ?></td>
+            <td><?php echo h($c['swap_reference']); ?></td>
+            <td><?php echo h($c['status']); ?></td>
+            <td><strong><?php echo $c['status'] === 'DEBITED' ? 'DEBIT' : 'RELEASE_HOLD'; ?></strong></td>
+            <td><?php echo number_format((float)$c['amount'], 2); ?> <?php echo h($c['currency'] ?? 'BWP'); ?></td>
+            <td><?php echo h($c['created_at']); ?></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+    </table>
+    </div>
+</div>
+<a href="?confirm=1&limit=5" class="btn secondary">TEST ON FIRST 5</a>
+<a href="?confirm=1" class="btn">RUN FULL RECONCILIATION</a>
+
+<?php else: ?>
+<div class="summary">
+    <div style="background:#d4edda;color:#155724;">✅ Fixed: <?php echo $counts['FIXED']; ?></div>
+    <div style="background:#e2e3e5;color:#41464b;">➖ Already OK: <?php echo $counts['ALREADY_OK']; ?></div>
+    <div style="background:#fff3cd;color:#856404;">❓ Not Found: <?php echo $counts['NOT_FOUND']; ?></div>
+    <div style="background:#f8d7da;color:#721c24;">❌ Errors: <?php echo $counts['ERROR'] + $counts['CALL_FAILED']; ?></div>
+</div>
+<?php if ($counts['ERROR'] + $counts['CALL_FAILED'] === count($results) && count($results) > 0): ?>
+<div class="section" style="border-color:#dc3545;">
+    <strong style="color:#dc3545;">Every single call failed the same way?</strong> That almost always means the fixed hold.php hasn't actually been deployed to SACCUSSALIS's production yet - check the "detail" column below for "Missing required field" to confirm, deploy it, then re-run.
+</div>
+<?php endif; ?>
+<div class="section">
+    <div class="table-responsive">
+    <table>
+        <thead><tr><th>Hold Reference</th><th>Action Called</th><th>Outcome</th><th>Detail</th></tr></thead>
+        <tbody>
+        <?php foreach ($results as $r): ?>
+        <tr>
+            <td><?php echo h($r['hold_reference']); ?></td>
+            <td><?php echo h($r['action']); ?></td>
+            <td><span class="outcome <?php echo h($r['outcome']); ?>"><?php echo h($r['outcome']); ?></span></td>
+            <td><?php echo h($r['detail']); ?></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+    </table>
+    </div>
+</div>
 <?php endif; ?>
 
 </body>
