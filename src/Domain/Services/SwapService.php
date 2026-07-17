@@ -785,7 +785,6 @@ class SwapService
                 ':forex_fee_percent' => $forexFeePercent,
                 ':forex_fee_amount' => $forexFeeAmount,
                 ':total_forex_fee' => $totalForexFee,
-                ':expected_to_amount' => $expectedToAmount,
                 ':trade_metadata' => json_encode([
                     'user_id' => $userId,
                     'request_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
@@ -930,10 +929,10 @@ class SwapService
                 :metadata::jsonb,
                 :user_id
             ) ON CONFLICT (swap_reference) DO UPDATE SET
-                status = EXCLUDED.status,
-                updated_at = NOW(),
-                completed_at = CASE WHEN EXCLUDED.status = 'COMPLETED' THEN NOW() ELSE completed_at END,
-                user_id = EXCLUDED.user_id
+    status = EXCLUDED.status,
+    updated_at = NOW(),
+    completed_at = CASE WHEN EXCLUDED.status = 'COMPLETED' THEN NOW() ELSE cashout_authorizations.completed_at END,
+    user_id = EXCLUDED.user_id
         ";
         
         $status = 'PENDING';
