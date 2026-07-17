@@ -771,17 +771,10 @@ private function getSwapRequestId(string $swapRef): ?int
 
 /**
  * Populate swap_transactions table
- * FIX: Uses numeric swap_id from swap_requests, not string reference
+ * FIX: Uses numeric swap_id from swap_requests (the primary key), not string reference
  */
-private function populateSwapTransaction(string $swapRef, array $swapData, array $details, ?int $userId = null): void
+private function populateSwapTransaction(int $swapId, array $swapData, array $details, ?int $userId = null): void
 {
-    // Get the numeric swap_id from swap_requests
-    $swapId = $this->getSwapRequestId($swapRef);
-    if (!$swapId) {
-        $this->logger->warning("No swap_request found for reference, skipping swap_transactions", ['swap_ref' => $swapRef]);
-        return;
-    }
-    
     $sql = "
         INSERT INTO swap_transactions (
             swap_id,
@@ -812,7 +805,7 @@ private function populateSwapTransaction(string $swapRef, array $swapData, array
     try {
         $stmt = $this->swapDB->prepare($sql);
         $stmt->execute([
-            ':swap_id' => $swapId,  // Now using integer ID
+            ':swap_id' => $swapId,  // Now using integer primary key from swap_requests
             ':from_account_details' => json_encode([
                 'institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
                 'identifier' => $details['source_identifier'] ?? null,
@@ -834,10 +827,10 @@ private function populateSwapTransaction(string $swapRef, array $swapData, array
             ])
         ]);
         
-        $this->logger->debug("swap_transactions populated", ['swap_id' => $swapId, 'swap_ref' => $swapRef]);
+        $this->logger->debug("swap_transactions populated", ['swap_id' => $swapId]);
         
     } catch (PDOException $e) {
-        $this->logger->error("Failed to populate swap_transactions", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
+        $this->logger->error("Failed to populate swap_transactions", ['error' => $e->getMessage(), 'swap_id' => $swapId]);
     }
 }
 
