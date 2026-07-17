@@ -3789,6 +3789,7 @@ class SwapService
             'bank' => $sourceInstitution,
             'destination_asset_type' => $destinationAssetType,
             'asset_type' => $destinationAssetType,
+            'user_id' => $payload['user_id'] ?? 0, 
         ];
         
         if ($sourceId['has_value']) {
