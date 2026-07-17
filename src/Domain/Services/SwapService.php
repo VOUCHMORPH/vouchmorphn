@@ -931,6 +931,97 @@ private function populateSwapTransaction(int $swapId, string $swapRef, array $sw
         $this->logger->error("Failed to populate swap_transactions", ['error' => $e->getMessage(), 'swap_id' => $swapId, 'swap_ref' => $swapRef]);
     }
 }
+
+/**
+ * Populate cashout_authorization table
+ * FIX: Uses 'cashout_authorizations' (plural) to match the actual table name
+ */
+private function populateCashoutAuthorization(string $swapRef, array $swapData, array $details, ?array $destResponse, ?int $userId = null): void
+{
+    if (!$destResponse) {
+        return;
+    }
+    
+    $sql = "
+        INSERT INTO cashout_authorizations (
+            swap_reference,
+            client_phone,
+            source_institution,
+            source_wallet,
+            amount,
+            currency,
+            fee_amount,
+            swap_code,
+            pin_code,
+            code_expiry,
+            cashout_point,
+            cashout_provider,
+            status,
+            created_at,
+            updated_at,
+            metadata
+        ) VALUES (
+            :swap_ref,
+            :client_phone,
+            :source_inst,
+            :source_wallet,
+            :amount,
+            :currency,
+            :fee_amount,
+            :swap_code,
+            :pin_code,
+            :code_expiry,
+            :cashout_point,
+            :cashout_provider,
+            :status,
+            :created_at,
+            :updated_at,
+            :metadata::jsonb
+        ) ON CONFLICT (swap_reference) DO UPDATE SET
+            status = EXCLUDED.status,
+            updated_at = NOW(),
+            completed_at = CASE WHEN EXCLUDED.status = 'COMPLETED' THEN NOW() ELSE completed_at END
+    ";
+    
+    $status = 'PENDING';
+    if (isset($destResponse['status'])) {
+        $status = strtoupper($destResponse['status']);
+    } elseif (isset($swapData['status'])) {
+        $status = strtoupper($swapData['status']);
+    }
+    
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':swap_ref' => $swapRef,
+            ':client_phone' => $details['beneficiary_phone'] ?? $details['client_phone'] ?? null,
+            ':source_inst' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
+            ':source_wallet' => $details['source_identifier'] ?? null,
+            ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
+            ':currency' => $swapData['currency'] ?? $details['currency'] ?? 'BWP',
+            ':fee_amount' => $details['fee_amount'] ?? 0,
+            ':swap_code' => $destResponse['cashout_code'] ?? $destResponse['swap_code'] ?? null,
+            ':pin_code' => $destResponse['pin_code'] ?? null,
+            ':code_expiry' => $destResponse['expiry'] ?? null,
+            ':cashout_point' => $details['delivery_method'] ?? $swapData['delivery_method'] ?? 'ATM',
+            ':cashout_provider' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
+            ':status' => $status,
+            ':created_at' => date('Y-m-d H:i:s'),
+            ':updated_at' => date('Y-m-d H:i:s'),
+            ':metadata' => json_encode([
+                'source' => 'swap_service',
+                'hold_id' => $this->currentHoldId,
+                'destination_response' => $destResponse,
+                'user_id' => $userId
+            ])
+        ]);
+        
+        $this->logger->debug("cashout_authorizations populated", ['swap_ref' => $swapRef]);
+        
+    } catch (PDOException $e) {
+        $this->logger->error("Failed to populate cashout_authorizations", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
+    }
+}
     
     /**
      * Populate deposit_transactions table
