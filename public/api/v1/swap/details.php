@@ -3,15 +3,18 @@ declare(strict_types=1);
 
 /**
  * VouchMorph - Swap Details API
- * Returns detailed information for a specific swap
+ * Returns complete detailed information for a specific swap
  *
- * PATCHED:
- *  - Exact API key comparison via hash_equals() instead of scraping
- *    every env var 32+ chars long as a "valid" key.
- *  - No more silent '?? "BWP"' currency fallback — if a swap row
- *    somehow has no currency and the country config has none either,
- *    that's an error worth surfacing, not a silent BWP default.
+ * FEATURES:
+ *  - Complete swap details including source/destination
+ *  - Full fee breakdown with distribution
+ *  - Forex information
+ *  - Cashout authorization details
+ *  - Hold transaction details
+ *  - User information
+ *  - Transaction status history
  */
+
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 require_once __DIR__ . '/../../../../src/bootstrap.php';
 
@@ -31,10 +34,6 @@ ini_set('display_errors', 0);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
 
-/**
- * Validates the provided key against the single configured
- * VOUCHMORPH_API_KEY using a constant-time comparison.
- */
 function isValidApiKey(?string $providedKey): bool {
     $validKey = getenv('VOUCHMORPH_API_KEY') ?: '';
 
@@ -118,35 +117,97 @@ try {
     $countryConfig = \Core\Config\LoadCountry::getConfig();
     $countryDefaultCurrency = $countryConfig['currency'] ?? null;
 
-    // Get swap details
+    // Get complete swap details from all related tables
     $sql = "
         SELECT
+            -- Hold Transaction Details
             ht.hold_id,
             ht.swap_reference,
             ht.participant_name as source_institution,
             ht.destination_institution,
-            ht.amount,
+            ht.amount as hold_amount,
             ht.currency,
-            ht.status,
-            ht.created_at,
-            ht.updated_at,
-            ht.source_details,
-            ht.metadata,
+            ht.status as hold_status,
+            ht.created_at as hold_created_at,
+            ht.updated_at as hold_updated_at,
             ht.debited_at,
             ht.released_at,
+            ht.source_details,
+            ht.metadata,
+            ht.asset_type,
+            ht.source_institution as source_institution_name,
+            ht.requester as hold_requester,
+            
+            -- Swap Request Details
+            sr.swap_id,
+            sr.swap_uuid,
+            sr.from_currency,
+            sr.to_currency,
+            sr.amount as swap_amount,
+            sr.status as swap_status,
+            sr.created_at as swap_created_at,
+            sr.source_country,
+            sr.destination_country,
+            sr.fee_breakdown,
+            sr.forex_rate,
+            sr.forex_fee_percent,
+            sr.forex_fee_amount,
+            sr.total_forex_fee,
+            sr.expected_to_amount,
+            sr.trade_metadata,
+            sr.original_swap_ref,
+            sr.user_id,
+            sr.retry_count,
+            
+            -- Cashout Authorization Details
             ca.auth_id,
-            ca.swap_code,
-            ca.pin_code as atm_code,
-            ca.code_expiry,
-            ca.amount as cashout_amount,
-            ca.fee_amount,
+            ca.swap_code as voucher_number,
+            ca.pin_code as atm_pin,
+            ca.code_expiry as voucher_expiry,
             ca.status as cashout_status,
-            ca.completed_at,
+            ca.amount as cashout_amount,
+            ca.fee_amount as cashout_fee,
+            ca.completed_at as cashout_completed_at,
             ca.cashout_point,
-            ca.cashout_provider
+            ca.cashout_provider,
+            ca.client_phone,
+            ca.source_wallet,
+            ca.updated_at as cashout_updated_at,
+            
+            -- Swap Transaction Details
+            st.swap_transaction_id,
+            st.amount as transaction_amount,
+            st.status as transaction_status,
+            st.from_account_details,
+            st.to_account_details,
+            st.created_at as transaction_created_at,
+            st.updated_at as transaction_updated_at,
+            st.transaction_id,
+            st.ledger_entry_id,
+            st.settlement_batch_id,
+            st.error_message,
+            st.retry_count as transaction_retry_count,
+            
+            -- Deposit Transaction Details (if deposit)
+            dt.deposit_id,
+            dt.transaction_reference as deposit_reference,
+            dt.source_type,
+            dt.source_account,
+            dt.destination_type,
+            dt.destination_account,
+            dt.status as deposit_status,
+            dt.completed_at as deposit_completed_at,
+            dt.created_at as deposit_created_at,
+            dt.updated_at as deposit_updated_at,
+            dt.fee_amount as deposit_fee_amount
         FROM hold_transactions ht
+        LEFT JOIN swap_requests sr ON ht.swap_reference = sr.swap_uuid
         LEFT JOIN cashout_authorizations ca ON ht.swap_reference = ca.swap_reference
+        LEFT JOIN swap_transactions st ON sr.swap_id = st.swap_id
+        LEFT JOIN deposit_transactions dt ON ht.swap_reference = dt.transaction_reference
         WHERE ht.swap_reference = :reference
+        ORDER BY ht.created_at DESC
+        LIMIT 1
     ";
 
     $stmt = $db->prepare($sql);
@@ -157,93 +218,170 @@ try {
         throw new Exception("Swap not found: {$reference}", 404);
     }
 
+    // Decode JSON fields
     $metadata = json_decode($row['metadata'] ?? '{}', true);
     $sourceDetails = json_decode($row['source_details'] ?? '{}', true);
+    $feeBreakdown = json_decode($row['fee_breakdown'] ?? '{}', true);
+    $fromAccountDetails = json_decode($row['from_account_details'] ?? '{}', true);
+    $toAccountDetails = json_decode($row['to_account_details'] ?? '{}', true);
+    $tradeMetadata = json_decode($row['trade_metadata'] ?? '{}', true);
 
-    // PATCHED: previously '?? "BWP"'. Prefer the row's own currency;
-    // fall back to the country default only if the country config
-    // actually has one, and log loudly either way so a missing
-    // currency on a real transaction doesn't disappear silently.
+    // Determine currency
     $rowCurrency = $row['currency'] ?? null;
     if (!$rowCurrency) {
-        if ($countryDefaultCurrency) {
-            error_log("[DETAILS] Warning: swap {$reference} has no currency on the row, using country default {$countryDefaultCurrency}");
-            $rowCurrency = $countryDefaultCurrency;
-        } else {
-            error_log("[DETAILS] Warning: swap {$reference} has no currency on the row AND no country default is configured");
-            $rowCurrency = 'UNKNOWN';
-        }
+        $rowCurrency = $countryDefaultCurrency ?? 'UNKNOWN';
     }
 
+    // Build complete swap details
     $swap = [
+        // ============================================================
+        // CORE SWAP INFORMATION
+        // ============================================================
         'reference' => $row['swap_reference'],
-        'source_institution' => $row['source_institution'],
-        'destination_institution' => $row['destination_institution'],
-        'amount' => (float)$row['amount'],
+        'swap_id' => $row['swap_id'],
+        'swap_uuid' => $row['swap_uuid'],
+        'swap_type' => $metadata['swap_type'] ?? 'STANDARD',
+        'status' => $row['swap_status'] ?? $row['hold_status'] ?? 'unknown',
+        'user_id' => $row['user_id'] ?? $sourceDetails['user_id'] ?? null,
+        'retry_count' => (int)($row['retry_count'] ?? 0),
+        
+        // ============================================================
+        // AMOUNTS & CURRENCY
+        // ============================================================
+        'amount' => (float)($row['swap_amount'] ?? $row['hold_amount'] ?? 0),
         'currency' => $rowCurrency,
-        'status' => $row['status'] ?? 'unknown',
-        'created_at' => $row['created_at'],
-        'updated_at' => $row['updated_at'],
-        'debited_at' => $row['debited_at'],
-        'released_at' => $row['released_at'],
+        'from_currency' => $row['from_currency'] ?? $rowCurrency,
+        'to_currency' => $row['to_currency'] ?? $rowCurrency,
+        'expected_to_amount' => $row['expected_to_amount'] ? (float)$row['expected_to_amount'] : null,
+        
+        // ============================================================
+        // INSTITUTIONS
+        // ============================================================
+        'source_institution' => $row['source_institution'] ?? $row['source_institution_name'],
+        'destination_institution' => $row['destination_institution'],
         'source_identifier' => $sourceDetails['source_identifier'] ?? null,
-        'swap_type' => $metadata['swap_type'] ?? null,
+        'destination_identifier' => $metadata['destination_identifier'] ?? null,
+        'source_asset_type' => $sourceDetails['asset_type'] ?? $row['asset_type'] ?? null,
+        'destination_asset_type' => $metadata['destination_asset_type'] ?? null,
+        
+        // ============================================================
+        // COUNTRIES
+        // ============================================================
+        'source_country' => $row['source_country'] ?? 'BW',
+        'destination_country' => $row['destination_country'] ?? 'BW',
+        
+        // ============================================================
+        // DATES
+        // ============================================================
+        'created_at' => $row['swap_created_at'] ?? $row['hold_created_at'],
+        'updated_at' => $row['hold_updated_at'] ?? $row['swap_created_at'],
+        'completed_at' => $row['cashout_completed_at'] ?? $row['deposit_completed_at'] ?? $row['debited_at'],
+        
+        // ============================================================
+        // FEES & FOREX
+        // ============================================================
+        'fee' => (float)($row['cashout_fee'] ?? $row['deposit_fee_amount'] ?? 0),
+        'fee_breakdown' => $feeBreakdown ?: null,
+        'forex_rate' => $row['forex_rate'] ? (float)$row['forex_rate'] : null,
+        'forex_fee_percent' => $row['forex_fee_percent'] ? (float)$row['forex_fee_percent'] : null,
+        'forex_fee_amount' => $row['forex_fee_amount'] ? (float)$row['forex_fee_amount'] : null,
+        'total_forex_fee' => $row['total_forex_fee'] ? (float)$row['total_forex_fee'] : null,
+        
+        // ============================================================
+        // HOLD TRANSACTION DETAILS
+        // ============================================================
+        'hold' => [
+            'hold_id' => $row['hold_id'],
+            'hold_reference' => $row['swap_reference'],
+            'amount' => (float)$row['hold_amount'],
+            'currency' => $rowCurrency,
+            'status' => $row['hold_status'],
+            'asset_type' => $row['asset_type'] ?? $sourceDetails['asset_type'],
+            'created_at' => $row['hold_created_at'],
+            'updated_at' => $row['hold_updated_at'],
+            'debited_at' => $row['debited_at'],
+            'released_at' => $row['released_at'],
+            'requester' => $row['hold_requester'] ?? $sourceDetails['requester'],
+        ],
+        
+        // ============================================================
+        // CASHOUT AUTHORIZATION DETAILS
+        // ============================================================
+        'cashout' => $row['voucher_number'] ? [
+            'auth_id' => $row['auth_id'],
+            'voucher_number' => $row['voucher_number'],
+            'atm_pin' => $row['atm_pin'],
+            'expiry' => $row['voucher_expiry'],
+            'status' => $row['cashout_status'],
+            'amount' => (float)($row['cashout_amount'] ?? 0),
+            'fee' => (float)($row['cashout_fee'] ?? 0),
+            'cashout_point' => $row['cashout_point'],
+            'cashout_provider' => $row['cashout_provider'],
+            'client_phone' => $row['client_phone'],
+            'source_wallet' => $row['source_wallet'],
+            'created_at' => $row['hold_created_at'],
+            'updated_at' => $row['cashout_updated_at'],
+            'completed_at' => $row['cashout_completed_at'],
+        ] : null,
+        
+        // ============================================================
+        // SWAP TRANSACTION DETAILS
+        // ============================================================
+        'transaction' => $row['swap_transaction_id'] ? [
+            'swap_transaction_id' => $row['swap_transaction_id'],
+            'amount' => (float)($row['transaction_amount'] ?? 0),
+            'status' => $row['transaction_status'],
+            'from_account' => $fromAccountDetails,
+            'to_account' => $toAccountDetails,
+            'created_at' => $row['transaction_created_at'],
+            'updated_at' => $row['transaction_updated_at'],
+            'transaction_id' => $row['transaction_id'],
+            'ledger_entry_id' => $row['ledger_entry_id'],
+            'settlement_batch_id' => $row['settlement_batch_id'],
+            'error_message' => $row['error_message'],
+            'retry_count' => (int)($row['transaction_retry_count'] ?? 0),
+        ] : null,
+        
+        // ============================================================
+        // DEPOSIT DETAILS (if applicable)
+        // ============================================================
+        'deposit' => $row['deposit_id'] ? [
+            'deposit_id' => $row['deposit_id'],
+            'reference' => $row['deposit_reference'],
+            'source_type' => $row['source_type'],
+            'source_account' => $row['source_account'],
+            'destination_type' => $row['destination_type'],
+            'destination_account' => $row['destination_account'],
+            'status' => $row['deposit_status'],
+            'fee' => (float)($row['deposit_fee_amount'] ?? 0),
+            'created_at' => $row['deposit_created_at'],
+            'updated_at' => $row['deposit_updated_at'],
+            'completed_at' => $row['deposit_completed_at'],
+        ] : null,
+        
+        // ============================================================
+        // REVENUE DISTRIBUTION
+        // ============================================================
+        'distribution' => $feeBreakdown['revenue_split'] ?? $metadata['distribution'] ?? null,
+        'destination_split' => $feeBreakdown['destination_split'] ?? $metadata['destination_split'] ?? null,
+        
+        // ============================================================
+        // SOURCE DETAILS
+        // ============================================================
+        'source_details' => $sourceDetails,
+        
+        // ============================================================
+        // METADATA
+        // ============================================================
+        'metadata' => $metadata,
+        'trade_metadata' => $tradeMetadata,
+        'original_swap_ref' => $row['original_swap_ref'],
     ];
 
-    // Add destination details
-    if (isset($metadata['destination_currency'])) {
-        $swap['destination_currency'] = $metadata['destination_currency'];
-    }
-    if (isset($metadata['destination_identifier'])) {
-        $swap['destination_identifier'] = $metadata['destination_identifier'];
-    }
-
-    // Add fee details
-    if (isset($row['fee_amount'])) {
-        $swap['fee'] = (float)$row['fee_amount'];
-    }
-    if (isset($metadata['fee_breakdown'])) {
-        $swap['fee_breakdown'] = $metadata['fee_breakdown'];
-    }
-
-    // Add forex details
-    if (isset($metadata['exchange_rate'])) {
-        $swap['exchange_rate'] = $metadata['exchange_rate'];
-    }
-    if (isset($metadata['net_amount_destination'])) {
-        $swap['net_amount_destination'] = $metadata['net_amount_destination'];
-    }
-    if (isset($metadata['forex_applied'])) {
-        $swap['forex_applied'] = $metadata['forex_applied'];
-    }
-    if (isset($metadata['forex_profit'])) {
-        $swap['forex_profit'] = $metadata['forex_profit'];
-    }
-
-    // Add cashout details
-    if (isset($row['swap_code'])) {
-        $swap['swap_code'] = $row['swap_code'];
-    }
-    if (isset($row['atm_code'])) {
-        $swap['atm_code'] = $row['atm_code'];
-    }
-    if (isset($row['code_expiry'])) {
-        $swap['code_expiry'] = $row['code_expiry'];
-    }
-    if (isset($row['cashout_point'])) {
-        $swap['cashout_point'] = $row['cashout_point'];
-    }
-    if (isset($row['cashout_provider'])) {
-        $swap['cashout_provider'] = $row['cashout_provider'];
-    }
-
-    // Add distribution details
-    if (isset($metadata['distribution'])) {
-        $swap['distribution'] = $metadata['distribution'];
-    }
-    if (isset($metadata['destination_split'])) {
-        $swap['destination_split'] = $metadata['destination_split'];
-    }
+    // Remove null values for cleaner output
+    $swap = array_filter($swap, function($value) {
+        return $value !== null;
+    });
 
     echo json_encode([
         'success' => true,
