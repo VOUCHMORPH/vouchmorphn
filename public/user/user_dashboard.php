@@ -657,8 +657,13 @@ details.raw-json-wrap summary { cursor: pointer; font-size: 12px; color: var(--t
         <div class="identity-field" id="identityFields" style="display:none;">
             <div class="field-group">
                 <label>Identity Type</label>
-                <select id="identityType" onchange="state.toIdentityType=this.value">
+                <!-- ============================================================
+                     FIX: Added birth_certificate and voter_id options
+                     ============================================================ -->
+                <select id="identityType" onchange="state.toIdentityType=this.value; updateIdentityHelp();">
                     <option value="national_id">National ID</option>
+                    <option value="birth_certificate">Birth Certificate</option>
+                    <option value="voter_id">Voter ID</option>
                     <option value="phone">Phone Number</option>
                     <option value="email">Email</option>
                 </select>
@@ -671,7 +676,10 @@ details.raw-json-wrap summary { cursor: pointer; font-size: 12px; color: var(--t
                 <label>SMS Notification (optional)</label>
                 <input id="identitySms" placeholder="Phone to send SMS notification" oninput="state.toIdentitySms=this.value">
             </div>
-            <div class="hint">The recipient will be notified and can claim the funds within 24 hours</div>
+            <!-- ============================================================
+                 FIX: Updated hint text to mention agent verification
+                 ============================================================ -->
+            <div class="hint" id="identityHint">The recipient will be notified and can claim the funds within 24 hours. Agents can verify physical documents (National ID, Birth Certificate, Voter ID) in person.</div>
         </div>
 
         <div id="multiSourceFields" style="display:none;">
@@ -1020,8 +1028,34 @@ function setSwapType(type) {
     document.getElementById('fromSection').style.display = isMulti ? 'none' : 'block';
     document.querySelector('.swap-divider').style.display = isMulti ? 'none' : 'flex';
 
+    // Update identity help text when identity type is selected
+    if (isIdentity) {
+        updateIdentityHelp();
+    }
+
     if (isMulti && state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
     refreshUI();
+}
+
+// ============================================================
+// FIX: Dynamic identity help text
+// ============================================================
+function updateIdentityHelp() {
+    const type = document.getElementById('identityType').value;
+    const hint = document.getElementById('identityHint');
+    if (!hint) return;
+    
+    const documentTypes = ['national_id', 'birth_certificate', 'voter_id'];
+    if (documentTypes.includes(type)) {
+        const labels = {
+            'national_id': 'National ID',
+            'birth_certificate': 'Birth Certificate',
+            'voter_id': 'Voter ID'
+        };
+        hint.textContent = `This is a physical document (${labels[type] || type}) that can be verified by an agent in person. The recipient will also receive a notification and can claim via dashboard within 24 hours.`;
+    } else {
+        hint.textContent = `The recipient will be notified via ${type === 'phone' ? 'SMS' : 'email'} and can claim the funds within 24 hours.`;
+    }
 }
 
 function quickSetSwapType(type) {
@@ -1345,7 +1379,16 @@ function showResultModal(response) {
 // ============================================================
 // MY PROFILE - Saved Identities
 // ============================================================
-const IDENTITY_TYPE_LABELS = { national_id: 'National ID', phone: 'Phone Number', email: 'Email' };
+// ============================================================
+// FIX: Updated IDENTITY_TYPE_LABELS with new types
+// ============================================================
+const IDENTITY_TYPE_LABELS = { 
+    national_id: 'National ID', 
+    birth_certificate: 'Birth Certificate',
+    voter_id: 'Voter ID',
+    phone: 'Phone Number', 
+    email: 'Email' 
+};
 
 function openProfileModal() {
     openModal('My Profile', renderProfileModal());
@@ -1364,13 +1407,15 @@ function renderProfileModal() {
                     <span class="quick-link danger" onclick="removeSavedIdentity(${i})">✕ Remove</span>
                 </div>
             </div>`).join('')
-        : `<div class="hint">No saved identities yet — add a phone number, national ID, or email below for quick reuse in the "Swap to Identity" flow.</div>`;
+        : `<div class="hint">No saved identities yet — add a phone number, national ID, birth certificate, voter ID, or email below for quick reuse in the "Swap to Identity" flow.</div>`;
     return `
         <div style="margin-bottom:12px;">${rows}</div>
         <div class="field-group">
             <label>Identity Type</label>
             <select id="newIdentityType">
                 <option value="national_id">National ID</option>
+                <option value="birth_certificate">Birth Certificate</option>
+                <option value="voter_id">Voter ID</option>
                 <option value="phone">Phone Number</option>
                 <option value="email">Email</option>
             </select>
@@ -1405,6 +1450,7 @@ function useSavedIdentity(idx) {
     state.toIdentityValue = id.value;
     document.getElementById('identityType').value = id.type;
     document.getElementById('identityValue').value = id.value;
+    updateIdentityHelp();
     refreshUI();
     showMessage(`Using saved ${IDENTITY_TYPE_LABELS[id.type] || id.type}: ${id.value}`, 'success');
 }
