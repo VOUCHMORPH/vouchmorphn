@@ -673,86 +673,41 @@ class SwapService
     }
 }
 
-    /**
- * Populate swap_requests table and return the ID
+/**
+ * Populate all tracking tables from swap data
  */
-private function populateSwapRequest(string $swapRef, array $swapData, array $details, ?int $userId = null): ?int
+private function populateTrackingTables(array $swapData, array $details, ?array $destResponse = null): void
 {
-    $sql = "
-        INSERT INTO swap_requests (
-            swap_uuid,
-            from_currency,
-            to_currency,
-            amount,
-            source_details,
-            destination_details,
-            status,
-            created_at,
-            source_country,
-            destination_country,
-            fee_breakdown,
-            metadata,
-            retry_count
-        ) VALUES (
-            :swap_uuid,
-            :from_currency,
-            :to_currency,
-            :amount,
-            :source_details::jsonb,
-            :destination_details::jsonb,
-            :status,
-            :created_at,
-            :source_country,
-            :destination_country,
-            :fee_breakdown::jsonb,
-            :metadata::jsonb,
-            0
-        ) ON CONFLICT (swap_uuid) DO UPDATE SET
-            status = EXCLUDED.status
-        RETURNING swap_id
-    ";
-    
-    $status = $swapData['status'] ?? 'pending';
-    if (isset($details['status'])) {
-        $status = $details['status'];
-    }
+    $swapType = $swapData['swap_type'] ?? 'STANDARD';
+    $swapRef = $swapData['reference'] ?? $this->currentSwapRef;
+    $userId = $details['user_id'] ?? $swapData['user_id'] ?? null;
     
     try {
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([
-            ':swap_uuid' => $swapRef,
-            ':from_currency' => $details['currency'] ?? $swapData['currency'] ?? 'BWP',
-            ':to_currency' => $details['destination_currency'] ?? $swapData['destination_currency'] ?? $details['currency'] ?? 'BWP',
-            ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
-            ':source_details' => json_encode($details),
-            ':destination_details' => json_encode([
-                'institution' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
-                'identifier' => $details['destination_identifier'] ?? null,
-                'asset_type' => $details['destination_asset_type'] ?? null
-            ]),
-            ':status' => strtolower($status),
-            ':created_at' => date('Y-m-d H:i:s'),
-            ':source_country' => $details['source_country'] ?? 'BW',
-            ':destination_country' => $details['destination_country'] ?? 'BW',
-            ':fee_breakdown' => json_encode($details['fee_breakdown'] ?? $this->feeCalculationDetails ?? []),
-            ':metadata' => json_encode([
-                'hold_id' => $this->currentHoldId,
-                'swap_type' => $swapData['swap_type'] ?? 'STANDARD',
-                'source_institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
-                'user_id' => $userId
-            ])
+        // 1. Populate swap_requests and get the numeric ID
+        $swapId = $this->populateSwapRequest($swapRef, $swapData, $details, $userId);
+        
+        // 2. Populate swap_transactions using the numeric ID
+        if ($swapId) {
+            $this->populateSwapTransaction($swapId, $swapRef, $swapData, $details, $userId);
+        } else {
+            $this->logger->warning("No swap_id available, skipping swap_transactions", ['swap_ref' => $swapRef]);
+        }
+        
+        // 3. Populate type-specific tables
+        if ($swapType === 'CASHOUT') {
+            $this->populateCashoutAuthorization($swapRef, $swapData, $details, $destResponse, $userId);
+            $this->populateMessageOutbox($swapRef, $swapData, $details, $destResponse, $userId);
+        } elseif ($swapType === 'DEPOSIT') {
+            $this->populateDepositTransaction($swapRef, $swapData, $details, $userId);
+        }
+        
+        $this->logger->info("Tracking tables populated", ['reference' => $swapRef, 'type' => $swapType]);
+        
+    } catch (Exception $e) {
+        $this->logger->error("Failed to populate tracking tables", [
+            'reference' => $swapRef,
+            'error' => $e->getMessage()
         ]);
-        
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        $swapId = $row ? (int)($row['swap_id'] ?? 0) : 0;
-        
-        $this->logger->debug("swap_requests populated", ['swap_uuid' => $swapRef, 'swap_id' => $swapId]);
-        
-        return $swapId > 0 ? $swapId : null;
-        
-    } catch (PDOException $e) {
-        $this->logger->error("Failed to populate swap_requests", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
-        return null;
     }
 }
 
