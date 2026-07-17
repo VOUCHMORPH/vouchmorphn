@@ -1,14 +1,12 @@
 <?php
 /**
  * Debug script to test cashout authorization creation
- * Run this to see why tables aren't being updated
  */
 
-header('Content-Type: application/json');
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-$baseDir = dirname(__DIR__, 4);
+$baseDir = dirname(__DIR__, 3);
 require_once $baseDir . '/vendor/autoload.php';
 require_once $baseDir . '/src/bootstrap.php';
 
@@ -141,97 +139,4 @@ try {
     echo "  Error code: " . $e->getCode() . "\n";
 }
 
-// Check what happens when confirmCashout is called
-echo "\n=== TEST: confirmCashout with test data ===\n";
-
-try {
-    // Create a test authorization
-    $swapRef = 'TEST_CONFIRM_' . time();
-    $voucherNumber = 'TEST_CONFIRM_' . time();
-    
-    $stmt = $db->prepare("
-        INSERT INTO cashout_authorizations (
-            swap_reference,
-            client_phone,
-            source_institution,
-            source_wallet,
-            amount,
-            currency,
-            fee_amount,
-            swap_code,
-            pin_code,
-            code_expiry,
-            cashout_point,
-            cashout_provider,
-            status,
-            created_at,
-            updated_at,
-            user_id
-        ) VALUES (
-            :swap_ref,
-            :client_phone,
-            :source_inst,
-            :source_wallet,
-            :amount,
-            :currency,
-            :fee_amount,
-            :swap_code,
-            :pin_code,
-            :code_expiry,
-            :cashout_point,
-            :cashout_provider,
-            'PENDING',
-            NOW(),
-            NOW(),
-            :user_id
-        ) RETURNING auth_id
-    ");
-    
-    $stmt->execute([
-        ':swap_ref' => $swapRef,
-        ':client_phone' => '+26770000000',
-        ':source_inst' => 'ZURUBANK',
-        ':source_wallet' => null,
-        ':amount' => 100,
-        ':currency' => 'BWP',
-        ':fee_amount' => 10,
-        ':swap_code' => $voucherNumber,
-        ':pin_code' => '1234',
-        ':code_expiry' => date('Y-m-d H:i:s', strtotime('+24 hours')),
-        ':cashout_point' => 'ATM',
-        ':cashout_provider' => 'ZURUBANK',
-        ':user_id' => 1
-    ]);
-    $authId = $stmt->fetchColumn();
-    
-    echo "✅ Test authorization created with auth_id: " . $authId . "\n";
-    
-    // Now try confirmCashout
-    $config = LoadCountry::getConfig();
-    $swapService = new SwapService($db, $config, 'Botswana');
-    
-    $payload = [
-        'voucher_number' => $voucherNumber,
-        'swap_reference' => $swapRef,
-        'atm_id' => 'TEST_ATM',
-        'cashout_reference' => 'TEST_CASHOUT',
-        'requester' => 'TEST_SYSTEM',
-        'is_callback' => true,
-        'cashout_point' => 'ATM'
-    ];
-    
-    echo "Calling confirmCashout with payload:\n";
-    echo json_encode($payload, JSON_PRETTY_PRINT) . "\n\n";
-    
-    $result = $swapService->confirmCashout($payload);
-    echo "✅ confirmCashout result:\n";
-    echo json_encode($result, JSON_PRETTY_PRINT) . "\n";
-    
-    // Clean up
-    $db->exec("DELETE FROM cashout_authorizations WHERE auth_id = $authId");
-    echo "\n🧹 Test data cleaned up\n";
-    
-} catch (Exception $e) {
-    echo "❌ confirmCashout failed: " . $e->getMessage() . "\n";
-    echo "  Trace: " . $e->getTraceAsString() . "\n";
-}
+echo "\n=== TEST COMPLETE ===\n";
