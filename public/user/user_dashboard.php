@@ -602,9 +602,6 @@ details.raw-json-wrap summary { cursor: pointer; font-size: 12px; color: var(--t
             <input type="number" id="fromAmount" placeholder="0.00" step="0.01" min="0.01">
             <span class="currency-suffix" id="fromCurrencyLabel"><?php echo htmlspecialchars($userCurrency); ?></span>
             <div class="help" id="fromLimitsHelp"></div>
-            <!-- ============================================================
-                 NEW: Currency info display
-                 ============================================================ -->
             <div class="help" id="fromCurrencyInfo" style="font-size:11px;color:var(--text-dim);margin-top:2px;"></div>
         </div>
     </div>
@@ -661,9 +658,6 @@ details.raw-json-wrap summary { cursor: pointer; font-size: 12px; color: var(--t
         <div class="identity-field" id="identityFields" style="display:none;">
             <div class="field-group">
                 <label>Identity Type</label>
-                <!-- ============================================================
-                     FIX: Added birth_certificate and voter_id options
-                     ============================================================ -->
                 <select id="identityType" onchange="state.toIdentityType=this.value; updateIdentityHelp();">
                     <option value="national_id">National ID</option>
                     <option value="birth_certificate">Birth Certificate</option>
@@ -680,9 +674,6 @@ details.raw-json-wrap summary { cursor: pointer; font-size: 12px; color: var(--t
                 <label>SMS Notification (optional)</label>
                 <input id="identitySms" placeholder="Phone to send SMS notification" oninput="state.toIdentitySms=this.value">
             </div>
-            <!-- ============================================================
-                 FIX: Updated hint text to mention agent verification
-                 ============================================================ -->
             <div class="hint" id="identityHint">The recipient will be notified and can claim the funds within 24 hours. Agents can verify physical documents (National ID, Birth Certificate, Voter ID) in person.</div>
         </div>
 
@@ -738,14 +729,6 @@ const ASSETS = <?php echo json_encode($assetTypes); ?>;
 
 // ============================================================
 // CASE/WHITESPACE-SAFE ASSET LOOKUP
-// participants.yaml and assets.yaml are separate files. If an
-// asset_types entry in participants.yaml doesn't match a key in
-// assets.yaml EXACTLY (case, stray whitespace), ASSETS[type]
-// silently returns undefined and the asset-specific form fields
-// just don't render - no error, nothing in the console. This
-// normalizes the lookup and logs loudly the moment that happens,
-// so a config mismatch is visible instead of looking like a
-// missing/broken form.
 // ============================================================
 const ASSET_KEY_MAP = {};
 Object.keys(ASSETS).forEach(k => { ASSET_KEY_MAP[k.trim().toUpperCase()] = k; });
@@ -789,12 +772,10 @@ function getInstitutionCurrency(instCode) {
 }
 
 function updateCurrencyDisplay() {
-    // Update source currency label
     const fromCurrency = getInstitutionCurrency(state.fromInst);
     const fromLabel = document.getElementById('fromCurrencyLabel');
     if (fromLabel) fromLabel.textContent = fromCurrency;
     
-    // Show currency info for source
     const fromInfo = document.getElementById('fromCurrencyInfo');
     if (fromInfo && state.fromInst) {
         fromInfo.textContent = `💰 Source currency: ${fromCurrency}`;
@@ -802,13 +783,11 @@ function updateCurrencyDisplay() {
         fromInfo.textContent = '';
     }
     
-    // For CASHOUT, show destination currency info if destination is selected
     if (state.swapType === 'CASHOUT' && state.toInst) {
         const toCurrency = getInstitutionCurrency(state.toInst);
         console.log(`[currency] CASHOUT destination: ${state.toInst} uses currency: ${toCurrency}`);
     }
     
-    // For DEPOSIT, show destination currency info if destination is selected
     if (state.swapType === 'DEPOSIT' && state.toInst) {
         const toCurrency = getInstitutionCurrency(state.toInst);
         console.log(`[currency] DEPOSIT destination: ${state.toInst} uses currency: ${toCurrency}`);
@@ -828,23 +807,40 @@ function switchCountry(country) {
 // INIT - DYNAMICALLY POPULATE FROM CONFIG - NO HARDCODING
 // ============================================================
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('[DASHBOARD] DOM loaded, initializing...');
+    console.log('[DASHBOARD] PARTICIPANTS keys:', Object.keys(PARTICIPANTS));
+    
     const fromSelect = document.getElementById('fromInstSelect');
     const toSelect = document.getElementById('toInstSelect');
     
-    // Populate institutions from loaded participants - NO HARDCODING
+    if (!fromSelect || !toSelect) {
+        console.error('[DASHBOARD] Critical: fromInstSelect or toInstSelect not found!');
+        showMessage('Dashboard initialization error. Please refresh.', 'error');
+        return;
+    }
+    
     const instOptions = Object.keys(PARTICIPANTS);
     
     if (instOptions.length === 0) {
-        // Show error if no participants loaded
         showMessage('No institutions found for this country. Please check the configuration.', 'error');
-        console.error('No participants loaded for country:', CONFIG.COUNTRY_CODE);
+        console.error('[DASHBOARD] No participants loaded for country:', CONFIG.COUNTRY_CODE);
+        fromSelect.innerHTML = '<option value="">No institutions available</option>';
+        toSelect.innerHTML = '<option value="">No institutions available</option>';
+        return;
     }
+    
+    console.log('[DASHBOARD] Loading', instOptions.length, 'institutions');
+    
+    fromSelect.innerHTML = '<option value="">Select institution</option>';
+    toSelect.innerHTML = '<option value="">Select institution</option>';
     
     instOptions.forEach(code => {
         const name = PARTICIPANTS[code]?.name || code;
         fromSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${name}</option>`);
         toSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${name}</option>`);
     });
+    
+    updateCurrencyDisplay();
     
     document.getElementById('fromAmount').addEventListener('input', function() {
         state.fromAmount = parseFloat(this.value) || 0;
@@ -866,7 +862,6 @@ function buildHeaders() {
 }
 
 async function callApi(endpoint, payload) {
-    // Add test_mode parameter if in test mode
     let url = endpoint;
     if (CONFIG.IS_TEST_MODE) {
         url += (url.includes('?') ? '&' : '?') + 'test_mode=1';
@@ -902,22 +897,37 @@ function selectFromInst(code) {
     state.fromAsset = null;
     state.fromFields = {};
     const assetGroup = document.getElementById('fromAssetGroup');
-    if (!code) { assetGroup.style.display = 'none'; document.getElementById('fromFields').innerHTML = ''; refreshUI(); return; }
+    if (!code) { 
+        assetGroup.style.display = 'none'; 
+        document.getElementById('fromFields').innerHTML = ''; 
+        updateCurrencyDisplay();
+        refreshUI(); 
+        return; 
+    }
     const inst = PARTICIPANTS[code];
-    if (!inst) { showMessage('Institution not found: ' + code, 'error'); return; }
+    if (!inst) { 
+        showMessage('Institution not found: ' + code, 'error'); 
+        return; 
+    }
     const sel = document.getElementById('fromAssetSelect');
     const assetTypes = inst.asset_types || [];
     sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => 
         `<option value="${t}">${getAssetConfig(t)?.icon || '📦'} ${getAssetConfig(t)?.label || t}</option>`
     ).join('');
     assetGroup.style.display = 'block';
-    document.getElementById('fromCurrencyLabel').textContent = inst.limits?.currency || CONFIG.CURRENCY;
+    
+    const currency = inst.limits?.currency || CONFIG.CURRENCY;
+    document.getElementById('fromCurrencyLabel').textContent = currency;
     document.getElementById('fromLimitsHelp').textContent = inst.limits
         ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
-    if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectFromAsset(assetTypes[0]); }
-    else { document.getElementById('fromFields').innerHTML = ''; }
     
-    // NEW: Update currency display
+    if (assetTypes.length === 1) { 
+        sel.value = assetTypes[0]; 
+        selectFromAsset(assetTypes[0]); 
+    } else { 
+        document.getElementById('fromFields').innerHTML = ''; 
+    }
+    
     updateCurrencyDisplay();
     refreshUI();
 }
@@ -976,9 +986,6 @@ function renderDynamicFields(containerId, assetType, prefix, onChange, includePi
 }
 
 function validateDynamicField(input, field) {
-    // Optional fields don't get red-flagged while typing, even if the
-    // value doesn't (yet) match the pattern - they're not required, so
-    // a partial or unusual entry shouldn't visually look like an error.
     if (!field.required) {
         input.classList.remove('invalid');
         return;
@@ -994,9 +1001,6 @@ function fieldsValidForAsset(assetType, values, includePin) {
         .filter(f => f.name !== 'amount');
     return fields.every(f => {
         const val = values[f.name];
-        // Optional fields never block the Review button, regardless of
-        // whether their current value matches the field's pattern - the
-        // pattern check only applies once a field is required.
         if (!f.required) return true;
         if (!val || String(val).trim().length === 0) return false;
         if (val && f.pattern && !new RegExp(f.pattern).test(val)) return false;
@@ -1036,7 +1040,6 @@ function selectToInst(code) {
         if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectToAsset(assetTypes[0]); }
         else { document.getElementById('toFields').style.display = 'none'; }
         
-        // NEW: Update currency display
         updateCurrencyDisplay();
     }
     refreshUI();
@@ -1074,12 +1077,10 @@ function setSwapType(type) {
     document.getElementById('fromSection').style.display = isMulti ? 'none' : 'block';
     document.querySelector('.swap-divider').style.display = isMulti ? 'none' : 'flex';
 
-    // Update identity help text when identity type is selected
     if (isIdentity) {
         updateIdentityHelp();
     }
 
-    // Update currency display when swap type changes
     updateCurrencyDisplay();
 
     if (isMulti && state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
@@ -1255,11 +1256,6 @@ function buildPayload() {
         const destFields = { ...state.toFields };
         if (assetHasAmountField(state.toAsset)) destFields.amount = totalAmount;
         const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-        
-        // ============================================================
-        // FIX: destination_currency comes from the destination institution's
-        // own configured currency, not just the source currency.
-        // ============================================================
         const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency || CONFIG.CURRENCY;
         
         const payload = {
@@ -1279,13 +1275,6 @@ function buildPayload() {
     const pin = extractPinFromFields(state.fromAsset, state.fromFields);
     const sourceAssetFields = { ...state.fromFields };
     if (assetHasAmountField(state.fromAsset)) sourceAssetFields.amount = state.fromAmount;
-    
-    // ============================================================
-    // FIX: Source currency must come from the institution's own
-    // configured currency, not the user's session/country currency.
-    // This is what triggers forex conversion when source and
-    // destination currencies differ.
-    // ============================================================
     const sourceCurrency = PARTICIPANTS[state.fromInst]?.limits?.currency || CONFIG.CURRENCY;
     console.log(`[currency] Source: ${state.fromInst} uses currency: ${sourceCurrency}`);
     
@@ -1305,20 +1294,12 @@ function buildPayload() {
         payload.identity_type = state.toIdentityType;
         payload.identity_value = state.toIdentityValue;
         if (state.toIdentitySms) payload.notification_phone = state.toIdentitySms;
-        // Destination isn't chosen yet for an identity swap (it's picked
-        // later at claim time) - hold currency matches the source for now.
         payload.destination_currency = sourceCurrency;
     } else if (state.swapType === 'CASHOUT') {
         payload.to_institution = state.toInst;
         payload.destination_institution = state.toInst;
         payload.delivery_method = state.deliveryMethod;
         if (state.beneficiaryPhone) { payload.beneficiary_phone = state.beneficiaryPhone; payload.client_phone = state.beneficiaryPhone; }
-        // ============================================================
-        // FIX: destination_currency for CASHOUT should be the destination
-        // institution's currency (what they dispense), not the user's
-        // session currency. If the destination institution doesn't have
-        // a currency configured, fall back to the country's currency.
-        // ============================================================
         const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency || CONFIG.CURRENCY;
         payload.destination_currency = destCurrency;
         console.log(`[currency] CASHOUT destination: ${state.toInst} uses currency: ${destCurrency}`);
@@ -1326,12 +1307,6 @@ function buildPayload() {
         payload.to_institution = state.toInst;
         payload.destination_institution = state.toInst;
         payload.destination_asset_type = state.toAsset;
-        // ============================================================
-        // FIX: destination_currency must come from the destination
-        // institution's own configured currency. Only fall back to
-        // source currency if the destination institution has no
-        // currency configured at all.
-        // ============================================================
         const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency || sourceCurrency;
         payload.destination_currency = destCurrency;
         console.log(`[currency] DEPOSIT destination: ${state.toInst} uses currency: ${destCurrency}`);
@@ -1348,7 +1323,7 @@ function buildPayload() {
 }
 
 // ============================================================
-// PREVIEW
+// PREVIEW SWAP - Shows details before execution
 // ============================================================
 async function previewSwap() {
     if (!isSwapReady()) {
@@ -1371,15 +1346,178 @@ async function previewSwap() {
     const btn = document.getElementById('reviewBtn');
     const original = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Working…';
+    btn.innerHTML = '<span class="spinner"></span>Calculating…';
 
-    const result = await callApi(CONFIG.EXECUTE_ENDPOINT, payload);
+    const result = await callApi(CONFIG.PREVIEW_ENDPOINT, payload);
 
     btn.disabled = false;
     btn.innerHTML = original;
     refreshUI();
 
-    if (!result.ok) { showMessage('Swap failed: ' + result.error, 'error'); return; }
+    if (!result.ok) { 
+        showMessage('Preview failed: ' + result.error, 'error'); 
+        return; 
+    }
+    
+    showPreviewModal(result.body);
+}
+
+// ============================================================
+// SHOW PREVIEW MODAL - With Confirm button
+// ============================================================
+function showPreviewModal(previewData) {
+    const data = previewData.preview || {};
+    const swapType = state.swapPayload.swap_type;
+    
+    let feeBreakdownHtml = '';
+    if (data.fee_breakdown && data.fee_breakdown.length > 0) {
+        feeBreakdownHtml = data.fee_breakdown.map(f => `
+            <div class="preview-row">
+                <span class="label">${f.name || f.slot}</span>
+                <span class="value">${f.amount || 0} ${f.currency || data.source_currency}</span>
+            </div>
+        `).join('');
+    }
+    
+    let multiSourceHtml = '';
+    if (data.is_multi_source && data.multi_source) {
+        const ms = data.multi_source;
+        multiSourceHtml = `
+            <div style="margin-top:12px;padding:12px;background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);">
+                <div style="font-weight:700;font-size:13px;margin-bottom:8px;">📊 Multi-Source Breakdown</div>
+                <div style="font-size:12px;color:var(--text-muted);">Strategy: ${ms.strategy_description || ms.strategy}</div>
+                <div style="font-size:12px;color:var(--text-muted);">Sources: ${ms.source_count}</div>
+                ${ms.sources ? ms.sources.map((s, i) => `
+                    <div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid rgba(0,0,0,0.06);">
+                        <span>Source ${i+1}: ${s.institution}</span>
+                        <span>${s.contribution_amount} ${data.source_currency} (${s.percentage_of_total}%)</span>
+                    </div>
+                `).join('') : ''}
+            </div>
+        `;
+    }
+    
+    let destinationSplitHtml = '';
+    if (data.destination_split) {
+        const ds = data.destination_split;
+        destinationSplitHtml = `
+            <div style="margin-top:8px;padding:8px;background:rgba(26,158,92,0.06);border-radius:var(--radius-sm);">
+                <div style="font-size:11px;color:var(--text-muted);">Destination Split</div>
+                <div style="display:flex;justify-content:space-between;font-size:12px;">
+                    <span>Generate Code Fee</span>
+                    <span>${ds.generate_code_fee || 0} ${data.source_currency}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:12px;">
+                    <span>Cashout Completion Fee</span>
+                    <span>${ds.cashout_completion_fee || 0} ${data.source_currency}</span>
+                </div>
+            </div>
+        `;
+    }
+    
+    let forexHtml = '';
+    if (data.forex_applied) {
+        forexHtml = `
+            <div style="margin-top:8px;padding:8px;background:rgba(0,160,173,0.08);border-radius:var(--radius-sm);">
+                <div style="font-size:11px;color:var(--text-muted);">💱 Forex Conversion</div>
+                <div style="display:flex;justify-content:space-between;font-size:12px;">
+                    <span>Rate</span>
+                    <span>1 ${data.source_currency} = ${data.exchange_rate} ${data.destination_currency}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:12px;">
+                    <span>Net Amount</span>
+                    <span>${data.net_amount_destination_currency} ${data.destination_currency}</span>
+                </div>
+                ${data.forex_profit > 0 ? `
+                <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--primary-dark);">
+                    <span>FX Profit</span>
+                    <span>${data.forex_profit} ${data.destination_currency}</span>
+                </div>` : ''}
+            </div>
+        `;
+    }
+    
+    const bodyHtml = `
+        <div class="preview-box">
+            <div class="preview-row">
+                <span class="label">Swap Type</span>
+                <span class="value">${swapType}</span>
+            </div>
+            <div class="preview-row">
+                <span class="label">Source</span>
+                <span class="value">${data.source_institution || '—'}</span>
+            </div>
+            <div class="preview-row">
+                <span class="label">Destination</span>
+                <span class="value">${data.destination_institution || '—'}</span>
+            </div>
+            <div class="preview-row">
+                <span class="label">Amount Requested</span>
+                <span class="value">${data.amount_requested} ${data.source_currency}</span>
+            </div>
+            ${data.is_multi_source ? `
+            <div class="preview-row">
+                <span class="label">Total Contributions</span>
+                <span class="value">${data.multi_source?.total_contributions || data.amount_requested} ${data.source_currency}</span>
+            </div>` : ''}
+            <div class="preview-row" style="border-top:2px solid var(--border);padding-top:8px;margin-top:4px;">
+                <span class="label" style="font-weight:700;">Total Fee</span>
+                <span class="value" style="color:var(--danger);">${data.total_fee} ${data.source_currency}</span>
+            </div>
+            ${feeBreakdownHtml ? `
+            <div style="margin-top:8px;padding:8px;background:rgba(0,0,0,0.03);border-radius:var(--radius-sm);">
+                <div style="font-size:11px;color:var(--text-muted);">Fee Breakdown</div>
+                ${feeBreakdownHtml}
+            </div>` : ''}
+            ${destinationSplitHtml}
+            ${forexHtml}
+            <div class="preview-row" style="border-top:2px solid var(--primary);padding-top:8px;margin-top:4px;">
+                <span class="label" style="font-weight:700;font-size:16px;">Net Amount</span>
+                <span class="value highlight">${data.net_amount_destination_currency || data.net_amount} ${data.destination_currency || data.source_currency}</span>
+            </div>
+            ${multiSourceHtml}
+        </div>
+        <div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;">
+            <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;">Cancel</button>
+            <button class="btn btn-primary" onclick="confirmSwap()" style="flex:1;">✅ Confirm & Execute</button>
+        </div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:8px;text-align:center;">
+            ⚡ Click Confirm to execute the swap. This action cannot be undone.
+        </div>
+    `;
+    
+    state.lastPreview = previewData;
+    openModal('Swap Preview', bodyHtml);
+}
+
+// ============================================================
+// CONFIRM SWAP - Execute after preview
+// ============================================================
+async function confirmSwap() {
+    closeModal();
+    
+    const payload = state.swapPayload;
+    if (!payload) {
+        showMessage('No swap payload to execute', 'error');
+        return;
+    }
+    
+    const btn = document.getElementById('reviewBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Executing…';
+    
+    const result = await callApi(CONFIG.EXECUTE_ENDPOINT, payload);
+    
+    btn.disabled = false;
+    btn.innerHTML = original;
+    refreshUI();
+    
+    if (!result.ok) { 
+        showMessage('Swap failed: ' + result.error, 'error'); 
+        return; 
+    }
+    
     showResultModal(result.body);
 }
 
@@ -1406,6 +1544,12 @@ function showResultModal(response) {
             <div class="amount-display">
                 <div style="font-size:12px;color:var(--text-muted);">Amount</div>
                 <div class="amt">${data.amount ?? state.swapPayload.amount} ${state.swapPayload.currency || CONFIG.CURRENCY}</div>
+                ${state.swapPayload.destination_currency && state.swapPayload.destination_currency !== state.swapPayload.currency ? `
+                <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">
+                    💱 Destination: ${data.net_amount_destination_currency || data.amount} ${state.swapPayload.destination_currency}
+                    ${data.forex ? ` @ ${data.forex.rate || '?'} rate` : ''}
+                </div>` : ''}
+                ${data.fee !== undefined ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">Fee: ${data.fee}</div>` : ''}
             </div>`;
     } else if (swapType === 'IDENTITY') {
         inner = `
@@ -1450,9 +1594,6 @@ function showResultModal(response) {
 
 // ============================================================
 // MY PROFILE - Saved Identities
-// ============================================================
-// ============================================================
-// FIX: Updated IDENTITY_TYPE_LABELS with new types
 // ============================================================
 const IDENTITY_TYPE_LABELS = { 
     national_id: 'National ID', 
