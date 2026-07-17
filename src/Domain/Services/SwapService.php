@@ -852,6 +852,87 @@ private function populateSwapRequest(string $swapRef, array $swapData, array $de
 }
 
     /**
+ * Populate swap_transactions table
+ * FIX: Uses numeric swap_id from swap_requests
+ * FIX: Only includes columns that exist in the schema
+ */
+private function populateSwapTransaction(int $swapId, string $swapRef, array $swapData, array $details, ?int $userId = null): void
+{
+    $sql = "
+        INSERT INTO swap_transactions (
+            swap_id,
+            from_account_details,
+            to_account_details,
+            amount,
+            status,
+            created_at,
+            updated_at,
+            metadata,
+            transaction_id,
+            ledger_entry_id,
+            settlement_batch_id,
+            error_message,
+            retry_count
+        ) VALUES (
+            :swap_id,
+            :from_account_details::jsonb,
+            :to_account_details::jsonb,
+            :amount,
+            :status,
+            :created_at,
+            :updated_at,
+            :metadata::jsonb,
+            :transaction_id,
+            :ledger_entry_id,
+            :settlement_batch_id,
+            :error_message,
+            0
+        )
+    ";
+    
+    $status = $swapData['status'] ?? 'pending';
+    if (isset($details['status'])) {
+        $status = $details['status'];
+    }
+    
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':swap_id' => $swapId,
+            ':from_account_details' => json_encode([
+                'institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
+                'identifier' => $details['source_identifier'] ?? null,
+                'asset_type' => $details['asset_type'] ?? null
+            ]),
+            ':to_account_details' => json_encode([
+                'institution' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
+                'identifier' => $details['destination_identifier'] ?? null,
+                'asset_type' => $details['destination_asset_type'] ?? null
+            ]),
+            ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
+            ':status' => strtolower($status),
+            ':created_at' => date('Y-m-d H:i:s'),
+            ':updated_at' => date('Y-m-d H:i:s'),
+            ':metadata' => json_encode([
+                'hold_id' => $this->currentHoldId,
+                'swap_type' => $swapData['swap_type'] ?? 'STANDARD',
+                'user_id' => $userId,
+                'swap_reference' => $swapRef
+            ]),
+            ':transaction_id' => $details['transaction_id'] ?? null,
+            ':ledger_entry_id' => $details['ledger_entry_id'] ?? null,
+            ':settlement_batch_id' => $details['settlement_batch_id'] ?? null,
+            ':error_message' => $details['error_message'] ?? null
+        ]);
+        
+        $this->logger->debug("swap_transactions populated", ['swap_id' => $swapId, 'swap_ref' => $swapRef]);
+        
+    } catch (PDOException $e) {
+        $this->logger->error("Failed to populate swap_transactions", ['error' => $e->getMessage(), 'swap_id' => $swapId, 'swap_ref' => $swapRef]);
+    }
+}
+    
+    /**
      * Populate deposit_transactions table
      * FIX: Added userId to metadata
      */
