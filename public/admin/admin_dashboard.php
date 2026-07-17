@@ -1,29 +1,18 @@
 <?php
 /**
  * admin_dashboard.php - VouchMorph Enhanced Role-Based Admin Dashboard
- * Features: Role-specific views, Report Generation, Live Transactions,
- *           Alerts/Exceptions, Institution Health, Transaction Search
- * Role IDs: 999=Super Admin, 3=Regulator, 4=Compliance, 5=Auditor
- *           10=Finance Manager, 11=Settlement Officer, 12=Revenue Officer
- *
- * CHANGES IN THIS VERSION:
- * 1. Wired up the previously-declared-but-unused $search variable into the
- *    Live Transactions and Recent Swaps queries, plus a search box in the UI.
- * 2. Added an Alerts/Exceptions panel: stuck holds (>24h non-terminal),
- *    expired-but-not-cancelled identity swaps, expired pending cashouts,
- *    and failed destinations inside multi-destination swaps.
- * 3. Added an Institution Health panel: per-institution volume, success
- *    rate, and average time-to-debit (latency), computed from
- *    hold_transactions/vw_all_swaps.
- * 4. Added 'alerts' and 'institution_health' to the relevant roles' view
- *    lists so every role that should see exceptions/health can.
- *
- * NOTE: vw_all_swaps currently appears to be capped (reported as exactly
- * 100 rows regardless of underlying table growth). That cap lives in the
- * VIEW DEFINITION itself, not in this file - none of the queries below add
- * a LIMIT. Run `SELECT pg_get_viewdef('vw_all_swaps', true);` and recreate
- * the view without the cap; this file will pick up the full history
- * automatically once that's fixed.
+ * 
+ * FEATURES:
+ * 1. Role-based views (Super Admin, Regulator, Compliance, Auditor, etc.)
+ * 2. Customer Support role (role_id 20) with Client Lookup by phone/national ID
+ * 3. Live Transactions with search and auto-refresh
+ * 4. Alerts/Exceptions panel (stuck holds, expired identities, stuck cashouts)
+ * 5. Institution Health (volume, success rate, latency)
+ * 6. Regulatory view with net positions and pending settlements
+ * 7. Audit view with real audit_logs data
+ * 8. Invoices view with FEE_INVOICE messages
+ * 9. Multi-destination swaps with detailed breakdown
+ * 10. Recent swaps with search
  */
 
 declare(strict_types=1);
@@ -75,7 +64,7 @@ $roleDefinitions = [
             'recent_swaps', 'swap_transactions', 'cross_border',
             'settlements', 'net_positions', 'regulatory_reports',
             'generate_reports', 'role_reports', 'multi_destination',
-            'alerts', 'institution_health'
+            'alerts', 'institution_health', 'client_lookup'
         ],
         'actions' => [
             'create', 'edit', 'delete', 'export', 'approve', 'reject',
@@ -110,7 +99,7 @@ $roleDefinitions = [
         'view' => [
             'dashboard', 'transactions', 'audit', 'reports', 'compliance',
             'fee_breakdown', 'recent_swaps', 'generate_reports', 'live_transactions',
-            'alerts'
+            'alerts', 'client_lookup'
         ],
         'actions' => ['view', 'review', 'approve', 'reject', 'export', 'generate_compliance_report'],
         'report_types' => ['compliance', 'audit', 'transaction', 'aml'],
@@ -203,6 +192,18 @@ $roleDefinitions = [
         'report_types' => ['compliance', 'aml', 'audit', 'fee_compliance'],
         'label' => '🔐 Compliance Auditor',
         'badge_color' => '#6f42c1'
+    ],
+    20 => [
+        'name' => 'Customer Support',
+        'level' => 40,
+        'permissions' => ['view_own_lookup', 'read_only'],
+        'view' => [
+            'dashboard', 'client_lookup'
+        ],
+        'actions' => ['view', 'lookup'],
+        'report_types' => [],
+        'label' => '📞 Customer Support',
+        'badge_color' => '#20c997'
     ]
 ];
 
@@ -223,7 +224,8 @@ $isFinanceManager = ($adminRoleId === 10);
 $isSettlementOfficer = ($adminRoleId === 11);
 $isRevenueOfficer = ($adminRoleId === 12);
 $isComplianceAuditor = ($adminRoleId === 13);
-$isReadOnly = in_array('read_only', $userPermissions) || $isAuditor || $isRegulator;
+$isCustomerSupport = ($adminRoleId === 20);
+$isReadOnly = in_array('read_only', $userPermissions) || $isAuditor || $isRegulator || $isCustomerSupport;
 
 // Permission helpers
 function hasPermission($permission) {
@@ -265,6 +267,7 @@ try {
 // Get view and parameters
 $view = $_GET['view'] ?? 'dashboard';
 $search = trim($_GET['search'] ?? '');
+$lookup = trim($_GET['lookup'] ?? '');
 $exportTable = $_GET['export'] ?? '';
 $action = $_GET['action'] ?? '';
 $reportType = $_GET['report_type'] ?? '';
@@ -288,21 +291,10 @@ try {
     $viewExists = $checkStmt->fetchColumn();
 
     if ($viewExists) {
-        // Search box filters reference/institution/status. An empty $search
-        // produces '%%' which matches every row, so the WHERE clause is
-        // always safe to apply.
         $stmt = $db->prepare("
             SELECT
-                swap_reference,
-                reference,
-                swap_type,
-                source_institution,
-                destination_institution,
-                amount,
-                currency,
-                status,
-                fee_amount,
-                created_at
+                swap_reference, reference, swap_type, source_institution,
+                destination_institution, amount, currency, status, fee_amount, created_at
             FROM vw_all_swaps
             WHERE swap_reference ILIKE :search1
                OR reference ILIKE :search2
@@ -313,11 +305,8 @@ try {
         ");
         $likeSearch = '%' . $search . '%';
         $stmt->execute([
-            ':search1' => $likeSearch,
-            ':search2' => $likeSearch,
-            ':search3' => $likeSearch,
-            ':search4' => $likeSearch,
-            ':search5' => $likeSearch,
+            ':search1' => $likeSearch, ':search2' => $likeSearch, ':search3' => $likeSearch,
+            ':search4' => $likeSearch, ':search5' => $likeSearch,
         ]);
         $liveTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -356,16 +345,8 @@ try {
     if ($viewExists) {
         $stmt = $db->prepare("
             SELECT
-                swap_reference,
-                reference,
-                swap_type,
-                source_institution,
-                destination_institution,
-                amount,
-                currency,
-                status,
-                fee_amount,
-                created_at
+                swap_reference, reference, swap_type, source_institution,
+                destination_institution, amount, currency, status, fee_amount, created_at
             FROM vw_all_swaps
             WHERE swap_reference ILIKE :search1
                OR reference ILIKE :search2
@@ -376,11 +357,8 @@ try {
         ");
         $likeSearch = '%' . $search . '%';
         $stmt->execute([
-            ':search1' => $likeSearch,
-            ':search2' => $likeSearch,
-            ':search3' => $likeSearch,
-            ':search4' => $likeSearch,
-            ':search5' => $likeSearch,
+            ':search1' => $likeSearch, ':search2' => $likeSearch, ':search3' => $likeSearch,
+            ':search4' => $likeSearch, ':search5' => $likeSearch,
         ]);
         $recentSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -394,21 +372,9 @@ try {
 $multiDestinationSwaps = [];
 try {
     $stmt = $db->query("
-        SELECT
-            id,
-            reference,
-            source_institution,
-            total_destinations,
-            successful_count,
-            failed_count,
-            total_amount,
-            total_fees,
-            total_delivered,
-            status,
-            destinations_payload,
-            results_payload,
-            created_at,
-            updated_at
+        SELECT id, reference, source_institution, total_destinations, successful_count,
+               failed_count, total_amount, total_fees, total_delivered, status,
+               destinations_payload, results_payload, created_at, updated_at
         FROM multi_destination_swaps
         ORDER BY created_at DESC
     ");
@@ -419,27 +385,17 @@ try {
 
 // ============================================================
 // ALERTS / EXCEPTIONS
-// Surfaces the things ops/compliance actually need to act on,
-// rather than making everyone scroll raw tables to spot them.
 // ============================================================
-$alerts = [
-    'stuck_holds' => [],
-    'expired_identity_swaps' => [],
-    'stuck_cashouts' => [],
-    'failed_destinations' => [],
-];
+$alerts = ['stuck_holds' => [], 'expired_identity_swaps' => [], 'stuck_cashouts' => [], 'failed_destinations' => []];
 
 try {
-    // Holds sitting in a non-terminal state for more than 24h.
-    // Terminal states are DEBITED / RELEASED / CANCELLED / FAILED.
     $stmt = $db->query("
         SELECT hold_id, hold_reference, swap_reference, participant_name AS institution,
                asset_type, amount, currency, status, created_at
         FROM hold_transactions
         WHERE status IN ('ACTIVE','HELD','PENDING_CASHOUT','PENDING_IDENTITY')
           AND created_at < NOW() - INTERVAL '24 hours'
-        ORDER BY created_at ASC
-        LIMIT 300
+        ORDER BY created_at ASC LIMIT 300
     ");
     $alerts['stuck_holds'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) {
@@ -447,16 +403,12 @@ try {
 }
 
 try {
-    // Identity swaps whose 24h confirmation window has passed but that
-    // were never picked up by the expiry-cancellation job.
     $stmt = $db->query("
         SELECT hold_id, swap_reference, source_institution, identity_type, identity_value,
                amount, currency, hold_expires_at, status, created_at
         FROM identity_swap_holds
-        WHERE status = 'pending'
-          AND hold_expires_at < NOW()
-        ORDER BY hold_expires_at ASC
-        LIMIT 300
+        WHERE status = 'pending' AND hold_expires_at < NOW()
+        ORDER BY hold_expires_at ASC LIMIT 300
     ");
     $alerts['expired_identity_swaps'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) {
@@ -464,15 +416,12 @@ try {
 }
 
 try {
-    // Cashout codes that expired without the recipient ever cashing out.
     $stmt = $db->query("
         SELECT auth_id, swap_reference, client_phone, source_institution, cashout_provider,
                amount, currency, code_expiry, status, created_at
         FROM cashout_authorizations
-        WHERE status = 'PENDING'
-          AND code_expiry < NOW()
-        ORDER BY code_expiry ASC
-        LIMIT 300
+        WHERE status = 'PENDING' AND code_expiry < NOW()
+        ORDER BY code_expiry ASC LIMIT 300
     ");
     $alerts['stuck_cashouts'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) {
@@ -480,15 +429,10 @@ try {
 }
 
 try {
-    // Individual failed legs inside otherwise-partial-success multi-destination
-    // swaps - these are easy to miss because the parent swap still shows
-    // "partial_success" rather than a hard failure.
     $stmt = $db->query("
         SELECT id, reference, source_institution, created_at, results_payload
-        FROM multi_destination_swaps
-        WHERE failed_count > 0
-        ORDER BY created_at DESC
-        LIMIT 150
+        FROM multi_destination_swaps WHERE failed_count > 0
+        ORDER BY created_at DESC LIMIT 150
     ");
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
     foreach ($rows as $row) {
@@ -496,10 +440,8 @@ try {
         foreach ($results as $r) {
             if (($r['status'] ?? '') === 'failed') {
                 $alerts['failed_destinations'][] = [
-                    'reference' => $row['reference'],
-                    'source_institution' => $row['source_institution'],
-                    'created_at' => $row['created_at'],
-                    'type' => $r['type'] ?? 'bank',
+                    'reference' => $row['reference'], 'source_institution' => $row['source_institution'],
+                    'created_at' => $row['created_at'], 'type' => $r['type'] ?? 'bank',
                     'identity_value' => $r['identity_value'] ?? null,
                     'destination_institution' => $r['destination_institution'] ?? null,
                     'amount' => $r['amount'] ?? $r['requested_amount'] ?? 0,
@@ -522,10 +464,6 @@ $totalAlerts = array_sum($alertCounts);
 
 // ============================================================
 // INSTITUTION HEALTH
-// Volume + success rate from vw_all_swaps (institution appears as
-// either source or destination). Latency is a separate query against
-// hold_transactions since that's the only table with both a start
-// (created_at) and completion (debited_at) timestamp.
 // ============================================================
 $institutionHealth = [];
 try {
@@ -538,16 +476,13 @@ try {
             COUNT(*) FILTER (WHERE status ILIKE '%pending%' OR status ILIKE '%confirmation%') AS pending,
             COALESCE(SUM(amount), 0) AS volume
         FROM (
-            SELECT source_institution AS inst, status, amount
-            FROM vw_all_swaps
+            SELECT source_institution AS inst, status, amount FROM vw_all_swaps
             WHERE source_institution IS NOT NULL AND source_institution <> 'N/A'
             UNION ALL
-            SELECT destination_institution AS inst, status, amount
-            FROM vw_all_swaps
+            SELECT destination_institution AS inst, status, amount FROM vw_all_swaps
             WHERE destination_institution IS NOT NULL AND destination_institution <> 'N/A'
         ) combined
-        GROUP BY inst
-        ORDER BY total DESC
+        GROUP BY inst ORDER BY total DESC
     ");
     $institutionHealth = $stmt->fetchAll(PDO::FETCH_ASSOC);
     foreach ($institutionHealth as &$row) {
@@ -566,15 +501,12 @@ try {
                AVG(EXTRACT(EPOCH FROM (debited_at - created_at))) AS avg_seconds,
                COUNT(*) AS debited_count
         FROM hold_transactions
-        WHERE debited_at IS NOT NULL
-          AND source_institution IS NOT NULL
+        WHERE debited_at IS NOT NULL AND source_institution IS NOT NULL
         GROUP BY source_institution
     ");
     $latencyRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
     $latencyByInstitution = [];
-    foreach ($latencyRows as $lr) {
-        $latencyByInstitution[$lr['institution']] = $lr;
-    }
+    foreach ($latencyRows as $lr) { $latencyByInstitution[$lr['institution']] = $lr; }
     foreach ($institutionHealth as &$row) {
         $inst = $row['institution'];
         if (isset($latencyByInstitution[$inst])) {
@@ -585,6 +517,184 @@ try {
     unset($row);
 } catch (Throwable $e) {
     error_log("[ADMIN DASHBOARD] institution latency error: " . $e->getMessage());
+}
+
+// ============================================================
+// CLIENT LOOKUP - for Customer Support / Compliance / Super Admin
+// ============================================================
+$lookupResults = [];
+if ($view === 'client_lookup' && $lookup !== '') {
+    $likeLookup = '%' . $lookup . '%';
+
+    try {
+        $stmt = $db->prepare("
+            SELECT swap_reference, source_institution, identity_type, identity_value,
+                   amount, currency, hold_expires_at, status, created_at
+            FROM identity_swap_holds
+            WHERE identity_value ILIKE :l OR swap_reference ILIKE :l OR source_identifier ILIKE :l
+            ORDER BY created_at DESC LIMIT 25
+        ");
+        $stmt->execute([':l' => $likeLookup]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $isExpired = strtotime($row['hold_expires_at'] ?? 'now') < time();
+            $nextAction = 'No action needed - completed.';
+            if ($row['status'] === 'pending') {
+                $nextAction = $isExpired
+                    ? 'Confirmation window expired. This swap needs to be cancelled and re-initiated.'
+                    : 'Recipient must confirm their identity (' . $row['identity_type'] . ') before ' . $row['hold_expires_at'] . ' to receive funds.';
+            } elseif ($row['status'] === 'expired' || $row['status'] === 'cancelled') {
+                $nextAction = 'This swap expired or was cancelled. Funds were returned to sender - a new swap is needed to try again.';
+            }
+            $lookupResults[] = [
+                'kind' => 'Identity Swap', 'reference' => $row['swap_reference'],
+                'institution' => $row['source_institution'], 'amount' => $row['amount'],
+                'currency' => $row['currency'] ?? 'BWP', 'status' => $row['status'],
+                'created_at' => $row['created_at'], 'next_action' => $nextAction,
+                'identity' => ($row['identity_type'] ?? '') . ': ' . ($row['identity_value'] ?? ''),
+            ];
+        }
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] client lookup identity_swap_holds error: " . $e->getMessage());
+    }
+
+    try {
+        $stmt = $db->prepare("
+            SELECT swap_reference, client_phone, source_institution, cashout_provider,
+                   amount, currency, code_expiry, status, created_at
+            FROM cashout_authorizations
+            WHERE client_phone ILIKE :l OR swap_reference ILIKE :l
+            ORDER BY created_at DESC LIMIT 25
+        ");
+        $stmt->execute([':l' => $likeLookup]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $isExpired = strtotime($row['code_expiry'] ?? 'now') < time();
+            $nextAction = 'Completed - cash collected.';
+            if ($row['status'] === 'PENDING') {
+                $nextAction = $isExpired
+                    ? 'Cashout code expired without being used. Client needs a new swap initiated.'
+                    : 'Client must visit an ATM/Agent at ' . $row['cashout_provider'] . ' with their code before ' . $row['code_expiry'] . '.';
+            } elseif ($row['status'] === 'VERIFIED') {
+                $nextAction = 'Code was verified at the cashout point - completion should follow shortly. If it has been a while, escalate.';
+            }
+            $lookupResults[] = [
+                'kind' => 'Cashout', 'reference' => $row['swap_reference'],
+                'institution' => $row['source_institution'] . ' → ' . $row['cashout_provider'],
+                'amount' => $row['amount'], 'currency' => $row['currency'] ?? 'BWP',
+                'status' => $row['status'], 'created_at' => $row['created_at'],
+                'next_action' => $nextAction, 'identity' => 'Phone: ' . ($row['client_phone'] ?? 'N/A'),
+            ];
+        }
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] client lookup cashout_authorizations error: " . $e->getMessage());
+    }
+
+    try {
+        $stmt = $db->prepare("
+            SELECT reference, source_institution, status, total_amount, total_destinations,
+                   successful_count, failed_count, created_at
+            FROM multi_destination_swaps
+            WHERE reference ILIKE :l
+               OR destinations_payload::text ILIKE :l
+               OR results_payload::text ILIKE :l
+            ORDER BY created_at DESC LIMIT 25
+        ");
+        $stmt->execute([':l' => $likeLookup]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $nextAction = $row['failed_count'] > 0
+                ? "{$row['failed_count']} of {$row['total_destinations']} destination(s) failed - needs manual review/retry."
+                : 'All destinations processed.';
+            $lookupResults[] = [
+                'kind' => 'Multi-Destination', 'reference' => $row['reference'],
+                'institution' => $row['source_institution'], 'amount' => $row['total_amount'],
+                'currency' => 'BWP', 'status' => $row['status'], 'created_at' => $row['created_at'],
+                'next_action' => $nextAction,
+                'identity' => "{$row['successful_count']}/{$row['total_destinations']} succeeded",
+            ];
+        }
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] client lookup multi_destination error: " . $e->getMessage());
+    }
+
+    try {
+        $stmt = $db->prepare("
+            SELECT swap_reference, reference, swap_type, source_institution,
+                   destination_institution, amount, currency, status, created_at
+            FROM vw_all_swaps
+            WHERE swap_reference ILIKE :l OR reference ILIKE :l
+            ORDER BY created_at DESC LIMIT 25
+        ");
+        $stmt->execute([':l' => $likeLookup]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $status = strtolower($row['status'] ?? '');
+            $nextAction = 'No action needed.';
+            if (str_contains($status, 'pending')) $nextAction = 'Still processing - check back shortly, or escalate if older than a few minutes.';
+            if (str_contains($status, 'fail')) $nextAction = 'This attempt failed. Escalate to ops for the reason before advising the client to retry.';
+            $lookupResults[] = [
+                'kind' => $row['swap_type'] ?? 'Swap', 'reference' => $row['swap_reference'] ?: $row['reference'],
+                'institution' => $row['source_institution'] . ' → ' . ($row['destination_institution'] ?? 'N/A'),
+                'amount' => $row['amount'], 'currency' => $row['currency'] ?? 'BWP',
+                'status' => $row['status'], 'created_at' => $row['created_at'],
+                'next_action' => $nextAction, 'identity' => '',
+            ];
+        }
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] client lookup vw_all_swaps error: " . $e->getMessage());
+    }
+
+    // De-duplicate by reference+kind
+    $seen = [];
+    $deduped = [];
+    foreach ($lookupResults as $r) {
+        $key = $r['kind'] . '|' . $r['reference'];
+        if (!isset($seen[$key])) { $seen[$key] = true; $deduped[] = $r; }
+    }
+    $lookupResults = $deduped;
+}
+
+// ============================================================
+// REGULATORY VIEW DATA
+// ============================================================
+$netPositions = [];
+$pendingSettlements = [];
+if ($view === 'regulatory' && canView('regulatory')) {
+    try {
+        $netPositions = $db->query("SELECT * FROM net_positions ORDER BY id DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] net_positions fetch error: " . $e->getMessage());
+    }
+    try {
+        $pendingSettlements = $db->query("SELECT * FROM settlement_queue WHERE status = 'PENDING' ORDER BY created_at DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] pending settlements fetch error: " . $e->getMessage());
+    }
+}
+
+// ============================================================
+// AUDIT VIEW DATA
+// ============================================================
+$auditRows = [];
+if ($view === 'audit' && canView('audit')) {
+    try {
+        $auditRows = $db->query("SELECT * FROM audit_logs ORDER BY audit_id DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] audit_logs fetch error: " . $e->getMessage());
+    }
+}
+
+// ============================================================
+// INVOICES VIEW DATA
+// ============================================================
+$invoiceMessages = [];
+if ($view === 'invoices' && canView('invoices')) {
+    try {
+        $invoiceMessages = $db->query("
+            SELECT * FROM settlement_outbox
+            WHERE message_type = 'FEE_INVOICE'
+            ORDER BY created_at DESC LIMIT 200
+        ")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] invoices fetch error: " . $e->getMessage());
+    }
 }
 
 // ============================================================
@@ -614,6 +724,11 @@ if (!isset($alerts)) $alerts = ['stuck_holds' => [], 'expired_identity_swaps' =>
 if (!isset($alertCounts)) $alertCounts = ['stuck_holds' => 0, 'expired_identity_swaps' => 0, 'stuck_cashouts' => 0, 'failed_destinations' => 0];
 if (!isset($totalAlerts)) $totalAlerts = 0;
 if (!isset($institutionHealth)) $institutionHealth = [];
+if (!isset($lookupResults)) $lookupResults = [];
+if (!isset($netPositions)) $netPositions = [];
+if (!isset($pendingSettlements)) $pendingSettlements = [];
+if (!isset($auditRows)) $auditRows = [];
+if (!isset($invoiceMessages)) $invoiceMessages = [];
 
 ?>
 <!DOCTYPE html>
@@ -625,87 +740,21 @@ if (!isset($institutionHealth)) $institutionHealth = [];
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'IBM Plex Mono', monospace;
-            background: #f7f9fc;
-            color: #001B44;
-            min-height: 100vh;
-        }
-        .admin-header {
-            background: #001B44;
-            border-bottom: 5px solid #FFDA63;
-            padding: 12px 24px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            color: #fff;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
+        body { font-family: 'IBM Plex Mono', monospace; background: #f7f9fc; color: #001B44; min-height: 100vh; }
+        .admin-header { background: #001B44; border-bottom: 5px solid #FFDA63; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; color: #fff; flex-wrap: wrap; gap: 10px; }
         .header-left { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
         .logo { font-size: 1.1rem; font-weight: 700; letter-spacing: 2px; }
         .logo span { color: #FFDA63; }
-        .role-badge {
-            padding: 4px 12px;
-            background: <?php echo $roleInfo['badge_color'] ?? '#FFDA63'; ?>;
-            color: #fff;
-            font-size: 0.7rem;
-            text-transform: uppercase;
-            border-radius: 4px;
-            font-weight: 700;
-        }
-        .readonly-badge {
-            padding: 4px 12px;
-            background: #f8d7da;
-            color: #721c24;
-            font-size: 0.65rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            border-radius: 4px;
-            border: 1px solid #f5c6cb;
-        }
+        .role-badge { padding: 4px 12px; background: <?php echo $roleInfo['badge_color'] ?? '#FFDA63'; ?>; color: #fff; font-size: 0.7rem; text-transform: uppercase; border-radius: 4px; font-weight: 700; }
+        .readonly-badge { padding: 4px 12px; background: #f8d7da; color: #721c24; font-size: 0.65rem; font-weight: 600; text-transform: uppercase; border-radius: 4px; border: 1px solid #f5c6cb; }
         .user-info { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
         .user-details { text-align: right; }
         .user-name { font-weight: 600; color: #FFDA63; font-size: 0.9rem; }
         .user-role { font-size: 0.65rem; color: #A1B5D8; text-transform: uppercase; }
-        .logout-btn {
-            padding: 6px 14px;
-            background: transparent;
-            border: 2px solid #FFDA63;
-            color: #FFDA63;
-            text-decoration: none;
-            font-size: 0.7rem;
-            font-weight: 600;
-            transition: all 0.2s;
-            border-radius: 4px;
-        }
+        .logout-btn { padding: 6px 14px; background: transparent; border: 2px solid #FFDA63; color: #FFDA63; text-decoration: none; font-size: 0.7rem; font-weight: 600; transition: all 0.2s; border-radius: 4px; }
         .logout-btn:hover { background: #FFDA63; color: #001B44; }
-
-        .admin-nav {
-            background: #fff;
-            border-bottom: 2px solid #001B44;
-            padding: 0 24px;
-            display: flex;
-            gap: 16px;
-            flex-wrap: wrap;
-            align-items: center;
-            overflow-x: auto;
-        }
-        .nav-item {
-            padding: 12px 0;
-            color: #666;
-            text-decoration: none;
-            font-size: 0.7rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            border-bottom: 3px solid transparent;
-            transition: all 0.2s;
-            white-space: nowrap;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-        }
+        .admin-nav { background: #fff; border-bottom: 2px solid #001B44; padding: 0 24px; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; overflow-x: auto; }
+        .nav-item { padding: 12px 0; color: #666; text-decoration: none; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 3px solid transparent; transition: all 0.2s; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
         .nav-item:hover { color: #001B44; }
         .nav-item.active { color: #001B44; border-bottom-color: #FFDA63; }
         .nav-item.finance { color: #28a745; }
@@ -714,123 +763,34 @@ if (!isset($institutionHealth)) $institutionHealth = [];
         .nav-item.regulator.active { border-bottom-color: #8B0000; }
         .nav-item.alerts { color: #dc3545; }
         .nav-item.alerts.active { border-bottom-color: #dc3545; }
-        .nav-badge {
-            background: #dc3545;
-            color: #fff;
-            font-size: 0.55rem;
-            padding: 1px 6px;
-            border-radius: 10px;
-            font-weight: 700;
-        }
-
+        .nav-item.support { color: #20c997; }
+        .nav-item.support.active { border-bottom-color: #20c997; }
+        .nav-badge { background: #dc3545; color: #fff; font-size: 0.55rem; padding: 1px 6px; border-radius: 10px; font-weight: 700; }
         .admin-content { padding: 24px; max-width: 1600px; margin: 0 auto; }
-        .content-header {
-            margin-bottom: 24px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 12px;
-        }
+        .content-header { margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
         .content-header h1 { font-size: 1.3rem; font-weight: 600; color: #001B44; }
         .content-header .timestamp { color: #666; font-size: 0.7rem; }
-
-        .metrics-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 12px;
-            margin-bottom: 24px;
-        }
-        .metric-card {
-            background: #fff;
-            border: 2px solid #001B44;
-            padding: 12px 16px;
-            box-shadow: 3px 3px 0 #A1B5D8;
-        }
-        .metric-label {
-            font-size: 0.55rem;
-            text-transform: uppercase;
-            color: #666;
-            letter-spacing: 0.5px;
-            margin-bottom: 4px;
-        }
+        .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 24px; }
+        .metric-card { background: #fff; border: 2px solid #001B44; padding: 12px 16px; box-shadow: 3px 3px 0 #A1B5D8; }
+        .metric-label { font-size: 0.55rem; text-transform: uppercase; color: #666; letter-spacing: 0.5px; margin-bottom: 4px; }
         .metric-value { font-size: 1.5rem; font-weight: 600; color: #001B44; }
-        .metric-value .sub { font-size: 0.8rem; color: #666; }
-        .metric-value .small { font-size: 0.9rem; }
-
-        .card {
-            background: #fff;
-            border: 2px solid #001B44;
-            padding: 16px;
-            margin-bottom: 16px;
-            box-shadow: 3px 3px 0 #A1B5D8;
-        }
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-            padding-bottom: 8px;
-            border-bottom: 2px solid #001B44;
-            flex-wrap: wrap;
-            gap: 8px;
-        }
+        .card { background: #fff; border: 2px solid #001B44; padding: 16px; margin-bottom: 16px; box-shadow: 3px 3px 0 #A1B5D8; }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid #001B44; flex-wrap: wrap; gap: 8px; }
         .card-title { font-size: 0.9rem; font-weight: 700; text-transform: uppercase; }
-        .card-badge {
-            padding: 2px 10px;
-            background: #001B44;
-            color: #fff;
-            font-size: 0.6rem;
-            border-radius: 12px;
-        }
+        .card-badge { padding: 2px 10px; background: #001B44; color: #fff; font-size: 0.6rem; border-radius: 12px; }
         .card-badge.success { background: #28a745; }
         .card-badge.warning { background: #856404; }
         .card-badge.danger { background: #dc3545; }
         .card-badge.info { background: #17a2b8; }
-
-        .search-box {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
-        .search-box input[type=text] {
-            font-family: 'IBM Plex Mono', monospace;
-            padding: 6px 10px;
-            border: 2px solid #001B44;
-            border-radius: 4px;
-            font-size: 0.7rem;
-            min-width: 220px;
-        }
-
+        .search-box { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .search-box input[type=text] { font-family: 'IBM Plex Mono', monospace; padding: 8px 12px; border: 2px solid #001B44; border-radius: 4px; font-size: 0.75rem; min-width: 260px; }
         .table-responsive { overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; font-size: 0.7rem; }
-        th {
-            background: #001B44;
-            color: #fff;
-            padding: 6px 10px;
-            font-weight: 600;
-            text-align: left;
-            font-size: 0.55rem;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            white-space: nowrap;
-            position: sticky;
-            top: 0;
-            z-index: 10;
-        }
+        th { background: #001B44; color: #fff; padding: 6px 10px; font-weight: 600; text-align: left; font-size: 0.55rem; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; position: sticky; top: 0; z-index: 10; }
         td { padding: 5px 10px; border-bottom: 1px solid #eee; font-size: 0.65rem; }
         tr:hover { background: #f5f5f5; }
         tr:nth-child(even) { background: #fafafa; }
-
-        .status {
-            display: inline-block;
-            padding: 1px 8px;
-            font-size: 0.55rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            border: 1px solid;
-            border-radius: 3px;
-        }
+        .status { display: inline-block; padding: 1px 8px; font-size: 0.55rem; font-weight: 600; text-transform: uppercase; border: 1px solid; border-radius: 3px; }
         .status-success { background: #d4edda; color: #155724; border-color: #c3e6cb; }
         .status-pending { background: #fff3cd; color: #856404; border-color: #ffeeba; }
         .status-failed { background: #f8d7da; color: #721c24; border-color: #f5c6cb; }
@@ -838,23 +798,7 @@ if (!isset($institutionHealth)) $institutionHealth = [];
         .status-warning { background: #fff3cd; color: #856404; border-color: #ffeeba; }
         .status-processing { background: #cce5ff; color: #004085; border-color: #b8daff; }
         .status-identity { background: #e8d5f5; color: #6f42c1; border-color: #d4b8e8; }
-        .status-danger { background: #f8d7da; color: #721c24; border-color: #f5c6cb; }
-
-        .btn {
-            padding: 6px 14px;
-            font-size: 0.65rem;
-            border: 2px solid #001B44;
-            background: #fff;
-            color: #001B44;
-            cursor: pointer;
-            font-family: 'IBM Plex Mono', monospace;
-            font-weight: 600;
-            text-transform: uppercase;
-            transition: all 0.2s;
-            border-radius: 4px;
-            text-decoration: none;
-            display: inline-block;
-        }
+        .btn { padding: 6px 14px; font-size: 0.65rem; border: 2px solid #001B44; background: #fff; color: #001B44; cursor: pointer; font-family: 'IBM Plex Mono', monospace; font-weight: 600; text-transform: uppercase; transition: all 0.2s; border-radius: 4px; text-decoration: none; display: inline-block; }
         .btn:hover { background: #001B44; color: #fff; }
         .btn-primary { background: #001B44; color: #fff; }
         .btn-primary:hover { background: #FFDA63; color: #001B44; border-color: #FFDA63; }
@@ -862,81 +806,22 @@ if (!isset($institutionHealth)) $institutionHealth = [];
         .btn-success:hover { background: #28a745; color: #fff; }
         .btn-danger { border-color: #dc3545; color: #dc3545; }
         .btn-danger:hover { background: #dc3545; color: #fff; }
-        .btn-regulator { border-color: #8B0000; color: #8B0000; }
-        .btn-regulator:hover { background: #8B0000; color: #fff; }
-        .btn-finance { border-color: #28a745; color: #28a745; }
-        .btn-finance:hover { background: #28a745; color: #fff; }
+        .btn-support { border-color: #20c997; color: #20c997; }
+        .btn-support:hover { background: #20c997; color: #fff; }
         .btn-sm { padding: 2px 8px; font-size: 0.55rem; }
-
         .empty-state { text-align: center; padding: 30px; color: #999; }
         .empty-state .icon { font-size: 2rem; margin-bottom: 8px; }
-
-        .admin-footer {
-            background: #001B44;
-            color: #A1B5D8;
-            padding: 16px 24px;
-            font-size: 0.65rem;
-            text-align: center;
-            border-top: 3px solid #FFDA63;
-            margin-top: 24px;
-        }
-
-        .live-indicator {
-            display: inline-block;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: #28a745;
-            animation: pulse 1.5s ease-in-out infinite;
-            margin-right: 8px;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.3; }
-        }
-
-        .auto-refresh-toggle {
-            cursor: pointer;
-            padding: 4px 12px;
-            border-radius: 4px;
-            border: 2px solid #001B44;
-            font-size: 0.65rem;
-            font-weight: 600;
-            background: #fff;
-            color: #001B44;
-            transition: all 0.2s;
-        }
-        .auto-refresh-toggle.active {
-            background: #28a745;
-            color: #fff;
-            border-color: #28a745;
-        }
-
-        .alert-section { margin-bottom: 20px; }
-        .alert-section-title {
-            font-size: 0.75rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            margin-bottom: 8px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .health-bar-track {
-            background: #eee;
-            border-radius: 4px;
-            height: 10px;
-            width: 100%;
-            overflow: hidden;
-        }
-        .health-bar-fill {
-            height: 100%;
-            background: #28a745;
-        }
+        .admin-footer { background: #001B44; color: #A1B5D8; padding: 16px 24px; font-size: 0.65rem; text-align: center; border-top: 3px solid #FFDA63; margin-top: 24px; }
+        .live-indicator { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #28a745; animation: pulse 1.5s ease-in-out infinite; margin-right: 8px; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .auto-refresh-toggle { cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 2px solid #001B44; font-size: 0.65rem; font-weight: 600; background: #fff; color: #001B44; transition: all 0.2s; }
+        .auto-refresh-toggle.active { background: #28a745; color: #fff; border-color: #28a745; }
+        .health-bar-track { background: #eee; border-radius: 4px; height: 10px; width: 100%; overflow: hidden; }
+        .health-bar-fill { height: 100%; background: #28a745; }
         .health-bar-fill.warn { background: #856404; }
         .health-bar-fill.bad { background: #dc3545; }
-
+        .lookup-card { border-left: 6px solid #20c997; margin-bottom: 12px; }
+        .lookup-next-action { background: #e6fcf5; color: #0b7a5c; padding: 10px; border-radius: 4px; font-size: 0.75rem; margin-top: 8px; font-weight: 600; }
         @media (max-width: 768px) {
             .metrics-grid { grid-template-columns: repeat(2, 1fr); }
             .admin-nav { padding: 0 12px; gap: 10px; }
@@ -951,9 +836,7 @@ if (!isset($institutionHealth)) $institutionHealth = [];
         <div class="header-left">
             <div class="logo">VOUCHMORPH <span>ADMIN</span></div>
             <div class="role-badge"><?php echo safeHtml($roleInfo['label'] ?? $roleName); ?></div>
-            <?php if ($isReadOnly): ?>
-            <span class="readonly-badge">🔒 READ ONLY</span>
-            <?php endif; ?>
+            <?php if ($isReadOnly): ?><span class="readonly-badge">🔒 READ ONLY</span><?php endif; ?>
         </div>
         <div class="user-info">
             <div class="user-details">
@@ -965,59 +848,27 @@ if (!isset($institutionHealth)) $institutionHealth = [];
     </header>
 
     <nav class="admin-nav">
-        <?php if (canView('dashboard')): ?>
-        <a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">📊 DASHBOARD</a>
-        <?php endif; ?>
-
+        <?php if (canView('dashboard')): ?><a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">📊 DASHBOARD</a><?php endif; ?>
+        <?php if (canView('client_lookup')): ?><a href="?view=client_lookup" class="nav-item support <?php echo $view === 'client_lookup' ? 'active' : ''; ?>">📞 CLIENT LOOKUP</a><?php endif; ?>
         <?php if (canView('alerts')): ?>
         <a href="?view=alerts" class="nav-item alerts <?php echo $view === 'alerts' ? 'active' : ''; ?>">
-            🚨 ALERTS
-            <?php if ($totalAlerts > 0): ?><span class="nav-badge"><?php echo $totalAlerts; ?></span><?php endif; ?>
+            🚨 ALERTS <?php if ($totalAlerts > 0): ?><span class="nav-badge"><?php echo $totalAlerts; ?></span><?php endif; ?>
         </a>
         <?php endif; ?>
-
-        <?php if (canView('live_transactions')): ?>
-        <a href="?view=live_transactions" class="nav-item <?php echo $view === 'live_transactions' ? 'active' : ''; ?>">🔴 LIVE TXNS</a>
-        <?php endif; ?>
-
-        <?php if (canView('multi_destination')): ?>
-        <a href="?view=multi_destination" class="nav-item <?php echo $view === 'multi_destination' ? 'active' : ''; ?>">🎯 MULTI-DEST</a>
-        <?php endif; ?>
-
-        <?php if (canView('recent_swaps')): ?>
-        <a href="?view=recent_swaps" class="nav-item <?php echo $view === 'recent_swaps' ? 'active' : ''; ?>">🔄 SWAPS</a>
-        <?php endif; ?>
-
-        <?php if (canView('institution_health')): ?>
-        <a href="?view=institution_health" class="nav-item <?php echo $view === 'institution_health' ? 'active' : ''; ?>">🏦 INSTITUTIONS</a>
-        <?php endif; ?>
-
-        <?php if (canView('settlements')): ?>
-        <a href="?view=settlements" class="nav-item <?php echo $view === 'settlements' ? 'active' : ''; ?>">📤 SETTLEMENTS</a>
-        <?php endif; ?>
-
-        <?php if (canView('regulatory')): ?>
-        <a href="?view=regulatory" class="nav-item regulator <?php echo $view === 'regulatory' ? 'active' : ''; ?>">🏛️ REGULATORY</a>
-        <?php endif; ?>
-
-        <?php if (canView('audit')): ?>
-        <a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">📝 AUDIT</a>
-        <?php endif; ?>
-
-        <?php if (canView('fee_breakdown') && hasFinancialAccess()): ?>
-        <a href="?view=fee_breakdown" class="nav-item finance <?php echo $view === 'fee_breakdown' ? 'active' : ''; ?>">📊 FEES</a>
-        <?php endif; ?>
-
-        <?php if (canView('invoices') && hasPermission('generate_invoice')): ?>
-        <a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">💰 INVOICES</a>
-        <?php endif; ?>
-
-        <?php if (canView('all_tables') && $isSuperAdmin): ?>
-        <a href="?view=all_tables" class="nav-item <?php echo $view === 'all_tables' ? 'active' : ''; ?>">📋 TABLES</a>
-        <?php endif; ?>
+        <?php if (canView('live_transactions')): ?><a href="?view=live_transactions" class="nav-item <?php echo $view === 'live_transactions' ? 'active' : ''; ?>">🔴 LIVE TXNS</a><?php endif; ?>
+        <?php if (canView('multi_destination')): ?><a href="?view=multi_destination" class="nav-item <?php echo $view === 'multi_destination' ? 'active' : ''; ?>">🎯 MULTI-DEST</a><?php endif; ?>
+        <?php if (canView('recent_swaps')): ?><a href="?view=recent_swaps" class="nav-item <?php echo $view === 'recent_swaps' ? 'active' : ''; ?>">🔄 SWAPS</a><?php endif; ?>
+        <?php if (canView('institution_health')): ?><a href="?view=institution_health" class="nav-item <?php echo $view === 'institution_health' ? 'active' : ''; ?>">🏦 INSTITUTIONS</a><?php endif; ?>
+        <?php if (canView('settlements')): ?><a href="?view=settlements" class="nav-item <?php echo $view === 'settlements' ? 'active' : ''; ?>">📤 SETTLEMENTS</a><?php endif; ?>
+        <?php if (canView('regulatory')): ?><a href="?view=regulatory" class="nav-item regulator <?php echo $view === 'regulatory' ? 'active' : ''; ?>">🏛️ REGULATORY</a><?php endif; ?>
+        <?php if (canView('audit')): ?><a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">📝 AUDIT</a><?php endif; ?>
+        <?php if (canView('fee_breakdown') && hasFinancialAccess()): ?><a href="?view=fee_breakdown" class="nav-item finance <?php echo $view === 'fee_breakdown' ? 'active' : ''; ?>">📊 FEES</a><?php endif; ?>
+        <?php if (canView('invoices')): ?><a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">💰 INVOICES</a><?php endif; ?>
+        <?php if (canView('all_tables') && $isSuperAdmin): ?><a href="?view=all_tables" class="nav-item <?php echo $view === 'all_tables' ? 'active' : ''; ?>">📋 TABLES</a><?php endif; ?>
     </nav>
 
     <main class="admin-content">
+
         <!-- ============================================================ -->
         <!-- DASHBOARD VIEW -->
         <!-- ============================================================ -->
@@ -1034,78 +885,93 @@ if (!isset($institutionHealth)) $institutionHealth = [];
                 <a href="?view=alerts" class="btn btn-danger btn-sm">VIEW ALERTS</a>
             </div>
             <div style="font-size:0.65rem; color:#666;">
-                <?php echo $alertCounts['stuck_holds']; ?> stuck holds ·
-                <?php echo $alertCounts['expired_identity_swaps']; ?> expired identity swaps ·
-                <?php echo $alertCounts['stuck_cashouts']; ?> stuck cashouts ·
-                <?php echo $alertCounts['failed_destinations']; ?> failed destinations
+                <?php echo $alertCounts['stuck_holds']; ?> stuck holds · <?php echo $alertCounts['expired_identity_swaps']; ?> expired identity swaps ·
+                <?php echo $alertCounts['stuck_cashouts']; ?> stuck cashouts · <?php echo $alertCounts['failed_destinations']; ?> failed destinations
             </div>
         </div>
         <?php endif; ?>
 
+        <?php if ($isCustomerSupport): ?>
+        <div class="card" style="border-color:#20c997;">
+            <div class="card-header"><span class="card-title" style="color:#20c997;">📞 Quick client lookup</span></div>
+            <p style="font-size:0.75rem; margin-bottom:10px;">Search by the customer's phone number, national ID, or reference number.</p>
+            <a href="?view=client_lookup" class="btn btn-support">GO TO CLIENT LOOKUP</a>
+        </div>
+        <?php else: ?>
         <div class="metrics-grid">
-            <div class="metric-card">
-                <div class="metric-label">Total Swaps</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_swaps'] ?? 0); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Total Users</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_users'] ?? 0); ?></div>
-            </div>
-            <div class="metric-card" style="border-color: #856404;">
-                <div class="metric-label">Pending Settlements</div>
-                <div class="metric-value"><?php echo number_format($metrics['pending_settlements'] ?? 0); ?></div>
-            </div>
-            <div class="metric-card" style="border-color: #28a745;">
-                <div class="metric-label">Total Fees</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_fees'] ?? 0, 2); ?></div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">24h Swaps</div>
-                <div class="metric-value"><?php echo number_format($metrics['recent_swaps_24h'] ?? 0); ?></div>
-            </div>
-            <div class="metric-card" style="border-color: #6f42c1;">
-                <div class="metric-label">Multi-Destination</div>
-                <div class="metric-value"><?php echo number_format($metrics['multi_destination_count'] ?? 0); ?></div>
-            </div>
-            <div class="metric-card" style="border-color: #17a2b8;">
-                <div class="metric-label">Multi-Source</div>
-                <div class="metric-value"><?php echo number_format($metrics['multi_source_count'] ?? 0); ?></div>
-            </div>
-            <div class="metric-card" style="border-color: #8B0000;">
-                <div class="metric-label">Pending Identity</div>
-                <div class="metric-value"><?php echo number_format($metrics['identity_swaps_pending'] ?? 0); ?></div>
-            </div>
+            <div class="metric-card"><div class="metric-label">Total Swaps</div><div class="metric-value"><?php echo number_format($metrics['total_swaps'] ?? 0); ?></div></div>
+            <div class="metric-card"><div class="metric-label">Total Users</div><div class="metric-value"><?php echo number_format($metrics['total_users'] ?? 0); ?></div></div>
+            <div class="metric-card" style="border-color: #856404;"><div class="metric-label">Pending Settlements</div><div class="metric-value"><?php echo number_format($metrics['pending_settlements'] ?? 0); ?></div></div>
+            <div class="metric-card" style="border-color: #28a745;"><div class="metric-label">Total Fees</div><div class="metric-value"><?php echo number_format($metrics['total_fees'] ?? 0, 2); ?></div></div>
+            <div class="metric-card"><div class="metric-label">24h Swaps</div><div class="metric-value"><?php echo number_format($metrics['recent_swaps_24h'] ?? 0); ?></div></div>
+            <div class="metric-card" style="border-color: #6f42c1;"><div class="metric-label">Multi-Destination</div><div class="metric-value"><?php echo number_format($metrics['multi_destination_count'] ?? 0); ?></div></div>
+            <div class="metric-card" style="border-color: #17a2b8;"><div class="metric-label">Multi-Source</div><div class="metric-value"><?php echo number_format($metrics['multi_source_count'] ?? 0); ?></div></div>
+            <div class="metric-card" style="border-color: #8B0000;"><div class="metric-label">Pending Identity</div><div class="metric-value"><?php echo number_format($metrics['identity_swaps_pending'] ?? 0); ?></div></div>
         </div>
 
-        <!-- Quick actions -->
         <div class="card">
-            <div class="card-header">
-                <span class="card-title">⚡ Quick Actions</span>
-            </div>
+            <div class="card-header"><span class="card-title">⚡ Quick Actions</span></div>
             <div style="display:flex; gap:12px; flex-wrap:wrap;">
-                <?php if (hasPermission('generate_invoice')): ?>
-                <a href="?action=generate_invoice" class="btn btn-finance">💰 Generate Invoice</a>
-                <?php endif; ?>
-                <?php if (canView('all_tables') && $isSuperAdmin): ?>
-                <a href="?view=all_tables" class="btn">📋 View All Tables</a>
-                <?php endif; ?>
-                <?php if (canView('alerts')): ?>
-                <a href="?view=alerts" class="btn btn-danger">🚨 View Alerts</a>
-                <?php endif; ?>
-                <?php if (canView('institution_health')): ?>
-                <a href="?view=institution_health" class="btn">🏦 Institution Health</a>
-                <?php endif; ?>
+                <?php if (canView('invoices')): ?><a href="?view=invoices" class="btn btn-success">💰 View Invoices</a><?php endif; ?>
+                <?php if (canView('all_tables') && $isSuperAdmin): ?><a href="?view=all_tables" class="btn">📋 View All Tables</a><?php endif; ?>
+                <?php if (canView('alerts')): ?><a href="?view=alerts" class="btn btn-danger">🚨 View Alerts</a><?php endif; ?>
+                <?php if (canView('institution_health')): ?><a href="?view=institution_health" class="btn">🏦 Institution Health</a><?php endif; ?>
+                <?php if (canView('client_lookup')): ?><a href="?view=client_lookup" class="btn btn-support">📞 Client Lookup</a><?php endif; ?>
             </div>
-            <?php if (!empty($success)): ?>
-            <div style="margin-top:12px; padding:12px; background:#d4edda; color:#155724; border:2px solid #c3e6cb; border-radius:4px;">
-                ✅ <?php echo safeHtml($success); ?>
-            </div>
-            <?php endif; ?>
         </div>
+        <?php endif; ?>
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- ALERTS / EXCEPTIONS VIEW -->
+        <!-- CLIENT LOOKUP VIEW -->
+        <!-- ============================================================ -->
+        <?php if ($view === 'client_lookup' && canView('client_lookup')): ?>
+        <div class="content-header">
+            <h1>📞 CLIENT LOOKUP</h1>
+            <div class="timestamp">Search by the customer's phone number, national ID, or any reference they give you</div>
+            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
+        </div>
+
+        <form method="get" class="search-box" style="margin-bottom:20px;">
+            <input type="hidden" name="view" value="client_lookup">
+            <input type="text" name="lookup" placeholder="Phone number, national ID, or reference..." value="<?php echo safeHtml($lookup); ?>" autofocus>
+            <button type="submit" class="btn btn-support">SEARCH</button>
+        </form>
+
+        <?php if ($lookup === ''): ?>
+        <div class="card"><div class="empty-state"><div class="icon">📞</div><p>Enter what the customer gave you - a phone number, national ID, or a reference code from a message they received.</p></div></div>
+        <?php elseif (empty($lookupResults)): ?>
+        <div class="card"><div class="empty-state"><div class="icon">🔍</div><p>No matches found for "<?php echo safeHtml($lookup); ?>". Double-check the number, or ask the customer for the reference from their confirmation SMS.</p></div></div>
+        <?php else: ?>
+        <?php foreach ($lookupResults as $r): ?>
+        <div class="card lookup-card">
+            <div class="card-header">
+                <span class="card-title"><?php echo safeHtml($r['kind']); ?> — <?php echo safeHtml($r['reference']); ?></span>
+                <?php
+                $st = strtolower($r['status'] ?? '');
+                $cls = match(true) {
+                    str_contains($st, 'complet') || str_contains($st, 'success') || str_contains($st, 'debited') => 'success',
+                    str_contains($st, 'pending') || str_contains($st, 'verified') => 'pending',
+                    str_contains($st, 'fail') || str_contains($st, 'expired') || str_contains($st, 'cancel') => 'failed',
+                    default => 'info'
+                };
+                ?>
+                <span class="status status-<?php echo $cls; ?>"><?php echo safeHtml($r['status']); ?></span>
+            </div>
+            <div style="font-size:0.75rem; display:grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap:8px;">
+                <div><strong>Amount:</strong> <?php echo number_format((float)$r['amount'], 2); ?> <?php echo safeHtml($r['currency']); ?></div>
+                <div><strong>Route:</strong> <?php echo safeHtml($r['institution']); ?></div>
+                <?php if (!empty($r['identity'])): ?><div><strong>Identity:</strong> <?php echo safeHtml($r['identity']); ?></div><?php endif; ?>
+                <div><strong>Date:</strong> <?php echo safeHtml(date('Y-m-d H:i', strtotime($r['created_at'] ?? 'now'))); ?></div>
+            </div>
+            <div class="lookup-next-action">👉 <?php echo safeHtml($r['next_action']); ?></div>
+        </div>
+        <?php endforeach; ?>
+        <?php endif; ?>
+        <?php endif; ?>
+
+        <!-- ============================================================ -->
+        <!-- ALERTS VIEW -->
         <!-- ============================================================ -->
         <?php if ($view === 'alerts' && canView('alerts')): ?>
         <div class="content-header">
@@ -1113,141 +979,46 @@ if (!isset($institutionHealth)) $institutionHealth = [];
             <div class="timestamp">Things that need a human to look at them, not just raw rows</div>
             <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
         </div>
-
         <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
-            <div class="metric-card" style="border-color:#dc3545;">
-                <div class="metric-label">Stuck Holds (&gt;24h)</div>
-                <div class="metric-value" style="color:#dc3545;"><?php echo number_format($alertCounts['stuck_holds']); ?></div>
-            </div>
-            <div class="metric-card" style="border-color:#856404;">
-                <div class="metric-label">Expired Identity Swaps</div>
-                <div class="metric-value" style="color:#856404;"><?php echo number_format($alertCounts['expired_identity_swaps']); ?></div>
-            </div>
-            <div class="metric-card" style="border-color:#856404;">
-                <div class="metric-label">Stuck Cashouts</div>
-                <div class="metric-value" style="color:#856404;"><?php echo number_format($alertCounts['stuck_cashouts']); ?></div>
-            </div>
-            <div class="metric-card" style="border-color:#dc3545;">
-                <div class="metric-label">Failed Destinations</div>
-                <div class="metric-value" style="color:#dc3545;"><?php echo number_format($alertCounts['failed_destinations']); ?></div>
-            </div>
+            <div class="metric-card" style="border-color:#dc3545;"><div class="metric-label">Stuck Holds (&gt;24h)</div><div class="metric-value" style="color:#dc3545;"><?php echo number_format($alertCounts['stuck_holds']); ?></div></div>
+            <div class="metric-card" style="border-color:#856404;"><div class="metric-label">Expired Identity Swaps</div><div class="metric-value" style="color:#856404;"><?php echo number_format($alertCounts['expired_identity_swaps']); ?></div></div>
+            <div class="metric-card" style="border-color:#856404;"><div class="metric-label">Stuck Cashouts</div><div class="metric-value" style="color:#856404;"><?php echo number_format($alertCounts['stuck_cashouts']); ?></div></div>
+            <div class="metric-card" style="border-color:#dc3545;"><div class="metric-label">Failed Destinations</div><div class="metric-value" style="color:#dc3545;"><?php echo number_format($alertCounts['failed_destinations']); ?></div></div>
         </div>
-
         <?php if ($totalAlerts === 0): ?>
-        <div class="card">
-            <div class="empty-state">
-                <div class="icon">✅</div>
-                <p>Nothing needs attention right now.</p>
-            </div>
-        </div>
+        <div class="card"><div class="empty-state"><div class="icon">✅</div><p>Nothing needs attention right now.</p></div></div>
         <?php endif; ?>
-
         <?php if (!empty($alerts['stuck_holds'])): ?>
-        <div class="card alert-section">
-            <div class="card-header">
-                <span class="card-title" style="color:#dc3545;">🔒 Stuck Holds (non-terminal &gt;24h)</span>
-                <span class="card-badge danger"><?php echo count($alerts['stuck_holds']); ?></span>
-            </div>
-            <div class="table-responsive">
-                <table>
-                    <thead><tr><th>Hold Ref</th><th>Swap Ref</th><th>Institution</th><th>Asset</th><th>Amount</th><th>Status</th><th>Age</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($alerts['stuck_holds'] as $h): ?>
-                        <tr>
-                            <td><?php echo safeHtml(substr($h['hold_reference'] ?? '', 0, 20)); ?></td>
-                            <td><?php echo safeHtml(substr($h['swap_reference'] ?? '', 0, 20)); ?></td>
-                            <td><?php echo safeHtml($h['institution'] ?? 'N/A'); ?></td>
-                            <td><?php echo safeHtml($h['asset_type'] ?? ''); ?></td>
-                            <td><?php echo number_format((float)($h['amount'] ?? 0), 2); ?> <?php echo safeHtml($h['currency'] ?? 'BWP'); ?></td>
-                            <td><span class="status status-warning"><?php echo safeHtml($h['status'] ?? ''); ?></span></td>
-                            <td><?php
-                                $ageHours = (time() - strtotime($h['created_at'] ?? 'now')) / 3600;
-                                echo round($ageHours, 1) . 'h';
-                            ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
+        <div class="card"><div class="card-header"><span class="card-title" style="color:#dc3545;">🔒 Stuck Holds (non-terminal &gt;24h)</span><span class="card-badge danger"><?php echo count($alerts['stuck_holds']); ?></span></div>
+        <div class="table-responsive"><table><thead><tr><th>Hold Ref</th><th>Swap Ref</th><th>Institution</th><th>Asset</th><th>Amount</th><th>Status</th><th>Age</th></tr></thead><tbody>
+        <?php foreach ($alerts['stuck_holds'] as $h): ?>
+        <tr><td><?php echo safeHtml(substr($h['hold_reference'] ?? '', 0, 20)); ?></td><td><?php echo safeHtml(substr($h['swap_reference'] ?? '', 0, 20)); ?></td><td><?php echo safeHtml($h['institution'] ?? 'N/A'); ?></td><td><?php echo safeHtml($h['asset_type'] ?? ''); ?></td><td><?php echo number_format((float)($h['amount'] ?? 0), 2); ?> <?php echo safeHtml($h['currency'] ?? 'BWP'); ?></td><td><span class="status status-warning"><?php echo safeHtml($h['status'] ?? ''); ?></span></td><td><?php echo round((time() - strtotime($h['created_at'] ?? 'now')) / 3600, 1); ?>h</td></tr>
+        <?php endforeach; ?>
+        </tbody></table></div></div>
         <?php endif; ?>
-
         <?php if (!empty($alerts['expired_identity_swaps'])): ?>
-        <div class="card alert-section">
-            <div class="card-header">
-                <span class="card-title" style="color:#856404;">🪪 Expired Identity Swaps (not yet cancelled)</span>
-                <span class="card-badge warning"><?php echo count($alerts['expired_identity_swaps']); ?></span>
-            </div>
-            <div class="table-responsive">
-                <table>
-                    <thead><tr><th>Swap Ref</th><th>Institution</th><th>Identity</th><th>Amount</th><th>Expired At</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($alerts['expired_identity_swaps'] as $s): ?>
-                        <tr>
-                            <td><?php echo safeHtml(substr($s['swap_reference'] ?? '', 0, 20)); ?></td>
-                            <td><?php echo safeHtml($s['source_institution'] ?? 'N/A'); ?></td>
-                            <td><?php echo safeHtml($s['identity_type'] ?? ''); ?>: <?php echo safeHtml($s['identity_value'] ?? ''); ?></td>
-                            <td><?php echo number_format((float)($s['amount'] ?? 0), 2); ?> <?php echo safeHtml($s['currency'] ?? 'BWP'); ?></td>
-                            <td><?php echo safeHtml($s['hold_expires_at'] ?? ''); ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
+        <div class="card"><div class="card-header"><span class="card-title" style="color:#856404;">🪪 Expired Identity Swaps (not yet cancelled)</span><span class="card-badge warning"><?php echo count($alerts['expired_identity_swaps']); ?></span></div>
+        <div class="table-responsive"><table><thead><tr><th>Swap Ref</th><th>Institution</th><th>Identity</th><th>Amount</th><th>Expired At</th></tr></thead><tbody>
+        <?php foreach ($alerts['expired_identity_swaps'] as $s): ?>
+        <tr><td><?php echo safeHtml(substr($s['swap_reference'] ?? '', 0, 20)); ?></td><td><?php echo safeHtml($s['source_institution'] ?? 'N/A'); ?></td><td><?php echo safeHtml($s['identity_type'] ?? ''); ?>: <?php echo safeHtml($s['identity_value'] ?? ''); ?></td><td><?php echo number_format((float)($s['amount'] ?? 0), 2); ?> <?php echo safeHtml($s['currency'] ?? 'BWP'); ?></td><td><?php echo safeHtml($s['hold_expires_at'] ?? ''); ?></td></tr>
+        <?php endforeach; ?>
+        </tbody></table></div></div>
         <?php endif; ?>
-
         <?php if (!empty($alerts['stuck_cashouts'])): ?>
-        <div class="card alert-section">
-            <div class="card-header">
-                <span class="card-title" style="color:#856404;">💵 Expired, Unclaimed Cashouts</span>
-                <span class="card-badge warning"><?php echo count($alerts['stuck_cashouts']); ?></span>
-            </div>
-            <div class="table-responsive">
-                <table>
-                    <thead><tr><th>Swap Ref</th><th>Source</th><th>Provider</th><th>Phone</th><th>Amount</th><th>Expired</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($alerts['stuck_cashouts'] as $c): ?>
-                        <tr>
-                            <td><?php echo safeHtml(substr($c['swap_reference'] ?? '', 0, 20)); ?></td>
-                            <td><?php echo safeHtml($c['source_institution'] ?? 'N/A'); ?></td>
-                            <td><?php echo safeHtml($c['cashout_provider'] ?? 'N/A'); ?></td>
-                            <td><?php echo safeHtml($c['client_phone'] ?? 'N/A'); ?></td>
-                            <td><?php echo number_format((float)($c['amount'] ?? 0), 2); ?> <?php echo safeHtml($c['currency'] ?? 'BWP'); ?></td>
-                            <td><?php echo safeHtml($c['code_expiry'] ?? ''); ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
+        <div class="card"><div class="card-header"><span class="card-title" style="color:#856404;">💵 Expired, Unclaimed Cashouts</span><span class="card-badge warning"><?php echo count($alerts['stuck_cashouts']); ?></span></div>
+        <div class="table-responsive"><table><thead><tr><th>Swap Ref</th><th>Source</th><th>Provider</th><th>Phone</th><th>Amount</th><th>Expired</th></tr></thead><tbody>
+        <?php foreach ($alerts['stuck_cashouts'] as $c): ?>
+        <tr><td><?php echo safeHtml(substr($c['swap_reference'] ?? '', 0, 20)); ?></td><td><?php echo safeHtml($c['source_institution'] ?? 'N/A'); ?></td><td><?php echo safeHtml($c['cashout_provider'] ?? 'N/A'); ?></td><td><?php echo safeHtml($c['client_phone'] ?? 'N/A'); ?></td><td><?php echo number_format((float)($c['amount'] ?? 0), 2); ?> <?php echo safeHtml($c['currency'] ?? 'BWP'); ?></td><td><?php echo safeHtml($c['code_expiry'] ?? ''); ?></td></tr>
+        <?php endforeach; ?>
+        </tbody></table></div></div>
         <?php endif; ?>
-
         <?php if (!empty($alerts['failed_destinations'])): ?>
-        <div class="card alert-section">
-            <div class="card-header">
-                <span class="card-title" style="color:#dc3545;">❌ Failed Destinations (inside multi-destination swaps)</span>
-                <span class="card-badge danger"><?php echo count($alerts['failed_destinations']); ?></span>
-            </div>
-            <div class="table-responsive">
-                <table>
-                    <thead><tr><th>Parent Ref</th><th>Source</th><th>Type</th><th>Target</th><th>Amount</th><th>Error</th><th>When</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($alerts['failed_destinations'] as $f): ?>
-                        <tr>
-                            <td><?php echo safeHtml(substr($f['reference'] ?? '', 0, 20)); ?></td>
-                            <td><?php echo safeHtml($f['source_institution'] ?? 'N/A'); ?></td>
-                            <td><span class="status <?php echo $f['type'] === 'identity' ? 'status-identity' : 'status-info'; ?>"><?php echo safeHtml(strtoupper($f['type'])); ?></span></td>
-                            <td><?php echo safeHtml($f['identity_value'] ?? $f['destination_institution'] ?? 'N/A'); ?></td>
-                            <td><?php echo number_format((float)($f['amount'] ?? 0), 2); ?></td>
-                            <td style="color:#dc3545; max-width:280px;"><?php echo safeHtml($f['error']); ?></td>
-                            <td><?php echo safeHtml(date('Y-m-d H:i', strtotime($f['created_at'] ?? 'now'))); ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
+        <div class="card"><div class="card-header"><span class="card-title" style="color:#dc3545;">❌ Failed Destinations</span><span class="card-badge danger"><?php echo count($alerts['failed_destinations']); ?></span></div>
+        <div class="table-responsive"><table><thead><tr><th>Parent Ref</th><th>Source</th><th>Type</th><th>Target</th><th>Amount</th><th>Error</th><th>When</th></tr></thead><tbody>
+        <?php foreach ($alerts['failed_destinations'] as $f): ?>
+        <tr><td><?php echo safeHtml(substr($f['reference'] ?? '', 0, 20)); ?></td><td><?php echo safeHtml($f['source_institution'] ?? 'N/A'); ?></td><td><span class="status <?php echo $f['type'] === 'identity' ? 'status-identity' : 'status-info'; ?>"><?php echo safeHtml(strtoupper($f['type'])); ?></span></td><td><?php echo safeHtml($f['identity_value'] ?? $f['destination_institution'] ?? 'N/A'); ?></td><td><?php echo number_format((float)($f['amount'] ?? 0), 2); ?></td><td style="color:#dc3545; max-width:280px;"><?php echo safeHtml($f['error']); ?></td><td><?php echo safeHtml(date('Y-m-d H:i', strtotime($f['created_at'] ?? 'now'))); ?></td></tr>
+        <?php endforeach; ?>
+        </tbody></table></div></div>
         <?php endif; ?>
         <?php endif; ?>
 
@@ -1255,348 +1026,214 @@ if (!isset($institutionHealth)) $institutionHealth = [];
         <!-- INSTITUTION HEALTH VIEW -->
         <!-- ============================================================ -->
         <?php if ($view === 'institution_health' && canView('institution_health')): ?>
-        <div class="content-header">
-            <h1>🏦 INSTITUTION HEALTH</h1>
-            <div class="timestamp">Volume, success rate, and average time-to-debit per institution</div>
-            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
-        </div>
-
+        <div class="content-header"><h1>🏦 INSTITUTION HEALTH</h1><div class="timestamp">Volume, success rate, and average time-to-debit per institution</div><a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a></div>
         <?php if (empty($institutionHealth)): ?>
         <div class="card"><div class="empty-state"><div class="icon">📭</div><p>No institution data yet</p></div></div>
         <?php else: ?>
-        <?php foreach ($institutionHealth as $inst):
-            $rate = (float)$inst['success_rate'];
-            $barClass = $rate >= 90 ? '' : ($rate >= 70 ? 'warn' : 'bad');
-        ?>
+        <?php foreach ($institutionHealth as $inst): $rate = (float)$inst['success_rate']; $barClass = $rate >= 90 ? '' : ($rate >= 70 ? 'warn' : 'bad'); ?>
         <div class="card">
-            <div class="card-header">
-                <span class="card-title"><?php echo safeHtml($inst['institution']); ?></span>
-                <span class="card-badge <?php echo $rate >= 90 ? 'success' : ($rate >= 70 ? 'warning' : 'danger'); ?>"><?php echo $rate; ?>% SUCCESS</span>
-            </div>
+            <div class="card-header"><span class="card-title"><?php echo safeHtml($inst['institution']); ?></span><span class="card-badge <?php echo $rate >= 90 ? 'success' : ($rate >= 70 ? 'warning' : 'danger'); ?>"><?php echo $rate; ?>% SUCCESS</span></div>
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:12px; margin-bottom:12px; font-size:0.7rem;">
                 <div><strong>Total Txns:</strong> <?php echo number_format($inst['total']); ?></div>
                 <div style="color:#28a745;"><strong>Successful:</strong> <?php echo number_format($inst['successful']); ?></div>
                 <div style="color:#856404;"><strong>Pending:</strong> <?php echo number_format($inst['pending']); ?></div>
                 <div style="color:#dc3545;"><strong>Failed:</strong> <?php echo number_format($inst['failed']); ?></div>
                 <div><strong>Volume:</strong> <?php echo number_format((float)$inst['volume'], 2); ?></div>
-                <div>
-                    <strong>Avg time-to-debit:</strong>
-                    <?php
-                        if ($inst['avg_latency_seconds'] !== null) {
-                            $secs = $inst['avg_latency_seconds'];
-                            echo $secs < 60 ? round($secs, 1) . 's' : round($secs / 60, 1) . 'm';
-                            echo ' (n=' . $inst['debited_sample_size'] . ')';
-                        } else {
-                            echo 'n/a';
-                        }
-                    ?>
-                </div>
+                <div><strong>Avg time-to-debit:</strong> <?php if ($inst['avg_latency_seconds'] !== null) { $secs = $inst['avg_latency_seconds']; echo $secs < 60 ? round($secs, 1) . 's' : round($secs / 60, 1) . 'm'; echo ' (n=' . $inst['debited_sample_size'] . ')'; } else { echo 'n/a'; } ?></div>
             </div>
-            <div class="health-bar-track">
-                <div class="health-bar-fill <?php echo $barClass; ?>" style="width: <?php echo min(100, $rate); ?>%;"></div>
-            </div>
+            <div class="health-bar-track"><div class="health-bar-fill <?php echo $barClass; ?>" style="width: <?php echo min(100, $rate); ?>%;"></div></div>
         </div>
         <?php endforeach; ?>
         <?php endif; ?>
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- LIVE TRANSACTIONS VIEW - NO LIMIT, SEARCHABLE -->
+        <!-- REGULATORY VIEW -->
+        <!-- ============================================================ -->
+        <?php if ($view === 'regulatory' && canView('regulatory')): ?>
+        <div class="content-header"><h1>🏛️ REGULATORY OVERSIGHT</h1><div class="timestamp">Net positions between institutions and pending settlements</div><a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a></div>
+
+        <div class="card">
+            <div class="card-header"><span class="card-title">Institution Success Rates (Summary)</span></div>
+            <?php if (empty($institutionHealth)): ?>
+            <div class="empty-state">No data yet</div>
+            <?php else: ?>
+            <div class="table-responsive"><table><thead><tr><th>Institution</th><th>Total</th><th>Success Rate</th><th>Volume</th></tr></thead><tbody>
+            <?php foreach ($institutionHealth as $inst): ?>
+            <tr><td><?php echo safeHtml($inst['institution']); ?></td><td><?php echo number_format($inst['total']); ?></td><td><?php echo $inst['success_rate']; ?>%</td><td><?php echo number_format((float)$inst['volume'], 2); ?></td></tr>
+            <?php endforeach; ?>
+            </tbody></table></div>
+            <?php endif; ?>
+        </div>
+
+        <div class="card">
+            <div class="card-header"><span class="card-title">Net Positions</span><span class="card-badge"><?php echo count($netPositions); ?> RECORDS</span></div>
+            <?php if (empty($netPositions)): ?>
+            <div class="empty-state">No net positions recorded</div>
+            <?php else: ?>
+            <div class="table-responsive"><table><thead><tr><?php foreach (array_keys($netPositions[0]) as $col): ?><th><?php echo safeHtml($col); ?></th><?php endforeach; ?></tr></thead><tbody>
+            <?php foreach ($netPositions as $row): ?>
+            <tr><?php foreach ($row as $val): ?><td><?php echo safeHtml(is_array($val) ? json_encode($val) : $val); ?></td><?php endforeach; ?></tr>
+            <?php endforeach; ?>
+            </tbody></table></div>
+            <?php endif; ?>
+        </div>
+
+        <div class="card">
+            <div class="card-header"><span class="card-title">Pending Settlements</span><span class="card-badge warning"><?php echo count($pendingSettlements); ?> RECORDS</span></div>
+            <?php if (empty($pendingSettlements)): ?>
+            <div class="empty-state">No pending settlements</div>
+            <?php else: ?>
+            <div class="table-responsive"><table><thead><tr><?php foreach (array_keys($pendingSettlements[0]) as $col): ?><th><?php echo safeHtml($col); ?></th><?php endforeach; ?></tr></thead><tbody>
+            <?php foreach ($pendingSettlements as $row): ?>
+            <tr><?php foreach ($row as $val): ?><td><?php echo safeHtml(is_array($val) ? json_encode($val) : $val); ?></td><?php endforeach; ?></tr>
+            <?php endforeach; ?>
+            </tbody></table></div>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
+
+        <!-- ============================================================ -->
+        <!-- AUDIT VIEW -->
+        <!-- ============================================================ -->
+        <?php if ($view === 'audit' && canView('audit')): ?>
+        <div class="content-header"><h1>📝 AUDIT LOG</h1><div class="timestamp">Most recent 200 entries, ordered by internal ID</div><a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a></div>
+        <div class="card">
+            <div class="card-header"><span class="card-title">Audit Trail</span><span class="card-badge"><?php echo count($auditRows); ?> RECORDS</span></div>
+            <?php if (empty($auditRows)): ?>
+            <div class="empty-state"><div class="icon">📭</div><p>No audit records found</p></div>
+            <?php else: ?>
+            <div class="table-responsive"><table><thead><tr><?php foreach (array_keys($auditRows[0]) as $col): ?><th><?php echo safeHtml($col); ?></th><?php endforeach; ?></tr></thead><tbody>
+            <?php foreach ($auditRows as $row): ?>
+            <tr><?php foreach ($row as $val): $s = is_array($val) ? json_encode($val) : (string)$val; ?><td title="<?php echo safeHtml($s); ?>"><?php echo safeHtml(strlen($s) > 60 ? substr($s, 0, 60) . '…' : $s); ?></td><?php endforeach; ?></tr>
+            <?php endforeach; ?>
+            </tbody></table></div>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
+
+        <!-- ============================================================ -->
+        <!-- INVOICES VIEW -->
+        <!-- ============================================================ -->
+        <?php if ($view === 'invoices' && canView('invoices')): ?>
+        <div class="content-header"><h1>💰 INVOICES</h1><div class="timestamp">Fee invoices generated through settlement</div><a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a></div>
+        <div class="card">
+            <div class="card-header"><span class="card-title">Fee Invoice Messages</span><span class="card-badge success"><?php echo count($invoiceMessages); ?> RECORDS</span></div>
+            <?php if (empty($invoiceMessages)): ?>
+            <div class="empty-state"><div class="icon">📭</div><p>No invoice messages found.</p></div>
+            <?php else: ?>
+            <div class="table-responsive"><table><thead><tr><th>Message ID</th><th>Swap Reference</th><th>Source</th><th>Destination</th><th>Created</th></tr></thead><tbody>
+            <?php foreach ($invoiceMessages as $inv): ?>
+            <tr>
+                <td><?php echo safeHtml(substr($inv['message_id'] ?? '', 0, 16)); ?></td>
+                <td><?php echo safeHtml(substr($inv['swap_reference'] ?? 'N/A', 0, 20)); ?></td>
+                <td><?php echo safeHtml($inv['source_institution'] ?? 'N/A'); ?></td>
+                <td><?php echo safeHtml($inv['destination_institution'] ?? 'N/A'); ?></td>
+                <td><?php echo safeHtml(date('Y-m-d H:i', strtotime($inv['created_at'] ?? 'now'))); ?></td>
+            </tr>
+            <?php endforeach; ?>
+            </tbody></table></div>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
+
+        <!-- ============================================================ -->
+        <!-- LIVE TRANSACTIONS VIEW -->
         <!-- ============================================================ -->
         <?php if ($view === 'live_transactions' && canView('live_transactions')): ?>
         <div class="content-header">
             <h1><span class="live-indicator"></span> 🔴 LIVE TRANSACTIONS</h1>
-            <div class="timestamp">
-                <?php echo date('Y-m-d H:i:s'); ?>
-                <span style="margin-left:16px; font-size:0.65rem; color:#666;">
-                    <?php echo count($liveTransactions); ?> transactions
-                </span>
-                <button class="auto-refresh-toggle active" onclick="toggleAutoRefresh()" id="refreshToggle">🔄 AUTO-REFRESH ON</button>
-            </div>
+            <div class="timestamp"><?php echo date('Y-m-d H:i:s'); ?><span style="margin-left:16px; font-size:0.65rem; color:#666;"><?php echo count($liveTransactions); ?> transactions</span><button class="auto-refresh-toggle active" onclick="toggleAutoRefresh()" id="refreshToggle">🔄 AUTO-REFRESH ON</button></div>
             <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
         </div>
-
         <form method="get" class="search-box" style="margin-bottom:16px;">
             <input type="hidden" name="view" value="live_transactions">
             <input type="text" name="search" placeholder="Search reference, institution, status..." value="<?php echo safeHtml($search); ?>">
             <button type="submit" class="btn btn-primary btn-sm">SEARCH</button>
-            <?php if ($search !== ''): ?>
-            <a href="?view=live_transactions" class="btn btn-sm">CLEAR</a>
-            <?php endif; ?>
+            <?php if ($search !== ''): ?><a href="?view=live_transactions" class="btn btn-sm">CLEAR</a><?php endif; ?>
         </form>
-
-        <!-- Live Stats -->
         <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));">
-            <div class="metric-card">
-                <div class="metric-label">Total (24h)</div>
-                <div class="metric-value"><?php echo number_format($liveStats['total'] ?? 0); ?></div>
-            </div>
-            <div class="metric-card" style="border-color:#28a745;">
-                <div class="metric-label">✅ Completed</div>
-                <div class="metric-value" style="color:#28a745;"><?php echo number_format($liveStats['completed'] ?? 0); ?></div>
-            </div>
-            <div class="metric-card" style="border-color:#856404;">
-                <div class="metric-label">⏳ Pending</div>
-                <div class="metric-value" style="color:#856404;"><?php echo number_format($liveStats['pending'] ?? 0); ?></div>
-            </div>
-            <div class="metric-card" style="border-color:#dc3545;">
-                <div class="metric-label">❌ Failed</div>
-                <div class="metric-value" style="color:#dc3545;"><?php echo number_format($liveStats['failed'] ?? 0); ?></div>
-            </div>
-            <div class="metric-card" style="border-color:#17a2b8;">
-                <div class="metric-label">💰 Volume</div>
-                <div class="metric-value"><?php echo number_format($liveStats['total_amount'] ?? 0, 2); ?></div>
-            </div>
+            <div class="metric-card"><div class="metric-label">Total (24h)</div><div class="metric-value"><?php echo number_format($liveStats['total'] ?? 0); ?></div></div>
+            <div class="metric-card" style="border-color:#28a745;"><div class="metric-label">✅ Completed</div><div class="metric-value" style="color:#28a745;"><?php echo number_format($liveStats['completed'] ?? 0); ?></div></div>
+            <div class="metric-card" style="border-color:#856404;"><div class="metric-label">⏳ Pending</div><div class="metric-value" style="color:#856404;"><?php echo number_format($liveStats['pending'] ?? 0); ?></div></div>
+            <div class="metric-card" style="border-color:#dc3545;"><div class="metric-label">❌ Failed</div><div class="metric-value" style="color:#dc3545;"><?php echo number_format($liveStats['failed'] ?? 0); ?></div></div>
+            <div class="metric-card" style="border-color:#17a2b8;"><div class="metric-label">💰 Volume</div><div class="metric-value"><?php echo number_format($liveStats['total_amount'] ?? 0, 2); ?></div></div>
         </div>
-
         <div class="card">
-            <div class="card-header">
-                <span class="card-title">📋 Live Transaction Feed</span>
-                <span class="card-badge" id="liveCount"><?php echo count($liveTransactions); ?> RECORDS</span>
-            </div>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>#</th>
-                            <th>Reference</th>
-                            <th>Type</th>
-                            <th>Amount</th>
-                            <th>Currency</th>
-                            <th>Status</th>
-                            <th>Source</th>
-                            <th>Destination</th>
-                            <th>Fee</th>
-                            <th>Created</th>
-                        </tr>
-                    </thead>
-                    <tbody id="liveTransactionsBody">
-                        <?php if (empty($liveTransactions)): ?>
-                        <tr><td colspan="10" class="empty-state">No live transactions found<?php echo $search !== '' ? ' for "' . safeHtml($search) . '"' : ''; ?></td></tr>
-                        <?php else: ?>
-                        <?php foreach ($liveTransactions as $index => $row): ?>
-                        <tr>
-                            <td><?php echo $index + 1; ?></td>
-                            <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['reference'] ?? 'N/A', 0, 12)); ?></td>
-                            <td>
-                                <?php
-                                $type = $row['swap_type'] ?? 'STANDARD';
-                                $typeClass = match($type) {
-                                    'MULTI_DESTINATION' => 'status-info',
-                                    'MULTI_SOURCE' => 'status-processing',
-                                    'IDENTITY' => 'status-identity',
-                                    'CASHOUT' => 'status-warning',
-                                    default => 'status-info'
-                                };
-                                ?>
-                                <span class="status <?php echo $typeClass; ?>"><?php echo safeHtml($type); ?></span>
-                            </td>
-                            <td><strong><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></strong></td>
-                            <td><?php echo safeHtml($row['currency'] ?? 'BWP'); ?></td>
-                            <td>
-                                <?php
-                                $status = strtolower($row['status'] ?? 'pending');
-                                $class = match(true) {
-                                    str_contains($status, 'complet') || str_contains($status, 'success') || str_contains($status, 'debited') => 'success',
-                                    str_contains($status, 'pending') || str_contains($status, 'sent') || str_contains($status, 'processing') => 'pending',
-                                    str_contains($status, 'fail') || str_contains($status, 'error') || str_contains($status, 'expired') => 'failed',
-                                    default => 'info'
-                                };
-                                ?>
-                                <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span>
-                            </td>
-                            <td><?php echo safeHtml($row['source_institution'] ?? 'N/A'); ?></td>
-                            <td><?php echo safeHtml($row['destination_institution'] ?? 'N/A'); ?></td>
-                            <td><?php echo number_format((float)($row['fee_amount'] ?? 0), 2); ?></td>
-                            <td><?php echo date('Y-m-d H:i:s', strtotime($row['created_at'] ?? 'now')); ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
+            <div class="card-header"><span class="card-title">📋 Live Transaction Feed</span><span class="card-badge" id="liveCount"><?php echo count($liveTransactions); ?> RECORDS</span></div>
+            <div class="table-responsive"><table><thead><tr><th>#</th><th>Reference</th><th>Type</th><th>Amount</th><th>Currency</th><th>Status</th><th>Source</th><th>Destination</th><th>Fee</th><th>Created</th></tr></thead><tbody id="liveTransactionsBody">
+            <?php if (empty($liveTransactions)): ?>
+            <tr><td colspan="10" class="empty-state">No live transactions found<?php echo $search !== '' ? ' for "' . safeHtml($search) . '"' : ''; ?></td></tr>
+            <?php else: foreach ($liveTransactions as $index => $row): $type = $row['swap_type'] ?? 'STANDARD'; $typeClass = match($type) { 'MULTI_DESTINATION' => 'status-info', 'MULTI_SOURCE' => 'status-processing', 'IDENTITY' => 'status-identity', 'CASHOUT' => 'status-warning', default => 'status-info' }; $status = strtolower($row['status'] ?? 'pending'); $class = match(true) { str_contains($status, 'complet') || str_contains($status, 'success') || str_contains($status, 'debited') => 'success', str_contains($status, 'pending') || str_contains($status, 'sent') || str_contains($status, 'processing') => 'pending', str_contains($status, 'fail') || str_contains($status, 'error') || str_contains($status, 'expired') => 'failed', default => 'info' }; ?>
+            <tr>
+                <td><?php echo $index + 1; ?></td>
+                <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['reference'] ?? 'N/A', 0, 12)); ?></td>
+                <td><span class="status <?php echo $typeClass; ?>"><?php echo safeHtml($type); ?></span></td>
+                <td><strong><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></strong></td>
+                <td><?php echo safeHtml($row['currency'] ?? 'BWP'); ?></td>
+                <td><span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span></td>
+                <td><?php echo safeHtml($row['source_institution'] ?? 'N/A'); ?></td>
+                <td><?php echo safeHtml($row['destination_institution'] ?? 'N/A'); ?></td>
+                <td><?php echo number_format((float)($row['fee_amount'] ?? 0), 2); ?></td>
+                <td><?php echo date('Y-m-d H:i:s', strtotime($row['created_at'] ?? 'now')); ?></td>
+            </tr>
+            <?php endforeach; endif; ?>
+            </tbody></table></div>
         </div>
-
         <script>
-            let autoRefresh = true;
-            let refreshInterval = null;
-
-            function toggleAutoRefresh() {
-                autoRefresh = !autoRefresh;
-                const toggle = document.getElementById('refreshToggle');
-                toggle.textContent = autoRefresh ? '🔄 AUTO-REFRESH ON' : '🔄 AUTO-REFRESH OFF';
-                toggle.classList.toggle('active');
-                if (autoRefresh) { startAutoRefresh(); }
-                else { clearInterval(refreshInterval); }
-            }
-
-            function startAutoRefresh() {
-                clearInterval(refreshInterval);
-                refreshInterval = setInterval(function() {
-                    fetch(window.location.href + (window.location.href.includes('?') ? '&' : '?') + 'ajax=1')
-                        .then(response => response.json())
-                        .then(data => {
-                            if (data.transactions) {
-                                const tbody = document.getElementById('liveTransactionsBody');
-                                let html = '';
-                                data.transactions.forEach((row, i) => {
-                                    const status = (row.status || 'pending').toLowerCase();
-                                    let cls = 'info';
-                                    if (status.includes('complet') || status.includes('success') || status.includes('debited')) cls = 'success';
-                                    else if (status.includes('pending') || status.includes('processing')) cls = 'pending';
-                                    else if (status.includes('fail') || status.includes('error')) cls = 'failed';
-                                    const type = row.swap_type || 'STANDARD';
-                                    let typeClass = 'status-info';
-                                    if (type === 'MULTI_DESTINATION') typeClass = 'status-info';
-                                    else if (type === 'MULTI_SOURCE') typeClass = 'status-processing';
-                                    else if (type === 'IDENTITY') typeClass = 'status-identity';
-                                    else if (type === 'CASHOUT') typeClass = 'status-warning';
-                                    html += `<tr>
-                                        <td>${i+1}</td>
-                                        <td>${(row.swap_reference || row.reference || 'N/A').substring(0,12)}</td>
-                                        <td><span class="status ${typeClass}">${type}</span></td>
-                                        <td><strong>${Number(row.amount || 0).toFixed(2)}</strong></td>
-                                        <td>${row.currency || 'BWP'}</td>
-                                        <td><span class="status status-${cls}">${row.status || 'pending'}</span></td>
-                                        <td>${row.source_institution || 'N/A'}</td>
-                                        <td>${row.destination_institution || 'N/A'}</td>
-                                        <td>${Number(row.fee_amount || 0).toFixed(2)}</td>
-                                        <td>${new Date(row.created_at).toLocaleString()}</td>
-                                    </tr>`;
-                                });
-                                tbody.innerHTML = html;
-                                document.getElementById('liveCount').textContent = data.transactions.length;
-                            }
-                        })
-                        .catch(e => console.error('Refresh failed:', e));
-                }, 5000);
-            }
+            let autoRefresh = true; let refreshInterval = null;
+            function toggleAutoRefresh() { autoRefresh = !autoRefresh; const toggle = document.getElementById('refreshToggle'); toggle.textContent = autoRefresh ? '🔄 AUTO-REFRESH ON' : '🔄 AUTO-REFRESH OFF'; toggle.classList.toggle('active'); if (autoRefresh) { startAutoRefresh(); } else { clearInterval(refreshInterval); } }
+            function startAutoRefresh() { clearInterval(refreshInterval); refreshInterval = setInterval(function() { fetch(window.location.href + (window.location.href.includes('?') ? '&' : '?') + 'ajax=1').then(r => r.json()).then(data => { if (data.transactions) { const tbody = document.getElementById('liveTransactionsBody'); let html = ''; data.transactions.forEach((row, i) => { const status = (row.status || 'pending').toLowerCase(); let cls = 'info'; if (status.includes('complet') || status.includes('success') || status.includes('debited')) cls = 'success'; else if (status.includes('pending') || status.includes('processing')) cls = 'pending'; else if (status.includes('fail') || status.includes('error')) cls = 'failed'; const type = row.swap_type || 'STANDARD'; let typeClass = 'status-info'; if (type === 'MULTI_DESTINATION') typeClass = 'status-info'; else if (type === 'MULTI_SOURCE') typeClass = 'status-processing'; else if (type === 'IDENTITY') typeClass = 'status-identity'; else if (type === 'CASHOUT') typeClass = 'status-warning'; html += `<tr><td>${i+1}</td><td>${(row.swap_reference || row.reference || 'N/A').substring(0,12)}</td><td><span class="status ${typeClass}">${type}</span></td><td><strong>${Number(row.amount || 0).toFixed(2)}</strong></td><td>${row.currency || 'BWP'}</td><td><span class="status status-${cls}">${row.status || 'pending'}</span></td><td>${row.source_institution || 'N/A'}</td><td>${row.destination_institution || 'N/A'}</td><td>${Number(row.fee_amount || 0).toFixed(2)}</td><td>${new Date(row.created_at).toLocaleString()}</td></tr>`; }); tbody.innerHTML = html; document.getElementById('liveCount').textContent = data.transactions.length; } }).catch(e => console.error('Refresh failed:', e)); }, 5000); }
             startAutoRefresh();
         </script>
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- RECENT SWAPS VIEW - NO LIMIT, SEARCHABLE -->
+        <!-- RECENT SWAPS VIEW -->
         <!-- ============================================================ -->
         <?php if ($view === 'recent_swaps' && canView('recent_swaps')): ?>
-        <div class="content-header">
-            <h1>🔄 RECENT SWAPS</h1>
-            <div class="timestamp">All swap transactions - complete history</div>
-            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
-        </div>
-
+        <div class="content-header"><h1>🔄 RECENT SWAPS</h1><div class="timestamp">All swap transactions - complete history</div><a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a></div>
         <form method="get" class="search-box" style="margin-bottom:16px;">
             <input type="hidden" name="view" value="recent_swaps">
             <input type="text" name="search" placeholder="Search reference, institution, status..." value="<?php echo safeHtml($search); ?>">
             <button type="submit" class="btn btn-primary btn-sm">SEARCH</button>
-            <?php if ($search !== ''): ?>
-            <a href="?view=recent_swaps" class="btn btn-sm">CLEAR</a>
-            <?php endif; ?>
+            <?php if ($search !== ''): ?><a href="?view=recent_swaps" class="btn btn-sm">CLEAR</a><?php endif; ?>
         </form>
-
         <div class="card">
-            <div class="card-header">
-                <span class="card-title">All Swaps</span>
-                <span class="card-badge"><?php echo count($recentSwaps); ?> TOTAL RECORDS</span>
-            </div>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Reference</th>
-                            <th>Type</th>
-                            <th>Amount</th>
-                            <th>Currency</th>
-                            <th>Status</th>
-                            <th>Source</th>
-                            <th>Destination</th>
-                            <th>Fee</th>
-                            <th>Created</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php if (empty($recentSwaps)): ?>
-                        <tr><td colspan="9" class="empty-state">No swaps found<?php echo $search !== '' ? ' for "' . safeHtml($search) . '"' : ''; ?></td></tr>
-                        <?php else: ?>
-                        <?php foreach ($recentSwaps as $row): ?>
-                        <tr>
-                            <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['reference'] ?? 'N/A', 0, 16)); ?></td>
-                            <td>
-                                <?php
-                                $type = $row['swap_type'] ?? 'STANDARD';
-                                $typeClass = match($type) {
-                                    'MULTI_DESTINATION' => 'status-info',
-                                    'MULTI_SOURCE' => 'status-processing',
-                                    'IDENTITY' => 'status-identity',
-                                    'CASHOUT' => 'status-warning',
-                                    default => 'status-info'
-                                };
-                                ?>
-                                <span class="status <?php echo $typeClass; ?>"><?php echo safeHtml($type); ?></span>
-                            </td>
-                            <td><strong><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></strong></td>
-                            <td><?php echo safeHtml($row['currency'] ?? 'BWP'); ?></td>
-                            <td>
-                                <?php
-                                $status = strtolower($row['status'] ?? 'pending');
-                                $class = match(true) {
-                                    str_contains($status, 'complet') || str_contains($status, 'success') => 'success',
-                                    str_contains($status, 'pending') || str_contains($status, 'processing') || str_contains($status, 'confirmation') => 'pending',
-                                    str_contains($status, 'fail') || str_contains($status, 'error') || str_contains($status, 'expired') => 'failed',
-                                    default => 'info'
-                                };
-                                ?>
-                                <span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span>
-                            </td>
-                            <td><?php echo safeHtml($row['source_institution'] ?? 'N/A'); ?></td>
-                            <td><?php echo safeHtml($row['destination_institution'] ?? 'N/A'); ?></td>
-                            <td><?php echo number_format((float)($row['fee_amount'] ?? 0), 2); ?></td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($row['created_at'] ?? 'now')); ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
+            <div class="card-header"><span class="card-title">All Swaps</span><span class="card-badge"><?php echo count($recentSwaps); ?> TOTAL RECORDS</span></div>
+            <div class="table-responsive"><table><thead><tr><th>Reference</th><th>Type</th><th>Amount</th><th>Currency</th><th>Status</th><th>Source</th><th>Destination</th><th>Fee</th><th>Created</th></tr></thead><tbody>
+            <?php if (empty($recentSwaps)): ?>
+            <tr><td colspan="9" class="empty-state">No swaps found<?php echo $search !== '' ? ' for "' . safeHtml($search) . '"' : ''; ?></td></tr>
+            <?php else: foreach ($recentSwaps as $row): $type = $row['swap_type'] ?? 'STANDARD'; $typeClass = match($type) { 'MULTI_DESTINATION' => 'status-info', 'MULTI_SOURCE' => 'status-processing', 'IDENTITY' => 'status-identity', 'CASHOUT' => 'status-warning', default => 'status-info' }; $status = strtolower($row['status'] ?? 'pending'); $class = match(true) { str_contains($status, 'complet') || str_contains($status, 'success') => 'success', str_contains($status, 'pending') || str_contains($status, 'processing') || str_contains($status, 'confirmation') => 'pending', str_contains($status, 'fail') || str_contains($status, 'error') || str_contains($status, 'expired') => 'failed', default => 'info' }; ?>
+            <tr>
+                <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['reference'] ?? 'N/A', 0, 16)); ?></td>
+                <td><span class="status <?php echo $typeClass; ?>"><?php echo safeHtml($type); ?></span></td>
+                <td><strong><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></strong></td>
+                <td><?php echo safeHtml($row['currency'] ?? 'BWP'); ?></td>
+                <td><span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span></td>
+                <td><?php echo safeHtml($row['source_institution'] ?? 'N/A'); ?></td>
+                <td><?php echo safeHtml($row['destination_institution'] ?? 'N/A'); ?></td>
+                <td><?php echo number_format((float)($row['fee_amount'] ?? 0), 2); ?></td>
+                <td><?php echo date('Y-m-d H:i', strtotime($row['created_at'] ?? 'now')); ?></td>
+            </tr>
+            <?php endforeach; endif; ?>
+            </tbody></table></div>
         </div>
         <?php endif; ?>
 
         <!-- ============================================================ -->
-        <!-- MULTI-DESTINATION VIEW - NO LIMIT -->
+        <!-- MULTI-DESTINATION VIEW -->
         <!-- ============================================================ -->
         <?php if ($view === 'multi_destination' && canView('multi_destination')): ?>
-        <div class="content-header">
-            <h1>🎯 MULTI-DESTINATION SWAPS</h1>
-            <div class="timestamp">All multi-destination swaps - complete history</div>
-            <a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a>
-        </div>
-
+        <div class="content-header"><h1>🎯 MULTI-DESTINATION SWAPS</h1><div class="timestamp">All multi-destination swaps - complete history</div><a href="?view=dashboard" style="font-size:0.7rem; color:#001B44;">← Back</a></div>
         <?php if (empty($multiDestinationSwaps)): ?>
-        <div class="card">
-            <div class="empty-state">
-                <div class="icon">📭</div>
-                <p>No multi-destination swaps found</p>
-            </div>
-        </div>
-        <?php else: ?>
-        <?php foreach ($multiDestinationSwaps as $swap):
-            $destinations = json_decode($swap['destinations_payload'] ?? '[]', true);
-            $results = json_decode($swap['results_payload'] ?? '[]', true);
-        ?>
+        <div class="card"><div class="empty-state"><div class="icon">📭</div><p>No multi-destination swaps found</p></div></div>
+        <?php else: foreach ($multiDestinationSwaps as $swap): $destinations = json_decode($swap['destinations_payload'] ?? '[]', true); $results = json_decode($swap['results_payload'] ?? '[]', true); ?>
         <div class="card" style="border-left: 6px solid <?php echo $swap['status'] === 'completed' ? '#28a745' : ($swap['status'] === 'partial' ? '#856404' : '#dc3545'); ?>;">
             <div class="card-header">
-                <span class="card-title">
-                    <?php echo safeHtml($swap['reference']); ?>
-                    <span style="font-size:0.55rem; font-weight:400; color:#666;">
-                        <?php echo date('Y-m-d H:i', strtotime($swap['created_at'])); ?>
-                    </span>
-                </span>
-                <span class="card-badge <?php echo $swap['status'] === 'completed' ? 'success' : ($swap['status'] === 'partial' ? 'warning' : 'danger'); ?>">
-                    <?php echo strtoupper($swap['status'] ?? 'UNKNOWN'); ?>
-                </span>
+                <span class="card-title"><?php echo safeHtml($swap['reference']); ?> <span style="font-size:0.55rem; font-weight:400; color:#666;"><?php echo date('Y-m-d H:i', strtotime($swap['created_at'])); ?></span></span>
+                <span class="card-badge <?php echo $swap['status'] === 'completed' ? 'success' : ($swap['status'] === 'partial' ? 'warning' : 'danger'); ?>"><?php echo strtoupper($swap['status'] ?? 'UNKNOWN'); ?></span>
             </div>
-
-            <!-- Summary -->
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:12px; font-size:0.65rem; background:#f8f9fa; padding:10px; border-radius:4px;">
                 <div><strong>Source:</strong> <?php echo safeHtml($swap['source_institution']); ?></div>
                 <div><strong>Total:</strong> <?php echo number_format((float)($swap['total_amount'] ?? 0), 2); ?> BWP</div>
@@ -1606,121 +1243,40 @@ if (!isset($institutionHealth)) $institutionHealth = [];
                 <div><strong>❌ Failed:</strong> <?php echo $swap['failed_count'] ?? 0; ?></div>
                 <div><strong>📦 Destinations:</strong> <?php echo $swap['total_destinations']; ?></div>
             </div>
-
-            <!-- Destinations Table -->
             <?php if (!empty($destinations)): ?>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>#</th>
-                            <th>Type</th>
-                            <th>Institution</th>
-                            <th>Identifier</th>
-                            <th>Amount</th>
-                            <th>Fee</th>
-                            <th>Net</th>
-                            <th>Status</th>
-                            <th>Hold Ref</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($destinations as $idx => $dest):
-                            $result = $results[$idx] ?? [];
-                            $status = $result['status'] ?? 'pending';
-                            $error = $result['error'] ?? null;
-                            $isIdentity = isset($dest['identity_type']) || isset($dest['identity_value']);
-                            $isCashout = isset($dest['delivery_method']) && $dest['delivery_method'] === 'ATM';
-                            $fee = (float)($result['fee'] ?? 0);
-                            $net = (float)($result['net_amount'] ?? $dest['amount'] ?? 0);
-                        ?>
-                        <tr>
-                            <td><?php echo $idx + 1; ?></td>
-                            <td>
-                                <?php if ($isIdentity): ?>
-                                <span class="status status-identity">IDENTITY</span>
-                                <?php elseif ($isCashout): ?>
-                                <span class="status status-warning">CASHOUT</span>
-                                <?php else: ?>
-                                <span class="status status-info">DEPOSIT</span>
-                                <?php endif; ?>
-                            </td>
-                            <td><?php echo safeHtml($dest['to_institution'] ?? $dest['destination_institution'] ?? ($isIdentity ? 'IDENTITY' : 'N/A')); ?></td>
-                            <td>
-                                <?php
-                                if ($isIdentity) {
-                                    echo safeHtml($dest['identity_type'] ?? 'national_id') . ': ' . safeHtml($dest['identity_value'] ?? 'N/A');
-                                } elseif ($isCashout) {
-                                    echo safeHtml($dest['beneficiary_phone'] ?? 'N/A');
-                                } else {
-                                    echo safeHtml($dest['destination_identifier'] ?? 'N/A');
-                                }
-                                ?>
-                            </td>
-                            <td><strong><?php echo number_format((float)($dest['amount'] ?? 0), 2); ?></strong></td>
-                            <td style="color:#dc3545;"><?php echo number_format($fee, 2); ?></td>
-                            <td style="color:#28a745;"><?php echo number_format($net, 2); ?></td>
-                            <td>
-                                <?php
-                                $statusClass = match($status) {
-                                    'success', 'completed' => 'success',
-                                    'failed' => 'failed',
-                                    'pending', 'pending_identity_confirmation' => 'pending',
-                                    default => 'info'
-                                };
-                                $statusLabel = $status === 'pending_identity_confirmation' ? 'PENDING_ID' : ($status ?: 'PENDING');
-                                ?>
-                                <span class="status status-<?php echo $statusClass; ?>"><?php echo safeHtml(strtoupper($statusLabel)); ?></span>
-                                <?php if ($error): ?>
-                                <span style="color:#dc3545; font-size:0.55rem; display:block;" title="<?php echo safeHtml($error); ?>">⚠️ <?php echo safeHtml(substr($error, 0, 30)); ?></span>
-                                <?php endif; ?>
-                            </td>
-                            <td><?php echo safeHtml(substr($result['hold_reference'] ?? 'N/A', 0, 10)); ?></td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
+            <div class="table-responsive"><table><thead><tr><th>#</th><th>Type</th><th>Institution</th><th>Identifier</th><th>Amount</th><th>Fee</th><th>Net</th><th>Status</th><th>Hold Ref</th></tr></thead><tbody>
+            <?php foreach ($destinations as $idx => $dest): $result = $results[$idx] ?? []; $status = $result['status'] ?? 'pending'; $error = $result['error'] ?? null; $isIdentity = isset($dest['identity_type']) || isset($dest['identity_value']); $isCashout = isset($dest['delivery_method']) && $dest['delivery_method'] === 'ATM'; $fee = (float)($result['fee'] ?? 0); $net = (float)($result['net_amount'] ?? $dest['amount'] ?? 0); ?>
+            <tr>
+                <td><?php echo $idx + 1; ?></td>
+                <td><?php if ($isIdentity): ?><span class="status status-identity">IDENTITY</span><?php elseif ($isCashout): ?><span class="status status-warning">CASHOUT</span><?php else: ?><span class="status status-info">DEPOSIT</span><?php endif; ?></td>
+                <td><?php echo safeHtml($dest['to_institution'] ?? $dest['destination_institution'] ?? ($isIdentity ? 'IDENTITY' : 'N/A')); ?></td>
+                <td><?php if ($isIdentity) { echo safeHtml($dest['identity_type'] ?? 'national_id') . ': ' . safeHtml($dest['identity_value'] ?? 'N/A'); } elseif ($isCashout) { echo safeHtml($dest['beneficiary_phone'] ?? 'N/A'); } else { echo safeHtml($dest['destination_identifier'] ?? 'N/A'); } ?></td>
+                <td><strong><?php echo number_format((float)($dest['amount'] ?? 0), 2); ?></strong></td>
+                <td style="color:#dc3545;"><?php echo number_format($fee, 2); ?></td>
+                <td style="color:#28a745;"><?php echo number_format($net, 2); ?></td>
+                <td>
+                    <?php $statusClass = match($status) { 'success', 'completed' => 'success', 'failed' => 'failed', 'pending', 'pending_identity_confirmation' => 'pending', default => 'info' }; $statusLabel = $status === 'pending_identity_confirmation' ? 'PENDING_ID' : ($status ?: 'PENDING'); ?>
+                    <span class="status status-<?php echo $statusClass; ?>"><?php echo safeHtml(strtoupper($statusLabel)); ?></span>
+                    <?php if ($error): ?><span style="color:#dc3545; font-size:0.55rem; display:block;" title="<?php echo safeHtml($error); ?>">⚠️ <?php echo safeHtml(substr($error, 0, 30)); ?></span><?php endif; ?>
+                </td>
+                <td><?php echo safeHtml(substr($result['hold_reference'] ?? 'N/A', 0, 10)); ?></td>
+            </tr>
+            <?php endforeach; ?>
+            </tbody></table></div>
             <?php endif; ?>
-
-            <!-- Raw JSON -->
-            <details style="margin-top:12px;">
-                <summary style="cursor:pointer; font-size:0.6rem; color:#666;">📄 Raw JSON</summary>
-                <pre style="background:#1e293b; color:#4ade80; padding:12px; font-size:0.55rem; overflow-x:auto; max-height:300px; overflow-y:auto; margin-top:8px;"><?php
-                    $fullData = [
-                        'summary' => [
-                            'reference' => $swap['reference'],
-                            'source_institution' => $swap['source_institution'],
-                            'status' => $swap['status'],
-                            'total_amount' => $swap['total_amount'],
-                            'total_fees' => $swap['total_fees']
-                        ],
-                        'destinations' => $destinations,
-                        'results' => $results
-                    ];
-                    echo safeHtml(json_encode($fullData, JSON_PRETTY_PRINT));
-                ?></pre>
-            </details>
+            <details style="margin-top:12px;"><summary style="cursor:pointer; font-size:0.6rem; color:#666;">📄 Raw JSON</summary><pre style="background:#1e293b; color:#4ade80; padding:12px; font-size:0.55rem; overflow-x:auto; max-height:300px; overflow-y:auto; margin-top:8px;"><?php echo safeHtml(json_encode(['summary' => ['reference' => $swap['reference'], 'source_institution' => $swap['source_institution'], 'status' => $swap['status'], 'total_amount' => $swap['total_amount'], 'total_fees' => $swap['total_fees']], 'destinations' => $destinations, 'results' => $results], JSON_PRETTY_PRINT)); ?></pre></details>
         </div>
-        <?php endforeach; ?>
-        <?php endif; ?>
+        <?php endforeach; endif; ?>
         <?php endif; ?>
 
         <!-- ============================================================ -->
         <!-- ACCESS DENIED -->
         <!-- ============================================================ -->
         <?php
-        $knownViews = ['dashboard', 'all_tables', 'multi_destination', 'live_transactions', 'recent_swaps', 'alerts', 'institution_health'];
+        $knownViews = ['dashboard', 'all_tables', 'multi_destination', 'live_transactions', 'recent_swaps', 'alerts', 'institution_health', 'client_lookup', 'regulatory', 'audit', 'invoices'];
         if (!canView($view) && !in_array($view, $knownViews)):
         ?>
-        <div class="card">
-            <div class="empty-state">
-                <div class="icon">🚫</div>
-                <h2>Access Denied</h2>
-                <p>You do not have permission to view this page.</p>
-                <a href="?view=dashboard" class="btn" style="margin-top:16px;">Return to Dashboard</a>
-            </div>
-        </div>
+        <div class="card"><div class="empty-state"><div class="icon">🚫</div><h2>Access Denied</h2><p>You do not have permission to view this page.</p><a href="?view=dashboard" class="btn" style="margin-top:16px;">Return to Dashboard</a></div></div>
         <?php endif; ?>
     </main>
 
