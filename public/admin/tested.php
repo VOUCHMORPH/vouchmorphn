@@ -1,636 +1,378 @@
 <?php
 /**
- * admin_diagnostic.php - Admin Dashboard Diagnostic Test
- * Tests database, views, tables, and each dashboard section
- * Run this from the browser or command line
+ * sandbox_readiness_test.php
+ *
+ * Answers three concrete questions with real data, not guesses:
+ *
+ *   1. If a court, the Bank of Botswana, or a disputing participant demands
+ *      the FULL record of a specific transaction, can we actually produce
+ *      it? (Picks a real recent swap and tries to reconstruct it end-to-end
+ *      across every table that should reference it.)
+ *   2. Is the system internally consistent right now - stuck holds, orphaned
+ *      records, missing signatures, settlements that don't tie out?
+ *   3. Can we generate invoices? (Checks what invoice-related data actually
+ *      exists; does NOT assume - flags what it can't confirm.)
+ *
+ * Read top to bottom. Anything marked FAIL or WARN is something to fix
+ * before you'd want to stand behind it in front of a regulator.
+ *
+ * Run this directly in a browser as an admin, same way you ran the earlier
+ * diagnostic. It is READ-ONLY - no writes, no mutations, safe to run
+ * against production/sandbox at any time.
  */
 
-// ============================================================
-// CONFIGURATION
-// ============================================================
+declare(strict_types=1);
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
 
 define('PROJECT_ROOT', dirname(__DIR__, 2));
-
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
-require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
 
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
-use Application\Admin\Auth\AdminAuth;
 
-// Check admin login
 if (!SessionManager::isAdminLoggedIn()) {
-    // Try to login via session
-    if (!isset($_SESSION['admin_id'])) {
-        // For CLI or direct access, we need to login
-        if (php_sapi_name() !== 'cli') {
-            header('Location: admin_login.php');
-            exit();
-        }
-    }
+    die("Not logged in as admin. Log in via admin_login.php first, then run this in the same browser session.");
 }
 
-// Get admin info
-$adminId = SessionManager::getAdminId() ?? $_SESSION['admin_id'] ?? null;
-$adminRoleId = SessionManager::getAdminRoleId() ?? $_SESSION['admin_role_id'] ?? null;
+function h($v): string { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
 
-// Database connection
-try {
-    $db = DBConnection::getConnection();
-    if (!$db) throw new Exception("Database connection failed");
-    $db->query("SELECT 1");
-    $dbConnected = true;
-} catch (Throwable $e) {
-    $dbConnected = false;
-    $dbError = $e->getMessage();
-}
-
-// ============================================================
-// TEST FUNCTIONS
-// ============================================================
-
-function testTable($db, $table) {
+/** Returns column names for a table, or [] if it can't be inspected. */
+function getColumns(PDO $db, string $table): array {
     try {
-        $stmt = $db->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '$table'");
-        $count = (int)$stmt->fetchColumn();
-        if ($count > 0) {
-            $stmt2 = $db->query("SELECT COUNT(*) FROM $table");
-            $records = (int)$stmt2->fetchColumn();
-            return ['exists' => true, 'records' => $records];
-        }
-        return ['exists' => false, 'records' => 0];
-    } catch (Exception $e) {
-        return ['exists' => false, 'records' => 0, 'error' => $e->getMessage()];
-    }
-}
-
-function testView($db, $view) {
-    try {
-        $stmt = $db->query("SELECT EXISTS (SELECT 1 FROM pg_views WHERE viewname = '$view')");
-        $exists = (bool)$stmt->fetchColumn();
-        if ($exists) {
-            $stmt2 = $db->query("SELECT COUNT(*) FROM $view");
-            $records = (int)$stmt2->fetchColumn();
-            return ['exists' => true, 'records' => $records];
-        }
-        return ['exists' => false, 'records' => 0];
-    } catch (Exception $e) {
-        return ['exists' => false, 'records' => 0, 'error' => $e->getMessage()];
-    }
-}
-
-function testTableColumns($db, $table) {
-    try {
-        $stmt = $db->query("SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = '$table' ORDER BY ordinal_position");
-        return $stmt->fetchAll(PDO::FETCH_COLUMN);
-    } catch (Exception $e) {
+        $stmt = $db->prepare("SELECT column_name FROM information_schema.columns WHERE table_name = :t");
+        $stmt->execute([':t' => $table]);
+        return array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'column_name');
+    } catch (Throwable $e) {
         return [];
     }
 }
 
-function checkAdminLogin() {
-    return SessionManager::isAdminLoggedIn() || isset($_SESSION['admin_id']);
+/** First column name from $candidates that actually exists in $columns, or null. */
+function pickColumn(array $columns, array $candidates): ?string {
+    foreach ($candidates as $c) {
+        if (in_array($c, $columns, true)) return $c;
+    }
+    return null;
 }
 
-function getAdminInfo() {
-    return [
-        'id' => SessionManager::getAdminId() ?? $_SESSION['admin_id'] ?? null,
-        'role_id' => SessionManager::getAdminRoleId() ?? $_SESSION['admin_role_id'] ?? null,
-        'username' => SessionManager::getAdminUsername() ?? $_SESSION['admin_username'] ?? 'Unknown'
-    ];
+$results = []; // section => [ ['label'=>, 'status'=>PASS|WARN|FAIL|INFO, 'detail'=>] ]
+
+function record(&$results, string $section, string $status, string $label, string $detail = '') {
+    $results[$section][] = ['status' => $status, 'label' => $label, 'detail' => $detail];
 }
 
-function safeHtml($value) {
-    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+try {
+    $db = DBConnection::getConnection();
+    if (!$db) throw new Exception("no connection object returned");
+    $db->query("SELECT 1");
+} catch (Throwable $e) {
+    die("<h1 style='font-family:monospace;color:#dc3545;'>DATABASE CONNECTION FAILED: " . h($e->getMessage()) . "</h1>");
 }
 
 // ============================================================
-// RUN TESTS
+// SECTION 1: CORE TABLE HEALTH
 // ============================================================
-
-$results = [
-    'database' => ['connected' => $dbConnected, 'error' => $dbError ?? null],
-    'admin' => ['logged_in' => checkAdminLogin(), 'info' => getAdminInfo()],
-    'tables' => [],
-    'views' => [],
-    'sections' => []
+$coreTables = [
+    'vw_all_swaps', 'multi_destination_swaps', 'multi_source_swaps',
+    'identity_swap_holds', 'hold_transactions', 'settlement_queue',
+    'settlement_outbox', 'net_positions', 'audit_logs', 'swap_requests',
+    'swap_transactions', 'cashout_authorizations'
 ];
-
-if ($dbConnected) {
-    // Test Tables
-    $tables = [
-        'vw_all_swaps',
-        'multi_destination_swaps',
-        'multi_source_swaps',
-        'identity_swap_holds',
-        'hold_transactions',
-        'settlement_queue',
-        'settlement_outbox',
-        'net_positions',
-        'audit_logs',
-        'swap_requests',
-        'swap_transactions',
-        'cashout_authorizations',
-        'financial_holds'
-    ];
-    
-    foreach ($tables as $table) {
-        $results['tables'][$table] = testTable($db, $table);
-        if ($results['tables'][$table]['exists']) {
-            $results['tables'][$table]['columns'] = testTableColumns($db, $table);
+foreach ($coreTables as $t) {
+    try {
+        $exists = $db->query("SELECT to_regclass('{$t}')")->fetchColumn();
+        if (!$exists) {
+            record($results, 'Core Tables', 'FAIL', $t, 'Table/view does not exist');
+            continue;
         }
-    }
-    
-    // Test Views
-    $views = [
-        'vw_all_swaps'
-    ];
-    
-    foreach ($views as $view) {
-        $results['views'][$view] = testView($db, $view);
+        $count = (int)$db->query("SELECT COUNT(*) FROM {$t}")->fetchColumn();
+        record($results, 'Core Tables', $count > 0 ? 'PASS' : 'WARN', $t, "{$count} records" . ($count === 0 ? ' - empty, confirm this is expected' : ''));
+    } catch (Throwable $e) {
+        record($results, 'Core Tables', 'FAIL', $t, 'Query error: ' . $e->getMessage());
     }
 }
 
 // ============================================================
-// GENERATE REPORT
+// SECTION 2: vw_all_swaps CAP CHECK
+// This is the bug from the earlier conversation - confirms whether it's
+// still capping the row count regardless of real swap volume.
 // ============================================================
+try {
+    $viewDef = $db->query("SELECT pg_get_viewdef('vw_all_swaps', true)")->fetchColumn();
+    $totalReal = (int)$db->query("SELECT COUNT(*) FROM swap_requests")->fetchColumn();
+    $viewCount = (int)$db->query("SELECT COUNT(*) FROM vw_all_swaps")->fetchColumn();
+    $hasLimitClause = (stripos($viewDef, 'limit') !== false);
 
-// Calculate summary stats
-$totalTables = count($results['tables']);
-$existingTables = 0;
-$totalRecords = 0;
-foreach ($results['tables'] as $table) {
-    if ($table['exists']) {
-        $existingTables++;
-        $totalRecords += $table['records'];
-    }
-}
-
-// Test sections
-$baseUrl = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP_HOST'] . '/admin/admin_dashboard.php';
-$sessionCookie = session_name() . '=' . session_id();
-
-$sections = [
-    'dashboard' => 'Dashboard',
-    'live_transactions' => 'Live Transactions',
-    'multi_destination' => 'Multi-Destination',
-    'recent_swaps' => 'Recent Swaps',
-    'settlements' => 'Settlements',
-    'regulatory' => 'Regulatory',
-    'audit' => 'Audit',
-    'fee_breakdown' => 'Fee Breakdown',
-    'invoices' => 'Invoices'
-];
-
-foreach ($sections as $section => $name) {
-    $url = $baseUrl . '?view=' . $section;
-    
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_COOKIE, $sessionCookie);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    
-    $hasFatal = strpos($response, 'Fatal error') !== false;
-    $hasWarning = strpos($response, 'Warning:') !== false;
-    $hasEmpty = strpos($response, 'No .* found') !== false || strpos($response, 'empty-state') !== false;
-    $hasData = strpos($response, 'RECORDS') !== false && !$hasEmpty;
-    
-    if ($hasFatal) {
-        $status = 'fail';
-        $statusText = '❌ Fatal Error';
-        $statusClass = 'fail';
-    } elseif ($hasWarning) {
-        $status = 'warning';
-        $statusText = '⚠️ Warnings';
-        $statusClass = 'empty';
-    } elseif ($hasEmpty) {
-        $status = 'empty';
-        $statusText = '📭 Empty (no data)';
-        $statusClass = 'empty';
-    } elseif ($hasData) {
-        $status = 'pass';
-        $statusText = '✅ Data Found';
-        $statusClass = 'pass';
+    if ($hasLimitClause) {
+        record($results, 'View Cap Check', 'FAIL', 'vw_all_swaps has a LIMIT clause',
+            'This will silently drop transactions once you exceed the limit. View definition: ' . substr($viewDef, 0, 400) . (strlen($viewDef) > 400 ? '...' : ''));
     } else {
-        $status = 'unknown';
-        $statusText = '⚠️ Unknown';
-        $statusClass = 'empty';
+        record($results, 'View Cap Check', 'PASS', 'vw_all_swaps has no LIMIT clause',
+            "swap_requests has {$totalReal} rows, vw_all_swaps returns {$viewCount} rows.");
     }
-    $results['sections'][$section] = ['status' => $status, 'http' => $httpCode];
+} catch (Throwable $e) {
+    record($results, 'View Cap Check', 'WARN', 'Could not inspect vw_all_swaps definition', $e->getMessage());
 }
 
-// HTML Output
+// ============================================================
+// SECTION 3: DATA INTEGRITY - things that would embarrass you if a
+// regulator found them before you did.
+// ============================================================
+try {
+    $stuck = (int)$db->query("
+        SELECT COUNT(*) FROM hold_transactions
+        WHERE status IN ('ACTIVE','HELD','PENDING_CASHOUT','PENDING_IDENTITY')
+          AND created_at < NOW() - INTERVAL '24 hours'
+    ")->fetchColumn();
+    record($results, 'Data Integrity', $stuck === 0 ? 'PASS' : 'WARN', 'Stuck holds (non-terminal >24h)', "{$stuck} found");
+} catch (Throwable $e) {
+    record($results, 'Data Integrity', 'WARN', 'Stuck holds check failed', $e->getMessage());
+}
+
+try {
+    $expiredIdentity = (int)$db->query("
+        SELECT COUNT(*) FROM identity_swap_holds
+        WHERE status = 'pending' AND hold_expires_at < NOW()
+    ")->fetchColumn();
+    record($results, 'Data Integrity', $expiredIdentity === 0 ? 'PASS' : 'WARN', 'Expired identity swaps not cancelled', "{$expiredIdentity} found");
+} catch (Throwable $e) {
+    record($results, 'Data Integrity', 'WARN', 'Expired identity check failed', $e->getMessage());
+}
+
+try {
+    // Holds marked DEBITED but with no debited_at timestamp - suggests the
+    // status was set without the corresponding audit trail field.
+    $orphanDebits = (int)$db->query("
+        SELECT COUNT(*) FROM hold_transactions
+        WHERE status = 'DEBITED' AND debited_at IS NULL
+    ")->fetchColumn();
+    record($results, 'Data Integrity', $orphanDebits === 0 ? 'PASS' : 'FAIL', 'DEBITED holds missing debited_at timestamp',
+        "{$orphanDebits} found" . ($orphanDebits > 0 ? ' - these will fail latency/audit queries and look inconsistent under review' : ''));
+} catch (Throwable $e) {
+    record($results, 'Data Integrity', 'WARN', 'Orphan debit check failed', $e->getMessage());
+}
+
+try {
+    $failedDestCount = (int)$db->query("SELECT COUNT(*) FROM multi_destination_swaps WHERE failed_count > 0")->fetchColumn();
+    record($results, 'Data Integrity', $failedDestCount === 0 ? 'PASS' : 'WARN', 'Multi-destination swaps with at least one failed leg', "{$failedDestCount} found");
+} catch (Throwable $e) {
+    record($results, 'Data Integrity', 'WARN', 'Failed-destination check failed', $e->getMessage());
+}
+
+// ============================================================
+// SECTION 4: THE ACTUAL TEST - can we reconstruct one real transaction
+// end-to-end? Picks a real, recent, completed swap and pulls together
+// everything that should reference it. This is what "produce the record"
+// looks like in practice.
+// ============================================================
+$reconstructionTarget = null;
+try {
+    $stmt = $db->query("
+        SELECT swap_reference, reference, swap_type, source_institution,
+               destination_institution, amount, currency, status, created_at
+        FROM vw_all_swaps
+        WHERE status ILIKE '%debited%' OR status ILIKE '%completed%' OR status ILIKE '%success%'
+        ORDER BY created_at DESC
+        LIMIT 1
+    ");
+    $reconstructionTarget = $stmt->fetch(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    record($results, 'Transaction Reconstruction', 'FAIL', 'Could not select a target transaction', $e->getMessage());
+}
+
+if ($reconstructionTarget) {
+    $ref = $reconstructionTarget['swap_reference'] ?: $reconstructionTarget['reference'];
+    record($results, 'Transaction Reconstruction', 'INFO', 'Target transaction selected', "Reference: {$ref} | Type: {$reconstructionTarget['swap_type']} | Amount: {$reconstructionTarget['amount']} {$reconstructionTarget['currency']} | Status: {$reconstructionTarget['status']} | Created: {$reconstructionTarget['created_at']}");
+
+    // 4a. Hold record(s) - direct and any sub-references (_DEST_0, _ID_0 etc.)
+    try {
+        $stmt = $db->prepare("SELECT hold_reference, swap_reference, participant_name, asset_type, amount, status, created_at, debited_at FROM hold_transactions WHERE swap_reference = :ref OR swap_reference LIKE :refLike ORDER BY created_at");
+        $stmt->execute([':ref' => $ref, ':refLike' => $ref . '\_%']);
+        $holds = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        record($results, 'Transaction Reconstruction', count($holds) > 0 ? 'PASS' : 'FAIL', 'Hold record(s) found', count($holds) . ' hold(s): ' . implode('; ', array_map(fn($x) => "{$x['hold_reference']} ({$x['status']}, {$x['participant_name']}, {$x['amount']})", $holds)));
+    } catch (Throwable $e) {
+        record($results, 'Transaction Reconstruction', 'WARN', 'Hold lookup failed', $e->getMessage());
+    }
+
+    // 4b. Settlement trail - dynamically discover the right column since
+    // we don't assume settlement_queue/settlement_outbox schema.
+    try {
+        $cols = getColumns($db, 'settlement_outbox');
+        $refCol = pickColumn($cols, ['swap_reference', 'reference']);
+        if ($refCol) {
+            $stmt = $db->prepare("SELECT message_id, message_type, source_institution, destination_institution, created_at FROM settlement_outbox WHERE {$refCol} = :ref OR {$refCol} LIKE :refLike");
+            $stmt->execute([':ref' => $ref, ':refLike' => $ref . '%']);
+            $outbox = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            record($results, 'Transaction Reconstruction', count($outbox) > 0 ? 'PASS' : 'WARN', 'Settlement outbox messages found', count($outbox) . ' message(s) via column "' . $refCol . '"');
+        } else {
+            record($results, 'Transaction Reconstruction', 'WARN', 'Could not find a reference column on settlement_outbox', 'Columns present: ' . implode(', ', $cols));
+        }
+    } catch (Throwable $e) {
+        record($results, 'Transaction Reconstruction', 'WARN', 'Settlement outbox lookup failed', $e->getMessage());
+    }
+
+    try {
+        $cols = getColumns($db, 'settlement_queue');
+        $refCol = pickColumn($cols, ['swap_reference', 'reference', 'transaction_reference']);
+        if ($refCol) {
+            $stmt = $db->prepare("SELECT * FROM settlement_queue WHERE {$refCol} = :ref OR {$refCol} LIKE :refLike LIMIT 10");
+            $stmt->execute([':ref' => $ref, ':refLike' => $ref . '%']);
+            $queue = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            record($results, 'Transaction Reconstruction', count($queue) > 0 ? 'PASS' : 'WARN', 'Settlement queue entries found', count($queue) . ' entr(y/ies) via column "' . $refCol . '"');
+        } else {
+            record($results, 'Transaction Reconstruction', 'WARN', 'settlement_queue has no per-transaction reference column',
+                'Columns present: ' . implode(', ', $cols) . '. This means settlement_queue tracks net institution-to-institution positions, not individual transactions - you cannot trace THIS specific swap to a settlement_queue row directly. If a regulator asks "show me the settlement for transaction X", you currently cannot answer from settlement_queue alone - you would need to reconcile via net_positions and the fee/amount matching manually.');
+        }
+    } catch (Throwable $e) {
+        record($results, 'Transaction Reconstruction', 'WARN', 'Settlement queue lookup failed', $e->getMessage());
+    }
+
+    // 4c. Audit log coverage
+    try {
+        $cols = getColumns($db, 'audit_logs');
+        $entityCol = pickColumn($cols, ['entity_id']);
+        if ($entityCol) {
+            $stmt = $db->prepare("SELECT audit_id, entity_type, action, created_at FROM audit_logs WHERE entity_id::text = :ref OR entity_id::text LIKE :refLike ORDER BY created_at LIMIT 20");
+            $stmt->execute([':ref' => $ref, ':refLike' => '%' . $ref . '%']);
+            $audit = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            record($results, 'Transaction Reconstruction', count($audit) > 0 ? 'PASS' : 'FAIL', 'Audit log entries found', count($audit) . ' entr(y/ies)' . (count($audit) === 0 ? ' - if this is really zero, you have NO audit trail for this transaction, which is a direct problem for any regulator or court request' : ''));
+        } else {
+            record($results, 'Transaction Reconstruction', 'WARN', 'Could not identify entity_id column on audit_logs', 'Columns present: ' . implode(', ', $cols));
+        }
+    } catch (Throwable $e) {
+        record($results, 'Transaction Reconstruction', 'WARN', 'Audit log lookup failed', $e->getMessage());
+    }
+
+    // 4d. Signature chain - was this a signed, certificate-backed hold?
+    try {
+        $stmt = $db->prepare("SELECT metadata FROM hold_transactions WHERE swap_reference = :ref OR swap_reference LIKE :refLike LIMIT 1");
+        $stmt->execute([':ref' => $ref, ':refLike' => $ref . '\_%']);
+        $meta = $stmt->fetchColumn();
+        if ($meta) {
+            $decoded = json_decode($meta, true);
+            $hasSig = !empty($decoded['signature_chain']) || !empty($decoded['hold_result']['signature']);
+            record($results, 'Transaction Reconstruction', $hasSig ? 'PASS' : 'WARN', 'Signature/proof chain present in hold metadata', $hasSig ? 'Signature data found' : 'No signature found in metadata - this weakens the evidentiary value of the record');
+        } else {
+            record($results, 'Transaction Reconstruction', 'WARN', 'No hold metadata to check for signatures', '');
+        }
+    } catch (Throwable $e) {
+        record($results, 'Transaction Reconstruction', 'WARN', 'Signature check failed', $e->getMessage());
+    }
+} else {
+    record($results, 'Transaction Reconstruction', 'FAIL', 'No completed transaction found to test against', 'Cannot verify reconstruction capability with zero completed swaps in vw_all_swaps');
+}
+
+// ============================================================
+// SECTION 5: INVOICE CAPABILITY - checked, not assumed.
+// ============================================================
+try {
+    $invoiceCount = (int)$db->query("SELECT COUNT(*) FROM settlement_outbox WHERE message_type = 'FEE_INVOICE'")->fetchColumn();
+    record($results, 'Invoice Capability', $invoiceCount > 0 ? 'PASS' : 'WARN', 'FEE_INVOICE messages in settlement_outbox', "{$invoiceCount} found" . ($invoiceCount === 0 ? ' - either no invoices have been generated yet, or invoice generation is not wired to this table' : ''));
+} catch (Throwable $e) {
+    record($results, 'Invoice Capability', 'WARN', 'Could not query settlement_outbox for invoices', $e->getMessage());
+}
+
+try {
+    $hasInvoiceTable = $db->query("SELECT to_regclass('invoices')")->fetchColumn();
+    if ($hasInvoiceTable) {
+        $invCount = (int)$db->query("SELECT COUNT(*) FROM invoices")->fetchColumn();
+        record($results, 'Invoice Capability', 'PASS', 'Dedicated invoices table exists', "{$invCount} records");
+    } else {
+        record($results, 'Invoice Capability', 'INFO', 'No dedicated "invoices" table', 'Invoicing (if it exists) is likely driven entirely through settlement_outbox FEE_INVOICE messages, not a separate ledger table');
+    }
+} catch (Throwable $e) {
+    record($results, 'Invoice Capability', 'WARN', 'Could not check for invoices table', $e->getMessage());
+}
+
+record($results, 'Invoice Capability', 'INFO', 'Cannot confirm invoice PDF/document generation from the database alone',
+    'This diagnostic can only see what data exists, not whether the actual invoice-generation code (the file behind ?action=generate_invoice) produces a correct, complete document. Share that file directly and it can be reviewed the same way the hold.php files were.');
+
+// ============================================================
+// SECTION 6: SETTLEMENT CONSISTENCY - do debited swaps have a settlement
+// counterpart, or does money move without a paper trail?
+// ============================================================
+try {
+    $debitedCount = (int)$db->query("SELECT COUNT(*) FROM hold_transactions WHERE status = 'DEBITED'")->fetchColumn();
+    $cols = getColumns($db, 'settlement_outbox');
+    if (in_array('swap_reference', $cols, true)) {
+        $settledRefs = (int)$db->query("SELECT COUNT(DISTINCT swap_reference) FROM settlement_outbox")->fetchColumn();
+        record($results, 'Settlement Consistency', 'INFO', 'Debited holds vs distinct settled references',
+            "{$debitedCount} debited holds in hold_transactions vs {$settledRefs} distinct swap_reference values in settlement_outbox. These won't match 1:1 (multi-destination swaps have many holds per one settlement batch), but if settled refs is dramatically lower, settlements are lagging or not firing for some swap types.");
+    }
+} catch (Throwable $e) {
+    record($results, 'Settlement Consistency', 'WARN', 'Settlement consistency check failed', $e->getMessage());
+}
+
+// ============================================================
+// RENDER
+// ============================================================
+$statusColor = ['PASS' => '#28a745', 'WARN' => '#856404', 'FAIL' => '#dc3545', 'INFO' => '#004085'];
+$statusBg = ['PASS' => '#d4edda', 'WARN' => '#fff3cd', 'FAIL' => '#f8d7da', 'INFO' => '#cce5ff'];
+
+$totalFail = 0; $totalWarn = 0; $totalPass = 0;
+foreach ($results as $items) {
+    foreach ($items as $i) {
+        if ($i['status'] === 'FAIL') $totalFail++;
+        if ($i['status'] === 'WARN') $totalWarn++;
+        if ($i['status'] === 'PASS') $totalPass++;
+    }
+}
 ?>
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · ADMIN DIAGNOSTIC</title>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'IBM Plex Mono', monospace;
-            background: #0d0d1a;
-            color: #e0e0e0;
-            min-height: 100vh;
-            padding: 24px;
-        }
-        .container { max-width: 1200px; margin: 0 auto; }
-        h1 { color: #00f0ff; font-size: 1.5rem; margin-bottom: 8px; }
-        .subtitle { color: #8888a0; font-size: 0.8rem; margin-bottom: 24px; }
-        
-        .card {
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 16px;
-        }
-        .card-title {
-            font-size: 0.8rem;
-            font-weight: 700;
-            color: #00f0ff;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 12px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .card-title .badge {
-            font-size: 0.6rem;
-            padding: 2px 10px;
-            border-radius: 20px;
-            font-weight: 600;
-        }
-        .badge-success { background: rgba(0,230,118,0.2); color: #00e676; border: 1px solid rgba(0,230,118,0.3); }
-        .badge-failed { background: rgba(255,82,82,0.2); color: #ff5252; border: 1px solid rgba(255,82,82,0.3); }
-        .badge-warning { background: rgba(255,193,7,0.2); color: #ffc107; border: 1px solid rgba(255,193,7,0.3); }
-        .badge-info { background: rgba(0,240,255,0.2); color: #00f0ff; border: 1px solid rgba(0,240,255,0.3); }
-        
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-        @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
-        
-        .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 0.7rem; }
-        .stat-row .label { color: #8888a0; }
-        .stat-row .value { font-weight: 600; color: #fff; }
-        .stat-row .value.green { color: #00e676; }
-        .stat-row .value.red { color: #ff5252; }
-        .stat-row .value.yellow { color: #ffc107; }
-        .stat-row .value.cyan { color: #00f0ff; }
-        
-        .table-responsive { overflow-x: auto; margin-top: 8px; }
-        table { width: 100%; border-collapse: collapse; font-size: 0.65rem; }
-        th { background: rgba(0,240,255,0.08); color: #00f0ff; padding: 6px 10px; text-align: left; font-weight: 600; text-transform: uppercase; font-size: 0.55rem; }
-        td { padding: 5px 10px; border-bottom: 1px solid rgba(255,255,255,0.04); }
-        .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-        .status-dot.green { background: #00e676; }
-        .status-dot.red { background: #ff5252; }
-        .status-dot.yellow { background: #ffc107; }
-        .status-dot.cyan { background: #00f0ff; }
-        
-        .section-result {
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 0.6rem;
-            font-weight: 600;
-        }
-        .section-result.pass { background: rgba(0,230,118,0.15); color: #00e676; }
-        .section-result.fail { background: rgba(255,82,82,0.15); color: #ff5252; }
-        .section-result.empty { background: rgba(255,193,7,0.15); color: #ffc107; }
-        
-        .code-block {
-            background: rgba(0,0,0,0.3);
-            padding: 12px;
-            border-radius: 6px;
-            font-size: 0.6rem;
-            color: #4ade80;
-            overflow-x: auto;
-            margin-top: 8px;
-        }
-        
-        .footer {
-            text-align: center;
-            color: #505070;
-            font-size: 0.65rem;
-            margin-top: 24px;
-            padding-top: 16px;
-            border-top: 1px solid rgba(255,255,255,0.04);
-        }
-        
-        .summary-box {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 12px;
-            margin-bottom: 16px;
-        }
-        .summary-item {
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(255,255,255,0.06);
-            border-radius: 8px;
-            padding: 12px 16px;
-            text-align: center;
-        }
-        .summary-item .number { font-size: 1.5rem; font-weight: 700; }
-        .summary-item .label { font-size: 0.55rem; color: #8888a0; text-transform: uppercase; margin-top: 4px; }
-    </style>
+<meta charset="UTF-8">
+<title>Sandbox Readiness Test</title>
+<style>
+    body { font-family: 'IBM Plex Mono', monospace; background:#f7f9fc; color:#001B44; padding:24px; max-width:1100px; margin:0 auto; }
+    h1 { font-size:1.3rem; }
+    .summary { display:flex; gap:12px; margin:16px 0 24px; flex-wrap:wrap; }
+    .summary div { padding:10px 18px; border-radius:6px; font-weight:700; font-size:0.9rem; }
+    .section { background:#fff; border:2px solid #001B44; border-radius:6px; padding:16px; margin-bottom:16px; box-shadow:3px 3px 0 #A1B5D8; }
+    .section h2 { font-size:0.85rem; text-transform:uppercase; margin-bottom:10px; border-bottom:2px solid #001B44; padding-bottom:6px; }
+    .row { display:flex; gap:10px; padding:6px 0; border-bottom:1px solid #eee; align-items:flex-start; font-size:0.75rem; }
+    .badge { padding:2px 8px; border-radius:4px; font-weight:700; font-size:0.65rem; white-space:nowrap; }
+    .label { font-weight:600; min-width:280px; }
+    .detail { color:#555; }
+</style>
 </head>
 <body>
-<div class="container">
-    <h1>🔍 ADMIN DASHBOARD DIAGNOSTIC</h1>
-    <div class="subtitle">Comprehensive system check · <?php echo date('Y-m-d H:i:s'); ?></div>
+<h1>🔍 Sandbox Readiness / Court-Defensibility Test</h1>
+<p style="color:#666; font-size:0.75rem;">Run at <?php echo date('Y-m-d H:i:s'); ?> · Read-only, no data was modified</p>
 
-    <!-- Summary -->
-    <div class="summary-box">
-        <div class="summary-item">
-            <div class="number" style="color: <?php echo $dbConnected ? '#00e676' : '#ff5252'; ?>">
-                <?php echo $dbConnected ? '✅' : '❌'; ?>
-            </div>
-            <div class="label">Database</div>
-        </div>
-        <div class="summary-item">
-            <div class="number" style="color: #00f0ff;"><?php echo $existingTables; ?>/<?php echo $totalTables; ?></div>
-            <div class="label">Tables Found</div>
-        </div>
-        <div class="summary-item">
-            <div class="number" style="color: #00e676;"><?php echo number_format($totalRecords); ?></div>
-            <div class="label">Total Records</div>
-        </div>
-        <div class="summary-item">
-            <div class="number" style="color: <?php echo checkAdminLogin() ? '#00e676' : '#ff5252'; ?>">
-                <?php echo checkAdminLogin() ? '✅' : '❌'; ?>
-            </div>
-            <div class="label">Admin Session</div>
-        </div>
-    </div>
-
-    <!-- Database Status -->
-    <div class="card">
-        <div class="card-title">
-            <span>📊 Database Connection</span>
-            <span class="badge <?php echo $dbConnected ? 'badge-success' : 'badge-failed'; ?>">
-                <?php echo $dbConnected ? 'CONNECTED' : 'FAILED'; ?>
-            </span>
-        </div>
-        <?php if ($dbConnected): ?>
-        <div class="stat-row">
-            <span class="label">Status</span>
-            <span class="value green">Connected successfully</span>
-        </div>
-        <?php else: ?>
-        <div class="stat-row">
-            <span class="label">Error</span>
-            <span class="value red"><?php echo safeHtml($dbError ?? 'Unknown error'); ?></span>
-        </div>
-        <?php endif; ?>
-    </div>
-
-    <!-- Admin Session -->
-    <div class="card">
-        <div class="card-title">
-            <span>👤 Admin Session</span>
-            <span class="badge <?php echo checkAdminLogin() ? 'badge-success' : 'badge-failed'; ?>">
-                <?php echo checkAdminLogin() ? 'LOGGED IN' : 'NOT LOGGED IN'; ?>
-            </span>
-        </div>
-        <?php if (checkAdminLogin()): ?>
-        <div class="stat-row">
-            <span class="label">Admin ID</span>
-            <span class="value"><?php echo safeHtml($results['admin']['info']['id'] ?? 'N/A'); ?></span>
-        </div>
-        <div class="stat-row">
-            <span class="label">Role ID</span>
-            <span class="value"><?php echo safeHtml($results['admin']['info']['role_id'] ?? 'N/A'); ?></span>
-        </div>
-        <div class="stat-row">
-            <span class="label">Username</span>
-            <span class="value"><?php echo safeHtml($results['admin']['info']['username'] ?? 'N/A'); ?></span>
-        </div>
-        <?php else: ?>
-        <div class="stat-row">
-            <span class="label">Status</span>
-            <span class="value red">Please login to run full tests</span>
-        </div>
-        <?php endif; ?>
-    </div>
-
-    <!-- Tables -->
-    <div class="card">
-        <div class="card-title">
-            <span>📋 Database Tables</span>
-            <span class="badge badge-info"><?php echo $existingTables; ?> / <?php echo $totalTables; ?> FOUND</span>
-        </div>
-        <div class="table-responsive">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Table</th>
-                        <th>Status</th>
-                        <th>Records</th>
-                        <th>Columns</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($results['tables'] as $table => $info): ?>
-                    <tr>
-                        <td><code><?php echo safeHtml($table); ?></code></td>
-                        <td>
-                            <span class="status-dot <?php echo $info['exists'] ? 'green' : 'red'; ?>"></span>
-                            <?php echo $info['exists'] ? '✅ Exists' : '❌ Missing'; ?>
-                        </td>
-                        <td>
-                            <?php if ($info['exists']): ?>
-                            <span style="color: #00e676;"><?php echo number_format($info['records']); ?></span>
-                            <?php else: ?>
-                            <span style="color: #8888a0;">—</span>
-                            <?php endif; ?>
-                        </td>
-                        <td>
-                            <?php if ($info['exists'] && !empty($info['columns'])): ?>
-                            <?php echo count($info['columns']); ?> columns
-                            <span style="color: #8888a0; font-size: 0.55rem;">
-                                (<?php echo safeHtml(implode(', ', array_slice($info['columns'], 0, 5))); ?><?php if (count($info['columns']) > 5) echo '...'; ?>)
-                            </span>
-                            <?php else: ?>
-                            <span style="color: #8888a0;">—</span>
-                            <?php endif; ?>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <!-- Views -->
-    <div class="card">
-        <div class="card-title">
-            <span>👁️ Database Views</span>
-            <span class="badge badge-info">CRITICAL FOR DASHBOARD</span>
-        </div>
-        <div class="table-responsive">
-            <table>
-                <thead>
-                    <tr>
-                        <th>View</th>
-                        <th>Status</th>
-                        <th>Records</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($results['views'] as $view => $info): ?>
-                    <tr>
-                        <td><code><?php echo safeHtml($view); ?></code></td>
-                        <td>
-                            <span class="status-dot <?php echo $info['exists'] ? 'green' : 'red'; ?>"></span>
-                            <?php echo $info['exists'] ? '✅ Exists' : '❌ Missing'; ?>
-                        </td>
-                        <td>
-                            <?php if ($info['exists']): ?>
-                            <span style="color: #00e676;"><?php echo number_format($info['records']); ?></span>
-                            <?php else: ?>
-                            <span style="color: #ff5252;">⚠️ REQUIRED</span>
-                            <?php endif; ?>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-        <?php if (!isset($results['views']['vw_all_swaps']) || !$results['views']['vw_all_swaps']['exists']): ?>
-        <div class="code-block">
-            ⚠️ vw_all_swaps view is MISSING. Run this SQL to create it:<br><br>
-            CREATE OR REPLACE VIEW vw_all_swaps AS<br>
-            SELECT hold_reference AS reference, swap_reference, 'HOLD' AS swap_type, ...<br>
-            FROM hold_transactions<br>
-            UNION ALL<br>
-            SELECT NULL AS reference, reference AS swap_reference, 'MULTI_DESTINATION' AS swap_type, ...<br>
-            FROM multi_destination_swaps;
-        </div>
-        <?php endif; ?>
-    </div>
-
-    <!-- Dashboard Sections -->
-    <div class="card">
-        <div class="card-title">
-            <span>📱 Dashboard Sections</span>
-            <span class="badge badge-info">FUNCTIONALITY TEST</span>
-        </div>
-        
-        <?php foreach ($sections as $section => $name): ?>
-        <?php 
-        $info = $results['sections'][$section] ?? ['status' => 'unknown', 'http' => 0];
-        $status = $info['status'];
-        $httpCode = $info['http'];
-        
-        if ($status === 'pass') {
-            $statusText = '✅ Working';
-            $statusClass = 'pass';
-        } elseif ($status === 'fail') {
-            $statusText = '❌ Fatal Error';
-            $statusClass = 'fail';
-        } elseif ($status === 'empty') {
-            $statusText = '📭 Empty (no data)';
-            $statusClass = 'empty';
-        } else {
-            $statusText = '⚠️ Unknown';
-            $statusClass = 'empty';
-        }
-        ?>
-        <div class="stat-row">
-            <span class="label"><?php echo safeHtml($name); ?></span>
-            <span class="value">
-                <span class="section-result <?php echo $statusClass; ?>"><?php echo $statusText; ?></span>
-                <?php if ($httpCode > 0): ?>
-                <span style="color: #8888a0; font-size: 0.55rem;">(HTTP <?php echo $httpCode; ?>)</span>
-                <?php endif; ?>
-            </span>
-        </div>
-        <?php endforeach; ?>
-    </div>
-
-    <!-- Recommendations -->
-    <div class="card" style="border-left: 3px solid #00f0ff;">
-        <div class="card-title">
-            <span>💡 Recommendations</span>
-        </div>
-        
-        <?php
-        $issues = [];
-        
-        if (!$dbConnected) {
-            $issues[] = '❌ Database connection failed - check DATABASE_URL environment variable';
-        }
-        
-        if (!isset($results['views']['vw_all_swaps']) || !$results['views']['vw_all_swaps']['exists']) {
-            $issues[] = '❌ vw_all_swaps view is MISSING - this is critical for the dashboard';
-        }
-        
-        if (isset($results['views']['vw_all_swaps']) && $results['views']['vw_all_swaps']['exists'] && $results['views']['vw_all_swaps']['records'] == 0) {
-            $issues[] = '⚠️ vw_all_swaps view exists but has 0 records - no swap data found';
-        }
-        
-        if (isset($results['tables']['multi_destination_swaps']) && $results['tables']['multi_destination_swaps']['exists'] && $results['tables']['multi_destination_swaps']['records'] == 0) {
-            $issues[] = '⚠️ multi_destination_swaps table is empty - no multi-destination data';
-        }
-        
-        if (isset($results['tables']['hold_transactions']) && $results['tables']['hold_transactions']['exists'] && $results['tables']['hold_transactions']['records'] == 0) {
-            $issues[] = '⚠️ hold_transactions table is empty - no hold data';
-        }
-        
-        foreach ($results['sections'] as $section => $info) {
-            if ($info['status'] === 'fail') {
-                $issues[] = '❌ ' . ucfirst(str_replace('_', ' ', $section)) . ' section has fatal errors';
-            }
-        }
-        
-        if (empty($issues)) {
-            echo '<div style="color: #00e676; font-size: 0.9rem;">✅ All systems operational! The dashboard should be working correctly.</div>';
-        } else {
-            echo '<div style="font-size: 0.7rem;">';
-            foreach ($issues as $issue) {
-                echo '<div style="padding: 4px 0;">' . $issue . '</div>';
-            }
-            echo '</div>';
-        }
-        ?>
-    </div>
-
-    <!-- Quick Fix SQL -->
-    <div class="card" style="border-left: 3px solid #ffc107;">
-        <div class="card-title">
-            <span>🔧 Quick Fix SQL</span>
-        </div>
-        <div class="code-block">
-            -- Check if vw_all_swaps exists<br>
-            SELECT EXISTS (SELECT 1 FROM pg_views WHERE viewname = 'vw_all_swaps');<br><br>
-            
-            -- Count records in key tables<br>
-            SELECT 'vw_all_swaps' as table_name, COUNT(*) as records FROM vw_all_swaps<br>
-            UNION ALL<br>
-            SELECT 'multi_destination_swaps', COUNT(*) FROM multi_destination_swaps<br>
-            UNION ALL<br>
-            SELECT 'hold_transactions', COUNT(*) FROM hold_transactions<br>
-            UNION ALL<br>
-            SELECT 'settlement_queue', COUNT(*) FROM settlement_queue;
-        </div>
-    </div>
-
-    <div class="footer">
-        VOUCHMORPH Admin Diagnostic · <?php echo date('Y'); ?>
-    </div>
+<div class="summary">
+    <div style="background:#d4edda;color:#155724;">✅ <?php echo $totalPass; ?> PASS</div>
+    <div style="background:#fff3cd;color:#856404;">⚠️ <?php echo $totalWarn; ?> WARN</div>
+    <div style="background:#f8d7da;color:#721c24;">❌ <?php echo $totalFail; ?> FAIL</div>
 </div>
+
+<?php if ($totalFail > 0): ?>
+<div class="section" style="border-color:#dc3545;">
+    <h2 style="color:#dc3545;">⚠️ Bottom line</h2>
+    <p style="font-size:0.8rem;">There are <?php echo $totalFail; ?> FAIL item(s) below. Those are the ones that would actually hurt you in front of a regulator or in a dispute - fix those first. WARN items are worth reviewing but aren't necessarily broken.</p>
+</div>
+<?php else: ?>
+<div class="section" style="border-color:#28a745;">
+    <h2 style="color:#28a745;">✅ Bottom line</h2>
+    <p style="font-size:0.8rem;">No hard failures. Review the WARN items below - some of them (like settlement_queue not having a per-transaction reference) are structural things worth knowing about even if they're not "broken."</p>
+</div>
+<?php endif; ?>
+
+<?php foreach ($results as $section => $items): ?>
+<div class="section">
+    <h2><?php echo h($section); ?></h2>
+    <?php foreach ($items as $item): ?>
+    <div class="row">
+        <span class="badge" style="background:<?php echo $statusBg[$item['status']]; ?>; color:<?php echo $statusColor[$item['status']]; ?>;"><?php echo $item['status']; ?></span>
+        <span class="label"><?php echo h($item['label']); ?></span>
+        <span class="detail"><?php echo h($item['detail']); ?></span>
+    </div>
+    <?php endforeach; ?>
+</div>
+<?php endforeach; ?>
 
 </body>
 </html>
