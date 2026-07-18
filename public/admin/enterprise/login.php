@@ -190,6 +190,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
        Full-bleed 60/40 split. Left: white, functional, form.
        Right: ink-black, magazine-set brand statement inside a
        museum-mat frame with the wordmark run around its border.
+       Frame moved outward by 50%, VOUCHMORPH™ on lateral side.
        ============================================================ */
     :root {
       --paper:        #EEF1EF;
@@ -214,6 +215,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
       --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
       --sp-9: 48px; --sp-10: 64px;
+      
+      /* Frame position: moved outward by 50% (closer to edges) */
+      --frame-inset: calc(var(--sp-6) * 0.5);  /* 12px instead of 24px (50% of sp-6) */
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -413,19 +417,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     /* ============================================================
        RIGHT — black, magazine statement inside a mat frame
+       Frame moved outward by 50% (closer to edges)
+       VOUCHMORPH™ on lateral side between frame and outer edge
        ============================================================ */
     .frame-mat {
       position: relative;
       flex: 1;
-      margin: var(--sp-8);
+      margin: var(--frame-inset);  /* ← 50% smaller margin = frame moves outward */
     }
     .frame-line {
       position: absolute;
-      inset: var(--sp-6);
+      inset: var(--frame-inset);   /* ← 50% smaller inset = frame moves outward */
       border: 1px solid rgba(255,255,255,0.16);
       pointer-events: none;
     }
 
+    /* Frame strips on top and bottom — inset matches frame */
     .frame-strip {
       position: absolute;
       color: rgba(255,255,255,0.3);
@@ -437,19 +444,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       overflow: hidden;
       display: flex;
       align-items: center;
+      z-index: 2;
     }
     .frame-strip span { display: inline-block; }
     .frame-strip.top {
-      top: var(--sp-3); left: var(--sp-6); right: var(--sp-6);
-      height: 20px; justify-content: center;
+      top: calc(var(--frame-inset) - 10px);
+      left: calc(var(--frame-inset) + 30px);
+      right: calc(var(--frame-inset) + 30px);
+      height: 20px;
+      justify-content: center;
+      background: #0A1420;
+      padding: 0 12px;
     }
     .frame-strip.bottom {
-      bottom: var(--sp-3); left: var(--sp-6); right: var(--sp-6);
-      height: 20px; justify-content: center;
+      bottom: calc(var(--frame-inset) - 10px);
+      left: calc(var(--frame-inset) + 30px);
+      right: calc(var(--frame-inset) + 30px);
+      height: 20px;
+      justify-content: center;
+      background: #0A1420;
+      padding: 0 12px;
     }
-    .frame-strip.right {
-      right: var(--sp-3); top: var(--sp-6); bottom: var(--sp-6);
-      width: 26px; writing-mode: vertical-rl; transform: rotate(180deg);
+
+    /* ============================================================
+       VOUCHMORPH™ — LATERAL SIDE (between frame and outer edge)
+       Positioned on the right side, between the frame line
+       and the outer edge of the column
+       ============================================================ */
+    .frame-strip.lateral {
+      right: calc(var(--frame-inset) - 14px);  /* ← Outside the frame, on the edge */
+      top: 50%;
+      transform: translateY(-50%) rotate(180deg);
+      transform-origin: center;
+      width: 26px;
+      height: auto;
+      writing-mode: vertical-rl;
       justify-content: center;
       color: var(--brass);
       font-family: var(--f-cond);
@@ -457,17 +486,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       font-weight: 700;
       letter-spacing: 0.34em;
       opacity: 1;
+      background: transparent;
+      padding: 0;
+      z-index: 3;
+      /* Remove any default background that might hide the edge */
+      background: none;
+    }
+    .frame-strip.lateral span {
+      display: inline-block;
+      padding: 8px 0;
+      background: transparent;
     }
 
     .magazine {
       position: absolute;
-      inset: var(--sp-6);
+      inset: var(--frame-inset);
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
       text-align: center;
       padding: var(--sp-7) var(--sp-6);
+      z-index: 1;
     }
     .magazine .eyebrow {
       font-family: var(--f-cond);
@@ -534,16 +574,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       .col-form { flex: 1 1 auto; }
       .col-brand { flex: 1 1 auto; min-height: 400px; }
       .col-form { padding: var(--sp-7) var(--sp-5); }
-      .frame-mat { margin: var(--sp-6); }
-      .frame-line { inset: var(--sp-5); }
-      .frame-strip.top, .frame-strip.bottom { left: var(--sp-5); right: var(--sp-5); }
-      .frame-strip.right { top: var(--sp-5); bottom: var(--sp-5); }
-      .magazine { inset: var(--sp-5); padding: var(--sp-6) var(--sp-4); }
+      :root { --frame-inset: calc(var(--sp-5) * 0.5); }
+      .frame-strip.top { top: calc(var(--frame-inset) - 8px); left: calc(var(--frame-inset) + 20px); right: calc(var(--frame-inset) + 20px); }
+      .frame-strip.bottom { bottom: calc(var(--frame-inset) - 8px); left: calc(var(--frame-inset) + 20px); right: calc(var(--frame-inset) + 20px); }
+      .frame-strip.lateral { right: calc(var(--frame-inset) - 12px); }
+      .magazine { inset: var(--frame-inset); padding: var(--sp-6) var(--sp-4); }
       .magazine p { font-size: 10px; max-width: 280px; }
       .magazine p.secondary { font-size: 10px; max-width: 280px; }
     }
     @media (max-width: 480px) {
-      .frame-strip.right { display: none; }
+      .frame-strip.lateral { display: none; }
       .trust-row { flex-wrap: wrap; gap: var(--sp-3); justify-content: center; }
       .magazine p { font-size: 10px; max-width: 260px; }
       .magazine p.secondary { font-size: 10px; max-width: 260px; }
@@ -624,10 +664,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <!-- RIGHT — black, magazine statement (40%) -->
   <div class="col col-brand">
     <div class="frame-mat">
+      <!-- Outer frame line — moved outward by 50% -->
       <div class="frame-line"></div>
 
-      <div class="frame-strip right"><span>VOUCHMORPH™</span></div>
+      <!-- Top and bottom frame strips -->
+      <div class="frame-strip top"><span>VOUCHMORPH ENTERPRISE</span></div>
+      <div class="frame-strip bottom"><span>VOUCHMORPH ENTERPRISE</span></div>
 
+      <!-- VOUCHMORPH™ on lateral side (between frame and outer edge) -->
+      <div class="frame-strip lateral"><span>VOUCHMORPH™</span></div>
+
+      <!-- Magazine content -->
       <div class="magazine">
         <div class="eyebrow">What is VouchMorph</div>
         <p>VouchMorph moves money between banks, wallets, and vouchers that were never built to talk to each other. An organization sends funds from an account, a card, or a mobile wallet — and the person on the other end can collect it however suits them: a bank deposit, an ATM withdrawal, or a printed voucher redeemed by an agent. One instruction in. Any form of money out.</p>
