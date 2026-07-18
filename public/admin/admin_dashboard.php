@@ -464,6 +464,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             max-width: var(--content-max);
             margin: 0 auto;
             display: flex;
+            justify-content: center;
             gap: var(--sp-5);
             flex-wrap: wrap;
             align-items: center;
@@ -545,6 +546,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
         .content-header {
             display: flex;
+            justify-content: center;
             align-items: center;
             flex-wrap: wrap;
             row-gap: var(--sp-2);
@@ -553,6 +555,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             margin-bottom: var(--sp-6);
             border-bottom: 2px solid var(--ink-900);
             position: relative;
+            text-align: center;
         }
         .content-header::after {
             content: "";
@@ -568,7 +571,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             letter-spacing: 0.01em;
             color: var(--ink-900);
             line-height: 1.2;
-            margin-right: auto;
             display: flex;
             align-items: center;
         }
@@ -957,7 +959,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
             <div class="card">
                 <div class="card-header"><span class="card-title">Quick Actions</span></div>
-                <div style="display:flex; gap:var(--sp-3); flex-wrap:wrap;">
+                <div style="display:flex; justify-content:center; gap:var(--sp-3); flex-wrap:wrap;">
                     <?php if (canView('invoices')): ?><a href="?view=invoices" class="btn btn-primary">Invoices</a><?php endif; ?>
                     <?php if (canView('alerts')): ?><a href="?view=alerts" class="btn">Alerts</a><?php endif; ?>
                     <?php if (canView('institution_health')): ?><a href="?view=institution_health" class="btn">Institution Health</a><?php endif; ?>
