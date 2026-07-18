@@ -487,16 +487,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     /* ============================================================
-       BOTH PARAGRAPHS — Same font size, justified alignment
-       First letter uses the same font as "V" in VOUCHMORPH
+       BOTH PARAGRAPHS — Same font (f-body), same size (10px),
+       Narrow max-width for vertical layout
        ============================================================ */
     .magazine p {
       font-family: var(--f-body);
-      font-size: 8px;
+      font-size: 10px;
       font-weight: 400;
       line-height: 1.85;
       color: rgba(255,255,255,0.92);
-      max-width: 520px;
+      max-width: 340px;          /* ← Narrower for vertical layout */
       text-align: justify;
       text-justify: inter-word;
       hyphens: auto;
@@ -516,11 +516,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     .magazine p.secondary {
       font-family: var(--f-body);
-      font-size: 8px;
+      font-size: 10px;
       font-weight: 400;
       line-height: 1.75;
       color: rgba(255,255,255,0.62);
-      max-width: 480px;
+      max-width: 340px;          /* ← Narrower for vertical layout */
       margin-top: var(--sp-5);
       letter-spacing: 0.005em;
       text-align: justify;
@@ -545,22 +545,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       .split { flex-direction: column; }
       .col { flex: 1 1 auto; }
       .col-form { padding: var(--sp-7) var(--sp-5); }
-      .col-brand { min-height: 380px; }
+      .col-brand { min-height: 420px; }
       .frame-mat { margin: var(--sp-6); }
       .frame-line { inset: var(--sp-6); }
       .frame-strip.top, .frame-strip.bottom { left: var(--sp-6); right: var(--sp-6); }
       .frame-strip.right { top: var(--sp-6); bottom: var(--sp-6); }
       .magazine { inset: var(--sp-6); padding: var(--sp-7) var(--sp-5); }
-      .magazine p { font-size: 15px; }
-      .magazine p::first-letter { font-size: 48px; }
-      .magazine p.secondary { font-size: 15px; }
+      /* Keep font size consistent on tablet */
+      .magazine p { font-size: 10px; max-width: 300px; }
+      .magazine p.secondary { font-size: 10px; max-width: 300px; }
+      .magazine p::first-letter { font-size: 28px; }
     }
     @media (max-width: 480px) {
       .frame-strip.right { display: none; }
       .trust-row { flex-wrap: wrap; gap: var(--sp-3); justify-content: center; }
-      .magazine p { font-size: 14px; }
-      .magazine p::first-letter { font-size: 40px; }
-      .magazine p.secondary { font-size: 14px; }
+      /* Keep font size consistent on mobile */
+      .magazine p { font-size: 10px; max-width: 280px; }
+      .magazine p.secondary { font-size: 10px; max-width: 280px; }
+      .magazine p::first-letter { font-size: 28px; }
     }
 
     @media (prefers-color-scheme: dark) {
@@ -623,7 +625,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       </form>
 
       <div class="trust-row">
-        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg>Secure</span> 
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg>Secure</span>
         <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>2FA Ready</span>
         <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m4 12 5 5L20 6"/></svg>ISO 27001</span>
       </div>
