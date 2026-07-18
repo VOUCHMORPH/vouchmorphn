@@ -178,742 +178,447 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · SIGN IN</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        /* ============================================================
-           TWO-COLUMN LAYOUT - White (left) + Grey Magazine (right)
-           With VOUCHMORPH™ framed border on right column
-           ============================================================ */
-        
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VOUCHMORPH · SIGN IN</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    /* ============================================================
+       VOUCHMORPH — SIGN IN
+       Full-bleed 50/50 split. Left: white, functional, form.
+       Right: ink-black, magazine-set brand statement inside a
+       museum-mat frame with the wordmark run around its border.
+       No max-width box floating mid-screen — each half fills
+       exactly 50% of the viewport at any size, always.
+       ============================================================ */
+    :root {
+      --paper:        #EEF1EF;
+      --panel:        #FFFFFF;
+      --ink-900:      #0B1B2B;
+      --ink-700:      #1D3557;
+      --ink-500:      #4A5A6E;
+      --ink-300:      #8A96A3;
+      --line:         #D3DAD6;
+      --line-strong:  #AEB8B2;
+      --brass:        #9C7A3C;
+      --brass-deep:   #6E5326;
+      --brass-tint:   #F4EFE3;
+      --danger:       #b3261e;
+      --danger-bg:    #fbeceb;
 
-        :root {
-            --panel:        #FFFFFF;
-            --paper:        #EEF1EF;
-            --ink-900:      #0F2138;
-            --ink-700:      #1D3557;
-            --ink-500:      #4A5A6E;
-            --ink-300:      #8A96A3;
-            --line:         #D3DAD6;
-            --line-strong:  #AEB8B2;
-            --brass:        #8A6D3B;
-            --brass-tint:   #F4EFE3;
-            --seal-red:     #7A2118;
-            --grey-mag:     #F2F0ED;
-            --grey-text:    #3D3D3D;
-            --f-body:       'IBM Plex Sans', sans-serif;
-            --f-cond:       'IBM Plex Sans Condensed', sans-serif;
-            --f-mono:       'IBM Plex Mono', monospace;
-            
-            --sp-1: 4px;
-            --sp-2: 8px;
-            --sp-3: 12px;
-            --sp-4: 16px;
-            --sp-5: 20px;
-            --sp-6: 24px;
-            --sp-7: 32px;
-            --sp-8: 40px;
-            --sp-9: 48px;
-            --sp-10: 64px;
-        }
+      --f-display: 'Source Serif 4', 'IBM Plex Sans', serif;
+      --f-body: 'IBM Plex Sans', sans-serif;
+      --f-cond: 'IBM Plex Sans Condensed', sans-serif;
+      --f-mono: 'IBM Plex Mono', monospace;
 
-        html, body {
-            height: 100%;
-            min-height: 100vh;
-        }
+      --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+      --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
+      --sp-9: 48px; --sp-10: 64px;
+    }
 
-        body {
-            font-family: var(--f-body);
-            background: #0B1420;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0;
-            margin: 0;
-            color: var(--ink-900);
-            font-size: 14px;
-            line-height: 1.5;
-            -webkit-font-smoothing: antialiased;
-        }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
 
-        .login-container {
-            display: flex;
-            width: 100%;
-            max-width: 1280px;
-            height: 100vh;
-            max-height: 820px;
-            min-height: 600px;
-            background: var(--panel);
-            box-shadow: 0 20px 60px rgba(0,0,0,0.6);
-            position: relative;
-            overflow: hidden;
-        }
+    body {
+      font-family: var(--f-body);
+      color: var(--ink-900);
+      font-size: 15px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
 
-        /* ============================================================
-           LEFT COLUMN - White (Login)
-           ============================================================ */
-        .login-left {
-            flex: 0 0 48%;
-            background: var(--panel);
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            padding: var(--sp-9) var(--sp-8);
-            position: relative;
-            z-index: 2;
-        }
+    :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
-        .login-left .brand {
-            margin-bottom: var(--sp-8);
-        }
-        .login-left .brand h1 {
-            font-family: var(--f-cond);
-            font-weight: 700;
-            font-size: 18px;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-            color: var(--ink-900);
-            border-top: 2px solid var(--brass);
-            border-bottom: 2px solid var(--brass);
-            padding: 14px 0;
-            display: inline-block;
-        }
-        .login-left .brand .sub {
-            color: var(--ink-300);
-            font-size: 9px;
-            margin-top: 12px;
-            letter-spacing: 0.15em;
-            text-transform: uppercase;
-            font-weight: 600;
-            font-family: var(--f-mono);
-            display: block;
-        }
+    /* ============================================================
+       SPLIT — two flex children, each exactly half, full height.
+       No fixed widths anywhere: this is what keeps it symmetric
+       on any screen size instead of drifting to one side.
+       ============================================================ */
+    .split {
+      display: flex;
+      min-height: 100vh;
+      width: 100%;
+    }
+    .col {
+      flex: 1 1 50%;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
 
-        .login-left h2 {
-            font-family: var(--f-cond);
-            font-size: 24px;
-            font-weight: 700;
-            color: var(--ink-900);
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-        }
-        .login-left .subtitle {
-            color: var(--ink-300);
-            font-size: 14px;
-            margin-top: 4px;
-            margin-bottom: var(--sp-7);
-            font-family: var(--f-body);
-        }
+    /* ============================================================
+       LEFT — white, functional
+       ============================================================ */
+    .col-form {
+      background: var(--panel);
+      align-items: center;
+      justify-content: center;
+      padding: var(--sp-8) var(--sp-6);
+    }
+    .form-wrap {
+      width: 100%;
+      max-width: 400px;
+    }
 
-        .field {
-            margin-bottom: var(--sp-5);
-        }
-        .field label {
-            display: block;
-            margin-bottom: 6px;
-            font-weight: 600;
-            font-size: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            color: var(--ink-500);
-            font-family: var(--f-cond);
-        }
-        .field-input {
-            position: relative;
-        }
-        .field-input svg {
-            position: absolute;
-            left: 14px;
-            top: 50%;
-            transform: translateY(-50%);
-            width: 18px;
-            height: 18px;
-            color: var(--ink-300);
-            pointer-events: none;
-        }
-        .field input {
-            width: 100%;
-            padding: 14px 16px 14px 44px;
-            border: 1.5px solid var(--line);
-            font-size: 15px;
-            font-family: var(--f-body);
-            background: #fdfcf9;
-            transition: border-color .15s, background .15s;
-            color: var(--ink-900);
-        }
-        .field input:focus {
-            outline: none;
-            border-color: var(--brass);
-            background: #fff;
-        }
-        .field input::placeholder {
-            color: var(--ink-300);
-            opacity: 0.7;
-        }
+    .brand {
+      margin-bottom: var(--sp-8);
+    }
+    .brand .mark {
+      font-family: var(--f-display);
+      font-weight: 600;
+      font-size: 26px;
+      letter-spacing: 0.005em;
+      color: var(--ink-900);
+    }
+    .brand .mark sup { font-size: 11px; color: var(--brass-deep); font-weight: 600; }
+    .brand .division {
+      margin-top: var(--sp-2);
+      font-family: var(--f-cond);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-300);
+      padding-top: var(--sp-2);
+      border-top: 2px solid var(--brass);
+      display: inline-block;
+    }
 
-        .btn {
-            width: 100%;
-            padding: 16px;
-            background: var(--ink-900);
-            color: #fff;
-            border: 1.5px solid var(--ink-900);
-            font-size: 13px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: .15s;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            font-family: var(--f-cond);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-            margin-top: 4px;
-        }
-        .btn:hover {
-            background: var(--brass);
-            border-color: var(--brass);
-            color: var(--ink-900);
-        }
-        .btn svg {
-            width: 16px;
-            height: 16px;
-            transition: transform .15s;
-        }
-        .btn:hover svg {
-            transform: translateX(4px);
-        }
+    .form-wrap h2 {
+      font-family: var(--f-display);
+      font-size: 24px;
+      font-weight: 600;
+      color: var(--ink-900);
+    }
+    .form-wrap .subtitle {
+      color: var(--ink-500);
+      font-size: 14px;
+      margin-top: var(--sp-1);
+      margin-bottom: var(--sp-7);
+    }
 
-        .error {
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
-            background: var(--danger-bg);
-            color: var(--danger);
-            padding: 14px 16px;
-            margin-bottom: var(--sp-5);
-            font-size: 13px;
-            border-left: 3px solid var(--danger);
-            line-height: 1.5;
-            font-weight: 500;
-        }
-        .error svg {
-            width: 18px;
-            height: 18px;
-            flex-shrink: 0;
-            margin-top: 1px;
-        }
+    .field { margin-bottom: var(--sp-5); }
+    .field label {
+      display: block;
+      margin-bottom: var(--sp-2);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--ink-500);
+      font-family: var(--f-cond);
+    }
+    .field-input { position: relative; }
+    .field-input svg {
+      position: absolute;
+      left: var(--sp-4);
+      top: 50%;
+      transform: translateY(-50%);
+      width: 18px;
+      height: 18px;
+      color: var(--ink-300);
+      pointer-events: none;
+    }
+    .field input {
+      width: 100%;
+      padding: var(--sp-4) var(--sp-4) var(--sp-4) 44px;
+      border: 1.5px solid var(--line);
+      font-size: 15px;
+      font-family: var(--f-body);
+      background: var(--paper);
+      transition: border-color .15s, background .15s;
+      color: var(--ink-900);
+      border-radius: 0;
+    }
+    .field input:focus {
+      outline: none;
+      border-color: var(--brass);
+      background: #fff;
+    }
+    .field input::placeholder { color: var(--ink-300); opacity: 0.8; }
 
-        .trust-row {
-            display: flex;
-            justify-content: space-between;
-            margin-top: var(--sp-6);
-            padding-top: var(--sp-5);
-            border-top: 1px solid var(--line);
-            font-size: 10px;
-            color: var(--ink-300);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            font-weight: 600;
-            font-family: var(--f-cond);
-        }
-        .trust-row span {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .trust-row svg {
-            width: 14px;
-            height: 14px;
-            color: var(--brass);
-        }
+    .btn {
+      width: 100%;
+      padding: var(--sp-4);
+      background: var(--ink-900);
+      color: #fff;
+      border: 1.5px solid var(--ink-900);
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: .15s;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-family: var(--f-cond);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--sp-3);
+      border-radius: 0;
+      margin-top: var(--sp-2);
+    }
+    .btn:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
+    .btn svg { width: 16px; height: 16px; transition: transform .15s; }
+    .btn:hover svg { transform: translateX(4px); }
 
-        .login-left .footer-text {
-            margin-top: var(--sp-7);
-            padding-top: var(--sp-5);
-            border-top: 1px solid var(--line);
-            color: var(--ink-300);
-            font-size: 9px;
-            letter-spacing: 0.06em;
-            font-family: var(--f-mono);
-            text-transform: uppercase;
-            line-height: 1.8;
-        }
+    .error {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--sp-3);
+      background: var(--danger-bg);
+      color: var(--danger);
+      padding: var(--sp-4);
+      margin-bottom: var(--sp-6);
+      font-size: 13px;
+      border-left: 3px solid var(--danger);
+      line-height: 1.5;
+      font-weight: 500;
+    }
+    .error svg { width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px; }
 
-        /* ============================================================
-           RIGHT COLUMN - Grey Magazine (Explanatory)
-           ============================================================ */
-        .login-right {
-            flex: 1;
-            background: var(--grey-mag);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: var(--sp-9) var(--sp-10);
-            position: relative;
-            overflow: hidden;
-        }
+    .trust-row {
+      display: flex;
+      justify-content: space-between;
+      margin-top: var(--sp-7);
+      padding-top: var(--sp-5);
+      border-top: 1px solid var(--line);
+      font-size: 10.5px;
+      color: var(--ink-300);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 600;
+      font-family: var(--f-cond);
+    }
+    .trust-row span { display: flex; align-items: center; gap: var(--sp-2); }
+    .trust-row svg { width: 14px; height: 14px; color: var(--brass); }
 
-        /* The framed border with VOUCHMORPH™ text around it */
-        .frame-border {
-            position: absolute;
-            inset: var(--sp-6);
-            border: 1px solid rgba(0,0,0,0.08);
-            pointer-events: none;
-        }
+    .legal {
+      margin-top: var(--sp-8);
+      font-size: 9.5px;
+      letter-spacing: 0.05em;
+      font-family: var(--f-mono);
+      text-transform: uppercase;
+      line-height: 1.9;
+      color: var(--ink-300);
+    }
+    .legal .line2 { color: var(--line-strong); font-size: 9px; }
 
-        /* Top-left corner text */
-        .frame-corner-tl {
-            position: absolute;
-            top: -9px;
-            left: 20px;
-            background: var(--grey-mag);
-            padding: 0 12px;
-            font-family: var(--f-cond);
-            font-size: 9px;
-            font-weight: 600;
-            letter-spacing: 0.15em;
-            color: var(--ink-300);
-            text-transform: uppercase;
-        }
+    /* ============================================================
+       RIGHT — black, magazine statement inside a mat frame
+       ============================================================ */
+    .col-brand {
+      background:
+        radial-gradient(1100px 600px at 85% 0%, rgba(156,122,60,.12), transparent 60%),
+        #0A1420;
+      position: relative;
+      align-items: stretch;
+      justify-content: stretch;
+      overflow: hidden;
+    }
 
-        /* Top-right corner text */
-        .frame-corner-tr {
-            position: absolute;
-            top: -9px;
-            right: 20px;
-            background: var(--grey-mag);
-            padding: 0 12px;
-            font-family: var(--f-cond);
-            font-size: 9px;
-            font-weight: 600;
-            letter-spacing: 0.15em;
-            color: var(--ink-300);
-            text-transform: uppercase;
-        }
+    .frame-mat {
+      position: relative;
+      flex: 1;
+      margin: var(--sp-9);
+    }
+    .frame-line {
+      position: absolute;
+      inset: var(--sp-8);
+      border: 1px solid rgba(255,255,255,0.16);
+      pointer-events: none;
+    }
 
-        /* Bottom-left corner text */
-        .frame-corner-bl {
-            position: absolute;
-            bottom: -9px;
-            left: 20px;
-            background: var(--grey-mag);
-            padding: 0 12px;
-            font-family: var(--f-cond);
-            font-size: 9px;
-            font-weight: 600;
-            letter-spacing: 0.15em;
-            color: var(--ink-300);
-            text-transform: uppercase;
-        }
+    /* Repeating wordmark strips that trace the frame — this is the
+       "written around the frame" effect, like a mat board with the
+       studio name printed on it. */
+    .frame-strip {
+      position: absolute;
+      color: rgba(255,255,255,0.3);
+      font-family: var(--f-mono);
+      font-size: 10px;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+    }
+    .frame-strip span { display: inline-block; }
+    .frame-strip.top {
+      top: var(--sp-3); left: var(--sp-8); right: var(--sp-8);
+      height: 20px; justify-content: center;
+    }
+    .frame-strip.bottom {
+      bottom: var(--sp-3); left: var(--sp-8); right: var(--sp-8);
+      height: 20px; justify-content: center;
+    }
+    .frame-strip.left {
+      left: var(--sp-3); top: var(--sp-8); bottom: var(--sp-8);
+      width: 20px; writing-mode: vertical-rl; transform: rotate(180deg);
+      justify-content: center;
+    }
+    .frame-strip.right {
+      right: var(--sp-3); top: var(--sp-8); bottom: var(--sp-8);
+      width: 20px; writing-mode: vertical-rl;
+      justify-content: center;
+    }
 
-        /* Bottom-right corner text */
-        .frame-corner-br {
-            position: absolute;
-            bottom: -9px;
-            right: 20px;
-            background: var(--grey-mag);
-            padding: 0 12px;
-            font-family: var(--f-cond);
-            font-size: 9px;
-            font-weight: 600;
-            letter-spacing: 0.15em;
-            color: var(--ink-300);
-            text-transform: uppercase;
-        }
+    .magazine {
+      position: absolute;
+      inset: var(--sp-8);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: var(--sp-9) var(--sp-8);
+    }
+    .magazine .eyebrow {
+      font-family: var(--f-cond);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--brass);
+      margin-bottom: var(--sp-6);
+    }
+    .magazine p {
+      font-family: var(--f-display);
+      font-size: 21px;
+      font-weight: 400;
+      line-height: 1.85;
+      color: rgba(255,255,255,0.92);
+      max-width: 460px;
+    }
+    .magazine p::first-letter {
+      font-size: 58px;
+      font-weight: 600;
+      color: var(--brass);
+      float: left;
+      line-height: 0.8;
+      padding-right: var(--sp-2);
+      padding-top: 6px;
+    }
+    .magazine .mark {
+      margin-top: var(--sp-7);
+      width: 40px;
+      height: 1px;
+      background: var(--brass);
+    }
 
-        /* The VOUCHMORPH™ TM text on the frame */
-        .frame-tm {
-            position: absolute;
-            top: 50%;
-            right: -1px;
-            transform: translateY(-50%) rotate(90deg);
-            transform-origin: right center;
-            background: var(--grey-mag);
-            padding: 8px 12px;
-            font-family: var(--f-cond);
-            font-size: 10px;
-            font-weight: 700;
-            letter-spacing: 0.2em;
-            color: rgba(0,0,0,0.15);
-            text-transform: uppercase;
-            writing-mode: vertical-rl;
-        }
+    /* ============================================================
+       RESPONSIVE — stack on narrow screens, never lopsided
+       ============================================================ */
+    @media (max-width: 900px) {
+      .split { flex-direction: column; }
+      .col { flex: 1 1 auto; }
+      .col-form { padding: var(--sp-7) var(--sp-5); }
+      .col-brand { min-height: 380px; }
+      .frame-mat { margin: var(--sp-6); }
+      .frame-line { inset: var(--sp-6); }
+      .frame-strip.top, .frame-strip.bottom { left: var(--sp-6); right: var(--sp-6); }
+      .frame-strip.left, .frame-strip.right { top: var(--sp-6); bottom: var(--sp-6); }
+      .magazine { inset: var(--sp-6); padding: var(--sp-7) var(--sp-5); }
+      .magazine p { font-size: 18px; }
+      .magazine p::first-letter { font-size: 46px; }
+    }
+    @media (max-width: 480px) {
+      .frame-strip.left, .frame-strip.right { display: none; }
+      .trust-row { flex-wrap: wrap; gap: var(--sp-3); justify-content: center; }
+    }
 
-        /* Magazine-style content */
-        .magazine-content {
-            max-width: 420px;
-            width: 100%;
-            position: relative;
-            z-index: 1;
-        }
-
-        .magazine-content .eyebrow {
-            font-family: var(--f-cond);
-            font-size: 10px;
-            font-weight: 600;
-            letter-spacing: 0.2em;
-            text-transform: uppercase;
-            color: var(--brass);
-            margin-bottom: var(--sp-4);
-        }
-
-        .magazine-content h2 {
-            font-family: 'Times New Roman', Georgia, serif;
-            font-weight: 700;
-            font-size: 32px;
-            line-height: 1.2;
-            color: var(--ink-900);
-            margin-bottom: var(--sp-5);
-            letter-spacing: -0.01em;
-        }
-
-        .magazine-content h2 .highlight {
-            color: var(--brass);
-            font-style: italic;
-        }
-
-        .magazine-content .lead {
-            font-family: 'Times New Roman', Georgia, serif;
-            font-size: 18px;
-            line-height: 1.6;
-            color: var(--grey-text);
-            margin-bottom: var(--sp-5);
-            font-weight: 400;
-        }
-
-        .magazine-content .body-text {
-            font-family: var(--f-body);
-            font-size: 14px;
-            line-height: 1.8;
-            color: var(--ink-500);
-            margin-bottom: var(--sp-5);
-        }
-
-        .magazine-content .body-text strong {
-            color: var(--ink-900);
-            font-weight: 600;
-        }
-
-        .magazine-content .divider {
-            width: 40px;
-            height: 2px;
-            background: var(--brass);
-            margin: var(--sp-5) 0;
-        }
-
-        .magazine-content .tagline {
-            font-family: var(--f-cond);
-            font-size: 11px;
-            font-weight: 600;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-            color: var(--brass);
-        }
-
-        /* ============================================================
-           RESPONSIVE
-           ============================================================ */
-        @media (max-width: 1024px) {
-            .login-container {
-                max-height: none;
-                min-height: 100vh;
-                height: auto;
-                flex-direction: column;
-            }
-            .login-left {
-                flex: none;
-                padding: var(--sp-8) var(--sp-6);
-            }
-            .login-right {
-                padding: var(--sp-7) var(--sp-6);
-                min-height: 400px;
-            }
-            .magazine-content {
-                max-width: 100%;
-            }
-            .magazine-content h2 {
-                font-size: 26px;
-            }
-            .frame-border {
-                inset: var(--sp-4);
-            }
-            .frame-tm {
-                display: none;
-            }
-        }
-
-        @media (max-width: 640px) {
-            .login-left {
-                padding: var(--sp-6) var(--sp-4);
-            }
-            .login-right {
-                padding: var(--sp-5) var(--sp-4);
-                min-height: 300px;
-            }
-            .magazine-content h2 {
-                font-size: 22px;
-            }
-            .magazine-content .lead {
-                font-size: 16px;
-            }
-            .login-left h2 {
-                font-size: 20px;
-            }
-            .trust-row {
-                flex-wrap: wrap;
-                gap: var(--sp-2);
-                justify-content: center;
-            }
-            .frame-corner-tl,
-            .frame-corner-tr,
-            .frame-corner-bl,
-            .frame-corner-br {
-                font-size: 7px;
-                padding: 0 8px;
-                top: -7px;
-                bottom: -7px;
-            }
-            .frame-border {
-                inset: var(--sp-3);
-            }
-        }
-
-        @media (max-width: 400px) {
-            .login-container {
-                border-radius: 0;
-            }
-            .login-left .brand h1 {
-                font-size: 14px;
-                padding: 10px 0;
-            }
-            .login-left .brand .sub {
-                font-size: 7px;
-            }
-        }
-
-        /* Dark mode support */
-        @media (prefers-color-scheme: dark) {
-            .login-left {
-                background: #1B2733;
-            }
-            .login-left h2 {
-                color: #ECEFF2;
-            }
-            .login-left .subtitle {
-                color: #6B7A85;
-            }
-            .login-left .brand h1 {
-                color: #ECEFF2;
-            }
-            .login-left .brand .sub {
-                color: #6B7A85;
-            }
-            .field input {
-                background: #1B2733;
-                border-color: #2C3A45;
-                color: #ECEFF2;
-            }
-            .field input:focus {
-                border-color: var(--brass);
-                background: #22303A;
-            }
-            .field input::placeholder {
-                color: #6B7A85;
-            }
-            .field label {
-                color: #93A2AC;
-            }
-            .trust-row {
-                border-color: #2C3A45;
-                color: #6B7A85;
-            }
-            .btn {
-                background: #2C3A45;
-                border-color: #2C3A45;
-                color: #ECEFF2;
-            }
-            .btn:hover {
-                background: var(--brass);
-                border-color: var(--brass);
-                color: var(--ink-900);
-            }
-            .login-left .footer-text {
-                border-color: #2C3A45;
-                color: #6B7A85;
-            }
-            .login-right {
-                background: #1A1F26;
-            }
-            .magazine-content h2 {
-                color: #ECEFF2;
-            }
-            .magazine-content .lead {
-                color: #B0B8C0;
-            }
-            .magazine-content .body-text {
-                color: #8A96A3;
-            }
-            .magazine-content .body-text strong {
-                color: #ECEFF2;
-            }
-            .frame-border {
-                border-color: rgba(255,255,255,0.06);
-            }
-            .frame-corner-tl,
-            .frame-corner-tr,
-            .frame-corner-bl,
-            .frame-corner-br,
-            .frame-tm {
-                background: #1A1F26;
-                color: rgba(255,255,255,0.15);
-            }
-        }
-    </style>
+    @media (prefers-color-scheme: dark) {
+      .col-form { background: #12202B; }
+      .brand .mark { color: #ECEFF2; }
+      .form-wrap h2 { color: #ECEFF2; }
+      .form-wrap .subtitle { color: #93A2AC; }
+      .field label { color: #93A2AC; }
+      .field input { background: #0F1B24; border-color: #2C3A45; color: #ECEFF2; }
+      .field input:focus { background: #16232E; border-color: var(--brass); }
+      .field input::placeholder { color: #6B7A85; }
+      .trust-row { border-color: #2C3A45; color: #6B7A85; }
+      .legal { color: #6B7A85; }
+      .legal .line2 { color: #3A4A56; }
+      .btn { background: #2C3A45; border-color: #2C3A45; color: #ECEFF2; }
+      .btn:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
+    }
+  </style>
 </head>
 <body>
+<div class="split">
 
-<div class="login-container">
+  <!-- LEFT — white, functional -->
+  <div class="col col-form">
+    <div class="form-wrap">
+      <div class="brand">
+        <div class="mark">VOUCHMORPH<sup>™</sup></div>
+        <div class="division">Enterprise Access</div>
+      </div>
 
-    <!-- ============================================================
-         LEFT COLUMN – White Login
-         ============================================================ -->
-    <div class="login-left">
-        <div class="brand">
-            <h1>Sovereign Disbursement Network</h1>
-            <span class="sub">Secure · Multi-Asset · Identity-First</span>
+      <h2>Sign in</h2>
+      <p class="subtitle">Access your organization's command center</p>
+
+      <?php if ($error): ?>
+      <div class="error">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <span><?php echo htmlspecialchars($error); ?></span>
+      </div>
+      <?php endif; ?>
+
+      <form method="POST" action="#">
+        <div class="field">
+          <label>Email address</label>
+          <div class="field-input">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 7l9 6 9-6"/></svg>
+            <input type="email" name="email" required placeholder="you@government.gov.bw" autocomplete="username">
+          </div>
         </div>
-
-        <h2>Sign in</h2>
-        <p class="subtitle">Access your organization's command center</p>
-
-        <?php if ($error): ?>
-        <div class="error">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="9"/>
-                <path d="M12 8v5M12 16h.01"/>
-            </svg>
-            <span><?php echo htmlspecialchars($error); ?></span>
+        <div class="field">
+          <label>Password</label>
+          <div class="field-input">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="1"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+            <input type="password" name="password" required placeholder="••••••••" autocomplete="current-password">
+          </div>
         </div>
-        <?php endif; ?>
+        <button type="submit" class="btn">
+          Sign in
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </form>
 
-        <form method="POST" action="#">
-            <div class="field">
-                <label>Email address</label>
-                <div class="field-input">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                        <rect x="3" y="5" width="18" height="14" rx="1"/>
-                        <path d="M3 7l9 6 9-6"/>
-                    </svg>
-                    <input type="email" name="email" required placeholder="you@government.gov.bw" autocomplete="username">
-                </div>
-            </div>
-            <div class="field">
-                <label>Password</label>
-                <div class="field-input">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                        <rect x="5" y="11" width="14" height="9" rx="1"/>
-                        <path d="M8 11V7a4 4 0 0 1 8 0v4"/>
-                    </svg>
-                    <input type="password" name="password" required placeholder="••••••••" autocomplete="current-password">
-                </div>
-            </div>
-            <button type="submit" class="btn">
-                Sign in
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M5 12h14M13 6l6 6-6 6"/>
-                </svg>
-            </button>
-        </form>
+      <div class="trust-row">
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg>Secure</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>2FA Ready</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m4 12 5 5L20 6"/></svg>ISO 27001</span>
+      </div>
 
-        <div class="trust-row">
-            <span>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/>
-                </svg>
-                Secure
-            </span>
-            <span>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="4" y="10" width="16" height="10" rx="1"/>
-                    <path d="M8 10V7a4 4 0 0 1 8 0v3"/>
-                </svg>
-                2FA Ready
-            </span>
-            <span>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="m4 12 5 5L20 6"/>
-                </svg>
-                ISO 27001
-            </span>
-        </div>
-
-        <div class="footer-text">
-            SECURE ENTERPRISE MULTI-ASSET PAYMENT · DISTRIBUTION RESTRICTED · ISO 27001 · © 2026 VOUCHMORPH
-        </div>
+      <div class="legal">
+        <div>Secure enterprise multi-asset payment · distribution restricted · ISO 27001 · © 2026 VouchMorph</div>
+        <div class="line2">VM/2026/0708-000</div>
+      </div>
     </div>
+  </div>
 
-    <!-- ============================================================
-         RIGHT COLUMN – Grey Magazine (Explanatory)
-         ============================================================ -->
-    <div class="login-right">
+  <!-- RIGHT — black, magazine statement in a mat frame -->
+  <div class="col col-brand">
+    <div class="frame-mat">
+      <div class="frame-line"></div>
 
-        <!-- The framed border with VOUCHMORPH™ -->
-        <div class="frame-border"></div>
+      <div class="frame-strip top"><span>VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™</span></div>
+      <div class="frame-strip bottom"><span>VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™</span></div>
+      <div class="frame-strip left"><span>VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™</span></div>
+      <div class="frame-strip right"><span>VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™</span></div>
 
-        <!-- Corner labels -->
-        <span class="frame-corner-tl"> VOUCHMORPH </span>
-        <span class="frame-corner-tr"> ENTERPRISE </span>
-        <span class="frame-corner-bl"> PAYMENT </span>
-        <span class="frame-corner-br"> NETWORK </span>
-
-        <!-- VOUCHMORPH™ on the right edge -->
-        <span class="frame-tm">VOUCHMORPH™</span>
-
-        <!-- Magazine-style content -->
-        <div class="magazine-content">
-            <div class="eyebrow">The Sovereign Disbursement Network</div>
-
-            <h2>
-                Send value,<br>
-                <span class="highlight">not just money.</span>
-            </h2>
-
-            <div class="divider"></div>
-
-            <p class="lead">
-                VouchMorph is a multi-asset payment orchestration layer
-                built for governments, enterprises, and financial institutions.
-            </p>
-
-            <p class="body-text">
-                <strong>One platform</strong> to disburse funds, manage beneficiaries,
-                and track every transaction across <strong>bank accounts, mobile wallets,
-                cash vouchers, and cards</strong> — all from a single, secure command center.
-            </p>
-
-            <p class="body-text">
-                With <strong>role‑based access</strong>, <strong>multi‑factor authentication</strong>,
-                and <strong>real‑time audit trails</strong>, VouchMorph ensures that every
-                payment reaches its destination with <strong>transparency, speed, and trust</strong>.
-            </p>
-
-            <div class="divider"></div>
-
-            <p class="tagline">Built for resilience · Designed for scale</p>
-        </div>
-
+      <div class="magazine">
+        <div class="eyebrow">What is VouchMorph</div>
+        <p>VouchMorph moves money between banks, wallets, and vouchers that were never built to talk to each other. An organization sends funds from an account, a card, or a mobile wallet — and the person on the other end can collect it however suits them: a bank deposit, an ATM withdrawal, or a printed voucher redeemed by an agent. One instruction in. Any form of money out.</p>
+        <div class="mark"></div>
+      </div>
     </div>
+  </div>
 
 </div>
-
 </body>
 </html>
