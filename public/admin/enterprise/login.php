@@ -491,8 +491,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
        First letter uses the same font as "V" in VOUCHMORPH
        ============================================================ */
     .magazine p {
-      font-family: var(--f-display);
-      font-size: 17px;
+      font-family: var(--f-body);
+      font-size: 8px;
       font-weight: 400;
       line-height: 1.85;
       color: rgba(255,255,255,0.92);
@@ -505,7 +505,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     /* First letter styling — uses the same font as the "V" in VOUCHMORPH™ */
     .magazine p::first-letter {
       font-family: var(--f-cond);
-      font-size: 58px;
+      font-size: 28px;
       font-weight: 700;
       color: var(--brass);
       float: left;
@@ -516,7 +516,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     .magazine p.secondary {
       font-family: var(--f-body);
-      font-size: 17px;
+      font-size: 8px;
       font-weight: 400;
       line-height: 1.75;
       color: rgba(255,255,255,0.62);
