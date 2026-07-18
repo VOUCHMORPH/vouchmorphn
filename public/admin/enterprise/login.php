@@ -455,7 +455,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       height: 20px; justify-content: center;
     }
     .frame-strip.left {
-      left: var(--sp-3); top: var(--sp-8); bottom: var(--sp-8);
+      right: var(--sp-3); top: var(--sp-8); bottom: var(--sp-8);
       width: 26px; writing-mode: vertical-rl; transform: rotate(180deg);
       justify-content: center;
       /* This edge is the signature mark — bold, high-contrast, single
@@ -630,9 +630,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="frame-mat">
       <div class="frame-line"></div>
 
-      <div class="frame-strip bottom"><span>VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™</span></div>
-      <div class="frame-strip left"><span>VOUCHMORPH™</span></div>
-      <div class="frame-strip right"><span>VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™</span></div>
+      <div class="frame-strip right"><span>VOUCHMORPH™</span></div>
 
       <div class="magazine">
         <div class="eyebrow">What is VouchMorph</div>
