@@ -320,6 +320,9 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
             --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
             --sp-9: 48px; --sp-10: 64px;
+
+            --content-max: 1080px;
+            --header-h: 38px;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -507,21 +510,17 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
 
         /* ============================================================
-           WORKSPACE — 60/40 split matching login
+           WORKSPACE — 30/70 split (dark letterhead / working content)
            ============================================================ */
         .workspace { display: flex; align-items: stretch; min-height: calc(100vh - 180px); }
         .workspace.dark-left { flex-direction: row; }
         .workspace.dark-right { flex-direction: row-reverse; }
 
         .panel-dark {
-            flex: 0 0 36%;
+            flex: 0 0 30%;
             background:
                 radial-gradient(900px 600px at 85% 0%, rgba(156,122,60,.10), transparent 60%),
                 #0A1420;
-            padding: var(--sp-9) var(--sp-7);
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
             position: sticky;
             top: 0;
             height: calc(100vh - 180px);
@@ -530,48 +529,99 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .workspace.dark-right .panel-dark { border-right: none; border-left: 1px solid rgba(255,255,255,0.06); }
 
+        /* Letterhead-style mat frame, echoing the login page's frame-mat treatment
+           so the two screens read as one continuous system. */
+        .panel-dark .frame-mat {
+            position: relative;
+            height: 100%;
+            min-height: 460px;
+            margin: var(--sp-5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .panel-dark .frame-line {
+            position: absolute;
+            inset: 0;
+            border: 1px solid rgba(255,255,255,0.14);
+            pointer-events: none;
+        }
+        .panel-dark .frame-strip {
+            position: absolute;
+            color: rgba(255,255,255,0.32);
+            font-family: var(--f-mono);
+            font-size: 9px;
+            letter-spacing: 0.26em;
+            text-transform: uppercase;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2;
+        }
+        .panel-dark .frame-strip.top {
+            top: -8px; left: 24px; right: 24px; height: 16px;
+            background: #0A1420; padding: 0 10px;
+        }
+        .panel-dark .frame-strip.bottom {
+            bottom: -8px; left: 24px; right: 24px; height: 16px;
+            background: #0A1420; padding: 0 10px;
+        }
+
+        .panel-dark .panel-inner {
+            position: relative;
+            z-index: 1;
+            width: 100%;
+            max-width: 300px;
+            margin: 0 auto;
+            padding: var(--sp-8) var(--sp-5);
+            text-align: center;
+        }
         .panel-dark .eyebrow {
             font-family: var(--f-cond);
-            font-size: 11px;
+            font-size: 10.5px;
             font-weight: 600;
-            letter-spacing: 0.18em;
+            letter-spacing: 0.2em;
             text-transform: uppercase;
             color: var(--brass);
             margin-bottom: var(--sp-5);
         }
         .panel-dark .blurb {
             font-family: var(--f-display);
-            font-size: 17px;
+            font-size: 16px;
             font-weight: 400;
-            line-height: 1.8;
+            line-height: 1.75;
             color: rgba(255,255,255,0.92);
-            max-width: 400px;
-            text-align: justify;
-            text-justify: inter-word;
+            text-align: left;
+            text-align-last: left;
             hyphens: auto;
         }
         .panel-dark .blurb::first-letter {
-            font-size: 46px;
+            font-size: 40px;
             font-weight: 600;
             color: var(--brass);
             float: left;
-            line-height: 0.8;
+            line-height: 0.75;
             padding-right: var(--sp-2);
             padding-top: 4px;
         }
         .panel-dark .mark {
-            margin-top: var(--sp-6);
+            margin: var(--sp-6) auto 0;
             width: 40px;
             height: 2px;
             background: var(--brass);
         }
 
         .workspace .admin-content {
-            flex: 1 1 64%;
+            flex: 1 1 70%;
             min-width: 0;
-            padding: var(--sp-7) var(--sp-7);
-            max-width: none;
-            margin: 0;
+            padding: var(--sp-7);
+            display: flex;
+            justify-content: center;
+        }
+        .workspace .admin-content-inner {
+            width: 100%;
+            max-width: var(--content-max);
         }
 
         /* ============================================================
@@ -579,13 +629,22 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
            ============================================================ */
         .content-header {
             display: flex;
-            justify-content: space-between;
-            align-items: flex-end;
+            align-items: center;
             flex-wrap: wrap;
-            gap: var(--sp-3);
+            row-gap: var(--sp-2);
+            column-gap: var(--sp-5);
             padding-bottom: var(--sp-4);
-            border-bottom: 1px solid var(--line-strong);
             margin-bottom: var(--sp-6);
+            border-bottom: 2px solid var(--ink-900);
+            position: relative;
+        }
+        /* letterhead-style double rule, echoes the brass mark on the login page */
+        .content-header::after {
+            content: "";
+            position: absolute;
+            left: 0; right: 0; bottom: -4px;
+            height: 1px;
+            background: var(--line-strong);
         }
         .content-header h1 {
             font-family: var(--f-display);
@@ -593,13 +652,17 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             font-weight: 600;
             letter-spacing: 0.01em;
             color: var(--ink-900);
-            line-height: 1.15;
+            line-height: 1.2;
+            margin-right: auto;
+            display: flex;
+            align-items: center;
         }
         .content-header .timestamp {
             font-family: var(--f-mono);
             font-size: 10px;
             color: var(--ink-300);
-            line-height: 1.8;
+            line-height: 1;
+            white-space: nowrap;
         }
         .content-header .back-link {
             font-family: var(--f-cond);
@@ -609,13 +672,16 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             letter-spacing: 0.06em;
             color: var(--ink-500);
             text-decoration: none;
-            padding: var(--sp-1) var(--sp-3);
+            padding: var(--sp-2) var(--sp-3);
             border: 1px solid var(--line-strong);
             transition: all 0.15s;
+            white-space: nowrap;
+            line-height: 1;
         }
         .content-header .back-link:hover {
             border-color: var(--brass);
             color: var(--ink-900);
+            background: var(--brass-tint);
         }
 
         /* ============================================================
@@ -631,28 +697,34 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .metric-card {
             background: var(--panel);
-            padding: var(--sp-4) var(--sp-5) var(--sp-3);
-            border-top: 2px solid transparent;
-            transition: border-color 0.15s;
+            padding: var(--sp-5) var(--sp-5) var(--sp-4);
+            min-height: 96px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            border-top: 2px solid var(--brass-tint);
+            transition: border-color 0.15s, background-color .15s;
         }
-        .metric-card:hover { border-top-color: var(--brass); }
+        .metric-card:hover { border-top-color: var(--brass); background: #FCFBF8; }
         .metric-card .metric-label {
             font-size: 10px;
             text-transform: uppercase;
             color: var(--ink-300);
-            letter-spacing: 0.06em;
+            letter-spacing: 0.07em;
             font-weight: 600;
             font-family: var(--f-cond);
             line-height: 1.4;
+            display: block;
         }
         .metric-card .metric-value {
             font-family: var(--f-display);
-            font-size: 26px;
+            font-size: 25px;
             font-weight: 600;
             color: var(--ink-900);
             font-variant-numeric: tabular-nums;
-            line-height: 1.1;
-            margin-top: var(--sp-1);
+            line-height: 1.25;
+            margin-top: var(--sp-2);
+            display: block;
         }
         .metric-card .metric-sub {
             font-size: 10px;
@@ -660,6 +732,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             font-family: var(--f-mono);
             line-height: 1.4;
             margin-top: var(--sp-1);
+            display: block;
         }
 
         /* ============================================================
@@ -723,14 +796,15 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
            ============================================================ */
         .search-box {
             display: flex;
-            gap: var(--sp-2);
-            align-items: center;
+            gap: var(--sp-3);
+            align-items: stretch;
             flex-wrap: wrap;
-            margin-bottom: var(--sp-4);
+            margin-bottom: var(--sp-5);
         }
         .search-box input[type="text"] {
             font-family: var(--f-body);
-            padding: var(--sp-2) var(--sp-4);
+            padding: 0 var(--sp-4);
+            height: 40px;
             border: 1.5px solid var(--line);
             font-size: 13px;
             background: #fdfcf9;
@@ -739,6 +813,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             flex: 1;
             transition: border-color .15s, background .15s;
         }
+        .search-box .btn { height: 40px; }
         .search-box input[type="text"]:focus {
             outline: none;
             border-color: var(--brass);
@@ -919,12 +994,13 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                 flex: 0 0 auto;
                 position: static;
                 height: auto;
-                padding: var(--sp-6) var(--sp-5);
                 border-right: none;
                 border-bottom: 1px solid rgba(255,255,255,0.06);
             }
             .workspace.dark-right .panel-dark { border-left: none; border-bottom: 1px solid rgba(255,255,255,0.06); }
-            .panel-dark .blurb { max-width: none; }
+            .panel-dark .frame-mat { min-height: 0; margin: var(--sp-4); }
+            .panel-dark .panel-inner { padding: var(--sp-6) var(--sp-4); max-width: 480px; }
+            .panel-dark .blurb { text-align: left; }
             .workspace .admin-content { padding: var(--sp-5); }
         }
         @media (max-width: 768px) {
@@ -934,9 +1010,10 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             .admin-nav { padding: 0 var(--sp-4); gap: var(--sp-4); }
             .admin-ribbon { padding: var(--sp-1) var(--sp-4); flex-direction: column; gap: 2px; }
             .metrics-grid { grid-template-columns: repeat(2, 1fr); }
-            .content-header { flex-direction: column; align-items: flex-start; }
-            .content-header h1 { font-size: 18px; }
+            .content-header h1 { font-size: 18px; width: 100%; }
+            .content-header { row-gap: var(--sp-3); }
             .workspace .admin-content { padding: var(--sp-4); }
+            .panel-dark .frame-strip.top, .panel-dark .frame-strip.bottom { left: 12px; right: 12px; font-size: 8px; letter-spacing: 0.18em; }
         }
         @media (max-width: 480px) {
             .metrics-grid { grid-template-columns: 1fr; }
@@ -992,13 +1069,20 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
     <div class="workspace dark-<?php echo safeHtml($currentMeta['side']); ?>">
         <!-- Description Panel (Dark) -->
         <div class="panel-dark">
-            <div class="eyebrow"><?php echo safeHtml($currentMeta['eyebrow']); ?></div>
-            <div class="blurb"><?php echo safeHtml($currentMeta['blurb']); ?></div>
-            <div class="mark"></div>
+            <div class="frame-mat">
+                <div class="frame-line"></div>
+                <div class="frame-strip top"><span>VouchMorph Admin</span></div>
+                <div class="frame-strip bottom"><span>VM/<?php echo date('Y'); ?>/ADM</span></div>
+                <div class="panel-inner">
+                    <div class="eyebrow"><?php echo safeHtml($currentMeta['eyebrow']); ?></div>
+                    <div class="blurb"><?php echo safeHtml($currentMeta['blurb']); ?></div>
+                    <div class="mark"></div>
+                </div>
+            </div>
         </div>
 
         <!-- Main Content -->
-        <main class="admin-content">
+        <main class="admin-content"><div class="admin-content-inner">
 
             <!-- DASHBOARD -->
             <?php if ($view === 'dashboard'): ?>
@@ -1362,7 +1446,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             <div class="card"><div class="empty-state"><span class="icon">🚫</span><h2 style="font-family:var(--f-cond);text-transform:uppercase;font-size:18px;margin-bottom:var(--sp-2);">Access Denied</h2><p>You do not have permission to view this page.</p><a href="?view=dashboard" class="btn btn-primary" style="margin-top:var(--sp-4);">Return to Dashboard</a></div></div>
             <?php endif; ?>
 
-        </main>
+        </div></main>
     </div>
 
     <!-- FOOTER -->
