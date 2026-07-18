@@ -2701,8 +2701,8 @@ class SwapService
                 'result' => $result
             ];
             
-        } catch (Exception $e) {
-            error_log("[SwapService] confirmAndFinalizeIdentitySwap FAILED: " . $e->getMessage());
+                } catch (\Throwable $e) {
+            error_log("[SwapService] confirmAndFinalizeIdentitySwap FAILED (" . get_class($e) . "): " . $e->getMessage());
             if (!$this->inAtomicSwap) {
                 $this->rollbackAtomicSwap($e->getMessage());
             }
