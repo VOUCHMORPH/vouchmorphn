@@ -7,7 +7,8 @@
 declare(strict_types=1);
 
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
 session_start();
 
 define('PROJECT_ROOT', dirname(__DIR__, 2));
@@ -69,6 +70,47 @@ $search = trim($_GET['search'] ?? '');
 $lookup = trim($_GET['lookup'] ?? '');
 
 // ============================================================
+// AJAX HANDLER — the live-transactions auto-refresh fetches
+// ?ajax=1 and expects JSON back. Must run before any HTML is
+// emitted, and must exit before reaching the <!DOCTYPE> below.
+// ============================================================
+if (isset($_GET['ajax']) && $view === 'live_transactions' && canView('live_transactions')) {
+    $ajaxRows = [];
+    try {
+        $checkStmt = $db->query("SELECT to_regclass('vw_all_swaps')");
+        if ($checkStmt->fetchColumn()) {
+            $stmt = $db->prepare("
+                SELECT swap_reference, reference, swap_type, source_institution,
+                       destination_institution, amount, currency, status, fee_amount, created_at
+                FROM vw_all_swaps
+                WHERE swap_reference ILIKE :search1 OR reference ILIKE :search2
+                   OR source_institution ILIKE :search3 OR destination_institution ILIKE :search4
+                   OR status ILIKE :search5
+                ORDER BY created_at DESC
+                LIMIT 200
+            ");
+            $likeSearch = '%' . $search . '%';
+            $stmt->execute([
+                ':search1' => $likeSearch, ':search2' => $likeSearch,
+                ':search3' => $likeSearch, ':search4' => $likeSearch,
+                ':search5' => $likeSearch,
+            ]);
+            $ajaxRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($ajaxRows as &$ajaxRow) {
+                $ajaxRow['amount'] = (float)($ajaxRow['amount'] ?? 0);
+                $ajaxRow['fee_amount'] = (float)($ajaxRow['fee_amount'] ?? 0);
+            }
+            unset($ajaxRow);
+        }
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] AJAX live_transactions error: " . $e->getMessage());
+    }
+    header('Content-Type: application/json');
+    echo json_encode(['transactions' => $ajaxRows]);
+    exit;
+}
+
+// ============================================================
 // FETCH DATA
 // ============================================================
 
@@ -102,6 +144,11 @@ try {
             FROM vw_all_swaps WHERE created_at >= NOW() - INTERVAL '24 hours'
         ");
         $liveStats = $statStmt->fetch(PDO::FETCH_ASSOC);
+        $liveStats['total'] = (int)($liveStats['total'] ?? 0);
+        $liveStats['completed'] = (int)($liveStats['completed'] ?? 0);
+        $liveStats['pending'] = (int)($liveStats['pending'] ?? 0);
+        $liveStats['failed'] = (int)($liveStats['failed'] ?? 0);
+        $liveStats['total_amount'] = (float)($liveStats['total_amount'] ?? 0);
     }
 } catch (Throwable $e) {}
 
@@ -132,7 +179,8 @@ $multiDestinationSwaps = [];
 try {
     $stmt = $db->query("
         SELECT id, reference, source_institution, total_destinations, successful_count,
-               failed_count, total_amount, total_fees, status, created_at
+               failed_count, total_amount, total_fees, status, created_at,
+               destinations_payload, results_payload
         FROM multi_destination_swaps ORDER BY created_at DESC
     ");
     $multiDestinationSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -189,6 +237,9 @@ try {
     ");
     $institutionHealth = $stmt->fetchAll(PDO::FETCH_ASSOC);
     foreach ($institutionHealth as &$row) {
+        $row['total'] = (int)($row['total'] ?? 0);
+        $row['successful'] = (int)($row['successful'] ?? 0);
+        $row['volume'] = (float)($row['volume'] ?? 0);
         $row['success_rate'] = $row['total'] > 0 ? round(($row['successful'] / $row['total']) * 100, 1) : 0.0;
     }
     unset($row);
@@ -264,6 +315,13 @@ if ($view === 'audit' && canView('audit')) {
     try { $auditRows = $db->query("SELECT * FROM audit_logs ORDER BY audit_id DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
 }
 
+$netPositions = [];
+$pendingSettlements = [];
+if ($view === 'regulatory' && canView('regulatory')) {
+    try { $netPositions = $db->query("SELECT * FROM net_positions ORDER BY id DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+    try { $pendingSettlements = $db->query("SELECT * FROM settlement_queue WHERE status = 'PENDING' ORDER BY created_at DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+}
+
 $invoiceMessages = [];
 if ($view === 'invoices' && canView('invoices')) {
     try { $invoiceMessages = $db->query("SELECT * FROM settlement_outbox WHERE message_type = 'FEE_INVOICE' ORDER BY created_at DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
@@ -294,11 +352,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ============================================================
-           VOUCHMORPH — ADMIN DASHBOARD
-           Perfect complement to login page. Same palette, same
-           typography, same spacing rhythm.
-           ============================================================ */
         :root {
             --paper:        #EEF1EF;
             --panel:        #FFFFFF;
@@ -337,296 +390,120 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             -webkit-font-smoothing: antialiased;
         }
 
-        /* ============================================================
-           RIBBON — matches login
-           ============================================================ */
-        .admin-ribbon {
-            background: var(--ink-900);
-            color: var(--ink-300);
-            font-family: var(--f-mono);
-            font-size: 10px;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            padding: var(--sp-1) var(--sp-7);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: var(--sp-3);
-            border-bottom: 1px solid rgba(255,255,255,0.08);
-            line-height: 1.8;
-        }
-        .admin-ribbon strong { color: var(--brass); font-weight: 600; }
+        .app-shell { display: flex; min-height: 100vh; }
 
         /* ============================================================
-           HEADER — matches login
+           SIDEBAR — fixed, permanent, carries nav + brand blurb.
+           Replaces the old ribbon + header + top nav + alternating
+           dark panel with one persistent left rail, matching the
+           standard admin-dashboard pattern (fixed sidebar + card
+           content) while keeping the login page's dark/brass identity
+           always on screen instead of appearing only per-page.
            ============================================================ */
-        .admin-header {
-            position: relative;
+        .sidebar {
+            flex: 0 0 280px;
+            min-width: 0;
             background:
-                radial-gradient(ellipse at top left, rgba(156,122,60,0.10), transparent 55%),
+                radial-gradient(700px 500px at 15% 0%, rgba(156,122,60,.12), transparent 60%),
                 var(--ink-900);
             color: #fff;
-            padding: var(--sp-5) var(--sp-7);
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: var(--sp-4);
-            border-bottom: 3px solid var(--brass);
-            overflow: hidden;
-        }
-        .admin-header::before {
-            content: "";
-            position: absolute;
-            inset: 0;
-            opacity: 0.06;
-            pointer-events: none;
-            background-image:
-                repeating-radial-gradient(circle at 0% 50%, transparent 0, transparent 6px, rgba(255,255,255,0.4) 7px, transparent 8px),
-                repeating-radial-gradient(circle at 100% 50%, transparent 0, transparent 6px, rgba(255,255,255,0.4) 7px, transparent 8px);
-            background-size: 80px 80px;
-        }
-        .header-left {
-            position: relative;
-            display: flex;
-            align-items: center;
-            gap: var(--sp-5);
-            flex-wrap: wrap;
-        }
-        .logo {
-            font-family: var(--f-display);
-            font-weight: 600;
-            font-size: 20px;
-            letter-spacing: 0.01em;
-            line-height: 1;
-        }
-        .logo span { color: var(--brass); font-weight: 400; }
-        .logo-sub {
-            font-family: var(--f-cond);
-            font-size: 10px;
-            font-weight: 600;
-            letter-spacing: 0.13em;
-            text-transform: uppercase;
-            color: var(--ink-300);
-            line-height: 1;
-        }
-        .role-badge {
-            padding: var(--sp-1) var(--sp-3);
-            background: transparent;
-            border: 1px solid var(--brass);
-            color: var(--brass);
-            font-size: 10px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            font-family: var(--f-cond);
-            line-height: 1;
-        }
-        .user-area {
-            position: relative;
-            display: flex;
-            align-items: center;
-            gap: var(--sp-5);
-            flex-wrap: wrap;
-        }
-        .user-details { text-align: right; display: flex; flex-direction: column; gap: 2px; }
-        .user-name {
-            font-weight: 600;
-            color: #fff;
-            font-size: 14px;
-            font-family: var(--f-display);
-            line-height: 1;
-        }
-        .user-role {
-            font-size: 10px;
-            color: var(--ink-300);
-            text-transform: uppercase;
-            font-family: var(--f-cond);
-            letter-spacing: 0.06em;
-            line-height: 1;
-        }
-        .logout-btn {
-            padding: var(--sp-2) var(--sp-4);
-            border: 1px solid rgba(255,255,255,0.25);
-            color: #fff;
-            text-decoration: none;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            font-family: var(--f-cond);
-            transition: all 0.15s;
-            letter-spacing: 0.06em;
-            line-height: 1;
-            background: transparent;
-        }
-        .logout-btn:hover {
-            background: var(--brass);
-            border-color: var(--brass);
-            color: var(--ink-900);
-        }
-
-        /* ============================================================
-           NAV — matches login
-           ============================================================ */
-        .admin-nav {
-            background: var(--panel);
-            border-bottom: 1px solid var(--line);
-            padding: 0 var(--sp-7);
-            display: flex;
-            gap: var(--sp-6);
-            flex-wrap: wrap;
-            align-items: center;
-            overflow-x: auto;
-        }
-        .nav-item {
-            padding: var(--sp-4) 0;
-            color: var(--ink-500);
-            text-decoration: none;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            border-bottom: 2px solid transparent;
-            transition: all 0.15s;
-            white-space: nowrap;
-            font-family: var(--f-cond);
-            line-height: 1;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .nav-item:hover { color: var(--ink-900); }
-        .nav-item.active {
-            color: var(--ink-900);
-            border-bottom-color: var(--brass);
-        }
-        .nav-badge {
-            background: var(--brass);
-            color: #fff;
-            font-size: 9px;
-            padding: 1px 8px;
-            font-family: var(--f-mono);
-            font-weight: 700;
-        }
-
-        /* ============================================================
-           WORKSPACE — 30/70 split (dark letterhead / working content)
-           ============================================================ */
-        .workspace { display: flex; align-items: stretch; min-height: calc(100vh - 180px); }
-        .workspace.dark-left { flex-direction: row; }
-        .workspace.dark-right { flex-direction: row-reverse; }
-
-        .panel-dark {
-            flex: 0 0 30%;
-            background:
-                radial-gradient(900px 600px at 85% 0%, rgba(156,122,60,.10), transparent 60%),
-                #0A1420;
+            flex-direction: column;
             position: sticky;
             top: 0;
-            height: calc(100vh - 180px);
-            overflow-y: auto;
-            border-right: 1px solid rgba(255,255,255,0.06);
+            height: 100vh;
+            border-right: 3px solid var(--brass);
         }
-        .workspace.dark-right .panel-dark { border-right: none; border-left: 1px solid rgba(255,255,255,0.06); }
-
-        /* Letterhead-style mat frame, echoing the login page's frame-mat treatment
-           so the two screens read as one continuous system. */
-        .panel-dark .frame-mat {
-            position: relative;
-            height: 100%;
-            min-height: 460px;
-            margin: var(--sp-5);
-            display: flex;
-            align-items: center;
-            justify-content: center;
+        .sidebar-brand {
+            padding: var(--sp-6) var(--sp-5) var(--sp-5);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
         }
-        .panel-dark .frame-line {
-            position: absolute;
-            inset: 0;
-            border: 1px solid rgba(255,255,255,0.14);
-            pointer-events: none;
+        .sidebar-brand .logo { font-family: var(--f-display); font-weight: 600; font-size: 19px; line-height: 1.2; }
+        .sidebar-brand .logo span { color: var(--brass); font-weight: 400; }
+        .sidebar-brand .division {
+            font-family: var(--f-cond); font-size: 9.5px; font-weight: 600;
+            letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-300);
+            margin-top: 4px;
         }
-        .panel-dark .frame-strip {
-            position: absolute;
-            color: rgba(255,255,255,0.32);
-            font-family: var(--f-mono);
-            font-size: 9px;
-            letter-spacing: 0.26em;
-            text-transform: uppercase;
-            white-space: nowrap;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 2;
-        }
-        .panel-dark .frame-strip.top {
-            top: -8px; left: 24px; right: 24px; height: 16px;
-            background: #0A1420; padding: 0 10px;
-        }
-        .panel-dark .frame-strip.bottom {
-            bottom: -8px; left: 24px; right: 24px; height: 16px;
-            background: #0A1420; padding: 0 10px;
-        }
-
-        .panel-dark .panel-inner {
-            position: relative;
-            z-index: 1;
-            width: 100%;
-            max-width: 300px;
-            margin: 0 auto;
-            padding: var(--sp-8) var(--sp-5);
-            text-align: center;
-        }
-        .panel-dark .eyebrow {
+        .sidebar-brand .role-badge {
+            display: inline-block; margin-top: var(--sp-3);
+            padding: 3px var(--sp-3); border: 1px solid var(--brass); color: var(--brass);
+            font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em;
             font-family: var(--f-cond);
-            font-size: 10.5px;
-            font-weight: 600;
-            letter-spacing: 0.2em;
-            text-transform: uppercase;
-            color: var(--brass);
-            margin-bottom: var(--sp-5);
-        }
-        .panel-dark .blurb {
-            font-family: var(--f-display);
-            font-size: 16px;
-            font-weight: 400;
-            line-height: 1.75;
-            color: rgba(255,255,255,0.92);
-            text-align: left;
-            text-align-last: left;
-            hyphens: auto;
-        }
-        .panel-dark .blurb::first-letter {
-            font-size: 40px;
-            font-weight: 600;
-            color: var(--brass);
-            float: left;
-            line-height: 0.75;
-            padding-right: var(--sp-2);
-            padding-top: 4px;
-        }
-        .panel-dark .mark {
-            margin: var(--sp-6) auto 0;
-            width: 40px;
-            height: 2px;
-            background: var(--brass);
         }
 
-        .workspace .admin-content {
-            flex: 1 1 70%;
-            min-width: 0;
-            padding: var(--sp-7);
-            display: flex;
-            justify-content: center;
+        .sidebar-nav { flex: 1; overflow-y: auto; padding: var(--sp-4) 0; }
+        .sidebar-nav a {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: var(--sp-3) var(--sp-5);
+            color: rgba(255,255,255,0.65); text-decoration: none;
+            font-size: 12.5px; font-weight: 600; font-family: var(--f-cond);
+            text-transform: uppercase; letter-spacing: 0.04em;
+            border-left: 3px solid transparent; transition: all 0.15s;
         }
-        .workspace .admin-content-inner {
-            width: 100%;
-            max-width: var(--content-max);
+        .sidebar-nav a:hover { color: #fff; background: rgba(255,255,255,0.04); }
+        .sidebar-nav a.active { color: #fff; background: rgba(156,122,60,0.14); border-left-color: var(--brass); }
+        .sidebar-nav .nav-badge {
+            background: var(--danger, #b3261e); color: #fff; font-size: 9.5px;
+            padding: 1px 7px; font-family: var(--f-mono); font-weight: 700;
         }
+
+        /* Brand blurb — same magazine typography as the login page,
+           narrower, always visible instead of appearing per-page. */
+        .sidebar-blurb { padding: var(--sp-5); border-top: 1px solid rgba(255,255,255,0.1); }
+        .sidebar-blurb .eyebrow {
+            font-family: var(--f-cond); font-size: 9.5px; font-weight: 600;
+            letter-spacing: 0.16em; text-transform: uppercase; color: var(--brass);
+            margin-bottom: var(--sp-3);
+        }
+        .sidebar-blurb p { font-family: var(--f-display); font-size: 13px; line-height: 1.65; color: rgba(255,255,255,0.82); }
+        .sidebar-blurb .mark { margin-top: var(--sp-4); width: 28px; height: 2px; background: var(--brass); }
+
+        .sidebar-user {
+            padding: var(--sp-4) var(--sp-5); border-top: 1px solid rgba(255,255,255,0.1);
+            display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+        }
+        .sidebar-user .name { font-family: var(--f-display); font-size: 13px; font-weight: 600; }
+        .sidebar-user .role { font-family: var(--f-cond); font-size: 9.5px; color: var(--ink-300); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 2px; }
+        .sidebar-user .sign-out {
+            font-family: var(--f-cond); font-size: 10px; font-weight: 600; text-transform: uppercase;
+            letter-spacing: 0.05em; color: rgba(255,255,255,0.6); text-decoration: none;
+            border: 1px solid rgba(255,255,255,0.25); padding: 4px 10px; transition: all .15s;
+        }
+        .sidebar-user .sign-out:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
 
         /* ============================================================
-           CONTENT HEADER
+           MAIN — the working area. Card/metric/table/status/btn
+           styles below this point are unchanged from before.
            ============================================================ */
+        .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+        .top-ribbon {
+            background: var(--panel); border-bottom: 1px solid var(--line);
+            padding: var(--sp-2) var(--sp-7); font-family: var(--f-mono); font-size: 10.5px;
+            color: var(--ink-300); display: flex; justify-content: flex-end; align-items: center; gap: var(--sp-3);
+        }
+        .top-ribbon strong { color: var(--brass-deep); font-weight: 600; }
+        .admin-content { flex: 1; padding: var(--sp-7); display: block; }
+        .admin-content-inner { width: 100%; max-width: var(--content-max); }
+
+        @media (max-width: 1024px) {
+            .app-shell { flex-direction: column; }
+            .sidebar { flex: 0 0 auto; height: auto; position: static; }
+            .sidebar-nav { max-height: 260px; }
+            .admin-content { padding: var(--sp-5); }
+        }
+        @media (max-width: 768px) {
+            .top-ribbon { padding: var(--sp-1) var(--sp-4); }
+            .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+            .content-header h1 { font-size: 18px; width: 100%; }
+            .content-header { row-gap: var(--sp-3); }
+            .admin-content { padding: var(--sp-4); }
+        }
+        @media (max-width: 480px) {
+            .metrics-grid { grid-template-columns: 1fr; }
+        }
+
+
         .content-header {
             display: flex;
             align-items: center;
@@ -638,7 +515,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             border-bottom: 2px solid var(--ink-900);
             position: relative;
         }
-        /* letterhead-style double rule, echoes the brass mark on the login page */
         .content-header::after {
             content: "";
             position: absolute;
@@ -684,9 +560,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             background: var(--brass-tint);
         }
 
-        /* ============================================================
-           METRICS GRID
-           ============================================================ */
         .metrics-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -735,9 +608,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             display: block;
         }
 
-        /* ============================================================
-           CARDS — sharp corners, brass accents
-           ============================================================ */
         .card {
             position: relative;
             background: var(--panel);
@@ -791,9 +661,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .card-badge.brass { background: var(--brass); }
 
-        /* ============================================================
-           SEARCH
-           ============================================================ */
         .search-box {
             display: flex;
             gap: var(--sp-3);
@@ -824,9 +691,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             opacity: 0.7;
         }
 
-        /* ============================================================
-           BUTTONS
-           ============================================================ */
         .btn {
             padding: var(--sp-2) var(--sp-5);
             font-size: 11px;
@@ -861,9 +725,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .btn-sm { padding: var(--sp-1) var(--sp-4); font-size: 10px; }
 
-        /* ============================================================
-           TABLES
-           ============================================================ */
         .table-responsive { overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
         th {
@@ -887,9 +748,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         tr:hover { background: var(--brass-tint); }
 
-        /* ============================================================
-           STATUS BADGES
-           ============================================================ */
         .status {
             display: inline-flex;
             align-items: center;
@@ -915,9 +773,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         .status-identity { background: #EDE8F5; color: #5C3D7A; border-color: #D4C0E8; }
         .status-identity::before { background: #5C3D7A; }
 
-        /* ============================================================
-           EMPTY STATE
-           ============================================================ */
         .empty-state {
             text-align: center;
             padding: var(--sp-8) var(--sp-4);
@@ -926,9 +781,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         .empty-state .icon { font-size: 28px; display: block; margin-bottom: var(--sp-3); }
         .empty-state p { font-size: 13px; }
 
-        /* ============================================================
-           LIVE INDICATOR
-           ============================================================ */
         .live-indicator {
             display: inline-block;
             width: 8px;
@@ -940,9 +792,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
-        /* ============================================================
-           HEALTH BAR
-           ============================================================ */
         .health-bar-track {
             background: var(--line);
             height: 6px;
@@ -953,9 +802,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         .health-bar-fill.warn { background: #b3261e; }
         .health-bar-fill.bad { background: #b3261e; }
 
-        /* ============================================================
-           LOOKUP
-           ============================================================ */
         .lookup-card { border-left: 3px solid var(--brass); margin-bottom: var(--sp-4); }
         .lookup-next-action {
             background: var(--brass-tint);
@@ -967,9 +813,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             border-left: 3px solid var(--brass);
         }
 
-        /* ============================================================
-           FOOTER — matches login
-           ============================================================ */
         .admin-footer {
             background: var(--ink-900);
             color: var(--ink-300);
@@ -982,107 +825,60 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             line-height: 1.8;
         }
         .admin-footer span { color: var(--brass); }
-
-        /* ============================================================
-           RESPONSIVE
-           ============================================================ */
-        @media (max-width: 1024px) {
-            .workspace, .workspace.dark-left, .workspace.dark-right {
-                flex-direction: column;
-            }
-            .panel-dark {
-                flex: 0 0 auto;
-                position: static;
-                height: auto;
-                border-right: none;
-                border-bottom: 1px solid rgba(255,255,255,0.06);
-            }
-            .workspace.dark-right .panel-dark { border-left: none; border-bottom: 1px solid rgba(255,255,255,0.06); }
-            .panel-dark .frame-mat { min-height: 0; margin: var(--sp-4); }
-            .panel-dark .panel-inner { padding: var(--sp-6) var(--sp-4); max-width: 480px; }
-            .panel-dark .blurb { text-align: left; }
-            .workspace .admin-content { padding: var(--sp-5); }
-        }
-        @media (max-width: 768px) {
-            .admin-header { padding: var(--sp-4) var(--sp-5); flex-direction: column; align-items: stretch; text-align: center; }
-            .header-left { justify-content: center; }
-            .user-area { justify-content: center; }
-            .admin-nav { padding: 0 var(--sp-4); gap: var(--sp-4); }
-            .admin-ribbon { padding: var(--sp-1) var(--sp-4); flex-direction: column; gap: 2px; }
-            .metrics-grid { grid-template-columns: repeat(2, 1fr); }
-            .content-header h1 { font-size: 18px; width: 100%; }
-            .content-header { row-gap: var(--sp-3); }
-            .workspace .admin-content { padding: var(--sp-4); }
-            .panel-dark .frame-strip.top, .panel-dark .frame-strip.bottom { left: 12px; right: 12px; font-size: 8px; letter-spacing: 0.18em; }
-        }
-        @media (max-width: 480px) {
-            .metrics-grid { grid-template-columns: 1fr; }
-            .admin-header .logo { font-size: 16px; }
-            .admin-header .logo-sub { font-size: 8px; }
-        }
     </style>
 </head>
 <body>
 
-    <!-- RIBBON -->
-    <div class="admin-ribbon">
-        <span>VouchMorph Internal Systems &nbsp;·&nbsp; Administrator Access Only</span>
-        <span><strong><?php echo safeHtml($roleName); ?></strong> &nbsp;·&nbsp; <?php echo date('Y-m-d H:i:s'); ?></span>
-    </div>
-
-    <!-- HEADER -->
-    <header class="admin-header">
-        <div class="header-left">
+    <div class="app-shell">
+    <!-- SIDEBAR — fixed, permanent: nav + brand blurb + user -->
+    <aside class="sidebar">
+        <div class="sidebar-brand">
             <div class="logo">VOUCHMORPH <span>Admin</span></div>
-            <span class="logo-sub">· <?php echo safeHtml($roleName); ?></span>
+            <div class="division"><?php echo safeHtml($roleName); ?></div>
             <span class="role-badge"><?php echo safeHtml($roleInfo['label'] ?? $roleName); ?></span>
         </div>
-        <div class="user-area">
-            <div class="user-details">
-                <div class="user-name"><?php echo safeHtml($adminFullName ?: $adminUsername); ?></div>
-                <div class="user-role"><?php echo safeHtml($roleName); ?></div>
-            </div>
-            <a href="admin_logout.php" class="logout-btn">Sign Out</a>
-        </div>
-    </header>
 
-    <!-- NAV -->
-    <nav class="admin-nav">
-        <?php if (canView('dashboard')): ?><a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">Dashboard</a><?php endif; ?>
-        <?php if (canView('client_lookup')): ?><a href="?view=client_lookup" class="nav-item <?php echo $view === 'client_lookup' ? 'active' : ''; ?>">Client Lookup</a><?php endif; ?>
-        <?php if (canView('alerts')): ?>
-        <a href="?view=alerts" class="nav-item <?php echo $view === 'alerts' ? 'active' : ''; ?>">
-            Alerts <?php if ($totalAlerts > 0): ?><span class="nav-badge"><?php echo $totalAlerts; ?></span><?php endif; ?>
-        </a>
-        <?php endif; ?>
-        <?php if (canView('live_transactions')): ?><a href="?view=live_transactions" class="nav-item <?php echo $view === 'live_transactions' ? 'active' : ''; ?>">Live Txns</a><?php endif; ?>
-        <?php if (canView('multi_destination')): ?><a href="?view=multi_destination" class="nav-item <?php echo $view === 'multi_destination' ? 'active' : ''; ?>">Multi-Dest</a><?php endif; ?>
-        <?php if (canView('recent_swaps')): ?><a href="?view=recent_swaps" class="nav-item <?php echo $view === 'recent_swaps' ? 'active' : ''; ?>">Swaps</a><?php endif; ?>
-        <?php if (canView('institution_health')): ?><a href="?view=institution_health" class="nav-item <?php echo $view === 'institution_health' ? 'active' : ''; ?>">Institutions</a><?php endif; ?>
-        <?php if (canView('regulatory')): ?><a href="?view=regulatory" class="nav-item <?php echo $view === 'regulatory' ? 'active' : ''; ?>">Regulatory</a><?php endif; ?>
-        <?php if (canView('audit')): ?><a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">Audit</a><?php endif; ?>
-        <?php if (canView('invoices')): ?><a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">Invoices</a><?php endif; ?>
-        <?php if (canView('all_tables') && $isSuperAdmin): ?><a href="?view=all_tables" class="nav-item <?php echo $view === 'all_tables' ? 'active' : ''; ?>">Tables</a><?php endif; ?>
-    </nav>
+        <nav class="sidebar-nav">
+            <?php if (canView('dashboard')): ?><a href="?view=dashboard" class="<?php echo $view === 'dashboard' ? 'active' : ''; ?>">Dashboard</a><?php endif; ?>
+            <?php if (canView('client_lookup')): ?><a href="?view=client_lookup" class="<?php echo $view === 'client_lookup' ? 'active' : ''; ?>">Client Lookup</a><?php endif; ?>
+            <?php if (canView('alerts')): ?>
+            <a href="?view=alerts" class="<?php echo $view === 'alerts' ? 'active' : ''; ?>">
+                Alerts <?php if ($totalAlerts > 0): ?><span class="nav-badge"><?php echo $totalAlerts; ?></span><?php endif; ?>
+            </a>
+            <?php endif; ?>
+            <?php if (canView('live_transactions')): ?><a href="?view=live_transactions" class="<?php echo $view === 'live_transactions' ? 'active' : ''; ?>">Live Transactions</a><?php endif; ?>
+            <?php if (canView('multi_destination')): ?><a href="?view=multi_destination" class="<?php echo $view === 'multi_destination' ? 'active' : ''; ?>">Multi-Destination</a><?php endif; ?>
+            <?php if (canView('recent_swaps')): ?><a href="?view=recent_swaps" class="<?php echo $view === 'recent_swaps' ? 'active' : ''; ?>">Swaps</a><?php endif; ?>
+            <?php if (canView('institution_health')): ?><a href="?view=institution_health" class="<?php echo $view === 'institution_health' ? 'active' : ''; ?>">Institutions</a><?php endif; ?>
+            <?php if (canView('regulatory')): ?><a href="?view=regulatory" class="<?php echo $view === 'regulatory' ? 'active' : ''; ?>">Regulatory</a><?php endif; ?>
+            <?php if (canView('audit')): ?><a href="?view=audit" class="<?php echo $view === 'audit' ? 'active' : ''; ?>">Audit</a><?php endif; ?>
+            <?php if (canView('invoices')): ?><a href="?view=invoices" class="<?php echo $view === 'invoices' ? 'active' : ''; ?>">Invoices</a><?php endif; ?>
+            <?php if (canView('all_tables') && $isSuperAdmin): ?><a href="?view=all_tables" class="<?php echo $view === 'all_tables' ? 'active' : ''; ?>">Tables</a><?php endif; ?>
+        </nav>
 
-    <!-- WORKSPACE -->
-    <div class="workspace dark-<?php echo safeHtml($currentMeta['side']); ?>">
-        <!-- Description Panel (Dark) -->
-        <div class="panel-dark">
-            <div class="frame-mat">
-                <div class="frame-line"></div>
-                <div class="frame-strip top"><span>VouchMorph Admin</span></div>
-                <div class="frame-strip bottom"><span>VM/<?php echo date('Y'); ?>/ADM</span></div>
-                <div class="panel-inner">
-                    <div class="eyebrow"><?php echo safeHtml($currentMeta['eyebrow']); ?></div>
-                    <div class="blurb"><?php echo safeHtml($currentMeta['blurb']); ?></div>
-                    <div class="mark"></div>
-                </div>
-            </div>
+        <div class="sidebar-blurb">
+            <div class="eyebrow"><?php echo safeHtml($currentMeta['eyebrow']); ?></div>
+            <p><?php echo safeHtml($currentMeta['blurb']); ?></p>
+            <div class="mark"></div>
         </div>
 
-        <!-- Main Content -->
-        <main class="admin-content"><div class="admin-content-inner">
+        <div class="sidebar-user">
+            <div>
+                <div class="name"><?php echo safeHtml($adminFullName ?: $adminUsername); ?></div>
+                <div class="role"><?php echo safeHtml($roleName); ?></div>
+            </div>
+            <a href="admin_logout.php" class="sign-out">Sign Out</a>
+        </div>
+    </aside>
+
+    <!-- MAIN -->
+    <main class="main">
+        <div class="top-ribbon">
+            <span>VouchMorph Internal Systems · Administrator Access Only</span>
+            <span>&nbsp;·&nbsp;</span>
+            <strong><?php echo date('Y-m-d H:i:s'); ?></strong>
+        </div>
+        <div class="admin-content"><div class="admin-content-inner">
 
             <!-- DASHBOARD -->
             <?php if ($view === 'dashboard'): ?>
@@ -1318,7 +1114,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             </div>
             <?php if (empty($multiDestinationSwaps)): ?>
             <div class="card"><div class="empty-state"><span class="icon">📭</span><p>No multi-destination swaps found</p></div></div>
-            <?php else: foreach ($multiDestinationSwaps as $swap): $destinations = json_decode($swap['destinations_payload'] ?? '[]', true); ?>
+            <?php else: foreach ($multiDestinationSwaps as $swap): $destinations = json_decode($swap['destinations_payload'] ?? '[]', true); $results = json_decode($swap['results_payload'] ?? '[]', true) ?: []; ?>
             <div class="card" style="border-left: 3px solid <?php echo $swap['status'] === 'completed' ? 'var(--brass)' : 'var(--ink-300)'; ?>;">
                 <div class="card-header">
                     <span class="card-title"><?php echo safeHtml($swap['reference']); ?> <span style="font-weight:400;color:var(--ink-300);font-size:10px;"><?php echo date('Y-m-d H:i', strtotime($swap['created_at'])); ?></span></span>
@@ -1438,6 +1234,16 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             <?php endif; ?>
             <?php endif; ?>
 
+            <!-- ALL TABLES (placeholder — nav linked here but no view existed) -->
+            <?php if ($view === 'all_tables' && $isSuperAdmin): ?>
+            <div class="content-header">
+                <h1>Raw Tables</h1>
+                <span class="timestamp">Direct table access</span>
+                <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+            <div class="card"><div class="empty-state"><span class="icon">🛠️</span><p>Raw table browsing isn't built yet — the nav link existed before the view did. Let me know which tables you want exposed here and I'll wire it up (with appropriate read-only guards).</p></div></div>
+            <?php endif; ?>
+
             <!-- ACCESS DENIED -->
             <?php
             $knownViews = ['dashboard', 'client_lookup', 'alerts', 'live_transactions', 'multi_destination', 'recent_swaps', 'institution_health', 'regulatory', 'audit', 'invoices', 'all_tables'];
@@ -1446,7 +1252,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             <div class="card"><div class="empty-state"><span class="icon">🚫</span><h2 style="font-family:var(--f-cond);text-transform:uppercase;font-size:18px;margin-bottom:var(--sp-2);">Access Denied</h2><p>You do not have permission to view this page.</p><a href="?view=dashboard" class="btn btn-primary" style="margin-top:var(--sp-4);">Return to Dashboard</a></div></div>
             <?php endif; ?>
 
-        </div></main>
+        </div></div>
+    </main>
     </div>
 
     <!-- FOOTER -->
