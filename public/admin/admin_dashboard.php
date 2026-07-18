@@ -270,6 +270,69 @@ $search = trim($_GET['search'] ?? '');
 $lookup = trim($_GET['lookup'] ?? '');
 $exportTable = $_GET['export'] ?? '';
 $action = $_GET['action'] ?? '';
+
+// ============================================================
+// DESCRIPTION PANEL — one per view, alternating sides. Purely
+// presentational; touches nothing above or below it.
+// ============================================================
+$viewMeta = [
+    'dashboard' => [
+        'side' => 'left', 'eyebrow' => 'Operating Picture',
+        'blurb' => "This is the operating picture — total swap volume, pending settlements, and the handful of numbers that tell you whether the system is healthy right now, without opening a single table."
+    ],
+    'client_lookup' => [
+        'side' => 'right', 'eyebrow' => 'Customer Support',
+        'blurb' => "Search by phone number, national ID, or any reference a customer can read off their own confirmation message. Every match comes with a plain next step, not just a status code."
+    ],
+    'alerts' => [
+        'side' => 'left', 'eyebrow' => 'Exceptions',
+        'blurb' => "Holds, cashouts, and identity swaps that have sat in a non-terminal state longer than expected. These need a human decision — everything else is just monitoring."
+    ],
+    'live_transactions' => [
+        'side' => 'right', 'eyebrow' => 'Real-Time Feed',
+        'blurb' => "A rolling view of the last twenty-four hours, refreshing on its own. Watch volume move without reloading the page."
+    ],
+    'multi_destination' => [
+        'side' => 'left', 'eyebrow' => 'Batch Settlement',
+        'blurb' => "One instruction, many destinations. A single batch can reach bank accounts, wallets, and identity-linked beneficiaries at once — this is where each leg settles independently."
+    ],
+    'recent_swaps' => [
+        'side' => 'right', 'eyebrow' => 'Transaction Ledger',
+        'blurb' => "The complete transaction ledger, searchable by reference, institution, or status. Nothing here is paginated away."
+    ],
+    'institution_health' => [
+        'side' => 'left', 'eyebrow' => 'Institution Health',
+        'blurb' => "Volume, success rate, and average time-to-debit, broken down per institution. The bar tells you at a glance who's having a bad day."
+    ],
+    'settlements' => [
+        'side' => 'right', 'eyebrow' => 'Settlement Queue',
+        'blurb' => "Net positions and settlements still waiting to clear — the accounting layer underneath every swap."
+    ],
+    'regulatory' => [
+        'side' => 'left', 'eyebrow' => 'Regulatory Oversight',
+        'blurb' => "Net positions between institutions and pending settlements — the numbers a regulator needs, not the raw transaction feed."
+    ],
+    'audit' => [
+        'side' => 'right', 'eyebrow' => 'Audit Trail',
+        'blurb' => "Every recorded action, most recent first. This is the trail — who did what, and when."
+    ],
+    'fee_breakdown' => [
+        'side' => 'left', 'eyebrow' => 'Fee Breakdown',
+        'blurb' => "Where the fee on every transaction actually goes, broken down by type and by participant."
+    ],
+    'invoices' => [
+        'side' => 'right', 'eyebrow' => 'Invoicing',
+        'blurb' => "Fee invoices generated automatically through settlement — the paper trail for what's owed to whom."
+    ],
+    'all_tables' => [
+        'side' => 'left', 'eyebrow' => 'Raw Tables',
+        'blurb' => "Direct access to the underlying tables, for the rare moment a dashboard view isn't enough."
+    ],
+];
+$currentMeta = $viewMeta[$view] ?? [
+    'side' => 'right', 'eyebrow' => 'VouchMorph Admin',
+    'blurb' => "Administrative tools for VouchMorph's enterprise disbursement network."
+];
 $reportType = $_GET['report_type'] ?? '';
 $dateFrom = $_GET['date_from'] ?? date('Y-m-d', strtotime('-30 days'));
 $dateTo = $_GET['date_to'] ?? date('Y-m-d');
@@ -924,6 +987,66 @@ if (!isset($invoiceMessages)) $invoiceMessages = [];
             th, td { font-size: 12.5px; padding: var(--sp-2) var(--sp-2); }
             .content-header h1 { font-size: 22px; }
         }
+        /* ============================================================
+           WORKSPACE SPLIT — the login page's dark/light split,
+           continued past the front door. One side is always the
+           30–40% dark description panel; the other is the working
+           dashboard. Which side is dark alternates per view, driven
+           by $currentMeta['side'] in PHP — nothing here decides that,
+           it only lays out whichever side it's told.
+           ============================================================ */
+        .workspace { display: flex; align-items: stretch; }
+        .workspace.dark-left { flex-direction: row; }
+        .workspace.dark-right { flex-direction: row-reverse; }
+
+        .panel-dark {
+            flex: 0 0 36%;
+            min-width: 0;
+            background: var(--black);
+            color: rgba(255,255,255,0.92);
+            padding: var(--sp-8) var(--sp-7);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            position: sticky;
+            top: 0;
+            height: 100vh;
+            overflow-y: auto;
+        }
+        .panel-dark .eyebrow {
+            font-family: var(--f-cond);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--red);
+            margin-bottom: var(--sp-5);
+        }
+        .panel-dark p {
+            font-family: var(--f-display);
+            font-size: 19px;
+            font-weight: 400;
+            line-height: 1.8;
+            max-width: 400px;
+        }
+        .panel-dark p::first-letter {
+            font-size: 46px;
+            font-weight: 600;
+            color: var(--red);
+            float: left;
+            line-height: 0.8;
+            padding-right: var(--sp-2);
+            padding-top: 4px;
+        }
+        .panel-dark .mark { margin-top: var(--sp-6); width: 40px; height: 2px; background: var(--red); }
+
+        .workspace .admin-content { max-width: none; margin: 0; flex: 1 1 64%; min-width: 0; }
+
+        @media (max-width: 1000px) {
+            .workspace, .workspace.dark-left, .workspace.dark-right { flex-direction: column; }
+            .panel-dark { flex: 0 0 auto; position: static; height: auto; padding: var(--sp-6) var(--sp-5); }
+            .panel-dark p { max-width: none; }
+        }
     </style>
 </head>
 <body>
@@ -965,6 +1088,13 @@ if (!isset($invoiceMessages)) $invoiceMessages = [];
         <?php if (canView('invoices')): ?><a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">💰 INVOICES</a><?php endif; ?>
         <?php if (canView('all_tables') && $isSuperAdmin): ?><a href="?view=all_tables" class="nav-item <?php echo $view === 'all_tables' ? 'active' : ''; ?>">📋 TABLES</a><?php endif; ?>
     </nav>
+
+    <div class="workspace dark-<?php echo safeHtml($currentMeta['side']); ?>">
+        <div class="panel-dark">
+            <div class="eyebrow"><?php echo safeHtml($currentMeta['eyebrow']); ?></div>
+            <p><?php echo safeHtml($currentMeta['blurb']); ?></p>
+            <div class="mark"></div>
+        </div>
 
     <main class="admin-content">
 
@@ -1378,6 +1508,7 @@ if (!isset($invoiceMessages)) $invoiceMessages = [];
         <div class="card"><div class="empty-state"><div class="icon">🚫</div><h2>Access Denied</h2><p>You do not have permission to view this page.</p><a href="?view=dashboard" class="btn" style="margin-top:16px;">Return to Dashboard</a></div></div>
         <?php endif; ?>
     </main>
+    </div>
 
     <footer class="admin-footer">
         <p>VOUCHMORPH · <?php echo safeHtml($roleName); ?> · <?php echo date('Y'); ?></p>
