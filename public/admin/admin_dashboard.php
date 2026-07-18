@@ -361,9 +361,9 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             --ink-300:      #8A96A3;
             --line:         #D3DAD6;
             --line-strong:  #AEB8B2;
-            --brass:        #9C7A3C;
-            --brass-deep:   #6E5326;
-            --brass-tint:   #F4EFE3;
+            --brass:        #C9A227;
+            --brass-deep:   #9A7B1E;
+            --brass-tint:   #FBF3D9;
 
             --f-display: 'Source Serif 4', 'IBM Plex Sans', serif;
             --f-body:    'IBM Plex Sans', sans-serif;
@@ -404,17 +404,21 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
         .admin-ribbon {
             background: var(--ink-900);
+            padding: var(--sp-1) var(--sp-7);
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .admin-ribbon-inner {
+            max-width: var(--content-max);
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--sp-3);
             color: rgba(255,255,255,0.65);
             font-family: var(--f-mono);
             font-size: 10px;
             letter-spacing: 0.08em;
             text-transform: uppercase;
-            padding: var(--sp-1) var(--sp-7);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: var(--sp-3);
-            border-bottom: 1px solid rgba(255,255,255,0.08);
             line-height: 1.8;
         }
         .admin-ribbon strong { color: var(--brass); font-weight: 600; }
@@ -426,13 +430,18 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                 var(--ink-900);
             color: #fff;
             padding: var(--sp-4) var(--sp-7);
+            border-bottom: 3px solid var(--brass);
+            overflow: hidden;
+        }
+        .admin-header-inner {
+            position: relative;
+            max-width: var(--content-max);
+            margin: 0 auto;
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
             gap: var(--sp-4);
-            border-bottom: 3px solid var(--brass);
-            overflow: hidden;
         }
         .header-left { position: relative; display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
         .logo { font-family: var(--f-display); font-weight: 600; font-size: 19px; letter-spacing: 0.01em; line-height: 1; }
@@ -450,6 +459,10 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             background: var(--panel);
             border-bottom: 1px solid var(--line);
             padding: 0 var(--sp-7);
+        }
+        .admin-nav-inner {
+            max-width: var(--content-max);
+            margin: 0 auto;
             display: flex;
             gap: var(--sp-5);
             flex-wrap: wrap;
@@ -514,7 +527,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
 
         @media (max-width: 768px) {
-            .admin-header { padding: var(--sp-3) var(--sp-5); flex-direction: column; align-items: stretch; text-align: center; }
+            .admin-header { padding: var(--sp-3) var(--sp-5); text-align: center; }
+            .admin-header-inner { flex-direction: column; align-items: stretch; }
             .header-left { justify-content: center; }
             .user-area { justify-content: center; }
             .admin-nav { padding: 0 var(--sp-4); gap: var(--sp-4); }
@@ -856,28 +870,33 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
     <!-- RIBBON -->
     <div class="admin-ribbon">
-        <span>VouchMorph Internal Systems &nbsp;·&nbsp; Administrator Access Only</span>
-        <span><strong><?php echo safeHtml($roleName); ?></strong> &nbsp;·&nbsp; <?php echo date('Y-m-d H:i:s'); ?></span>
+        <div class="admin-ribbon-inner">
+            <span>VouchMorph Internal Systems &nbsp;·&nbsp; Administrator Access Only</span>
+            <span><strong><?php echo safeHtml($roleName); ?></strong> &nbsp;·&nbsp; <?php echo date('Y-m-d H:i:s'); ?></span>
+        </div>
     </div>
 
     <!-- HEADER -->
     <header class="admin-header">
-        <div class="header-left">
-            <div class="logo">VOUCHMORPH <span>Admin</span></div>
-            <span class="logo-sub">· <?php echo safeHtml($roleName); ?></span>
-            <span class="role-badge"><?php echo safeHtml($roleInfo['label'] ?? $roleName); ?></span>
-        </div>
-        <div class="user-area">
-            <div class="user-details">
-                <div class="user-name"><?php echo safeHtml($adminFullName ?: $adminUsername); ?></div>
-                <div class="user-role"><?php echo safeHtml($roleName); ?></div>
+        <div class="admin-header-inner">
+            <div class="header-left">
+                <div class="logo">VOUCHMORPH <span>Admin</span></div>
+                <span class="logo-sub">· <?php echo safeHtml($roleName); ?></span>
+                <span class="role-badge"><?php echo safeHtml($roleInfo['label'] ?? $roleName); ?></span>
             </div>
-            <a href="admin_logout.php" class="logout-btn">Sign Out</a>
+            <div class="user-area">
+                <div class="user-details">
+                    <div class="user-name"><?php echo safeHtml($adminFullName ?: $adminUsername); ?></div>
+                    <div class="user-role"><?php echo safeHtml($roleName); ?></div>
+                </div>
+                <a href="admin_logout.php" class="logout-btn">Sign Out</a>
+            </div>
         </div>
     </header>
 
     <!-- NAV -->
     <nav class="admin-nav">
+        <div class="admin-nav-inner">
         <?php if (canView('dashboard')): ?><a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">Dashboard</a><?php endif; ?>
         <?php if (canView('client_lookup')): ?><a href="?view=client_lookup" class="nav-item <?php echo $view === 'client_lookup' ? 'active' : ''; ?>">Client Lookup</a><?php endif; ?>
         <?php if (canView('alerts')): ?>
@@ -893,7 +912,9 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         <?php if (canView('audit')): ?><a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">Audit</a><?php endif; ?>
         <?php if (canView('invoices')): ?><a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">Invoices</a><?php endif; ?>
         <?php if (canView('all_tables') && $isSuperAdmin): ?><a href="?view=all_tables" class="nav-item <?php echo $view === 'all_tables' ? 'active' : ''; ?>">Tables</a><?php endif; ?>
+        </div>
     </nav>
+
 
     <!-- DESCRIPTION BAR -->
     <div class="page-description">
