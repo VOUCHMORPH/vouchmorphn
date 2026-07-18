@@ -544,7 +544,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       .frame-strip.top, .frame-strip.bottom { left: var(--sp-6); right: var(--sp-6); }
       .frame-strip.left, .frame-strip.right { top: var(--sp-6); bottom: var(--sp-6); }
       .magazine { inset: var(--sp-6); padding: var(--sp-7) var(--sp-5); }
-      .magazine p { font-size: 16px; }
+      .magazine p { font-size: 12.5px; }
       .magazine p::first-letter { font-size: 42px; }
       .magazine p.secondary { font-size: 12.5px; }
     }
