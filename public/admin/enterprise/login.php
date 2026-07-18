@@ -456,8 +456,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     .frame-strip.left {
       left: var(--sp-3); top: var(--sp-8); bottom: var(--sp-8);
-      width: 20px; writing-mode: vertical-rl; transform: rotate(180deg);
+      width: 26px; writing-mode: vertical-rl; transform: rotate(180deg);
       justify-content: center;
+      /* This edge is the signature mark — bold, high-contrast, single
+         instance — distinct from the quiet repeating text on the
+         other three sides. */
+      color: var(--brass);
+      font-family: var(--f-cond);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.34em;
+      opacity: 1;
     }
     .frame-strip.right {
       right: var(--sp-3); top: var(--sp-8); bottom: var(--sp-8);
@@ -486,20 +495,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     .magazine p {
       font-family: var(--f-display);
-      font-size: 21px;
+      font-size: 19px;
       font-weight: 400;
       line-height: 1.85;
       color: rgba(255,255,255,0.92);
       max-width: 460px;
     }
     .magazine p::first-letter {
-      font-size: 58px;
+      font-size: 54px;
       font-weight: 600;
       color: var(--brass);
       float: left;
       line-height: 0.8;
       padding-right: var(--sp-2);
       padding-top: 6px;
+    }
+    .magazine p.secondary {
+      font-family: var(--f-body);
+      font-size: 13.5px;
+      font-weight: 400;
+      line-height: 1.75;
+      color: rgba(255,255,255,0.62);
+      max-width: 420px;
+      margin-top: var(--sp-5);
+      letter-spacing: 0.005em;
+    }
+    .magazine p.secondary strong {
+      color: rgba(255,255,255,0.85);
+      font-weight: 600;
     }
     .magazine .mark {
       margin-top: var(--sp-7);
@@ -521,11 +544,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       .frame-strip.top, .frame-strip.bottom { left: var(--sp-6); right: var(--sp-6); }
       .frame-strip.left, .frame-strip.right { top: var(--sp-6); bottom: var(--sp-6); }
       .magazine { inset: var(--sp-6); padding: var(--sp-7) var(--sp-5); }
-      .magazine p { font-size: 18px; }
-      .magazine p::first-letter { font-size: 46px; }
+      .magazine p { font-size: 16px; }
+      .magazine p::first-letter { font-size: 42px; }
+      .magazine p.secondary { font-size: 12.5px; }
     }
     @media (max-width: 480px) {
-      .frame-strip.left, .frame-strip.right { display: none; }
+      .frame-strip.right { display: none; }
       .trust-row { flex-wrap: wrap; gap: var(--sp-3); justify-content: center; }
     }
 
@@ -608,12 +632,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
       <div class="frame-strip top"><span>VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™</span></div>
       <div class="frame-strip bottom"><span>VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™</span></div>
-      <div class="frame-strip left"><span>VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™</span></div>
+      <div class="frame-strip left"><span>VOUCHMORPH™</span></div>
       <div class="frame-strip right"><span>VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™</span></div>
 
       <div class="magazine">
         <div class="eyebrow">What is VouchMorph</div>
         <p>VouchMorph moves money between banks, wallets, and vouchers that were never built to talk to each other. An organization sends funds from an account, a card, or a mobile wallet — and the person on the other end can collect it however suits them: a bank deposit, an ATM withdrawal, or a printed voucher redeemed by an agent. One instruction in. Any form of money out.</p>
+        <p class="secondary">A single batch isn't limited to one destination type. Bank accounts, mobile wallets, and beneficiaries identified only by phone number or national ID can sit <strong>in the same batch</strong>, funded from one or several sources, and settle together as one reconciled record — not dozens of separate transfers to track by hand.</p>
         <div class="mark"></div>
       </div>
     </div>
