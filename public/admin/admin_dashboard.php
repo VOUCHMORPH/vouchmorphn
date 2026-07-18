@@ -616,6 +616,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             display: flex;
             flex-direction: column;
             justify-content: center;
+            align-items: center;
+            text-align: center;
             border-top: 2px solid var(--brass-tint);
             transition: border-color 0.15s, background-color .15s;
         }
@@ -675,8 +677,9 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .card-header {
             display: flex;
-            justify-content: space-between;
+            justify-content: center;
             align-items: center;
+            text-align: center;
             margin-bottom: var(--sp-4);
             padding-bottom: var(--sp-3);
             border-bottom: 1px solid var(--line);
