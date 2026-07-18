@@ -5,6 +5,22 @@ declare(strict_types=1);
  * VouchMorph - Swap Details API
  * Returns complete detailed information for a specific swap
  *
+ * FIXED: previous version SELECTed ht.requester, which does not exist
+ * as a column on hold_transactions. createLocalHold() in SwapService.php
+ * never writes a "requester" column — it only ever writes:
+ *   hold_reference, swap_reference, participant_name, asset_type, amount,
+ *   currency, status, source_details, destination_institution, metadata,
+ *   placed_at, created_at, updated_at, source_institution
+ * "requester" also isn't a key inside source_details JSON (see
+ * createLocalHold's $sourceDetails array — it has user_id,
+ * source_identifier, source_identifier_type, source_institution,
+ * asset_type, original_payload, is_hooked, but no requester).
+ *
+ * This version drops the ht.requester column reference and instead
+ * looks for a requester value inside source_details.original_payload
+ * (where the raw incoming swap payload is stashed), falling back to
+ * null rather than crashing if it's not there.
+ *
  * FEATURES:
  *  - Complete swap details including source/destination
  *  - Full fee breakdown with distribution
@@ -136,7 +152,6 @@ try {
             ht.metadata,
             ht.asset_type,
             ht.source_institution as source_institution_name,
-            ht.requester as hold_requester,
             
             -- Swap Request Details
             sr.swap_id,
@@ -226,6 +241,17 @@ try {
     $toAccountDetails = json_decode($row['to_account_details'] ?? '{}', true);
     $tradeMetadata = json_decode($row['trade_metadata'] ?? '{}', true);
 
+    // requester isn't a hold_transactions column and isn't a top-level
+    // source_details key — the closest thing available is whatever the
+    // original inbound payload carried (stashed under original_payload
+    // by createLocalHold()). Fall back to null rather than assume a
+    // field exists.
+    $originalPayload = $sourceDetails['original_payload'] ?? [];
+    $holdRequester = $sourceDetails['requester']
+        ?? $originalPayload['requester']
+        ?? $originalPayload['performed_by']
+        ?? null;
+
     // Determine currency
     $rowCurrency = $row['currency'] ?? null;
     if (!$rowCurrency) {
@@ -301,7 +327,7 @@ try {
             'updated_at' => $row['hold_updated_at'],
             'debited_at' => $row['debited_at'],
             'released_at' => $row['released_at'],
-            'requester' => $row['hold_requester'] ?? $sourceDetails['requester'],
+            'requester' => $holdRequester,
         ],
         
         // ============================================================
@@ -388,8 +414,12 @@ try {
         'swap' => $swap
     ]);
 
-} catch (Exception $e) {
-    $code = $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 400;
+} catch (\Throwable $e) {
+    // Broadened from catch(Exception) — see SwapService_throwable_fix.php
+    // for why a plain \Error (e.g. another undefined-column typo like
+    // this one, or a missing method elsewhere) should still produce a
+    // clean JSON error response instead of a raw 500.
+    $code = ($e instanceof Exception && $e->getCode() >= 400 && $e->getCode() < 600) ? $e->getCode() : 500;
     http_response_code($code);
 
     echo json_encode([
@@ -397,5 +427,5 @@ try {
         'error' => $e->getMessage()
     ]);
 
-    error_log("[DETAILS] Error: " . $e->getMessage());
+    error_log("[DETAILS] Error (" . get_class($e) . "): " . $e->getMessage());
 }
