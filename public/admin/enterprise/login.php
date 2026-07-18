@@ -454,7 +454,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       bottom: var(--sp-3); left: var(--sp-8); right: var(--sp-8);
       height: 20px; justify-content: center;
     }
-    .frame-strip.left {
+    .frame-strip.right {
       right: var(--sp-3); top: var(--sp-8); bottom: var(--sp-8);
       width: 26px; writing-mode: vertical-rl; transform: rotate(180deg);
       justify-content: center;
