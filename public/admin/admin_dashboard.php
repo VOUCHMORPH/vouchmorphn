@@ -390,119 +390,141 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             -webkit-font-smoothing: antialiased;
         }
 
-        .app-shell { display: flex; min-height: 100vh; }
-
         /* ============================================================
-           SIDEBAR — fixed, permanent, carries nav + brand blurb.
-           Replaces the old ribbon + header + top nav + alternating
-           dark panel with one persistent left rail, matching the
-           standard admin-dashboard pattern (fixed sidebar + card
-           content) while keeping the login page's dark/brass identity
-           always on screen instead of appearing only per-page.
+           TOP/BOTTOM SPLIT — dark header band (brand + nav) above,
+           full-width light content below. No vertical column eating
+           into the work area; everything shares one consistent left
+           edge (--sp-7) so header, nav, and content line up exactly.
+           Per-view description now lives as a subtitle under each
+           page's <h1> instead of a dedicated dark rail — same voice,
+           proportionate to a horizontal layout.
            ============================================================ */
-        .sidebar {
-            flex: 0 0 280px;
-            min-width: 0;
+
+        .admin-ribbon {
+            background: var(--ink-900);
+            color: var(--ink-300);
+            font-family: var(--f-mono);
+            font-size: 10px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            padding: var(--sp-1) var(--sp-7);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--sp-3);
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            line-height: 1.8;
+        }
+        .admin-ribbon strong { color: var(--brass); font-weight: 600; }
+
+        .admin-header {
+            position: relative;
             background:
-                radial-gradient(700px 500px at 15% 0%, rgba(156,122,60,.12), transparent 60%),
+                radial-gradient(ellipse at top left, rgba(156,122,60,0.10), transparent 55%),
                 var(--ink-900);
             color: #fff;
+            padding: var(--sp-4) var(--sp-7);
             display: flex;
-            flex-direction: column;
-            position: sticky;
-            top: 0;
-            height: 100vh;
-            border-right: 3px solid var(--brass);
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: var(--sp-4);
+            border-bottom: 3px solid var(--brass);
+            overflow: hidden;
         }
-        .sidebar-brand {
-            padding: var(--sp-6) var(--sp-5) var(--sp-5);
-            border-bottom: 1px solid rgba(255,255,255,0.1);
+        .header-left { position: relative; display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
+        .logo { font-family: var(--f-display); font-weight: 600; font-size: 19px; letter-spacing: 0.01em; line-height: 1; }
+        .logo span { color: var(--brass); font-weight: 400; }
+        .logo-sub { font-family: var(--f-cond); font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-300); line-height: 1; }
+        .role-badge { padding: 4px var(--sp-3); background: transparent; border: 1px solid var(--brass); color: var(--brass); font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; font-family: var(--f-cond); line-height: 1; }
+        .user-area { position: relative; display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
+        .user-details { text-align: right; display: flex; flex-direction: column; gap: 2px; }
+        .user-name { font-weight: 600; color: #fff; font-size: 13px; font-family: var(--f-display); line-height: 1; }
+        .user-role { font-size: 9.5px; color: var(--ink-300); text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.06em; line-height: 1; }
+        .logout-btn { padding: 6px var(--sp-4); border: 1px solid rgba(255,255,255,0.25); color: #fff; text-decoration: none; font-size: 10.5px; font-weight: 600; text-transform: uppercase; font-family: var(--f-cond); transition: all 0.15s; letter-spacing: 0.06em; line-height: 1; background: transparent; }
+        .logout-btn:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
+
+        .admin-nav {
+            background: var(--panel);
+            border-bottom: 1px solid var(--line);
+            padding: 0 var(--sp-7);
+            display: flex;
+            gap: var(--sp-5);
+            flex-wrap: wrap;
+            align-items: center;
         }
-        .sidebar-brand .logo { font-family: var(--f-display); font-weight: 600; font-size: 19px; line-height: 1.2; }
-        .sidebar-brand .logo span { color: var(--brass); font-weight: 400; }
-        .sidebar-brand .division {
-            font-family: var(--f-cond); font-size: 9.5px; font-weight: 600;
-            letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-300);
-            margin-top: 4px;
-        }
-        .sidebar-brand .role-badge {
-            display: inline-block; margin-top: var(--sp-3);
-            padding: 3px var(--sp-3); border: 1px solid var(--brass); color: var(--brass);
-            font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em;
+        .nav-item {
+            padding: var(--sp-3) 0;
+            color: var(--ink-500);
+            text-decoration: none;
+            font-size: 10.5px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s;
+            white-space: nowrap;
             font-family: var(--f-cond);
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
         }
+        .nav-item:hover { color: var(--ink-900); }
+        .nav-item.active { color: var(--ink-900); border-bottom-color: var(--brass); }
+        .nav-badge { background: var(--brass); color: #fff; font-size: 9px; padding: 1px 7px; font-family: var(--f-mono); font-weight: 700; }
 
-        .sidebar-nav { flex: 1; overflow-y: auto; padding: var(--sp-4) 0; }
-        .sidebar-nav a {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: var(--sp-3) var(--sp-5);
-            color: rgba(255,255,255,0.65); text-decoration: none;
-            font-size: 12.5px; font-weight: 600; font-family: var(--f-cond);
-            text-transform: uppercase; letter-spacing: 0.04em;
-            border-left: 3px solid transparent; transition: all 0.15s;
-        }
-        .sidebar-nav a:hover { color: #fff; background: rgba(255,255,255,0.04); }
-        .sidebar-nav a.active { color: #fff; background: rgba(156,122,60,0.14); border-left-color: var(--brass); }
-        .sidebar-nav .nav-badge {
-            background: var(--danger, #b3261e); color: #fff; font-size: 9.5px;
-            padding: 1px 7px; font-family: var(--f-mono); font-weight: 700;
-        }
-
-        /* Brand blurb — same magazine typography as the login page,
-           narrower, always visible instead of appearing per-page. */
-        .sidebar-blurb { padding: var(--sp-5); border-top: 1px solid rgba(255,255,255,0.1); }
-        .sidebar-blurb .eyebrow {
-            font-family: var(--f-cond); font-size: 9.5px; font-weight: 600;
-            letter-spacing: 0.16em; text-transform: uppercase; color: var(--brass);
-            margin-bottom: var(--sp-3);
-        }
-        .sidebar-blurb p { font-family: var(--f-display); font-size: 13px; line-height: 1.65; color: rgba(255,255,255,0.82); }
-        .sidebar-blurb .mark { margin-top: var(--sp-4); width: 28px; height: 2px; background: var(--brass); }
-
-        .sidebar-user {
-            padding: var(--sp-4) var(--sp-5); border-top: 1px solid rgba(255,255,255,0.1);
-            display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
-        }
-        .sidebar-user .name { font-family: var(--f-display); font-size: 13px; font-weight: 600; }
-        .sidebar-user .role { font-family: var(--f-cond); font-size: 9.5px; color: var(--ink-300); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 2px; }
-        .sidebar-user .sign-out {
-            font-family: var(--f-cond); font-size: 10px; font-weight: 600; text-transform: uppercase;
-            letter-spacing: 0.05em; color: rgba(255,255,255,0.6); text-decoration: none;
-            border: 1px solid rgba(255,255,255,0.25); padding: 4px 10px; transition: all .15s;
-        }
-        .sidebar-user .sign-out:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
-
-        /* ============================================================
-           MAIN — the working area. Card/metric/table/status/btn
-           styles below this point are unchanged from before.
-           ============================================================ */
-        .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-        .top-ribbon {
-            background: var(--panel); border-bottom: 1px solid var(--line);
-            padding: var(--sp-2) var(--sp-7); font-family: var(--f-mono); font-size: 10.5px;
-            color: var(--ink-300); display: flex; justify-content: flex-end; align-items: center; gap: var(--sp-3);
-        }
-        .top-ribbon strong { color: var(--brass-deep); font-weight: 600; }
-        .admin-content { flex: 1; padding: var(--sp-7); display: block; }
+        .admin-content { padding: var(--sp-6) var(--sp-7); }
         .admin-content-inner { width: 100%; max-width: var(--content-max); margin: 0 auto; }
 
-        @media (max-width: 1024px) {
-            .app-shell { flex-direction: column; }
-            .sidebar { flex: 0 0 auto; height: auto; position: static; }
-            .sidebar-nav { max-height: 260px; }
-            .admin-content { padding: var(--sp-5); }
+        /* Description bar — replaces the dark side panel. One line,
+           same serif voice, sits between nav and content instead of
+           claiming its own column. Same $currentMeta data as before. */
+        .page-description {
+            background: var(--parchment, #FBF9F4);
+            border-bottom: 1px solid var(--line);
+            padding: var(--sp-3) var(--sp-7);
         }
+        .page-description-inner {
+            max-width: var(--content-max);
+            margin: 0 auto;
+            display: flex;
+            align-items: baseline;
+            gap: var(--sp-4);
+            flex-wrap: wrap;
+        }
+        .page-description .eyebrow {
+            font-family: var(--f-cond);
+            font-size: 9.5px;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--brass-deep);
+            flex-shrink: 0;
+        }
+        .page-description p {
+            font-family: var(--f-display);
+            font-style: italic;
+            font-size: 13px;
+            color: var(--ink-500);
+            line-height: 1.5;
+        }
+
         @media (max-width: 768px) {
-            .top-ribbon { padding: var(--sp-1) var(--sp-4); }
+            .admin-header { padding: var(--sp-3) var(--sp-5); flex-direction: column; align-items: stretch; text-align: center; }
+            .header-left { justify-content: center; }
+            .user-area { justify-content: center; }
+            .admin-nav { padding: 0 var(--sp-4); gap: var(--sp-4); }
+            .admin-ribbon { padding: var(--sp-1) var(--sp-4); flex-direction: column; gap: 2px; }
             .metrics-grid { grid-template-columns: repeat(2, 1fr); }
             .content-header h1 { font-size: 18px; width: 100%; }
-            .content-header { row-gap: var(--sp-3); }
+            .content-header { row-gap: var(--sp-2); }
             .admin-content { padding: var(--sp-4); }
         }
         @media (max-width: 480px) {
             .metrics-grid { grid-template-columns: 1fr; }
+            .admin-header .logo { font-size: 16px; }
         }
-
 
         .content-header {
             display: flex;
@@ -829,56 +851,56 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 </head>
 <body>
 
-    <div class="app-shell">
-    <!-- SIDEBAR — fixed, permanent: nav + brand blurb + user -->
-    <aside class="sidebar">
-        <div class="sidebar-brand">
+    <!-- RIBBON -->
+    <div class="admin-ribbon">
+        <span>VouchMorph Internal Systems &nbsp;·&nbsp; Administrator Access Only</span>
+        <span><strong><?php echo safeHtml($roleName); ?></strong> &nbsp;·&nbsp; <?php echo date('Y-m-d H:i:s'); ?></span>
+    </div>
+
+    <!-- HEADER -->
+    <header class="admin-header">
+        <div class="header-left">
             <div class="logo">VOUCHMORPH <span>Admin</span></div>
-            <div class="division"><?php echo safeHtml($roleName); ?></div>
+            <span class="logo-sub">· <?php echo safeHtml($roleName); ?></span>
             <span class="role-badge"><?php echo safeHtml($roleInfo['label'] ?? $roleName); ?></span>
         </div>
-
-        <nav class="sidebar-nav">
-            <?php if (canView('dashboard')): ?><a href="?view=dashboard" class="<?php echo $view === 'dashboard' ? 'active' : ''; ?>">Dashboard</a><?php endif; ?>
-            <?php if (canView('client_lookup')): ?><a href="?view=client_lookup" class="<?php echo $view === 'client_lookup' ? 'active' : ''; ?>">Client Lookup</a><?php endif; ?>
-            <?php if (canView('alerts')): ?>
-            <a href="?view=alerts" class="<?php echo $view === 'alerts' ? 'active' : ''; ?>">
-                Alerts <?php if ($totalAlerts > 0): ?><span class="nav-badge"><?php echo $totalAlerts; ?></span><?php endif; ?>
-            </a>
-            <?php endif; ?>
-            <?php if (canView('live_transactions')): ?><a href="?view=live_transactions" class="<?php echo $view === 'live_transactions' ? 'active' : ''; ?>">Live Transactions</a><?php endif; ?>
-            <?php if (canView('multi_destination')): ?><a href="?view=multi_destination" class="<?php echo $view === 'multi_destination' ? 'active' : ''; ?>">Multi-Destination</a><?php endif; ?>
-            <?php if (canView('recent_swaps')): ?><a href="?view=recent_swaps" class="<?php echo $view === 'recent_swaps' ? 'active' : ''; ?>">Swaps</a><?php endif; ?>
-            <?php if (canView('institution_health')): ?><a href="?view=institution_health" class="<?php echo $view === 'institution_health' ? 'active' : ''; ?>">Institutions</a><?php endif; ?>
-            <?php if (canView('regulatory')): ?><a href="?view=regulatory" class="<?php echo $view === 'regulatory' ? 'active' : ''; ?>">Regulatory</a><?php endif; ?>
-            <?php if (canView('audit')): ?><a href="?view=audit" class="<?php echo $view === 'audit' ? 'active' : ''; ?>">Audit</a><?php endif; ?>
-            <?php if (canView('invoices')): ?><a href="?view=invoices" class="<?php echo $view === 'invoices' ? 'active' : ''; ?>">Invoices</a><?php endif; ?>
-            <?php if (canView('all_tables') && $isSuperAdmin): ?><a href="?view=all_tables" class="<?php echo $view === 'all_tables' ? 'active' : ''; ?>">Tables</a><?php endif; ?>
-        </nav>
-
-        <div class="sidebar-blurb">
-            <div class="eyebrow"><?php echo safeHtml($currentMeta['eyebrow']); ?></div>
-            <p><?php echo safeHtml($currentMeta['blurb']); ?></p>
-            <div class="mark"></div>
-        </div>
-
-        <div class="sidebar-user">
-            <div>
-                <div class="name"><?php echo safeHtml($adminFullName ?: $adminUsername); ?></div>
-                <div class="role"><?php echo safeHtml($roleName); ?></div>
+        <div class="user-area">
+            <div class="user-details">
+                <div class="user-name"><?php echo safeHtml($adminFullName ?: $adminUsername); ?></div>
+                <div class="user-role"><?php echo safeHtml($roleName); ?></div>
             </div>
-            <a href="admin_logout.php" class="sign-out">Sign Out</a>
+            <a href="admin_logout.php" class="logout-btn">Sign Out</a>
         </div>
-    </aside>
+    </header>
 
-    <!-- MAIN -->
-    <main class="main">
-        <div class="top-ribbon">
-            <span>VouchMorph Internal Systems · Administrator Access Only</span>
-            <span>&nbsp;·&nbsp;</span>
-            <strong><?php echo date('Y-m-d H:i:s'); ?></strong>
+    <!-- NAV -->
+    <nav class="admin-nav">
+        <?php if (canView('dashboard')): ?><a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">Dashboard</a><?php endif; ?>
+        <?php if (canView('client_lookup')): ?><a href="?view=client_lookup" class="nav-item <?php echo $view === 'client_lookup' ? 'active' : ''; ?>">Client Lookup</a><?php endif; ?>
+        <?php if (canView('alerts')): ?>
+        <a href="?view=alerts" class="nav-item <?php echo $view === 'alerts' ? 'active' : ''; ?>">
+            Alerts <?php if ($totalAlerts > 0): ?><span class="nav-badge"><?php echo $totalAlerts; ?></span><?php endif; ?>
+        </a>
+        <?php endif; ?>
+        <?php if (canView('live_transactions')): ?><a href="?view=live_transactions" class="nav-item <?php echo $view === 'live_transactions' ? 'active' : ''; ?>">Live Txns</a><?php endif; ?>
+        <?php if (canView('multi_destination')): ?><a href="?view=multi_destination" class="nav-item <?php echo $view === 'multi_destination' ? 'active' : ''; ?>">Multi-Dest</a><?php endif; ?>
+        <?php if (canView('recent_swaps')): ?><a href="?view=recent_swaps" class="nav-item <?php echo $view === 'recent_swaps' ? 'active' : ''; ?>">Swaps</a><?php endif; ?>
+        <?php if (canView('institution_health')): ?><a href="?view=institution_health" class="nav-item <?php echo $view === 'institution_health' ? 'active' : ''; ?>">Institutions</a><?php endif; ?>
+        <?php if (canView('regulatory')): ?><a href="?view=regulatory" class="nav-item <?php echo $view === 'regulatory' ? 'active' : ''; ?>">Regulatory</a><?php endif; ?>
+        <?php if (canView('audit')): ?><a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">Audit</a><?php endif; ?>
+        <?php if (canView('invoices')): ?><a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">Invoices</a><?php endif; ?>
+        <?php if (canView('all_tables') && $isSuperAdmin): ?><a href="?view=all_tables" class="nav-item <?php echo $view === 'all_tables' ? 'active' : ''; ?>">Tables</a><?php endif; ?>
+    </nav>
+
+    <!-- DESCRIPTION BAR -->
+    <div class="page-description">
+        <div class="page-description-inner">
+            <span class="eyebrow"><?php echo safeHtml($currentMeta['eyebrow']); ?></span>
+            <p><?php echo safeHtml($currentMeta['blurb']); ?></p>
         </div>
-        <div class="admin-content"><div class="admin-content-inner">
+    </div>
+
+    <main class="admin-content"><div class="admin-content-inner">
 
             <!-- DASHBOARD -->
             <?php if ($view === 'dashboard'): ?>
@@ -1252,9 +1274,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             <div class="card"><div class="empty-state"><span class="icon">🚫</span><h2 style="font-family:var(--f-cond);text-transform:uppercase;font-size:18px;margin-bottom:var(--sp-2);">Access Denied</h2><p>You do not have permission to view this page.</p><a href="?view=dashboard" class="btn btn-primary" style="margin-top:var(--sp-4);">Return to Dashboard</a></div></div>
             <?php endif; ?>
 
-        </div></div>
-    </main>
-    </div>
+        </div></main>
 
     <!-- FOOTER -->
     <footer class="admin-footer">
