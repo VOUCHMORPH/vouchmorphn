@@ -513,13 +513,13 @@ if (empty($availableCountries)) {
   <title>VOUCHMORPH · ADMIN SIGN IN</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=Alex+Brush&display=swap" rel="stylesheet">
   <style>
     /* ============================================================
        VOUCHMORPH — ADMIN LOGIN
        Full-bleed 60/40 split matching main login style.
        Left: white/greyish, functional admin login form.
-       Right: dark, magazine-set brand statement.
+       Right: dark, magazine-set brand statement with "SWAP" in script.
        ============================================================ */
     :root {
       --paper:        #EEF1EF;
@@ -540,6 +540,7 @@ if (empty($availableCountries)) {
       --f-body: 'IBM Plex Sans', sans-serif;
       --f-cond: 'IBM Plex Sans Condensed', sans-serif;
       --f-mono: 'IBM Plex Mono', monospace;
+      --f-script: 'Alex Brush', 'Brush Script MT', cursive;
 
       --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
       --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
@@ -776,6 +777,7 @@ if (empty($availableCountries)) {
        RIGHT — dark, magazine statement inside a mat frame
        Frame moved outward by 50% (closer to edges)
        VOUCHMORPH™ on lateral side between frame and outer edge
+       "SWAP" in script font above "What is VouchMorph"
        ============================================================ */
     .frame-mat {
       position: relative;
@@ -859,6 +861,19 @@ if (empty($availableCountries)) {
       padding: var(--sp-7) var(--sp-6);
       z-index: 1;
     }
+
+    /* "SWAP" in script font above the eyebrow */
+    .magazine .script-word {
+      font-family: var(--f-script);
+      font-size: 30px;
+      font-weight: 700;
+      color: #ffffff;
+      letter-spacing: 0.05em;
+      margin-bottom: var(--sp-4);
+      opacity: 0.95;
+      text-shadow: 0 2px 20px rgba(156,122,60,0.2);
+    }
+
     .magazine .eyebrow {
       font-family: var(--f-cond);
       font-size: 11px;
@@ -931,12 +946,14 @@ if (empty($availableCountries)) {
       .magazine { inset: var(--frame-inset); padding: var(--sp-6) var(--sp-4); }
       .magazine p { font-size: 10px; max-width: 280px; }
       .magazine p.secondary { font-size: 10px; max-width: 280px; }
+      .magazine .script-word { font-size: 26px; }
     }
     @media (max-width: 480px) {
       .frame-strip.lateral { display: none; }
       .trust-row { flex-wrap: wrap; gap: var(--sp-3); justify-content: center; }
       .magazine p { font-size: 10px; max-width: 260px; }
       .magazine p.secondary { font-size: 10px; max-width: 260px; }
+      .magazine .script-word { font-size: 22px; }
     }
 
     @media (prefers-color-scheme: dark) {
@@ -1076,6 +1093,9 @@ if (empty($availableCountries)) {
 
       <!-- Magazine content -->
       <div class="magazine">
+        <!-- "SWAP" in script font above the eyebrow -->
+        <div class="script-word">Swap</div>
+        
         <div class="eyebrow">Administrative Command Center</div>
         <p>VouchMorph administrative access provides complete oversight of multi-asset payment orchestration, beneficiary management, and transaction auditing across all institutions and destinations.</p>
         <p class="secondary">Administrators have full visibility into <strong>every transaction</strong>, from source funding to final settlement. Role-based access controls ensure that only authorized personnel can approve, disburse, or audit payment flows.</p>
