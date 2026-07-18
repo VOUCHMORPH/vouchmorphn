@@ -357,7 +357,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             --panel:        #FFFFFF;
             --ink-900:      #0B1B2B;
             --ink-700:      #1D3557;
-            --ink-500:      #4A5A6E;
+            --ink-500:      #33445A;
             --ink-300:      #8A96A3;
             --line:         #D3DAD6;
             --line-strong:  #AEB8B2;
@@ -385,8 +385,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             background: var(--paper);
             color: var(--ink-900);
             min-height: 100vh;
-            font-size: 14px;
-            line-height: 1.5;
+            font-size: 15px;
+            line-height: 1.55;
             -webkit-font-smoothing: antialiased;
             display: flex;
             flex-direction: column;
@@ -404,7 +404,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
         .admin-ribbon {
             background: var(--ink-900);
-            color: var(--ink-300);
+            color: rgba(255,255,255,0.65);
             font-family: var(--f-mono);
             font-size: 10px;
             letter-spacing: 0.08em;
@@ -437,12 +437,12 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         .header-left { position: relative; display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
         .logo { font-family: var(--f-display); font-weight: 600; font-size: 19px; letter-spacing: 0.01em; line-height: 1; }
         .logo span { color: var(--brass); font-weight: 400; }
-        .logo-sub { font-family: var(--f-cond); font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-300); line-height: 1; }
+        .logo-sub { font-family: var(--f-cond); font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(255,255,255,0.6); line-height: 1; }
         .role-badge { padding: 4px var(--sp-3); background: transparent; border: 1px solid var(--brass); color: var(--brass); font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; font-family: var(--f-cond); line-height: 1; }
         .user-area { position: relative; display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
         .user-details { text-align: right; display: flex; flex-direction: column; gap: 2px; }
         .user-name { font-weight: 600; color: #fff; font-size: 13px; font-family: var(--f-display); line-height: 1; }
-        .user-role { font-size: 9.5px; color: var(--ink-300); text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.06em; line-height: 1; }
+        .user-role { font-size: 9.5px; color: rgba(255,255,255,0.6); text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.06em; line-height: 1; }
         .logout-btn { padding: 6px var(--sp-4); border: 1px solid rgba(255,255,255,0.25); color: #fff; text-decoration: none; font-size: 10.5px; font-weight: 600; text-transform: uppercase; font-family: var(--f-cond); transition: all 0.15s; letter-spacing: 0.06em; line-height: 1; background: transparent; }
         .logout-btn:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
 
@@ -459,7 +459,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             padding: var(--sp-3) 0;
             color: var(--ink-500);
             text-decoration: none;
-            font-size: 10.5px;
+            font-size: 11.5px;
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.05em;
@@ -476,40 +476,41 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         .nav-item.active { color: var(--ink-900); border-bottom-color: var(--brass); }
         .nav-badge { background: var(--brass); color: #fff; font-size: 9px; padding: 1px 7px; font-family: var(--f-mono); font-weight: 700; }
 
-        .admin-content { padding: var(--sp-6) var(--sp-7); flex: 1 0 auto; }
+        .admin-content { padding: var(--sp-8) var(--sp-7) var(--sp-7); flex: 1 0 auto; }
         .admin-content-inner { width: 100%; max-width: var(--content-max); margin: 0 auto; }
 
-        /* Description bar — replaces the dark side panel. One line,
-           same serif voice, sits between nav and content instead of
-           claiming its own column. Same $currentMeta data as before. */
+        /* Description bar — centered letterhead, echoing the login
+           page's centered masthead treatment. Eyebrow above, sentence
+           centered below, both capped to a readable measure so long
+           blurbs don't stretch edge-to-edge. */
         .page-description {
             background: var(--parchment, #FBF9F4);
             border-bottom: 1px solid var(--line);
-            padding: var(--sp-3) var(--sp-7);
+            padding: var(--sp-5) var(--sp-7);
+            text-align: center;
         }
         .page-description-inner {
-            max-width: var(--content-max);
+            max-width: 680px;
             margin: 0 auto;
             display: flex;
-            align-items: baseline;
-            gap: var(--sp-4);
-            flex-wrap: wrap;
+            flex-direction: column;
+            align-items: center;
+            gap: var(--sp-2);
         }
         .page-description .eyebrow {
             font-family: var(--f-cond);
-            font-size: 9.5px;
+            font-size: 11px;
             font-weight: 700;
-            letter-spacing: 0.14em;
+            letter-spacing: 0.16em;
             text-transform: uppercase;
             color: var(--brass-deep);
-            flex-shrink: 0;
         }
         .page-description p {
             font-family: var(--f-display);
             font-style: italic;
-            font-size: 13px;
+            font-size: 15px;
             color: var(--ink-500);
-            line-height: 1.5;
+            line-height: 1.6;
         }
 
         @media (max-width: 768px) {
@@ -548,7 +549,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .content-header h1 {
             font-family: var(--f-display);
-            font-size: 22px;
+            font-size: 25px;
             font-weight: 600;
             letter-spacing: 0.01em;
             color: var(--ink-900);
@@ -615,7 +616,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .metric-card .metric-value {
             font-family: var(--f-display);
-            font-size: 25px;
+            font-size: 27px;
             font-weight: 600;
             color: var(--ink-900);
             font-variant-numeric: tabular-nums;
@@ -1281,7 +1282,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
     <!-- FOOTER -->
     <footer class="admin-footer">
         VOUCHMORPH · <?php echo safeHtml($roleName); ?> · <?php echo date('Y'); ?>
-        <span style="display:block;margin-top:2px;font-size:9px;color:var(--ink-500);">Bank of Botswana Regulatory Sandbox Participant</span>
+        <span style="display:block;margin-top:2px;font-size:9px;color:rgba(255,255,255,0.4);">Bank of Botswana Regulatory Sandbox Participant</span>
     </footer>
 
 </body>
