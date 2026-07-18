@@ -388,6 +388,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             font-size: 14px;
             line-height: 1.5;
             -webkit-font-smoothing: antialiased;
+            display: flex;
+            flex-direction: column;
         }
 
         /* ============================================================
@@ -474,7 +476,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         .nav-item.active { color: var(--ink-900); border-bottom-color: var(--brass); }
         .nav-badge { background: var(--brass); color: #fff; font-size: 9px; padding: 1px 7px; font-family: var(--f-mono); font-weight: 700; }
 
-        .admin-content { padding: var(--sp-6) var(--sp-7); }
+        .admin-content { padding: var(--sp-6) var(--sp-7); flex: 1 0 auto; }
         .admin-content-inner { width: 100%; max-width: var(--content-max); margin: 0 auto; }
 
         /* Description bar — replaces the dark side panel. One line,
