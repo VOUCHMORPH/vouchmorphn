@@ -374,7 +374,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
             --sp-9: 48px; --sp-10: 64px;
 
-            --content-max: 1080px;
+            --content-max: 1440px;
             --header-h: 38px;
         }
 
@@ -484,7 +484,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .top-ribbon strong { color: var(--brass-deep); font-weight: 600; }
         .admin-content { flex: 1; padding: var(--sp-7); display: block; }
-        .admin-content-inner { width: 100%; max-width: var(--content-max); }
+        .admin-content-inner { width: 100%; max-width: var(--content-max); margin: 0 auto; }
 
         @media (max-width: 1024px) {
             .app-shell { flex-direction: column; }
