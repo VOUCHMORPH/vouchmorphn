@@ -630,7 +630,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="frame-mat">
       <div class="frame-line"></div>
 
-      <div class="frame-strip top"><span>VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™</span></div>
       <div class="frame-strip bottom"><span>VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™</span></div>
       <div class="frame-strip left"><span>VOUCHMORPH™</span></div>
       <div class="frame-strip right"><span>VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™ &nbsp;·&nbsp; VOUCHMORPH™</span></div>
