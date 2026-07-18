@@ -1,1109 +1,1459 @@
 <?php
+/**
+ * admin_dashboard.php - VouchMorph Admin Dashboard
+ * Designed to perfectly complement the login page with tight alignment
+ */
+
 declare(strict_types=1);
 
-ob_start();
 error_reporting(E_ALL);
-ini_set('display_errors', 0); // Turn off display errors in production
+ini_set('display_errors', 1);
+session_start();
 
-// ============================================================
-// ADMIN LOGIN - Using DBConnection + RoleManager (Single Source of Truth)
-// ============================================================
-
-// Define project root (goes up 2 levels: public/admin/ -> project root)
 define('PROJECT_ROOT', dirname(__DIR__, 2));
 
-// Debug logging
-error_log("[ADMIN LOGIN] Starting login process");
-
-// Load Composer autoloader first
-require_once PROJECT_ROOT . '/vendor/autoload.php';
-
-// Load required classes
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
-require_once PROJECT_ROOT . '/src/Security/Monitoring/ApiRateLimiter.php';
-require_once PROJECT_ROOT . '/src/Domain/Services/AuditTrailService.php';
-require_once __DIR__ . '/roles.php';
+require_once PROJECT_ROOT . '/vendor/autoload.php';
 
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
 use Application\Admin\Auth\AdminAuth;
-use Security\Monitoring\ApiRateLimiter;
-use Domain\Services\AuditTrailService;
 
-// Load configuration for country data only (not database)
-$configPath = PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
-if (file_exists($configPath)) {
-    require_once $configPath;
-    try {
-        $config = \Core\Config\LoadCountry::getConfig();
-        error_log("[ADMIN LOGIN] Configuration loaded");
-    } catch (Throwable $e) {
-        error_log("[ADMIN LOGIN] Config warning: " . $e->getMessage());
-        $config = [];
-    }
-} else {
-    $config = [];
+if (!SessionManager::isAdminLoggedIn()) {
+    header('Location: admin_login.php');
+    exit();
 }
 
-// Get country
-$countryCode = $_GET['country'] ?? $_POST['country'] ?? $_SESSION['admin_country'] ?? 'BW';
-$systemCountry = strtoupper($countryCode);
+$adminId = SessionManager::getAdminId();
+$adminUsername = SessionManager::getAdminUsername();
+$adminFullName = SessionManager::get('admin_full_name');
+$adminRoleId = SessionManager::getAdminRoleId();
+$adminCountry = SessionManager::getAdminCountry();
 
-// Start session
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
+$roleDefinitions = [
+    999 => ['name' => 'Super Admin', 'label' => 'SUPER ADMIN', 'view' => ['dashboard', 'live_transactions', 'audit', 'invoices', 'regulatory', 'all_tables', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'client_lookup']],
+    3 => ['name' => 'Central Bank Regulator', 'label' => 'REGULATOR', 'view' => ['dashboard', 'regulatory', 'audit', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health']],
+    4 => ['name' => 'Compliance Officer', 'label' => 'COMPLIANCE', 'view' => ['dashboard', 'audit', 'recent_swaps', 'alerts', 'client_lookup']],
+    5 => ['name' => 'Auditor', 'label' => 'AUDITOR', 'view' => ['dashboard', 'audit', 'recent_swaps', 'institution_health']],
+    10 => ['name' => 'Finance Manager', 'label' => 'FINANCE', 'view' => ['dashboard', 'invoices', 'recent_swaps', 'alerts', 'institution_health']],
+    11 => ['name' => 'Settlement Officer', 'label' => 'SETTLEMENT', 'view' => ['dashboard', 'recent_swaps', 'alerts', 'institution_health']],
+    20 => ['name' => 'Customer Support', 'label' => 'SUPPORT', 'view' => ['dashboard', 'client_lookup']]
+];
+
+$roleInfo = $roleDefinitions[$adminRoleId] ?? $roleDefinitions[5];
+$roleName = $roleInfo['name'] ?? 'Auditor';
+$availableViews = $roleInfo['view'] ?? ['dashboard'];
+$isSuperAdmin = ($adminRoleId === 999);
+
+function canView($view) {
+    global $availableViews, $isSuperAdmin;
+    return $isSuperAdmin || in_array($view, $availableViews);
 }
-$_SESSION['admin_country'] = $systemCountry;
 
-// Initialize database connection using DBConnection (Single Source of Truth)
-$db = null;
-$auth = null;
-$dbError = null;
-$auditService = null;
-$roleManager = null;
+function safeHtml($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
 
 try {
     $db = DBConnection::getConnection();
-    
-    if (!$db) {
-        throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
-    }
-    
-    // Test connection
-    $stmt = $db->query("SELECT 1");
-    $stmt->fetch();
-    error_log("[ADMIN LOGIN] Database connected successfully via DBConnection");
-    
-    // Initialize AdminAuth
-    $auth = new AdminAuth($db);
-    error_log("[ADMIN LOGIN] AdminAuth initialized");
-    
-    // Initialize AuditTrailService - pass null for logger (it will use fallback)
-    $auditService = new AuditTrailService(
-        $db,
-        $config ?? [],
-        null,  // Logger will use fallback
-        $systemCountry
-    );
-    error_log("[ADMIN LOGIN] AuditTrailService initialized");
-    
-    // Initialize RoleManager
-    $roleManager = new RoleManager($db);
-    error_log("[ADMIN LOGIN] RoleManager initialized");
-    
+    if (!$db) throw new Exception("Database connection failed");
+    $db->query("SELECT 1");
 } catch (Throwable $e) {
-    error_log("[ADMIN LOGIN] DB Error: " . $e->getMessage());
-    $dbError = $e->getMessage();
+    die("Database connection failed: " . $e->getMessage());
 }
 
-$error = '';
-$mfaRequired = false;
-$adminId = null;
-$username = '';
-$loginResult = null;
+$view = $_GET['view'] ?? 'dashboard';
+$search = trim($_GET['search'] ?? '');
+$lookup = trim($_GET['lookup'] ?? '');
 
 // ============================================================
-// HELPER FUNCTIONS
+// FETCH DATA
 // ============================================================
 
-/**
- * Get single IP from forwarded headers
- */
-function getClientIp(): string {
-    $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-    
-    if (isset($_SERVER['HTTP_X_FORWARDED_FOR'])) {
-        $ips = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
-        $ip = trim($ips[0]);
-    } elseif (isset($_SERVER['HTTP_CLIENT_IP'])) {
-        $ip = $_SERVER['HTTP_CLIENT_IP'];
-    } elseif (isset($_SERVER['HTTP_X_REAL_IP'])) {
-        $ip = $_SERVER['HTTP_X_REAL_IP'];
+$liveTransactions = [];
+$liveStats = ['total' => 0, 'completed' => 0, 'pending' => 0, 'failed' => 0, 'total_amount' => 0];
+try {
+    $checkStmt = $db->query("SELECT to_regclass('vw_all_swaps')");
+    if ($checkStmt->fetchColumn()) {
+        $stmt = $db->prepare("
+            SELECT swap_reference, reference, swap_type, source_institution,
+                   destination_institution, amount, currency, status, fee_amount, created_at
+            FROM vw_all_swaps
+            WHERE swap_reference ILIKE :search1 OR reference ILIKE :search2
+               OR source_institution ILIKE :search3 OR destination_institution ILIKE :search4
+               OR status ILIKE :search5
+            ORDER BY created_at DESC
+        ");
+        $likeSearch = '%' . $search . '%';
+        $stmt->execute([
+            ':search1' => $likeSearch, ':search2' => $likeSearch,
+            ':search3' => $likeSearch, ':search4' => $likeSearch,
+            ':search5' => $likeSearch,
+        ]);
+        $liveTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $statStmt = $db->query("
+            SELECT COUNT(*) as total,
+                   COUNT(CASE WHEN status ILIKE '%completed%' OR status ILIKE '%success%' OR status ILIKE '%debited%' THEN 1 END) as completed,
+                   COUNT(CASE WHEN status ILIKE '%pending%' OR status ILIKE '%processing%' THEN 1 END) as pending,
+                   COUNT(CASE WHEN status ILIKE '%failed%' OR status ILIKE '%error%' THEN 1 END) as failed,
+                   COALESCE(SUM(amount), 0) as total_amount
+            FROM vw_all_swaps WHERE created_at >= NOW() - INTERVAL '24 hours'
+        ");
+        $liveStats = $statStmt->fetch(PDO::FETCH_ASSOC);
     }
-    
-    if (!filter_var($ip, FILTER_VALIDATE_IP)) {
-        $ip = 'unknown';
+} catch (Throwable $e) {}
+
+$recentSwaps = [];
+try {
+    $checkStmt = $db->query("SELECT to_regclass('vw_all_swaps')");
+    if ($checkStmt->fetchColumn()) {
+        $stmt = $db->prepare("
+            SELECT swap_reference, reference, swap_type, source_institution,
+                   destination_institution, amount, currency, status, fee_amount, created_at
+            FROM vw_all_swaps
+            WHERE swap_reference ILIKE :search1 OR reference ILIKE :search2
+               OR source_institution ILIKE :search3 OR destination_institution ILIKE :search4
+               OR status ILIKE :search5
+            ORDER BY created_at DESC
+        ");
+        $likeSearch = '%' . $search . '%';
+        $stmt->execute([
+            ':search1' => $likeSearch, ':search2' => $likeSearch,
+            ':search3' => $likeSearch, ':search4' => $likeSearch,
+            ':search5' => $likeSearch,
+        ]);
+        $recentSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
-    
-    return $ip;
+} catch (Throwable $e) {}
+
+$multiDestinationSwaps = [];
+try {
+    $stmt = $db->query("
+        SELECT id, reference, source_institution, total_destinations, successful_count,
+               failed_count, total_amount, total_fees, status, created_at
+        FROM multi_destination_swaps ORDER BY created_at DESC
+    ");
+    $multiDestinationSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {}
+
+$alerts = ['stuck_holds' => [], 'expired_identity_swaps' => [], 'stuck_cashouts' => []];
+$totalAlerts = 0;
+try {
+    $stmt = $db->query("
+        SELECT hold_id, hold_reference, swap_reference, participant_name AS institution,
+               amount, currency, status, created_at
+        FROM hold_transactions
+        WHERE status IN ('ACTIVE','HELD','PENDING_CASHOUT','PENDING_IDENTITY')
+          AND created_at < NOW() - INTERVAL '24 hours'
+        ORDER BY created_at ASC LIMIT 300
+    ");
+    $alerts['stuck_holds'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $totalAlerts += count($alerts['stuck_holds']);
+} catch (Throwable $e) {}
+try {
+    $stmt = $db->query("
+        SELECT swap_reference, source_institution, identity_type, identity_value,
+               amount, currency, hold_expires_at, status
+        FROM identity_swap_holds
+        WHERE status = 'pending' AND hold_expires_at < NOW()
+        ORDER BY hold_expires_at ASC LIMIT 300
+    ");
+    $alerts['expired_identity_swaps'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $totalAlerts += count($alerts['expired_identity_swaps']);
+} catch (Throwable $e) {}
+try {
+    $stmt = $db->query("
+        SELECT swap_reference, client_phone, source_institution, cashout_provider,
+               amount, currency, code_expiry, status
+        FROM cashout_authorizations
+        WHERE status = 'PENDING' AND code_expiry < NOW()
+        ORDER BY code_expiry ASC LIMIT 300
+    ");
+    $alerts['stuck_cashouts'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $totalAlerts += count($alerts['stuck_cashouts']);
+} catch (Throwable $e) {}
+
+$institutionHealth = [];
+try {
+    $stmt = $db->query("
+        SELECT inst AS institution, COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE status ILIKE '%completed%' OR status ILIKE '%success%') AS successful,
+               COALESCE(SUM(amount), 0) AS volume
+        FROM (
+            SELECT source_institution AS inst, status, amount FROM vw_all_swaps
+            UNION ALL
+            SELECT destination_institution AS inst, status, amount FROM vw_all_swaps
+        ) combined GROUP BY inst ORDER BY total DESC
+    ");
+    $institutionHealth = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($institutionHealth as &$row) {
+        $row['success_rate'] = $row['total'] > 0 ? round(($row['successful'] / $row['total']) * 100, 1) : 0.0;
+    }
+    unset($row);
+} catch (Throwable $e) {}
+
+$metrics = [];
+try {
+    $metrics['total_users'] = (int)$db->query("SELECT COUNT(*) FROM users")->fetchColumn();
+    $metrics['total_swaps'] = (int)$db->query("SELECT COUNT(*) FROM vw_all_swaps")->fetchColumn();
+    $metrics['pending_settlements'] = (int)$db->query("SELECT COUNT(*) FROM settlement_queue WHERE status = 'PENDING'")->fetchColumn();
+    $metrics['total_fees'] = (float)$db->query("SELECT COALESCE(SUM((message_payload->>'fee_amount')::numeric), 0) FROM settlement_outbox WHERE message_type = 'FEE_INVOICE'")->fetchColumn();
+    $metrics['recent_swaps_24h'] = (int)$db->query("SELECT COUNT(*) FROM vw_all_swaps WHERE created_at >= NOW() - INTERVAL '24 hours'")->fetchColumn();
+    $metrics['multi_destination_count'] = (int)$db->query("SELECT COUNT(*) FROM multi_destination_swaps")->fetchColumn();
+} catch (Throwable $e) {
+    $metrics = array_fill_keys(['total_users', 'total_swaps', 'pending_settlements', 'total_fees', 'recent_swaps_24h', 'multi_destination_count'], 0);
 }
 
-/**
- * Validate role exists in database - handles both role_name and role_id
- */
-function validateRole($roleManager, $role): bool {
-    // Empty role is invalid
-    if (empty($role)) {
-        error_log("[ROLE VALIDATION] Empty role provided - treating as invalid");
-        return false;
-    }
-    
+$lookupResults = [];
+if ($view === 'client_lookup' && $lookup !== '') {
+    $likeLookup = '%' . $lookup . '%';
     try {
-        if (is_numeric($role)) {
-            $roleInfo = $roleManager->getRoleById((int)$role);
-            if ($roleInfo) {
-                error_log("[ROLE VALIDATION] Validated role ID: {$role} -> {$roleInfo['role_name']}");
-                return true;
-            }
-            error_log("[ROLE VALIDATION] Role ID {$role} not found");
-            return false;
+        $stmt = $db->prepare("
+            SELECT swap_reference, source_institution, identity_type, identity_value,
+                   amount, currency, hold_expires_at, status, created_at
+            FROM identity_swap_holds
+            WHERE identity_value ILIKE :l OR swap_reference ILIKE :l
+            ORDER BY created_at DESC LIMIT 25
+        ");
+        $stmt->execute([':l' => $likeLookup]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $isExpired = strtotime($row['hold_expires_at'] ?? 'now') < time();
+            $lookupResults[] = [
+                'kind' => 'Identity Swap',
+                'reference' => $row['swap_reference'],
+                'institution' => $row['source_institution'],
+                'amount' => $row['amount'],
+                'currency' => $row['currency'] ?? 'BWP',
+                'status' => $row['status'],
+                'created_at' => $row['created_at'],
+                'next_action' => $row['status'] === 'pending' ? ($isExpired ? 'EXPIRED - Needs cancellation.' : 'Awaiting confirmation.') : 'Completed.',
+                'identity' => ($row['identity_type'] ?? '') . ': ' . ($row['identity_value'] ?? ''),
+            ];
         }
-        
-        $roleInfo = $roleManager->getRoleByName($role);
-        if ($roleInfo) {
-            error_log("[ROLE VALIDATION] Validated role name: {$role} -> ID: {$roleInfo['role_id']}");
-            return true;
-        }
-        error_log("[ROLE VALIDATION] Role name '{$role}' not found");
-        return false;
-        
-    } catch (Throwable $e) {
-        error_log("[ROLE VALIDATION] Error: " . $e->getMessage());
-        return false;
-    }
-}
-
-/**
- * Get role info from database - handles both role_name and role_id
- */
-function getRoleInfo($roleManager, $role): ?array {
-    if (empty($role)) {
-        return null;
-    }
-    
+    } catch (Throwable $e) {}
     try {
-        if (is_numeric($role)) {
-            return $roleManager->getRoleById((int)$role);
+        $stmt = $db->prepare("
+            SELECT swap_reference, client_phone, source_institution, cashout_provider,
+                   amount, currency, code_expiry, status, created_at
+            FROM cashout_authorizations
+            WHERE client_phone ILIKE :l OR swap_reference ILIKE :l
+            ORDER BY created_at DESC LIMIT 25
+        ");
+        $stmt->execute([':l' => $likeLookup]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $isExpired = strtotime($row['code_expiry'] ?? 'now') < time();
+            $lookupResults[] = [
+                'kind' => 'Cashout',
+                'reference' => $row['swap_reference'],
+                'institution' => $row['source_institution'] . ' → ' . $row['cashout_provider'],
+                'amount' => $row['amount'],
+                'currency' => $row['currency'] ?? 'BWP',
+                'status' => $row['status'],
+                'created_at' => $row['created_at'],
+                'next_action' => $row['status'] === 'PENDING' ? ($isExpired ? 'EXPIRED - New swap needed.' : 'Active - Client must cash out.') : 'Completed.',
+                'identity' => 'Phone: ' . ($row['client_phone'] ?? 'N/A'),
+            ];
         }
-        return $roleManager->getRoleByName($role);
-    } catch (Throwable $e) {
-        error_log("[ROLE VALIDATION] Error getting role info: " . $e->getMessage());
-        return null;
-    }
+    } catch (Throwable $e) {}
 }
 
-/**
- * Destroy session completely
- */
-function destroySessionCompletely(): void {
-    // Clear all session variables
-    $_SESSION = [];
-    
-    // Destroy the session cookie
-    if (ini_get("session.use_cookies")) {
-        $params = session_get_cookie_params();
-        setcookie(
-            session_name(),
-            '',
-            time() - 42000,
-            $params["path"],
-            $params["domain"],
-            $params["secure"],
-            $params["httponly"]
-        );
-    }
-    
-    // Destroy the session
-    session_destroy();
-    
-    // Also clear the global session array
-    session_unset();
-    
-    // Start a new session to ensure clean state
-    session_start();
-    session_regenerate_id(true);
-    
-    error_log("[SESSION] Session destroyed completely");
+$auditRows = [];
+if ($view === 'audit' && canView('audit')) {
+    try { $auditRows = $db->query("SELECT * FROM audit_logs ORDER BY audit_id DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
 }
 
-// ============================================================
-// HANDLE LOGIN POST
-// ============================================================
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService) && isset($roleManager)) {
-    $clientIp = getClientIp();
-    $rateLimitKey = 'admin_login:' . $clientIp;
-    $rateLimited = false;
-
-    // --- RATE LIMITING ---
-    try {
-        $limiter = new ApiRateLimiter(8, 300);
-        if (!$limiter->check($rateLimitKey)) {
-            $rateLimited = true;
-            error_log("[ADMIN LOGIN] Rate limit exceeded for IP: {$clientIp}");
-        }
-    } catch (\Throwable $e) {
-        error_log("[ADMIN LOGIN] Rate limiter unavailable: " . $e->getMessage());
-    }
-
-    if ($rateLimited) {
-        $error = 'Too many login attempts. Please try again in a few minutes.';
-        
-        try {
-            $auditService->recordLog(
-                'admin_login',
-                null,
-                'RATE_LIMIT_EXCEEDED',
-                'security',
-                'WARNING',
-                json_encode(['ip' => $clientIp]),
-                null,
-                null,
-                $clientIp,
-                $_SERVER['HTTP_USER_AGENT'] ?? null
-            );
-        } catch (Throwable $e) {
-            error_log("[ADMIN LOGIN] Failed to audit rate limit: " . $e->getMessage());
-        }
-    } else {
-        try {
-            if (isset($_POST['mfa_code'])) {
-                // MFA verification
-                $loginResult = $auth->verifyMfa($_POST['mfa_code'], $systemCountry);
-                if ($loginResult['success']) {
-                    try {
-                        $auditService->recordLog(
-                            'admin_login',
-                            SessionManager::get('admin_id'),
-                            'MFA_VERIFIED',
-                            'security',
-                            'INFO',
-                            null,
-                            json_encode(['method' => 'totp']),
-                            SessionManager::get('admin_id'),
-                            $clientIp,
-                            $_SERVER['HTTP_USER_AGENT'] ?? null
-                        );
-                    } catch (Throwable $e) {
-                        error_log("[ADMIN LOGIN] Failed to audit MFA: " . $e->getMessage());
-                    }
-                    
-                    header('Location: admin_dashboard.php?country=' . $systemCountry);
-                    exit;
-                } else {
-                    $error = $loginResult['message'];
-                    
-                    try {
-                        $auditService->recordLog(
-                            'admin_login',
-                            SessionManager::get('admin_id'),
-                            'MFA_FAILED',
-                            'security',
-                            'WARNING',
-                            json_encode(['reason' => $error]),
-                            null,
-                            SessionManager::get('admin_id'),
-                            $clientIp,
-                            $_SERVER['HTTP_USER_AGENT'] ?? null
-                        );
-                    } catch (Throwable $e) {
-                        error_log("[ADMIN LOGIN] Failed to audit MFA failure: " . $e->getMessage());
-                    }
-                }
-            } else {
-                // Initial login
-                $username = trim($_POST['username'] ?? '');
-                $password = $_POST['password'] ?? '';
-
-                if (empty($username) || empty($password)) {
-                    $error = 'Username and password are required';
-                } else {
-                    // ============================================================
-                    // STEP 1: Authenticate the user
-                    // ============================================================
-                    $loginResult = $auth->login($username, $password, $systemCountry);
-                    
-                    if ($loginResult['success']) {
-                        // ============================================================
-                        // STEP 2: ROLE VALIDATION - Check BEFORE session is fully committed
-                        // ============================================================
-                        
-                        // Get role from login result - try multiple possible keys
-                        $userRole = $loginResult['role'] ?? 
-                                   $loginResult['role_name'] ?? 
-                                   $loginResult['role_id'] ?? 
-                                   '';
-                        
-                        $adminId = $loginResult['admin_id'] ?? null;
-                        
-                        // Log what we found for debugging
-                        error_log("[ADMIN LOGIN] Role from login result: " . json_encode([
-                            'role' => $loginResult['role'] ?? 'null',
-                            'role_name' => $loginResult['role_name'] ?? 'null',
-                            'role_id' => $loginResult['role_id'] ?? 'null',
-                            'userRole_final' => $userRole
-                        ]));
-                        
-                        // Validate the role
-                        $roleValid = validateRole($roleManager, $userRole);
-                        
-                        // Get role info for logging
-                        $roleInfo = getRoleInfo($roleManager, $userRole);
-                        $roleLevel = $roleInfo['role_level'] ?? 'N/A';
-                        
-                        error_log("[ADMIN LOGIN] Role validation result: " . ($roleValid ? 'VALID' : 'INVALID') . 
-                                 " - Role: {$userRole}, Admin ID: {$adminId}");
-                        
-                        if (!$roleValid) {
-                            // ============================================================
-                            // INVALID ROLE - Security incident - DESTROY SESSION IMMEDIATELY
-                            // ============================================================
-                            $error = 'Access denied: Invalid account permissions. Please contact system administrator.';
-                            
-                            error_log("[SECURITY] Invalid role detected during login: {$userRole} for user: {$username}");
-                            error_log("[SECURITY] Admin ID: {$adminId}, IP: {$clientIp}");
-                            
-                            // Log the security incident
-                            try {
-                                $auditService->recordLog(
-                                    'admin_login',
-                                    $adminId,
-                                    'INVALID_ROLE_DETECTED',
-                                    'security',
-                                    'CRITICAL',
-                                    json_encode([
-                                        'username' => $username,
-                                        'role' => $userRole,
-                                        'role_type' => is_numeric($userRole) ? 'numeric' : 'string'
-                                    ]),
-                                    null,
-                                    $adminId,
-                                    $clientIp,
-                                    $_SERVER['HTTP_USER_AGENT'] ?? null
-                                );
-                            } catch (Throwable $e) {
-                                error_log("[ADMIN LOGIN] Failed to audit invalid role: " . $e->getMessage());
-                            }
-                            
-                            // ============================================================
-                            // CRITICAL: DESTROY SESSION COMPLETELY
-                            // ============================================================
-                            destroySessionCompletely();
-                            
-                            // Clear the login result to prevent further processing
-                            $loginResult['success'] = false;
-                            
-                            // Ensure we don't proceed
-                            $error = 'Access denied: Invalid account permissions. Please contact system administrator.';
-                            
-                            // IMPORTANT: Do NOT redirect or proceed - stay on login page
-                            // The error will be displayed and the user will need to re-authenticate
-                            
-                        } else {
-                            // ============================================================
-                            // ROLE VALID - Proceed with login
-                            // ============================================================
-                            
-                            // Log successful login with role info
-                            try {
-                                $auditService->recordLog(
-                                    'admin_login',
-                                    $adminId,
-                                    'LOGIN_SUCCESS',
-                                    'security',
-                                    'INFO',
-                                    null,
-                                    json_encode([
-                                        'username' => $username,
-                                        'role' => $userRole,
-                                        'role_level' => $roleLevel,
-                                        'role_validated' => true,
-                                        'role_id' => $roleInfo['role_id'] ?? null
-                                    ]),
-                                    $adminId,
-                                    $clientIp,
-                                    $_SERVER['HTTP_USER_AGENT'] ?? null
-                                );
-                            } catch (Throwable $e) {
-                                error_log("[ADMIN LOGIN] Failed to audit login success: " . $e->getMessage());
-                            }
-                            
-                            // Check if MFA is required
-                            if (isset($loginResult['mfa_required']) && $loginResult['mfa_required'] === true) {
-                                $mfaRequired = true;
-                                $adminId = $loginResult['admin_id'];
-                            } else {
-                                // Session is already set by AdminAuth, but ensure it's complete
-                                if (!SessionManager::isLoggedIn()) {
-                                    SessionManager::set('admin_id', $adminId);
-                                    SessionManager::set('admin_username', $username);
-                                    SessionManager::set('admin_role', $userRole);
-                                    SessionManager::set('admin_country', $systemCountry);
-                                    SessionManager::set('logged_in', true);
-                                    
-                                    if ($roleInfo) {
-                                        SessionManager::set('admin_role_id', $roleInfo['role_id'] ?? null);
-                                        SessionManager::set('admin_role_level', $roleInfo['role_level'] ?? null);
-                                    }
-                                }
-                                
-                                header('Location: admin_dashboard.php?country=' . $systemCountry);
-                                exit;
-                            }
-                        }
-                    } else {
-                        $error = $loginResult['message'];
-                        
-                        // Log failed login
-                        try {
-                            $auditService->recordLog(
-                                'admin_login',
-                                null,
-                                'LOGIN_FAILED',
-                                'security',
-                                'WARNING',
-                                json_encode(['username' => $username, 'reason' => $error]),
-                                null,
-                                null,
-                                $clientIp,
-                                $_SERVER['HTTP_USER_AGENT'] ?? null
-                            );
-                        } catch (Throwable $e) {
-                            error_log("[ADMIN LOGIN] Failed to audit login failure: " . $e->getMessage());
-                        }
-                    }
-                }
-            }
-        } catch (Throwable $e) {
-            error_log("[ADMIN LOGIN] Exception: " . $e->getMessage());
-            $error = "Authentication error occurred.";
-            
-            try {
-                $auditService->recordLog(
-                    'admin_login',
-                    null,
-                    'LOGIN_EXCEPTION',
-                    'security',
-                    'ERROR',
-                    json_encode(['exception' => $e->getMessage()]),
-                    null,
-                    null,
-                    $clientIp,
-                    $_SERVER['HTTP_USER_AGENT'] ?? null
-                );
-            } catch (Throwable $auditErr) {
-                error_log("[ADMIN LOGIN] Failed to audit exception: " . $auditErr->getMessage());
-            }
-        }
-    }
+$invoiceMessages = [];
+if ($view === 'invoices' && canView('invoices')) {
+    try { $invoiceMessages = $db->query("SELECT * FROM settlement_outbox WHERE message_type = 'FEE_INVOICE' ORDER BY created_at DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
 }
 
-// Get available countries
-$availableCountries = [];
-$countriesDir = PROJECT_ROOT . '/src/Core/Config/Countries/';
-if (is_dir($countriesDir)) {
-    $items = scandir($countriesDir);
-    foreach ($items as $item) {
-        if (is_dir($countriesDir . $item) && !in_array($item, ['.', '..'])) {
-            $availableCountries[] = $item;
-        }
-    }
-}
-if (empty($availableCountries)) {
-    $availableCountries = ['Botswana'];
-}
+// View meta for description panel
+$viewMeta = [
+    'dashboard' => ['side' => 'left', 'eyebrow' => 'Operating Picture', 'blurb' => "Total swap volume, pending settlements, and the numbers that tell you whether the system is healthy right now — without opening a single table."],
+    'client_lookup' => ['side' => 'right', 'eyebrow' => 'Customer Support', 'blurb' => "Search by phone number, national ID, or any reference. Every match comes with a plain next step, not just a status code."],
+    'alerts' => ['side' => 'left', 'eyebrow' => 'Exceptions', 'blurb' => "Holds, cashouts, and identity swaps that have sat in a non-terminal state longer than expected. These need a human decision."],
+    'live_transactions' => ['side' => 'right', 'eyebrow' => 'Real-Time Feed', 'blurb' => "A rolling view of the last twenty-four hours, refreshing on its own. Watch volume move without reloading the page."],
+    'multi_destination' => ['side' => 'left', 'eyebrow' => 'Batch Settlement', 'blurb' => "One instruction, many destinations. A single batch can reach bank accounts, wallets, and identity-linked beneficiaries at once."],
+    'recent_swaps' => ['side' => 'right', 'eyebrow' => 'Transaction Ledger', 'blurb' => "The complete transaction ledger, searchable by reference, institution, or status. Nothing here is paginated away."],
+    'institution_health' => ['side' => 'left', 'eyebrow' => 'Institution Health', 'blurb' => "Volume, success rate, and average time-to-debit, broken down per institution. The bar tells you at a glance who's having a bad day."],
+    'regulatory' => ['side' => 'left', 'eyebrow' => 'Regulatory Oversight', 'blurb' => "Net positions between institutions and pending settlements — the numbers a regulator needs, not the raw transaction feed."],
+    'audit' => ['side' => 'right', 'eyebrow' => 'Audit Trail', 'blurb' => "Every recorded action, most recent first. This is the trail — who did what, and when."],
+    'invoices' => ['side' => 'right', 'eyebrow' => 'Invoicing', 'blurb' => "Fee invoices generated automatically through settlement — the paper trail for what's owed to whom."],
+];
+$currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph Admin', 'blurb' => "Administrative tools for VouchMorph's enterprise disbursement network."];
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VOUCHMORPH · ADMIN SIGN IN</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=Alex+Brush&display=swap" rel="stylesheet">
-  <style>
-    /* ============================================================
-       VOUCHMORPH — ADMIN LOGIN
-       Full-bleed 60/40 split matching main login style.
-       Left: white/greyish, functional admin login form.
-       Right: dark, magazine-set brand statement with "SWAP" in script.
-       ============================================================ */
-    :root {
-      --paper:        #EEF1EF;
-      --panel:        #FFFFFF;
-      --ink-900:      #0B1B2B;
-      --ink-700:      #1D3557;
-      --ink-500:      #4A5A6E;
-      --ink-300:      #8A96A3;
-      --line:         #D3DAD6;
-      --line-strong:  #AEB8B2;
-      --brass:        #9C7A3C;
-      --brass-deep:   #6E5326;
-      --brass-tint:   #F4EFE3;
-      --danger:       #b3261e;
-      --danger-bg:    #fbeceb;
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VOUCHMORPH · <?php echo safeHtml($roleName); ?></title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* ============================================================
+           VOUCHMORPH — ADMIN DASHBOARD
+           Perfect complement to login page. Same palette, same
+           typography, same spacing rhythm.
+           ============================================================ */
+        :root {
+            --paper:        #EEF1EF;
+            --panel:        #FFFFFF;
+            --ink-900:      #0B1B2B;
+            --ink-700:      #1D3557;
+            --ink-500:      #4A5A6E;
+            --ink-300:      #8A96A3;
+            --line:         #D3DAD6;
+            --line-strong:  #AEB8B2;
+            --brass:        #9C7A3C;
+            --brass-deep:   #6E5326;
+            --brass-tint:   #F4EFE3;
 
-      --f-display: 'Source Serif 4', 'IBM Plex Sans', serif;
-      --f-body: 'IBM Plex Sans', sans-serif;
-      --f-cond: 'IBM Plex Sans Condensed', sans-serif;
-      --f-mono: 'IBM Plex Mono', monospace;
-      --f-script: 'Alex Brush', 'Brush Script MT', cursive;
+            --f-display: 'Source Serif 4', 'IBM Plex Sans', serif;
+            --f-body:    'IBM Plex Sans', sans-serif;
+            --f-cond:    'IBM Plex Sans Condensed', sans-serif;
+            --f-mono:    'IBM Plex Mono', monospace;
 
-      --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
-      --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
-      --sp-9: 48px; --sp-10: 64px;
-      
-      /* Frame position: moved outward by 50% (closer to edges) */
-      --frame-inset: calc(var(--sp-6) * 0.5);
-    }
+            --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+            --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
+            --sp-9: 48px; --sp-10: 64px;
 
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { height: 100%; }
+            --content-max: 1080px;
+            --header-h: 38px;
+        }
 
-    body {
-      font-family: var(--f-body);
-      color: var(--ink-900);
-      font-size: 15px;
-      line-height: 1.55;
-      -webkit-font-smoothing: antialiased;
-    }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
-    :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+        body {
+            font-family: var(--f-body);
+            background: var(--paper);
+            color: var(--ink-900);
+            min-height: 100vh;
+            font-size: 14px;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+        }
 
-    /* ============================================================
-       SPLIT — LEFT 60% | RIGHT 40%
-       ============================================================ */
-    .split {
-      display: flex;
-      min-height: 100vh;
-      width: 100%;
-    }
-    .col {
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-    }
+        /* ============================================================
+           RIBBON — matches login
+           ============================================================ */
+        .admin-ribbon {
+            background: var(--ink-900);
+            color: var(--ink-300);
+            font-family: var(--f-mono);
+            font-size: 10px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            padding: var(--sp-1) var(--sp-7);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--sp-3);
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            line-height: 1.8;
+        }
+        .admin-ribbon strong { color: var(--brass); font-weight: 600; }
 
-    /* LEFT — 60% — Greyish background */
-    .col-form {
-      flex: 0 0 60%;
-      background: #F2F0ED;
-      align-items: center;
-      justify-content: center;
-      padding: var(--sp-8) var(--sp-6);
-    }
-    .form-wrap {
-      width: 100%;
-      max-width: 440px;
-    }
+        /* ============================================================
+           HEADER — matches login
+           ============================================================ */
+        .admin-header {
+            position: relative;
+            background:
+                radial-gradient(ellipse at top left, rgba(156,122,60,0.10), transparent 55%),
+                var(--ink-900);
+            color: #fff;
+            padding: var(--sp-5) var(--sp-7);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: var(--sp-4);
+            border-bottom: 3px solid var(--brass);
+            overflow: hidden;
+        }
+        .admin-header::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            opacity: 0.06;
+            pointer-events: none;
+            background-image:
+                repeating-radial-gradient(circle at 0% 50%, transparent 0, transparent 6px, rgba(255,255,255,0.4) 7px, transparent 8px),
+                repeating-radial-gradient(circle at 100% 50%, transparent 0, transparent 6px, rgba(255,255,255,0.4) 7px, transparent 8px);
+            background-size: 80px 80px;
+        }
+        .header-left {
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: var(--sp-5);
+            flex-wrap: wrap;
+        }
+        .logo {
+            font-family: var(--f-display);
+            font-weight: 600;
+            font-size: 20px;
+            letter-spacing: 0.01em;
+            line-height: 1;
+        }
+        .logo span { color: var(--brass); font-weight: 400; }
+        .logo-sub {
+            font-family: var(--f-cond);
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.13em;
+            text-transform: uppercase;
+            color: var(--ink-300);
+            line-height: 1;
+        }
+        .role-badge {
+            padding: var(--sp-1) var(--sp-3);
+            background: transparent;
+            border: 1px solid var(--brass);
+            color: var(--brass);
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-family: var(--f-cond);
+            line-height: 1;
+        }
+        .user-area {
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: var(--sp-5);
+            flex-wrap: wrap;
+        }
+        .user-details { text-align: right; display: flex; flex-direction: column; gap: 2px; }
+        .user-name {
+            font-weight: 600;
+            color: #fff;
+            font-size: 14px;
+            font-family: var(--f-display);
+            line-height: 1;
+        }
+        .user-role {
+            font-size: 10px;
+            color: var(--ink-300);
+            text-transform: uppercase;
+            font-family: var(--f-cond);
+            letter-spacing: 0.06em;
+            line-height: 1;
+        }
+        .logout-btn {
+            padding: var(--sp-2) var(--sp-4);
+            border: 1px solid rgba(255,255,255,0.25);
+            color: #fff;
+            text-decoration: none;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-family: var(--f-cond);
+            transition: all 0.15s;
+            letter-spacing: 0.06em;
+            line-height: 1;
+            background: transparent;
+        }
+        .logout-btn:hover {
+            background: var(--brass);
+            border-color: var(--brass);
+            color: var(--ink-900);
+        }
 
-    /* RIGHT — 40% — Dark magazine style */
-    .col-brand {
-      flex: 0 0 40%;
-      background:
-        radial-gradient(900px 600px at 85% 0%, rgba(156,122,60,.12), transparent 60%),
-        #0A1420;
-      position: relative;
-      align-items: stretch;
-      justify-content: stretch;
-      overflow: hidden;
-    }
+        /* ============================================================
+           NAV — matches login
+           ============================================================ */
+        .admin-nav {
+            background: var(--panel);
+            border-bottom: 1px solid var(--line);
+            padding: 0 var(--sp-7);
+            display: flex;
+            gap: var(--sp-6);
+            flex-wrap: wrap;
+            align-items: center;
+            overflow-x: auto;
+        }
+        .nav-item {
+            padding: var(--sp-4) 0;
+            color: var(--ink-500);
+            text-decoration: none;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s;
+            white-space: nowrap;
+            font-family: var(--f-cond);
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .nav-item:hover { color: var(--ink-900); }
+        .nav-item.active {
+            color: var(--ink-900);
+            border-bottom-color: var(--brass);
+        }
+        .nav-badge {
+            background: var(--brass);
+            color: #fff;
+            font-size: 9px;
+            padding: 1px 8px;
+            font-family: var(--f-mono);
+            font-weight: 700;
+        }
 
-    .brand {
-      margin-bottom: var(--sp-8);
-    }
-    .brand .mark {
-      font-family: var(--f-display);
-      font-weight: 600;
-      font-size: 26px;
-      letter-spacing: 0.005em;
-      color: var(--ink-900);
-    }
-    .brand .mark sup { font-size: 11px; color: var(--brass-deep); font-weight: 600; }
-    .brand .division {
-      margin-top: var(--sp-2);
-      font-family: var(--f-cond);
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--ink-300);
-      padding-top: var(--sp-2);
-      border-top: 2px solid var(--brass);
-      display: inline-block;
-    }
+        /* ============================================================
+           WORKSPACE — 30/70 split (dark letterhead / working content)
+           ============================================================ */
+        .workspace { display: flex; align-items: stretch; min-height: calc(100vh - 180px); }
+        .workspace.dark-left { flex-direction: row; }
+        .workspace.dark-right { flex-direction: row-reverse; }
 
-    .form-wrap h2 {
-      font-family: var(--f-display);
-      font-size: 24px;
-      font-weight: 600;
-      color: var(--ink-900);
-    }
-    .form-wrap .subtitle {
-      color: var(--ink-500);
-      font-size: 14px;
-      margin-top: var(--sp-1);
-      margin-bottom: var(--sp-7);
-    }
+        .panel-dark {
+            flex: 0 0 30%;
+            background:
+                radial-gradient(900px 600px at 85% 0%, rgba(156,122,60,.10), transparent 60%),
+                #0A1420;
+            position: sticky;
+            top: 0;
+            height: calc(100vh - 180px);
+            overflow-y: auto;
+            border-right: 1px solid rgba(255,255,255,0.06);
+        }
+        .workspace.dark-right .panel-dark { border-right: none; border-left: 1px solid rgba(255,255,255,0.06); }
 
-    .field { margin-bottom: var(--sp-5); }
-    .field label {
-      display: block;
-      margin-bottom: var(--sp-2);
-      font-weight: 600;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--ink-500);
-      font-family: var(--f-cond);
-    }
-    .field-input { position: relative; }
-    .field-input svg {
-      position: absolute;
-      left: var(--sp-4);
-      top: 50%;
-      transform: translateY(-50%);
-      width: 18px;
-      height: 18px;
-      color: var(--ink-300);
-      pointer-events: none;
-    }
-    .field input,
-    .field select {
-      width: 100%;
-      padding: var(--sp-4) var(--sp-4) var(--sp-4) 44px;
-      border: 1.5px solid var(--line);
-      font-size: 15px;
-      font-family: var(--f-body);
-      background: #fdfcf9;
-      transition: border-color .15s, background .15s;
-      color: var(--ink-900);
-      border-radius: 0;
-      appearance: none;
-      -webkit-appearance: none;
-    }
-    .field input:focus,
-    .field select:focus {
-      outline: none;
-      border-color: var(--brass);
-      background: #fff;
-    }
-    .field input::placeholder,
-    .field select::placeholder { color: var(--ink-300); opacity: 0.8; }
-    
-    /* Custom select arrow */
-    .field-input select {
-      padding-right: 40px;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%234A5A6E' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 16px center;
-    }
+        /* Letterhead-style mat frame, echoing the login page's frame-mat treatment
+           so the two screens read as one continuous system. */
+        .panel-dark .frame-mat {
+            position: relative;
+            height: 100%;
+            min-height: 460px;
+            margin: var(--sp-5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .panel-dark .frame-line {
+            position: absolute;
+            inset: 0;
+            border: 1px solid rgba(255,255,255,0.14);
+            pointer-events: none;
+        }
+        .panel-dark .frame-strip {
+            position: absolute;
+            color: rgba(255,255,255,0.32);
+            font-family: var(--f-mono);
+            font-size: 9px;
+            letter-spacing: 0.26em;
+            text-transform: uppercase;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2;
+        }
+        .panel-dark .frame-strip.top {
+            top: -8px; left: 24px; right: 24px; height: 16px;
+            background: #0A1420; padding: 0 10px;
+        }
+        .panel-dark .frame-strip.bottom {
+            bottom: -8px; left: 24px; right: 24px; height: 16px;
+            background: #0A1420; padding: 0 10px;
+        }
 
-    .btn {
-      width: 100%;
-      padding: var(--sp-4);
-      background: var(--ink-900);
-      color: #fff;
-      border: 1.5px solid var(--ink-900);
-      font-size: 13px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: .15s;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      font-family: var(--f-cond);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: var(--sp-3);
-      border-radius: 0;
-      margin-top: var(--sp-2);
-    }
-    .btn:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
-    .btn svg { width: 16px; height: 16px; transition: transform .15s; }
-    .btn:hover svg { transform: translateX(4px); }
+        .panel-dark .panel-inner {
+            position: relative;
+            z-index: 1;
+            width: 100%;
+            max-width: 300px;
+            margin: 0 auto;
+            padding: var(--sp-8) var(--sp-5);
+            text-align: center;
+        }
+        .panel-dark .eyebrow {
+            font-family: var(--f-cond);
+            font-size: 10.5px;
+            font-weight: 600;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: var(--brass);
+            margin-bottom: var(--sp-5);
+        }
+        .panel-dark .blurb {
+            font-family: var(--f-display);
+            font-size: 16px;
+            font-weight: 400;
+            line-height: 1.75;
+            color: rgba(255,255,255,0.92);
+            text-align: left;
+            text-align-last: left;
+            hyphens: auto;
+        }
+        .panel-dark .blurb::first-letter {
+            font-size: 40px;
+            font-weight: 600;
+            color: var(--brass);
+            float: left;
+            line-height: 0.75;
+            padding-right: var(--sp-2);
+            padding-top: 4px;
+        }
+        .panel-dark .mark {
+            margin: var(--sp-6) auto 0;
+            width: 40px;
+            height: 2px;
+            background: var(--brass);
+        }
 
-    .error {
-      display: flex;
-      align-items: flex-start;
-      gap: var(--sp-3);
-      background: var(--danger-bg);
-      color: var(--danger);
-      padding: var(--sp-4);
-      margin-bottom: var(--sp-6);
-      font-size: 13px;
-      border-left: 3px solid var(--danger);
-      line-height: 1.5;
-      font-weight: 500;
-    }
-    .error svg { width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px; }
+        .workspace .admin-content {
+            flex: 1 1 70%;
+            min-width: 0;
+            padding: var(--sp-7);
+            display: flex;
+            justify-content: center;
+        }
+        .workspace .admin-content-inner {
+            width: 100%;
+            max-width: var(--content-max);
+        }
 
-    .mfa-info {
-      display: flex;
-      align-items: flex-start;
-      gap: var(--sp-3);
-      background: #e3f2fd;
-      color: #1976d2;
-      padding: var(--sp-4);
-      margin-bottom: var(--sp-6);
-      font-size: 13px;
-      border-left: 3px solid #1976d2;
-      line-height: 1.5;
-      font-weight: 500;
-    }
-    .mfa-info svg { width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px; }
+        /* ============================================================
+           CONTENT HEADER
+           ============================================================ */
+        .content-header {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            row-gap: var(--sp-2);
+            column-gap: var(--sp-5);
+            padding-bottom: var(--sp-4);
+            margin-bottom: var(--sp-6);
+            border-bottom: 2px solid var(--ink-900);
+            position: relative;
+        }
+        /* letterhead-style double rule, echoes the brass mark on the login page */
+        .content-header::after {
+            content: "";
+            position: absolute;
+            left: 0; right: 0; bottom: -4px;
+            height: 1px;
+            background: var(--line-strong);
+        }
+        .content-header h1 {
+            font-family: var(--f-display);
+            font-size: 22px;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+            color: var(--ink-900);
+            line-height: 1.2;
+            margin-right: auto;
+            display: flex;
+            align-items: center;
+        }
+        .content-header .timestamp {
+            font-family: var(--f-mono);
+            font-size: 10px;
+            color: var(--ink-300);
+            line-height: 1;
+            white-space: nowrap;
+        }
+        .content-header .back-link {
+            font-family: var(--f-cond);
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--ink-500);
+            text-decoration: none;
+            padding: var(--sp-2) var(--sp-3);
+            border: 1px solid var(--line-strong);
+            transition: all 0.15s;
+            white-space: nowrap;
+            line-height: 1;
+        }
+        .content-header .back-link:hover {
+            border-color: var(--brass);
+            color: var(--ink-900);
+            background: var(--brass-tint);
+        }
 
-    .trust-row {
-      display: flex;
-      justify-content: space-between;
-      margin-top: var(--sp-7);
-      padding-top: var(--sp-5);
-      border-top: 1px solid var(--line);
-      font-size: 10.5px;
-      color: var(--ink-300);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      font-weight: 600;
-      font-family: var(--f-cond);
-    }
-    .trust-row span { display: flex; align-items: center; gap: var(--sp-2); }
-    .trust-row svg { width: 14px; height: 14px; color: var(--brass); }
+        /* ============================================================
+           METRICS GRID
+           ============================================================ */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 1px;
+            background: var(--line);
+            border: 1px solid var(--line);
+            margin-bottom: var(--sp-6);
+        }
+        .metric-card {
+            background: var(--panel);
+            padding: var(--sp-5) var(--sp-5) var(--sp-4);
+            min-height: 96px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            border-top: 2px solid var(--brass-tint);
+            transition: border-color 0.15s, background-color .15s;
+        }
+        .metric-card:hover { border-top-color: var(--brass); background: #FCFBF8; }
+        .metric-card .metric-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            color: var(--ink-300);
+            letter-spacing: 0.07em;
+            font-weight: 600;
+            font-family: var(--f-cond);
+            line-height: 1.4;
+            display: block;
+        }
+        .metric-card .metric-value {
+            font-family: var(--f-display);
+            font-size: 25px;
+            font-weight: 600;
+            color: var(--ink-900);
+            font-variant-numeric: tabular-nums;
+            line-height: 1.25;
+            margin-top: var(--sp-2);
+            display: block;
+        }
+        .metric-card .metric-sub {
+            font-size: 10px;
+            color: var(--ink-300);
+            font-family: var(--f-mono);
+            line-height: 1.4;
+            margin-top: var(--sp-1);
+            display: block;
+        }
 
-    .legal {
-      margin-top: var(--sp-8);
-      font-size: 9.5px;
-      letter-spacing: 0.05em;
-      font-family: var(--f-mono);
-      text-transform: uppercase;
-      line-height: 1.9;
-      color: var(--ink-300);
-    }
-    .legal .line2 { color: var(--line-strong); font-size: 9px; }
+        /* ============================================================
+           CARDS — sharp corners, brass accents
+           ============================================================ */
+        .card {
+            position: relative;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            padding: var(--sp-5) var(--sp-5) var(--sp-4);
+            margin-bottom: var(--sp-5);
+        }
+        .card::before, .card::after {
+            content: "";
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            pointer-events: none;
+        }
+        .card::before {
+            top: -1px; left: -1px;
+            border-top: 2px solid var(--brass);
+            border-left: 2px solid var(--brass);
+        }
+        .card::after {
+            bottom: -1px; right: -1px;
+            border-bottom: 2px solid var(--brass);
+            border-right: 2px solid var(--brass);
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: var(--sp-4);
+            padding-bottom: var(--sp-3);
+            border-bottom: 1px solid var(--line);
+            flex-wrap: wrap;
+            gap: var(--sp-3);
+        }
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            font-family: var(--f-display);
+            letter-spacing: 0.01em;
+            line-height: 1;
+        }
+        .card-badge {
+            padding: var(--sp-1) var(--sp-3);
+            background: var(--ink-900);
+            color: #fff;
+            font-size: 10px;
+            font-weight: 600;
+            font-family: var(--f-mono);
+            letter-spacing: 0.04em;
+            line-height: 1.4;
+        }
+        .card-badge.brass { background: var(--brass); }
 
-    /* ============================================================
-       RIGHT — dark, magazine statement inside a mat frame
-       Frame moved outward by 50% (closer to edges)
-       VOUCHMORPH™ on lateral side between frame and outer edge
-       "SWAP" in script font above "What is VouchMorph"
-       ============================================================ */
-    .frame-mat {
-      position: relative;
-      flex: 1;
-      margin: var(--frame-inset);
-    }
-    .frame-line {
-      position: absolute;
-      inset: var(--frame-inset);
-      border: 1px solid rgba(255,255,255,0.16);
-      pointer-events: none;
-    }
+        /* ============================================================
+           SEARCH
+           ============================================================ */
+        .search-box {
+            display: flex;
+            gap: var(--sp-3);
+            align-items: stretch;
+            flex-wrap: wrap;
+            margin-bottom: var(--sp-5);
+        }
+        .search-box input[type="text"] {
+            font-family: var(--f-body);
+            padding: 0 var(--sp-4);
+            height: 40px;
+            border: 1.5px solid var(--line);
+            font-size: 13px;
+            background: #fdfcf9;
+            color: var(--ink-900);
+            min-width: 250px;
+            flex: 1;
+            transition: border-color .15s, background .15s;
+        }
+        .search-box .btn { height: 40px; }
+        .search-box input[type="text"]:focus {
+            outline: none;
+            border-color: var(--brass);
+            background: #fff;
+        }
+        .search-box input[type="text"]::placeholder {
+            color: var(--ink-300);
+            opacity: 0.7;
+        }
 
-    .frame-strip {
-      position: absolute;
-      color: rgba(255,255,255,0.3);
-      font-family: var(--f-mono);
-      font-size: 10px;
-      letter-spacing: 0.28em;
-      text-transform: uppercase;
-      white-space: nowrap;
-      overflow: hidden;
-      display: flex;
-      align-items: center;
-      z-index: 2;
-    }
-    .frame-strip span { display: inline-block; }
-    .frame-strip.top {
-      top: calc(var(--frame-inset) - 10px);
-      left: calc(var(--frame-inset) + 30px);
-      right: calc(var(--frame-inset) + 30px);
-      height: 20px;
-      justify-content: center;
-      background: #0A1420;
-      padding: 0 12px;
-    }
-    .frame-strip.bottom {
-      bottom: calc(var(--frame-inset) - 10px);
-      left: calc(var(--frame-inset) + 30px);
-      right: calc(var(--frame-inset) + 30px);
-      height: 20px;
-      justify-content: center;
-      background: #0A1420;
-      padding: 0 12px;
-    }
+        /* ============================================================
+           BUTTONS
+           ============================================================ */
+        .btn {
+            padding: var(--sp-2) var(--sp-5);
+            font-size: 11px;
+            font-weight: 700;
+            border: 1.5px solid var(--ink-900);
+            background: transparent;
+            color: var(--ink-900);
+            cursor: pointer;
+            transition: all 0.15s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: var(--sp-2);
+            font-family: var(--f-cond);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            line-height: 1;
+        }
+        .btn:hover {
+            background: var(--ink-900);
+            color: #fff;
+        }
+        .btn-primary {
+            background: var(--ink-900);
+            color: #fff;
+            border-color: var(--ink-900);
+        }
+        .btn-primary:hover {
+            background: var(--brass);
+            border-color: var(--brass);
+            color: var(--ink-900);
+        }
+        .btn-sm { padding: var(--sp-1) var(--sp-4); font-size: 10px; }
 
-    .frame-strip.lateral {
-      right: calc(var(--frame-inset) - 24px);
-      top: 50%;
-      transform: translateY(-50%) rotate(180deg);
-      transform-origin: center;
-      width: 26px;
-      height: auto;
-      writing-mode: vertical-rl;
-      justify-content: center;
-      color: var(--brass);
-      font-family: var(--f-cond);
-      font-size: 15px;
-      font-weight: 700;
-      letter-spacing: 0.34em;
-      opacity: 1;
-      background: transparent;
-      padding: 0;
-      z-index: 3;
-      background: none;
-    }
-    .frame-strip.lateral span {
-      display: inline-block;
-      padding: 8px 0;
-      background: transparent;
-    }
+        /* ============================================================
+           TABLES
+           ============================================================ */
+        .table-responsive { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+        th {
+            background: var(--paper);
+            color: var(--ink-500);
+            padding: var(--sp-2) var(--sp-4);
+            text-align: left;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            font-weight: 700;
+            border-bottom: 2px solid var(--ink-900);
+            font-family: var(--f-cond);
+            white-space: nowrap;
+        }
+        td {
+            padding: var(--sp-2) var(--sp-4);
+            border-bottom: 1px solid var(--line);
+            font-size: 12.5px;
+            vertical-align: middle;
+        }
+        tr:hover { background: var(--brass-tint); }
 
-    .magazine {
-      position: absolute;
-      inset: var(--frame-inset);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-      padding: var(--sp-7) var(--sp-6);
-      z-index: 1;
-    }
+        /* ============================================================
+           STATUS BADGES
+           ============================================================ */
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 2px var(--sp-3) 2px 6px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            border: 1px solid transparent;
+            font-family: var(--f-cond);
+            line-height: 1.6;
+        }
+        .status::before { content: ""; width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+        .status-success { background: var(--paper); color: var(--ink-500); border-color: var(--line-strong); }
+        .status-success::before { background: var(--ink-300); }
+        .status-pending { background: #fef3c7; color: #8A6D00; border-color: #e0c375; }
+        .status-pending::before { background: #8A6D00; }
+        .status-failed { background: #fbeceb; color: #b3261e; border-color: #e3b3ae; }
+        .status-failed::before { background: #b3261e; }
+        .status-info { background: var(--paper); color: var(--ink-500); border-color: var(--line-strong); }
+        .status-info::before { background: var(--ink-300); }
+        .status-identity { background: #EDE8F5; color: #5C3D7A; border-color: #D4C0E8; }
+        .status-identity::before { background: #5C3D7A; }
 
-    /* "SWAP" in script font above the eyebrow */
-    .magazine .script-word {
-      font-family: var(--f-script);
-      font-size: 30px;
-      font-weight: 700;
-      color: #ffffff;
-      letter-spacing: 0.05em;
-      margin-bottom: var(--sp-4);
-      opacity: 0.95;
-      text-shadow: 0 2px 20px rgba(156,122,60,0.2);
-    }
+        /* ============================================================
+           EMPTY STATE
+           ============================================================ */
+        .empty-state {
+            text-align: center;
+            padding: var(--sp-8) var(--sp-4);
+            color: var(--ink-300);
+        }
+        .empty-state .icon { font-size: 28px; display: block; margin-bottom: var(--sp-3); }
+        .empty-state p { font-size: 13px; }
 
-    .magazine .eyebrow {
-      font-family: var(--f-cond);
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: var(--brass);
-      margin-bottom: var(--sp-4);
-    }
+        /* ============================================================
+           LIVE INDICATOR
+           ============================================================ */
+        .live-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #b3261e;
+            animation: pulse 1.5s ease-in-out infinite;
+            margin-right: var(--sp-2);
+        }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
-    .magazine p {
-      font-family: var(--f-body);
-      font-size: 10px;
-      font-weight: 400;
-      line-height: 1.85;
-      color: rgba(255,255,255,0.92);
-      max-width: 300px;
-      text-align: justify;
-      text-justify: inter-word;
-      hyphens: auto;
-    }
+        /* ============================================================
+           HEALTH BAR
+           ============================================================ */
+        .health-bar-track {
+            background: var(--line);
+            height: 6px;
+            overflow: hidden;
+            margin-top: var(--sp-2);
+        }
+        .health-bar-fill { height: 100%; background: var(--brass); }
+        .health-bar-fill.warn { background: #b3261e; }
+        .health-bar-fill.bad { background: #b3261e; }
 
-    .magazine p::first-letter {
-      font-family: var(--f-cond);
-      font-size: 28px;
-      font-weight: 700;
-      color: var(--brass);
-      float: left;
-      line-height: 0.8;
-      padding-right: var(--sp-2);
-      padding-top: 4px;
-    }
+        /* ============================================================
+           LOOKUP
+           ============================================================ */
+        .lookup-card { border-left: 3px solid var(--brass); margin-bottom: var(--sp-4); }
+        .lookup-next-action {
+            background: var(--brass-tint);
+            color: var(--ink-700);
+            padding: var(--sp-3);
+            margin-top: var(--sp-2);
+            font-size: 12px;
+            font-weight: 600;
+            border-left: 3px solid var(--brass);
+        }
 
-    .magazine p.secondary {
-      font-family: var(--f-body);
-      font-size: 10px;
-      font-weight: 400;
-      line-height: 1.75;
-      color: rgba(255,255,255,0.62);
-      max-width: 300px;
-      margin-top: var(--sp-4);
-      letter-spacing: 0.005em;
-      text-align: justify;
-      text-justify: inter-word;
-      hyphens: auto;
-    }
-    .magazine p.secondary strong {
-      color: rgba(255,255,255,0.85);
-      font-weight: 600;
-    }
-    .magazine .mark {
-      margin-top: var(--sp-5);
-      width: 40px;
-      height: 1px;
-      background: var(--brass);
-    }
+        /* ============================================================
+           FOOTER — matches login
+           ============================================================ */
+        .admin-footer {
+            background: var(--ink-900);
+            color: var(--ink-300);
+            padding: var(--sp-4) var(--sp-7);
+            text-align: center;
+            font-size: 10px;
+            border-top: 2px solid var(--brass);
+            margin-top: var(--sp-4);
+            font-family: var(--f-mono);
+            line-height: 1.8;
+        }
+        .admin-footer span { color: var(--brass); }
 
-    /* ============================================================
-       RESPONSIVE — stack on narrow screens
-       ============================================================ */
-    @media (max-width: 900px) {
-      .split { flex-direction: column; }
-      .col-form { flex: 1 1 auto; }
-      .col-brand { flex: 1 1 auto; min-height: 400px; }
-      .col-form { padding: var(--sp-7) var(--sp-5); }
-      :root { --frame-inset: calc(var(--sp-5) * 0.5); }
-      .frame-strip.top { top: calc(var(--frame-inset) - 8px); left: calc(var(--frame-inset) + 20px); right: calc(var(--frame-inset) + 20px); }
-      .frame-strip.bottom { bottom: calc(var(--frame-inset) - 8px); left: calc(var(--frame-inset) + 20px); right: calc(var(--frame-inset) + 20px); }
-      .frame-strip.lateral { right: calc(var(--frame-inset) - 20px); }
-      .magazine { inset: var(--frame-inset); padding: var(--sp-6) var(--sp-4); }
-      .magazine p { font-size: 10px; max-width: 280px; }
-      .magazine p.secondary { font-size: 10px; max-width: 280px; }
-      .magazine .script-word { font-size: 26px; }
-    }
-    @media (max-width: 480px) {
-      .frame-strip.lateral { display: none; }
-      .trust-row { flex-wrap: wrap; gap: var(--sp-3); justify-content: center; }
-      .magazine p { font-size: 10px; max-width: 260px; }
-      .magazine p.secondary { font-size: 10px; max-width: 260px; }
-      .magazine .script-word { font-size: 22px; }
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .col-form { background: #1A1F26; }
-      .brand .mark { color: #ECEFF2; }
-      .form-wrap h2 { color: #ECEFF2; }
-      .form-wrap .subtitle { color: #93A2AC; }
-      .field label { color: #93A2AC; }
-      .field input,
-      .field select { background: #0F1B24; border-color: #2C3A45; color: #ECEFF2; }
-      .field input:focus,
-      .field select:focus { background: #16232E; border-color: var(--brass); }
-      .field input::placeholder,
-      .field select::placeholder { color: #6B7A85; }
-      .trust-row { border-color: #2C3A45; color: #6B7A85; }
-      .legal { color: #6B7A85; }
-      .legal .line2 { color: #3A4A56; }
-      .btn { background: #2C3A45; border-color: #2C3A45; color: #ECEFF2; }
-      .btn:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
-      .field-input select {
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2393A2AC' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-      }
-    }
-  </style>
+        /* ============================================================
+           RESPONSIVE
+           ============================================================ */
+        @media (max-width: 1024px) {
+            .workspace, .workspace.dark-left, .workspace.dark-right {
+                flex-direction: column;
+            }
+            .panel-dark {
+                flex: 0 0 auto;
+                position: static;
+                height: auto;
+                border-right: none;
+                border-bottom: 1px solid rgba(255,255,255,0.06);
+            }
+            .workspace.dark-right .panel-dark { border-left: none; border-bottom: 1px solid rgba(255,255,255,0.06); }
+            .panel-dark .frame-mat { min-height: 0; margin: var(--sp-4); }
+            .panel-dark .panel-inner { padding: var(--sp-6) var(--sp-4); max-width: 480px; }
+            .panel-dark .blurb { text-align: left; }
+            .workspace .admin-content { padding: var(--sp-5); }
+        }
+        @media (max-width: 768px) {
+            .admin-header { padding: var(--sp-4) var(--sp-5); flex-direction: column; align-items: stretch; text-align: center; }
+            .header-left { justify-content: center; }
+            .user-area { justify-content: center; }
+            .admin-nav { padding: 0 var(--sp-4); gap: var(--sp-4); }
+            .admin-ribbon { padding: var(--sp-1) var(--sp-4); flex-direction: column; gap: 2px; }
+            .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+            .content-header h1 { font-size: 18px; width: 100%; }
+            .content-header { row-gap: var(--sp-3); }
+            .workspace .admin-content { padding: var(--sp-4); }
+            .panel-dark .frame-strip.top, .panel-dark .frame-strip.bottom { left: 12px; right: 12px; font-size: 8px; letter-spacing: 0.18em; }
+        }
+        @media (max-width: 480px) {
+            .metrics-grid { grid-template-columns: 1fr; }
+            .admin-header .logo { font-size: 16px; }
+            .admin-header .logo-sub { font-size: 8px; }
+        }
+    </style>
 </head>
 <body>
-<div class="split">
 
-  <!-- LEFT — greyish, functional admin login (60%) -->
-  <div class="col col-form">
-    <div class="form-wrap">
-      <div class="brand">
-        <div class="mark">VOUCHMORPH<sup>™</sup></div>
-        <div class="division">Administrative Access</div>
-      </div>
+    <!-- RIBBON -->
+    <div class="admin-ribbon">
+        <span>VouchMorph Internal Systems &nbsp;·&nbsp; Administrator Access Only</span>
+        <span><strong><?php echo safeHtml($roleName); ?></strong> &nbsp;·&nbsp; <?php echo date('Y-m-d H:i:s'); ?></span>
+    </div>
 
-      <h2>Sign in</h2>
-      <p class="subtitle">Access the administrative command center</p>
-
-      <?php if (isset($dbError)): ?>
-      <div class="error">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
-        <span><strong>SYSTEM UNAVAILABLE</strong><br><?php echo htmlspecialchars($dbError); ?></span>
-      </div>
-      <?php endif; ?>
-
-      <?php if ($error): ?>
-      <div class="error">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
-        <span><?php echo htmlspecialchars($error); ?></span>
-      </div>
-      <?php endif; ?>
-
-      <?php if ($mfaRequired): ?>
-      <div class="mfa-info">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        <span><strong>Two-Factor Authentication</strong><br>Please enter the authentication code from your authenticator app.</span>
-      </div>
-      <?php endif; ?>
-
-      <?php if (!isset($dbError)): ?>
-      <form method="POST" action="">
-        <input type="hidden" name="country" value="<?php echo htmlspecialchars($systemCountry); ?>">
-
-        <?php if ($mfaRequired): ?>
-          <div class="field">
-            <label>Authentication Code</label>
-            <div class="field-input">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-              <input type="text" name="mfa_code" placeholder="000000" maxlength="6" autofocus required>
+    <!-- HEADER -->
+    <header class="admin-header">
+        <div class="header-left">
+            <div class="logo">VOUCHMORPH <span>Admin</span></div>
+            <span class="logo-sub">· <?php echo safeHtml($roleName); ?></span>
+            <span class="role-badge"><?php echo safeHtml($roleInfo['label'] ?? $roleName); ?></span>
+        </div>
+        <div class="user-area">
+            <div class="user-details">
+                <div class="user-name"><?php echo safeHtml($adminFullName ?: $adminUsername); ?></div>
+                <div class="user-role"><?php echo safeHtml($roleName); ?></div>
             </div>
-          </div>
-        <?php else: ?>
-          <div class="field">
-            <label>System Country</label>
-            <div class="field-input">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 0 20 15.3 15.3 0 0 1 0-20z"/></svg>
-              <select name="country" onchange="this.form.submit()">
-                <?php foreach ($availableCountries as $country): ?>
-                  <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $systemCountry ? 'selected' : ''; ?>>
-                    <?php echo htmlspecialchars($country); ?>
-                  </option>
-                <?php endforeach; ?>
-              </select>
-            </div>
-          </div>
+            <a href="admin_logout.php" class="logout-btn">Sign Out</a>
+        </div>
+    </header>
 
-          <div class="field">
-            <label>Username / Email</label>
-            <div class="field-input">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 7l9 6 9-6"/></svg>
-              <input type="text" name="username" placeholder="Enter username or email" autofocus required>
-            </div>
-          </div>
-
-          <div class="field">
-            <label>Password</label>
-            <div class="field-input">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="1"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
-              <input type="password" name="password" placeholder="Enter your password" required>
-            </div>
-          </div>
+    <!-- NAV -->
+    <nav class="admin-nav">
+        <?php if (canView('dashboard')): ?><a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">Dashboard</a><?php endif; ?>
+        <?php if (canView('client_lookup')): ?><a href="?view=client_lookup" class="nav-item <?php echo $view === 'client_lookup' ? 'active' : ''; ?>">Client Lookup</a><?php endif; ?>
+        <?php if (canView('alerts')): ?>
+        <a href="?view=alerts" class="nav-item <?php echo $view === 'alerts' ? 'active' : ''; ?>">
+            Alerts <?php if ($totalAlerts > 0): ?><span class="nav-badge"><?php echo $totalAlerts; ?></span><?php endif; ?>
+        </a>
         <?php endif; ?>
+        <?php if (canView('live_transactions')): ?><a href="?view=live_transactions" class="nav-item <?php echo $view === 'live_transactions' ? 'active' : ''; ?>">Live Txns</a><?php endif; ?>
+        <?php if (canView('multi_destination')): ?><a href="?view=multi_destination" class="nav-item <?php echo $view === 'multi_destination' ? 'active' : ''; ?>">Multi-Dest</a><?php endif; ?>
+        <?php if (canView('recent_swaps')): ?><a href="?view=recent_swaps" class="nav-item <?php echo $view === 'recent_swaps' ? 'active' : ''; ?>">Swaps</a><?php endif; ?>
+        <?php if (canView('institution_health')): ?><a href="?view=institution_health" class="nav-item <?php echo $view === 'institution_health' ? 'active' : ''; ?>">Institutions</a><?php endif; ?>
+        <?php if (canView('regulatory')): ?><a href="?view=regulatory" class="nav-item <?php echo $view === 'regulatory' ? 'active' : ''; ?>">Regulatory</a><?php endif; ?>
+        <?php if (canView('audit')): ?><a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">Audit</a><?php endif; ?>
+        <?php if (canView('invoices')): ?><a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">Invoices</a><?php endif; ?>
+        <?php if (canView('all_tables') && $isSuperAdmin): ?><a href="?view=all_tables" class="nav-item <?php echo $view === 'all_tables' ? 'active' : ''; ?>">Tables</a><?php endif; ?>
+    </nav>
 
-        <button type="submit" class="btn">
-          <?php echo $mfaRequired ? 'Verify Code' : 'Sign in'; ?>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-        </button>
-      </form>
-      <?php endif; ?>
+    <!-- WORKSPACE -->
+    <div class="workspace dark-<?php echo safeHtml($currentMeta['side']); ?>">
+        <!-- Description Panel (Dark) -->
+        <div class="panel-dark">
+            <div class="frame-mat">
+                <div class="frame-line"></div>
+                <div class="frame-strip top"><span>VouchMorph Admin</span></div>
+                <div class="frame-strip bottom"><span>VM/<?php echo date('Y'); ?>/ADM</span></div>
+                <div class="panel-inner">
+                    <div class="eyebrow"><?php echo safeHtml($currentMeta['eyebrow']); ?></div>
+                    <div class="blurb"><?php echo safeHtml($currentMeta['blurb']); ?></div>
+                    <div class="mark"></div>
+                </div>
+            </div>
+        </div>
 
-      <div class="trust-row">
-        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg>Secure</span>
-        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>2FA Ready</span>
-        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m4 12 5 5L20 6"/></svg>ISO 27001</span>
-      </div>
+        <!-- Main Content -->
+        <main class="admin-content"><div class="admin-content-inner">
 
-      <div class="legal">
-        <div>Secure administrative access · distribution restricted · ISO 27001 · © 2026 VouchMorph</div>
-        <div class="line2">VM/2026/0708-000</div>
-      </div>
+            <!-- DASHBOARD -->
+            <?php if ($view === 'dashboard'): ?>
+            <div class="content-header">
+                <h1>Dashboard</h1>
+                <span class="timestamp"><?php echo date('Y-m-d H:i:s'); ?></span>
+            </div>
+
+            <?php if ($totalAlerts > 0 && canView('alerts')): ?>
+            <div class="card" style="border-color:var(--line-strong);">
+                <div class="card-header">
+                    <span class="card-title" style="color:#b3261e;">⚠️ <?php echo $totalAlerts; ?> item<?php echo $totalAlerts === 1 ? '' : 's'; ?> require attention</span>
+                    <a href="?view=alerts" class="btn btn-primary btn-sm">View Alerts</a>
+                </div>
+                <div style="font-size:12px; color:var(--ink-500);">
+                    <?php echo count($alerts['stuck_holds']); ?> stuck holds · <?php echo count($alerts['expired_identity_swaps']); ?> expired ·
+                    <?php echo count($alerts['stuck_cashouts']); ?> stuck cashouts
+                </div>
+            </div>
+            <?php endif; ?>
+
+            <div class="metrics-grid">
+                <div class="metric-card"><span class="metric-label">Total Swaps</span><span class="metric-value"><?php echo number_format($metrics['total_swaps'] ?? 0); ?></span><span class="metric-sub">Lifetime</span></div>
+                <div class="metric-card"><span class="metric-label">Total Users</span><span class="metric-value"><?php echo number_format($metrics['total_users'] ?? 0); ?></span><span class="metric-sub">Registered</span></div>
+                <div class="metric-card"><span class="metric-label">Pending Settlements</span><span class="metric-value"><?php echo number_format($metrics['pending_settlements'] ?? 0); ?></span><span class="metric-sub">Awaiting</span></div>
+                <div class="metric-card"><span class="metric-label">Total Fees</span><span class="metric-value"><?php echo number_format($metrics['total_fees'] ?? 0, 2); ?></span><span class="metric-sub">Collected</span></div>
+                <div class="metric-card"><span class="metric-label">24h Swaps</span><span class="metric-value"><?php echo number_format($metrics['recent_swaps_24h'] ?? 0); ?></span><span class="metric-sub">Last 24h</span></div>
+                <div class="metric-card"><span class="metric-label">Multi-Destination</span><span class="metric-value"><?php echo number_format($metrics['multi_destination_count'] ?? 0); ?></span><span class="metric-sub">Batches</span></div>
+            </div>
+
+            <div class="card">
+                <div class="card-header"><span class="card-title">Quick Actions</span></div>
+                <div style="display:flex; gap:var(--sp-3); flex-wrap:wrap;">
+                    <?php if (canView('invoices')): ?><a href="?view=invoices" class="btn btn-primary">Invoices</a><?php endif; ?>
+                    <?php if (canView('alerts')): ?><a href="?view=alerts" class="btn">Alerts</a><?php endif; ?>
+                    <?php if (canView('institution_health')): ?><a href="?view=institution_health" class="btn">Institution Health</a><?php endif; ?>
+                    <?php if (canView('client_lookup')): ?><a href="?view=client_lookup" class="btn">Client Lookup</a><?php endif; ?>
+                </div>
+            </div>
+            <?php endif; ?>
+
+            <!-- CLIENT LOOKUP -->
+            <?php if ($view === 'client_lookup' && canView('client_lookup')): ?>
+            <div class="content-header">
+                <h1>Client Lookup</h1>
+                <span class="timestamp">Search by phone, national ID, or reference</span>
+                <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+            <form method="get" class="search-box">
+                <input type="hidden" name="view" value="client_lookup">
+                <input type="text" name="lookup" placeholder="Enter phone, national ID, or reference..." value="<?php echo safeHtml($lookup); ?>" autofocus>
+                <button type="submit" class="btn btn-primary">Search</button>
+            </form>
+            <?php if ($lookup === ''): ?>
+            <div class="card"><div class="empty-state"><span class="icon">📞</span><p>Enter what the client gave you — a phone number, national ID, or reference code.</p></div></div>
+            <?php elseif (empty($lookupResults)): ?>
+            <div class="card"><div class="empty-state"><span class="icon">🔍</span><p>No matches found for "<?php echo safeHtml($lookup); ?>".</p></div></div>
+            <?php else: foreach ($lookupResults as $r): ?>
+            <div class="card lookup-card">
+                <div class="card-header">
+                    <span class="card-title"><?php echo safeHtml($r['kind']); ?> — <?php echo safeHtml($r['reference']); ?></span>
+                    <?php $st = strtolower($r['status'] ?? ''); $cls = match(true) { str_contains($st, 'complet') || str_contains($st, 'success') => 'success', str_contains($st, 'pending') || str_contains($st, 'verified') => 'pending', str_contains($st, 'fail') || str_contains($st, 'expired') => 'failed', default => 'info' }; ?>
+                    <span class="status status-<?php echo $cls; ?>"><?php echo safeHtml($r['status']); ?></span>
+                </div>
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap:var(--sp-2); font-size:12px;">
+                    <div><strong>Amount:</strong> <?php echo number_format((float)$r['amount'], 2); ?> <?php echo safeHtml($r['currency']); ?></div>
+                    <div><strong>Route:</strong> <?php echo safeHtml($r['institution']); ?></div>
+                    <?php if (!empty($r['identity'])): ?><div><strong>Identity:</strong> <?php echo safeHtml($r['identity']); ?></div><?php endif; ?>
+                    <div><strong>Date:</strong> <?php echo safeHtml(date('Y-m-d H:i', strtotime($r['created_at'] ?? 'now'))); ?></div>
+                </div>
+                <div class="lookup-next-action">→ <?php echo safeHtml($r['next_action']); ?></div>
+            </div>
+            <?php endforeach; endif; ?>
+            <?php endif; ?>
+
+            <!-- ALERTS -->
+            <?php if ($view === 'alerts' && canView('alerts')): ?>
+            <div class="content-header">
+                <h1>Alerts</h1>
+                <span class="timestamp">Items requiring attention</span>
+                <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+            <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));">
+                <div class="metric-card"><span class="metric-label">Stuck Holds</span><span class="metric-value"><?php echo number_format(count($alerts['stuck_holds'])); ?></span><span class="metric-sub">&gt;24h</span></div>
+                <div class="metric-card"><span class="metric-label">Expired Identity</span><span class="metric-value"><?php echo number_format(count($alerts['expired_identity_swaps'])); ?></span><span class="metric-sub">Unconfirmed</span></div>
+                <div class="metric-card"><span class="metric-label">Stuck Cashouts</span><span class="metric-value"><?php echo number_format(count($alerts['stuck_cashouts'])); ?></span><span class="metric-sub">Expired</span></div>
+            </div>
+            <?php if ($totalAlerts === 0): ?>
+            <div class="card"><div class="empty-state"><span class="icon">✅</span><p>All systems clear.</p></div></div>
+            <?php endif; ?>
+            <?php if (!empty($alerts['stuck_holds'])): ?>
+            <div class="card">
+                <div class="card-header"><span class="card-title">🔒 Stuck Holds</span><span class="card-badge"><?php echo count($alerts['stuck_holds']); ?></span></div>
+                <div class="table-responsive"><table><thead><tr><th>Hold Ref</th><th>Swap Ref</th><th>Institution</th><th>Amount</th><th>Status</th><th>Age</th></tr></thead><tbody>
+                <?php foreach ($alerts['stuck_holds'] as $h): ?>
+                <tr><td><?php echo safeHtml(substr($h['hold_reference'] ?? '', 0, 16)); ?></td><td><?php echo safeHtml(substr($h['swap_reference'] ?? '', 0, 16)); ?></td><td><?php echo safeHtml($h['institution'] ?? 'N/A'); ?></td><td><?php echo number_format((float)($h['amount'] ?? 0), 2); ?></td><td><span class="status status-pending"><?php echo safeHtml($h['status'] ?? ''); ?></span></td><td><?php echo round((time() - strtotime($h['created_at'] ?? 'now')) / 3600, 1); ?>h</td></tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+            </div>
+            <?php endif; ?>
+            <?php if (!empty($alerts['expired_identity_swaps'])): ?>
+            <div class="card">
+                <div class="card-header"><span class="card-title">🪪 Expired Identity</span><span class="card-badge"><?php echo count($alerts['expired_identity_swaps']); ?></span></div>
+                <div class="table-responsive"><table><thead><tr><th>Swap Ref</th><th>Institution</th><th>Identity</th><th>Amount</th><th>Expired</th></tr></thead><tbody>
+                <?php foreach ($alerts['expired_identity_swaps'] as $s): ?>
+                <tr><td><?php echo safeHtml(substr($s['swap_reference'] ?? '', 0, 16)); ?></td><td><?php echo safeHtml($s['source_institution'] ?? 'N/A'); ?></td><td><?php echo safeHtml($s['identity_type'] ?? ''); ?>: <?php echo safeHtml($s['identity_value'] ?? ''); ?></td><td><?php echo number_format((float)($s['amount'] ?? 0), 2); ?></td><td><?php echo safeHtml($s['hold_expires_at'] ?? ''); ?></td></tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+            </div>
+            <?php endif; ?>
+            <?php if (!empty($alerts['stuck_cashouts'])): ?>
+            <div class="card">
+                <div class="card-header"><span class="card-title">💵 Expired Cashouts</span><span class="card-badge"><?php echo count($alerts['stuck_cashouts']); ?></span></div>
+                <div class="table-responsive"><table><thead><tr><th>Swap Ref</th><th>Source</th><th>Provider</th><th>Phone</th><th>Amount</th><th>Expired</th></tr></thead><tbody>
+                <?php foreach ($alerts['stuck_cashouts'] as $c): ?>
+                <tr><td><?php echo safeHtml(substr($c['swap_reference'] ?? '', 0, 16)); ?></td><td><?php echo safeHtml($c['source_institution'] ?? 'N/A'); ?></td><td><?php echo safeHtml($c['cashout_provider'] ?? 'N/A'); ?></td><td><?php echo safeHtml($c['client_phone'] ?? 'N/A'); ?></td><td><?php echo number_format((float)($c['amount'] ?? 0), 2); ?></td><td><?php echo safeHtml($c['code_expiry'] ?? ''); ?></td></tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+            </div>
+            <?php endif; ?>
+            <?php endif; ?>
+
+            <!-- INSTITUTION HEALTH -->
+            <?php if ($view === 'institution_health' && canView('institution_health')): ?>
+            <div class="content-header">
+                <h1>Institution Health</h1>
+                <span class="timestamp">Volume · Success Rate</span>
+                <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+            <?php if (empty($institutionHealth)): ?>
+            <div class="card"><div class="empty-state"><span class="icon">📭</span><p>No institution data available</p></div></div>
+            <?php else: foreach ($institutionHealth as $inst): $rate = (float)$inst['success_rate']; $barClass = $rate >= 90 ? '' : ($rate >= 70 ? 'warn' : 'bad'); ?>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title"><?php echo safeHtml($inst['institution']); ?></span>
+                    <span class="card-badge brass"><?php echo $rate; ?>% SUCCESS</span>
+                </div>
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap:var(--sp-2); margin-bottom:var(--sp-2); font-size:12px;">
+                    <div><strong>Total:</strong> <?php echo number_format($inst['total']); ?></div>
+                    <div style="color:var(--ink-500);"><strong>Success:</strong> <?php echo number_format($inst['successful']); ?></div>
+                    <div><strong>Volume:</strong> <?php echo number_format((float)$inst['volume'], 2); ?></div>
+                </div>
+                <div class="health-bar-track"><div class="health-bar-fill <?php echo $barClass; ?>" style="width: <?php echo min(100, $rate); ?>%;"></div></div>
+            </div>
+            <?php endforeach; endif; ?>
+            <?php endif; ?>
+
+            <!-- LIVE TRANSACTIONS -->
+            <?php if ($view === 'live_transactions' && canView('live_transactions')): ?>
+            <div class="content-header">
+                <h1><span class="live-indicator"></span> Live Transactions</h1>
+                <span class="timestamp"><?php echo date('Y-m-d H:i:s'); ?> · <?php echo count($liveTransactions); ?> transactions</span>
+                <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+            <form method="get" class="search-box">
+                <input type="hidden" name="view" value="live_transactions">
+                <input type="text" name="search" placeholder="Search reference, institution, status..." value="<?php echo safeHtml($search); ?>">
+                <button type="submit" class="btn btn-primary btn-sm">Search</button>
+                <?php if ($search !== ''): ?><a href="?view=live_transactions" class="btn btn-sm">Clear</a><?php endif; ?>
+            </form>
+            <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));">
+                <div class="metric-card"><span class="metric-label">24h Total</span><span class="metric-value"><?php echo number_format($liveStats['total'] ?? 0); ?></span></div>
+                <div class="metric-card"><span class="metric-label">Completed</span><span class="metric-value" style="color:var(--ink-500);"><?php echo number_format($liveStats['completed'] ?? 0); ?></span></div>
+                <div class="metric-card"><span class="metric-label">Pending</span><span class="metric-value"><?php echo number_format($liveStats['pending'] ?? 0); ?></span></div>
+                <div class="metric-card"><span class="metric-label">Failed</span><span class="metric-value"><?php echo number_format($liveStats['failed'] ?? 0); ?></span></div>
+                <div class="metric-card"><span class="metric-label">Volume</span><span class="metric-value"><?php echo number_format($liveStats['total_amount'] ?? 0, 2); ?></span></div>
+            </div>
+            <div class="card">
+                <div class="card-header"><span class="card-title">Live Feed</span><span class="card-badge" id="liveCount"><?php echo count($liveTransactions); ?></span></div>
+                <div class="table-responsive"><table><thead><tr><th>#</th><th>Reference</th><th>Type</th><th>Amount</th><th>Status</th><th>Source</th><th>Destination</th><th>Created</th></tr></thead><tbody id="liveTransactionsBody">
+                <?php if (empty($liveTransactions)): ?>
+                <tr><td colspan="8" class="empty-state">No transactions<?php echo $search !== '' ? ' for "' . safeHtml($search) . '"' : ''; ?></td></tr>
+                <?php else: foreach ($liveTransactions as $index => $row): $type = $row['swap_type'] ?? 'STANDARD'; $status = strtolower($row['status'] ?? 'pending'); $class = match(true) { str_contains($status, 'complet') || str_contains($status, 'success') => 'success', str_contains($status, 'pending') || str_contains($status, 'processing') => 'pending', str_contains($status, 'fail') || str_contains($status, 'error') => 'failed', default => 'info' }; ?>
+                <tr>
+                    <td><?php echo $index + 1; ?></td>
+                    <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['reference'] ?? 'N/A', 0, 14)); ?></td>
+                    <td><span class="status status-info"><?php echo safeHtml($type); ?></span></td>
+                    <td><strong><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></strong></td>
+                    <td><span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span></td>
+                    <td><?php echo safeHtml($row['source_institution'] ?? 'N/A'); ?></td>
+                    <td><?php echo safeHtml($row['destination_institution'] ?? 'N/A'); ?></td>
+                    <td><?php echo date('Y-m-d H:i:s', strtotime($row['created_at'] ?? 'now')); ?></td>
+                </tr>
+                <?php endforeach; endif; ?>
+                </tbody></table></div>
+            </div>
+            <script>
+                let autoRefresh = true; let refreshInterval = null;
+                function startAutoRefresh() { clearInterval(refreshInterval); refreshInterval = setInterval(function() { fetch(window.location.href + (window.location.href.includes('?') ? '&' : '?') + 'ajax=1').then(r => r.json()).then(data => { if (data.transactions) { const tbody = document.getElementById('liveTransactionsBody'); let html = ''; data.transactions.forEach((row, i) => { const status = (row.status || 'pending').toLowerCase(); let cls = 'info'; if (status.includes('complet') || status.includes('success')) cls = 'success'; else if (status.includes('pending') || status.includes('processing')) cls = 'pending'; else if (status.includes('fail') || status.includes('error')) cls = 'failed'; html += `<tr><td>${i+1}</td><td>${(row.swap_reference || row.reference || 'N/A').substring(0,14)}</td><td><span class="status status-info">${row.swap_type || 'STANDARD'}</span></td><td><strong>${Number(row.amount || 0).toFixed(2)}</strong></td><td><span class="status status-${cls}">${row.status || 'pending'}</span></td><td>${row.source_institution || 'N/A'}</td><td>${row.destination_institution || 'N/A'}</td><td>${new Date(row.created_at).toLocaleString()}</td></tr>`; }); tbody.innerHTML = html; document.getElementById('liveCount').textContent = data.transactions.length; } }).catch(e => console.error('Refresh failed:', e)); }, 5000); }
+                startAutoRefresh();
+            </script>
+            <?php endif; ?>
+
+            <!-- RECENT SWAPS -->
+            <?php if ($view === 'recent_swaps' && canView('recent_swaps')): ?>
+            <div class="content-header">
+                <h1>Recent Swaps</h1>
+                <span class="timestamp">Complete transaction history</span>
+                <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+            <form method="get" class="search-box">
+                <input type="hidden" name="view" value="recent_swaps">
+                <input type="text" name="search" placeholder="Search reference, institution, status..." value="<?php echo safeHtml($search); ?>">
+                <button type="submit" class="btn btn-primary btn-sm">Search</button>
+                <?php if ($search !== ''): ?><a href="?view=recent_swaps" class="btn btn-sm">Clear</a><?php endif; ?>
+            </form>
+            <div class="card">
+                <div class="card-header"><span class="card-title">All Swaps</span><span class="card-badge"><?php echo count($recentSwaps); ?></span></div>
+                <div class="table-responsive"><table><thead><tr><th>Reference</th><th>Type</th><th>Amount</th><th>Status</th><th>Source</th><th>Destination</th><th>Created</th></tr></thead><tbody>
+                <?php if (empty($recentSwaps)): ?>
+                <tr><td colspan="7" class="empty-state">No swaps<?php echo $search !== '' ? ' for "' . safeHtml($search) . '"' : ''; ?></td></tr>
+                <?php else: foreach ($recentSwaps as $row): $status = strtolower($row['status'] ?? 'pending'); $class = match(true) { str_contains($status, 'complet') || str_contains($status, 'success') => 'success', str_contains($status, 'pending') || str_contains($status, 'processing') => 'pending', str_contains($status, 'fail') || str_contains($status, 'error') => 'failed', default => 'info' }; ?>
+                <tr>
+                    <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['reference'] ?? 'N/A', 0, 16)); ?></td>
+                    <td><span class="status status-info"><?php echo safeHtml($row['swap_type'] ?? 'STANDARD'); ?></span></td>
+                    <td><strong><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></strong></td>
+                    <td><span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span></td>
+                    <td><?php echo safeHtml($row['source_institution'] ?? 'N/A'); ?></td>
+                    <td><?php echo safeHtml($row['destination_institution'] ?? 'N/A'); ?></td>
+                    <td><?php echo date('Y-m-d H:i', strtotime($row['created_at'] ?? 'now')); ?></td>
+                </tr>
+                <?php endforeach; endif; ?>
+                </tbody></table></div>
+            </div>
+            <?php endif; ?>
+
+            <!-- MULTI-DESTINATION -->
+            <?php if ($view === 'multi_destination' && canView('multi_destination')): ?>
+            <div class="content-header">
+                <h1>Multi-Destination Swaps</h1>
+                <span class="timestamp">Batch disbursements</span>
+                <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+            <?php if (empty($multiDestinationSwaps)): ?>
+            <div class="card"><div class="empty-state"><span class="icon">📭</span><p>No multi-destination swaps found</p></div></div>
+            <?php else: foreach ($multiDestinationSwaps as $swap): $destinations = json_decode($swap['destinations_payload'] ?? '[]', true); ?>
+            <div class="card" style="border-left: 3px solid <?php echo $swap['status'] === 'completed' ? 'var(--brass)' : 'var(--ink-300)'; ?>;">
+                <div class="card-header">
+                    <span class="card-title"><?php echo safeHtml($swap['reference']); ?> <span style="font-weight:400;color:var(--ink-300);font-size:10px;"><?php echo date('Y-m-d H:i', strtotime($swap['created_at'])); ?></span></span>
+                    <span class="card-badge <?php echo $swap['status'] === 'completed' ? 'brass' : ''; ?>"><?php echo strtoupper($swap['status'] ?? 'UNKNOWN'); ?></span>
+                </div>
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap:var(--sp-2); margin-bottom:var(--sp-3); font-size:11px; background:var(--paper); padding:var(--sp-3);">
+                    <div><strong>Source:</strong> <?php echo safeHtml($swap['source_institution']); ?></div>
+                    <div><strong>Total:</strong> <?php echo number_format((float)($swap['total_amount'] ?? 0), 2); ?></div>
+                    <div><strong>✅</strong> <?php echo $swap['successful_count'] ?? 0; ?></div>
+                    <div><strong>❌</strong> <?php echo $swap['failed_count'] ?? 0; ?></div>
+                    <div><strong>📦</strong> <?php echo $swap['total_destinations']; ?></div>
+                </div>
+                <?php if (!empty($destinations)): ?>
+                <div class="table-responsive"><table><thead><tr><th>#</th><th>Type</th><th>Institution</th><th>Identifier</th><th>Amount</th><th>Status</th></tr></thead><tbody>
+                <?php foreach ($destinations as $idx => $dest): $result = $results[$idx] ?? []; $status = $result['status'] ?? 'pending'; $isIdentity = isset($dest['identity_type']) || isset($dest['identity_value']); $isCashout = isset($dest['delivery_method']) && $dest['delivery_method'] === 'ATM'; ?>
+                <tr>
+                    <td><?php echo $idx + 1; ?></td>
+                    <td><?php if ($isIdentity): ?><span class="status status-identity">IDENTITY</span><?php elseif ($isCashout): ?><span class="status status-pending">CASHOUT</span><?php else: ?><span class="status status-info">DEPOSIT</span><?php endif; ?></td>
+                    <td><?php echo safeHtml($dest['to_institution'] ?? $dest['destination_institution'] ?? ($isIdentity ? 'IDENTITY' : 'N/A')); ?></td>
+                    <td><?php if ($isIdentity) { echo safeHtml($dest['identity_type'] ?? 'national_id') . ': ' . safeHtml($dest['identity_value'] ?? 'N/A'); } elseif ($isCashout) { echo safeHtml($dest['beneficiary_phone'] ?? 'N/A'); } else { echo safeHtml($dest['destination_identifier'] ?? 'N/A'); } ?></td>
+                    <td><strong><?php echo number_format((float)($dest['amount'] ?? 0), 2); ?></strong></td>
+                    <td>
+                        <?php $statusClass = match($status) { 'success', 'completed' => 'success', 'failed' => 'failed', 'pending' => 'pending', default => 'info' }; ?>
+                        <span class="status status-<?php echo $statusClass; ?>"><?php echo safeHtml(strtoupper($status ?: 'PENDING')); ?></span>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+                <?php endif; ?>
+            </div>
+            <?php endforeach; endif; ?>
+            <?php endif; ?>
+
+            <!-- AUDIT -->
+            <?php if ($view === 'audit' && canView('audit')): ?>
+            <div class="content-header">
+                <h1>Audit Log</h1>
+                <span class="timestamp">Most recent 200 entries</span>
+                <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+            <div class="card">
+                <div class="card-header"><span class="card-title">Audit Trail</span><span class="card-badge"><?php echo count($auditRows); ?></span></div>
+                <?php if (empty($auditRows)): ?><div class="empty-state"><span class="icon">📭</span><p>No audit records</p></div>
+                <?php else: ?>
+                <div class="table-responsive"><table><thead><tr><?php foreach (array_keys($auditRows[0]) as $col): ?><th><?php echo safeHtml($col); ?></th><?php endforeach; ?></tr></thead><tbody>
+                <?php foreach ($auditRows as $row): ?>
+                <tr><?php foreach ($row as $val): $s = is_array($val) ? json_encode($val) : (string)$val; ?><td><?php echo safeHtml(strlen($s) > 50 ? substr($s, 0, 50) . '…' : $s); ?></td><?php endforeach; ?></tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+
+            <!-- INVOICES -->
+            <?php if ($view === 'invoices' && canView('invoices')): ?>
+            <div class="content-header">
+                <h1>Invoices</h1>
+                <span class="timestamp">Fee invoices from settlement</span>
+                <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+            <div class="card">
+                <div class="card-header"><span class="card-title">Fee Invoices</span><span class="card-badge"><?php echo count($invoiceMessages); ?></span></div>
+                <?php if (empty($invoiceMessages)): ?><div class="empty-state"><span class="icon">📭</span><p>No invoices</p></div>
+                <?php else: ?>
+                <div class="table-responsive"><table><thead><tr><th>Message ID</th><th>Swap Ref</th><th>Source</th><th>Destination</th><th>Created</th></tr></thead><tbody>
+                <?php foreach ($invoiceMessages as $inv): ?>
+                <tr>
+                    <td><?php echo safeHtml(substr($inv['message_id'] ?? '', 0, 16)); ?></td>
+                    <td><?php echo safeHtml(substr($inv['swap_reference'] ?? 'N/A', 0, 16)); ?></td>
+                    <td><?php echo safeHtml($inv['source_institution'] ?? 'N/A'); ?></td>
+                    <td><?php echo safeHtml($inv['destination_institution'] ?? 'N/A'); ?></td>
+                    <td><?php echo safeHtml(date('Y-m-d H:i', strtotime($inv['created_at'] ?? 'now'))); ?></td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+
+            <!-- REGULATORY -->
+            <?php if ($view === 'regulatory' && canView('regulatory')): ?>
+            <div class="content-header">
+                <h1>Regulatory Oversight</h1>
+                <span class="timestamp">Net positions · Pending settlements</span>
+                <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+            <div class="card">
+                <div class="card-header"><span class="card-title">Institution Success Rates</span></div>
+                <?php if (empty($institutionHealth)): ?><div class="empty-state"><p>No data</p></div>
+                <?php else: ?>
+                <div class="table-responsive"><table><thead><tr><th>Institution</th><th>Total</th><th>Success Rate</th><th>Volume</th></tr></thead><tbody>
+                <?php foreach ($institutionHealth as $inst): ?>
+                <tr><td><?php echo safeHtml($inst['institution']); ?></td><td><?php echo number_format($inst['total']); ?></td><td><?php echo $inst['success_rate']; ?>%</td><td><?php echo number_format((float)$inst['volume'], 2); ?></td></tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+                <?php endif; ?>
+            </div>
+            <?php if (!empty($netPositions)): ?>
+            <div class="card">
+                <div class="card-header"><span class="card-title">Net Positions</span><span class="card-badge"><?php echo count($netPositions); ?></span></div>
+                <div class="table-responsive"><table><thead><tr><?php foreach (array_keys($netPositions[0]) as $col): ?><th><?php echo safeHtml($col); ?></th><?php endforeach; ?></tr></thead><tbody>
+                <?php foreach ($netPositions as $row): ?>
+                <tr><?php foreach ($row as $val): ?><td><?php echo safeHtml(is_array($val) ? json_encode($val) : $val); ?></td><?php endforeach; ?></tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+            </div>
+            <?php endif; ?>
+            <?php if (!empty($pendingSettlements)): ?>
+            <div class="card">
+                <div class="card-header"><span class="card-title">Pending Settlements</span><span class="card-badge"><?php echo count($pendingSettlements); ?></span></div>
+                <div class="table-responsive"><table><thead><tr><?php foreach (array_keys($pendingSettlements[0]) as $col): ?><th><?php echo safeHtml($col); ?></th><?php endforeach; ?></tr></thead><tbody>
+                <?php foreach ($pendingSettlements as $row): ?>
+                <tr><?php foreach ($row as $val): ?><td><?php echo safeHtml(is_array($val) ? json_encode($val) : $val); ?></td><?php endforeach; ?></tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+            </div>
+            <?php endif; ?>
+            <?php endif; ?>
+
+            <!-- ACCESS DENIED -->
+            <?php
+            $knownViews = ['dashboard', 'client_lookup', 'alerts', 'live_transactions', 'multi_destination', 'recent_swaps', 'institution_health', 'regulatory', 'audit', 'invoices', 'all_tables'];
+            if (!canView($view) && !in_array($view, $knownViews)):
+            ?>
+            <div class="card"><div class="empty-state"><span class="icon">🚫</span><h2 style="font-family:var(--f-cond);text-transform:uppercase;font-size:18px;margin-bottom:var(--sp-2);">Access Denied</h2><p>You do not have permission to view this page.</p><a href="?view=dashboard" class="btn btn-primary" style="margin-top:var(--sp-4);">Return to Dashboard</a></div></div>
+            <?php endif; ?>
+
+        </div></main>
     </div>
-  </div>
 
-  <!-- RIGHT — dark, magazine statement (40%) -->
-  <div class="col col-brand">
-    <div class="frame-mat">
-      <!-- Outer frame line — moved outward by 50% -->
-      <div class="frame-line"></div>
+    <!-- FOOTER -->
+    <footer class="admin-footer">
+        VOUCHMORPH · <?php echo safeHtml($roleName); ?> · <?php echo date('Y'); ?>
+        <span style="display:block;margin-top:2px;font-size:9px;color:var(--ink-500);">Bank of Botswana Regulatory Sandbox Participant</span>
+    </footer>
 
-      <!-- Top and bottom frame strips -->
-      <div class="frame-strip top"><span>VOUCHMORPH ADMIN</span></div>
-      <div class="frame-strip bottom"><span>VOUCHMORPH ADMIN</span></div>
-
-      <!-- VOUCHMORPH™ on lateral side (between frame and outer edge) -->
-      <div class="frame-strip lateral"><span>VOUCHMORPH™</span></div>
-
-      <!-- Magazine content -->
-      <div class="magazine">
-        <!-- "SWAP" in script font above the eyebrow -->
-        <div class="script-word">Swap!</div>
-        
-        <div class="eyebrow">Administrative Command Center</div>
-        <p>VouchMorph administrative access provides complete oversight of multi-asset payment orchestration, beneficiary management, and transaction auditing across all institutions and destinations.</p>
-        <p class="secondary">Administrators have full visibility into <strong>every transaction</strong>, from source funding to final settlement. Role-based access controls ensure that only authorized personnel can approve, disburse, or audit payment flows.</p>
-        <div class="mark"></div>
-      </div>
-    </div>
-  </div>
-
-</div>
 </body>
 </html>
