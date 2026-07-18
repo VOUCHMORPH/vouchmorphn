@@ -1251,15 +1251,16 @@ class SwapService
             
             return $result;
             
-        } catch (Exception $e) {
+                } catch (\Throwable $e) {
             $this->logger->error("Atomic swap failed", [
                 'reference' => $ref,
                 'step' => $this->getLastStep(),
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
+                'exception_class' => get_class($e)
             ]);
-            
+ 
             $rollbackResult = $this->rollbackAtomicSwap($e->getMessage());
-            
+ 
             if ($idempotencyKey) {
                 $this->storeIdempotencyResult($idempotencyKey, [
                     'status' => 'failed',
@@ -1267,7 +1268,7 @@ class SwapService
                     'error' => $e->getMessage()
                 ]);
             }
-            
+ 
             throw new RuntimeException("Swap failed: " . $e->getMessage(), 0, $e);
         }
     }
