@@ -1094,7 +1094,7 @@ if (empty($availableCountries)) {
       <!-- Magazine content -->
       <div class="magazine">
         <!-- "SWAP" in script font above the eyebrow -->
-        <div class="script-word">Swap</div>
+        <div class="script-word">Swap!</div>
         
         <div class="eyebrow">Administrative Command Center</div>
         <p>VouchMorph administrative access provides complete oversight of multi-asset payment orchestration, beneficiary management, and transaction auditing across all institutions and destinations.</p>
