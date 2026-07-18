@@ -187,11 +187,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <style>
     /* ============================================================
        VOUCHMORPH — SIGN IN
-       Full-bleed 50/50 split. Left: white, functional, form.
+       Full-bleed 60/40 split. Left: white, functional, form.
        Right: ink-black, magazine-set brand statement inside a
        museum-mat frame with the wordmark run around its border.
-       No max-width box floating mid-screen — each half fills
-       exactly 50% of the viewport at any size, always.
        ============================================================ */
     :root {
       --paper:        #EEF1EF;
@@ -232,9 +230,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
     /* ============================================================
-       SPLIT — two flex children, each exactly half, full height.
-       No fixed widths anywhere: this is what keeps it symmetric
-       on any screen size instead of drifting to one side.
+       SPLIT — LEFT 60% | RIGHT 40%
        ============================================================ */
     .split {
       display: flex;
@@ -242,16 +238,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       width: 100%;
     }
     .col {
-      flex: 1 1 50%;
       min-width: 0;
       display: flex;
       flex-direction: column;
     }
 
-    /* ============================================================
-       LEFT — white, functional
-       ============================================================ */
+    /* LEFT — 60% */
     .col-form {
+      flex: 0 0 60%;
       background: var(--panel);
       align-items: center;
       justify-content: center;
@@ -259,7 +253,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     .form-wrap {
       width: 100%;
-      max-width: 400px;
+      max-width: 440px;
+    }
+
+    /* RIGHT — 40% */
+    .col-brand {
+      flex: 0 0 40%;
+      background:
+        radial-gradient(900px 600px at 85% 0%, rgba(156,122,60,.12), transparent 60%),
+        #0A1420;
+      position: relative;
+      align-items: stretch;
+      justify-content: stretch;
+      overflow: hidden;
     }
 
     .brand {
@@ -408,31 +414,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     /* ============================================================
        RIGHT — black, magazine statement inside a mat frame
        ============================================================ */
-    .col-brand {
-      background:
-        radial-gradient(1100px 600px at 85% 0%, rgba(156,122,60,.12), transparent 60%),
-        #0A1420;
-      position: relative;
-      align-items: stretch;
-      justify-content: stretch;
-      overflow: hidden;
-    }
-
     .frame-mat {
       position: relative;
       flex: 1;
-      margin: var(--sp-9);
+      margin: var(--sp-8);
     }
     .frame-line {
       position: absolute;
-      inset: var(--sp-8);
+      inset: var(--sp-6);
       border: 1px solid rgba(255,255,255,0.16);
       pointer-events: none;
     }
 
-    /* Repeating wordmark strips that trace the frame — this is the
-       "written around the frame" effect, like a mat board with the
-       studio name printed on it. */
     .frame-strip {
       position: absolute;
       color: rgba(255,255,255,0.3);
@@ -447,15 +440,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     .frame-strip span { display: inline-block; }
     .frame-strip.top {
-      top: var(--sp-3); left: var(--sp-8); right: var(--sp-8);
+      top: var(--sp-3); left: var(--sp-6); right: var(--sp-6);
       height: 20px; justify-content: center;
     }
     .frame-strip.bottom {
-      bottom: var(--sp-3); left: var(--sp-8); right: var(--sp-8);
+      bottom: var(--sp-3); left: var(--sp-6); right: var(--sp-6);
       height: 20px; justify-content: center;
     }
     .frame-strip.right {
-      right: var(--sp-3); top: var(--sp-8); bottom: var(--sp-8);
+      right: var(--sp-3); top: var(--sp-6); bottom: var(--sp-6);
       width: 26px; writing-mode: vertical-rl; transform: rotate(180deg);
       justify-content: center;
       color: var(--brass);
@@ -468,13 +461,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     .magazine {
       position: absolute;
-      inset: var(--sp-8);
+      inset: var(--sp-6);
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
       text-align: center;
-      padding: var(--sp-9) var(--sp-8);
+      padding: var(--sp-7) var(--sp-6);
     }
     .magazine .eyebrow {
       font-family: var(--f-cond);
@@ -483,26 +476,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       letter-spacing: 0.18em;
       text-transform: uppercase;
       color: var(--brass);
-      margin-bottom: var(--sp-6);
+      margin-bottom: var(--sp-4);
     }
 
-    /* ============================================================
-       BOTH PARAGRAPHS — Same font (f-body), same size (10px),
-       Narrow max-width for vertical layout
-       ============================================================ */
     .magazine p {
       font-family: var(--f-body);
       font-size: 10px;
       font-weight: 400;
       line-height: 1.85;
       color: rgba(255,255,255,0.92);
-      max-width: 340px;          /* ← Narrower for vertical layout */
+      max-width: 300px;
       text-align: justify;
       text-justify: inter-word;
       hyphens: auto;
     }
 
-    /* First letter styling — uses the same font as the "V" in VOUCHMORPH™ */
     .magazine p::first-letter {
       font-family: var(--f-cond);
       font-size: 28px;
@@ -520,8 +508,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       font-weight: 400;
       line-height: 1.75;
       color: rgba(255,255,255,0.62);
-      max-width: 340px;          /* ← Narrower for vertical layout */
-      margin-top: var(--sp-5);
+      max-width: 300px;
+      margin-top: var(--sp-4);
       letter-spacing: 0.005em;
       text-align: justify;
       text-justify: inter-word;
@@ -532,37 +520,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       font-weight: 600;
     }
     .magazine .mark {
-      margin-top: var(--sp-7);
+      margin-top: var(--sp-5);
       width: 40px;
       height: 1px;
       background: var(--brass);
     }
 
     /* ============================================================
-       RESPONSIVE — stack on narrow screens, never lopsided
+       RESPONSIVE — stack on narrow screens
        ============================================================ */
     @media (max-width: 900px) {
       .split { flex-direction: column; }
-      .col { flex: 1 1 auto; }
+      .col-form { flex: 1 1 auto; }
+      .col-brand { flex: 1 1 auto; min-height: 400px; }
       .col-form { padding: var(--sp-7) var(--sp-5); }
-      .col-brand { min-height: 420px; }
       .frame-mat { margin: var(--sp-6); }
-      .frame-line { inset: var(--sp-6); }
-      .frame-strip.top, .frame-strip.bottom { left: var(--sp-6); right: var(--sp-6); }
-      .frame-strip.right { top: var(--sp-6); bottom: var(--sp-6); }
-      .magazine { inset: var(--sp-6); padding: var(--sp-7) var(--sp-5); }
-      /* Keep font size consistent on tablet */
-      .magazine p { font-size: 10px; max-width: 300px; }
-      .magazine p.secondary { font-size: 10px; max-width: 300px; }
-      .magazine p::first-letter { font-size: 28px; }
+      .frame-line { inset: var(--sp-5); }
+      .frame-strip.top, .frame-strip.bottom { left: var(--sp-5); right: var(--sp-5); }
+      .frame-strip.right { top: var(--sp-5); bottom: var(--sp-5); }
+      .magazine { inset: var(--sp-5); padding: var(--sp-6) var(--sp-4); }
+      .magazine p { font-size: 10px; max-width: 280px; }
+      .magazine p.secondary { font-size: 10px; max-width: 280px; }
     }
     @media (max-width: 480px) {
       .frame-strip.right { display: none; }
       .trust-row { flex-wrap: wrap; gap: var(--sp-3); justify-content: center; }
-      /* Keep font size consistent on mobile */
-      .magazine p { font-size: 10px; max-width: 280px; }
-      .magazine p.secondary { font-size: 10px; max-width: 280px; }
-      .magazine p::first-letter { font-size: 28px; }
+      .magazine p { font-size: 10px; max-width: 260px; }
+      .magazine p.secondary { font-size: 10px; max-width: 260px; }
     }
 
     @media (prefers-color-scheme: dark) {
@@ -585,7 +569,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <body>
 <div class="split">
 
-  <!-- LEFT — white, functional -->
+  <!-- LEFT — white, functional (60%) -->
   <div class="col col-form">
     <div class="form-wrap">
       <div class="brand">
@@ -637,7 +621,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
   </div>
 
-  <!-- RIGHT — black, magazine statement in a mat frame -->
+  <!-- RIGHT — black, magazine statement (40%) -->
   <div class="col col-brand">
     <div class="frame-mat">
       <div class="frame-line"></div>
