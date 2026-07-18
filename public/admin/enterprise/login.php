@@ -472,7 +472,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
        and the outer edge of the column
        ============================================================ */
     .frame-strip.lateral {
-      right: calc(var(--frame-inset) - 20px);  /* ← Outside the frame, on the edge */
+      right: calc(var(--frame-inset) - 22px);  /* ← Outside the frame, on the edge */
       top: 50%;
       transform: translateY(-50%) rotate(180deg);
       transform-origin: center;
