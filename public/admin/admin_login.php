@@ -510,246 +510,580 @@ if (empty($availableCountries)) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VOUCHMORPH · ADMIN LOGIN</title>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <title>VOUCHMORPH · ADMIN SIGN IN</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
+    /* ============================================================
+       VOUCHMORPH — ADMIN LOGIN
+       Full-bleed 60/40 split matching main login style.
+       Left: white/greyish, functional admin login form.
+       Right: dark, magazine-set brand statement.
+       ============================================================ */
+    :root {
+      --paper:        #EEF1EF;
+      --panel:        #FFFFFF;
+      --ink-900:      #0B1B2B;
+      --ink-700:      #1D3557;
+      --ink-500:      #4A5A6E;
+      --ink-300:      #8A96A3;
+      --line:         #D3DAD6;
+      --line-strong:  #AEB8B2;
+      --brass:        #9C7A3C;
+      --brass-deep:   #6E5326;
+      --brass-tint:   #F4EFE3;
+      --danger:       #b3261e;
+      --danger-bg:    #fbeceb;
+
+      --f-display: 'Source Serif 4', 'IBM Plex Sans', serif;
+      --f-body: 'IBM Plex Sans', sans-serif;
+      --f-cond: 'IBM Plex Sans Condensed', sans-serif;
+      --f-mono: 'IBM Plex Mono', monospace;
+
+      --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+      --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
+      --sp-9: 48px; --sp-10: 64px;
+      
+      /* Frame position: moved outward by 50% (closer to edges) */
+      --frame-inset: calc(var(--sp-6) * 0.5);
+    }
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
 
     body {
-      font-family: 'IBM Plex Mono', monospace;
-      background:
-        radial-gradient(1100px 500px at 15% -10%, rgba(255, 218, 99, .08), transparent 60%),
-        linear-gradient(160deg, #001B44 0%, #002B6A 100%);
+      font-family: var(--f-body);
+      color: var(--ink-900);
+      font-size: 15px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
+    /* ============================================================
+       SPLIT — LEFT 60% | RIGHT 40%
+       ============================================================ */
+    .split {
+      display: flex;
       min-height: 100vh;
+      width: 100%;
+    }
+    .col {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* LEFT — 60% — Greyish background */
+    .col-form {
+      flex: 0 0 60%;
+      background: #F2F0ED;
+      align-items: center;
+      justify-content: center;
+      padding: var(--sp-8) var(--sp-6);
+    }
+    .form-wrap {
+      width: 100%;
+      max-width: 440px;
+    }
+
+    /* RIGHT — 40% — Dark magazine style */
+    .col-brand {
+      flex: 0 0 40%;
+      background:
+        radial-gradient(900px 600px at 85% 0%, rgba(156,122,60,.12), transparent 60%),
+        #0A1420;
+      position: relative;
+      align-items: stretch;
+      justify-content: stretch;
+      overflow: hidden;
+    }
+
+    .brand {
+      margin-bottom: var(--sp-8);
+    }
+    .brand .mark {
+      font-family: var(--f-display);
+      font-weight: 600;
+      font-size: 26px;
+      letter-spacing: 0.005em;
+      color: var(--ink-900);
+    }
+    .brand .mark sup { font-size: 11px; color: var(--brass-deep); font-weight: 600; }
+    .brand .division {
+      margin-top: var(--sp-2);
+      font-family: var(--f-cond);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-300);
+      padding-top: var(--sp-2);
+      border-top: 2px solid var(--brass);
+      display: inline-block;
+    }
+
+    .form-wrap h2 {
+      font-family: var(--f-display);
+      font-size: 24px;
+      font-weight: 600;
+      color: var(--ink-900);
+    }
+    .form-wrap .subtitle {
+      color: var(--ink-500);
+      font-size: 14px;
+      margin-top: var(--sp-1);
+      margin-bottom: var(--sp-7);
+    }
+
+    .field { margin-bottom: var(--sp-5); }
+    .field label {
+      display: block;
+      margin-bottom: var(--sp-2);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--ink-500);
+      font-family: var(--f-cond);
+    }
+    .field-input { position: relative; }
+    .field-input svg {
+      position: absolute;
+      left: var(--sp-4);
+      top: 50%;
+      transform: translateY(-50%);
+      width: 18px;
+      height: 18px;
+      color: var(--ink-300);
+      pointer-events: none;
+    }
+    .field input,
+    .field select {
+      width: 100%;
+      padding: var(--sp-4) var(--sp-4) var(--sp-4) 44px;
+      border: 1.5px solid var(--line);
+      font-size: 15px;
+      font-family: var(--f-body);
+      background: #fdfcf9;
+      transition: border-color .15s, background .15s;
+      color: var(--ink-900);
+      border-radius: 0;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+    .field input:focus,
+    .field select:focus {
+      outline: none;
+      border-color: var(--brass);
+      background: #fff;
+    }
+    .field input::placeholder,
+    .field select::placeholder { color: var(--ink-300); opacity: 0.8; }
+    
+    /* Custom select arrow */
+    .field-input select {
+      padding-right: 40px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%234A5A6E' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 16px center;
+    }
+
+    .btn {
+      width: 100%;
+      padding: var(--sp-4);
+      background: var(--ink-900);
+      color: #fff;
+      border: 1.5px solid var(--ink-900);
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: .15s;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-family: var(--f-cond);
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 32px;
-    }
-
-    .login-container {
-      max-width: 520px;
-      width: 100%;
-    }
-
-    .login-header {
-      text-align: center;
-      margin-bottom: 36px;
-    }
-    .login-header h1 {
-      color: #FFDA63;
-      font-size: 2.2rem;
-      letter-spacing: 4px;
-      font-weight: 700;
-      margin-bottom: 8px;
-    }
-    .login-header p {
-      color: #A1B5D8;
-      font-size: 1.0rem;
-      letter-spacing: 2px;
-    }
-
-    .login-card {
-      background: #fff;
-      border: 3px solid #001B44;
+      gap: var(--sp-3);
       border-radius: 0;
-      padding: 48px 44px 40px;
-      position: relative;
-      box-shadow: 8px 8px 0 #FFDA63;
+      margin-top: var(--sp-2);
     }
-    .login-card::before {
-      content: "";
-      position: absolute;
-      top: -3px;
-      left: -3px;
-      width: 14px;
-      height: 14px;
-      border-top: 4px solid #FFDA63;
-      border-left: 4px solid #FFDA63;
-      pointer-events: none;
-    }
-    .login-card::after {
-      content: "";
-      position: absolute;
-      bottom: -3px;
-      right: -3px;
-      width: 14px;
-      height: 14px;
-      border-bottom: 4px solid #FFDA63;
-      border-right: 4px solid #FFDA63;
-      pointer-events: none;
-    }
+    .btn:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
+    .btn svg { width: 16px; height: 16px; transition: transform .15s; }
+    .btn:hover svg { transform: translateX(4px); }
 
-    .country-selector,
-    .form-group {
-      margin-bottom: 24px;
+    .error {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--sp-3);
+      background: var(--danger-bg);
+      color: var(--danger);
+      padding: var(--sp-4);
+      margin-bottom: var(--sp-6);
+      font-size: 13px;
+      border-left: 3px solid var(--danger);
+      line-height: 1.5;
+      font-weight: 500;
     }
-    .country-selector label,
-    .form-group label {
-      display: block;
-      font-size: 0.85rem;
-      font-weight: 700;
-      color: #001B44;
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-      margin-bottom: 8px;
-    }
-    .country-selector select,
-    .form-group input {
-      width: 100%;
-      padding: 14px 16px;
-      border: 2px solid #001B44;
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 1.0rem;
-      background: #fff;
-      transition: border-color 0.2s;
-      border-radius: 0;
-    }
-    .country-selector select:focus,
-    .form-group input:focus {
-      outline: none;
-      border-color: #FFDA63;
-    }
+    .error svg { width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px; }
 
-    .error-message {
-      background: #ffebee;
-      border: 2px solid #c62828;
-      color: #c62828;
-      padding: 14px 16px;
-      margin-bottom: 24px;
-      font-size: 0.95rem;
-      font-weight: 600;
-      text-align: center;
-      border-radius: 0;
-    }
     .mfa-info {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--sp-3);
       background: #e3f2fd;
-      border: 2px solid #1976d2;
       color: #1976d2;
-      padding: 14px 16px;
-      margin-bottom: 24px;
-      font-size: 0.95rem;
-      text-align: center;
-      border-radius: 0;
+      padding: var(--sp-4);
+      margin-bottom: var(--sp-6);
+      font-size: 13px;
+      border-left: 3px solid #1976d2;
+      line-height: 1.5;
+      font-weight: 500;
+    }
+    .mfa-info svg { width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px; }
+
+    .trust-row {
+      display: flex;
+      justify-content: space-between;
+      margin-top: var(--sp-7);
+      padding-top: var(--sp-5);
+      border-top: 1px solid var(--line);
+      font-size: 10.5px;
+      color: var(--ink-300);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 600;
+      font-family: var(--f-cond);
+    }
+    .trust-row span { display: flex; align-items: center; gap: var(--sp-2); }
+    .trust-row svg { width: 14px; height: 14px; color: var(--brass); }
+
+    .legal {
+      margin-top: var(--sp-8);
+      font-size: 9.5px;
+      letter-spacing: 0.05em;
+      font-family: var(--f-mono);
+      text-transform: uppercase;
+      line-height: 1.9;
+      color: var(--ink-300);
+    }
+    .legal .line2 { color: var(--line-strong); font-size: 9px; }
+
+    /* ============================================================
+       RIGHT — dark, magazine statement inside a mat frame
+       Frame moved outward by 50% (closer to edges)
+       VOUCHMORPH™ on lateral side between frame and outer edge
+       ============================================================ */
+    .frame-mat {
+      position: relative;
+      flex: 1;
+      margin: var(--frame-inset);
+    }
+    .frame-line {
+      position: absolute;
+      inset: var(--frame-inset);
+      border: 1px solid rgba(255,255,255,0.16);
+      pointer-events: none;
     }
 
-    .login-btn {
-      width: 100%;
-      padding: 16px;
-      background: #001B44;
-      border: 2px solid #001B44;
-      color: #fff;
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 1.1rem;
+    .frame-strip {
+      position: absolute;
+      color: rgba(255,255,255,0.3);
+      font-family: var(--f-mono);
+      font-size: 10px;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      z-index: 2;
+    }
+    .frame-strip span { display: inline-block; }
+    .frame-strip.top {
+      top: calc(var(--frame-inset) - 10px);
+      left: calc(var(--frame-inset) + 30px);
+      right: calc(var(--frame-inset) + 30px);
+      height: 20px;
+      justify-content: center;
+      background: #0A1420;
+      padding: 0 12px;
+    }
+    .frame-strip.bottom {
+      bottom: calc(var(--frame-inset) - 10px);
+      left: calc(var(--frame-inset) + 30px);
+      right: calc(var(--frame-inset) + 30px);
+      height: 20px;
+      justify-content: center;
+      background: #0A1420;
+      padding: 0 12px;
+    }
+
+    .frame-strip.lateral {
+      right: calc(var(--frame-inset) - 24px);
+      top: 50%;
+      transform: translateY(-50%) rotate(180deg);
+      transform-origin: center;
+      width: 26px;
+      height: auto;
+      writing-mode: vertical-rl;
+      justify-content: center;
+      color: var(--brass);
+      font-family: var(--f-cond);
+      font-size: 15px;
       font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 2.5px;
-      cursor: pointer;
-      transition: all 0.2s;
-      border-radius: 0;
-      margin-top: 4px;
+      letter-spacing: 0.34em;
+      opacity: 1;
+      background: transparent;
+      padding: 0;
+      z-index: 3;
+      background: none;
     }
-    .login-btn:hover {
-      background: #FFDA63;
-      color: #001B44;
-      border-color: #FFDA63;
-    }
-
-    .login-footer {
-      margin-top: 28px;
-      text-align: center;
-      color: #A1B5D8;
-      font-size: 0.9rem;
-    }
-    .system-badge {
+    .frame-strip.lateral span {
       display: inline-block;
-      padding: 6px 16px;
-      background: rgba(255, 218, 99, 0.1);
-      border: 1px solid #FFDA63;
-      color: #FFDA63;
-      font-size: 0.8rem;
-      text-transform: uppercase;
-      letter-spacing: 1px;
+      padding: 8px 0;
+      background: transparent;
     }
 
+    .magazine {
+      position: absolute;
+      inset: var(--frame-inset);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: var(--sp-7) var(--sp-6);
+      z-index: 1;
+    }
+    .magazine .eyebrow {
+      font-family: var(--f-cond);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--brass);
+      margin-bottom: var(--sp-4);
+    }
+
+    .magazine p {
+      font-family: var(--f-body);
+      font-size: 10px;
+      font-weight: 400;
+      line-height: 1.85;
+      color: rgba(255,255,255,0.92);
+      max-width: 300px;
+      text-align: justify;
+      text-justify: inter-word;
+      hyphens: auto;
+    }
+
+    .magazine p::first-letter {
+      font-family: var(--f-cond);
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--brass);
+      float: left;
+      line-height: 0.8;
+      padding-right: var(--sp-2);
+      padding-top: 4px;
+    }
+
+    .magazine p.secondary {
+      font-family: var(--f-body);
+      font-size: 10px;
+      font-weight: 400;
+      line-height: 1.75;
+      color: rgba(255,255,255,0.62);
+      max-width: 300px;
+      margin-top: var(--sp-4);
+      letter-spacing: 0.005em;
+      text-align: justify;
+      text-justify: inter-word;
+      hyphens: auto;
+    }
+    .magazine p.secondary strong {
+      color: rgba(255,255,255,0.85);
+      font-weight: 600;
+    }
+    .magazine .mark {
+      margin-top: var(--sp-5);
+      width: 40px;
+      height: 1px;
+      background: var(--brass);
+    }
+
+    /* ============================================================
+       RESPONSIVE — stack on narrow screens
+       ============================================================ */
+    @media (max-width: 900px) {
+      .split { flex-direction: column; }
+      .col-form { flex: 1 1 auto; }
+      .col-brand { flex: 1 1 auto; min-height: 400px; }
+      .col-form { padding: var(--sp-7) var(--sp-5); }
+      :root { --frame-inset: calc(var(--sp-5) * 0.5); }
+      .frame-strip.top { top: calc(var(--frame-inset) - 8px); left: calc(var(--frame-inset) + 20px); right: calc(var(--frame-inset) + 20px); }
+      .frame-strip.bottom { bottom: calc(var(--frame-inset) - 8px); left: calc(var(--frame-inset) + 20px); right: calc(var(--frame-inset) + 20px); }
+      .frame-strip.lateral { right: calc(var(--frame-inset) - 20px); }
+      .magazine { inset: var(--frame-inset); padding: var(--sp-6) var(--sp-4); }
+      .magazine p { font-size: 10px; max-width: 280px; }
+      .magazine p.secondary { font-size: 10px; max-width: 280px; }
+    }
     @media (max-width: 480px) {
-      .login-container { max-width: 100%; padding: 0 12px; }
-      .login-card { padding: 30px 20px 24px; }
-      .login-header h1 { font-size: 1.8rem; }
-      .login-header p { font-size: 0.9rem; }
+      .frame-strip.lateral { display: none; }
+      .trust-row { flex-wrap: wrap; gap: var(--sp-3); justify-content: center; }
+      .magazine p { font-size: 10px; max-width: 260px; }
+      .magazine p.secondary { font-size: 10px; max-width: 260px; }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .col-form { background: #1A1F26; }
+      .brand .mark { color: #ECEFF2; }
+      .form-wrap h2 { color: #ECEFF2; }
+      .form-wrap .subtitle { color: #93A2AC; }
+      .field label { color: #93A2AC; }
+      .field input,
+      .field select { background: #0F1B24; border-color: #2C3A45; color: #ECEFF2; }
+      .field input:focus,
+      .field select:focus { background: #16232E; border-color: var(--brass); }
+      .field input::placeholder,
+      .field select::placeholder { color: #6B7A85; }
+      .trust-row { border-color: #2C3A45; color: #6B7A85; }
+      .legal { color: #6B7A85; }
+      .legal .line2 { color: #3A4A56; }
+      .btn { background: #2C3A45; border-color: #2C3A45; color: #ECEFF2; }
+      .btn:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
+      .field-input select {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2393A2AC' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      }
     }
   </style>
 </head>
 <body>
-<div class="login-container">
-  <div class="login-header">
-    <h1>VOUCHMORPH</h1>
-    <p>ADMINISTRATIVE ACCESS</p>
-  </div>
+<div class="split">
 
-  <div class="login-card">
-    <?php if (isset($dbError)): ?>
-      <div class="error-message">
-        <strong>🔐 SYSTEM UNAVAILABLE</strong><br>
-        <?php echo htmlspecialchars($dbError); ?>
+  <!-- LEFT — greyish, functional admin login (60%) -->
+  <div class="col col-form">
+    <div class="form-wrap">
+      <div class="brand">
+        <div class="mark">VOUCHMORPH<sup>™</sup></div>
+        <div class="division">Administrative Access</div>
       </div>
-    <?php endif; ?>
 
-    <?php if ($error): ?>
-      <div class="error-message"><?php echo htmlspecialchars($error); ?></div>
-    <?php endif; ?>
+      <h2>Sign in</h2>
+      <p class="subtitle">Access the administrative command center</p>
 
-    <?php if ($mfaRequired): ?>
-      <div class="mfa-info">
-        <strong>🔐 Two-Factor Authentication</strong><br>
-        Please enter the authentication code from your authenticator app.
+      <?php if (isset($dbError)): ?>
+      <div class="error">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <span><strong>SYSTEM UNAVAILABLE</strong><br><?php echo htmlspecialchars($dbError); ?></span>
       </div>
-    <?php endif; ?>
-
-    <?php if (!isset($dbError)): ?>
-    <form method="POST" action="">
-      <input type="hidden" name="country" value="<?php echo htmlspecialchars($systemCountry); ?>">
-
-      <?php if ($mfaRequired): ?>
-        <div class="form-group">
-          <label>AUTHENTICATION CODE</label>
-          <input type="text" name="mfa_code" placeholder="000000" maxlength="6" autofocus required>
-        </div>
-      <?php else: ?>
-        <div class="country-selector">
-          <label>SYSTEM COUNTRY</label>
-          <select name="country" onchange="this.form.submit()">
-            <?php foreach ($availableCountries as $country): ?>
-              <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $systemCountry ? 'selected' : ''; ?>>
-                <?php echo htmlspecialchars($country); ?> · VOUCHMORPH
-              </option>
-            <?php endforeach; ?>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label>USERNAME / EMAIL</label>
-          <input type="text" name="username" placeholder="Enter username or email" autofocus required>
-        </div>
-
-        <div class="form-group">
-          <label>PASSWORD</label>
-          <input type="password" name="password" placeholder="Enter your password" required>
-        </div>
       <?php endif; ?>
 
-      <button type="submit" class="login-btn">
-        <?php echo $mfaRequired ? 'VERIFY CODE' : 'SIGN IN →'; ?>
-      </button>
-    </form>
-    <?php endif; ?>
+      <?php if ($error): ?>
+      <div class="error">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <span><?php echo htmlspecialchars($error); ?></span>
+      </div>
+      <?php endif; ?>
 
-    <div class="login-footer">
-      <div class="system-badge">
-        <?php echo htmlspecialchars($systemCountry); ?> · <?php echo date('Y'); ?>
+      <?php if ($mfaRequired): ?>
+      <div class="mfa-info">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <span><strong>Two-Factor Authentication</strong><br>Please enter the authentication code from your authenticator app.</span>
+      </div>
+      <?php endif; ?>
+
+      <?php if (!isset($dbError)): ?>
+      <form method="POST" action="">
+        <input type="hidden" name="country" value="<?php echo htmlspecialchars($systemCountry); ?>">
+
+        <?php if ($mfaRequired): ?>
+          <div class="field">
+            <label>Authentication Code</label>
+            <div class="field-input">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              <input type="text" name="mfa_code" placeholder="000000" maxlength="6" autofocus required>
+            </div>
+          </div>
+        <?php else: ?>
+          <div class="field">
+            <label>System Country</label>
+            <div class="field-input">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 0 20 15.3 15.3 0 0 1 0-20z"/></svg>
+              <select name="country" onchange="this.form.submit()">
+                <?php foreach ($availableCountries as $country): ?>
+                  <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $systemCountry ? 'selected' : ''; ?>>
+                    <?php echo htmlspecialchars($country); ?>
+                  </option>
+                <?php endforeach; ?>
+              </select>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Username / Email</label>
+            <div class="field-input">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 7l9 6 9-6"/></svg>
+              <input type="text" name="username" placeholder="Enter username or email" autofocus required>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Password</label>
+            <div class="field-input">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="1"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+              <input type="password" name="password" placeholder="Enter your password" required>
+            </div>
+          </div>
+        <?php endif; ?>
+
+        <button type="submit" class="btn">
+          <?php echo $mfaRequired ? 'Verify Code' : 'Sign in'; ?>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </form>
+      <?php endif; ?>
+
+      <div class="trust-row">
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg>Secure</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>2FA Ready</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m4 12 5 5L20 6"/></svg>ISO 27001</span>
+      </div>
+
+      <div class="legal">
+        <div>Secure administrative access · distribution restricted · ISO 27001 · © 2026 VouchMorph</div>
+        <div class="line2">VM/2026/0708-000</div>
       </div>
     </div>
   </div>
+
+  <!-- RIGHT — dark, magazine statement (40%) -->
+  <div class="col col-brand">
+    <div class="frame-mat">
+      <!-- Outer frame line — moved outward by 50% -->
+      <div class="frame-line"></div>
+
+      <!-- Top and bottom frame strips -->
+      <div class="frame-strip top"><span>VOUCHMORPH ADMIN</span></div>
+      <div class="frame-strip bottom"><span>VOUCHMORPH ADMIN</span></div>
+
+      <!-- VOUCHMORPH™ on lateral side (between frame and outer edge) -->
+      <div class="frame-strip lateral"><span>VOUCHMORPH™</span></div>
+
+      <!-- Magazine content -->
+      <div class="magazine">
+        <div class="eyebrow">Administrative Command Center</div>
+        <p>VouchMorph administrative access provides complete oversight of multi-asset payment orchestration, beneficiary management, and transaction auditing across all institutions and destinations.</p>
+        <p class="secondary">Administrators have full visibility into <strong>every transaction</strong>, from source funding to final settlement. Role-based access controls ensure that only authorized personnel can approve, disburse, or audit payment flows.</p>
+        <div class="mark"></div>
+      </div>
+    </div>
+  </div>
+
 </div>
 </body>
 </html>
