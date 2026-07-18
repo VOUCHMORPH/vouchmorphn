@@ -458,20 +458,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       right: var(--sp-3); top: var(--sp-8); bottom: var(--sp-8);
       width: 26px; writing-mode: vertical-rl; transform: rotate(180deg);
       justify-content: center;
-      /* This edge is the signature mark — bold, high-contrast, single
-         instance — distinct from the quiet repeating text on the
-         other three sides. */
       color: var(--brass);
       font-family: var(--f-cond);
       font-size: 15px;
       font-weight: 700;
       letter-spacing: 0.34em;
       opacity: 1;
-    }
-    .frame-strip.right {
-      right: var(--sp-3); top: var(--sp-8); bottom: var(--sp-8);
-      width: 20px; writing-mode: vertical-rl;
-      justify-content: center;
     }
 
     .magazine {
@@ -493,32 +485,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       color: var(--brass);
       margin-bottom: var(--sp-6);
     }
+
+    /* ============================================================
+       BOTH PARAGRAPHS — Same font size, justified alignment
+       First letter uses the same font as "V" in VOUCHMORPH
+       ============================================================ */
     .magazine p {
       font-family: var(--f-display);
-      font-size: 19px;
+      font-size: 17px;
       font-weight: 400;
       line-height: 1.85;
       color: rgba(255,255,255,0.92);
-      max-width: 460px;
+      max-width: 520px;
+      text-align: justify;
+      text-justify: inter-word;
+      hyphens: auto;
     }
+
+    /* First letter styling — uses the same font as the "V" in VOUCHMORPH™ */
     .magazine p::first-letter {
-      font-size: 54px;
-      font-weight: 600;
+      font-family: var(--f-cond);
+      font-size: 58px;
+      font-weight: 700;
       color: var(--brass);
       float: left;
       line-height: 0.8;
       padding-right: var(--sp-2);
-      padding-top: 6px;
+      padding-top: 4px;
     }
+
     .magazine p.secondary {
       font-family: var(--f-body);
-      font-size: 13.5px;
+      font-size: 17px;
       font-weight: 400;
       line-height: 1.75;
       color: rgba(255,255,255,0.62);
-      max-width: 420px;
+      max-width: 480px;
       margin-top: var(--sp-5);
       letter-spacing: 0.005em;
+      text-align: justify;
+      text-justify: inter-word;
+      hyphens: auto;
     }
     .magazine p.secondary strong {
       color: rgba(255,255,255,0.85);
@@ -542,15 +549,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       .frame-mat { margin: var(--sp-6); }
       .frame-line { inset: var(--sp-6); }
       .frame-strip.top, .frame-strip.bottom { left: var(--sp-6); right: var(--sp-6); }
-      .frame-strip.left, .frame-strip.right { top: var(--sp-6); bottom: var(--sp-6); }
+      .frame-strip.right { top: var(--sp-6); bottom: var(--sp-6); }
       .magazine { inset: var(--sp-6); padding: var(--sp-7) var(--sp-5); }
-      .magazine p { font-size: 12.5px; }
-      .magazine p::first-letter { font-size: 42px; }
-      .magazine p.secondary { font-size: 12.5px; }
+      .magazine p { font-size: 15px; }
+      .magazine p::first-letter { font-size: 48px; }
+      .magazine p.secondary { font-size: 15px; }
     }
     @media (max-width: 480px) {
       .frame-strip.right { display: none; }
       .trust-row { flex-wrap: wrap; gap: var(--sp-3); justify-content: center; }
+      .magazine p { font-size: 14px; }
+      .magazine p::first-letter { font-size: 40px; }
+      .magazine p.secondary { font-size: 14px; }
     }
 
     @media (prefers-color-scheme: dark) {
