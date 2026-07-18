@@ -385,7 +385,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             background: var(--paper);
             color: var(--ink-900);
             min-height: 100vh;
-            font-size: 15px;
+            font-size: 17px;
             line-height: 1.55;
             -webkit-font-smoothing: antialiased;
             display: flex;
@@ -416,7 +416,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             gap: var(--sp-3);
             color: rgba(255,255,255,0.65);
             font-family: var(--f-mono);
-            font-size: 10px;
+            font-size: 12px;
             letter-spacing: 0.08em;
             text-transform: uppercase;
             line-height: 1.8;
@@ -444,15 +444,15 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             gap: var(--sp-4);
         }
         .header-left { position: relative; display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
-        .logo { font-family: var(--f-display); font-weight: 600; font-size: 19px; letter-spacing: 0.01em; line-height: 1; }
+        .logo { font-family: var(--f-display); font-weight: 600; font-size: 21px; letter-spacing: 0.01em; line-height: 1; }
         .logo span { color: var(--brass); font-weight: 400; }
-        .logo-sub { font-family: var(--f-cond); font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(255,255,255,0.6); line-height: 1; }
-        .role-badge { padding: 4px var(--sp-3); background: transparent; border: 1px solid var(--brass); color: var(--brass); font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; font-family: var(--f-cond); line-height: 1; }
+        .logo-sub { font-family: var(--f-cond); font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(255,255,255,0.6); line-height: 1; }
+        .role-badge { padding: 4px var(--sp-3); background: transparent; border: 1px solid var(--brass); color: var(--brass); font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; font-family: var(--f-cond); line-height: 1; }
         .user-area { position: relative; display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
         .user-details { text-align: right; display: flex; flex-direction: column; gap: 2px; }
-        .user-name { font-weight: 600; color: #fff; font-size: 13px; font-family: var(--f-display); line-height: 1; }
-        .user-role { font-size: 9.5px; color: rgba(255,255,255,0.6); text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.06em; line-height: 1; }
-        .logout-btn { padding: 6px var(--sp-4); border: 1px solid rgba(255,255,255,0.25); color: #fff; text-decoration: none; font-size: 10.5px; font-weight: 600; text-transform: uppercase; font-family: var(--f-cond); transition: all 0.15s; letter-spacing: 0.06em; line-height: 1; background: transparent; }
+        .user-name { font-weight: 600; color: #fff; font-size: 15px; font-family: var(--f-display); line-height: 1; }
+        .user-role { font-size: 11.5px; color: rgba(255,255,255,0.6); text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.06em; line-height: 1; }
+        .logout-btn { padding: 6px var(--sp-4); border: 1px solid rgba(255,255,255,0.25); color: #fff; text-decoration: none; font-size: 12.5px; font-weight: 600; text-transform: uppercase; font-family: var(--f-cond); transition: all 0.15s; letter-spacing: 0.06em; line-height: 1; background: transparent; }
         .logout-btn:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
 
         .admin-nav {
@@ -472,7 +472,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             padding: var(--sp-3) 0;
             color: var(--ink-500);
             text-decoration: none;
-            font-size: 11.5px;
+            font-size: 13.5px;
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.05em;
@@ -487,7 +487,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .nav-item:hover { color: var(--ink-900); }
         .nav-item.active { color: var(--ink-900); border-bottom-color: var(--brass); }
-        .nav-badge { background: var(--brass); color: #fff; font-size: 9px; padding: 1px 7px; font-family: var(--f-mono); font-weight: 700; }
+        .nav-badge { background: var(--brass); color: #fff; font-size: 11px; padding: 1px 7px; font-family: var(--f-mono); font-weight: 700; }
 
         .admin-content { padding: var(--sp-8) var(--sp-7) var(--sp-7); flex: 1 0 auto; }
         .admin-content-inner { width: 100%; max-width: var(--content-max); margin: 0 auto; }
@@ -512,7 +512,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .page-description .eyebrow {
             font-family: var(--f-cond);
-            font-size: 11px;
+            font-size: 13px;
             font-weight: 700;
             letter-spacing: 0.16em;
             text-transform: uppercase;
@@ -521,7 +521,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         .page-description p {
             font-family: var(--f-display);
             font-style: italic;
-            font-size: 15px;
+            font-size: 17px;
             color: var(--ink-500);
             line-height: 1.6;
         }
@@ -534,13 +534,13 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             .admin-nav { padding: 0 var(--sp-4); gap: var(--sp-4); }
             .admin-ribbon { padding: var(--sp-1) var(--sp-4); flex-direction: column; gap: 2px; }
             .metrics-grid { grid-template-columns: repeat(2, 1fr); }
-            .content-header h1 { font-size: 18px; width: 100%; }
+            .content-header h1 { font-size: 20px; width: 100%; }
             .content-header { row-gap: var(--sp-2); }
             .admin-content { padding: var(--sp-4); }
         }
         @media (max-width: 480px) {
             .metrics-grid { grid-template-columns: 1fr; }
-            .admin-header .logo { font-size: 16px; }
+            .admin-header .logo { font-size: 18px; }
         }
 
         .content-header {
@@ -563,7 +563,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .content-header h1 {
             font-family: var(--f-display);
-            font-size: 25px;
+            font-size: 27px;
             font-weight: 600;
             letter-spacing: 0.01em;
             color: var(--ink-900);
@@ -574,14 +574,14 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .content-header .timestamp {
             font-family: var(--f-mono);
-            font-size: 10px;
+            font-size: 12px;
             color: var(--ink-300);
             line-height: 1;
             white-space: nowrap;
         }
         .content-header .back-link {
             font-family: var(--f-cond);
-            font-size: 10px;
+            font-size: 12px;
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.06em;
@@ -619,7 +619,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .metric-card:hover { border-top-color: var(--brass); background: #FCFBF8; }
         .metric-card .metric-label {
-            font-size: 10px;
+            font-size: 12px;
             text-transform: uppercase;
             color: var(--ink-300);
             letter-spacing: 0.07em;
@@ -630,7 +630,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         .metric-card .metric-value {
             font-family: var(--f-display);
-            font-size: 27px;
+            font-size: 29px;
             font-weight: 600;
             color: var(--ink-900);
             font-variant-numeric: tabular-nums;
@@ -639,7 +639,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             display: block;
         }
         .metric-card .metric-sub {
-            font-size: 10px;
+            font-size: 12px;
             color: var(--ink-300);
             font-family: var(--f-mono);
             line-height: 1.4;
@@ -682,7 +682,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             gap: var(--sp-3);
         }
         .card-title {
-            font-size: 16px;
+            font-size: 18px;
             font-weight: 600;
             font-family: var(--f-display);
             letter-spacing: 0.01em;
@@ -692,7 +692,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             padding: var(--sp-1) var(--sp-3);
             background: var(--ink-900);
             color: #fff;
-            font-size: 10px;
+            font-size: 12px;
             font-weight: 600;
             font-family: var(--f-mono);
             letter-spacing: 0.04em;
@@ -712,7 +712,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             padding: 0 var(--sp-4);
             height: 40px;
             border: 1.5px solid var(--line);
-            font-size: 13px;
+            font-size: 15px;
             background: #fdfcf9;
             color: var(--ink-900);
             min-width: 250px;
@@ -732,7 +732,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
         .btn {
             padding: var(--sp-2) var(--sp-5);
-            font-size: 11px;
+            font-size: 13px;
             font-weight: 700;
             border: 1.5px solid var(--ink-900);
             background: transparent;
@@ -762,16 +762,16 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             border-color: var(--brass);
             color: var(--ink-900);
         }
-        .btn-sm { padding: var(--sp-1) var(--sp-4); font-size: 10px; }
+        .btn-sm { padding: var(--sp-1) var(--sp-4); font-size: 12px; }
 
         .table-responsive { overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+        table { width: 100%; border-collapse: collapse; font-size: 15px; font-variant-numeric: tabular-nums; }
         th {
             background: var(--paper);
             color: var(--ink-500);
             padding: var(--sp-2) var(--sp-4);
             text-align: left;
-            font-size: 10px;
+            font-size: 12px;
             text-transform: uppercase;
             letter-spacing: 0.06em;
             font-weight: 700;
@@ -782,7 +782,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         td {
             padding: var(--sp-2) var(--sp-4);
             border-bottom: 1px solid var(--line);
-            font-size: 12.5px;
+            font-size: 14.5px;
             vertical-align: middle;
         }
         tr:hover { background: var(--brass-tint); }
@@ -792,7 +792,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             align-items: center;
             gap: 5px;
             padding: 2px var(--sp-3) 2px 6px;
-            font-size: 10px;
+            font-size: 12px;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.04em;
@@ -803,29 +803,29 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         .status::before { content: ""; width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
         .status-success { background: var(--paper); color: var(--ink-500); border-color: var(--line-strong); }
         .status-success::before { background: var(--ink-300); }
-        .status-pending { background: #fef3c7; color: #8A6D00; border-color: #e0c375; }
-        .status-pending::before { background: #8A6D00; }
-        .status-failed { background: #fbeceb; color: #b3261e; border-color: #e3b3ae; }
-        .status-failed::before { background: #b3261e; }
+        .status-pending { background: #fef3c7; color: #B8830A; border-color: #e0c375; }
+        .status-pending::before { background: #B8830A; }
+        .status-failed { background: #fbeceb; color: #D32F2F; border-color: #e3b3ae; }
+        .status-failed::before { background: #D32F2F; }
         .status-info { background: var(--paper); color: var(--ink-500); border-color: var(--line-strong); }
         .status-info::before { background: var(--ink-300); }
-        .status-identity { background: #EDE8F5; color: #5C3D7A; border-color: #D4C0E8; }
-        .status-identity::before { background: #5C3D7A; }
+        .status-identity { background: #EDE8F5; color: #7C3FBE; border-color: #D4C0E8; }
+        .status-identity::before { background: #7C3FBE; }
 
         .empty-state {
             text-align: center;
             padding: var(--sp-8) var(--sp-4);
             color: var(--ink-300);
         }
-        .empty-state .icon { font-size: 28px; display: block; margin-bottom: var(--sp-3); }
-        .empty-state p { font-size: 13px; }
+        .empty-state .icon { font-size: 30px; display: block; margin-bottom: var(--sp-3); }
+        .empty-state p { font-size: 15px; }
 
         .live-indicator {
             display: inline-block;
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background: #b3261e;
+            background: #D32F2F;
             animation: pulse 1.5s ease-in-out infinite;
             margin-right: var(--sp-2);
         }
@@ -838,8 +838,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             margin-top: var(--sp-2);
         }
         .health-bar-fill { height: 100%; background: var(--brass); }
-        .health-bar-fill.warn { background: #b3261e; }
-        .health-bar-fill.bad { background: #b3261e; }
+        .health-bar-fill.warn { background: #D32F2F; }
+        .health-bar-fill.bad { background: #D32F2F; }
 
         .lookup-card { border-left: 3px solid var(--brass); margin-bottom: var(--sp-4); }
         .lookup-next-action {
@@ -847,7 +847,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             color: var(--ink-700);
             padding: var(--sp-3);
             margin-top: var(--sp-2);
-            font-size: 12px;
+            font-size: 14px;
             font-weight: 600;
             border-left: 3px solid var(--brass);
         }
@@ -857,7 +857,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             color: var(--ink-300);
             padding: var(--sp-4) var(--sp-7);
             text-align: center;
-            font-size: 10px;
+            font-size: 12px;
             border-top: 2px solid var(--brass);
             margin-top: var(--sp-4);
             font-family: var(--f-mono);
@@ -936,10 +936,10 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             <?php if ($totalAlerts > 0 && canView('alerts')): ?>
             <div class="card" style="border-color:var(--line-strong);">
                 <div class="card-header">
-                    <span class="card-title" style="color:#b3261e;">⚠️ <?php echo $totalAlerts; ?> item<?php echo $totalAlerts === 1 ? '' : 's'; ?> require attention</span>
+                    <span class="card-title" style="color:#D32F2F;">⚠️ <?php echo $totalAlerts; ?> item<?php echo $totalAlerts === 1 ? '' : 's'; ?> require attention</span>
                     <a href="?view=alerts" class="btn btn-primary btn-sm">View Alerts</a>
                 </div>
-                <div style="font-size:12px; color:var(--ink-500);">
+                <div style="font-size:14px; color:var(--ink-500);">
                     <?php echo count($alerts['stuck_holds']); ?> stuck holds · <?php echo count($alerts['expired_identity_swaps']); ?> expired ·
                     <?php echo count($alerts['stuck_cashouts']); ?> stuck cashouts
                 </div>
@@ -989,7 +989,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php $st = strtolower($r['status'] ?? ''); $cls = match(true) { str_contains($st, 'complet') || str_contains($st, 'success') => 'success', str_contains($st, 'pending') || str_contains($st, 'verified') => 'pending', str_contains($st, 'fail') || str_contains($st, 'expired') => 'failed', default => 'info' }; ?>
                     <span class="status status-<?php echo $cls; ?>"><?php echo safeHtml($r['status']); ?></span>
                 </div>
-                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap:var(--sp-2); font-size:12px;">
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap:var(--sp-2); font-size:14px;">
                     <div><strong>Amount:</strong> <?php echo number_format((float)$r['amount'], 2); ?> <?php echo safeHtml($r['currency']); ?></div>
                     <div><strong>Route:</strong> <?php echo safeHtml($r['institution']); ?></div>
                     <?php if (!empty($r['identity'])): ?><div><strong>Identity:</strong> <?php echo safeHtml($r['identity']); ?></div><?php endif; ?>
@@ -1062,7 +1062,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <span class="card-title"><?php echo safeHtml($inst['institution']); ?></span>
                     <span class="card-badge brass"><?php echo $rate; ?>% SUCCESS</span>
                 </div>
-                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap:var(--sp-2); margin-bottom:var(--sp-2); font-size:12px;">
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap:var(--sp-2); margin-bottom:var(--sp-2); font-size:14px;">
                     <div><strong>Total:</strong> <?php echo number_format($inst['total']); ?></div>
                     <div style="color:var(--ink-500);"><strong>Success:</strong> <?php echo number_format($inst['successful']); ?></div>
                     <div><strong>Volume:</strong> <?php echo number_format((float)$inst['volume'], 2); ?></div>
@@ -1163,10 +1163,10 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             <?php else: foreach ($multiDestinationSwaps as $swap): $destinations = json_decode($swap['destinations_payload'] ?? '[]', true); $results = json_decode($swap['results_payload'] ?? '[]', true) ?: []; ?>
             <div class="card" style="border-left: 3px solid <?php echo $swap['status'] === 'completed' ? 'var(--brass)' : 'var(--ink-300)'; ?>;">
                 <div class="card-header">
-                    <span class="card-title"><?php echo safeHtml($swap['reference']); ?> <span style="font-weight:400;color:var(--ink-300);font-size:10px;"><?php echo date('Y-m-d H:i', strtotime($swap['created_at'])); ?></span></span>
+                    <span class="card-title"><?php echo safeHtml($swap['reference']); ?> <span style="font-weight:400;color:var(--ink-300);font-size:12px;"><?php echo date('Y-m-d H:i', strtotime($swap['created_at'])); ?></span></span>
                     <span class="card-badge <?php echo $swap['status'] === 'completed' ? 'brass' : ''; ?>"><?php echo strtoupper($swap['status'] ?? 'UNKNOWN'); ?></span>
                 </div>
-                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap:var(--sp-2); margin-bottom:var(--sp-3); font-size:11px; background:var(--paper); padding:var(--sp-3);">
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap:var(--sp-2); margin-bottom:var(--sp-3); font-size:13px; background:var(--paper); padding:var(--sp-3);">
                     <div><strong>Source:</strong> <?php echo safeHtml($swap['source_institution']); ?></div>
                     <div><strong>Total:</strong> <?php echo number_format((float)($swap['total_amount'] ?? 0), 2); ?></div>
                     <div><strong>✅</strong> <?php echo $swap['successful_count'] ?? 0; ?></div>
@@ -1295,7 +1295,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             $knownViews = ['dashboard', 'client_lookup', 'alerts', 'live_transactions', 'multi_destination', 'recent_swaps', 'institution_health', 'regulatory', 'audit', 'invoices', 'all_tables'];
             if (!canView($view) && !in_array($view, $knownViews)):
             ?>
-            <div class="card"><div class="empty-state"><span class="icon">🚫</span><h2 style="font-family:var(--f-cond);text-transform:uppercase;font-size:18px;margin-bottom:var(--sp-2);">Access Denied</h2><p>You do not have permission to view this page.</p><a href="?view=dashboard" class="btn btn-primary" style="margin-top:var(--sp-4);">Return to Dashboard</a></div></div>
+            <div class="card"><div class="empty-state"><span class="icon">🚫</span><h2 style="font-family:var(--f-cond);text-transform:uppercase;font-size:20px;margin-bottom:var(--sp-2);">Access Denied</h2><p>You do not have permission to view this page.</p><a href="?view=dashboard" class="btn btn-primary" style="margin-top:var(--sp-4);">Return to Dashboard</a></div></div>
             <?php endif; ?>
 
         </div></main>
@@ -1303,7 +1303,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
     <!-- FOOTER -->
     <footer class="admin-footer">
         VOUCHMORPH · <?php echo safeHtml($roleName); ?> · <?php echo date('Y'); ?>
-        <span style="display:block;margin-top:2px;font-size:9px;color:rgba(255,255,255,0.4);">Bank of Botswana Regulatory Sandbox Participant</span>
+        <span style="display:block;margin-top:2px;font-size:11px;color:rgba(255,255,255,0.4);">Bank of Botswana Regulatory Sandbox Participant</span>
     </footer>
 
 </body>
