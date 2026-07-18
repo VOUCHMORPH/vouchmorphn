@@ -2583,13 +2583,14 @@ class SwapService
                 'access_methods' => $this->getIdentityAccessMethods($identityType, $payload['identity_value'])
             ];
 
-        } catch (Exception $e) {
-            error_log("[SwapService] initiateSwapToIdentity FAILED: " . $e->getMessage());
+                } catch (\Throwable $e) {
+            error_log("[SwapService] initiateSwapToIdentity FAILED (" . get_class($e) . "): " . $e->getMessage());
             if (!$this->inAtomicSwap) {
                 $this->rollbackAtomicSwap($e->getMessage());
             }
             throw $e;
         }
+
     }
 
     public function confirmAndFinalizeIdentitySwap(array $payload): array
