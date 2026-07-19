@@ -2616,24 +2616,35 @@ class SwapService
         }
         
         $confirmedByType = $payload['confirmed_by_type'] ?? null;
-        $confirmedById = $payload['confirmed_by_id'] ?? null;
-        $identityType = $identitySwap['identity_type'];
-        $identityValue = $identitySwap['identity_value'];
-        
-        if ($confirmedByType === 'user') {
-            $this->verifyUserOwnsIdentity($confirmedById, $identityType, $identityValue);
-        } elseif ($confirmedByType === 'agent') {
-            if (!$this->isAgentVerifiableIdentityType($identityType)) {
-                throw new RuntimeException("Agents can only confirm document-based identity types (" . implode(', ', self::IDENTITY_TYPES_AGENT_VERIFIABLE) . "), not {$identityType}");
-            }
-            $verified = ($payload['identity_document_verified'] ?? null) === true
-                || ($payload['national_id_verified'] ?? null) === true;
-            if (!$verified) {
-                throw new RuntimeException("Agent must verify the physical {$identityType} first");
-            }
-        } else {
-            throw new RuntimeException("confirmed_by_type must be 'user' or 'agent'");
-        }
+$confirmedById = $payload['confirmed_by_id'] ?? null;
+$identityType = $identitySwap['identity_type'];
+$identityValue = $identitySwap['identity_value'];
+$suppliedPin = (string)($payload['pin'] ?? '');
+ 
+if (!in_array($confirmedByType, ['user', 'agent'], true)) {
+    throw new RuntimeException("confirmed_by_type must be 'user' or 'agent'");
+}
+ 
+if ($confirmedByType === 'agent') {
+    if (!$this->isAgentVerifiableIdentityType($identityType)) {
+        throw new RuntimeException("Agents can only confirm document-based identity types (" . implode(', ', self::IDENTITY_TYPES_AGENT_VERIFIABLE) . "), not {$identityType}");
+    }
+    // Physical document check stays as an ADDITIONAL agent-side
+    // control (matches how agents work in practice) - it does not
+    // replace the PIN check below, both are required.
+    $documentVerified = ($payload['identity_document_verified'] ?? null) === true
+        || ($payload['national_id_verified'] ?? null) === true;
+    if (!$documentVerified) {
+        throw new RuntimeException("Agent must verify the physical {$identityType} first");
+    }
+}
+ 
+// PIN check applies REGARDLESS of confirmed_by_type - a person
+// relaying their PIN through an agent still must supply it. This
+// is what stops a dishonest agent from finalizing alone.
+$this->verifyIdentityClaimPin($identitySwap, $suppliedPin);
+ 
+
         
         $destinationType = strtoupper($payload['destination_type'] ?? 'CASHOUT');
         if (!in_array($destinationType, ['CASHOUT', 'DEPOSIT'])) {
