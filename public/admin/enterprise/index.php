@@ -1,7 +1,7 @@
 <?php
 /**
  * enterprise/index.php - VouchMorph Enterprise Client Dashboard
- * 
+ *  
  * This is the main dashboard for organizations using VouchMorph.
  * Different roles see different views based on their permissions.
  */
