@@ -885,9 +885,14 @@ async function openAgentModal() {
     document.getElementById('modalBody').innerHTML = renderAgentModal();
 }
 
-// UPDATED: renderAgentModal with Cancel button for pending/rejected destinations
+// FIXED: renderAgentModal with Cancel button - filters out cancelled records
 function renderAgentModal() {
-    const statusRows = agentStatus.all_destinations.length ? agentStatus.all_destinations.map(d => {
+    // Filter out cancelled records (they have status 'cancelled' or deleted_at set)
+    const activeDestinations = agentStatus.all_destinations.filter(d => 
+        d.status !== 'cancelled' && !d.deleted_at
+    );
+    
+    const statusRows = activeDestinations.length ? activeDestinations.map(d => {
         const isPending = d.status === 'pending_confirmation';
         const isRejected = d.status === 'rejected';
         const canCancel = isPending || isRejected;
@@ -895,7 +900,6 @@ function renderAgentModal() {
         const badge = d.status === 'active' ? '<span style="background:#dcfce7;color:#166534;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">Active</span>'
             : isPending ? '<span style="background:#fef3c7;color:#8a5a0b;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">⏳ Pending Approval</span>'
             : isRejected ? '<span style="background:#fbeceb;color:var(--danger);padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">Rejected</span>'
-            : d.status === 'cancelled' ? '<span style="background:#f0f0f0;color:#666;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">Cancelled</span>'
             : '<span style="background:#fbeceb;color:var(--danger);padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">' + (d.status || 'Unknown') + '</span>';
             
         return `<div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-bottom:8px;background:#fff;">
