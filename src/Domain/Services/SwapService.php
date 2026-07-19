@@ -2406,13 +2406,15 @@ public function releaseCashoutHold(int $authId, string $reason): array
     }
     $holdReferenceForRelease = $realHoldReference ?? $swapRef;
 
-    // 3. Debit the withheld portion from the source hold
+    // 3. Debit the withheld portion from the source hold (the fees are
+    // real money that must leave the source institution), then release
+    // whatever's left of the hold back to the customer's availability.
     if ($withheld > 0) {
         try {
             $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
             $debitResult = $adapter->debit([
                 'reference' => $swapRef . '_RELEASE_WITHHOLD',
-                'hold_reference' => $holdReferenceForRelease, // FIXED: uses real hold reference
+                'hold_reference' => $holdReferenceForRelease,
                 'amount' => $withheld,
                 'reason' => 'Cashout expired - withholding generate-code fee + levy: ' . $reason,
                 'from_institution' => $sourceInstitution,
@@ -2431,7 +2433,7 @@ public function releaseCashoutHold(int $authId, string $reason): array
     try {
         $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
         $releaseResult = $adapter->releaseHold([
-            'hold_reference' => $holdReferenceForRelease, // FIXED: uses real hold reference
+            'hold_reference' => $holdReferenceForRelease,
             'action' => 'RELEASE_HOLD',
             'reason' => "Cashout expired unredeemed: {$reason}. Released " . $releaseAmount . " of " . $heldAmount . " (withheld {$withheld} in fees).",
         ], []);
@@ -2448,9 +2450,10 @@ public function releaseCashoutHold(int $authId, string $reason): array
     ");
     $stmt->execute([':reason' => $reason, ':id' => $authId]);
 
+    // 6. Update the hold status
     $this->updateHoldForSwap($swapRef, 'PARTIALLY_RELEASED');
 
-    // 6. Audit log
+    // 7. Audit log
     try {
         $auditStmt = $this->swapDB->prepare("
             INSERT INTO audit_logs
@@ -2467,7 +2470,7 @@ public function releaseCashoutHold(int $authId, string $reason): array
                 'levy_withheld' => $levy,
                 'released_amount' => $releaseAmount,
                 'swap_reference' => $swapRef,
-                'hold_reference_used' => $holdReferenceForRelease, // ADDED: for audit trail
+                'hold_reference_used' => $holdReferenceForRelease,
             ])
         ]);
     } catch (Exception $e) {
@@ -2482,7 +2485,7 @@ public function releaseCashoutHold(int $authId, string $reason): array
         'levy_withheld' => $levy,
         'released_amount' => $releaseAmount,
         'release_result' => $releaseResult,
-        'hold_reference_used' => $holdReferenceForRelease, // ADDED: for debugging
+        'hold_reference_used' => $holdReferenceForRelease,
     ];
 }
 
@@ -2532,6 +2535,8 @@ private function getHoldReferenceForSwap(string $swapRef): ?string
         return null;
     }
 }
+
+
 
 /* =================================================================
  * cancelExpiredCashouts(): the cron entry point,
