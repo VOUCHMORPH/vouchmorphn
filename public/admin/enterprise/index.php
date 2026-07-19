@@ -1,7 +1,7 @@
 <?php
 /**
  * enterprise/index.php - VouchMorph Enterprise Client Dashboard
- *  
+ * 
  * This is the main dashboard for organizations using VouchMorph.
  * Different roles see different views based on their permissions.
  */
@@ -849,7 +849,7 @@ function getRoleLabel($role) {
         <a href="imports/source_input.php" class="nav-item">💰 New Disbursement</a>
         <?php endif; ?>
         
-        <a href="imports/review_batch.php?status=all" class="nav-item">
+        <a href="batches/index.php?status=all" class="nav-item">
             📋 Batches
             <?php if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0): ?>
             <span class="badge"><?php echo $metrics['pending_approvals']; ?></span>
@@ -860,7 +860,7 @@ function getRoleLabel($role) {
         </a>
         
         <?php if ($canApprove): ?>
-        <a href="imports/review_batch.php?status=pending_approval" class="nav-item">⏳ Pending Approvals
+        <a href="batches/index.php?status=pending_approval" class="nav-item">⏳ Pending Approvals
             <?php if (($metrics['pending_approvals'] ?? 0) > 0): ?>
             <span class="badge"><?php echo $metrics['pending_approvals']; ?></span>
             <?php endif; ?>
@@ -868,7 +868,7 @@ function getRoleLabel($role) {
         <?php endif; ?>
         
         <?php if ($canDisburse): ?>
-        <a href="imports/review_batch.php?status=approved" class="nav-item">🚀 Disburse Funds
+        <a href="batches/index.php?status=approved" class="nav-item">🚀 Disburse Funds
             <?php if (($metrics['approved_for_disbursement'] ?? 0) > 0): ?>
             <span class="badge-gold"><?php echo $metrics['approved_for_disbursement']; ?></span>
             <?php endif; ?>
@@ -917,7 +917,7 @@ function getRoleLabel($role) {
             <?php endif; ?>
             
             <?php if ($isApprover): ?>
-            <a href="imports/review_batch.php?status=pending_approval" class="quick-action" style="border-color: var(--amber);">
+            <a href="batches/index.php?status=pending_approval" class="quick-action" style="border-color: var(--amber);">
                 <span class="icon">✅</span>
                 <div>
                     <div class="label">Review & Approve</div>
@@ -927,7 +927,7 @@ function getRoleLabel($role) {
             <?php endif; ?>
             
             <?php if ($isSupervisor): ?>
-            <a href="imports/review_batch.php?status=approved" class="quick-action" style="border-color: var(--ledger-green);">
+            <a href="batches/index.php?status=approved" class="quick-action" style="border-color: var(--ledger-green);">
                 <span class="icon">💸</span>
                 <div>
                     <div class="label">Disburse Funds</div>
@@ -1034,7 +1034,7 @@ function getRoleLabel($role) {
                 <span class="card-title">📋 Recent Batches</span>
                 <span class="card-badge"><?php echo count($recentBatches); ?> RECENT</span>
                 <div class="card-actions">
-                    <a href="imports/review_batch.php?status=all" class="btn btn-outline btn-sm">View All</a>
+                    <a href="batches/index.php?status=all" class="btn btn-outline btn-sm">View All</a>
                     <?php if ($canCreate): ?>
                     <a href="imports/source_input.php" class="btn btn-primary btn-sm">➕ New Batch</a>
                     <?php endif; ?>
@@ -1123,7 +1123,7 @@ function getRoleLabel($role) {
                 <?php if (($metrics['pending_approvals'] ?? 0) > 0): ?>
                 <span class="highlight"><?php echo $metrics['pending_approvals']; ?> batches awaiting your review.</span>
                 <?php endif; ?>
-                <a href="imports/review_batch.php?status=pending_approval" class="btn btn-warning btn-sm" style="margin-left:12px;">Review Now</a>
+                <a href="batches/index.php?status=pending_approval" class="btn btn-warning btn-sm" style="margin-left:12px;">Review Now</a>
             </div>
         </div>
         <?php endif; ?>
@@ -1136,7 +1136,7 @@ function getRoleLabel($role) {
                 <?php if (($metrics['approved_for_disbursement'] ?? 0) > 0): ?>
                 <span class="highlight"><?php echo $metrics['approved_for_disbursement']; ?> batches ready for disbursement.</span>
                 <?php endif; ?>
-                <a href="imports/review_batch.php?status=approved" class="btn btn-success btn-sm" style="margin-left:12px;">Disburse Funds</a>
+                <a href="batches/index.php?status=approved" class="btn btn-success btn-sm" style="margin-left:12px;">Disburse Funds</a>
             </div>
         </div>
         <?php endif; ?>
