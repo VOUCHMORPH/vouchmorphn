@@ -1132,7 +1132,7 @@ class GenericBankClient implements BankAPIInterface
     public function verifyToken(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: verifyToken ===");
-        return $this->send('verify_token', $payload);
+        return $this->send('verify_token', $payload); 
     }
 
     public function confirmCashout(array $payload): array
