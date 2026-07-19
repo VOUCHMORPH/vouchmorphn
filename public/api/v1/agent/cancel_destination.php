@@ -1,8 +1,8 @@
 <?php
 // /api/v1/agent/cancel_destination.php
 
-require_once __DIR__ . '/../../../vendor/autoload.php';
-require_once __DIR__ . '/../../Application/Utils/SessionManager.php';
+require_once __DIR__ . '/../../../../vendor/autoload.php';
+require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
 
 use Application\Utils\SessionManager;
 use Infrastructure\Database\DBConnection;
