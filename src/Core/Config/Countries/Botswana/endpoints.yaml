@@ -31,7 +31,7 @@ ZURUBANK:
   oauth:
     client_id: "VOUCHMORPH_APP_ID"
     client_secret: "YOUR_BANK_SECRET"
-    redirect_uri: "https://vouchmorphn.com/api/v1/source/auth/callback"
+    redirect_uri: "https://vouchmorphn-production.up.railway.app/api/v1/agent/oauth_callback.php"
     authorization_url: "/api/v1/oauth/authorize.php"
     token_url: "/api/v1/oauth/token.php"
     refresh_url: "/api/v1/oauth/refresh.php"
