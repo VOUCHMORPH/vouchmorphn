@@ -3903,6 +3903,148 @@ if ($sourceIdentifierForLedger) {
         return $response;
     }
 
+public function proposeAgentDestinationAccount(
+    int $userId,
+    string $institution,
+    string $assetType,
+    string $identifier,
+    string $identifierType,
+    ?string $accountName = null
+): array {
+    error_log("[SwapService] proposeAgentDestinationAccount: user={$userId}, institution={$institution}, identifier={$identifier}");
+ 
+    // Reuse the existing generic account-verification call - same
+    // one used for deposit destinations elsewhere in this class.
+    $verifyPayload = [
+        'action' => 'VERIFY_ACCOUNT',
+        'reference' => 'AGENT_DEST_' . $userId . '_' . time(),
+        'account_identifier' => $identifier,
+        'identifier_type' => $identifierType,
+        'requester' => 'VOUCHMORPH',
+        'timestamp' => time(),
+        'destination_asset_type' => $assetType,
+    ];
+ 
+    try {
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        $verifyResult = $adapter->verifyAccount($verifyPayload, [
+            'institution' => $institution,
+            'purpose' => 'agent_destination_registration',
+        ]);
+    } catch (Exception $e) {
+        error_log("[SwapService] Agent destination verification failed to reach institution: " . $e->getMessage());
+        throw new RuntimeException("Could not verify this account with {$institution}: " . $e->getMessage());
+    }
+ 
+    if (!($verifyResult['verified'] ?? false)) {
+        throw new RuntimeException("Account not found or not verifiable at {$institution}: " . ($verifyResult['message'] ?? 'Unknown reason'));
+    }
+ 
+    // The actual gate: only business/agent-designated accounts are
+    // eligible. account_type must be explicitly present and match -
+    // an adapter that doesn't return this field fails closed here,
+    // not open, since we cannot confirm eligibility either way.
+    $accountType = strtoupper($verifyResult['account_type'] ?? $verifyResult['data']['account_type'] ?? '');
+    $eligibleTypes = ['BUSINESS', 'AGENT', 'MERCHANT'];
+ 
+    if ($accountType === '') {
+        throw new RuntimeException(
+            "{$institution} did not return an account type for this account, so we cannot confirm " .
+            "it's a business/agent account. This institution's integration needs updating before " .
+            "agent registration can be verified automatically - contact VouchMorph support."
+        );
+    }
+ 
+    if (!in_array($accountType, $eligibleTypes, true)) {
+        throw new RuntimeException(
+            "This account is registered as a {$accountType} account at {$institution}. Only business " .
+            "or agent-designated accounts can be used as an agent destination - personal accounts are " .
+            "not eligible."
+        );
+    }
+ 
+    // Prevent duplicates (also enforced by the UNIQUE constraint, but
+    // give a clearer error than a raw constraint violation).
+    $stmt = $this->swapDB->prepare("
+        SELECT id, status FROM agent_destination_accounts
+        WHERE user_id = :user_id AND institution = :institution AND identifier = :identifier
+        AND deleted_at IS NULL
+    ");
+    $stmt->execute([':user_id' => $userId, ':institution' => $institution, ':identifier' => $identifier]);
+    if ($existing = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        throw new RuntimeException("You already have this account registered as an agent destination (status: {$existing['status']}).");
+    }
+ 
+    $sql = "
+        INSERT INTO agent_destination_accounts (
+            user_id, institution, asset_type, identifier, identifier_type,
+            account_name, account_type, account_type_verified,
+            status, proposed_by, proposed_at
+        ) VALUES (
+            :user_id, :institution, :asset_type, :identifier, :identifier_type,
+            :account_name, :account_type, true,
+            'pending_confirmation', :user_id, NOW()
+        ) RETURNING id
+    ";
+ 
+    $stmt = $this->swapDB->prepare($sql);
+    $stmt->execute([
+        ':user_id' => $userId,
+        ':institution' => $institution,
+        ':asset_type' => $assetType,
+        ':identifier' => $identifier,
+        ':identifier_type' => $identifierType,
+        ':account_name' => $accountName ?? $verifyResult['account_name'] ?? null,
+        ':account_type' => $accountType,
+    ]);
+ 
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $id = $row ? (int)$row['id'] : 0;
+ 
+    error_log("[SwapService] Agent destination account proposed: id={$id}, account_type={$accountType}, awaiting confirmation");
+ 
+    return [
+        'id' => $id,
+        'status' => 'pending_confirmation',
+        'account_type' => $accountType,
+        'message' => "Verified as a {$accountType} account at {$institution}. Awaiting approval before it can be used.",
+    ];
+}
+ 
+/**
+ * Returns this user's APPROVED (active) agent destination accounts,
+ * for pre-filling the destination fields when they finalize an
+ * identity swap via deposit - so an approved agent never has to
+ * manually re-type their own account each time.
+ */
+public function getApprovedAgentDestinations(int $userId): array
+{
+    $stmt = $this->swapDB->prepare("
+        SELECT id, institution, asset_type, identifier, identifier_type, account_name, confirmed_at
+        FROM agent_destination_accounts
+        WHERE user_id = :user_id AND status = 'active' AND deleted_at IS NULL
+        ORDER BY institution
+    ");
+    $stmt->execute([':user_id' => $userId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+ 
+/**
+ * Whether this user has at least one approved agent destination -
+ * cheap check for "should the dashboard show them as an agent at all".
+ */
+public function isApprovedAgent(int $userId): bool
+{
+    $stmt = $this->swapDB->prepare("
+        SELECT 1 FROM agent_destination_accounts
+        WHERE user_id = :user_id AND status = 'active' AND deleted_at IS NULL
+        LIMIT 1
+    ");
+    $stmt->execute([':user_id' => $userId]);
+    return (bool)$stmt->fetchColumn();
+}
+
+
     // ============================================================================
     // MULTI-SOURCE SWAP
     // ============================================================================
