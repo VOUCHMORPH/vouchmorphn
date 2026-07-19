@@ -412,8 +412,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             margin: 0 auto;
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            gap: var(--sp-3);
+            justify-content: center;
+            gap: var(--sp-6);
             color: rgba(255,255,255,0.65);
             font-family: var(--f-mono);
             font-size: 12px;
@@ -438,10 +438,10 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             max-width: var(--content-max);
             margin: 0 auto;
             display: flex;
-            justify-content: space-between;
+            justify-content: center;
             align-items: center;
             flex-wrap: wrap;
-            gap: var(--sp-4);
+            gap: var(--sp-8);
         }
         .header-left { position: relative; display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
         .logo { font-family: var(--f-display); font-weight: 600; font-size: 21px; letter-spacing: 0.01em; line-height: 1; }
@@ -944,7 +944,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <span class="card-title" style="color:#D32F2F;">⚠️ <?php echo $totalAlerts; ?> item<?php echo $totalAlerts === 1 ? '' : 's'; ?> require attention</span>
                     <a href="?view=alerts" class="btn btn-primary btn-sm">View Alerts</a>
                 </div>
-                <div style="font-size:14px; color:var(--ink-500);">
+                <div style="font-size:14px; color:var(--ink-500); text-align:center;">
                     <?php echo count($alerts['stuck_holds']); ?> stuck holds · <?php echo count($alerts['expired_identity_swaps']); ?> expired ·
                     <?php echo count($alerts['stuck_cashouts']); ?> stuck cashouts
                 </div>
