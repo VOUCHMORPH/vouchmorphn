@@ -4196,6 +4196,68 @@ public function initiateAgentDestinationRegistration(
 }
 
 /**
+ * Cancel a pending agent destination registration
+ * Allows users to cancel pending or rejected registrations
+ */
+public function cancelAgentDestination(int $userId, int $destinationId): array
+{
+    error_log("[SwapService] cancelAgentDestination: user={$userId}, destination_id={$destinationId}");
+    
+    // First check if this destination belongs to the user
+    $stmt = $this->swapDB->prepare("
+        SELECT id, status, institution, identifier, asset_type 
+        FROM agent_destination_accounts 
+        WHERE id = :id AND user_id = :user_id AND deleted_at IS NULL
+    ");
+    $stmt->execute([':id' => $destinationId, ':user_id' => $userId]);
+    $destination = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$destination) {
+        throw new RuntimeException("Destination account not found or does not belong to you.");
+    }
+    
+    // Only allow cancellation if status is pending or rejected
+    if (!in_array($destination['status'], ['pending_confirmation', 'rejected'])) {
+        throw new RuntimeException("This account cannot be cancelled (status: {$destination['status']}).");
+    }
+    
+    // Soft delete - set deleted_at and status to cancelled
+    $stmt = $this->swapDB->prepare("
+        UPDATE agent_destination_accounts 
+        SET status = 'cancelled', 
+            deleted_at = NOW(),
+            updated_at = NOW()
+        WHERE id = :id AND user_id = :user_id
+    ");
+    $stmt->execute([':id' => $destinationId, ':user_id' => $userId]);
+    
+    // Also cancel any pending registration attempts for this destination
+    $stmt = $this->swapDB->prepare("
+        UPDATE agent_registration_attempts 
+        SET status = 'cancelled', 
+            cancelled_at = NOW()
+        WHERE user_id = :user_id 
+        AND institution = :institution 
+        AND identifier = :identifier 
+        AND status IN ('otp_pending', 'oauth_pending')
+    ");
+    $stmt->execute([
+        ':user_id' => $userId,
+        ':institution' => $destination['institution'],
+        ':identifier' => $destination['identifier']
+    ]);
+    
+    error_log("[SwapService] Agent destination cancelled: id={$destinationId}, user={$userId}");
+    
+    return [
+        'success' => true,
+        'message' => 'Agent destination registration cancelled successfully.',
+        'id' => $destinationId,
+        'status' => 'cancelled'
+    ];
+}
+    
+/**
  * Phase 2: Complete OTP verification - creates the account row on success
  */
 public function completeAgentDestinationRegistration(int $userId, int $attemptId, string $otp): array
