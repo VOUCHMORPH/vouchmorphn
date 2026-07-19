@@ -8,17 +8,27 @@ use Core\Database\DBConnection;
 $db = DBConnection::getConnection();
 $orgId = getOrganizationId();
 $userId = $user['id'] ?? $user['user_id'] ?? null;
+$role = $user['role'] ?? 'viewer';
+
+// Same gate as add_source.php - determines whether the "add/manage
+// source accounts" link is shown at all.
+$canManageSourceAccounts = in_array($role, ['finance_officer', 'owner', 'it_manager_enterprise']);
 
 $error = '';
 $success = '';
 $batchId = $_GET['batch_id'] ?? 0;
 
-// Get available source accounts
+// Get available source accounts - ONLY confirmed, active ones.
+// Sources with status = 'pending_confirmation' are proposed but not
+// yet approved by an Owner/IT Manager, and must never be selectable
+// for a live disbursement batch.
 $sources = [];
 try {
     $stmt = $db->prepare("
         SELECT * FROM source_accounts 
-        WHERE organization_id = :org_id AND is_active = true
+        WHERE organization_id = :org_id 
+        AND is_active = true 
+        AND status = 'active'
         ORDER BY institution, source_identifier
     ");
     $stmt->execute([':org_id' => $orgId]);
@@ -50,15 +60,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = 'Please select a source account.';
         } else {
             try {
-                // Get source details
+                // Get source details - re-check it's confirmed & active.
+                // (Defends against a stale/tampered source_id in the POST
+                // body pointing at a pending or deactivated source.)
                 $stmt = $db->prepare("
-                    SELECT * FROM source_accounts WHERE id = :id AND organization_id = :org_id
+                    SELECT * FROM source_accounts 
+                    WHERE id = :id AND organization_id = :org_id 
+                    AND is_active = true AND status = 'active'
                 ");
                 $stmt->execute([':id' => $sourceId, ':org_id' => $orgId]);
                 $source = $stmt->fetch(PDO::FETCH_ASSOC);
                 
                 if (!$source) {
-                    throw new Exception("Source not found.");
+                    throw new Exception("Source not found or not yet confirmed for use.");
                 }
                 
                 // Create or update batch
@@ -336,10 +350,15 @@ $orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
                     <label>Select Source Account</label>
                     <?php if (empty($sources)): ?>
                     <div style="padding:20px; text-align:center; color:var(--ink-300); border:2px dashed var(--line); border-radius:8px;">
-                        <p>No source accounts configured.</p>
-                        <p style="font-size:12px; margin-top:8px;">
-                            <a href="add_source.php" style="color:var(--brass);">Add a source account →</a>
+                        <p>No confirmed source accounts available.</p>
+                        <p style="font-size:12px; margin-top:8px; color:var(--ink-500);">
+                            A source account must be proposed by a Finance Officer and confirmed by an Owner or IT Manager before it appears here.
                         </p>
+                        <?php if ($canManageSourceAccounts): ?>
+                        <p style="font-size:12px; margin-top:8px;">
+                            <a href="add_source.php" style="color:var(--brass);">Manage source accounts →</a>
+                        </p>
+                        <?php endif; ?>
                     </div>
                     <?php else: ?>
                     <div style="max-height:400px; overflow-y:auto;">
@@ -365,7 +384,9 @@ $orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
                 <input type="hidden" name="source_id" id="sourceId" value="<?php echo $batch ? $batch['source_account_id'] : ''; ?>">
 
                 <div style="display:flex; gap:12px; margin-top:16px; flex-wrap:wrap;">
-                    <a href="add_source.php" class="btn btn-secondary">➕ Add New Source</a>
+                    <?php if ($canManageSourceAccounts): ?>
+                    <a href="add_source.php" class="btn btn-secondary">➕ Manage Source Accounts</a>
+                    <?php endif; ?>
                     <button type="submit" class="btn btn-primary" <?php echo empty($sources) ? 'disabled' : ''; ?>>
                         Continue → Add Destinations
                     </button>
