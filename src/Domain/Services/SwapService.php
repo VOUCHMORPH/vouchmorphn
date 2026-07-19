@@ -2488,7 +2488,7 @@ public function releaseCashoutHold(int $authId, string $reason): array
         'hold_reference_used' => $holdReferenceForRelease,
     ];
 }
-
+}
 /**
  * Get the real hold reference for a swap.
  * 
