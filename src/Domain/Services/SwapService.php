@@ -3981,6 +3981,10 @@ if ($sourceIdentifierForLedger) {
  * Phase 1: Verify account + trigger OTP/OAuth, then create pending attempt
  * Does NOT create the agent_destination_accounts row yet
  */
+/**
+ * Phase 1: Verify account + trigger OTP/OAuth, then create pending attempt
+ * Does NOT create the agent_destination_accounts row yet
+ */
 public function initiateAgentDestinationRegistration(
     int $userId,
     string $institution,
@@ -3997,12 +4001,24 @@ public function initiateAgentDestinationRegistration(
         throw new RuntimeException("Agent destinations must be Account, Wallet, or Card - '{$assetType}' is not eligible.");
     }
 
+    // ============================================================
+    // FIX: Auto-set identifier_type based on asset_type
+    // This ensures the bank adapter knows what kind of identifier
+    // it's looking at (phone for wallets, card_number for cards, etc.)
+    // ============================================================
+    $identifierType = match($assetType) {
+        'WALLET', 'BANK-WALLET' => 'phone',        // Wallets use phone numbers
+        'CARD' => 'card_number',                    // Cards use card numbers
+        'ACCOUNT' => 'account_number',             // Accounts use account numbers
+        default => 'account_number'
+    };
+
     // Verify account exists and is business type
     $verifyPayload = [
         'action' => 'VERIFY_ACCOUNT',
         'reference' => 'AGENT_DEST_' . $userId . '_' . time(),
         'account_identifier' => $identifier,
-        'identifier_type' => $identifierType,
+        'identifier_type' => $identifierType,      // Now correctly set
         'requester' => 'VOUCHMORPH',
         'timestamp' => time(),
         'destination_asset_type' => $assetType,
@@ -4064,6 +4080,7 @@ public function initiateAgentDestinationRegistration(
         $linkResult = $this->initiateSourceLink([
             'institution' => $institution,
             'identifier' => $identifier,
+            'identifier_type' => $identifierType,  // Pass correct type
             'asset_type' => $assetType,
             'user_id' => $userId,
             'redirect_uri' => $callbackUrl,
@@ -4093,6 +4110,8 @@ public function initiateAgentDestinationRegistration(
             'id' => $id,
             'status' => 'pending_confirmation',
             'account_type' => $accountType,
+            'asset_type' => $assetType,
+            'identifier_type' => $identifierType,
             'message' => "Registered without ownership verification - awaiting manual review.",
         ];
     }
@@ -4129,6 +4148,8 @@ public function initiateAgentDestinationRegistration(
             'otp_supported' => true,
             'attempt_id' => $attemptId,
             'redirect_url' => $linkResult['redirect_url'],
+            'asset_type' => $assetType,
+            'identifier_type' => $identifierType,
             'message' => "You'll be taken to {$institution}'s login page to confirm ownership.",
         ];
     }
@@ -4168,6 +4189,8 @@ public function initiateAgentDestinationRegistration(
         'otp_supported' => true,
         'attempt_id' => $attemptId,
         'method' => $linkResult['method'] ?? 'sms',
+        'asset_type' => $assetType,
+        'identifier_type' => $identifierType,
         'message' => $linkResult['message'] ?? 'Verification code sent by the institution.',
     ];
 }
