@@ -62,9 +62,17 @@ use Core\Config\LoadCountry;
 
 try {
     $db = DBConnection::getConnection();
+    
+    if (!$db) {
+        throw new \Exception("Database connection failed");
+    }
+    
     $country = getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
     $swapService = new SwapService($db, LoadCountry::getConfig(), $country);
 
+    // ============================================================
+    // FIX: Complete the OAuth flow with the code from ZuruBank
+    // ============================================================
     $result = $swapService->completeAgentDestinationRegistrationByState($state, $code);
 
     renderResultPage(
@@ -72,7 +80,17 @@ try {
         'Account Verified',
         $result['message'] ?? 'Your account was verified and registered. It now awaits approval.'
     );
-} catch (\Throwable $e) {
+} catch (\Exception $e) {
     error_log("[oauth_callback] Error: " . $e->getMessage());
-    renderResultPage(false, 'Verification Failed', $e->getMessage());
+    
+    // Check if it's a duplicate key error - give a helpful message
+    if (strpos($e->getMessage(), 'duplicate key value violates unique constraint') !== false) {
+        renderResultPage(
+            false, 
+            'Already Registered', 
+            'This account is already registered. You can check your agent status in the dashboard.'
+        );
+    } else {
+        renderResultPage(false, 'Verification Failed', $e->getMessage());
+    }
 }
