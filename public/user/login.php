@@ -8,15 +8,15 @@
 // - No PIN verification (ANY PIN works, or no PIN at all)
 // - OTP completely disabled
 // - Just needs a valid identifier
-
+//
+// ⚠️ SECURITY NOTE: This mode authenticates any user by identifier alone.
+// Flip SKIP_PIN_VERIFICATION / TEST_MODE back to false before going live.
 ob_start();
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 ini_set('log_errors', 1);
-
 require_once __DIR__ . '/../../vendor/autoload.php';
-
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
@@ -24,13 +24,11 @@ require_once __DIR__ . '/../../src/Infrastructure/SMS/Contracts/ProviderInterfac
 require_once __DIR__ . '/../../src/Core/Factories/CommunicationFactory.php';
 require_once __DIR__ . '/../../src/Infrastructure/Email/Contracts/EmailProviderInterface.php';
 require_once __DIR__ . '/../../src/Infrastructure/Email/EmailGatewayClient.php';
-
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
 use Core\Config\LoadCountry;
 use Core\Factories\CommunicationFactory;
 use Infrastructure\Email\EmailGatewayClient;
-
 // ============================================================
 // SUPER TEST MODE: NO PIN REQUIRED
 // ============================================================
@@ -38,14 +36,11 @@ define('ENABLE_OTP', false);           // OTP disabled
 define('TEST_MODE', true);             // No restrictions
 define('SKIP_PIN_VERIFICATION', true); // SKIP PIN verification entirely
 define('ALLOW_EMPTY_PIN', true);       // Allow login with empty PIN
-
 SessionManager::start();
-
 if (SessionManager::isLoggedIn()) {
     header('Location: user_dashboard.php');
     exit();
 }
-
 // --------------------------------------------------
 // Load Country & Config
 // --------------------------------------------------
@@ -56,20 +51,16 @@ try {
     error_log("[USER LOGIN] Config load error: " . $e->getMessage());
     die("Configuration error: " . $e->getMessage());
 }
-
 if (!defined('SYSTEM_COUNTRY')) {
     define('SYSTEM_COUNTRY', $config['country'] ?? 'BW');
 }
-
 $systemCountry = SYSTEM_COUNTRY;
 $countryConfig = $config['country_settings'][$systemCountry] ?? [];
-
 $countryDialCode  = $countryConfig['dial_code'] ?? '+267';
 $localLength      = (int)($countryConfig['local_phone_length'] ?? 8);
 $phonePlaceholder = $countryConfig['phone_placeholder'] ?? str_repeat('0', $localLength);
 $countryName      = $countryConfig['name'] ?? $systemCountry;
 $phonePattern     = '[0-9]{' . $localLength . '}';
-
 // --------------------------------------------------
 // DB Bootstrap
 // --------------------------------------------------
@@ -86,7 +77,6 @@ try {
     error_log("[USER LOGIN] DB ERROR: " . $e->getMessage());
     die("Database connection failed: " . $e->getMessage());
 }
-
 // --------------------------------------------------
 // Helpers
 // --------------------------------------------------
@@ -97,7 +87,6 @@ function normalizePhone(string $phoneInput, string $dialCode): string
     if (str_starts_with($phoneInput, '+')) return $phoneInput;
     return $dialCode . ltrim($phoneInput, '0');
 }
-
 function getLocalPhonePart(string $fullPhone, string $dialCode): string
 {
     if (str_starts_with($fullPhone, $dialCode)) {
@@ -105,7 +94,6 @@ function getLocalPhonePart(string $fullPhone, string $dialCode): string
     }
     return ltrim($fullPhone, '0');
 }
-
 function getClientIp(): string
 {
     $ip = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
@@ -114,33 +102,28 @@ function getClientIp(): string
     }
     return $ip;
 }
-
 function maskPhone(string $phone): string
 {
     $len = strlen($phone);
     if ($len <= 4) return str_repeat('•', $len);
     return substr($phone, 0, 5) . str_repeat('•', max(0, $len - 8)) . substr($phone, -3);
 }
-
 function maskEmail(string $email): string
 {
     if (!str_contains($email, '@')) return '•••';
     [$local, $domain] = explode('@', $email, 2);
     return substr($local, 0, 1) . str_repeat('•', max(1, strlen($local) - 1)) . '@' . $domain;
 }
-
 // --------------------------------------------------
 // STATE
 // --------------------------------------------------
 $error = '';
 $identifierType = $_POST['identifier_type'] ?? 'phone';
 $inputValueRaw = trim($_POST['identifier'] ?? '');
-
 // ================================================================
 // LOGIN: SUPER TEST MODE - NO PIN REQUIRED
 // ================================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-
     // Normalize based on identifier type
     if ($identifierType === 'phone') {
         $formattedValue = normalizePhone($inputValueRaw, $countryDialCode);
@@ -149,11 +132,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $formattedValue = $inputValueRaw;
         $inputValue = $inputValueRaw;
     }
-
     error_log("[USER LOGIN SUPER TEST] Input: {$inputValueRaw}, Formatted: {$formattedValue}, Type: {$identifierType}");
-
     $pin = trim($_POST['pin'] ?? '');
-
     if ($formattedValue === '') {
         $error = "Please enter your identifier.";
     } else {
@@ -176,9 +156,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ");
             $stmt->execute([':identifier' => $formattedValue]);
             $user = $stmt->fetch(\PDO::FETCH_ASSOC);
-
             error_log("[USER LOGIN SUPER TEST] User found: " . ($user ? 'YES' : 'NO'));
-
             if (!$user) {
                 $error = "User not found. Please check your identifier.";
                 error_log("[USER LOGIN SUPER TEST] User not found: {$formattedValue}");
@@ -190,9 +168,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // SUPER TEST MODE: NO PIN VERIFICATION
                 // ANY PIN works, or no PIN at all
                 // ========================================================
-                
+
                 $pinValid = true; // ALWAYS true in super test mode
-                
+
                 if (SKIP_PIN_VERIFICATION) {
                     // NO PIN verification - ANY PIN works
                     error_log("[USER LOGIN SUPER TEST] PIN SKIPPED - any PIN accepted (or no PIN)");
@@ -208,14 +186,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $error = "Invalid PIN. Please try again.";
                     }
                 }
-                
+
                 if ($pinValid) {
                     // ========================================================
                     // LOGIN IMMEDIATELY - NO OTP, NO RESTRICTIONS
                     // ========================================================
                     try {
                         session_regenerate_id(true);
-
                         SessionManager::login([
                             'user_id'         => $user['user_id'],
                             'username'        => $user['username'] ?? '',
@@ -232,12 +209,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'created_at'      => $user['created_at'] ?? null,
                             'pin_enabled'     => (int)($user['has_transaction_pin'] ?? 0) === 1,
                         ]);
-
                         error_log("[USER LOGIN SUPER TEST] ✅ LOGIN COMPLETE: user_id={$user['user_id']}");
-                        
+
                         header('Location: user_dashboard.php');
                         exit;
-
                     } catch (\Throwable $e) {
                         error_log("[USER LOGIN SUPER TEST] Login error: " . $e->getMessage());
                         $error = "System error. Please try again.";
@@ -257,190 +232,562 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>VouchMorph™ – Login</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
-<link href="https://api.fontshare.com/v2/css?f[]=clash-display@400,500,600,700&f[]=general-sans@400,500,600&f[]=space-grotesk@400,500,600&display=swap" rel="stylesheet">
+<title>VouchMorph™ · Sign In</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=Alex+Brush&display=swap" rel="stylesheet">
 <style>
+    /* ============================================================
+       VOUCHMORPH — USER SIGN IN
+       Same brand system as admin (serif display, brass/ink, frame
+       motif) but the right column flips from dark editorial to a
+       light, doodled panel — friendlier, consumer-facing register.
+       ============================================================ */
+    :root {
+        --paper:        #FBF9F5;
+        --panel:        #FFFFFF;
+        --ink-900:      #16232E;
+        --ink-700:      #24384A;
+        --ink-500:      #5B6B78;
+        --ink-300:      #9AA6AC;
+        --line:         #E4DFD3;
+        --line-strong:  #CFC7B4;
+        --brass:        #B4884A;
+        --brass-deep:   #8A6530;
+        --brass-tint:   #F6EFDF;
+        --mint:         #6E9A85;
+        --danger:       #b3261e;
+        --danger-bg:    #fbeceb;
+        --f-display: 'Source Serif 4', 'IBM Plex Sans', serif;
+        --f-body: 'IBM Plex Sans', sans-serif;
+        --f-cond: 'IBM Plex Sans Condensed', sans-serif;
+        --f-mono: 'IBM Plex Mono', monospace;
+        --f-script: 'Alex Brush', 'Brush Script MT', cursive;
+        --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+        --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
+        --sp-9: 48px; --sp-10: 64px;
+        --frame-inset: calc(var(--sp-6) * 0.5);
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
     body {
-        background: #050505;
-        font-family: 'Inter', sans-serif;
-        color: #FFFFFF;
-        min-height: 100vh;
+        font-family: var(--f-body);
+        color: var(--ink-900);
+        font-size: 15px;
+        line-height: 1.55;
+        -webkit-font-smoothing: antialiased;
+    }
+    :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
+    .split { display: flex; min-height: 100vh; width: 100%; }
+    .col { min-width: 0; display: flex; flex-direction: column; }
+
+    /* LEFT — 58% — clean paper, the actual form */
+    .col-form {
+        flex: 0 0 58%;
+        background: var(--paper);
+        align-items: center;
+        justify-content: center;
+        padding: var(--sp-8) var(--sp-6);
+    }
+    .form-wrap { width: 100%; max-width: 440px; }
+
+    .brand { margin-bottom: var(--sp-7); }
+    .brand .mark {
+        font-family: var(--f-display);
+        font-weight: 600;
+        font-size: 26px;
+        letter-spacing: 0.005em;
+        color: var(--ink-900);
+    }
+    .brand .mark sup { font-size: 11px; color: var(--brass-deep); font-weight: 600; }
+    .brand .division {
+        margin-top: var(--sp-2);
+        font-family: var(--f-cond);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ink-300);
+        padding-top: var(--sp-2);
+        border-top: 2px solid var(--brass);
+        display: inline-block;
+    }
+
+    .form-wrap h2 {
+        font-family: var(--f-display);
+        font-size: 26px;
+        font-weight: 600;
+        color: var(--ink-900);
+    }
+    .form-wrap .subtitle {
+        color: var(--ink-500);
+        font-size: 14px;
+        margin-top: var(--sp-1);
+        margin-bottom: var(--sp-6);
+    }
+
+    /* Identifier type — quiet tab row instead of loud pill buttons */
+    .id-tabs {
+        display: flex;
+        gap: var(--sp-1);
+        border-bottom: 1.5px solid var(--line);
+        margin-bottom: var(--sp-6);
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+    .id-tabs::-webkit-scrollbar { display: none; }
+    .id-tab {
+        flex: 0 0 auto;
+        background: none;
+        border: none;
+        padding: var(--sp-3) var(--sp-3) 10px;
+        font-family: var(--f-cond);
+        font-size: 11.5px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--ink-300);
+        cursor: pointer;
+        position: relative;
+        white-space: nowrap;
+        transition: color .15s;
+    }
+    .id-tab:hover { color: var(--ink-700); }
+    .id-tab.active { color: var(--brass-deep); }
+    .id-tab.active::after {
+        content: '';
+        position: absolute;
+        left: 0; right: 0; bottom: -1.5px;
+        height: 2px;
+        background: var(--brass);
+    }
+
+    .field { margin-bottom: var(--sp-5); }
+    .field label {
+        display: block;
+        margin-bottom: var(--sp-2);
+        font-weight: 600;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--ink-500);
+        font-family: var(--f-cond);
+    }
+    .field label .hint {
+        text-transform: none;
+        font-weight: 400;
+        letter-spacing: 0;
+        color: var(--ink-300);
+        font-family: var(--f-body);
+    }
+    .field-input { position: relative; display: flex; }
+    .field-input svg {
+        position: absolute;
+        left: var(--sp-4);
+        top: 50%;
+        transform: translateY(-50%);
+        width: 18px;
+        height: 18px;
+        color: var(--ink-300);
+        pointer-events: none;
+    }
+    .phone-prefix {
+        display: none;
+        align-items: center;
+        padding: 0 var(--sp-3);
+        font-family: var(--f-mono);
+        font-size: 14px;
+        color: var(--brass-deep);
+        background: var(--brass-tint);
+        border: 1.5px solid var(--line);
+        border-right: none;
+    }
+    .phone-prefix.show { display: flex; }
+    .field input {
+        flex: 1;
+        width: 100%;
+        min-width: 0;
+        padding: var(--sp-4) var(--sp-4) var(--sp-4) 44px;
+        border: 1.5px solid var(--line);
+        font-size: 15px;
+        font-family: var(--f-body);
+        background: #fff;
+        transition: border-color .15s, background .15s;
+        color: var(--ink-900);
+        border-radius: 0;
+    }
+    .field-input.has-prefix input { padding-left: var(--sp-4); }
+    .field input:focus { outline: none; border-color: var(--brass); }
+    .field input::placeholder { color: var(--ink-300); opacity: 0.8; }
+    .pin-input { font-family: var(--f-mono); letter-spacing: 0.35em; }
+
+    .btn {
+        width: 100%;
+        padding: var(--sp-4);
+        background: var(--ink-900);
+        color: #fff;
+        border: 1.5px solid var(--ink-900);
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: .15s;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-family: var(--f-cond);
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 1.5rem;
+        gap: var(--sp-3);
+        border-radius: 0;
+        margin-top: var(--sp-2);
+    }
+    .btn:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
+    .btn svg { width: 16px; height: 16px; transition: transform .15s; }
+    .btn:hover svg { transform: translateX(4px); }
+
+    .error {
+        display: flex;
+        align-items: flex-start;
+        gap: var(--sp-3);
+        background: var(--danger-bg);
+        color: var(--danger);
+        padding: var(--sp-4);
+        margin-bottom: var(--sp-6);
+        font-size: 13px;
+        border-left: 3px solid var(--danger);
+        line-height: 1.5;
+        font-weight: 500;
+    }
+    .error svg { width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px; }
+
+    .dev-notice {
+        display: flex;
+        align-items: flex-start;
+        gap: var(--sp-3);
+        background: var(--brass-tint);
+        color: var(--brass-deep);
+        padding: var(--sp-3) var(--sp-4);
+        margin-bottom: var(--sp-6);
+        font-size: 11.5px;
+        border-left: 3px solid var(--brass);
+        line-height: 1.5;
+        font-family: var(--f-cond);
+        letter-spacing: 0.01em;
+    }
+    .dev-notice svg { width: 15px; height: 15px; flex-shrink: 0; margin-top: 2px; }
+    .dev-notice strong { text-transform: uppercase; letter-spacing: 0.06em; }
+
+    .trust-row {
+        display: flex;
+        justify-content: space-between;
+        margin-top: var(--sp-7);
+        padding-top: var(--sp-5);
+        border-top: 1px solid var(--line);
+        font-size: 10.5px;
+        color: var(--ink-300);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-weight: 600;
+        font-family: var(--f-cond);
+    }
+    .trust-row span { display: flex; align-items: center; gap: var(--sp-2); }
+    .trust-row svg { width: 14px; height: 14px; color: var(--brass); }
+
+    .foot-links {
+        display: flex;
+        justify-content: center;
+        gap: var(--sp-6);
+        margin-top: var(--sp-7);
+        font-family: var(--f-cond);
+        font-size: 11.5px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        font-weight: 600;
+    }
+    .foot-links a { color: var(--ink-500); text-decoration: none; transition: color .15s; }
+    .foot-links a:hover { color: var(--brass-deep); }
+
+    /* ============================================================
+       RIGHT — 42% — light doodle panel
+       Same frame motif as admin, but paper-toned with a scatter of
+       thin-line financial doodles instead of the dark editorial copy.
+       ============================================================ */
+    .col-brand {
+        flex: 0 0 42%;
+        background: var(--brass-tint);
         position: relative;
-        overflow-x: hidden;
+        align-items: stretch;
+        justify-content: stretch;
+        overflow: hidden;
     }
-    body::before {
-        content: '';
-        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-        background-image:
-            linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
-        background-size: 50px 50px;
-        pointer-events: none; z-index: 0;
+    .frame-mat { position: relative; flex: 1; margin: var(--frame-inset); }
+    .frame-line {
+        position: absolute;
+        inset: var(--frame-inset);
+        border: 1px solid rgba(22,35,46,0.14);
+        pointer-events: none;
     }
-    .login-container {
-        position: relative; z-index: 2; width: 100%; max-width: 520px;
-        background: rgba(5, 5, 5, 0.95);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        backdrop-filter: blur(10px);
-        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-        border-radius: 16px;
+    .frame-strip {
+        position: absolute;
+        color: rgba(22,35,46,0.4);
+        font-family: var(--f-mono);
+        font-size: 10px;
+        letter-spacing: 0.28em;
+        text-transform: uppercase;
+        white-space: nowrap;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2;
     }
-    .login-header { padding: 2rem 2rem 1.5rem; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
-    .login-header h1 { font-family: 'Clash Display', sans-serif; font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; background: linear-gradient(135deg, #FFFFFF 0%, #00F0FF 40%, #B000FF 100%); -webkit-background-clip: text; background-clip: text; color: transparent; margin-bottom: 0.5rem; }
-    .subtitle { font-size: 0.875rem; color: #A0A0B0; margin-bottom: 1rem; }
-    .system-badge { display: inline-block; padding: 0.25rem 0.75rem; background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); font-size: 0.7rem; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: #00F0FF; border-radius: 20px; }
-    .super-test-badge { display: inline-block; padding: 0.25rem 0.75rem; background: rgba(255, 48, 48, 0.2); border: 1px solid rgba(255, 48, 48, 0.4); font-size: 0.65rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: #FF6060; border-radius: 20px; margin-left: 8px; animation: pulse 2s infinite; }
-    .no-pin-badge { display: inline-block; padding: 0.25rem 0.75rem; background: rgba(255, 193, 7, 0.15); border: 1px solid rgba(255, 193, 7, 0.3); font-size: 0.6rem; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: #FFC107; border-radius: 20px; margin-left: 8px; }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-    .login-form { padding: 2rem; }
-    .form-group { margin-bottom: 1.5rem; }
-    .form-group label { display: block; margin-bottom: 0.5rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #C0C0D0; }
-    .identifier-type-selector { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
-    .id-type-btn { padding: 0.4rem 0.8rem; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #808090; font-size: 0.7rem; font-weight: 500; text-transform: uppercase; cursor: pointer; transition: all 0.2s; font-family: 'Inter', sans-serif; border-radius: 6px; }
-    .id-type-btn.active { border-color: #00F0FF; color: #00F0FF; background: rgba(0, 240, 255, 0.1); }
-    .id-type-btn:hover { color: #FFFFFF; }
-    .phone-input-container { display: flex; border: 1px solid rgba(255, 255, 255, 0.15); background: rgba(0, 0, 0, 0.5); transition: all 0.2s ease; border-radius: 8px; overflow: hidden; }
-    .phone-input-container:focus-within { border-color: #00F0FF; box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.2); }
-    .phone-prefix { padding: 0.875rem 1rem; font-family: 'Space Grotesk', monospace; font-weight: 500; color: #00F0FF; background: rgba(0, 240, 255, 0.05); border-right: 1px solid rgba(255, 255, 255, 0.1); letter-spacing: 0.5px; display: none; }
-    .phone-prefix.show { display: flex; }
-    .form-control { flex: 1; border: none; padding: 0.875rem 1rem; font-size: 1rem; font-family: 'Inter', sans-serif; background: transparent; color: #FFFFFF; outline: none; width: 100%; }
-    .form-control::placeholder { color: #505060; }
-    .pin-input { font-family: 'Space Grotesk', monospace; font-size: 1.25rem; letter-spacing: 0.5rem; text-align: center; }
-    .login-btn { width: 100%; padding: 1rem; background: linear-gradient(135deg, #00F0FF 0%, #B000FF 100%); color: #050505; border: none; font-family: 'General Sans', sans-serif; font-weight: 700; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.1em; cursor: pointer; transition: all 0.2s ease; margin-top: 0.5rem; border-radius: 8px; }
-    .login-btn:hover { transform: translateY(-2px); box-shadow: 0 10px 30px -10px rgba(0, 240, 255, 0.4); }
-    .login-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
-    .error-message { background: rgba(255, 48, 48, 0.1); border-left: 3px solid #FF3030; padding: 0.875rem; margin-bottom: 1.5rem; font-size: 0.8125rem; color: #FF6060; border-radius: 4px; }
-    .super-test-notice { background: rgba(255, 48, 48, 0.08); border: 2px solid rgba(255, 48, 48, 0.3); padding: 0.75rem; margin-bottom: 1.5rem; font-size: 0.75rem; color: #FF6060; text-align: center; border-radius: 8px; font-weight: 600; }
-    .security-notice { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid rgba(255, 255, 255, 0.05); font-size: 0.7rem; color: #606070; text-align: center; }
-    .login-footer { padding: 1.25rem 2rem; border-top: 1px solid rgba(255, 255, 255, 0.05); background: rgba(10, 10, 20, 0.3); border-radius: 0 0 16px 16px; }
-    .login-links { display: flex; justify-content: center; gap: 2rem; flex-wrap: wrap; }
-    .login-links a { color: #808090; text-decoration: none; font-size: 0.75rem; font-weight: 500; transition: color 0.2s; }
-    .login-links a:hover { color: #00F0FF; }
-    @media (max-width: 640px) {
-        .login-container { margin: 1rem; border-radius: 12px; }
-        .login-header { padding: 1.5rem 1.5rem 1rem; }
-        .login-header h1 { font-size: 1.5rem; }
-        .login-form { padding: 1.5rem; }
-        .login-footer { padding: 1rem 1.5rem; }
-        .login-links { gap: 1rem; }
-        .identifier-type-selector { gap: 0.25rem; }
-        .id-type-btn { font-size: 0.6rem; padding: 0.3rem 0.6rem; }
+    .frame-strip.top {
+        top: calc(var(--frame-inset) - 10px);
+        left: calc(var(--frame-inset) + 30px);
+        right: calc(var(--frame-inset) + 30px);
+        height: 20px;
+        background: var(--brass-tint);
+        padding: 0 12px;
+    }
+    .frame-strip.bottom {
+        bottom: calc(var(--frame-inset) - 10px);
+        left: calc(var(--frame-inset) + 30px);
+        right: calc(var(--frame-inset) + 30px);
+        height: 20px;
+        background: var(--brass-tint);
+        padding: 0 12px;
+    }
+    .frame-strip.lateral {
+        right: calc(var(--frame-inset) - 24px);
+        top: 50%;
+        transform: translateY(-50%) rotate(180deg);
+        width: 26px;
+        height: auto;
+        writing-mode: vertical-rl;
+        color: var(--brass-deep);
+        font-family: var(--f-cond);
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: 0.34em;
+        z-index: 3;
+    }
+
+    /* Doodle field — thin hand-style line icons scattered across the panel */
+    .doodle-field {
+        position: absolute;
+        inset: var(--frame-inset);
+        z-index: 0;
+        overflow: hidden;
+    }
+    .doodle-field svg { position: absolute; stroke: rgba(22,35,46,0.16); fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+    .d1 { top: 8%;  left: 8%;  width: 54px; }
+    .d2 { top: 14%; right: 12%; width: 40px; stroke: rgba(180,136,74,0.35); }
+    .d3 { top: 38%; left: 4%;  width: 46px; }
+    .d4 { bottom: 20%; right: 6%; width: 58px; }
+    .d5 { bottom: 10%; left: 14%; width: 42px; stroke: rgba(180,136,74,0.35); }
+    .d6 { top: 58%; right: 24%; width: 34px; }
+    .d7 { bottom: 34%; left: 42%; width: 30px; stroke: rgba(180,136,74,0.3); }
+
+    .magazine {
+        position: absolute;
+        inset: var(--frame-inset);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: var(--sp-7) var(--sp-6);
+        z-index: 1;
+    }
+    .magazine .script-word {
+        font-family: var(--f-script);
+        font-size: 32px;
+        font-weight: 700;
+        color: var(--ink-900);
+        letter-spacing: 0.03em;
+        margin-bottom: var(--sp-4);
+        opacity: 0.92;
+    }
+    .magazine .eyebrow {
+        font-family: var(--f-cond);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--brass-deep);
+        margin-bottom: var(--sp-4);
+    }
+    .magazine p {
+        font-family: var(--f-body);
+        font-size: 13px;
+        line-height: 1.7;
+        color: var(--ink-700);
+        max-width: 300px;
+    }
+    .magazine p.secondary {
+        font-size: 12px;
+        line-height: 1.7;
+        color: var(--ink-500);
+        max-width: 290px;
+        margin-top: var(--sp-4);
+    }
+    .magazine p.secondary strong { color: var(--ink-700); font-weight: 600; }
+    .magazine .rule { margin-top: var(--sp-5); width: 40px; height: 1px; background: var(--brass); }
+
+    /* ============================================================
+       RESPONSIVE
+       ============================================================ */
+    @media (max-width: 900px) {
+        .split { flex-direction: column; }
+        .col-form { flex: 1 1 auto; order: 2; padding: var(--sp-7) var(--sp-5); }
+        .col-brand { flex: 1 1 auto; order: 1; min-height: 260px; }
+        :root { --frame-inset: calc(var(--sp-5) * 0.5); }
+        .frame-strip.lateral { display: none; }
+        .magazine p, .magazine p.secondary { max-width: 280px; }
+    }
+    @media (max-width: 480px) {
+        .trust-row { flex-wrap: wrap; gap: var(--sp-3); justify-content: center; }
+        .foot-links { gap: var(--sp-4); }
     }
 </style>
 </head>
 <body>
+<div class="split">
 
-<div class="login-container">
-    <div class="login-header">
-        <h1>VOUCHMORPH<sup style="font-size: 0.7rem;">™</sup></h1>
-        <div class="subtitle">Interoperability Platform</div>
-        <div>
-            <span class="system-badge"><?= htmlspecialchars(strtoupper($countryName)) ?> • SECURE LOGIN</span>
-            <span class="super-test-badge">⚡ SUPER TEST MODE</span>
-            <span class="no-pin-badge">🔓 NO PIN REQUIRED</span>
+  <!-- LEFT — the actual sign-in form -->
+  <div class="col col-form">
+    <div class="form-wrap">
+      <div class="brand">
+        <div class="mark">VOUCHMORPH<sup>™</sup></div>
+        <div class="division"><?= htmlspecialchars(strtoupper($countryName)) ?> · Secure Login</div>
+      </div>
+
+      <h2>Welcome back</h2>
+      <p class="subtitle">Sign in to send, receive, and track your money</p>
+
+      <?php if ($error): ?>
+      <div class="error">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <span><?= htmlspecialchars($error) ?></span>
+      </div>
+      <?php endif; ?>
+
+      <div class="dev-notice">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+        <span><strong>Test mode</strong> — PIN verification is disabled. Any identifier logs you straight in. Turn this off before launch.</span>
+      </div>
+
+      <form method="POST" action="" id="credentialsForm" novalidate>
+        <input type="hidden" name="identifier_type" id="identifier_type" value="phone">
+
+        <div class="id-tabs" role="tablist" aria-label="Sign in with">
+          <button type="button" class="id-tab active" data-type="phone">Phone</button>
+          <button type="button" class="id-tab" data-type="email">Email</button>
+          <button type="button" class="id-tab" data-type="national_id">National ID</button>
+          <button type="button" class="id-tab" data-type="drivers_license">Licence</button>
+          <button type="button" class="id-tab" data-type="passport">Passport</button>
         </div>
+
+        <div class="field">
+          <label id="identifier-label">Mobile number</label>
+          <div class="field-input has-prefix" id="identifier-wrap">
+            <span class="phone-prefix show" id="phone-prefix"><?= htmlspecialchars($countryDialCode) ?></span>
+            <input type="tel" name="identifier" id="identifier-input" required
+                   value="<?= htmlspecialchars($inputValueRaw) ?>"
+                   placeholder="<?= htmlspecialchars($phonePlaceholder) ?>" autocomplete="off" autofocus>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>PIN <span class="hint">(any value is accepted in test mode)</span></label>
+          <div class="field-input">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="1"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+            <input type="password" name="pin" class="pin-input" maxlength="6" placeholder="••••••" inputmode="numeric" autocomplete="current-password">
+          </div>
+        </div>
+
+        <button type="submit" class="btn">
+          Sign in
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </form>
+
+      <div class="trust-row">
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg>Encrypted</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>PIN Protected</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m4 12 5 5L20 6"/></svg>ISO 27001</span>
+      </div>
+
+      <div class="foot-links">
+        <a href="register.php">Create account</a>
+        <a href="forgot.php">Forgot PIN?</a>
+        <a href="support.php">Support</a>
+      </div>
     </div>
+  </div>
 
-    <div class="login-form">
-        <?php if ($error): ?>
-            <div class="error-message"><?= htmlspecialchars($error) ?></div>
-        <?php endif; ?>
+  <!-- RIGHT — light doodle panel -->
+  <div class="col col-brand">
+    <div class="frame-mat">
+      <div class="frame-line"></div>
+      <div class="frame-strip top"><span>VOUCHMORPH</span></div>
+      <div class="frame-strip bottom"><span>VOUCHMORPH</span></div>
+      <div class="frame-strip lateral"><span>VOUCHMORPH™</span></div>
 
-        <div class="super-test-notice">
-            ⚡ SUPER TEST MODE — NO PIN REQUIRED!<br>
-            <span style="font-weight: normal; font-size: 0.65rem; color: #FF9090;">
-                No rate limiting, no account locking, no OTP required.
-                ANY PIN works - just enter any identifier.
-            </span>
-        </div>
+      <!-- hand-drawn line doodles: wallet, coins, phone-transfer, receipt, globe, arrow-swap -->
+      <div class="doodle-field" aria-hidden="true">
+        <svg class="d1" viewBox="0 0 48 40"><rect x="2" y="10" width="44" height="26" rx="4"/><path d="M2 18h44"/><circle cx="36" cy="27" r="3"/></svg>
+        <svg class="d2" viewBox="0 0 40 40"><circle cx="14" cy="14" r="10"/><circle cx="24" cy="24" r="10"/></svg>
+        <svg class="d3" viewBox="0 0 40 48"><rect x="6" y="2" width="28" height="44" rx="5"/><path d="M14 40h12"/><path d="M14 12h12M14 20h12M14 28h6"/></svg>
+        <svg class="d4" viewBox="0 0 52 40"><path d="M4 20h30M26 10l10 10-10 10"/><path d="M48 20H18M26 30 16 20l10-10"/></svg>
+        <svg class="d5" viewBox="0 0 40 40"><circle cx="20" cy="20" r="17"/><path d="M3 20h34M20 3c5 5 5 29 0 34M20 3c-5 5-5 29 0 34"/></svg>
+        <svg class="d6" viewBox="0 0 34 34"><path d="M4 26 26 4M26 4h-10M26 4v10"/></svg>
+        <svg class="d7" viewBox="0 0 30 30"><rect x="3" y="7" width="24" height="17" rx="2"/><path d="M3 12h24"/></svg>
+      </div>
 
-        <!-- STEP 1: Identifier + PIN (PIN is optional) -->
-        <div id="step-credentials" class="active">
-            <form method="POST" novalidate id="credentialsForm">
-                <div class="form-group">
-                    <label>IDENTIFIER TYPE</label>
-                    <div class="identifier-type-selector">
-                        <button type="button" class="id-type-btn active" data-type="phone" onclick="setIdentifierType('phone')">📱 Phone</button>
-                        <button type="button" class="id-type-btn" data-type="email" onclick="setIdentifierType('email')">✉️ Email</button>
-                        <button type="button" class="id-type-btn" data-type="national_id" onclick="setIdentifierType('national_id')">🆔 National ID</button>
-                        <button type="button" class="id-type-btn" data-type="drivers_license" onclick="setIdentifierType('drivers_license')">🚗 License</button>
-                        <button type="button" class="id-type-btn" data-type="passport" onclick="setIdentifierType('passport')">📖 Passport</button>
-                    </div>
-                    <input type="hidden" name="identifier_type" id="identifier_type" value="phone">
-                </div>
-                <div class="form-group">
-                    <label id="identifier-label">MOBILE NUMBER</label>
-                    <div class="phone-input-container">
-                        <span class="phone-prefix show" id="phone-prefix"><?= htmlspecialchars($countryDialCode) ?></span>
-                        <input type="text" name="identifier" id="identifier-input" class="form-control" required
-                               value="<?= htmlspecialchars($inputValueRaw) ?>"
-                               placeholder="<?= htmlspecialchars($phonePlaceholder) ?>" autocomplete="off">
-                    </div>
-                    <div style="font-size: 0.7rem; color: #606070; margin-top: 0.5rem;" id="identifier-help">Enter your primary phone number</div>
-                </div>
-                <div class="form-group">
-                    <label>PIN <span style="color: #FFC107; font-weight: normal;">(ANY PIN WORKS - or leave empty)</span></label>
-                    <input type="password" name="pin" class="form-control pin-input" maxlength="6"
-                           placeholder="•••••• (optional)" inputmode="numeric" autocomplete="current-password">
-                </div>
-                <button type="submit" class="login-btn">LOGIN →</button>
-            </form>
-        </div>
-
-        <div class="security-notice">
-            ⚡ SUPER TEST MODE: No PIN required. Any identifier works. For testing only.
-        </div>
+      <div class="magazine">
+        <div class="script-word">Swap!</div>
+        <div class="eyebrow">Your money, moving freely</div>
+        <p>Send funds home, top up a card, or pay a bill — VouchMorph moves your money across banks, wallets, and borders in a single, secure step.</p>
+        <p class="secondary">Every transfer is <strong>PIN-protected</strong> and tracked end to end, so you always know exactly where your money is.</p>
+        <div class="rule"></div>
+      </div>
     </div>
+  </div>
 
-    <div class="login-footer">
-        <div class="login-links">
-            <a href="register.php">REGISTER</a>
-            <a href="forgot.php">RECOVER ACCOUNT</a>
-            <a href="support.php">SUPPORT</a>
-        </div>
-    </div>
 </div>
 
 <script>
-const countryDialCode = '<?= $countryDialCode ?>';
+const IDENTIFIER_META = {
+    phone:           { label: 'Mobile number', placeholder: '<?= htmlspecialchars($phonePlaceholder) ?>', type: 'tel', prefix: true },
+    email:           { label: 'Email address', placeholder: 'you@example.com', type: 'text', prefix: false },
+    national_id:     { label: 'National ID number', placeholder: 'Enter National ID', type: 'text', prefix: false },
+    drivers_license: { label: "Driver's licence number", placeholder: "Enter driver's licence", type: 'text', prefix: false },
+    passport:        { label: 'Passport number', placeholder: 'Enter passport number', type: 'text', prefix: false },
+};
 
 function setIdentifierType(type) {
-    document.querySelectorAll('#step-credentials .id-type-btn').forEach(btn => btn.classList.remove('active'));
-    document.querySelector(`#step-credentials .id-type-btn[data-type="${type}"]`)?.classList.add('active');
+    document.querySelectorAll('.id-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.type === type));
     document.getElementById('identifier_type').value = type;
 
-    const isPhone = type === 'phone';
+    const meta = IDENTIFIER_META[type];
+    const wrap = document.getElementById('identifier-wrap');
     const prefix = document.getElementById('phone-prefix');
     const input = document.getElementById('identifier-input');
     const label = document.getElementById('identifier-label');
-    const help = document.getElementById('identifier-help');
 
-    if (isPhone) {
-        prefix.classList.add('show');
-        input.type = 'tel';
-        input.placeholder = '<?= htmlspecialchars($phonePlaceholder) ?>';
-        label.textContent = 'MOBILE NUMBER';
-        help.textContent = 'Enter your primary phone number';
-    } else {
-        prefix.classList.remove('show');
-        input.type = 'text';
-        const labels = { 'email': 'EMAIL ADDRESS', 'national_id': 'NATIONAL ID NUMBER', 'drivers_license': "DRIVER'S LICENSE NUMBER", 'passport': 'PASSPORT NUMBER' };
-        const helps = { 'email': 'Enter your email address', 'national_id': 'Enter your National ID number', 'drivers_license': "Enter your Driver's License number", 'passport': 'Enter your Passport number' };
-        const placeholders = { 'email': 'you@example.com', 'national_id': 'Enter National ID', 'drivers_license': "Enter Driver's License", 'passport': 'Enter Passport number' };
-        label.textContent = labels[type] || 'IDENTIFIER';
-        input.placeholder = placeholders[type] || 'Enter your identifier';
-        help.textContent = helps[type] || 'Enter your identifier';
-    }
+    label.textContent = meta.label;
+    input.type = meta.type;
+    input.placeholder = meta.placeholder;
     input.value = '';
+    wrap.classList.toggle('has-prefix', meta.prefix);
+    prefix.classList.toggle('show', meta.prefix);
 }
 
-document.getElementById('identifier-input')?.addEventListener('keypress', function(e) {
+document.querySelectorAll('.id-tab').forEach(btn => {
+    btn.addEventListener('click', () => setIdentifierType(btn.dataset.type));
+});
+document.getElementById('identifier-input')?.addEventListener('keypress', function (e) {
     if (e.key === 'Enter') this.closest('form').submit();
 });
 </script>
