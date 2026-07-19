@@ -5105,86 +5105,102 @@ public function getPendingClaimsForUser(int $userId): array
         return $methods;
     }
 
-    // ============================================================================
-    // CASHOUT AUTHORIZATION METHODS
-    // ============================================================================
-
-    private function storeCashoutAuthorization(
-        string $swapReference,
-        ?string $clientPhone,
-        string $sourceInstitution,
-        string $destinationInstitution,
-        float $amount,
-        float $feeAmount,
-        ?string $swapCode,
-        string $pinCode,
-        string $codeExpiry
-    ): int {
-        $sql = "
-            INSERT INTO cashout_authorizations (
-                swap_reference,
-                client_phone,
-                source_institution,
-                source_wallet,
-                amount,
-                currency,
-                fee_amount,
-                swap_code,
-                pin_code,
-                code_expiry,
-                cashout_point,
-                cashout_provider,
-                status,
-                created_at,
-                updated_at
-            ) VALUES (
-                :swap_ref,
-                :client_phone,
-                :source_inst,
-                :source_wallet,
-                :amount,
-                :currency,
-                :fee_amount,
-                :swap_code,
-                :pin_code,
-                :code_expiry,
-                :cashout_point,
-                :cashout_provider,
-                'PENDING',
-                NOW(),
-                NOW()
-            ) RETURNING auth_id
-        ";
-        
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':swap_ref' => $swapReference,
-                ':client_phone' => $clientPhone,
-                ':source_inst' => $sourceInstitution,
-                ':source_wallet' => null,
-                ':amount' => $amount,
-                ':currency' => $this->config['currency'] ?? 'BWP',
-                ':fee_amount' => $feeAmount,
-                ':swap_code' => $swapCode,
-                ':pin_code' => $pinCode,
-                ':code_expiry' => $codeExpiry,
-                ':cashout_point' => 'ATM',
-                ':cashout_provider' => $destinationInstitution
-            ]);
-            
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            $authId = $row ? (int)$row['auth_id'] : 0;
-            
-            error_log("[SwapService] Cashout authorization stored: auth_id={$authId}");
-            
-            return $authId;
-            
-        } catch (PDOException $e) {
-            error_log("[SwapService] Failed to store cashout authorization: " . $e->getMessage());
-            throw new RuntimeException("Failed to store cashout authorization: " . $e->getMessage());
-        }
+    /* =================================================================
+ * EDIT 1 — REPLACE storeCashoutAuthorization()'s signature and INSERT
+ * to accept and persist the real source identifier + type, generic
+ * across ACCOUNT/WALLET/VOUCHER/CARD - not hardcoded to "wallet".
+ * ================================================================= */
+ 
+private function storeCashoutAuthorization(
+    string $swapReference,
+    ?string $clientPhone,
+    string $sourceInstitution,
+    ?string $sourceIdentifier,
+    ?string $sourceIdentifierType,
+    string $destinationInstitution,
+    float $amount,
+    float $feeAmount,
+    float $generateCodeFeeAmount,
+    float $levyAmount,
+    ?string $swapCode,
+    string $pinCode,
+    string $codeExpiry
+): int {
+    $sql = "
+        INSERT INTO cashout_authorizations (
+            swap_reference,
+            client_phone,
+            source_institution,
+            source_identifier,
+            source_identifier_type,
+            amount,
+            currency,
+            fee_amount,
+            generate_code_fee_amount,
+            levy_amount,
+            swap_code,
+            pin_code,
+            code_expiry,
+            cashout_point,
+            cashout_provider,
+            status,
+            created_at,
+            updated_at
+        ) VALUES (
+            :swap_ref,
+            :client_phone,
+            :source_inst,
+            :source_identifier,
+            :source_identifier_type,
+            :amount,
+            :currency,
+            :fee_amount,
+            :generate_code_fee_amount,
+            :levy_amount,
+            :swap_code,
+            :pin_code,
+            :code_expiry,
+            :cashout_point,
+            :cashout_provider,
+            'PENDING',
+            NOW(),
+            NOW()
+        ) RETURNING auth_id
+    ";
+ 
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':swap_ref' => $swapReference,
+            ':client_phone' => $clientPhone,
+            ':source_inst' => $sourceInstitution,
+            ':source_identifier' => $sourceIdentifier,
+            ':source_identifier_type' => $sourceIdentifierType,
+            ':amount' => $amount,
+            ':currency' => $this->config['currency'] ?? 'BWP',
+            ':fee_amount' => $feeAmount,
+            ':generate_code_fee_amount' => $generateCodeFeeAmount,
+            ':levy_amount' => $levyAmount,
+            ':swap_code' => $swapCode,
+            ':pin_code' => $pinCode,
+            ':code_expiry' => $codeExpiry,
+            ':cashout_point' => 'ATM',
+            ':cashout_provider' => $destinationInstitution
+        ]);
+ 
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $authId = $row ? (int)$row['auth_id'] : 0;
+ 
+        error_log("[SwapService] Cashout authorization stored: auth_id={$authId}, source={$sourceIdentifierType}:{$sourceIdentifier}, generate_code_fee={$generateCodeFeeAmount}, levy={$levyAmount}");
+ 
+        return $authId;
+ 
+    } catch (PDOException $e) {
+        error_log("[SwapService] Failed to store cashout authorization: " . $e->getMessage());
+        throw new RuntimeException("Failed to store cashout authorization: " . $e->getMessage());
     }
+}
+
 
     private function getCashoutAuthorization(?string $swapRef, ?int $authId): ?array
     {
