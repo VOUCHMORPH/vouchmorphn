@@ -32,19 +32,19 @@ ZURUBANK:
     client_id: "VOUCHMORPH_APP_ID"
     client_secret: "YOUR_BANK_SECRET"
     redirect_uri: "https://vouchmorphn.com/api/v1/source/auth/callback"
-    authorization_url: "/oauth/authorize"
-    token_url: "/oauth/token"
-    refresh_url: "/oauth/refresh"
-    revoke_url: "/oauth/revoke"
-    userinfo_url: "/oauth/userinfo"
+    authorization_url: "/api/v1/oauth/authorize.php"
+    token_url: "/api/v1/oauth/token.php"
+    refresh_url: "/api/v1/oauth/refresh.php"
+    revoke_url: "/api/v1/oauth/revoke.php"
+    userinfo_url: "/api/v1/oauth/userinfo.php"
     scopes: ["balance", "transactions", "payments"]
   
   # Source linking endpoints (OAuth2 flow)
   source_linking:
-    initiate: "/oauth/authorize"
-    verify: "/oauth/token"
-    refresh: "/oauth/refresh"
-    revoke: "/oauth/revoke"
+    initiate: "/api/v1/oauth/authorize.php"
+    verify: "/api/v1/oauth/token.php"
+    refresh: "/api/v1/oauth/refresh.php"
+    revoke: "/api/v1/oauth/revoke.php"
     use: "/api/v1/verify_asset.php"
   
   # API endpoints by operation
