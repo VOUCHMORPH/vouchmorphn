@@ -563,7 +563,7 @@ class GenericBankClient implements BankAPIInterface
             $payload = [
                 'grant_type' => 'authorization_code',
                 'code' => $params['code'],
-                'redirect_uri' => $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://https://vouchmorphn-production.up.railway.app/api/v1/source/auth/callback',
+                'redirect_uri' => $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn-production.up.railway.app/api/v1/source/auth/callback',
                 'client_id' => $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? 'VOUCHMORPH_APP_ID',
                 'client_secret' => $oauthConfig['client_secret'] ?? getenv('CLIENT_SECRET') ?? 'YOUR_BANK_SECRET'
             ];
