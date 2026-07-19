@@ -3163,6 +3163,227 @@ $this->verifyIdentityClaimPin($identitySwap, $suppliedPin);
         }
     }
 
+
+<?php
+/**
+ * PATCH FOR: src/Domain/Services/SwapService.php
+ * (continuation - apply after SwapService_hold_release_patch.php)
+ * =================================================================
+ */
+ 
+ 
+/* =================================================================
+ * EDIT 1 — ADD these new methods anywhere in the class (e.g. near
+ * the identity swap helper methods).
+ * ================================================================= */
+ 
+/**
+ * Called once identity-swap money has actually landed in a
+ * destination account (after a successful DEPOSIT finalization).
+ * Creates VouchMorph's own tracking ledger for that earmarked
+ * balance, since no bank-side hold exists anymore to consult.
+ */
+private function createEarmarkedBalance(
+    int $identitySwapHoldId,
+    string $destInstitution,
+    string $destIdentifier,
+    string $destIdentifierType,
+    float $amount,
+    string $currency
+): int {
+    $denominations = $this->atmNotes[$currency] ?? [200, 100, 50, 20, 10];
+    $smallestNote = min($denominations);
+    $totalCashoutFee = (float)($this->feesConfig['CASHOUT']['fee_components']['F1']['amount'] ?? 0);
+ 
+    $sql = "
+        INSERT INTO identity_earmarked_balances (
+            identity_swap_hold_id, destination_institution, destination_identifier,
+            destination_identifier_type, currency, original_amount,
+            withdrawn_amount, remaining_amount, smallest_note_amount,
+            total_cashout_fee_amount, status
+        ) VALUES (
+            :hold_id, :institution, :identifier,
+            :identifier_type, :currency, :amount,
+            0, :amount, :smallest_note,
+            :total_fee, 'open'
+        ) RETURNING id
+    ";
+ 
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':hold_id' => $identitySwapHoldId,
+            ':institution' => $destInstitution,
+            ':identifier' => $destIdentifier,
+            ':identifier_type' => $destIdentifierType,
+            ':currency' => $currency,
+            ':amount' => $amount,
+            ':smallest_note' => $smallestNote,
+            ':total_fee' => $totalCashoutFee,
+        ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $id = $row ? (int)$row['id'] : 0;
+ 
+        error_log("[SwapService] Earmarked balance created: id={$id}, {$destInstitution}/{$destIdentifier}, amount={$amount} {$currency}, threshold=" . ($smallestNote + $totalCashoutFee));
+ 
+        return $id;
+    } catch (PDOException $e) {
+        error_log("[SwapService] Failed to create earmarked balance: " . $e->getMessage());
+        // Non-fatal by design: the deposit itself already succeeded and
+        // real money already moved. Failing to create the tracking
+        // ledger shouldn't roll back a completed deposit - but it does
+        // mean this account's earmarked money goes untracked, which
+        // needs manual reconciliation. Logged loudly for that reason.
+        return 0;
+    }
+}
+ 
+/**
+ * Aggregates all OPEN earmarked balances for a given account into a
+ * single figure to check a withdrawal against. Multiple identity
+ * deposits into the same account (over time) are summed; the most
+ * conservative (largest) threshold among them is used, so a
+ * withdrawal can never slip through on a looser number from an
+ * older entry.
+ */
+private function getOpenEarmarkedSummary(string $institution, string $identifier): ?array
+{
+    $stmt = $this->swapDB->prepare("
+        SELECT id, remaining_amount, smallest_note_amount, total_cashout_fee_amount
+        FROM identity_earmarked_balances
+        WHERE destination_institution = :institution
+        AND destination_identifier = :identifier
+        AND status = 'open'
+        ORDER BY created_at ASC
+    ");
+    $stmt->execute([':institution' => $institution, ':identifier' => $identifier]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+ 
+    if (empty($rows)) {
+        return null;
+    }
+ 
+    $totalRemaining = array_sum(array_column($rows, 'remaining_amount'));
+    $maxThreshold = 0.0;
+    foreach ($rows as $r) {
+        $threshold = (float)$r['smallest_note_amount'] + (float)$r['total_cashout_fee_amount'];
+        $maxThreshold = max($maxThreshold, $threshold);
+    }
+ 
+    return [
+        'total_remaining' => (float)$totalRemaining,
+        'threshold' => $maxThreshold,
+        'entries' => $rows, // ordered oldest-first for FIFO consumption
+    ];
+}
+ 
+/**
+ * Enforces the partial-withdrawal rule against any open earmarked
+ * balance on this account: a withdrawal is only valid if it leaves
+ * the earmarked remainder at exactly zero, or strictly above
+ * (smallest note + total cashout fee). Does NOT mutate anything -
+ * pure validation, safe to call before a hold is placed. Silently
+ * returns (no-op) if the account has no open earmarked balance at
+ * all - ordinary funds are never restricted by this rule.
+ */
+private function validateEarmarkedWithdrawal(string $institution, string $identifier, float $requestedAmount): void
+{
+    $summary = $this->getOpenEarmarkedSummary($institution, $identifier);
+    if ($summary === null) {
+        return; // No earmarked money on this account - unrestricted.
+    }
+ 
+    $remaining = $summary['total_remaining'];
+    $threshold = $summary['threshold'];
+ 
+    if ($requestedAmount >= $remaining) {
+        // Fully consumes (or exceeds, if mixed with the account's own
+        // funds) the earmarked balance - always allowed, since the
+        // earmarked portion hits exactly zero.
+        return;
+    }
+ 
+    $newRemaining = $remaining - $requestedAmount;
+    if ($newRemaining > 0 && $newRemaining <= $threshold) {
+        throw new RuntimeException(
+            "This withdrawal would leave {$newRemaining} of earmarked identity money in this account, " .
+            "which is too small to usefully redeem later (minimum note {$threshold} " .
+            "including cashout fee). Withdraw the full remaining balance ({$remaining}) " .
+            "instead, or leave enough that more than {$threshold} remains."
+        );
+    }
+}
+ 
+/**
+ * Actually decrements the earmarked ledger, FIFO across open entries,
+ * after a withdrawal has genuinely succeeded (called post-debit, never
+ * pre-emptively - a validated-but-failed cashout must not consume the
+ * ledger). Marks entries 'depleted' once their remaining hits zero.
+ */
+private function consumeEarmarkedBalance(string $institution, string $identifier, float $amountWithdrawn, ?string $swapReference = null): void
+{
+    $summary = $this->getOpenEarmarkedSummary($institution, $identifier);
+    if ($summary === null) {
+        return; // Nothing earmarked on this account - ordinary withdrawal, nothing to track.
+    }
+ 
+    $remainingToConsume = $amountWithdrawn;
+ 
+    foreach ($summary['entries'] as $entry) {
+        if ($remainingToConsume <= 0) {
+            break;
+        }
+ 
+        $entryId = (int)$entry['id'];
+        $entryRemaining = (float)$entry['remaining_amount'];
+        $consumeFromThisEntry = min($entryRemaining, $remainingToConsume);
+        $newEntryRemaining = round($entryRemaining - $consumeFromThisEntry, 2);
+        $newStatus = $newEntryRemaining <= 0.005 ? 'depleted' : 'open';
+ 
+        try {
+            $stmt = $this->swapDB->prepare("
+                UPDATE identity_earmarked_balances
+                SET withdrawn_amount = withdrawn_amount + :consumed,
+                    remaining_amount = :new_remaining,
+                    status = :status,
+                    depleted_at = CASE WHEN :status = 'depleted' THEN NOW() ELSE depleted_at END,
+                    updated_at = NOW()
+                WHERE id = :id
+            ");
+            $stmt->execute([
+                ':consumed' => $consumeFromThisEntry,
+                ':new_remaining' => max(0, $newEntryRemaining),
+                ':status' => $newStatus,
+                ':id' => $entryId,
+            ]);
+ 
+            $auditStmt = $this->swapDB->prepare("
+                INSERT INTO identity_earmarked_withdrawals
+                (earmarked_balance_id, swap_reference, amount, remaining_after)
+                VALUES (:balance_id, :swap_ref, :amount, :remaining)
+            ");
+            $auditStmt->execute([
+                ':balance_id' => $entryId,
+                ':swap_ref' => $swapReference,
+                ':amount' => $consumeFromThisEntry,
+                ':remaining' => max(0, $newEntryRemaining),
+            ]);
+ 
+            error_log("[SwapService] Earmarked balance {$entryId} consumed {$consumeFromThisEntry}, remaining {$newEntryRemaining}, status {$newStatus}");
+ 
+        } catch (PDOException $e) {
+            error_log("[SwapService] Failed to consume earmarked balance {$entryId}: " . $e->getMessage());
+        }
+ 
+        $remainingToConsume -= $consumeFromThisEntry;
+    }
+ 
+    if ($remainingToConsume > 0.005) {
+        error_log("[SwapService] WARNING: withdrew {$amountWithdrawn} from {$institution}/{$identifier} but only {$summary['total_remaining']} was earmarked - {$remainingToConsume} came from the account's own funds, which is expected and fine.");
+    }
+}
+
+    
      
 public function cancelExpiredIdentitySwaps(): array
 {
