@@ -3274,8 +3274,6 @@ return $result;
         }
     }
 
-
-<?php
 /**
  * PATCH FOR: src/Domain/Services/SwapService.php
  * (continuation - apply after SwapService_hold_release_patch.php)
