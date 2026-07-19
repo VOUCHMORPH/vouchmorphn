@@ -884,17 +884,31 @@ async function openAgentModal() {
     document.getElementById('agentBadge').style.display = agentStatus.is_agent ? 'inline-block' : 'none';
     document.getElementById('modalBody').innerHTML = renderAgentModal();
 }
+
+// UPDATED: renderAgentModal with Cancel button for pending/rejected destinations
 function renderAgentModal() {
     const statusRows = agentStatus.all_destinations.length ? agentStatus.all_destinations.map(d => {
+        const isPending = d.status === 'pending_confirmation';
+        const isRejected = d.status === 'rejected';
+        const canCancel = isPending || isRejected;
+        
         const badge = d.status === 'active' ? '<span style="background:#dcfce7;color:#166534;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">Active</span>'
-            : d.status === 'pending_confirmation' ? '<span style="background:#fef3c7;color:#8a5a0b;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">⏳ Pending Approval</span>'
-            : '<span style="background:#fbeceb;color:var(--danger);padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">Rejected</span>';
+            : isPending ? '<span style="background:#fef3c7;color:#8a5a0b;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">⏳ Pending Approval</span>'
+            : isRejected ? '<span style="background:#fbeceb;color:var(--danger);padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">Rejected</span>'
+            : d.status === 'cancelled' ? '<span style="background:#f0f0f0;color:#666;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">Cancelled</span>'
+            : '<span style="background:#fbeceb;color:var(--danger);padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">' + (d.status || 'Unknown') + '</span>';
+            
         return `<div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-bottom:8px;background:#fff;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
-                <div><div style="font-weight:600;">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(d.identifier)} · ${escapeHtml(d.account_type || d.asset_type)}</div></div>${badge}
+                <div><div style="font-weight:600;">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(d.identifier)} · ${escapeHtml(d.account_type || d.asset_type)}</div></div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    ${badge}
+                    ${canCancel ? `<button class="btn-danger-outline" onclick="cancelAgentDestination(${d.id})" style="font-size:10px;padding:4px 10px;">✕ Cancel</button>` : ''}
+                </div>
             </div>${d.status === 'rejected' && d.rejection_reason ? `<div style="font-size:12px;color:var(--danger);margin-top:6px;">Reason: ${escapeHtml(d.rejection_reason)}</div>` : ''}
         </div>`;
     }).join('') : '<div style="font-size:12px;color:var(--text-dim);">You have no agent destination accounts registered yet.</div>';
+    
     return `
         <div style="margin-bottom:16px;"><div class="field-label" style="margin-bottom:8px;">Your Agent Accounts</div>${statusRows}</div>
         <div style="border-top:1px solid var(--border);padding-top:16px;">
@@ -907,6 +921,24 @@ function renderAgentModal() {
             <div class="cta-row"><button class="btn btn-primary" onclick="submitAgentDestination()">Register & Verify</button></div>
         </div>`;
 }
+
+// NEW: Cancel agent destination function
+async function cancelAgentDestination(destinationId) {
+    if (!confirm('Cancel this registration? You can register again later.')) return;
+    
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/cancel_destination.php', {
+        destination_id: destinationId
+    });
+    
+    if (!result.ok) {
+        showMessage('Failed to cancel: ' + result.error, 'error');
+        return;
+    }
+    
+    showMessage('Registration cancelled successfully.', 'success');
+    openAgentModal(); // Refresh the modal
+}
+
 async function submitAgentDestination() {
     const institution = document.getElementById('agentInst').value;
     const assetType = document.getElementById('agentAssetType').value;
@@ -921,25 +953,17 @@ async function submitAgentDestination() {
     const data = result.body.data;
 
     if (data.requires_redirect) {
-        // Strong verification: send the browser to the bank's own login
-        // page. This leaves the app entirely - the bank redirects back
-        // to our callback page once the user logs in, which sends them
-        // back to the dashboard.
         showMessage(data.message || 'Redirecting you to your bank to confirm this account...', 'info');
         window.location.href = data.redirect_url;
         return;
     }
 
     if (!data.requires_otp) {
-        // Institution has neither OAuth nor OTP support - already
-        // registered (KYC-only, flagged as such in the message).
         showMessage(data.message, data.otp_supported ? 'success' : 'warning');
         openAgentModal();
         return;
     }
 
-    // OTP was sent - show the verification step instead of returning
-    // to the list yet.
     document.getElementById('modalBody').innerHTML = renderAgentOtpStep(data);
 }
 
@@ -963,10 +987,6 @@ async function verifyAgentOtp(attemptId) {
     openAgentModal();
 }
 
-// Agent destinations are restricted to real, controllable business
-// instruments (Account, Wallet, Card) - vouchers are excluded even if
-// the institution offers them, since vouchers stay a manual, one-time
-// instrument per the earlier design decision.
 const AGENT_ELIGIBLE_ASSET_TYPES = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
 
 function onAgentInstChange(code) {
