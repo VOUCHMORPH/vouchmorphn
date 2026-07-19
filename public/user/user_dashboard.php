@@ -900,21 +900,89 @@ function renderAgentModal() {
         <div style="border-top:1px solid var(--border);padding-top:16px;">
             <div class="field-label" style="margin-bottom:8px;">Register a New Agent Destination</div>
             <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Register a business/agent account you hold at a participating institution. Only business or agent-designated accounts are eligible. Approval required before activation.</div>
-            <div class="field-group"><label>Institution</label><select id="agentInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
-            <div class="field-group"><label>Account / Wallet Number</label><input id="agentIdentifier" placeholder="Your business account number"></div>
+            <div class="field-group"><label>Institution</label><select id="agentInst" onchange="onAgentInstChange(this.value)"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
+            <div class="field-group" id="agentAssetTypeGroup" style="display:none;"><label>Account Type</label><select id="agentAssetType"></select><div class="help">Only Account, Wallet, or Card can be used — vouchers stay manual, never registered as a destination.</div></div>
+            <div class="field-group"><label>Account / Wallet / Card Number</label><input id="agentIdentifier" placeholder="Your business account number"></div>
             <div class="field-group"><label>Account Name (optional)</label><input id="agentAccountName" placeholder="e.g. Thabo's General Store"></div>
             <div class="cta-row"><button class="btn btn-primary" onclick="submitAgentDestination()">Register & Verify</button></div>
         </div>`;
 }
 async function submitAgentDestination() {
     const institution = document.getElementById('agentInst').value;
+    const assetType = document.getElementById('agentAssetType').value;
     const identifier = document.getElementById('agentIdentifier').value.trim();
     const accountName = document.getElementById('agentAccountName').value.trim();
     if (!institution || !identifier) { showMessage('Select an institution and enter your account number.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/propose_destination.php', { institution, identifier, account_name: accountName || undefined });
+    if (!assetType) { showMessage('Select whether this is an Account, Wallet, or Card.', 'warning'); return; }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/propose_destination.php', { institution, asset_type: assetType, identifier, account_name: accountName || undefined });
     if (!result.ok) { showMessage('Could not register: ' + result.error, 'error'); return; }
-    showMessage(result.body.data.message || 'Registered - awaiting approval.', 'success');
+
+    const data = result.body.data;
+
+    if (data.requires_redirect) {
+        // Strong verification: send the browser to the bank's own login
+        // page. This leaves the app entirely - the bank redirects back
+        // to our callback page once the user logs in, which sends them
+        // back to the dashboard.
+        showMessage(data.message || 'Redirecting you to your bank to confirm this account...', 'info');
+        window.location.href = data.redirect_url;
+        return;
+    }
+
+    if (!data.requires_otp) {
+        // Institution has neither OAuth nor OTP support - already
+        // registered (KYC-only, flagged as such in the message).
+        showMessage(data.message, data.otp_supported ? 'success' : 'warning');
+        openAgentModal();
+        return;
+    }
+
+    // OTP was sent - show the verification step instead of returning
+    // to the list yet.
+    document.getElementById('modalBody').innerHTML = renderAgentOtpStep(data);
+}
+
+function renderAgentOtpStep(data) {
+    return `
+        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:14px;margin-bottom:16px;">
+            <div style="font-weight:600;margin-bottom:4px;">📱 Verification code sent</div>
+            <div style="font-size:12px;color:var(--text-muted);">${escapeHtml(data.message)}</div>
+        </div>
+        <div class="field-group"><label>Enter the code</label><input type="text" id="agentOtpCode" inputmode="numeric" maxlength="8" placeholder="Code from your bank"></div>
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentModal()">Cancel</button><button class="btn btn-primary" onclick="verifyAgentOtp(${data.attempt_id})">Verify & Register</button></div>
+    `;
+}
+
+async function verifyAgentOtp(attemptId) {
+    const otp = document.getElementById('agentOtpCode').value.trim();
+    if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/verify_destination_otp.php', { attempt_id: attemptId, otp });
+    if (!result.ok) { showMessage('Verification failed: ' + result.error, 'error'); return; }
+    showMessage(result.body.data.message || 'Account verified and registered.', 'success');
     openAgentModal();
+}
+
+// Agent destinations are restricted to real, controllable business
+// instruments (Account, Wallet, Card) - vouchers are excluded even if
+// the institution offers them, since vouchers stay a manual, one-time
+// instrument per the earlier design decision.
+const AGENT_ELIGIBLE_ASSET_TYPES = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
+
+function onAgentInstChange(code) {
+    const group = document.getElementById('agentAssetTypeGroup');
+    const sel = document.getElementById('agentAssetType');
+    if (!code) { group.style.display = 'none'; sel.innerHTML = ''; return; }
+    const inst = PARTICIPANTS[code];
+    const allTypes = inst?.asset_types || [];
+    const eligible = allTypes.filter(t => AGENT_ELIGIBLE_ASSET_TYPES.includes(String(t).toUpperCase()));
+    if (eligible.length === 0) {
+        group.style.display = 'block';
+        sel.innerHTML = '<option value="">No eligible account types at this institution</option>';
+        return;
+    }
+    sel.innerHTML = eligible.map(t => `<option value="${t}">${getAssetConfig(t)?.icon || '📦'} ${getAssetConfig(t)?.label || t}</option>`).join('');
+    group.style.display = 'block';
 }
 
 let agentSearchResult = null;
