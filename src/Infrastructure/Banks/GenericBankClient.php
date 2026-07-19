@@ -459,184 +459,185 @@ class GenericBankClient implements BankAPIInterface
     }
 
     public function initiateSourceLink(array $params): array
-{
-    error_log("[GenericBankClient] initiateSourceLink called");
-    
-    $endpoint = $this->getSourceLinkingEndpoint('initiate');
-    if (!$endpoint) {
-        return ['success' => false, 'message' => 'Source linking not configured for this institution'];
-    }
-    
-    $baseUrl = $this->getBaseUrl();
-    $url = $baseUrl . '/' . ltrim($endpoint, '/');
-    
-    // ============================================================
-    // FIX: Detect OAuth from endpoint path, not just config
-    // ============================================================
-    $oauthConfig = $this->config['oauth'] ?? null;
-    $isOAuthEndpoint = strpos($endpoint, 'oauth') !== false || 
-                       strpos($endpoint, 'authorize') !== false;
-    
-    // Use OAuth if configured OR if the endpoint looks like OAuth
-    if ($oauthConfig || $isOAuthEndpoint) {
-        error_log("[GenericBankClient] OAuth detected! endpoint={$endpoint}, isOAuthEndpoint=" . ($isOAuthEndpoint ? 'YES' : 'NO'));
+    {
+        error_log("[GenericBankClient] initiateSourceLink called");
         
-        $clientId = $oauthConfig['client_id'] ?? 'VOUCHMORPH_APP_ID';
-        $redirectUri = $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn-production.up.railway.app/api/v1/agent/oauth_callback.php';
-        $state = $params['state'] ?? bin2hex(random_bytes(16));
-        $scopes = $params['scope'] ?? $oauthConfig['scopes'] ?? ['read_balance', 'read_transactions', 'payments'];
+        $endpoint = $this->getSourceLinkingEndpoint('initiate');
+        if (!$endpoint) {
+            return ['success' => false, 'message' => 'Source linking not configured for this institution'];
+        }
         
-        $authUrl = $url . '?' . http_build_query([
-            'client_id' => $clientId,
-            'redirect_uri' => $redirectUri,
-            'response_type' => 'code',
-            'scope' => implode(' ', $scopes),
-            'state' => $state
-        ]);
+        $baseUrl = $this->getBaseUrl();
+        $url = $baseUrl . '/' . ltrim($endpoint, '/');
         
-        $_SESSION['oauth_state_' . $state] = [
-            'user_id' => $params['user_id'] ?? 0,
-            'institution' => $this->config['provider_code'] ?? 'unknown',
-            'identifier' => $params['identifier'] ?? '',
-            'asset_type' => $params['asset_type'] ?? 'ACCOUNT'
+        // ============================================================
+        // Detect OAuth from endpoint path, not just config
+        // ============================================================
+        $oauthConfig = $this->config['oauth'] ?? null;
+        $isOAuthEndpoint = strpos($endpoint, 'oauth') !== false || 
+                           strpos($endpoint, 'authorize') !== false;
+        
+        // Use OAuth if configured OR if the endpoint looks like OAuth
+        if ($oauthConfig || $isOAuthEndpoint) {
+            error_log("[GenericBankClient] OAuth detected! endpoint={$endpoint}, isOAuthEndpoint=" . ($isOAuthEndpoint ? 'YES' : 'NO'));
+            
+            // FIX: Use ?: operator to properly handle falsy values
+            $clientId = $oauthConfig['client_id'] ?: (getenv('CLIENT_ID') ?: 'VOUCHMORPH_APP_ID');
+            $redirectUri = $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn-production.up.railway.app/api/v1/agent/oauth_callback.php';
+            $state = $params['state'] ?? bin2hex(random_bytes(16));
+            $scopes = $params['scope'] ?? $oauthConfig['scopes'] ?? ['read_balance', 'read_transactions', 'payments'];
+            
+            $authUrl = $url . '?' . http_build_query([
+                'client_id' => $clientId,
+                'redirect_uri' => $redirectUri,
+                'response_type' => 'code',
+                'scope' => implode(' ', $scopes),
+                'state' => $state
+            ]);
+            
+            $_SESSION['oauth_state_' . $state] = [
+                'user_id' => $params['user_id'] ?? 0,
+                'institution' => $this->config['provider_code'] ?? 'unknown',
+                'identifier' => $params['identifier'] ?? '',
+                'asset_type' => $params['asset_type'] ?? 'ACCOUNT'
+            ];
+            
+            error_log("[GenericBankClient] OAuth redirect URL: " . $authUrl);
+            
+            return [
+                'success' => true,
+                'auth_type' => 'oauth',
+                'redirect_url' => $authUrl,
+                'state' => $state,
+                'message' => 'Redirect to bank authorization page'
+            ];
+        }
+        
+        // ============================================================
+        // Fallback to OTP flow (only if not OAuth)
+        // ============================================================
+        $authId = $params['auth_id'] ?? 'AUTH_' . date('Ymd') . '_' . bin2hex(random_bytes(6));
+        $identifier = $params['identifier'] ?? '';
+        $assetType = $params['asset_type'] ?? 'BANK-WALLET';
+        
+        $payload = [
+            'auth_id' => $authId,
+            'identifier' => $identifier,
+            'asset_type' => $assetType,
+            'action' => 'link_source',
+            'timestamp' => time()
         ];
         
-        error_log("[GenericBankClient] OAuth redirect URL: " . $authUrl);
+        $result = $this->sendSourceLinkingRequest('initiate', $payload);
+        
+        if (!$result['success']) {
+            return ['success' => false, 'message' => $result['message'] ?? 'Failed to initiate'];
+        }
+        
+        $data = $result['data'] ?? [];
         
         return [
             'success' => true,
-            'auth_type' => 'oauth',
-            'redirect_url' => $authUrl,
-            'state' => $state,
-            'message' => 'Redirect to bank authorization page'
+            'auth_type' => 'otp',
+            'auth_id' => $authId,
+            'message' => $data['message'] ?? 'OTP sent to your phone',
+            'expires_in' => $data['expires_in'] ?? 300,
+            'method' => $data['method'] ?? 'sms'
         ];
     }
-    
-    // ============================================================
-    // Fallback to OTP flow (only if not OAuth)
-    // ============================================================
-    $authId = $params['auth_id'] ?? 'AUTH_' . date('Ymd') . '_' . bin2hex(random_bytes(6));
-    $identifier = $params['identifier'] ?? '';
-    $assetType = $params['asset_type'] ?? 'BANK-WALLET';
-    
-    $payload = [
-        'auth_id' => $authId,
-        'identifier' => $identifier,
-        'asset_type' => $assetType,
-        'action' => 'link_source',
-        'timestamp' => time()
-    ];
-    
-    $result = $this->sendSourceLinkingRequest('initiate', $payload);
-    
-    if (!$result['success']) {
-        return ['success' => false, 'message' => $result['message'] ?? 'Failed to initiate'];
-    }
-    
-    $data = $result['data'] ?? [];
-    
-    return [
-        'success' => true,
-        'auth_type' => 'otp',
-        'auth_id' => $authId,
-        'message' => $data['message'] ?? 'OTP sent to your phone',
-        'expires_in' => $data['expires_in'] ?? 300,
-        'method' => $data['method'] ?? 'sms'
-    ];
-}
 
     public function verifySourceLink(array $params): array
-{
-    error_log("[GenericBankClient] verifySourceLink called");
-    
-    $endpoint = $this->getSourceLinkingEndpoint('verify');
-    if (!$endpoint) {
-        return ['success' => false, 'message' => 'Source linking not configured for this institution'];
-    }
-    
-    $baseUrl = $this->getBaseUrl();
-    $url = $baseUrl . '/' . ltrim($endpoint, '/');
-    
-    // ============================================================
-    // FIX: Check if this is an OAuth callback (has 'code' parameter)
-    // The endpoint path might indicate OAuth, not just the config
-    // ============================================================
-    $oauthConfig = $this->config['oauth'] ?? null;
-    $isOAuthEndpoint = strpos($endpoint, 'oauth') !== false || 
-                       strpos($endpoint, 'token') !== false ||
-                       strpos($endpoint, 'authorize') !== false;
-    
-    // ALSO check if the params contain 'code' - that's a strong OAuth indicator
-    $hasCode = isset($params['code']) && !empty($params['code']);
-    
-    // Use OAuth if configured OR if the endpoint looks like OAuth OR if 'code' is present
-    if ($oauthConfig || $isOAuthEndpoint || $hasCode) {
-        error_log("[GenericBankClient] OAuth verification detected! endpoint={$endpoint}, hasCode=" . ($hasCode ? 'YES' : 'NO'));
+    {
+        error_log("[GenericBankClient] verifySourceLink called");
         
-        $payload = [
-            'grant_type' => 'authorization_code',
-            'code' => $params['code'],
-            'redirect_uri' => $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn-production.up.railway.app/api/v1/agent/oauth_callback.php',
-            'client_id' => $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? 'VOUCHMORPH_APP_ID',
-            'client_secret' => $oauthConfig['client_secret'] ?? getenv('CLIENT_SECRET') ?? 'YOUR_BANK_SECRET'
-        ];
-        
-        $result = $this->sendSourceLinkingRequest('verify', $payload, 'application/x-www-form-urlencoded');
-        
-        if (!$result['success']) {
-            return ['success' => false, 'message' => $result['message'] ?? 'Failed to exchange code'];
+        $endpoint = $this->getSourceLinkingEndpoint('verify');
+        if (!$endpoint) {
+            return ['success' => false, 'message' => 'Source linking not configured for this institution'];
         }
         
-        $data = $result['data'] ?? $result;
+        $baseUrl = $this->getBaseUrl();
+        $url = $baseUrl . '/' . ltrim($endpoint, '/');
+        
+        // ============================================================
+        // Check if this is an OAuth callback (has 'code' parameter)
+        // ============================================================
+        $oauthConfig = $this->config['oauth'] ?? null;
+        $isOAuthEndpoint = strpos($endpoint, 'oauth') !== false || 
+                           strpos($endpoint, 'token') !== false ||
+                           strpos($endpoint, 'authorize') !== false;
+        
+        // ALSO check if the params contain 'code' - that's a strong OAuth indicator
+        $hasCode = isset($params['code']) && !empty($params['code']);
+        
+        // Use OAuth if configured OR if the endpoint looks like OAuth OR if 'code' is present
+        if ($oauthConfig || $isOAuthEndpoint || $hasCode) {
+            error_log("[GenericBankClient] OAuth verification detected! endpoint={$endpoint}, hasCode=" . ($hasCode ? 'YES' : 'NO'));
+            
+            // FIX: Use ?: operator to properly handle falsy values
+            $payload = [
+                'grant_type' => 'authorization_code',
+                'code' => $params['code'],
+                'redirect_uri' => $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn-production.up.railway.app/api/v1/agent/oauth_callback.php',
+                'client_id' => $oauthConfig['client_id'] ?: (getenv('CLIENT_ID') ?: 'VOUCHMORPH_APP_ID'),
+                'client_secret' => $oauthConfig['client_secret'] ?: (getenv('CLIENT_SECRET') ?: 'YOUR_BANK_SECRET')
+            ];
+            
+            $result = $this->sendSourceLinkingRequest('verify', $payload, 'application/x-www-form-urlencoded');
+            
+            if (!$result['success']) {
+                return ['success' => false, 'message' => $result['message'] ?? 'Failed to exchange code'];
+            }
+            
+            $data = $result['data'] ?? $result;
+            
+            return [
+                'success' => true,
+                'authorized' => true,
+                'source_reference' => 'SRC_' . date('Ymd') . '_' . bin2hex(random_bytes(8)),
+                'access_token' => $data['access_token'] ?? null,
+                'refresh_token' => $data['refresh_token'] ?? null,
+                'expires_at' => date('Y-m-d H:i:s', time() + ($data['expires_in'] ?? 3600)),
+                'token_type' => $data['token_type'] ?? 'Bearer'
+            ];
+        }
+        
+        // ============================================================
+        // OTP verification path (only if not OAuth)
+        // ============================================================
+        if (!isset($params['auth_id'])) {
+            error_log("[GenericBankClient] OTP verification missing auth_id");
+            return ['success' => false, 'message' => 'auth_id required for OTP verification'];
+        }
+        
+        if (!isset($params['otp'])) {
+            error_log("[GenericBankClient] OTP verification missing otp");
+            return ['success' => false, 'message' => 'otp required for verification'];
+        }
+        
+        $payload = [
+            'auth_id' => $params['auth_id'],
+            'otp' => $params['otp'],
+            'timestamp' => time()
+        ];
+        
+        $result = $this->sendSourceLinkingRequest('verify', $payload);
+        
+        if (!$result['success']) {
+            return ['success' => false, 'message' => $result['message'] ?? 'Invalid OTP'];
+        }
+        
+        $data = $result['data'] ?? [];
         
         return [
             'success' => true,
             'authorized' => true,
-            'source_reference' => 'SRC_' . date('Ymd') . '_' . bin2hex(random_bytes(8)),
+            'source_reference' => $data['source_reference'] ?? 'SRC_' . bin2hex(random_bytes(8)),
             'access_token' => $data['access_token'] ?? null,
             'refresh_token' => $data['refresh_token'] ?? null,
-            'expires_at' => date('Y-m-d H:i:s', time() + ($data['expires_in'] ?? 3600)),
-            'token_type' => $data['token_type'] ?? 'Bearer'
+            'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', time() + 3600),
+            'holder_name' => $data['holder_name'] ?? null
         ];
     }
-    
-    // ============================================================
-    // OTP verification path (only if not OAuth)
-    // ============================================================
-    if (!isset($params['auth_id'])) {
-        error_log("[GenericBankClient] OTP verification missing auth_id");
-        return ['success' => false, 'message' => 'auth_id required for OTP verification'];
-    }
-    
-    if (!isset($params['otp'])) {
-        error_log("[GenericBankClient] OTP verification missing otp");
-        return ['success' => false, 'message' => 'otp required for verification'];
-    }
-    
-    $payload = [
-        'auth_id' => $params['auth_id'],
-        'otp' => $params['otp'],
-        'timestamp' => time()
-    ];
-    
-    $result = $this->sendSourceLinkingRequest('verify', $payload);
-    
-    if (!$result['success']) {
-        return ['success' => false, 'message' => $result['message'] ?? 'Invalid OTP'];
-    }
-    
-    $data = $result['data'] ?? [];
-    
-    return [
-        'success' => true,
-        'authorized' => true,
-        'source_reference' => $data['source_reference'] ?? 'SRC_' . bin2hex(random_bytes(8)),
-        'access_token' => $data['access_token'] ?? null,
-        'refresh_token' => $data['refresh_token'] ?? null,
-        'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', time() + 3600),
-        'holder_name' => $data['holder_name'] ?? null
-    ];
-}
 
     public function refreshSourceToken(array $params): array
     {
@@ -655,8 +656,9 @@ class GenericBankClient implements BankAPIInterface
         
         if ($oauthConfig) {
             $payload['grant_type'] = 'refresh_token';
-            $payload['client_id'] = $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? 'VOUCHMORPH_APP_ID';
-            $payload['client_secret'] = $oauthConfig['client_secret'] ?? getenv('CLIENT_SECRET') ?? 'YOUR_BANK_SECRET';
+            // FIX: Use ?: operator to properly handle falsy values
+            $payload['client_id'] = $oauthConfig['client_id'] ?: (getenv('CLIENT_ID') ?: 'VOUCHMORPH_APP_ID');
+            $payload['client_secret'] = $oauthConfig['client_secret'] ?: (getenv('CLIENT_SECRET') ?: 'YOUR_BANK_SECRET');
         }
         
         $result = $this->sendSourceLinkingRequest('refresh', $payload, 'application/x-www-form-urlencoded');
@@ -693,8 +695,9 @@ class GenericBankClient implements BankAPIInterface
         ];
         
         if ($oauthConfig) {
-            $payload['client_id'] = $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? 'VOUCHMORPH_APP_ID';
-            $payload['client_secret'] = $oauthConfig['client_secret'] ?? getenv('CLIENT_SECRET') ?? 'YOUR_BANK_SECRET';
+            // FIX: Use ?: operator to properly handle falsy values
+            $payload['client_id'] = $oauthConfig['client_id'] ?: (getenv('CLIENT_ID') ?: 'VOUCHMORPH_APP_ID');
+            $payload['client_secret'] = $oauthConfig['client_secret'] ?: (getenv('CLIENT_SECRET') ?: 'YOUR_BANK_SECRET');
         }
         
         $result = $this->sendSourceLinkingRequest('revoke', $payload, 'application/x-www-form-urlencoded');
@@ -821,7 +824,7 @@ class GenericBankClient implements BankAPIInterface
         ];
         
         $codeVerifier = bin2hex(random_bytes(32));
-        $codeChallenge = rtrim(strtr(base64_encode(hash('sha256', $codeVerifier, true)), '+/', '-_'), '='); 
+        $codeChallenge = rtrim(strtr(base64_encode(hash('sha256', $codeVerifier, true)), '+/', '-_'), '=');
         
         $_SESSION['oauth_code_verifier_' . $state] = $codeVerifier;
         $params['code_challenge'] = $codeChallenge;
@@ -1158,7 +1161,7 @@ class GenericBankClient implements BankAPIInterface
     public function verifyToken(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: verifyToken ===");
-        return $this->send('verify_token', $payload); 
+        return $this->send('verify_token', $payload);
     }
 
     public function confirmCashout(array $payload): array
