@@ -579,14 +579,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         z-index: 0;
         overflow: hidden;
     }
-    .doodle-field svg { position: absolute; stroke: rgba(22,35,46,0.16); fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
-    .d1 { top: 8%;  left: 8%;  width: 54px; }
-    .d2 { top: 14%; right: 12%; width: 40px; stroke: rgba(180,136,74,0.35); }
-    .d3 { top: 38%; left: 4%;  width: 46px; }
-    .d4 { bottom: 20%; right: 6%; width: 58px; }
-    .d5 { bottom: 10%; left: 14%; width: 42px; stroke: rgba(180,136,74,0.35); }
-    .d6 { top: 58%; right: 24%; width: 34px; }
-    .d7 { bottom: 34%; left: 42%; width: 30px; stroke: rgba(180,136,74,0.3); }
+    .doodle-field svg { position: absolute; stroke: rgba(22,35,46,0.20); fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+    .doodle-field svg.brass { stroke: rgba(180,136,74,0.42); }
+    .doodle-field svg.faint { stroke: rgba(22,35,46,0.12); }
+
+    .magazine::before {
+        content: '';
+        position: absolute;
+        inset: -16px;
+        background: radial-gradient(ellipse at center, var(--brass-tint) 42%, rgba(246,239,223,0) 78%);
+        z-index: -1;
+    }
 
     .magazine {
         position: absolute;
@@ -734,16 +737,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <div class="frame-strip bottom"><span>VOUCHMORPH</span></div>
       <div class="frame-strip lateral"><span>VOUCHMORPH™</span></div>
 
-      <!-- hand-drawn line doodles: wallet, coins, phone-transfer, receipt, globe, arrow-swap -->
-      <div class="doodle-field" aria-hidden="true">
-        <svg class="d1" viewBox="0 0 48 40"><rect x="2" y="10" width="44" height="26" rx="4"/><path d="M2 18h44"/><circle cx="36" cy="27" r="3"/></svg>
-        <svg class="d2" viewBox="0 0 40 40"><circle cx="14" cy="14" r="10"/><circle cx="24" cy="24" r="10"/></svg>
-        <svg class="d3" viewBox="0 0 40 48"><rect x="6" y="2" width="28" height="44" rx="5"/><path d="M14 40h12"/><path d="M14 12h12M14 20h12M14 28h6"/></svg>
-        <svg class="d4" viewBox="0 0 52 40"><path d="M4 20h30M26 10l10 10-10 10"/><path d="M48 20H18M26 30 16 20l10-10"/></svg>
-        <svg class="d5" viewBox="0 0 40 40"><circle cx="20" cy="20" r="17"/><path d="M3 20h34M20 3c5 5 5 29 0 34M20 3c-5 5-5 29 0 34"/></svg>
-        <svg class="d6" viewBox="0 0 34 34"><path d="M4 26 26 4M26 4h-10M26 4v10"/></svg>
-        <svg class="d7" viewBox="0 0 30 30"><rect x="3" y="7" width="24" height="17" rx="2"/><path d="M3 12h24"/></svg>
-      </div>
+      <!-- doodle field is generated at runtime — see script at bottom -->
+      <div class="doodle-field" id="doodleField" aria-hidden="true"></div>
 
       <div class="magazine">
         <div class="script-word">Swap!</div>
@@ -790,6 +785,72 @@ document.querySelectorAll('.id-tab').forEach(btn => {
 document.getElementById('identifier-input')?.addEventListener('keypress', function (e) {
     if (e.key === 'Enter') this.closest('form').submit();
 });
+
+// ------------------------------------------------------------
+// Doodle field generator — scatters the icon library across the
+// right panel. Change DOODLE_COUNT to taste.
+// ------------------------------------------------------------
+const DOODLE_COUNT = 90;
+
+const DOODLE_LIBRARY = [
+    { vb: '0 0 48 40', p: '<rect x="2" y="10" width="44" height="26" rx="4"/><path d="M2 18h44"/><circle cx="36" cy="27" r="3"/>' },      // wallet
+    { vb: '0 0 40 40', p: '<circle cx="14" cy="14" r="10"/><circle cx="24" cy="24" r="10"/>' },                                            // coins
+    { vb: '0 0 40 48', p: '<rect x="6" y="2" width="28" height="44" rx="5"/><path d="M14 40h12"/><path d="M14 12h12M14 20h12M14 28h6"/>' }, // phone
+    { vb: '0 0 52 40', p: '<path d="M4 20h30M26 10l10 10-10 10"/><path d="M48 20H18M26 30 16 20l10-10"/>' },                               // swap arrows
+    { vb: '0 0 40 40', p: '<circle cx="20" cy="20" r="17"/><path d="M3 20h34M20 3c5 5 5 29 0 34M20 3c-5 5-5 29 0 34"/>' },                 // globe
+    { vb: '0 0 34 34', p: '<path d="M4 26 26 4M26 4h-10M26 4v10"/>' },                                                                      // send arrow
+    { vb: '0 0 30 30', p: '<rect x="3" y="7" width="24" height="17" rx="2"/><path d="M3 12h24"/>' },                                       // card
+    { vb: '0 0 30 36', p: '<rect x="4" y="12" width="22" height="20" rx="3"/><path d="M9 12V8a6 6 0 0 1 12 0v4"/><circle cx="15" cy="21" r="2"/>' }, // lock
+    { vb: '0 0 36 24', p: '<rect x="2" y="2" width="32" height="20" rx="3"/><path d="M2 9h32"/><path d="M7 16h8"/>' },                     // card 2
+    { vb: '0 0 40 30', p: '<path d="M2 26c6-14 12 6 18-6s10-14 18 4"/><ellipse cx="12" cy="10" rx="9" ry="6"/><path d="M12 16v6"/>' },      // piggy bank
+    { vb: '0 0 32 26', p: '<path d="M4 24 26 2M18 2h8v8"/><rect x="2" y="18" width="8" height="6" rx="1"/>' },                             // receipt arrow
+    { vb: '0 0 26 26', p: '<circle cx="13" cy="13" r="11"/><path d="M13 7v6l4 3"/>' },                                                      // clock
+    { vb: '0 0 24 24', p: '<path d="M12 2 4 6v6c0 5 3.4 8 8 10 4.6-2 8-5 8-10V6l-8-4Z"/>' },                                                // shield
+    { vb: '0 0 28 20', p: '<path d="M2 4h24v14H2z"/><path d="M2 4l12 9 12-9"/>' },                                                          // envelope
+    { vb: '0 0 30 30', p: '<path d="M15 3v24M4 8l11-5 11 5M4 22l11 5 11-5M4 8v14M26 8v14"/>' },                                             // bank
+    { vb: '0 0 20 20', p: '<path d="M10 1 12.5 7 19 8l-4.7 4.4L15.5 19 10 15.7 4.5 19l1.2-6.6L1 8l6.5-1Z"/>' },                             // star
+    { vb: '0 0 22 22', p: '<circle cx="6" cy="6" r="1.6"/><circle cx="14" cy="6" r="1.6"/><circle cx="6" cy="14" r="1.6"/><circle cx="14" cy="14" r="1.6"/>' }, // dots
+    { vb: '0 0 22 16', p: '<path d="M2 8c3-6 6-6 9 0s6 6 9 0"/>' },                                                                          // wave
+    { vb: '0 0 26 20', p: '<rect x="2" y="2" width="22" height="16" rx="2"/><path d="M2 7h22"/><path d="M6 12h6"/>' },                     // ID card
+    { vb: '0 0 18 18', p: '<path d="M3 9c0-3.3 2.7-6 6-6s6 2.7 6 6-2.7 6-6 6"/><path d="M9 3v6l4 2"/>' },                                   // small clock
+    { vb: '0 0 24 18', p: '<path d="M3 9c3-5 6.5-7 9-7s6 2 9 7c-3 5-6.5 7-9 7s-6-2-9-7Z"/><circle cx="12" cy="9" r="2.6"/>' },              // eye/visibility
+    { vb: '0 0 16 16', p: '<path d="M2 14 14 2M9 2h5v5"/>' },                                                                                // outbound arrow
+    { vb: '0 0 18 18', p: '<path d="M2 9h14M9 2v14"/>' },                                                                                    // plus
+    { vb: '0 0 22 22', p: '<circle cx="11" cy="11" r="9"/><path d="M7 11l3 3 5-6"/>' },                                                     // check
+];
+
+(function generateDoodles() {
+    const field = document.getElementById('doodleField');
+    if (!field) return;
+
+    const frag = document.createDocumentFragment();
+    const svgNS = 'http://www.w3.org/2000/svg';
+
+    for (let i = 0; i < DOODLE_COUNT; i++) {
+        const icon = DOODLE_LIBRARY[Math.floor(Math.random() * DOODLE_LIBRARY.length)];
+        const svg = document.createElementNS(svgNS, 'svg');
+        svg.setAttribute('viewBox', icon.vb);
+        svg.innerHTML = icon.p;
+
+        const size = 14 + Math.random() * 40;           // 14–54px
+        const top = Math.random() * 96;                  // 0–96%
+        const left = Math.random() * 96;                 // 0–96%
+        const rotate = Math.round(Math.random() * 40 - 20); // -20–20deg
+
+        svg.style.width = size + 'px';
+        svg.style.top = top + '%';
+        svg.style.left = left + '%';
+        svg.style.transform = `rotate(${rotate}deg)`;
+
+        const roll = Math.random();
+        if (roll < 0.22) svg.classList.add('brass');
+        else if (roll < 0.5) svg.classList.add('faint');
+
+        frag.appendChild(svg);
+    }
+
+    field.appendChild(frag);
+})();
 </script>
 </body>
 </html>
