@@ -3794,10 +3794,16 @@ error_log("[SwapService] Debit successful");
 // Consume the earmarked ledger now that money has actually, 
 // successfully left the account - never before this point.
 try {
-    $sourceIdentifierForLedger = $authorization['source_wallet'] ?? null;
-    if ($sourceIdentifierForLedger) {
-        $this->consumeEarmarkedBalance($sourceInstitution, $sourceIdentifierForLedger, $amountToSend + $feeAmount, $swapRef);
-    }
+    $sourceIdentifierForLedger = $authorization['source_identifier'] ?? null;
+if ($sourceIdentifierForLedger) {
+    $this->consumeEarmarkedBalance($sourceInstitution, $sourceIdentifierForLedger, $amountToSend + $feeAmount, $swapRef);
+} else {
+    // Older authorizations created before this fix will have no
+    // source_identifier on record - log it so it's visible in
+    // reconciliation rather than silently skipping ledger consumption.
+    error_log("[SwapService] No source_identifier on cashout_authorizations for auth_id={$authId} (swap_ref={$swapRef}) - cannot consume earmarked balance, likely a pre-migration record.");
+}
+
 } catch (Exception $e) {
     error_log("[SwapService] Non-fatal: failed to consume earmarked balance after successful debit: " . $e->getMessage());
 }
