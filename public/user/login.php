@@ -583,14 +583,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     .doodle-field svg.brass { stroke: rgba(180,136,74,0.42); }
     .doodle-field svg.faint { stroke: rgba(22,35,46,0.12); }
 
-    .magazine::before {
-        content: '';
-        position: absolute;
-        inset: -16px;
-        background: radial-gradient(ellipse at center, var(--brass-tint) 42%, rgba(246,239,223,0) 78%);
-        z-index: -1;
-    }
-
     .magazine {
         position: absolute;
         inset: var(--frame-inset);
@@ -601,6 +593,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         text-align: center;
         padding: var(--sp-7) var(--sp-6);
         z-index: 1;
+    }
+    /* halo, not a fade: punches letterforms clear of doodles crossing
+       behind them without masking the artwork itself */
+    .halo-text {
+        text-shadow:
+            0 0 6px var(--brass-tint), 0 0 6px var(--brass-tint),
+            0 0 10px var(--brass-tint), 0 0 10px var(--brass-tint);
     }
     .magazine .script-word {
         font-family: var(--f-script);
@@ -741,10 +740,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <div class="doodle-field" id="doodleField" aria-hidden="true"></div>
 
       <div class="magazine">
-        <div class="script-word">Swap!</div>
-        <div class="eyebrow">Your money, moving freely</div>
-        <p>Send funds home, top up a card, or pay a bill — VouchMorph moves your money across banks, wallets, and borders in a single, secure step.</p>
-        <p class="secondary">Every transfer is <strong>PIN-protected</strong> and tracked end to end, so you always know exactly where your money is.</p>
+        <div class="script-word halo-text">Swap!</div>
+        <div class="eyebrow halo-text">Your money, moving freely</div>
+        <p class="halo-text">Send funds home, top up a card, or pay a bill — VouchMorph moves your money across banks, wallets, and borders in a single, secure step.</p>
+        <p class="secondary halo-text">Every transfer is <strong>PIN-protected</strong> and tracked end to end, so you always know exactly where your money is.</p>
         <div class="rule"></div>
       </div>
     </div>
@@ -790,7 +789,7 @@ document.getElementById('identifier-input')?.addEventListener('keypress', functi
 // Doodle field generator — scatters the icon library across the
 // right panel. Change DOODLE_COUNT to taste.
 // ------------------------------------------------------------
-const DOODLE_COUNT = 90;
+const DOODLE_COUNT = 160;
 
 const DOODLE_LIBRARY = [
     { vb: '0 0 48 40', p: '<rect x="2" y="10" width="44" height="26" rx="4"/><path d="M2 18h44"/><circle cx="36" cy="27" r="3"/>' },      // wallet
