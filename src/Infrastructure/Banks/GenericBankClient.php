@@ -482,7 +482,7 @@ class GenericBankClient implements BankAPIInterface
         error_log("[GenericBankClient] OAuth detected! endpoint={$endpoint}, isOAuthEndpoint=" . ($isOAuthEndpoint ? 'YES' : 'NO'));
         
         $clientId = $oauthConfig['client_id'] ?? 'VOUCHMORPH_APP_ID';
-        $redirectUri = $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn.com/api/v1/agent/oauth_callback.php';
+        $redirectUri = $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://https://vouchmorphn-production.up.railway.app/api/v1/agent/oauth_callback.php';
         $state = $params['state'] ?? bin2hex(random_bytes(16));
         $scopes = $params['scope'] ?? $oauthConfig['scopes'] ?? ['read_balance', 'read_transactions', 'payments'];
         
@@ -563,7 +563,7 @@ class GenericBankClient implements BankAPIInterface
             $payload = [
                 'grant_type' => 'authorization_code',
                 'code' => $params['code'],
-                'redirect_uri' => $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn.com/api/v1/source/auth/callback',
+                'redirect_uri' => $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://https://vouchmorphn-production.up.railway.app/api/v1/source/auth/callback',
                 'client_id' => $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? 'VOUCHMORPH_APP_ID',
                 'client_secret' => $oauthConfig['client_secret'] ?? getenv('CLIENT_SECRET') ?? 'YOUR_BANK_SECRET'
             ];
