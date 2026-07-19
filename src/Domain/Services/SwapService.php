@@ -3779,6 +3779,22 @@ if (!$debitSuccess) {
 
         error_log("[SwapService] Debit successful");
 
+         
+error_log("[SwapService] Debit successful");
+ 
+// Consume the earmarked ledger now that money has actually, 
+// successfully left the account - never before this point.
+try {
+    $sourceIdentifierForLedger = $authorization['source_wallet'] ?? null;
+    if ($sourceIdentifierForLedger) {
+        $this->consumeEarmarkedBalance($sourceInstitution, $sourceIdentifierForLedger, $amountToSend + $feeAmount, $swapRef);
+    }
+} catch (Exception $e) {
+    error_log("[SwapService] Non-fatal: failed to consume earmarked balance after successful debit: " . $e->getMessage());
+}
+ 
+
+
         // ============================================================
         // 6. UPDATE STATUSES
         // ============================================================
