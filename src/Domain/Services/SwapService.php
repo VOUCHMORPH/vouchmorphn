@@ -4461,6 +4461,8 @@ if (!$debitSuccess) {
     // recipient and needs a one-time OTP PIN.
     $owner = $this->findVerifiedIdentityOwner($identityType, $identityValue);
     $notificationPhone = $payload['notification_phone'] ?? $payload['beneficiary_phone'] ?? null;
+
+    $levyAmount = (float)($this->feesConfig['DEPOSIT']['fee_components']['F7']['amount'] ?? 0);
  
     $claimType = null;
     $otpHash = null;
