@@ -2338,7 +2338,7 @@ public function releaseCashoutHold(int $authId, string $reason): array
     if (!$auth) {
         throw new RuntimeException("Cashout authorization not found: {$authId}");
     }
-
+}
     if ($auth['status'] === 'COMPLETED') {
         error_log("[SwapService] auth_id={$authId} already COMPLETED - refusing to release");
         return ['status' => 'already_completed', 'auth_id' => $authId];
