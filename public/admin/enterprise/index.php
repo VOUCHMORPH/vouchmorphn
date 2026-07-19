@@ -39,6 +39,11 @@ $isApprover = in_array($userRole, ['approver', 'senior_approver']);
 $isSupervisor = in_array($userRole, ['owner', 'it_manager_enterprise']);
 $isLoader = in_array($userRole, ['program_officer', 'department_head']);
 
+// Source account maker-checker: Finance Officers propose, Owner/IT Manager confirm.
+$canProposeSource = in_array($userRole, ['finance_officer', 'owner']);
+$canConfirmSource = in_array($userRole, ['owner', 'it_manager_enterprise']);
+$canManageSourceAccounts = $canProposeSource || $canConfirmSource;
+
 // ============================================================
 // HELPER: Check if user can edit a batch
 // ============================================================
@@ -151,6 +156,24 @@ try {
     ");
     $stmt->execute([':org_id' => $orgId]);
     $metrics['pending_approvals'] = (int)$stmt->fetchColumn();
+
+    // For Owner/IT Manager - source accounts awaiting confirmation
+    if ($canConfirmSource) {
+        try {
+            $stmt = $pdo->prepare("
+                SELECT COUNT(*) as total 
+                FROM source_accounts 
+                WHERE organization_id = :org_id 
+                AND status = 'pending_confirmation'
+                AND deleted_at IS NULL
+            ");
+            $stmt->execute([':org_id' => $orgId]);
+            $metrics['pending_source_confirmations'] = (int)$stmt->fetchColumn();
+        } catch (PDOException $e) {
+            error_log("[ENTERPRISE DASHBOARD] Source metrics error: " . $e->getMessage());
+            $metrics['pending_source_confirmations'] = 0;
+        }
+    }
     
     // Recent batches with status-based filtering
     $statusFilter = "";
@@ -245,6 +268,7 @@ function getRoleLabel($role) {
         'it_support' => 'IT Support',
         'department_head' => 'Department Head',
         'program_officer' => 'Program Officer',
+        'finance_officer' => 'Finance Officer',
         'approver' => 'Approver',
         'senior_approver' => 'Senior Approver',
         'supervisor' => 'Supervisor',
@@ -881,6 +905,14 @@ function getRoleLabel($role) {
         <a href="imports/add_destinations.php" class="nav-item">📝 Add Destinations</a>
         <?php endif; ?>
         
+        <?php if ($canManageSourceAccounts): ?>
+        <a href="imports/add_source.php" class="nav-item">💰 Source Accounts
+            <?php if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0): ?>
+            <span class="badge"><?php echo $metrics['pending_source_confirmations']; ?></span>
+            <?php endif; ?>
+        </a>
+        <?php endif; ?>
+        
         <a href="reports.php" class="nav-item">📈 Reports</a>
         
         <?php if ($canManageUsers): ?>
@@ -1147,6 +1179,26 @@ function getRoleLabel($role) {
             <div class="desc">
                 You can add and manage beneficiaries for disbursement batches.
                 <a href="imports/add_destinations.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Add Beneficiaries</a>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0): ?>
+        <div class="info-panel" style="border-left-color: var(--amber); background: #fef3c7;">
+            <div class="label">💰 Source Accounts Awaiting Confirmation</div>
+            <div class="desc">
+                <span class="highlight"><?php echo $metrics['pending_source_confirmations']; ?> source account(s)</span> proposed by Finance are waiting for an Owner or IT Manager to confirm before they can be used in disbursements.
+                <a href="imports/add_source.php" class="btn btn-warning btn-sm" style="margin-left:12px;">Review Now</a>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($userRole === 'finance_officer'): ?>
+        <div class="info-panel" style="border-left-color: var(--brass); background: var(--brass-tint);">
+            <div class="label">💰 Finance Officer Access</div>
+            <div class="desc">
+                You can propose new source accounts for disbursements. An Owner or IT Manager (not you) must confirm each one before it becomes usable.
+                <a href="imports/add_source.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Manage Source Accounts</a>
             </div>
         </div>
         <?php endif; ?>
