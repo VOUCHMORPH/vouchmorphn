@@ -1,11 +1,11 @@
 <?php
-// /api/v1/agent/cancel_destination.php
+// /public/api/v1/agent/cancel_destination.php
 
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
 
 use Application\Utils\SessionManager;
-use Infrastructure\Database\DBConnection;
+use Core\Database\DBConnection;
 use Domain\Services\SwapService;
 
 SessionManager::start();
@@ -35,9 +35,14 @@ if (!$destinationId) {
 }
 
 try {
-    $db = DBConnection::getInstance();
-    $swapService = new SwapService($db, [], 'Botswana');
+    // Get database connection using Core\Database\DBConnection
+    $db = DBConnection::getConnection();
     
+    if (!$db) {
+        throw new \Exception("Failed to connect to database");
+    }
+    
+    $swapService = new SwapService($db, [], 'Botswana');
     $result = $swapService->cancelAgentDestination($userId, $destinationId);
     
     echo json_encode(['success' => true, 'data' => $result]);
