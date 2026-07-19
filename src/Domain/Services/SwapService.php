@@ -4189,75 +4189,104 @@ if (!$debitSuccess) {
     // ============================================================================
 
     private function storeIdentityHold(array $payload, string $swapRef, array $holdResult, int $holdId): int
-    {
-        $sourceInstitution = $this->extractSourceInstitution($payload);
-        
-        $sql = "
-            INSERT INTO identity_swap_holds (
-                swap_reference,
-                source_institution,
-                source_identifier,
-                source_asset_type,
-                amount,
-                currency,
-                identity_type,
-                identity_value,
-                hold_reference,
-                hold_id,
-                hold_expires_at,
-                status,
-                source_payload,
-                metadata,
-                created_by
-            ) VALUES (
-                :swap_ref,
-                :source_institution,
-                :source_identifier,
-                :asset_type,
-                :amount,
-                :currency,
-                :identity_type,
-                :identity_value,
-                :hold_reference,
-                :hold_id,
-                :expires_at,
-                'pending',
-                :source_payload::jsonb,
-                :metadata::jsonb,
-                :created_by
-            ) RETURNING hold_id
-        ";
-        
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':swap_ref' => $swapRef,
-                ':source_institution' => $sourceInstitution,
-                ':source_identifier' => $payload['source_identifier'],
-                ':asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
-                ':amount' => $payload['amount'],
-                ':currency' => $payload['currency'] ?? 'BWP',
-                ':identity_type' => $payload['identity_type'],
-                ':identity_value' => $payload['identity_value'],
-                ':hold_reference' => $holdResult['hold_reference'],
-                ':hold_id' => $holdId,
-                ':expires_at' => date('Y-m-d H:i:s', strtotime('+24 hours')),
-                ':source_payload' => json_encode($payload),
-                ':metadata' => json_encode([
-                    'signed_payloads' => $this->signedPayloads,
-                    'hold_result' => $holdResult
-                ]),
-                ':created_by' => $payload['user_id'] ?? null
-            ]);
-            
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            return $row ? (int)$row['hold_id'] : 0;
-            
-        } catch (PDOException $e) {
-            error_log("[SwapService] Failed to store identity hold: " . $e->getMessage());
-            throw new RuntimeException("Failed to store identity hold: " . $e->getMessage());
+{
+    $sourceInstitution = $this->extractSourceInstitution($payload);
+    $identityType = strtolower($payload['identity_type']);
+    $identityValue = $payload['identity_value'];
+ 
+    // Decide claim path: is this identity already a VERIFIED owner
+    // in our system? If so, they'll use their personal account PIN
+    // at claim time. If not, this is a first-time/unregistered
+    // recipient and needs a one-time OTP PIN.
+    $owner = $this->findVerifiedIdentityOwner($identityType, $identityValue);
+    $notificationPhone = $payload['notification_phone'] ?? $payload['beneficiary_phone'] ?? null;
+ 
+    $claimType = null;
+    $otpHash = null;
+    $requiresDual = false;
+ 
+    if ($owner) {
+        $claimType = 'account_pin';
+        error_log("[SwapService] Identity {$identityType}={$identityValue} is a VERIFIED registered owner (user_id={$owner['user_id']}) - claim will require their account PIN");
+    } elseif ($notificationPhone) {
+        $claimType = 'otp_pin';
+        $otp = $this->generateOtpPin();
+        $otpHash = password_hash($otp, PASSWORD_DEFAULT);
+        error_log("[SwapService] Identity {$identityType}={$identityValue} is UNREGISTERED - generated one-time claim PIN, sending to {$notificationPhone}");
+        if ($this->smsService) {
+            try {
+                $this->smsService->sendCashoutCode($notificationPhone, $otp, (float)$payload['amount'], $swapRef);
+            } catch (Exception $e) {
+                error_log("[SwapService] Failed to SMS claim PIN: " . $e->getMessage());
+            }
         }
+    } else {
+        // No registered owner AND no phone to send an OTP to.
+        // This is the hard case flagged in review: an agent's word
+        // alone must never be sufficient to release funds here.
+        // Dual confirmation (two independent agents, or one agent +
+        // a VouchMorph ops reviewer) is required, but that reviewer
+        // workflow isn't built yet — so we deliberately block single-
+        // actor finalization rather than silently allowing it.
+        $claimType = 'dual_confirmation';
+        $requiresDual = true;
+        error_log("[SwapService] WARNING: Identity {$identityType}={$identityValue} has no registered owner and no phone - flagged for dual confirmation (not yet implemented; finalization will be blocked until built)");
     }
+ 
+    $sql = "
+        INSERT INTO identity_swap_holds (
+            swap_reference, source_institution, source_identifier, source_asset_type,
+            amount, currency, identity_type, identity_value,
+            hold_reference, hold_id, hold_expires_at, status,
+            source_payload, metadata, created_by,
+            otp_pin_hash, otp_pin_sent_to, otp_pin_sent_at,
+            requires_dual_confirmation, claim_type
+        ) VALUES (
+            :swap_ref, :source_institution, :source_identifier, :asset_type,
+            :amount, :currency, :identity_type, :identity_value,
+            :hold_reference, :hold_id, :expires_at, 'pending',
+            :source_payload::jsonb, :metadata::jsonb, :created_by,
+            :otp_pin_hash, :otp_pin_sent_to, :otp_pin_sent_at,
+            :requires_dual, :claim_type
+        ) RETURNING hold_id
+    ";
+ 
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':swap_ref' => $swapRef,
+            ':source_institution' => $sourceInstitution,
+            ':source_identifier' => $payload['source_identifier'],
+            ':asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
+            ':amount' => $payload['amount'],
+            ':currency' => $payload['currency'] ?? 'BWP',
+            ':identity_type' => $identityType,
+            ':identity_value' => $identityValue,
+            ':hold_reference' => $holdResult['hold_reference'],
+            ':hold_id' => $holdId,
+            ':expires_at' => date('Y-m-d H:i:s', strtotime('+24 hours')),
+            ':source_payload' => json_encode($payload),
+            ':metadata' => json_encode([
+                'signed_payloads' => $this->signedPayloads,
+                'hold_result' => $holdResult
+            ]),
+            ':created_by' => $payload['user_id'] ?? null,
+            ':otp_pin_hash' => $otpHash,
+            ':otp_pin_sent_to' => $otpHash ? $notificationPhone : null,
+            ':otp_pin_sent_at' => $otpHash ? date('Y-m-d H:i:s') : null,
+            ':requires_dual' => $requiresDual ? 't' : 'f',
+            ':claim_type' => $claimType
+        ]);
+ 
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ? (int)$row['hold_id'] : 0;
+ 
+    } catch (PDOException $e) {
+        error_log("[SwapService] Failed to store identity hold: " . $e->getMessage());
+        throw new RuntimeException("Failed to store identity hold: " . $e->getMessage());
+    }
+}
+
 
     private function updateIdentityHoldStatus(int $holdId, string $status, array $additionalData = []): void
     {
