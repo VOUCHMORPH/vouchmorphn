@@ -3163,66 +3163,98 @@ $this->verifyIdentityClaimPin($identitySwap, $suppliedPin);
         }
     }
 
-    public function cancelExpiredIdentitySwaps(): array
-    {
-        error_log("[SwapService] ===== cancelExpiredIdentitySwaps =====");
-        
-        $results = ['total_expired' => 0, 'cancelled' => 0, 'errors' => 0, 'details' => []];
-        
-        $sql = "
-            SELECT * FROM identity_swap_holds 
-            WHERE status = 'pending' 
-            AND hold_expires_at < NOW()
-        ";
-        
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute();
-            $expiredSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            $results['total_expired'] = count($expiredSwaps);
-            
-            foreach ($expiredSwaps as $swap) {
-                try {
-                    $adapter = $this->adapterFactory->getAdapter($swap['source_institution']);
-                    
-                    $releaseResult = $adapter->releaseHold([
-                        'hold_reference' => $swap['hold_reference'],
-                        'action' => 'RELEASE_HOLD',
-                        'reason' => 'Identity swap expired after 24 hours'
-                    ], []);
-                    
-                    $this->updateIdentityHoldStatus($swap['hold_id'], 'expired', [
-                        'release_result' => $releaseResult,
-                        'expired_at' => date('Y-m-d H:i:s')
-                    ]);
-                    
-                    $this->updateHoldStatus($swap['hold_id'], 'RELEASED');
-                    
-                    $results['cancelled']++;
-                    $results['details'][] = [
-                        'swap_reference' => $swap['swap_reference'],
-                        'hold_id' => $swap['hold_id'],
-                        'status' => 'expired'
-                    ];
-                    
-                } catch (Exception $e) {
-                    error_log("[SwapService] Failed to cancel swap {$swap['swap_reference']}: " . $e->getMessage());
-                    $results['errors']++;
-                    $results['details'][] = [
-                        'swap_reference' => $swap['swap_reference'],
-                        'status' => 'error',
-                        'error' => $e->getMessage()
-                    ];
+     
+public function cancelExpiredIdentitySwaps(): array
+{
+    error_log("[SwapService] ===== cancelExpiredIdentitySwaps =====");
+ 
+    $results = ['total_expired' => 0, 'cancelled' => 0, 'errors' => 0, 'details' => []];
+ 
+    $sql = "
+        SELECT * FROM identity_swap_holds
+        WHERE status = 'pending'
+        AND hold_expires_at < NOW()
+    ";
+ 
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute();
+        $expiredSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $results['total_expired'] = count($expiredSwaps);
+ 
+        foreach ($expiredSwaps as $swap) {
+            try {
+                $levy = (float)($swap['levy_amount'] ?? 0);
+                $sourceInstitution = $swap['source_institution'];
+                $swapRef = $swap['swap_reference'];
+ 
+                if ($levy > 0) {
+                    try {
+                        $this->settlement->invoiceFee(
+                            $swapRef,
+                            $sourceInstitution,
+                            $this->getParticipantId('VOUCHMORPH'),
+                            'SWAP_LEVY',
+                            $levy,
+                            $swap['currency'] ?? 'BWP'
+                        );
+ 
+                        $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
+                        $adapter->debit([
+                            'reference' => $swapRef . '_EXPIRED_LEVY',
+                            'hold_reference' => $swap['hold_reference'],
+                            'amount' => $levy,
+                            'reason' => 'Identity swap expired unclaimed - withholding non-refundable levy',
+                            'from_institution' => $sourceInstitution,
+                            'source_institution' => $sourceInstitution,
+                        ], []);
+                    } catch (Exception $e) {
+                        error_log("[SwapService] Failed to withhold levy on expired identity swap {$swapRef}: " . $e->getMessage());
+                    }
                 }
+ 
+                $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
+                $releaseResult = $adapter->releaseHold([
+                    'hold_reference' => $swap['hold_reference'],
+                    'action' => 'RELEASE_HOLD',
+                    'reason' => "Identity swap expired after 24 hours. Withheld levy: {$levy}."
+                ], []);
+ 
+                $this->updateIdentityHoldStatus($swap['hold_id'], 'expired', [
+                    'release_result' => $releaseResult,
+                    'levy_withheld' => $levy,
+                    'expired_at' => date('Y-m-d H:i:s')
+                ]);
+ 
+                $this->updateHoldStatus($swap['hold_id'], $levy > 0 ? 'PARTIALLY_RELEASED' : 'RELEASED');
+ 
+                $results['cancelled']++;
+                $results['details'][] = [
+                    'swap_reference' => $swap['swap_reference'],
+                    'hold_id' => $swap['hold_id'],
+                    'levy_withheld' => $levy,
+                    'status' => 'expired'
+                ];
+ 
+            } catch (Exception $e) {
+                error_log("[SwapService] Failed to cancel swap {$swap['swap_reference']}: " . $e->getMessage());
+                $results['errors']++;
+                $results['details'][] = [
+                    'swap_reference' => $swap['swap_reference'],
+                    'status' => 'error',
+                    'error' => $e->getMessage()
+                ];
             }
-            
-            return $results;
-            
-        } catch (PDOException $e) {
-            error_log("[SwapService] Failed to get expired swaps: " . $e->getMessage());
-            throw new RuntimeException("Failed to cancel expired swaps: " . $e->getMessage());
         }
+ 
+        return $results;
+ 
+    } catch (PDOException $e) {
+        error_log("[SwapService] Failed to get expired swaps: " . $e->getMessage());
+        throw new RuntimeException("Failed to cancel expired swaps: " . $e->getMessage());
     }
+}
+
 
     // ============================================================================
     // EXECUTE VERIFY CASHOUT & CONFIRM CASHOUT
