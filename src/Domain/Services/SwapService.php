@@ -4995,7 +4995,7 @@ private function findAuthorization(string $swapReference = null, int $authId = n
     {
         if ($holdId === null) return;
         
-        $validStatuses = ['ACTIVE', 'HELD', 'PENDING_CASHOUT', 'DEBITED', 'RELEASED', 'CANCELLED', 'FAILED', 'PENDING_IDENTITY'];
+        $validStatuses = ['ACTIVE', 'HELD', 'PENDING_CASHOUT', 'DEBITED', 'RELEASED', 'PARTIALLY_RELEASED', 'CANCELLED', 'FAILED', 'PENDING_IDENTITY'];
         if (!in_array($status, $validStatuses)) return;
         
         $sql = "
