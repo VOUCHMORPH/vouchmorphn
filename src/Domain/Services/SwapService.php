@@ -3033,7 +3033,25 @@ $this->verifyIdentityClaimPin($identitySwap, $suppliedPin);
         $depositPayload['_confirmed_by_type'] = $confirmationPayload['confirmed_by_type'] ?? 'user';
         $depositPayload['_confirmed_by_id'] = $confirmationPayload['confirmed_by_id'] ?? 0;
         
-        return $this->executeSignedDeposit($depositPayload);
+$result = $this->executeSignedDeposit($depositPayload);
+ 
+// Money has now genuinely landed in the destination account and the
+// source hold is fully closed - this is the only point where
+// VouchMorph can still create a tracking record for "how much of
+// this account's new balance is earmarked identity money."
+if (($result['status'] ?? null) === 'success') {
+    $this->createEarmarkedBalance(
+        (int)$identitySwap['hold_id'],
+        $destinationInstitution,
+        (string)$destIdentifier,
+        $destIdentifierType,
+        (float)$identitySwap['amount'],
+        $identitySwap['currency'] ?? 'BWP'
+    );
+}
+ 
+return $result;
+ 
     }
 
     // ============================================================================
