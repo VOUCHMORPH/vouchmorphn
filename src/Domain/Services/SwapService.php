@@ -2126,6 +2126,18 @@ class SwapService
         $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
         
         error_log("[SwapService] Source: {$sourceInstitution}, Dest: {$destinationInstitution}, Amount: {$amount}");
+
+         
+// Reject early if this withdrawal would leave an un-redeemable dust
+// amount of earmarked identity money behind. Uses the SOURCE side of
+// this cashout, since a cashout's "source" is the account the money
+// is being withdrawn FROM (e.g. the shop/agent's account that
+// received identity-swap money earlier).
+$sourceIdForEarmarkCheck = $this->extractSourceIdentifier($payload);
+if ($sourceIdForEarmarkCheck['has_value']) {
+    $this->validateEarmarkedWithdrawal($sourceInstitution, $sourceIdForEarmarkCheck['identifier'], $amount);
+}
+
         
         if (isset($payload['_cashout_validation'])) {
             $this->feeCalculationDetails['cashout_validation'] = $payload['_cashout_validation'];
