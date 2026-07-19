@@ -4368,50 +4368,202 @@ if (!$debitSuccess) {
         }
     }
 
-    private function verifyUserOwnsIdentity(int $userId, string $identityType, string $identityValue): void
-    {
-        try {
-            $stmt = $this->swapDB->prepare("SELECT to_regclass('user_identities')");
-            $stmt->execute();
-            $tableExists = $stmt->fetchColumn();
-            
-            if (!$tableExists) {
-                error_log("[SwapService] user_identities table not found - skipping identity check");
-                return;
-            }
-        } catch (Exception $e) {
-            error_log("[SwapService] user_identities table check failed - skipping");
-            return;
+    
+private function generateOtpPin(): string
+{
+    return str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+}
+ 
+/**
+ * Look up whether an identity_type/identity_value pair belongs to
+ * a registered user with a VERIFIED (KYC-approved) identity record.
+ * Returns the owning user's id if so, null otherwise.
+ */
+private function findVerifiedIdentityOwner(string $identityType, string $identityValue): ?array
+{
+    try {
+        $stmt = $this->swapDB->prepare("
+            SELECT user_id FROM user_identities
+            WHERE identity_type = :type AND identity_value = :value AND status = 'verified'
+            LIMIT 1
+        ");
+        $stmt->execute([':type' => $identityType, ':value' => $identityValue]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ? ['user_id' => (int)$row['user_id']] : null;
+    } catch (PDOException $e) {
+        error_log("[SwapService] findVerifiedIdentityOwner failed: " . $e->getMessage());
+        return null;
+    }
+}
+ 
+/**
+ * Verifies the PIN supplied at claim time against whichever claim
+ * path was decided at initiation (account_pin / otp_pin /
+ * dual_confirmation), with attempt-based lockout on both paths.
+ * Throws on any failure - callers never get a silent pass.
+ */
+private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin): void
+{
+    $claimType = $identitySwap['claim_type'] ?? null;
+    $holdId = (int)$identitySwap['hold_id'];
+ 
+    if ($suppliedPin === '') {
+        throw new RuntimeException("A PIN is required to finalize this claim.");
+    }
+ 
+    if ($claimType === 'dual_confirmation') {
+        throw new RuntimeException(
+            "This claim has no registered owner and no phone on file, so it requires " .
+            "confirmation from two independent parties. That workflow is not yet available - " .
+            "please escalate to VouchMorph ops rather than finalizing manually."
+        );
+    }
+ 
+    if ($claimType === 'otp_pin') {
+        $this->assertNotLocked($identitySwap['otp_pin_locked_until'] ?? null, 'claim PIN');
+ 
+        $hash = $identitySwap['otp_pin_hash'] ?? null;
+        if (!$hash || !password_verify($suppliedPin, $hash)) {
+            $this->recordFailedIdentityOtpAttempt($holdId, (int)($identitySwap['otp_pin_attempts'] ?? 0));
+            throw new RuntimeException("Incorrect claim PIN.");
         }
-        
-        $sql = "
-            SELECT COUNT(*) as count 
-            FROM user_identities 
-            WHERE user_id = :user_id 
-            AND identity_type = :identity_type 
-            AND identity_value = :identity_value
-        ";
-        
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':user_id' => $userId,
-                ':identity_type' => $identityType,
-                ':identity_value' => $identityValue
-            ]);
-            
-            $result = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (($result['count'] ?? 0) > 0) {
-                error_log("[SwapService] User {$userId} verified owns identity {$identityType}:{$identityValue}");
-            } else {
-                error_log("[SwapService] User {$userId} does NOT own identity {$identityType}:{$identityValue} - can use AGENT route");
-            }
-            
-        } catch (PDOException $e) {
-            error_log("[SwapService] Failed to verify user identity: " . $e->getMessage());
+ 
+        // Single-use: clear it so it can't be replayed.
+        $stmt = $this->swapDB->prepare("
+            UPDATE identity_swap_holds
+            SET otp_pin_hash = NULL, otp_pin_attempts = 0
+            WHERE hold_id = :id
+        ");
+        $stmt->execute([':id' => $holdId]);
+        return;
+    }
+ 
+    if ($claimType === 'account_pin') {
+        $owner = $this->findVerifiedIdentityOwner($identitySwap['identity_type'], $identitySwap['identity_value']);
+        if (!$owner) {
+            // Identity was verified at initiation time but no longer is
+            // (or was removed) - fail closed, don't fall back to OTP.
+            throw new RuntimeException("This identity's verification status changed - claim cannot proceed. Contact support.");
+        }
+ 
+        $stmt = $this->swapDB->prepare("
+            SELECT transaction_pin_hash, transaction_pin_attempts, transaction_pin_locked_until
+            FROM users WHERE user_id = :id
+        ");
+        $stmt->execute([':id' => $owner['user_id']]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+ 
+        if (!$user || empty($user['transaction_pin_hash'])) {
+            throw new RuntimeException("No transaction PIN has been set on this account yet. Set one in your VouchMorph profile before claiming.");
+        }
+ 
+        $this->assertNotLocked($user['transaction_pin_locked_until'] ?? null, 'transaction PIN');
+ 
+        if (!password_verify($suppliedPin, $user['transaction_pin_hash'])) {
+            $this->recordFailedAccountPinAttempt($owner['user_id'], (int)($user['transaction_pin_attempts'] ?? 0));
+            throw new RuntimeException("Incorrect transaction PIN.");
+        }
+ 
+        // Reset attempt counter on success.
+        $stmt = $this->swapDB->prepare("UPDATE users SET transaction_pin_attempts = 0 WHERE user_id = :id");
+        $stmt->execute([':id' => $owner['user_id']]);
+        return;
+    }
+ 
+    throw new RuntimeException("Unknown claim type for this identity swap - cannot verify PIN.");
+}
+ 
+private function assertNotLocked(?string $lockedUntil, string $label): void
+{
+    if ($lockedUntil && strtotime($lockedUntil) > time()) {
+        $waitMinutes = ceil((strtotime($lockedUntil) - time()) / 60);
+        throw new RuntimeException("Too many incorrect attempts on the {$label}. Try again in {$waitMinutes} minute(s).");
+    }
+}
+ 
+private function recordFailedIdentityOtpAttempt(int $holdId, int $currentAttempts): void
+{
+    $attempts = $currentAttempts + 1;
+    $maxAttempts = 5;
+    $lockUntil = $attempts >= $maxAttempts ? date('Y-m-d H:i:s', strtotime('+30 minutes')) : null;
+ 
+    $stmt = $this->swapDB->prepare("
+        UPDATE identity_swap_holds
+        SET otp_pin_attempts = :attempts, otp_pin_locked_until = :lock
+        WHERE hold_id = :id
+    ");
+    $stmt->execute([':attempts' => $attempts, ':lock' => $lockUntil, ':id' => $holdId]);
+ 
+    if ($lockUntil) {
+        error_log("[SECURITY] Identity swap hold {$holdId} claim PIN locked after {$attempts} failed attempts");
+    }
+}
+ 
+private function recordFailedAccountPinAttempt(int $userId, int $currentAttempts): void
+{
+    $attempts = $currentAttempts + 1;
+    $maxAttempts = 5;
+    $lockUntil = $attempts >= $maxAttempts ? date('Y-m-d H:i:s', strtotime('+30 minutes')) : null;
+ 
+    $stmt = $this->swapDB->prepare("
+        UPDATE users
+        SET transaction_pin_attempts = :attempts, transaction_pin_locked_until = :lock
+        WHERE user_id = :id
+    ");
+    $stmt->execute([':attempts' => $attempts, ':lock' => $lockUntil, ':id' => $userId]);
+ 
+    if ($lockUntil) {
+        error_log("[SECURITY] User {$userId} transaction PIN locked after {$attempts} failed attempts");
+    }
+}
+ 
+/**
+ * Sets/replaces a user's personal transaction PIN. Called from the
+ * new set_pin.php endpoint. Requires the user to already be
+ * authenticated (session) - this does not verify identity itself,
+ * the login session already did that.
+ */
+public function setUserTransactionPin(int $userId, string $pin): void
+{
+    if (!preg_match('/^\d{4,6}$/', $pin)) {
+        throw new RuntimeException("PIN must be 4-6 digits.");
+    }
+    $hash = password_hash($pin, PASSWORD_DEFAULT);
+    $stmt = $this->swapDB->prepare("
+        UPDATE users
+        SET transaction_pin_hash = :hash, transaction_pin_set_at = NOW(),
+            transaction_pin_attempts = 0, transaction_pin_locked_until = NULL
+        WHERE user_id = :id
+    ");
+    $stmt->execute([':hash' => $hash, ':id' => $userId]);
+}
+ 
+/**
+ * Returns pending identity swaps for every VERIFIED identity a given
+ * user owns - used by the new pending_claims.php endpoint to power
+ * the "money waiting for you" banner in user_dashboard.php.
+ */
+public function getPendingClaimsForUser(int $userId): array
+{
+    $stmt = $this->swapDB->prepare("
+        SELECT identity_type, identity_value FROM user_identities
+        WHERE user_id = :id AND status = 'verified'
+    ");
+    $stmt->execute([':id' => $userId]);
+    $identities = $stmt->fetchAll(PDO::FETCH_ASSOC);
+ 
+    $allPending = [];
+    foreach ($identities as $identity) {
+        $pending = $this->getPendingIdentitySwaps($identity['identity_type'], $identity['identity_value'], 'pending');
+        foreach ($pending as $swap) {
+            $swap['claim_type'] = $swap['claim_type'] ?? 'account_pin';
+            $allPending[] = $swap;
         }
     }
+    return $allPending;
+}
+
+
 
     private function getIdentityAccessMethods(string $identityType, string $identityValue): array
     {
