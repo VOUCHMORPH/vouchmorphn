@@ -2223,32 +2223,42 @@ class SwapService
             throw new RuntimeException("Destination failed: No code generated");
         }
         
-        $authId = $this->storeCashoutAuthorization(
-            $this->currentSwapRef,
-            $beneficiaryPhone,
-            $sourceInstitution,
-            $destinationInstitution,
-            $amountToSend,
-            $feeBreakdown['total_fee'] ?? 0,
-            $generateResult['voucher_number'] ?? $generateResult['swap_code'],
-            $generateResult['atm_pin'],
-            $generateResult['expires_at']
-        );
-        
-        if ($beneficiaryPhone && $this->smsService && isset($generateResult['atm_pin'])) {
-            try {
-                $this->smsService->sendCashoutCode(
-                    $beneficiaryPhone,
-                    $generateResult['atm_pin'],
-                    $amountToSend,
-                    $generateResult['voucher_number'] ?? null
-                );
-            } catch (Exception $e) {
-                error_log("[SwapService] SMS failed but continuing: " . $e->getMessage());
-            }
-        }
-        
-        $this->updateHoldStatus($this->currentHoldId, 'PENDING_CASHOUT');
+        $destSplit = $this->feeCalculationDetails['destination_split'] ?? [];
+$generateCodeFeePercent = $destSplit['generate_code_fee_percent'] ?? 10;
+$destinationShare = $this->feeCalculationDetails['revenue_split']['destination_institution_percent'] ?? null;
+// Prefer whatever the fee engine actually computed for the destination's
+// generate-code portion if present; otherwise derive from percentages.
+$generateCodeFeeAmount = $this->feeCalculationDetails['destination_split']['generate_code_fee_computed']
+    ?? round((($feeBreakdown['total_fee'] ?? 0) * ($this->feesConfig['CASHOUT']['distribution']['split']['destination_institution_percent'] ?? 50) / 100)
+        * ($generateCodeFeePercent / 100), 2);
+$levyAmount = (float)($this->feesConfig['CASHOUT']['fee_components']['F7']['amount'] ?? 0);
+ 
+$authId = $this->storeCashoutAuthorization(
+    $this->currentSwapRef,
+    $beneficiaryPhone,
+    $sourceInstitution,
+    $destinationInstitution,
+    $amountToSend,
+    $feeBreakdown['total_fee'] ?? 0,
+    $generateCodeFeeAmount,
+    $levyAmount,
+    $generateResult['voucher_number'] ?? $generateResult['swap_code'],
+    $generateResult['atm_pin'],
+    $generateResult['expires_at']
+);
+ 
+// Buffer window: source-side hold must outlive the destination's
+// code by a margin, so a release-hold cron never fires before a
+// legitimate last-second redemption callback can arrive and be
+// processed. Without this, releasing exactly at code_expiry risks
+// a double-spend: client's balance freed up while the destination
+// institution is simultaneously paying out cash on the same code.
+$holdReleaseBufferHours = 6;
+$holdExpiresAt = date('Y-m-d H:i:s', strtotime($generateResult['expires_at'] . " +{$holdReleaseBufferHours} hours"));
+$this->updateHoldExpiry($this->currentHoldId, $holdExpiresAt);
+ 
+$this->updateHoldStatus($this->currentHoldId, 'PENDING_CASHOUT');
+
         
         $this->populateTrackingTables(
             [
