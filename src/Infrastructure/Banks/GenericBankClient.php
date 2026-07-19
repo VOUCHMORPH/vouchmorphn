@@ -795,7 +795,7 @@ class GenericBankClient implements BankAPIInterface
         ];
         
         $codeVerifier = bin2hex(random_bytes(32));
-        $codeChallenge = rtrim(strtr(base64_encode(hash('sha256', $codeVerifier, true)), '+/', '-_'), '=');
+        $codeChallenge = rtrim(strtr(base64_encode(hash('sha256', $codeVerifier, true)), '+/', '-_'), '='); 
         
         $_SESSION['oauth_code_verifier_' . $state] = $codeVerifier;
         $params['code_challenge'] = $codeChallenge;
