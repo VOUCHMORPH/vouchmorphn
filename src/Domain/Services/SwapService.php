@@ -5016,6 +5016,22 @@ private function findAuthorization(string $swapReference = null, int $authId = n
         }
     }
 
+private function updateHoldExpiry(?int $holdId, string $expiresAt): void
+{
+    if ($holdId === null) return;
+    try {
+        $stmt = $this->swapDB->prepare("
+            UPDATE hold_transactions SET expires_at = :expires_at, updated_at = NOW()
+            WHERE hold_id = :id
+        ");
+        $stmt->execute([':expires_at' => $expiresAt, ':id' => $holdId]);
+        error_log("[SwapService] Hold {$holdId} expiry set to {$expiresAt}");
+    } catch (PDOException $e) {
+        error_log("[SwapService] Failed to update hold expiry: " . $e->getMessage());
+    }
+}
+
+    
     private function generateReference(): string
     {
         return 'SWAP_' . time() . '_' . bin2hex(random_bytes(8));
