@@ -5521,20 +5521,6 @@ private function findAuthorization(string $swapReference = null, int $authId = n
         }
     }
 
-private function getHoldReferenceForSwap(string $swapRef): ?string
-{
-    $stmt = $this->swapDB->prepare("
-        SELECT hold_reference FROM hold_transactions
-        WHERE swap_reference = :swap_ref
-        ORDER BY placed_at DESC LIMIT 1
-    ");
-    $stmt->execute([':swap_ref' => $swapRef]);
-    $result = $stmt->fetch(PDO::FETCH_ASSOC);
-    return $result['hold_reference'] ?? null;
-}
- 
-
-
     /**
      * Update swap request status
      */
