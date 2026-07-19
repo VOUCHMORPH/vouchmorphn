@@ -2297,6 +2297,214 @@ $this->updateHoldStatus($this->currentHoldId, 'PENDING_CASHOUT');
         ];
     }
 
+
+     
+public function releaseCashoutHold(int $authId, string $reason): array
+{
+    error_log("[SwapService] ===== releaseCashoutHold: auth_id={$authId}, reason={$reason} =====");
+ 
+    $stmt = $this->swapDB->prepare("SELECT * FROM cashout_authorizations WHERE auth_id = :id");
+    $stmt->execute([':id' => $authId]);
+    $auth = $stmt->fetch(PDO::FETCH_ASSOC);
+ 
+    if (!$auth) {
+        throw new RuntimeException("Cashout authorization not found: {$authId}");
+    }
+ 
+    if ($auth['status'] === 'COMPLETED') {
+        // Idempotency: a legitimate redemption may have landed between
+        // the cron query and this call - never release on top of a
+        // completed cashout.
+        error_log("[SwapService] auth_id={$authId} already COMPLETED - refusing to release");
+        return ['status' => 'already_completed', 'auth_id' => $authId];
+    }
+ 
+    if (in_array($auth['status'], ['EXPIRED', 'DEBIT_FAILED'], true) && $auth['released_at']) {
+        error_log("[SwapService] auth_id={$authId} already released at {$auth['released_at']}");
+        return ['status' => 'already_released', 'auth_id' => $authId];
+    }
+ 
+    $sourceInstitution = $auth['source_institution'];
+    $heldAmount = (float)$auth['amount'];
+    $generateCodeFee = (float)($auth['generate_code_fee_amount'] ?? 0);
+    $levy = (float)($auth['levy_amount'] ?? 0);
+    $currency = $auth['currency'] ?? 'BWP';
+    $swapRef = $auth['swap_reference'];
+ 
+    $withheld = $generateCodeFee + $levy;
+    $releaseAmount = max(0, $heldAmount - $withheld);
+ 
+    error_log("[SwapService] Release breakdown: held={$heldAmount}, generate_code_fee={$generateCodeFee}, levy={$levy}, releasing={$releaseAmount}");
+ 
+    // 1. Settle the generate-code fee to the destination institution -
+    // they produced a real, redeemable code; that work is compensated
+    // regardless of whether the client ever showed up.
+    if ($generateCodeFee > 0) {
+        try {
+            $this->settlement->invoiceFee(
+                $swapRef,
+                $sourceInstitution,
+                $this->getParticipantId($auth['cashout_provider']),
+                'CASHOUT_GENERATE_CODE_FEE',
+                $generateCodeFee,
+                $currency
+            );
+        } catch (Exception $e) {
+            error_log("[SwapService] Failed to invoice generate-code fee on release: " . $e->getMessage());
+        }
+    }
+ 
+    // 2. Withhold the levy - always non-refundable per fee config,
+    // regardless of outcome.
+    if ($levy > 0) {
+        try {
+            $this->settlement->invoiceFee(
+                $swapRef,
+                $sourceInstitution,
+                $this->getParticipantId('VOUCHMORPH'),
+                'SWAP_LEVY',
+                $levy,
+                $currency
+            );
+        } catch (Exception $e) {
+            error_log("[SwapService] Failed to invoice levy on release: " . $e->getMessage());
+        }
+    }
+ 
+    // 3. Debit the withheld portion from the source hold (the fees are
+    // real money that must leave the source institution), then release
+    // whatever's left of the hold back to the customer's availability.
+    if ($withheld > 0) {
+        try {
+            $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
+            $debitResult = $adapter->debit([
+                'reference' => $swapRef . '_RELEASE_WITHHOLD',
+                'hold_reference' => $auth['swap_code'] ?? $swapRef,
+                'amount' => $withheld,
+                'reason' => 'Cashout expired - withholding generate-code fee + levy: ' . $reason,
+                'from_institution' => $sourceInstitution,
+                'source_institution' => $sourceInstitution,
+            ], []);
+ 
+            if (!(($debitResult['success'] ?? false) || ($debitResult['debited'] ?? false))) {
+                error_log("[SwapService] WARNING: withheld-fee debit failed during release for auth_id={$authId} - proceeding with release anyway; reconcile manually. Response: " . json_encode($debitResult));
+            }
+        } catch (Exception $e) {
+            error_log("[SwapService] Withheld-fee debit threw during release: " . $e->getMessage());
+        }
+    }
+ 
+    try {
+        $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
+        $releaseResult = $adapter->releaseHold([
+            'hold_reference' => $auth['swap_code'] ?? $swapRef,
+            'action' => 'RELEASE_HOLD',
+            'reason' => "Cashout expired unredeemed: {$reason}. Released " . $releaseAmount . " of " . $heldAmount . " (withheld {$withheld} in fees).",
+        ], []);
+    } catch (Exception $e) {
+        error_log("[SwapService] Hold release call failed for auth_id={$authId}: " . $e->getMessage());
+        $releaseResult = ['success' => false, 'error' => $e->getMessage()];
+    }
+ 
+    $stmt = $this->swapDB->prepare("
+        UPDATE cashout_authorizations
+        SET status = 'EXPIRED', released_at = NOW(), release_reason = :reason, updated_at = NOW()
+        WHERE auth_id = :id
+    ");
+    $stmt->execute([':reason' => $reason, ':id' => $authId]);
+ 
+    $this->updateHoldForSwap($swapRef, 'PARTIALLY_RELEASED');
+ 
+    try {
+        $auditStmt = $this->swapDB->prepare("
+            INSERT INTO audit_logs
+            (entity_type, entity_id, action, category, severity, performed_by, metadata, performed_at)
+            VALUES
+            ('cashout_authorizations', :auth_id, 'CASHOUT_HOLD_RELEASED', 'financial', 'info', 'SYSTEM_CRON', :metadata, NOW())
+        ");
+        $auditStmt->execute([
+            ':auth_id' => $authId,
+            ':metadata' => json_encode([
+                'reason' => $reason,
+                'held_amount' => $heldAmount,
+                'generate_code_fee_withheld' => $generateCodeFee,
+                'levy_withheld' => $levy,
+                'released_amount' => $releaseAmount,
+                'swap_reference' => $swapRef,
+            ])
+        ]);
+    } catch (Exception $e) {
+        error_log("[SwapService] Audit log warning on release: " . $e->getMessage());
+    }
+ 
+    return [
+        'status' => 'released',
+        'auth_id' => $authId,
+        'held_amount' => $heldAmount,
+        'generate_code_fee_withheld' => $generateCodeFee,
+        'levy_withheld' => $levy,
+        'released_amount' => $releaseAmount,
+        'release_result' => $releaseResult,
+    ];
+}
+ 
+ 
+/* =================================================================
+ * EDIT F — ADD cancelExpiredCashouts(): the cron entry point,
+ * mirroring cancelExpiredIdentitySwaps()'s pattern. Only picks up
+ * authorizations whose code_expiry + 6h buffer has fully passed -
+ * never acts on the bare code_expiry alone.
+ * ================================================================= */
+ 
+public function cancelExpiredCashouts(int $bufferHours = 6): array
+{
+    error_log("[SwapService] ===== cancelExpiredCashouts (buffer={$bufferHours}h) =====");
+ 
+    $results = ['total_expired' => 0, 'released' => 0, 'errors' => 0, 'details' => []];
+ 
+    $sql = "
+        SELECT * FROM cashout_authorizations
+        WHERE status IN ('PENDING', 'VERIFIED')
+        AND code_expiry + (:buffer || ' hours')::interval < NOW()
+    ";
+ 
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([':buffer' => $bufferHours]);
+        $expired = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $results['total_expired'] = count($expired);
+ 
+        foreach ($expired as $auth) {
+            try {
+                $result = $this->releaseCashoutHold(
+                    (int)$auth['auth_id'],
+                    "Unredeemed {$bufferHours}h past code expiry ({$auth['code_expiry']})"
+                );
+                $results['released']++;
+                $results['details'][] = [
+                    'auth_id' => $auth['auth_id'],
+                    'swap_reference' => $auth['swap_reference'],
+                    'status' => $result['status'],
+                    'released_amount' => $result['released_amount'] ?? null,
+                ];
+            } catch (Exception $e) {
+                error_log("[SwapService] Failed to release cashout hold for auth_id={$auth['auth_id']}: " . $e->getMessage());
+                $results['errors']++;
+                $results['details'][] = [
+                    'auth_id' => $auth['auth_id'],
+                    'status' => 'error',
+                    'error' => $e->getMessage(),
+                ];
+            }
+        }
+ 
+        return $results;
+ 
+    } catch (PDOException $e) {
+        error_log("[SwapService] Failed to query expired cashouts: " . $e->getMessage());
+        throw new RuntimeException("Failed to cancel expired cashouts: " . $e->getMessage());
+    }
+}
     // ============================================================================
     // EXECUTE SIGNED DEPOSIT - UPDATED WITH TABLE POPULATION
     // ============================================================================
