@@ -546,71 +546,86 @@ class GenericBankClient implements BankAPIInterface
 }
 
     public function verifySourceLink(array $params): array
-    {
-        error_log("[GenericBankClient] verifySourceLink called");
-        
-        $endpoint = $this->getSourceLinkingEndpoint('verify');
-        if (!$endpoint) {
-            return ['success' => false, 'message' => 'Source linking not configured for this institution'];
-        }
-        
-        $baseUrl = $this->getBaseUrl();
-        $url = $baseUrl . '/' . ltrim($endpoint, '/');
-        
-        $oauthConfig = $this->config['oauth'] ?? null;
-        
-        if ($oauthConfig && isset($params['code'])) {
-            $payload = [
-                'grant_type' => 'authorization_code',
-                'code' => $params['code'],
-                'redirect_uri' => $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn-production.up.railway.app/api/v1/source/auth/callback',
-                'client_id' => $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? 'VOUCHMORPH_APP_ID',
-                'client_secret' => $oauthConfig['client_secret'] ?? getenv('CLIENT_SECRET') ?? 'YOUR_BANK_SECRET'
-            ];
-            
-            $result = $this->sendSourceLinkingRequest('verify', $payload, 'application/x-www-form-urlencoded');
-            
-            if (!$result['success']) {
-                return ['success' => false, 'message' => $result['message'] ?? 'Failed to exchange code'];
-            }
-            
-            $data = $result['data'] ?? $result;
-            
-            return [
-                'success' => true,
-                'authorized' => true,
-                'source_reference' => 'SRC_' . date('Ymd') . '_' . bin2hex(random_bytes(8)),
-                'access_token' => $data['access_token'] ?? null,
-                'refresh_token' => $data['refresh_token'] ?? null,
-                'expires_at' => date('Y-m-d H:i:s', time() + ($data['expires_in'] ?? 3600)),
-                'token_type' => $data['token_type'] ?? 'Bearer'
-            ];
-        }
-        
+{
+    error_log("[GenericBankClient] verifySourceLink called");
+    
+    $endpoint = $this->getSourceLinkingEndpoint('verify');
+    if (!$endpoint) {
+        return ['success' => false, 'message' => 'Source linking not configured for this institution'];
+    }
+    
+    $baseUrl = $this->getBaseUrl();
+    $url = $baseUrl . '/' . ltrim($endpoint, '/');
+    
+    $oauthConfig = $this->config['oauth'] ?? null;
+    
+    // ============================================================
+    // FIX: Check if this is an OAuth callback (has 'code' parameter)
+    // ============================================================
+    if ($oauthConfig && isset($params['code'])) {
         $payload = [
-            'auth_id' => $params['auth_id'],
-            'otp' => $params['otp'],
-            'timestamp' => time()
+            'grant_type' => 'authorization_code',
+            'code' => $params['code'],
+            'redirect_uri' => $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn-production.up.railway.app/api/v1/agent/oauth_callback.php',
+            'client_id' => $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? 'VOUCHMORPH_APP_ID',
+            'client_secret' => $oauthConfig['client_secret'] ?? getenv('CLIENT_SECRET') ?? 'YOUR_BANK_SECRET'
         ];
         
-        $result = $this->sendSourceLinkingRequest('verify', $payload);
+        $result = $this->sendSourceLinkingRequest('verify', $payload, 'application/x-www-form-urlencoded');
         
         if (!$result['success']) {
-            return ['success' => false, 'message' => $result['message'] ?? 'Invalid OTP'];
+            return ['success' => false, 'message' => $result['message'] ?? 'Failed to exchange code'];
         }
         
-        $data = $result['data'] ?? [];
+        $data = $result['data'] ?? $result;
         
         return [
             'success' => true,
             'authorized' => true,
-            'source_reference' => $data['source_reference'] ?? 'SRC_' . bin2hex(random_bytes(8)),
-            'access_token' => $data['access_token'],
+            'source_reference' => 'SRC_' . date('Ymd') . '_' . bin2hex(random_bytes(8)),
+            'access_token' => $data['access_token'] ?? null,
             'refresh_token' => $data['refresh_token'] ?? null,
-            'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', time() + 3600),
-            'holder_name' => $data['holder_name'] ?? null
+            'expires_at' => date('Y-m-d H:i:s', time() + ($data['expires_in'] ?? 3600)),
+            'token_type' => $data['token_type'] ?? 'Bearer'
         ];
     }
+    
+    // ============================================================
+    // OTP verification path
+    // ============================================================
+    // FIX: Check if auth_id exists before using it
+    if (!isset($params['auth_id'])) {
+        return ['success' => false, 'message' => 'auth_id required for OTP verification'];
+    }
+    
+    if (!isset($params['otp'])) {
+        return ['success' => false, 'message' => 'otp required for verification'];
+    }
+    
+    $payload = [
+        'auth_id' => $params['auth_id'],
+        'otp' => $params['otp'],
+        'timestamp' => time()
+    ];
+    
+    $result = $this->sendSourceLinkingRequest('verify', $payload);
+    
+    if (!$result['success']) {
+        return ['success' => false, 'message' => $result['message'] ?? 'Invalid OTP'];
+    }
+    
+    $data = $result['data'] ?? [];
+    
+    return [
+        'success' => true,
+        'authorized' => true,
+        'source_reference' => $data['source_reference'] ?? 'SRC_' . bin2hex(random_bytes(8)),
+        'access_token' => $data['access_token'] ?? null,
+        'refresh_token' => $data['refresh_token'] ?? null,
+        'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', time() + 3600),
+        'holder_name' => $data['holder_name'] ?? null
+    ];
+}
 
     public function refreshSourceToken(array $params): array
     {
