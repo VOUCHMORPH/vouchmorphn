@@ -2245,10 +2245,18 @@ $generateCodeFeeAmount = $this->feeCalculationDetails['destination_split']['gene
         * ($generateCodeFeePercent / 100), 2);
 $levyAmount = (float)($this->feesConfig['CASHOUT']['fee_components']['F7']['amount'] ?? 0);
  
+ 
+// Reuse the identifier extracted earlier in this method (from the
+// earmarked-balance validation step) rather than re-deriving it -
+// same payload, same result, no reason to call this twice.
+$sourceIdForAuth = $sourceIdForEarmarkCheck ?? $this->extractSourceIdentifier($payload);
+ 
 $authId = $this->storeCashoutAuthorization(
     $this->currentSwapRef,
     $beneficiaryPhone,
     $sourceInstitution,
+    $sourceIdForAuth['identifier'] ?? null,
+    $sourceIdForAuth['type'] ?? null,
     $destinationInstitution,
     $amountToSend,
     $feeBreakdown['total_fee'] ?? 0,
@@ -2258,6 +2266,7 @@ $authId = $this->storeCashoutAuthorization(
     $generateResult['atm_pin'],
     $generateResult['expires_at']
 );
+
  
 // Buffer window: source-side hold must outlive the destination's
 // code by a margin, so a release-hold cron never fires before a
