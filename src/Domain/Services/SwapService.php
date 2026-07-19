@@ -3973,7 +3973,15 @@ if ($sourceIdentifierForLedger) {
         return $response;
     }
 
-public function proposeAgentDestinationAccount(
+// ============================================================================
+// AGENT DESTINATION REGISTRATION METHODS
+// ============================================================================
+
+/**
+ * Phase 1: Verify account + trigger OTP/OAuth, then create pending attempt
+ * Does NOT create the agent_destination_accounts row yet
+ */
+public function initiateAgentDestinationRegistration(
     int $userId,
     string $institution,
     string $assetType,
@@ -3981,10 +3989,15 @@ public function proposeAgentDestinationAccount(
     string $identifierType,
     ?string $accountName = null
 ): array {
-    error_log("[SwapService] proposeAgentDestinationAccount: user={$userId}, institution={$institution}, identifier={$identifier}");
- 
-    // Reuse the existing generic account-verification call - same
-    // one used for deposit destinations elsewhere in this class.
+    error_log("[SwapService] initiateAgentDestinationRegistration: user={$userId}, institution={$institution}, identifier={$identifier}");
+
+    $assetType = strtoupper(trim($assetType));
+    $eligibleAssetTypes = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
+    if (!in_array($assetType, $eligibleAssetTypes, true)) {
+        throw new RuntimeException("Agent destinations must be Account, Wallet, or Card - '{$assetType}' is not eligible.");
+    }
+
+    // Verify account exists and is business type
     $verifyPayload = [
         'action' => 'VERIFY_ACCOUNT',
         'reference' => 'AGENT_DEST_' . $userId . '_' . time(),
@@ -3994,7 +4007,7 @@ public function proposeAgentDestinationAccount(
         'timestamp' => time(),
         'destination_asset_type' => $assetType,
     ];
- 
+
     try {
         $adapter = $this->adapterFactory->getAdapter($institution);
         $verifyResult = $adapter->verifyAccount($verifyPayload, [
@@ -4002,39 +4015,25 @@ public function proposeAgentDestinationAccount(
             'purpose' => 'agent_destination_registration',
         ]);
     } catch (Exception $e) {
-        error_log("[SwapService] Agent destination verification failed to reach institution: " . $e->getMessage());
+        error_log("[SwapService] Agent destination verification failed: " . $e->getMessage());
         throw new RuntimeException("Could not verify this account with {$institution}: " . $e->getMessage());
     }
- 
+
     if (!($verifyResult['verified'] ?? false)) {
         throw new RuntimeException("Account not found or not verifiable at {$institution}: " . ($verifyResult['message'] ?? 'Unknown reason'));
     }
- 
-    // The actual gate: only business/agent-designated accounts are
-    // eligible. account_type must be explicitly present and match -
-    // an adapter that doesn't return this field fails closed here,
-    // not open, since we cannot confirm eligibility either way.
+
     $accountType = strtoupper($verifyResult['account_type'] ?? $verifyResult['data']['account_type'] ?? '');
     $eligibleTypes = ['BUSINESS', 'AGENT', 'MERCHANT'];
- 
+
     if ($accountType === '') {
-        throw new RuntimeException(
-            "{$institution} did not return an account type for this account, so we cannot confirm " .
-            "it's a business/agent account. This institution's integration needs updating before " .
-            "agent registration can be verified automatically - contact VouchMorph support."
-        );
+        throw new RuntimeException("{$institution} did not return an account type - contact VouchMorph support.");
     }
- 
     if (!in_array($accountType, $eligibleTypes, true)) {
-        throw new RuntimeException(
-            "This account is registered as a {$accountType} account at {$institution}. Only business " .
-            "or agent-designated accounts can be used as an agent destination - personal accounts are " .
-            "not eligible."
-        );
+        throw new RuntimeException("This account is a {$accountType} account. Only business or agent-designated accounts are eligible.");
     }
- 
-    // Prevent duplicates (also enforced by the UNIQUE constraint, but
-    // give a clearer error than a raw constraint violation).
+
+    // Check for duplicates
     $stmt = $this->swapDB->prepare("
         SELECT id, status FROM agent_destination_accounts
         WHERE user_id = :user_id AND institution = :institution AND identifier = :identifier
@@ -4042,22 +4041,110 @@ public function proposeAgentDestinationAccount(
     ");
     $stmt->execute([':user_id' => $userId, ':institution' => $institution, ':identifier' => $identifier]);
     if ($existing = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        throw new RuntimeException("You already have this account registered as an agent destination (status: {$existing['status']}).");
+        throw new RuntimeException("You already have this account registered (status: {$existing['status']}).");
     }
- 
-    $sql = "
-        INSERT INTO agent_destination_accounts (
+
+    // Check for pending attempts
+    $stmt = $this->swapDB->prepare("
+        SELECT id FROM agent_registration_attempts
+        WHERE user_id = :user_id AND institution = :institution AND identifier = :identifier
+        AND status IN ('otp_pending', 'oauth_pending') AND otp_expires_at > NOW()
+    ");
+    $stmt->execute([':user_id' => $userId, ':institution' => $institution, ':identifier' => $identifier]);
+    if ($stmt->fetch()) {
+        throw new RuntimeException("A verification attempt is already pending for this account.");
+    }
+
+    // Trigger OAuth or OTP
+    $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
+        . '/api/v1/agent/oauth_callback.php';
+
+    $linkResult = null;
+    try {
+        $linkResult = $this->initiateSourceLink([
+            'institution' => $institution,
+            'identifier' => $identifier,
+            'asset_type' => $assetType,
+            'user_id' => $userId,
+            'redirect_uri' => $callbackUrl,
+        ]);
+    } catch (Exception $e) {
+        error_log("[SwapService] initiateSourceLink threw: " . $e->getMessage());
+        $linkResult = ['success' => false, 'message' => $e->getMessage()];
+    }
+
+    $linkSucceeded = (bool)($linkResult['success'] ?? false);
+    $isOauth = $linkSucceeded && ($linkResult['auth_type'] ?? null) === 'oauth';
+
+    if (!$linkSucceeded) {
+        // No OTP/OAuth support - register without ownership proof
+        error_log("[SwapService] {$institution} has no OTP/OAuth support - registering without ownership proof");
+
+        $id = $this->insertAgentDestinationAccount(
+            $userId, $institution, $assetType, $identifier, $identifierType,
+            $accountName ?? $verifyResult['account_name'] ?? null, $accountType,
+            false, null, null, null
+        );
+
+        return [
+            'requires_otp' => false,
+            'requires_redirect' => false,
+            'otp_supported' => false,
+            'id' => $id,
+            'status' => 'pending_confirmation',
+            'account_type' => $accountType,
+            'message' => "Registered without ownership verification - awaiting manual review.",
+        ];
+    }
+
+    if ($isOauth) {
+        // OAuth path - store attempt with state
+        $stmt = $this->swapDB->prepare("
+            INSERT INTO agent_registration_attempts (
+                user_id, institution, asset_type, identifier, identifier_type,
+                account_name, account_type, oauth_state, otp_supported, status
+            ) VALUES (
+                :user_id, :institution, :asset_type, :identifier, :identifier_type,
+                :account_name, :account_type, :oauth_state, true, 'oauth_pending'
+            ) RETURNING id
+        ");
+        $stmt->execute([
+            ':user_id' => $userId,
+            ':institution' => $institution,
+            ':asset_type' => $assetType,
+            ':identifier' => $identifier,
+            ':identifier_type' => $identifierType,
+            ':account_name' => $accountName ?? $verifyResult['account_name'] ?? null,
+            ':account_type' => $accountType,
+            ':oauth_state' => $linkResult['state'],
+        ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $attemptId = $row ? (int)$row['id'] : 0;
+
+        error_log("[SwapService] OAuth attempt {$attemptId} created for {$institution}");
+
+        return [
+            'requires_otp' => false,
+            'requires_redirect' => true,
+            'otp_supported' => true,
+            'attempt_id' => $attemptId,
+            'redirect_url' => $linkResult['redirect_url'],
+            'message' => "You'll be taken to {$institution}'s login page to confirm ownership.",
+        ];
+    }
+
+    // OTP path
+    $stmt = $this->swapDB->prepare("
+        INSERT INTO agent_registration_attempts (
             user_id, institution, asset_type, identifier, identifier_type,
-            account_name, account_type, account_type_verified,
-            status, proposed_by, proposed_at
+            account_name, account_type, bank_auth_id, otp_method,
+            otp_expires_at, otp_supported, status
         ) VALUES (
             :user_id, :institution, :asset_type, :identifier, :identifier_type,
-            :account_name, :account_type, true,
-            'pending_confirmation', :user_id, NOW()
+            :account_name, :account_type, :auth_id, :method,
+            :expires_at, true, 'otp_pending'
         ) RETURNING id
-    ";
- 
-    $stmt = $this->swapDB->prepare($sql);
+    ");
     $stmt->execute([
         ':user_id' => $userId,
         ':institution' => $institution,
@@ -4066,19 +4153,216 @@ public function proposeAgentDestinationAccount(
         ':identifier_type' => $identifierType,
         ':account_name' => $accountName ?? $verifyResult['account_name'] ?? null,
         ':account_type' => $accountType,
+        ':auth_id' => $linkResult['auth_id'] ?? null,
+        ':method' => $linkResult['method'] ?? 'sms',
+        ':expires_at' => date('Y-m-d H:i:s', time() + (int)($linkResult['expires_in'] ?? 300)),
     ]);
- 
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    $id = $row ? (int)$row['id'] : 0;
- 
-    error_log("[SwapService] Agent destination account proposed: id={$id}, account_type={$accountType}, awaiting confirmation");
- 
+    $attemptId = $row ? (int)$row['id'] : 0;
+
+    error_log("[SwapService] OTP attempt {$attemptId} created for {$institution}");
+
+    return [
+        'requires_otp' => true,
+        'requires_redirect' => false,
+        'otp_supported' => true,
+        'attempt_id' => $attemptId,
+        'method' => $linkResult['method'] ?? 'sms',
+        'message' => $linkResult['message'] ?? 'Verification code sent by the institution.',
+    ];
+}
+
+/**
+ * Phase 2: Complete OTP verification - creates the account row on success
+ */
+public function completeAgentDestinationRegistration(int $userId, int $attemptId, string $otp): array
+{
+    $stmt = $this->swapDB->prepare("
+        SELECT * FROM agent_registration_attempts
+        WHERE id = :id AND user_id = :user_id AND status = 'otp_pending'
+    ");
+    $stmt->execute([':id' => $attemptId, ':user_id' => $userId]);
+    $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$attempt) {
+        throw new RuntimeException("Verification attempt not found.");
+    }
+    if (strtotime($attempt['otp_expires_at']) < time()) {
+        throw new RuntimeException("Verification code expired. Start registration again.");
+    }
+
+    try {
+        $verifyResult = $this->verifySourceLink([
+            'institution' => $attempt['institution'],
+            'auth_id' => $attempt['bank_auth_id'],
+            'otp' => $otp,
+        ]);
+    } catch (Exception $e) {
+        throw new RuntimeException("Could not verify code: " . $e->getMessage());
+    }
+
+    if (!($verifyResult['success'] ?? false) || !($verifyResult['authorized'] ?? false)) {
+        throw new RuntimeException($verifyResult['message'] ?? 'Incorrect or expired code.');
+    }
+
+    $id = $this->insertAgentDestinationAccount(
+        (int)$attempt['user_id'],
+        $attempt['institution'],
+        $attempt['asset_type'],
+        $attempt['identifier'],
+        $attempt['identifier_type'],
+        $attempt['account_name'],
+        $attempt['account_type'],
+        true,
+        $verifyResult['access_token'] ?? null,
+        $verifyResult['refresh_token'] ?? null,
+        $verifyResult['expires_at'] ?? null
+    );
+
+    $stmt = $this->swapDB->prepare("
+        UPDATE agent_registration_attempts SET status = 'completed', completed_at = NOW() WHERE id = :id
+    ");
+    $stmt->execute([':id' => $attemptId]);
+
+    error_log("[SwapService] Agent destination {$id} created with OTP verification");
+
     return [
         'id' => $id,
         'status' => 'pending_confirmation',
-        'account_type' => $accountType,
-        'message' => "Verified as a {$accountType} account at {$institution}. Awaiting approval before it can be used.",
+        'account_type' => $attempt['account_type'],
+        'message' => "Ownership verified. Awaiting approval.",
     ];
+}
+
+/**
+ * Complete OAuth-based agent registration by state token
+ */
+public function completeAgentDestinationRegistrationByState(string $oauthState, string $code): array
+{
+    $stmt = $this->swapDB->prepare("
+        SELECT * FROM agent_registration_attempts
+        WHERE oauth_state = :state AND status = 'oauth_pending'
+    ");
+    $stmt->execute([':state' => $oauthState]);
+    $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$attempt) {
+        throw new RuntimeException("Registration attempt not found or already completed.");
+    }
+
+    $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
+        . '/api/v1/agent/oauth_callback.php';
+
+    try {
+        $verifyResult = $this->verifySourceLink([
+            'institution' => $attempt['institution'],
+            'code' => $code,
+            'redirect_uri' => $callbackUrl,
+        ]);
+    } catch (Exception $e) {
+        throw new RuntimeException("Could not complete verification: " . $e->getMessage());
+    }
+
+    if (!($verifyResult['success'] ?? false) || !($verifyResult['authorized'] ?? false)) {
+        throw new RuntimeException($verifyResult['message'] ?? 'Bank login could not be verified.');
+    }
+
+    $id = $this->insertAgentDestinationAccount(
+        (int)$attempt['user_id'],
+        $attempt['institution'],
+        $attempt['asset_type'],
+        $attempt['identifier'],
+        $attempt['identifier_type'],
+        $attempt['account_name'],
+        $attempt['account_type'],
+        true,
+        $verifyResult['access_token'] ?? null,
+        $verifyResult['refresh_token'] ?? null,
+        $verifyResult['expires_at'] ?? null
+    );
+
+    $stmt = $this->swapDB->prepare("
+        UPDATE agent_registration_attempts SET status = 'completed', completed_at = NOW() WHERE id = :id
+    ");
+    $stmt->execute([':id' => $attempt['id']]);
+
+    error_log("[SwapService] Agent destination {$id} created via OAuth");
+
+    return [
+        'id' => $id,
+        'status' => 'pending_confirmation',
+        'account_type' => $attempt['account_type'],
+        'institution' => $attempt['institution'],
+        'message' => "Bank login verified. Awaiting approval.",
+    ];
+}
+
+/**
+ * Insert agent destination account (shared helper)
+ */
+private function insertAgentDestinationAccount(
+    int $userId,
+    string $institution,
+    string $assetType,
+    string $identifier,
+    string $identifierType,
+    ?string $accountName,
+    string $accountType,
+    bool $isHooked,
+    ?string $accessToken,
+    ?string $refreshToken,
+    ?string $tokenExpiresAt
+): int {
+    $sql = "
+        INSERT INTO agent_destination_accounts (
+            user_id, institution, asset_type, identifier, identifier_type,
+            account_name, account_type, account_type_verified,
+            is_hooked, access_token, refresh_token, token_expires_at,
+            status, proposed_by, proposed_at
+        ) VALUES (
+            :user_id, :institution, :asset_type, :identifier, :identifier_type,
+            :account_name, :account_type, true,
+            :is_hooked, :access_token, :refresh_token, :token_expires_at,
+            'pending_confirmation', :user_id, NOW()
+        ) RETURNING id
+    ";
+    $stmt = $this->swapDB->prepare($sql);
+    $stmt->execute([
+        ':user_id' => $userId,
+        ':institution' => $institution,
+        ':asset_type' => $assetType,
+        ':identifier' => $identifier,
+        ':identifier_type' => $identifierType,
+        ':account_name' => $accountName,
+        ':account_type' => $accountType,
+        ':is_hooked' => $isHooked ? 't' : 'f',
+        ':access_token' => $accessToken,
+        ':refresh_token' => $refreshToken,
+        ':token_expires_at' => $tokenExpiresAt,
+    ]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ? (int)$row['id'] : 0;
+}
+
+/**
+ * Simplified wrapper - delegates to initiateAgentDestinationRegistration
+ */
+public function proposeAgentDestinationAccount(
+    int $userId,
+    string $institution,
+    string $assetType,
+    string $identifier,
+    string $identifierType,
+    ?string $accountName = null
+): array {
+    return $this->initiateAgentDestinationRegistration(
+        $userId,
+        $institution,
+        $assetType,
+        $identifier,
+        $identifierType,
+        $accountName
+    );
 }
  
 /**
@@ -4113,7 +4397,6 @@ public function isApprovedAgent(int $userId): bool
     $stmt->execute([':user_id' => $userId]);
     return (bool)$stmt->fetchColumn();
 }
-
 
     // ============================================================================
     // MULTI-SOURCE SWAP
