@@ -552,6 +552,9 @@ details.raw-json-wrap summary { cursor: pointer; font-size: 12px; color: var(--t
             <?php endforeach; ?>
         </select>
         <span class="quick-link" onclick="openSwapHistory()">📋 History</span>
+        <span class="quick-link" id="claimsButton" onclick="openClaimsModal()" style="display:none;">
+            💰 Claim Money <span id="claimsBadge" style="background:var(--danger);color:#fff;border-radius:10px;padding:1px 6px;font-size:10px;margin-left:4px;"></span>
+        </span>
         <span class="quick-link muted" onclick="openProfileModal()">👤 My Profile</span>
         <a href="logout.php" class="logout-btn">Logout</a>
     </div>
@@ -832,6 +835,7 @@ document.addEventListener('DOMContentLoaded', function() {
         refreshUI();
     });
     refreshUI();
+    checkPendingClaims();
 });
 
 // ============================================================
@@ -1625,7 +1629,25 @@ function renderProfileModal() {
             <input id="newIdentityValue" placeholder="Enter the identity value">
         </div>
         <div class="cta-row"><button class="btn btn-primary" onclick="addSavedIdentity()">+ Add Identity</button></div>
-        <div class="hint" style="margin-top:8px;">Saved here for this session only.</div>`;
+        <div class="hint" style="margin-top:8px;">Saved here for this session only.</div>
+
+        <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+            <div class="field-label" style="margin-bottom:8px;">🔒 Transaction PIN</div>
+            <div class="hint" style="margin-bottom:10px;">
+                Required to claim money sent to your verified identity — whether you finalize it
+                yourself here, or relay it to an agent in person. Never share it over SMS or with
+                anyone claiming to be VouchMorph support.
+            </div>
+            <div class="field-group">
+                <label>New PIN (4-6 digits)</label>
+                <input type="password" id="newPin" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="••••">
+            </div>
+            <div class="field-group">
+                <label>Confirm PIN</label>
+                <input type="password" id="confirmPin" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="••••">
+            </div>
+            <div class="cta-row"><button class="btn btn-primary" onclick="setTransactionPin()">Set PIN</button></div>
+        </div>`;
 }
 
 function addSavedIdentity() {
@@ -1653,6 +1675,155 @@ function useSavedIdentity(idx) {
     updateIdentityHelp();
     refreshUI();
     showMessage(`Using saved ${IDENTITY_TYPE_LABELS[id.type] || id.type}: ${id.value}`, 'success');
+}
+
+// ============================================================
+// TRANSACTION PIN
+// ============================================================
+async function setTransactionPin() {
+    const pin = document.getElementById('newPin').value.trim();
+    const confirmPin = document.getElementById('confirmPin').value.trim();
+
+    if (!/^\d{4,6}$/.test(pin)) {
+        showMessage('PIN must be 4-6 digits.', 'warning');
+        return;
+    }
+    if (pin !== confirmPin) {
+        showMessage('PIN and confirmation do not match.', 'warning');
+        return;
+    }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/set_pin.php', { pin, confirm_pin: confirmPin });
+    if (!result.ok) {
+        showMessage('Could not set PIN: ' + result.error, 'error');
+        return;
+    }
+    showMessage('Transaction PIN set. Keep it private — you\'ll need it to claim money sent to your identity.', 'success');
+    closeModal();
+}
+
+// ============================================================
+// CLAIM MONEY SENT TO YOU (self-service identity swap finalization)
+// ============================================================
+let pendingClaims = [];
+
+async function checkPendingClaims() {
+    if (!CONFIG.USER_ID) return; // same missing-session-id guard as history
+    try {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {});
+        if (!result.ok) return;
+        pendingClaims = result.body.data || [];
+        const btn = document.getElementById('claimsButton');
+        const badge = document.getElementById('claimsBadge');
+        if (pendingClaims.length > 0) {
+            btn.style.display = 'inline-flex';
+            badge.textContent = pendingClaims.length;
+        } else {
+            btn.style.display = 'none';
+        }
+    } catch (e) {
+        console.error('[claims] Failed to check pending claims', e);
+    }
+}
+
+function openClaimsModal() {
+    if (pendingClaims.length === 0) {
+        openModal('Claim Money', '<div class="hint">No money currently waiting for your verified identities.</div>');
+        return;
+    }
+    const rows = pendingClaims.map((c, i) => `
+        <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+                <div>
+                    <div style="font-weight:700;font-size:16px;color:var(--primary-dark);">${escapeHtml(c.amount)} ${escapeHtml(c.currency)}</div>
+                    <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">From ${escapeHtml(c.source_institution || 'Unknown')}</div>
+                    <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Expires ${c.hold_expires_at ? new Date(c.hold_expires_at).toLocaleString() : 'soon'}</div>
+                </div>
+                <button class="btn btn-primary btn-sm" style="padding:8px 18px;" onclick="openClaimForm(${i})">Claim</button>
+            </div>
+        </div>
+    `).join('');
+    openModal('💰 Claim Money', `<div style="margin-bottom:8px;">${rows}</div>`);
+}
+
+function openClaimForm(idx) {
+    const claim = pendingClaims[idx];
+    if (!claim) return;
+
+    const pinHint = claim.claim_type === 'otp_pin'
+        ? 'Use the one-time PIN that was sent by SMS when this money was sent.'
+        : 'Use your VouchMorph transaction PIN.';
+
+    const body = `
+        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:14px;margin-bottom:14px;">
+            <div style="font-size:20px;font-weight:700;color:var(--primary-dark);">${escapeHtml(claim.amount)} ${escapeHtml(claim.currency)}</div>
+            <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(claim.source_institution || 'Unknown')}</div>
+        </div>
+        <div class="field-group">
+            <label>Claim PIN</label>
+            <input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="••••">
+            <div class="help">${pinHint}</div>
+        </div>
+        <div class="field-group">
+            <label>Receive as</label>
+            <select id="claimDestType" onchange="toggleClaimDestFields(this.value)">
+                <option value="CASHOUT">Cashout (ATM / Agent code)</option>
+                <option value="DEPOSIT">Deposit to an account/wallet</option>
+            </select>
+        </div>
+        <div id="claimDepositFields" style="display:none;">
+            <div class="field-group">
+                <label>Destination Institution</label>
+                <select id="claimDestInst">
+                    <option value="">Select institution</option>
+                    ${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}
+                </select>
+            </div>
+            <div class="field-group">
+                <label>Account / Wallet Number</label>
+                <input id="claimDestIdentifier" placeholder="Account number or phone">
+            </div>
+        </div>
+        <div class="cta-row">
+            <button class="btn btn-secondary" onclick="openClaimsModal()">← Back</button>
+            <button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">✅ Claim Funds</button>
+        </div>
+    `;
+    openModal('Claim Money', body);
+}
+
+function toggleClaimDestFields(type) {
+    document.getElementById('claimDepositFields').style.display = type === 'DEPOSIT' ? 'block' : 'none';
+}
+
+async function submitClaim(swapReference) {
+    const pin = document.getElementById('claimPin').value.trim();
+    const destType = document.getElementById('claimDestType').value;
+
+    if (!pin) {
+        showMessage('Enter your claim PIN.', 'warning');
+        return;
+    }
+
+    const payload = { swap_reference: swapReference, pin, destination_type: destType };
+    if (destType === 'DEPOSIT') {
+        payload.destination_institution = document.getElementById('claimDestInst').value;
+        payload.destination_identifier = document.getElementById('claimDestIdentifier').value.trim();
+        if (!payload.destination_institution || !payload.destination_identifier) {
+            showMessage('Select a destination institution and enter an account/wallet number.', 'warning');
+            return;
+        }
+    }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', payload);
+    if (!result.ok) {
+        showMessage('Claim failed: ' + result.error, 'error');
+        return;
+    }
+
+    closeModal();
+    showMessage('Funds claimed successfully!', 'success');
+    checkPendingClaims();
 }
 
 // ============================================================
