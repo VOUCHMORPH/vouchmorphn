@@ -287,6 +287,8 @@ function getRoleLabel($role) {
             --danger:       #b3261e;
             --danger-bg:    #fbeceb;
 
+            --max-width:    1400px;
+
             --f-body: 'IBM Plex Sans', sans-serif;
             --f-cond: 'IBM Plex Sans Condensed', sans-serif;
             --f-mono: 'IBM Plex Mono', monospace;
@@ -312,13 +314,17 @@ function getRoleLabel($role) {
         .header {
             background: var(--ink-900);
             color: #fff;
+            border-bottom: 3px solid var(--brass);
+        }
+        .header-inner {
+            max-width: var(--max-width);
+            margin: 0 auto;
             padding: 16px 32px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
             gap: 12px;
-            border-bottom: 3px solid var(--brass);
         }
         .header-left {
             display: flex;
@@ -394,6 +400,10 @@ function getRoleLabel($role) {
         .nav {
             background: var(--panel);
             border-bottom: 1px solid var(--line);
+        }
+        .nav-inner {
+            max-width: var(--max-width);
+            margin: 0 auto;
             padding: 0 32px;
             display: flex;
             gap: 28px;
@@ -440,7 +450,7 @@ function getRoleLabel($role) {
            CONTENT
            ============================================================ */
         .content {
-            max-width: 1400px;
+            max-width: var(--max-width);
             margin: 0 auto;
             padding: 28px 32px;
         }
@@ -732,12 +742,16 @@ function getRoleLabel($role) {
         .footer {
             background: var(--ink-900);
             color: var(--ink-300);
-            padding: 16px 32px;
             text-align: center;
             font-size: 11px;
             border-top: 2px solid var(--brass);
             margin-top: 28px;
             font-family: var(--f-mono);
+        }
+        .footer-inner {
+            max-width: var(--max-width);
+            margin: 0 auto;
+            padding: 16px 32px;
         }
         .footer .sub {
             color: rgba(255,255,255,0.15);
@@ -751,8 +765,9 @@ function getRoleLabel($role) {
            RESPONSIVE
            ============================================================ */
         @media (max-width: 768px) {
-            .header { padding: 12px 16px; }
-            .nav { padding: 0 16px; gap: 16px; }
+            .header-inner { padding: 12px 16px; }
+            .nav-inner { padding: 0 16px; gap: 16px; }
+            .footer-inner { padding: 12px 16px; }
             .content { padding: 16px; }
             .metrics-grid { grid-template-columns: repeat(2, 1fr); }
             .quick-actions { grid-template-columns: 1fr; }
@@ -808,16 +823,18 @@ function getRoleLabel($role) {
     <!-- HEADER -->
     <!-- ============================================================ -->
     <header class="header">
-        <div class="header-left">
-            <div class="logo">VOUCHMORPH <span>·</span> <?php echo safeHtml($orgName); ?></div>
-            <span class="role-badge"><?php echo safeHtml(getRoleLabel($userRole)); ?></span>
-        </div>
-        <div class="user-info">
-            <div class="user-details">
-                <div class="user-name"><?php echo safeHtml($fullName); ?></div>
-                <div class="user-role"><?php echo safeHtml(getRoleLabel($userRole)); ?> · <?php echo safeHtml($orgName); ?></div>
+        <div class="header-inner">
+            <div class="header-left">
+                <div class="logo">VOUCHMORPH <span>·</span> <?php echo safeHtml($orgName); ?></div>
+                <span class="role-badge"><?php echo safeHtml(getRoleLabel($userRole)); ?></span>
             </div>
-            <a href="logout.php" class="logout-btn">Sign Out</a>
+            <div class="user-info">
+                <div class="user-details">
+                    <div class="user-name"><?php echo safeHtml($fullName); ?></div>
+                    <div class="user-role"><?php echo safeHtml(getRoleLabel($userRole)); ?> · <?php echo safeHtml($orgName); ?></div>
+                </div>
+                <a href="logout.php" class="logout-btn">Sign Out</a>
+            </div>
         </div>
     </header>
 
@@ -825,6 +842,7 @@ function getRoleLabel($role) {
     <!-- NAVIGATION -->
     <!-- ============================================================ -->
     <nav class="nav">
+        <div class="nav-inner">
         <a href="index.php" class="nav-item active">📊 Dashboard</a>
         
         <?php if ($canCreate): ?>
@@ -870,6 +888,7 @@ function getRoleLabel($role) {
         <?php endif; ?>
         
         <a href="settings.php" class="nav-item">⚙️ Settings</a>
+        </div>
     </nav>
 
     <!-- ============================================================ -->
@@ -1137,8 +1156,10 @@ function getRoleLabel($role) {
     <!-- FOOTER -->
     <!-- ============================================================ -->
     <footer class="footer">
-        <div>VOUCHMORPH · Enterprise Disbursement Platform · <?php echo date('Y'); ?></div>
-        <div class="sub"><?php echo safeHtml($orgName); ?> · Role: <?php echo safeHtml(getRoleLabel($userRole)); ?></div>
+        <div class="footer-inner">
+            <div>VOUCHMORPH · Enterprise Disbursement Platform · <?php echo date('Y'); ?></div>
+            <div class="sub"><?php echo safeHtml($orgName); ?> · Role: <?php echo safeHtml(getRoleLabel($userRole)); ?></div>
+        </div>
     </footer>
 </body>
 </html>
