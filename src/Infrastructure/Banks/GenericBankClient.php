@@ -459,71 +459,91 @@ class GenericBankClient implements BankAPIInterface
     }
 
     public function initiateSourceLink(array $params): array
-    {
-        error_log("[GenericBankClient] initiateSourceLink called");
+{
+    error_log("[GenericBankClient] initiateSourceLink called");
+    
+    $endpoint = $this->getSourceLinkingEndpoint('initiate');
+    if (!$endpoint) {
+        return ['success' => false, 'message' => 'Source linking not configured for this institution'];
+    }
+    
+    $baseUrl = $this->getBaseUrl();
+    $url = $baseUrl . '/' . ltrim($endpoint, '/');
+    
+    // ============================================================
+    // FIX: Detect OAuth from endpoint path, not just config
+    // ============================================================
+    $oauthConfig = $this->config['oauth'] ?? null;
+    $isOAuthEndpoint = strpos($endpoint, 'oauth') !== false || 
+                       strpos($endpoint, 'authorize') !== false;
+    
+    // Use OAuth if configured OR if the endpoint looks like OAuth
+    if ($oauthConfig || $isOAuthEndpoint) {
+        error_log("[GenericBankClient] OAuth detected! endpoint={$endpoint}, isOAuthEndpoint=" . ($isOAuthEndpoint ? 'YES' : 'NO'));
         
-        $endpoint = $this->getSourceLinkingEndpoint('initiate');
-        if (!$endpoint) {
-            return ['success' => false, 'message' => 'Source linking not configured for this institution'];
-        }
+        $clientId = $oauthConfig['client_id'] ?? 'VOUCHMORPH_APP_ID';
+        $redirectUri = $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn.com/api/v1/agent/oauth_callback.php';
+        $state = $params['state'] ?? bin2hex(random_bytes(16));
+        $scopes = $params['scope'] ?? $oauthConfig['scopes'] ?? ['read_balance', 'read_transactions', 'payments'];
         
-        $baseUrl = $this->getBaseUrl();
-        $url = $baseUrl . '/' . ltrim($endpoint, '/');
+        $authUrl = $url . '?' . http_build_query([
+            'client_id' => $clientId,
+            'redirect_uri' => $redirectUri,
+            'response_type' => 'code',
+            'scope' => implode(' ', $scopes),
+            'state' => $state
+        ]);
         
-        $oauthConfig = $this->config['oauth'] ?? null;
-        if ($oauthConfig) {
-            $clientId = $oauthConfig['client_id'] ?? getenv('CLIENT_ID') ?? 'VOUCHMORPH_APP_ID';
-            $redirectUri = $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn.com/api/v1/source/auth/callback';
-            $state = $params['state'] ?? bin2hex(random_bytes(16));
-            $scopes = $params['scope'] ?? $oauthConfig['scopes'] ?? ['balance', 'transactions', 'payments'];
-            
-            $authUrl = $url . '?' . http_build_query([
-                'client_id' => $clientId,
-                'redirect_uri' => $redirectUri,
-                'response_type' => 'code',
-                'scope' => implode(' ', $scopes),
-                'state' => $state
-            ]);
-            
-            $_SESSION['oauth_state_' . $state] = $params['user_id'] ?? 'unknown';
-            
-            return [
-                'success' => true,
-                'auth_type' => 'oauth',
-                'redirect_url' => $authUrl,
-                'state' => $state,
-                'message' => 'Redirect to bank authorization page'
-            ];
-        }
-        
-        $authId = $params['auth_id'] ?? 'AUTH_' . date('Ymd') . '_' . bin2hex(random_bytes(6));
-        $identifier = $params['identifier'] ?? '';
-        $assetType = $params['asset_type'] ?? 'BANK-WALLET';
-        
-        $payload = [
-            'auth_id' => $authId,
-            'identifier' => $identifier,
-            'asset_type' => $assetType,
-            'action' => 'link_source',
-            'timestamp' => time()
+        $_SESSION['oauth_state_' . $state] = [
+            'user_id' => $params['user_id'] ?? 0,
+            'institution' => $this->config['provider_code'] ?? 'unknown',
+            'identifier' => $params['identifier'] ?? '',
+            'asset_type' => $params['asset_type'] ?? 'ACCOUNT'
         ];
         
-        $result = $this->sendSourceLinkingRequest('initiate', $payload);
-        
-        if (!$result['success']) {
-            return ['success' => false, 'message' => $result['message'] ?? 'Failed to initiate'];
-        }
-        
-        $data = $result['data'] ?? [];
+        error_log("[GenericBankClient] OAuth redirect URL: " . $authUrl);
         
         return [
             'success' => true,
-            'auth_id' => $authId,
-            'message' => $data['message'] ?? 'OTP sent to your phone',
-            'expires_in' => $data['expires_in'] ?? 300,
-            'method' => $data['method'] ?? 'sms'
+            'auth_type' => 'oauth',
+            'redirect_url' => $authUrl,
+            'state' => $state,
+            'message' => 'Redirect to bank authorization page'
         ];
     }
+    
+    // ============================================================
+    // Fallback to OTP flow (only if not OAuth)
+    // ============================================================
+    $authId = $params['auth_id'] ?? 'AUTH_' . date('Ymd') . '_' . bin2hex(random_bytes(6));
+    $identifier = $params['identifier'] ?? '';
+    $assetType = $params['asset_type'] ?? 'BANK-WALLET';
+    
+    $payload = [
+        'auth_id' => $authId,
+        'identifier' => $identifier,
+        'asset_type' => $assetType,
+        'action' => 'link_source',
+        'timestamp' => time()
+    ];
+    
+    $result = $this->sendSourceLinkingRequest('initiate', $payload);
+    
+    if (!$result['success']) {
+        return ['success' => false, 'message' => $result['message'] ?? 'Failed to initiate'];
+    }
+    
+    $data = $result['data'] ?? [];
+    
+    return [
+        'success' => true,
+        'auth_type' => 'otp',
+        'auth_id' => $authId,
+        'message' => $data['message'] ?? 'OTP sent to your phone',
+        'expires_in' => $data['expires_in'] ?? 300,
+        'method' => $data['method'] ?? 'sms'
+    ];
+}
 
     public function verifySourceLink(array $params): array
     {
