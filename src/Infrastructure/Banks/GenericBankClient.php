@@ -557,12 +557,22 @@ class GenericBankClient implements BankAPIInterface
     $baseUrl = $this->getBaseUrl();
     $url = $baseUrl . '/' . ltrim($endpoint, '/');
     
-    $oauthConfig = $this->config['oauth'] ?? null;
-    
     // ============================================================
     // FIX: Check if this is an OAuth callback (has 'code' parameter)
+    // The endpoint path might indicate OAuth, not just the config
     // ============================================================
-    if ($oauthConfig && isset($params['code'])) {
+    $oauthConfig = $this->config['oauth'] ?? null;
+    $isOAuthEndpoint = strpos($endpoint, 'oauth') !== false || 
+                       strpos($endpoint, 'token') !== false ||
+                       strpos($endpoint, 'authorize') !== false;
+    
+    // ALSO check if the params contain 'code' - that's a strong OAuth indicator
+    $hasCode = isset($params['code']) && !empty($params['code']);
+    
+    // Use OAuth if configured OR if the endpoint looks like OAuth OR if 'code' is present
+    if ($oauthConfig || $isOAuthEndpoint || $hasCode) {
+        error_log("[GenericBankClient] OAuth verification detected! endpoint={$endpoint}, hasCode=" . ($hasCode ? 'YES' : 'NO'));
+        
         $payload = [
             'grant_type' => 'authorization_code',
             'code' => $params['code'],
@@ -591,14 +601,15 @@ class GenericBankClient implements BankAPIInterface
     }
     
     // ============================================================
-    // OTP verification path
+    // OTP verification path (only if not OAuth)
     // ============================================================
-    // FIX: Check if auth_id exists before using it
     if (!isset($params['auth_id'])) {
+        error_log("[GenericBankClient] OTP verification missing auth_id");
         return ['success' => false, 'message' => 'auth_id required for OTP verification'];
     }
     
     if (!isset($params['otp'])) {
+        error_log("[GenericBankClient] OTP verification missing otp");
         return ['success' => false, 'message' => 'otp required for verification'];
     }
     
