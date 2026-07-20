@@ -1,29 +1,34 @@
 <?php
-// test_sms.php — run directly on the VouchMorph server/container
+// test.php
 require_once __DIR__ . '/../vendor/autoload.php';
 require_once __DIR__ . '/../src/Core/Config/LoadCountry.php';
+require_once __DIR__ . '/../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../src/Infrastructure/SMS/SmsNotificationService.php';
 
 use Core\Config\LoadCountry;
+use Core\Database\DBConnection;
 use Infrastructure\SMS\SmsNotificationService;
 
 $config = LoadCountry::getConfig();
-$smsConfig = $config['participants']['sms'] ?? [];
+$commConfig = $config['communication'] ?? [];
 
-echo "SMS config found: " . (empty($smsConfig) ? "NO — smsService would be null in SwapService\n" : "YES\n");
-echo json_encode($smsConfig, JSON_PRETTY_PRINT) . "\n\n";
+echo "Communication config found: " . (empty($commConfig) ? "NO\n" : "YES\n");
+echo json_encode($commConfig, JSON_PRETTY_PRINT) . "\n\n";
 
-if (empty($smsConfig)) {
-    exit("Stopping — no SMS config, this confirms the 'skipped_no_provider' case.\n");
+if (empty($commConfig)) {
+    exit("Stopping — no communication config found.\n");
 }
 
-$sms = new SmsNotificationService($smsConfig);
+$db = DBConnection::getConnection();
+$sms = new SmsNotificationService($db, $commConfig);
 
-$testPhone = '+26770000001'; // use a real number you can check
+echo "isConfigured(): " . ($sms->isConfigured() ? "YES\n" : "NO\n");
+
+$testPhone = '+26770000000'; // starts with 70 → should route to Cazacom
 try {
     $result = $sms->sendCashoutCode($testPhone, '123456', 100.00, 'TEST_REF_' . time());
-    echo "SUCCESS: " . json_encode($result) . "\n";
+    echo "RESULT: " . json_encode($result, JSON_PRETTY_PRINT) . "\n";
 } catch (\Exception $e) {
-    echo "FAILED: " . $e->getMessage() . "\n";
-    echo "Trace: " . $e->getTraceAsString() . "\n";
+    echo "EXCEPTION: " . $e->getMessage() . "\n";
+    echo $e->getTraceAsString() . "\n";
 }
