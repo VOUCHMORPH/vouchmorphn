@@ -4366,7 +4366,7 @@ public function completeAgentDestinationRegistrationByState(string $oauthState, 
         $verifyResult['refresh_token'] ?? null,
         $verifyResult['expires_at'] ?? null,
         'active',
-        'null'
+         null
     );
     // ↑↑↑ replaces the old call (which had no 'active' / 'SYSTEM_OAUTH_VERIFICATION' args) ↑↑↑
 
