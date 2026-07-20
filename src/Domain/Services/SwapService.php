@@ -4852,6 +4852,336 @@ public function finalizeIdentityClaimSplit(
 
     return $response;
 }
+
+
+// ============================================================================
+// USER SOURCE ACCOUNT REGISTRATION - mirrors agent destination registration
+// ============================================================================
+
+/**
+ * Phase 1: verify the account exists (via the SOURCE-role verifyAsset,
+ * not verifyAccount - a source needs to prove funds/existence, not
+ * business-account-type eligibility like agent destinations do), then
+ * trigger OTP/OAuth ownership proof.
+ */
+public function initiateUserSourceRegistration(
+    int $userId,
+    string $institution,
+    string $assetType,
+    string $identifier,
+    string $identifierType,
+    ?string $accountName = null
+): array {
+    error_log("[SwapService] initiateUserSourceRegistration: user={$userId}, institution={$institution}, identifier={$identifier}");
+
+    $assetType = strtoupper(trim($assetType));
+    $eligibleAssetTypes = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
+    if (!in_array($assetType, $eligibleAssetTypes, true)) {
+        throw new RuntimeException("Source must be Account, Wallet, or Card - '{$assetType}' is not eligible.");
+    }
+
+    $identifierType = match($assetType) {
+        'WALLET', 'BANK-WALLET' => 'phone',
+        'CARD' => 'card_number',
+        'ACCOUNT' => 'account_number',
+        default => 'account_number'
+    };
+
+    // Verify the account/asset actually exists at the bank before we
+    // bother with OTP/OAuth - same defensive pattern as agent registration.
+    $verifyPayload = [
+        'action' => 'VERIFY_ASSET',
+        'reference' => 'USER_SRC_' . $userId . '_' . time(),
+        'source_identifier' => $identifier,
+        'identifier_type' => $identifierType,
+        'asset_type' => $assetType,
+        'requester' => 'VOUCHMORPH',
+        'timestamp' => time(),
+        'from_institution' => $institution,
+        'source_institution' => $institution,
+    ];
+
+    try {
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        $verifyResult = $adapter->verifyAsset($verifyPayload, [
+            'institution' => $institution,
+            'purpose' => 'user_source_registration',
+        ]);
+    } catch (Exception $e) {
+        error_log("[SwapService] User source verification failed: " . $e->getMessage());
+        throw new RuntimeException("Could not verify this account with {$institution}: " . $e->getMessage());
+    }
+
+    if (!($verifyResult['verified'] ?? false)) {
+        throw new RuntimeException("Account not found or not verifiable at {$institution}: " . ($verifyResult['message'] ?? 'Unknown reason'));
+    }
+
+    // Duplicate check
+    $stmt = $this->swapDB->prepare("
+        SELECT id, status FROM user_source_accounts
+        WHERE user_id = :user_id AND institution = :institution AND identifier = :identifier
+        AND deleted_at IS NULL
+    ");
+    $stmt->execute([':user_id' => $userId, ':institution' => $institution, ':identifier' => $identifier]);
+    if ($existing = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        throw new RuntimeException("You already have this account registered as a source (status: {$existing['status']}).");
+    }
+
+    // Pending attempt check
+    $stmt = $this->swapDB->prepare("
+        SELECT id FROM user_source_registration_attempts
+        WHERE user_id = :user_id AND institution = :institution AND identifier = :identifier
+        AND status IN ('otp_pending', 'oauth_pending') AND otp_expires_at > NOW()
+    ");
+    $stmt->execute([':user_id' => $userId, ':institution' => $institution, ':identifier' => $identifier]);
+    if ($stmt->fetch()) {
+        throw new RuntimeException("A verification attempt is already pending for this account.");
+    }
+
+    $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
+        . '/api/v1/user/source_oauth_callback.php';
+
+    $linkResult = null;
+    try {
+        $linkResult = $this->initiateSourceLink([
+            'institution' => $institution,
+            'identifier' => $identifier,
+            'identifier_type' => $identifierType,
+            'asset_type' => $assetType,
+            'user_id' => $userId,
+            'redirect_uri' => $callbackUrl,
+        ]);
+    } catch (Exception $e) {
+        error_log("[SwapService] initiateSourceLink threw: " . $e->getMessage());
+        $linkResult = ['success' => false, 'message' => $e->getMessage()];
+    }
+
+    $linkSucceeded = (bool)($linkResult['success'] ?? false);
+    $isOauth = $linkSucceeded && ($linkResult['auth_type'] ?? null) === 'oauth';
+
+    if (!$linkSucceeded) {
+        // Bank has no OTP/OAuth support - register without ownership proof,
+        // flagged for manual review rather than silently trusting it.
+        error_log("[SwapService] {$institution} has no OTP/OAuth support for sources - registering without ownership proof");
+        $id = $this->insertUserSourceAccount(
+            $userId, $institution, $assetType, $identifier, $identifierType,
+            $accountName ?? $verifyResult['account_name'] ?? null,
+            $verifyResult['currency'] ?? 'BWP',
+            false, null, null, null, 'pending_confirmation'
+        );
+        return [
+            'requires_otp' => false,
+            'requires_redirect' => false,
+            'otp_supported' => false,
+            'id' => $id,
+            'status' => 'pending_confirmation',
+            'message' => "Registered without ownership verification - awaiting manual review.",
+        ];
+    }
+
+    if ($isOauth) {
+        $stmt = $this->swapDB->prepare("
+            INSERT INTO user_source_registration_attempts (
+                user_id, institution, asset_type, identifier, identifier_type,
+                account_name, oauth_state, otp_supported, status
+            ) VALUES (
+                :user_id, :institution, :asset_type, :identifier, :identifier_type,
+                :account_name, :oauth_state, true, 'oauth_pending'
+            ) RETURNING id
+        ");
+        $stmt->execute([
+            ':user_id' => $userId,
+            ':institution' => $institution,
+            ':asset_type' => $assetType,
+            ':identifier' => $identifier,
+            ':identifier_type' => $identifierType,
+            ':account_name' => $accountName ?? $verifyResult['account_name'] ?? null,
+            ':oauth_state' => $linkResult['state'],
+        ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return [
+            'requires_otp' => false,
+            'requires_redirect' => true,
+            'otp_supported' => true,
+            'attempt_id' => $row ? (int)$row['id'] : 0,
+            'redirect_url' => $linkResult['redirect_url'],
+            'message' => "You'll be taken to {$institution}'s login page to confirm ownership.",
+        ];
+    }
+
+    // OTP path - bank sends the code to the phone IT has on file
+    $stmt = $this->swapDB->prepare("
+        INSERT INTO user_source_registration_attempts (
+            user_id, institution, asset_type, identifier, identifier_type,
+            account_name, bank_auth_id, otp_method, otp_expires_at, otp_supported, status
+        ) VALUES (
+            :user_id, :institution, :asset_type, :identifier, :identifier_type,
+            :account_name, :auth_id, :method, :expires_at, true, 'otp_pending'
+        ) RETURNING id
+    ");
+    $stmt->execute([
+        ':user_id' => $userId,
+        ':institution' => $institution,
+        ':asset_type' => $assetType,
+        ':identifier' => $identifier,
+        ':identifier_type' => $identifierType,
+        ':account_name' => $accountName ?? $verifyResult['account_name'] ?? null,
+        ':auth_id' => $linkResult['auth_id'] ?? null,
+        ':method' => $linkResult['method'] ?? 'sms',
+        ':expires_at' => date('Y-m-d H:i:s', time() + (int)($linkResult['expires_in'] ?? 300)),
+    ]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    return [
+        'requires_otp' => true,
+        'requires_redirect' => false,
+        'otp_supported' => true,
+        'attempt_id' => $row ? (int)$row['id'] : 0,
+        'method' => $linkResult['method'] ?? 'sms',
+        'message' => $linkResult['message'] ?? "Verification code sent by {$institution} to your registered phone.",
+    ];
+}
+
+/** Phase 2: complete OTP verification - creates the active source row */
+public function completeUserSourceRegistration(int $userId, int $attemptId, string $otp): array
+{
+    $stmt = $this->swapDB->prepare("
+        SELECT * FROM user_source_registration_attempts
+        WHERE id = :id AND user_id = :user_id AND status = 'otp_pending'
+    ");
+    $stmt->execute([':id' => $attemptId, ':user_id' => $userId]);
+    $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$attempt) {
+        throw new RuntimeException("Verification attempt not found.");
+    }
+    if (strtotime($attempt['otp_expires_at']) < time()) {
+        throw new RuntimeException("Verification code expired. Start again.");
+    }
+
+    try {
+        $verifyResult = $this->verifySourceLink([
+            'institution' => $attempt['institution'],
+            'auth_id' => $attempt['bank_auth_id'],
+            'otp' => $otp,
+        ]);
+    } catch (Exception $e) {
+        throw new RuntimeException("Could not verify code: " . $e->getMessage());
+    }
+
+    if (!($verifyResult['success'] ?? false) || !($verifyResult['authorized'] ?? false)) {
+        throw new RuntimeException($verifyResult['message'] ?? 'Incorrect or expired code.');
+    }
+
+    $id = $this->insertUserSourceAccount(
+        (int)$attempt['user_id'], $attempt['institution'], $attempt['asset_type'],
+        $attempt['identifier'], $attempt['identifier_type'], $attempt['account_name'],
+        'BWP', true,
+        $verifyResult['access_token'] ?? null,
+        $verifyResult['refresh_token'] ?? null,
+        $verifyResult['expires_at'] ?? null,
+        'active'
+    );
+
+    $stmt = $this->swapDB->prepare("UPDATE user_source_registration_attempts SET status = 'completed', completed_at = NOW() WHERE id = :id");
+    $stmt->execute([':id' => $attemptId]);
+
+    return ['id' => $id, 'status' => 'active', 'message' => "Ownership verified. Account added as a source."];
+}
+
+/** OAuth completion by state token - mirrors agent OAuth completion */
+public function completeUserSourceRegistrationByState(string $oauthState, string $code): array
+{
+    $stmt = $this->swapDB->prepare("
+        SELECT * FROM user_source_registration_attempts WHERE oauth_state = :state AND status = 'oauth_pending'
+    ");
+    $stmt->execute([':state' => $oauthState]);
+    $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$attempt) {
+        throw new RuntimeException("Registration attempt not found or already completed.");
+    }
+
+    $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
+        . '/api/v1/user/source_oauth_callback.php';
+
+    try {
+        $verifyResult = $this->verifySourceLink([
+            'institution' => $attempt['institution'],
+            'code' => $code,
+            'redirect_uri' => $callbackUrl,
+        ]);
+    } catch (Exception $e) {
+        throw new RuntimeException("Could not complete verification: " . $e->getMessage());
+    }
+    if (!($verifyResult['success'] ?? false) || !($verifyResult['authorized'] ?? false)) {
+        throw new RuntimeException($verifyResult['message'] ?? 'Bank login could not be verified.');
+    }
+
+    $id = $this->insertUserSourceAccount(
+        (int)$attempt['user_id'], $attempt['institution'], $attempt['asset_type'],
+        $attempt['identifier'], $attempt['identifier_type'], $attempt['account_name'],
+        'BWP', true,
+        $verifyResult['access_token'] ?? null,
+        $verifyResult['refresh_token'] ?? null,
+        $verifyResult['expires_at'] ?? null,
+        'active'
+    );
+
+    $stmt = $this->swapDB->prepare("UPDATE user_source_registration_attempts SET status = 'completed', completed_at = NOW() WHERE id = :id");
+    $stmt->execute([':id' => $attempt['id']]);
+
+    return ['id' => $id, 'status' => 'active', 'institution' => $attempt['institution'], 'message' => "Bank login verified. Source is now active."];
+}
+
+private function insertUserSourceAccount(
+    int $userId, string $institution, string $assetType, string $identifier,
+    string $identifierType, ?string $accountName, string $currency, bool $isHooked,
+    ?string $accessToken, ?string $refreshToken, ?string $tokenExpiresAt, string $status
+): int {
+    $sourceReference = 'SRC_' . $userId . '_' . bin2hex(random_bytes(6));
+    $stmt = $this->swapDB->prepare("
+        INSERT INTO user_source_accounts (
+            user_id, institution, asset_type, identifier, identifier_type,
+            account_name, currency, is_hooked, access_token, refresh_token,
+            token_expires_at, source_reference, status, confirmed_at
+        ) VALUES (
+            :user_id, :institution, :asset_type, :identifier, :identifier_type,
+            :account_name, :currency, :is_hooked, :access_token, :refresh_token,
+            :token_expires_at, :source_reference, :status,
+            CASE WHEN :status2 = 'active' THEN NOW() ELSE NULL END
+        ) RETURNING id
+    ");
+    $stmt->execute([
+        ':user_id' => $userId, ':institution' => $institution, ':asset_type' => $assetType,
+        ':identifier' => $identifier, ':identifier_type' => $identifierType,
+        ':account_name' => $accountName, ':currency' => $currency,
+        ':is_hooked' => $isHooked ? 't' : 'f', ':access_token' => $accessToken,
+        ':refresh_token' => $refreshToken, ':token_expires_at' => $tokenExpiresAt,
+        ':source_reference' => $sourceReference, ':status' => $status, ':status2' => $status,
+    ]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ? (int)$row['id'] : 0;
+}
+
+/** Cancel a pending/rejected source registration - mirrors cancelAgentDestination */
+public function cancelUserSourceAccount(int $userId, int $sourceId): array
+{
+    $stmt = $this->swapDB->prepare("
+        SELECT id, status FROM user_source_accounts
+        WHERE id = :id AND user_id = :user_id AND deleted_at IS NULL
+    ");
+    $stmt->execute([':id' => $sourceId, ':user_id' => $userId]);
+    if (!$stmt->fetch()) {
+        throw new RuntimeException("Source account not found or does not belong to you.");
+    }
+    $stmt = $this->swapDB->prepare("
+        UPDATE user_source_accounts SET status = 'cancelled', deleted_at = NOW(), updated_at = NOW()
+        WHERE id = :id AND user_id = :user_id
+    ");
+    $stmt->execute([':id' => $sourceId, ':user_id' => $userId]);
+    return ['success' => true, 'message' => 'Source account removed.', 'id' => $sourceId];
+}
+
     
 /**
  * Insert agent destination account (shared helper)
