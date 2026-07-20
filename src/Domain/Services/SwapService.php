@@ -977,6 +977,32 @@ if (!empty($commConfig)) {
     
     private function populateDepositTransaction(string $swapRef, array $swapData, array $details, ?int $userId = null): void
 {
+    // Get beneficiary phone from identity_swap_holds
+    $clientPhone = null;
+    try {
+        $stmt = $this->swapDB->prepare("
+            SELECT otp_pin_sent_to 
+            FROM identity_swap_holds 
+            WHERE swap_reference = :swap_ref
+            LIMIT 1
+        ");
+        $stmt->execute([':swap_ref' => $swapRef]);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($result && !empty($result['otp_pin_sent_to'])) {
+            $clientPhone = $result['otp_pin_sent_to'];
+        }
+    } catch (PDOException $e) {
+        $this->logger->warning("Failed to get beneficiary phone", ['error' => $e->getMessage()]);
+    }
+
+    // Fallback if not found
+    if (empty($clientPhone)) {
+        $clientPhone = $details['client_phone'] ?? 
+                       $details['beneficiary_phone'] ?? 
+                       $details['notification_phone'] ?? 
+                       'unknown_' . substr($swapRef, 0, 20);
+    }
+
     $sql = "
         INSERT INTO deposit_transactions (
             transaction_reference,
@@ -993,6 +1019,7 @@ if (!empty($commConfig)) {
             status,
             created_at,
             updated_at,
+            completed_at,
             metadata,
             user_id
         ) VALUES (
@@ -1010,6 +1037,7 @@ if (!empty($commConfig)) {
             :status,
             :created_at,
             :updated_at,
+            :completed_at,
             :metadata::jsonb,
             :user_id
         ) ON CONFLICT (transaction_reference) DO UPDATE SET
@@ -1033,7 +1061,7 @@ if (!empty($commConfig)) {
         $stmt = $this->swapDB->prepare($sql);
         $stmt->execute([
             ':tx_ref' => $swapRef,
-            ':client_phone' => $details['client_phone'] ?? $details['beneficiary_phone'] ?? null,
+            ':client_phone' => $clientPhone,
             ':source_type' => $details['asset_type'] ?? $swapData['asset_type'] ?? 'ACCOUNT',
             ':source_inst' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
             ':source_account' => $details['source_identifier'] ?? null,
@@ -1046,6 +1074,7 @@ if (!empty($commConfig)) {
             ':status' => $status,
             ':created_at' => date('Y-m-d H:i:s'),
             ':updated_at' => date('Y-m-d H:i:s'),
+            ':completed_at' => $status === 'COMPLETED' ? date('Y-m-d H:i:s') : null,
             ':metadata' => json_encode([
                 'source' => 'swap_service',
                 'hold_id' => $this->currentHoldId
