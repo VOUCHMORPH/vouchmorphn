@@ -4958,26 +4958,31 @@ public function isApprovedAgent(int $userId): bool
     }
 
     public function debitSource(array $payload, string $institution): array
-    {
-        $debitPayload = [
-            'reference' => $payload['reference'] ?? $this->currentSwapRef,
-            'hold_reference' => $payload['hold_reference'] ?? $this->currentHoldReference,
-            'amount' => $payload['amount'] ?? 0,
-            'reason' => $payload['reason'] ?? 'Swap completed successfully',
-            'from_institution' => $institution,
-            'source_institution' => $institution
-        ];
-
-        $this->forwardPin($payload, $debitPayload);
-
-        $adapter = $this->adapterFactory->getAdapter($institution);
-        return $adapter->debit($debitPayload, [
-            'swap_reference' => $this->currentSwapRef,
-            'institution' => $institution,
-            'hold_reference' => $this->currentHoldReference,
-            'signed_payloads' => $this->signedPayloads
-        ]);
+{
+    $sourceId = $this->extractSourceIdentifier($payload);
+    if ($sourceId['has_value']) {
+        $this->validateAgentMinimumBalance($institution, $sourceId['identifier'], (float)($payload['amount'] ?? 0));
     }
+
+    $debitPayload = [
+        'reference' => $payload['reference'] ?? $this->currentSwapRef,
+        'hold_reference' => $payload['hold_reference'] ?? $this->currentHoldReference,
+        'amount' => $payload['amount'] ?? 0,
+        'reason' => $payload['reason'] ?? 'Swap completed successfully',
+        'from_institution' => $institution,
+        'source_institution' => $institution
+    ];
+
+    $this->forwardPin($payload, $debitPayload);
+
+    $adapter = $this->adapterFactory->getAdapter($institution);
+    return $adapter->debit($debitPayload, [
+        'swap_reference' => $this->currentSwapRef,
+        'institution' => $institution,
+        'hold_reference' => $this->currentHoldReference,
+        'signed_payloads' => $this->signedPayloads
+    ]);
+}
 
     public function releaseHold(
         array $sourcePayload,
