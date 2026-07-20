@@ -853,49 +853,71 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
     // ============================================================
     
     public function getBalance(array $payload, array $context): array
-    {
-        $this->context = array_merge($context, $payload);
+{
+    $this->context = array_merge($context, $payload);
+    
+    try {
+        $this->ensureConsent();
         
-        try {
-            $this->ensureConsent();
-            
-            $balancePayload = [
-                'account_id' => $payload['account_id'] ?? $payload['account_identifier'] ?? null,
-                'access_token' => $this->accessToken
-            ];
-            
-            $result = $this->bankClient->getAccountBalance(
-                $this->accessToken ?? '',
-                $balancePayload['account_id']
-            );
-            
-            if (!$result || !isset($result['balance'])) {
-                return [
-                    'success' => false,
-                    'message' => 'Failed to get balance',
-                    'balance' => 0,
-                    'currency' => $payload['currency'] ?? 'BWP'
-                ];
+        // FIX: Also check for source_identifier
+        $accountId = $payload['account_id'] ?? 
+                     $payload['account_identifier'] ?? 
+                     $payload['source_identifier'] ??  // <-- ADD THIS
+                     $payload['identifier'] ?? 
+                     null;
+        
+        if (empty($accountId)) {
+            if ($this->logger) {
+                $this->logger->error("getBalance called with no account identifier", [
+                    'payload_keys' => array_keys($payload),
+                    'institution' => $this->institution
+                ]);
             }
-            
-            return [
-                'success' => true,
-                'balance' => (float) $result['balance'],
-                'currency' => $result['currency'] ?? $payload['currency'] ?? 'BWP',
-                'account_id' => $payload['account_id'] ?? null,
-                'account_name' => $result['account_name'] ?? null,
-                'last_updated' => date('Y-m-d H:i:s')
-            ];
-            
-        } catch (\Exception $e) {
             return [
                 'success' => false,
-                'message' => $e->getMessage(),
+                'message' => 'No account identifier provided',
                 'balance' => 0,
                 'currency' => $payload['currency'] ?? 'BWP'
             ];
         }
+        
+        $balancePayload = [
+            'account_id' => $accountId,
+            'access_token' => $this->accessToken
+        ];
+        
+        $result = $this->bankClient->getAccountBalance(
+            $this->accessToken ?? '',
+            $accountId
+        );
+        
+        if (!$result || !isset($result['balance'])) {
+            return [
+                'success' => false,
+                'message' => 'Failed to get balance',
+                'balance' => 0,
+                'currency' => $payload['currency'] ?? 'BWP'
+            ];
+        }
+        
+        return [
+            'success' => true,
+            'balance' => (float) $result['balance'],
+            'currency' => $result['currency'] ?? $payload['currency'] ?? 'BWP',
+            'account_id' => $accountId,
+            'account_name' => $result['account_name'] ?? null,
+            'last_updated' => date('Y-m-d H:i:s')
+        ];
+        
+    } catch (\Exception $e) {
+        return [
+            'success' => false,
+            'message' => $e->getMessage(),
+            'balance' => 0,
+            'currency' => $payload['currency'] ?? 'BWP'
+        ];
     }
+}
     
     public function getTransactions(array $payload, array $context): array
     {
