@@ -1211,7 +1211,7 @@ async function submitAddSource() {
     btn.disabled = true;
     btn.textContent = '⏳ Registering...';
     
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/add_source.php', {
+    const result = await callApi(CONFIG.API_BASE + '/user/add_source.php', {
         institution: institution,
         asset_type: assetType,
         identifier: identifier,
@@ -1268,7 +1268,7 @@ async function completeSourceOtp() {
     btn.disabled = true;
     btn.textContent = '⏳ Verifying...';
     
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/verify_source.php', {
+    const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', {
         attempt_id: addSourceState.attemptId,
         otp: otp
     });
@@ -1291,7 +1291,7 @@ async function completeSourceOtp() {
 async function removeSource(sourceId) {
     if (!confirm('Remove this source? You can add it again later.')) return;
     
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/sources/delete.php', {
+    const result = await callApi(CONFIG.API_BASE + '/user/delete.php', {
         source_id: sourceId
     });
     
