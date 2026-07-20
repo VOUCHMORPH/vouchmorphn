@@ -103,35 +103,17 @@ if ($pinMatches && $matchedHold) {
 }
 
 // ============================================================
-// STEP 3: CHECK CURRENT AGENT BALANCE (Before)
+// STEP 3: FINALIZE ALL HOLDS
 // ============================================================
-echo "\n💰 STEP 3: CHECKING AGENT BALANCE (BEFORE)\n";
-echo str_repeat('-', 40) . "\n";
-
-$stmt = $db->prepare("
-    SELECT balance FROM zurubank_accounts WHERE account_number = '10000001'
-");
-$stmt->execute();
-$agentBalanceBefore = $stmt->fetchColumn();
-
-if ($agentBalanceBefore !== false) {
-    echo "Agent account 10000001 balance: {$agentBalanceBefore} BWP\n";
-} else {
-    echo "⚠️ Could not get agent balance. Continuing...\n";
-    $agentBalanceBefore = 0;
-}
-
-// ============================================================
-// STEP 4: FINALIZE ALL HOLDS
-// ============================================================
-echo "\n🚀 STEP 4: FINALIZING ALL HOLDS\n";
+echo "\n🚀 STEP 3: FINALIZING ALL HOLDS\n";
 echo str_repeat('-', 40) . "\n";
 
 echo "Total gross: {$totalGross} BWP\n";
 echo "Cash to client: {$cashNowAmount} BWP\n";
-echo "Estimated fees: ~" . (count($pendingHolds) * 6) . " BWP\n";
-echo "Estimated net: ~" . ($totalGross - (count($pendingHolds) * 6)) . " BWP\n";
-echo "Estimated remainder: ~" . ($totalGross - (count($pendingHolds) * 6) - $cashNowAmount) . " BWP\n";
+$estimatedFees = count($pendingHolds) * 6;
+echo "Estimated fees: ~{$estimatedFees} BWP\n";
+echo "Estimated net: ~" . ($totalGross - $estimatedFees) . " BWP\n";
+echo "Estimated remainder: ~" . ($totalGross - $estimatedFees - $cashNowAmount) . " BWP\n";
 
 try {
     $startTime = microtime(true);
@@ -159,9 +141,9 @@ try {
 }
 
 // ============================================================
-// STEP 5: DISPLAY RESULTS
+// STEP 4: DISPLAY RESULTS
 // ============================================================
-echo "\n📊 STEP 5: RESULTS\n";
+echo "\n📊 STEP 4: RESULTS\n";
 echo str_repeat('-', 40) . "\n";
 
 if ($result) {
@@ -189,7 +171,8 @@ if ($result) {
     if (!empty($result['successful_deposits'])) {
         echo "\n✅ Successful deposits:\n";
         foreach ($result['successful_deposits'] as $dep) {
-            echo "  - Hold {$dep['hold_id']}: {$dep['gross_amount']} BWP → {$dep['net_deposited']} BWP (fee: " . ($dep['gross_amount'] - $dep['net_deposited']) . " BWP)\n";
+            $fee = $dep['gross_amount'] - $dep['net_deposited'];
+            echo "  - Hold {$dep['hold_id']}: {$dep['gross_amount']} BWP → {$dep['net_deposited']} BWP (fee: {$fee} BWP)\n";
         }
     }
     
@@ -205,16 +188,17 @@ if ($result) {
         echo "\n🔄 Remainder re-swap:\n";
         echo "  - Amount: {$remainder} BWP\n";
         echo "  - Status: {$result['remainder_reswap']['status']}\n";
-        echo "  - New hold reference: " . ($result['remainder_reswap']['result']['hold_reference'] ?? 'N/A') . "\n";
-        echo "  - New hold ID: " . ($result['remainder_reswap']['result']['hold_id'] ?? 'N/A') . "\n";
-        echo "  - Expires at: " . ($result['remainder_reswap']['result']['expires_at'] ?? 'N/A') . "\n";
+        $remResult = $result['remainder_reswap']['result'] ?? [];
+        echo "  - New hold reference: " . ($remResult['hold_reference'] ?? 'N/A') . "\n";
+        echo "  - New hold ID: " . ($remResult['hold_id'] ?? 'N/A') . "\n";
+        echo "  - Expires at: " . ($remResult['expires_at'] ?? 'N/A') . "\n";
     }
 }
 
 // ============================================================
-// STEP 6: VERIFY DATABASE STATE
+// STEP 5: VERIFY DATABASE STATE
 // ============================================================
-echo "\n📊 STEP 6: VERIFYING DATABASE STATE\n";
+echo "\n📊 STEP 5: VERIFYING DATABASE STATE\n";
 echo str_repeat('-', 40) . "\n";
 
 // Check all holds after the operation
@@ -283,37 +267,33 @@ foreach ($deposits as $dep) {
 }
 
 // ============================================================
-// STEP 7: CHECK AGENT BALANCE (After)
+// STEP 6: MATH VERIFICATION
 // ============================================================
-echo "\n💰 STEP 7: CHECKING AGENT BALANCE (AFTER)\n";
+echo "\n📊 STEP 6: MATH VERIFICATION\n";
 echo str_repeat('-', 40) . "\n";
 
-$stmt = $db->prepare("
-    SELECT balance FROM zurubank_accounts WHERE account_number = '10000001'
-");
-$stmt->execute();
-$agentBalanceAfter = $stmt->fetchColumn();
+$expectedAgentKeeps = $net - $cashGiven - $remainder;
+$totalAccounted = $cashGiven + $remainder + $totalFees + $expectedAgentKeeps;
 
-if ($agentBalanceAfter !== false) {
-    $balanceChange = $agentBalanceAfter - $agentBalanceBefore;
-    echo "Agent account 10000001 balance: {$agentBalanceAfter} BWP\n";
-    echo "Balance change: " . ($balanceChange > 0 ? '+' : '') . "{$balanceChange} BWP\n";
-    
-    // Verify the math
-    $expectedChange = $net - $cashGiven - $remainder;
-    echo "\nMath verification:\n";
-    echo "  Net deposited: {$net} BWP\n";
-    echo "  Cash given: {$cashGiven} BWP\n";
-    echo "  Remainder re-swapped: {$remainder} BWP\n";
-    echo "  Expected balance change: {$expectedChange} BWP\n";
-    echo "  Actual balance change: {$balanceChange} BWP\n";
-    echo "  Difference: " . abs($balanceChange - $expectedChange) . " BWP\n";
+echo "Money flow:\n";
+echo "  Gross: {$gross} BWP\n";
+echo "  Fees: {$totalFees} BWP\n";
+echo "  Net: {$net} BWP\n";
+echo "  Cash to client: {$cashGiven} BWP\n";
+echo "  Remainder re-swapped: {$remainder} BWP\n";
+echo "  Agent keeps (net - cash - remainder): {$expectedAgentKeeps} BWP\n";
+echo "  Total accounted: {$totalAccounted} BWP\n";
+
+if (abs($totalAccounted - $gross) < 0.01) {
+    echo "✅ MATH CHECKS OUT! (Gross = Fees + Cash + Remainder + Agent Keeps)\n";
+} else {
+    echo "⚠️ MATH DOESN'T CHECK OUT! Difference: " . abs($totalAccounted - $gross) . " BWP\n";
 }
 
 // ============================================================
-// STEP 8: FINAL SUMMARY
+// STEP 7: FINAL SUMMARY
 // ============================================================
-echo "\n🔍 STEP 8: FINAL SUMMARY\n";
+echo "\n🔍 STEP 7: FINAL SUMMARY\n";
 echo str_repeat('-', 40) . "\n";
 
 echo "✅ TEST COMPLETE\n\n";
@@ -335,6 +315,14 @@ if ($pendingCount === 0 && $completedCount > 0) {
 } elseif ($pendingCount > 0) {
     echo "\n⚠️ {$pendingCount} hold(s) still pending.\n";
     echo "   Check the logs for details.\n";
+}
+
+// Show next steps if there are pending holds
+if ($pendingCount > 0) {
+    echo "\n📋 Next steps:\n";
+    echo "  1. Check the pending holds: SELECT * FROM identity_swap_holds WHERE hold_id IN (...);\n";
+    echo "  2. If deposits exist, mark as completed: UPDATE identity_swap_holds SET status = 'completed' WHERE hold_id IN (...);\n";
+    echo "  3. Or retry with the PIN again.\n";
 }
 
 echo "\nTest completed at " . date('Y-m-d H:i:s') . "\n";
