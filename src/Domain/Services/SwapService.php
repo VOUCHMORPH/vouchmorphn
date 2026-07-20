@@ -4252,6 +4252,7 @@ public function finalizeAggregatedIdentityClaim(
     float $cashNowAmount,
     ?int $agentUserId = null
 ): array {
+    // 1. Verify the agent's destination account
     $sql = "
         SELECT institution, identifier, identifier_type, asset_type
         FROM agent_destination_accounts
@@ -4269,6 +4270,7 @@ public function finalizeAggregatedIdentityClaim(
         throw new RuntimeException("Agent destination account not found, not active, or not owned by this agent.");
     }
 
+    // 2. Get ALL pending holds for this identity
     $stmt = $this->swapDB->prepare("
         SELECT * FROM identity_swap_holds
         WHERE identity_type = :identity_type AND identity_value = :identity_value
@@ -4282,6 +4284,7 @@ public function finalizeAggregatedIdentityClaim(
         throw new RuntimeException("No pending balance found for this identity.");
     }
 
+    // 3. Check currencies
     $currencies = array_unique(array_column($pendingHolds, 'currency'));
     if (count($currencies) > 1) {
         throw new RuntimeException(
@@ -4296,9 +4299,7 @@ public function finalizeAggregatedIdentityClaim(
         throw new RuntimeException("Requested cash amount must be between 0 and {$fullAmount}.");
     }
 
-    // PIN check happens ONCE, against whichever hold most recently sent a
-    // PIN (falls back to most recently created for account_pin claim types,
-    // which never set otp_pin_sent_at).
+    // 4. PIN check happens ONCE, against whichever hold most recently sent a PIN
     usort($pendingHolds, function ($a, $b) {
         $aKey = $a['otp_pin_sent_at'] ?? $a['created_at'];
         $bKey = $b['otp_pin_sent_at'] ?? $b['created_at'];
@@ -4306,8 +4307,8 @@ public function finalizeAggregatedIdentityClaim(
     });
     $latestHold = $pendingHolds[0];
     $this->verifyIdentityClaimPin($latestHold, $pin);
-    // Re-sort back to chronological (oldest first) for the deposit loop -
-    // purely cosmetic/FIFO ordering, not security-relevant.
+    
+    // Re-sort back to chronological (oldest first) for the deposit loop
     usort($pendingHolds, fn($a, $b) => strtotime($a['created_at']) <=> strtotime($b['created_at']));
 
     $beneficiaryPhone = $latestHold['otp_pin_sent_to'] ?? null;
@@ -4316,6 +4317,7 @@ public function finalizeAggregatedIdentityClaim(
         $beneficiaryPhone = $latestSourcePayload['notification_phone'] ?? $latestSourcePayload['beneficiary_phone'] ?? null;
     }
 
+    // 5. Process EACH hold as a SEPARATE transaction
     $depositResults = [];
     $failedHolds = [];
     $totalDepositedNet = 0.0;
@@ -4335,7 +4337,10 @@ public function finalizeAggregatedIdentityClaim(
         ];
 
         try {
-            $result = $this->finalizeIdentityHoldNoPin($hold, $confirmationPayload);
+            // ✅ CRITICAL FIX: Process each hold as its OWN atomic transaction
+            // This way if ONE hold fails, the others still succeed
+            $result = $this->executeSingleHoldTransaction($hold, $confirmationPayload);
+            
             $netAmount = $result['result']['amount'] ?? $hold['amount'];
 
             $depositResults[] = [
@@ -4344,6 +4349,7 @@ public function finalizeAggregatedIdentityClaim(
                 'gross_amount' => (float)$hold['amount'],
                 'net_deposited' => (float)$netAmount,
                 'status' => 'completed',
+                'transaction_reference' => $result['transaction_reference'] ?? null,
             ];
             $totalDepositedNet += (float)$netAmount;
 
@@ -4356,9 +4362,7 @@ public function finalizeAggregatedIdentityClaim(
                 'status' => 'failed',
                 'error' => $e->getMessage(),
             ];
-            // A single source failing (e.g. its bank briefly unreachable)
-            // doesn't block the others - it stays 'pending' and can be
-            // retried on the next claim attempt.
+            // CONTINUE to next hold - don't stop!
         }
     }
 
@@ -4366,6 +4370,7 @@ public function finalizeAggregatedIdentityClaim(
         throw new RuntimeException("All underlying swaps failed to deposit - nothing was claimed. See individual errors and retry.");
     }
 
+    // 6. Calculate totals from successful deposits ONLY
     $actuallyClaimedGross = round((float)array_sum(array_column($depositResults, 'gross_amount')), 2);
     $adjustedCashNow = min($cashNowAmount, $actuallyClaimedGross);
     $adjustedRemainder = round($actuallyClaimedGross - $adjustedCashNow, 2);
@@ -4385,8 +4390,10 @@ public function finalizeAggregatedIdentityClaim(
         'remainder_reswap' => null,
     ];
 
+    // 7. Handle remainder re-swap (if any)
     if ($adjustedRemainder > 0) {
         try {
+            // ✅ The remainder re-swap is ONE transaction for the total remainder
             $result = $this->executeAtomicSwap([
                 'swap_type' => 'IDENTITY',
                 'reference' => 'AGG_REMAIN_' . time() . '_' . bin2hex(random_bytes(4)),
@@ -4414,17 +4421,42 @@ public function finalizeAggregatedIdentityClaim(
                 'amount' => $adjustedRemainder,
                 'error' => $e->getMessage(),
             ];
-            // Money already landed in the agent's account for the FULL
-            // claimed amount at this point - a failed remainder reswap
-            // here is a real, uncompensated loss to the client, not just
-            // a log line. Flag it loudly for manual reconciliation.
             $response['status'] = 'partial_success';
             $response['requires_manual_reconciliation'] = true;
         }
     }
 
     return $response;
-}   
+}
+
+/**
+ * Execute a single hold as its own independent transaction
+ * This ensures that if one hold fails, others are not affected
+ */
+private function executeSingleHoldTransaction(array $hold, array $confirmationPayload): array
+{
+    // Generate a unique reference for this hold's transaction
+    $holdRef = 'HOLD_TX_' . $hold['hold_id'] . '_' . time();
+    
+    // Start a NEW transaction for THIS hold only
+    $this->swapDB->beginTransaction();
+    
+    try {
+        // Process the hold using existing logic
+        $result = $this->finalizeIdentityHoldNoPin($hold, $confirmationPayload);
+        
+        // Commit THIS hold's transaction
+        $this->swapDB->commit();
+        
+        return $result;
+        
+    } catch (Exception $e) {
+        // Rollback ONLY this hold's transaction
+        $this->swapDB->rollBack();
+        error_log("[SwapService] Single hold transaction failed for hold {$hold['hold_id']}: " . $e->getMessage());
+        throw $e;
+    }
+}
 // ============================================================================
 // AGENT DESTINATION REGISTRATION METHODS
 // ============================================================================
