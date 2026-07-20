@@ -4,7 +4,7 @@ async function submitClaim(swapReference) {
     if (!pin) { showMessage('Enter your claim PIN.', 'warning'); return; }
     
     // ============================================================
-    // FIX: Use identity_type + identity_value instead of swap_reference
+    // FIX: Use identity_type + identity_value instead of swap_reference  
     // This claims ALL holds at once
     // ============================================================
     const claim = pendingClaims.find(c => c.swap_reference === swapReference);
