@@ -2811,132 +2811,137 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
     // ============================================================================
 
     public function initiateSwapToIdentity(array $payload): array
-    {
-        error_log("[SwapService] ===== initiateSwapToIdentity (PAUSE AT HOLD) =====");
+{
+    error_log("[SwapService] ===== initiateSwapToIdentity (PAUSE AT HOLD) =====");
 
-        $sourceInstitution = $this->extractSourceInstitution($payload);
+    $sourceInstitution = $this->extractSourceInstitution($payload);
 
-        $required = ['amount', 'from_institution', 'source_identifier', 'identity_type', 'identity_value'];
-        foreach ($required as $field) {
-            if (empty($payload[$field])) {
-                throw new RuntimeException("Missing required field: {$field}");
-            }
+    $required = ['amount', 'from_institution', 'source_identifier', 'identity_type', 'identity_value'];
+    foreach ($required as $field) {
+        if (empty($payload[$field])) {
+            throw new RuntimeException("Missing required field: {$field}");
         }
-
-        $identityType = strtolower($payload['identity_type']);
-        if (!$this->isValidIdentityType($identityType)) {
-            throw new RuntimeException("Invalid identity_type. Must be one of: " . $this->validIdentityTypesLabel());
-        }
-
-        $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
-        $swapRef = $payload['reference'] ?? $this->currentSwapRef ?? $this->generateReference();
-
-        if (!$this->inAtomicSwap) {
-            $this->beginAtomicSwap($swapRef);
-        } else {
-            $this->currentSwapRef = $swapRef;
-        }
-
-        try {
-            if (!$skipHold) {
-                error_log("[SwapService] STEP 1: Verify asset at source: {$sourceInstitution}");
-                $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
-                    return $this->verifyAssetSigned($payload, $sourceInstitution);
-                });
-
-                if (!($verificationResult['verified'] ?? false)) {
-                    throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown'));
-                }
-
-                $this->signedPayloads['verification'] = [
-                    'payload' => $verificationResult['original_payload'],
-                    'signature' => $verificationResult['signature'],
-                    'source' => $sourceInstitution,
-                    'timestamp' => $verificationResult['timestamp']
-                ];
-
-                error_log("[SwapService] STEP 2: Place hold on source");
-                $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
-                    return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
-                });
-
-                if (!($holdResult['hold_placed'] ?? false)) {
-                    throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown'));
-                }
-
-                $this->assertStepIntegrity(
-                    $holdResult,
-                    'hold_placed',
-                    ['hold_reference', 'signature'],
-                    'PLACE_HOLD_SIGNED'
-                );
-
-                $this->signedPayloads['hold'] = [
-                    'payload' => $holdResult['original_payload'],
-                    'signature' => $holdResult['signature'],
-                    'source' => $sourceInstitution,
-                    'timestamp' => $holdResult['timestamp']
-                ];
-
-                $this->currentHoldReference = $holdResult['hold_reference'];
-                $this->currentHoldId = $holdResult['local_hold_id'];
-
-            } else {
-                error_log("[SwapService] SKIPPING verify+hold - reusing existing hold: " . ($payload['hold_reference'] ?? $this->currentHoldReference ?? 'unknown'));
-
-                $existingHoldRef = $payload['hold_reference'] ?? $this->currentHoldReference ?? null;
-                $existingHoldId = $this->currentHoldId ?? null;
-
-                if (empty($existingHoldRef) || $existingHoldId === null) {
-                    throw new RuntimeException("_skip_hold set but no existing hold_reference/hold_id available to reuse");
-                }
-
-                $this->currentHoldReference = $existingHoldRef;
-                $this->currentHoldId = $existingHoldId;
-
-                $holdResult = [
-                    'hold_reference' => $existingHoldRef,
-                    'local_hold_id' => $existingHoldId
-                ];
-            }
-
-            error_log("[SwapService] STEP 3: Store identity mapping (PAUSED)");
-            $identityHoldId = $this->storeIdentityHold(
-                $payload,
-                $swapRef,
-                $holdResult,
-                $this->currentHoldId
-            );
-
-            $this->updateHoldStatus($this->currentHoldId, 'PENDING_IDENTITY');
-
-            $expiresAt = date('Y-m-d H:i:s', strtotime('+24 hours'));
-
-            return [
-                'status' => 'pending_identity_confirmation',
-                'swap_reference' => $swapRef,
-                'hold_reference' => $this->currentHoldReference,
-                'hold_id' => $identityHoldId,
-                'amount' => (float)$payload['amount'],
-                'currency' => $payload['currency'] ?? 'BWP',
-                'identity_type' => $identityType,
-                'identity_value' => $payload['identity_value'],
-                'source_institution' => $sourceInstitution,
-                'expires_at' => $expiresAt,
-                'message' => 'Swap paused. Recipient must confirm identity and choose destination within 24 hours.',
-                'access_methods' => $this->getIdentityAccessMethods($identityType, $payload['identity_value'])
-            ];
-
-                } catch (\Throwable $e) {
-            error_log("[SwapService] initiateSwapToIdentity FAILED (" . get_class($e) . "): " . $e->getMessage());
-            if (!$this->inAtomicSwap) {
-                $this->rollbackAtomicSwap($e->getMessage());
-            }
-            throw $e;
-        }
-
     }
 
+    $identityType = strtolower($payload['identity_type']);
+    if (!$this->isValidIdentityType($identityType)) {
+        throw new RuntimeException("Invalid identity_type. Must be one of: " . $this->validIdentityTypesLabel());
+    }
+
+    $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
+    $swapRef = $payload['reference'] ?? $this->currentSwapRef ?? $this->generateReference();
+
+    // ✅ FIX: Track whether THIS call opened the atomic transaction
+    $openedHere = !$this->inAtomicSwap;
+    if ($openedHere) {
+        $this->beginAtomicSwap($swapRef);
+    } else {
+        $this->currentSwapRef = $swapRef;
+    }
+
+    try {
+        if (!$skipHold) {
+            error_log("[SwapService] STEP 1: Verify asset at source: {$sourceInstitution}");
+            $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
+                return $this->verifyAssetSigned($payload, $sourceInstitution);
+            });
+
+            if (!($verificationResult['verified'] ?? false)) {
+                throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown'));
+            }
+
+            $this->signedPayloads['verification'] = [
+                'payload' => $verificationResult['original_payload'],
+                'signature' => $verificationResult['signature'],
+                'source' => $sourceInstitution,
+                'timestamp' => $verificationResult['timestamp']
+            ];
+
+            error_log("[SwapService] STEP 2: Place hold on source");
+            $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
+                return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
+            });
+
+            if (!($holdResult['hold_placed'] ?? false)) {
+                throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown'));
+            }
+
+            $this->assertStepIntegrity(
+                $holdResult,
+                'hold_placed',
+                ['hold_reference', 'signature'],
+                'PLACE_HOLD_SIGNED'
+            );
+
+            $this->signedPayloads['hold'] = [
+                'payload' => $holdResult['original_payload'],
+                'signature' => $holdResult['signature'],
+                'source' => $sourceInstitution,
+                'timestamp' => $holdResult['timestamp']
+            ];
+
+            $this->currentHoldReference = $holdResult['hold_reference'];
+            $this->currentHoldId = $holdResult['local_hold_id'];
+
+        } else {
+            error_log("[SwapService] SKIPPING verify+hold - reusing existing hold: " . ($payload['hold_reference'] ?? $this->currentHoldReference ?? 'unknown'));
+
+            $existingHoldRef = $payload['hold_reference'] ?? $this->currentHoldReference ?? null;
+            $existingHoldId = $this->currentHoldId ?? null;
+
+            if (empty($existingHoldRef) || $existingHoldId === null) {
+                throw new RuntimeException("_skip_hold set but no existing hold_reference/hold_id available to reuse");
+            }
+
+            $this->currentHoldReference = $existingHoldRef;
+            $this->currentHoldId = $existingHoldId;
+
+            $holdResult = [
+                'hold_reference' => $existingHoldRef,
+                'local_hold_id' => $existingHoldId
+            ];
+        }
+
+        error_log("[SwapService] STEP 3: Store identity mapping (PAUSED)");
+        $identityHoldId = $this->storeIdentityHold(
+            $payload,
+            $swapRef,
+            $holdResult,
+            $this->currentHoldId
+        );
+
+        $this->updateHoldStatus($this->currentHoldId, 'PENDING_IDENTITY');
+
+        $expiresAt = date('Y-m-d H:i:s', strtotime('+24 hours'));
+
+        // ✅ FIX: Commit the atomic swap if this call opened it
+        if ($openedHere) {
+            $this->commitAtomicSwap();
+        }
+
+        return [
+            'status' => 'pending_identity_confirmation',
+            'swap_reference' => $swapRef,
+            'hold_reference' => $this->currentHoldReference,
+            'hold_id' => $identityHoldId,
+            'amount' => (float)$payload['amount'],
+            'currency' => $payload['currency'] ?? 'BWP',
+            'identity_type' => $identityType,
+            'identity_value' => $payload['identity_value'],
+            'source_institution' => $sourceInstitution,
+            'expires_at' => $expiresAt,
+            'message' => 'Swap paused. Recipient must confirm identity and choose destination within 24 hours.',
+            'access_methods' => $this->getIdentityAccessMethods($identityType, $payload['identity_value'])
+        ];
+
+    } catch (\Throwable $e) {
+        error_log("[SwapService] initiateSwapToIdentity FAILED (" . get_class($e) . "): " . $e->getMessage());
+        if ($openedHere) {
+            $this->rollbackAtomicSwap($e->getMessage());
+        }
+        throw $e;
+    }
+}
     public function confirmAndFinalizeIdentitySwap(array $payload): array
 {
     error_log("[SwapService] ===== confirmAndFinalizeIdentitySwap =====");
