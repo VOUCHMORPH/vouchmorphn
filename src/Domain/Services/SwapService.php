@@ -6989,25 +6989,39 @@ private function findAuthorization(string $swapReference = null, int $authId = n
         $stmt->execute([':status' => $status, ':swap_ref' => $swapRef]);
     }
 
-    // ============================================================================
-    // ATOMIC BOUNDARY METHODS
-    // ============================================================================
-
-    private function beginAtomicSwap(string $reference): void
-    {
-        if ($this->inAtomicSwap) {
-            throw new RuntimeException("Already in atomic swap: {$this->currentSwapRef}");
-        }
-        
-        $this->currentSwapRef = $reference;
-        $this->inAtomicSwap = true;
-        $this->executedSteps = [];
-        $this->stepResults = [];
-        $this->signedPayloads = [];
-        
-        $this->swapDB->beginTransaction();
-        $this->logger->info("Atomic swap begun", ['reference' => $reference]);
+    
+/**
+ * ============================================================
+ * REPLACES: beginAtomicSwap()
+ * ============================================================
+ * Hardened so $this->inAtomicSwap is only set to true AFTER the PDO
+ * transaction has actually started successfully. Previously the flag
+ * was set first, so if swapDB->beginTransaction() threw (e.g. because
+ * a transaction was already active - the exact bug this patch fixes
+ * upstream), the flag was left permanently true with nothing to reset
+ * it, corrupting every subsequent atomic-swap call in the request.
+ */
+private function beginAtomicSwap(string $reference): void
+{
+    if ($this->inAtomicSwap) {
+        throw new RuntimeException("Already in atomic swap: {$this->currentSwapRef}");
     }
+ 
+    error_log("[DEBUG][agg_claim] beginAtomicSwap reference={$reference} pdo_in_transaction=" . ($this->swapDB->inTransaction() ? 'true' : 'false'));
+ 
+    // Start the real transaction FIRST. Only flip service-level state
+    // once we know PDO actually accepted it.
+    $this->swapDB->beginTransaction();
+ 
+    $this->currentSwapRef = $reference;
+    $this->inAtomicSwap = true;
+    $this->executedSteps = [];
+    $this->stepResults = [];
+    $this->signedPayloads = [];
+ 
+    $this->logger->info("Atomic swap begun", ['reference' => $reference]);
+}
+
 
     private function commitAtomicSwap(): array
     {
