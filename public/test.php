@@ -95,8 +95,8 @@ $expectedFeePerHold = null; // <-- SET THIS from FeeService::calculateFees('DEPO
 echo "\n=== TEST C: run finalizeAggregatedIdentityClaim with partial cash-now ===\n";
 
 // You'll need a real, active agent_destination_accounts.id here.
-$destinationAccountId = 1; // <-- ADJUST to a real, active account id
-$agentUserId = 12;         // <-- ADJUST to a real agent user id
+$destinationAccountId = 7;
+$agentUserId = 12;
 
 $cashNowRequested = 400.0; // deliberately less than gross (800) so remainder > 0
 
