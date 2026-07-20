@@ -5230,27 +5230,51 @@ private function insertUserSourceAccount(
     string $identifierType, ?string $accountName, string $currency, bool $isHooked,
     ?string $accessToken, ?string $refreshToken, ?string $tokenExpiresAt, string $status
 ): int {
+    // Validate asset type for users
+    $userEligibleAssetTypes = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
+    if (!in_array($assetType, $userEligibleAssetTypes, true)) {
+        throw new RuntimeException("Invalid asset type for user source: {$assetType}. Users can only add Account, Wallet, or Card.");
+    }
+    
+    // Generate unique source reference
     $sourceReference = 'SRC_' . $userId . '_' . bin2hex(random_bytes(6));
+    
+    // Encrypt tokens if provided
+    $encryptedAccess = $accessToken ? $this->encryptSourceSecret($accessToken) : null;
+    $encryptedRefresh = $refreshToken ? $this->encryptSourceSecret($refreshToken) : null;
+    
     $stmt = $this->swapDB->prepare("
         INSERT INTO user_source_accounts (
             user_id, institution, asset_type, identifier, identifier_type,
             account_name, currency, is_hooked, access_token, refresh_token,
-            token_expires_at, source_reference, status, confirmed_at
+            token_expires_at, source_reference, status, proposed_at, confirmed_at, created_at, updated_at
         ) VALUES (
             :user_id, :institution, :asset_type, :identifier, :identifier_type,
             :account_name, :currency, :is_hooked, :access_token, :refresh_token,
             :token_expires_at, :source_reference, :status,
-            CASE WHEN :status2 = 'active' THEN NOW() ELSE NULL END
+            NOW(),
+            CASE WHEN :status_active = 'active' THEN NOW() ELSE NULL END,
+            NOW(), NOW()
         ) RETURNING id
     ");
+    
     $stmt->execute([
-        ':user_id' => $userId, ':institution' => $institution, ':asset_type' => $assetType,
-        ':identifier' => $identifier, ':identifier_type' => $identifierType,
-        ':account_name' => $accountName, ':currency' => $currency,
-        ':is_hooked' => $isHooked ? 't' : 'f', ':access_token' => $accessToken,
-        ':refresh_token' => $refreshToken, ':token_expires_at' => $tokenExpiresAt,
-        ':source_reference' => $sourceReference, ':status' => $status, ':status2' => $status,
+        ':user_id' => $userId,
+        ':institution' => $institution,
+        ':asset_type' => $assetType,
+        ':identifier' => $identifier,
+        ':identifier_type' => $identifierType,
+        ':account_name' => $accountName,
+        ':currency' => $currency,
+        ':is_hooked' => $isHooked ? 't' : 'f',
+        ':access_token' => $encryptedAccess,
+        ':refresh_token' => $encryptedRefresh,
+        ':token_expires_at' => $tokenExpiresAt,
+        ':source_reference' => $sourceReference,
+        ':status' => $status,
+        ':status_active' => $status === 'active' ? 'active' : 'inactive'
     ]);
+    
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     return $row ? (int)$row['id'] : 0;
 }
