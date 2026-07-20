@@ -5,18 +5,21 @@
  *   1. Single-hold claim still works after the atomic-commit fix
  *   2. Partial claim + remainder re-swap (the original Problem 1)
  *   3. Aggregated multi-source claim (Problem 3)
- *
- * TODO: fill in the bootstrap section below to match how your app
- * normally constructs $swapDB / $config / $country for SwapService.
  */
 
-require_once __DIR__ . '/../../vendor/autoload.php'; // adjust to your actual bootstrap
+require_once __DIR__ . '/../../vendor/autoload.php';
+require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
 
-// ---- BOOTSTRAP: replace with your real setup ----
-// $swapDB = new PDO(...);
-// $config = [...];
-// $country = 'Botswana';
-// $swapService = new \Domain\Services\SwapService($swapDB, $config, $country);
+use Core\Database\DBConnection;
+use Core\Config\LoadCountry;
+use Domain\Services\SwapService;
+
+// ---- BOOTSTRAP ----
+$db = DBConnection::getConnection();
+$country = 'Botswana';
+$config = LoadCountry::getConfig();
+$swapService = new SwapService($db, $config, $country);
 // ---------------------------------------------------
 
 $results = [];
@@ -37,7 +40,7 @@ try {
         'reference' => $swapRef1,
         'from_institution' => 'ZURUBANK',
         'source_institution' => 'ZURUBANK',
-        'source_identifier' => 'SAV00000018', // adjust to a real test account
+        'source_identifier' => 'SAV00000018',
         'asset_type' => 'ACCOUNT',
         'amount' => 500,
         'currency' => 'BWP',
@@ -48,7 +51,7 @@ try {
     record($results, 'Test 1a: initiate single identity swap', $initResult['status'] === 'pending_identity_confirmation', $initResult);
 
     // Fetch the OTP hash directly from DB for the test (real flow reads SMS)
-    $stmt = $swapDB->prepare("SELECT otp_pin_hash FROM identity_swap_holds WHERE swap_reference = :ref");
+    $stmt = $db->prepare("SELECT otp_pin_hash FROM identity_swap_holds WHERE swap_reference = :ref");
     // NOTE: can't reverse a hash - in a real test environment, seed a known
     // PIN via a test-only code path, or intercept the SMS. Placeholder:
     $testPin = getenv('TEST_KNOWN_OTP') ?: '000000';
