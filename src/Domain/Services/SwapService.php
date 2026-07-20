@@ -4456,7 +4456,7 @@ public function finalizeAggregatedIdentityClaim(
  * Execute a single hold as its own independent transaction
  * This ensures that if one hold fails, others are not affected
  */
- */
+
 private function executeSingleHoldTransaction(array $hold, array $confirmationPayload): array
 {
     $holdId = $hold['hold_id'];
