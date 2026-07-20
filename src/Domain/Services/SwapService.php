@@ -6593,7 +6593,7 @@ private function updateHoldExpiry(?int $holdId, string $expiresAt): void
                 'source' => $source,
                 'institution' => $source['institution']
             ]);
-            return (float)($result['data']['balance'] ?? 0);
+            return (float)($result['balance'] ?? $result['data']['balance'] ?? 0);
         } catch (Exception $e) {
             $this->logger->warning("Failed to get balance for source", [
                 'source' => $source['institution'],
