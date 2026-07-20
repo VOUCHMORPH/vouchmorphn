@@ -253,6 +253,19 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .result-box .atm-code .code { font-size: 28px; font-weight: 700; font-family: monospace; letter-spacing: 4px; color: var(--primary-dark); }
 .raw-json { text-align: left; font-size: 11px; background: #f4efe4; border-radius: var(--radius-sm); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-muted); margin-top: 12px; max-height: 200px; overflow-y: auto; }
 @media (max-width: 480px) { body { padding: 12px; } .btn, .btn-secondary { padding: 12px 24px; width: 100%; } .cta-row { flex-direction: column; } .topbar { flex-direction: column; align-items: stretch; } }
+
+/* Source management styles */
+.source-card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 10px; }
+.source-card .source-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.source-card .source-institution { font-weight: 600; font-size: 16px; }
+.source-card .source-details { font-size: 13px; color: var(--text-muted); }
+.source-card .source-status { font-size: 11px; padding: 2px 10px; border-radius: 10px; }
+.source-status.active { background: #dcfce7; color: #166534; }
+.source-status.pending { background: #fef3c7; color: #8a5a0b; }
+.source-status.inactive { background: #fbeceb; color: var(--danger); }
+.otp-input-group { display: flex; gap: 8px; margin: 12px 0; }
+.otp-input-group input { flex: 1; }
+.otp-input-group button { flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -269,6 +282,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $userCountry ? 'selected' : ''; ?>><?php echo htmlspecialchars($country); ?></option>
             <?php endforeach; ?>
         </select>
+        <span class="quick-link" onclick="openMySources()">🔗 My Sources</span>
         <span class="quick-link" onclick="openSwapHistory()">📋 History</span>
         <span class="quick-link" id="claimsButton" onclick="openClaimsModal()" style="display:none;">💰 Claim Money <span id="claimsBadge" style="background:var(--danger);color:#fff;border-radius:10px;padding:1px 6px;font-size:10px;margin-left:4px;"></span></span>
         <span class="quick-link" id="agentToolsButton" onclick="openAgentToolsModal()" style="display:none;">🏪 Agent Tools</span>
@@ -420,6 +434,7 @@ let state = {
     multiSources: [], lastPreview: null, swapPayload: null,
 };
 let savedIdentities = [];
+let userSources = [];
 
 function getInstitutionCurrency(instCode) {
     if (!instCode) return CONFIG.CURRENCY;
@@ -460,6 +475,7 @@ document.addEventListener('DOMContentLoaded', function() {
     refreshUI();
     checkPendingClaims();
     loadAgentStatus();
+    loadUserSources();
 });
 
 function buildHeaders() {
@@ -760,6 +776,268 @@ function showResultModal(response) {
 }
 
 const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'Birth Certificate', voter_id: 'Voter ID', phone: 'Phone Number', email: 'Email' };
+
+// ============================================================
+// USER SOURCE MANAGEMENT
+// ============================================================
+
+async function loadUserSources() {
+    if (!CONFIG.USER_ID) return;
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/sources.php', {});
+    if (!result.ok) return;
+    userSources = result.body.data?.sources || [];
+}
+
+function openMySources() {
+    openModal('🔗 My Sources', renderMySources());
+}
+
+function renderMySources() {
+    if (userSources.length === 0) {
+        return `
+            <div style="text-align:center;padding:20px;">
+                <div style="font-size:48px;">📭</div>
+                <div style="font-weight:600;margin:8px 0;">No sources added yet</div>
+                <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">Link your bank accounts, wallets, or cards to use them as swap sources.</div>
+                <button class="btn btn-primary" onclick="openAddSource()">+ Add Source</button>
+            </div>
+        `;
+    }
+    
+    const sourceList = userSources.map(source => {
+        const statusClass = source.status === 'active' ? 'active' : source.status === 'pending_confirmation' ? 'pending' : 'inactive';
+        const statusLabel = source.status === 'active' ? '✅ Active' : source.status === 'pending_confirmation' ? '⏳ Pending' : '❌ Inactive';
+        const isActive = source.status === 'active';
+        const assetIcon = ASSETS[source.asset_type]?.icon || '📦';
+        const assetLabel = ASSETS[source.asset_type]?.label || source.asset_type;
+        
+        return `
+            <div class="source-card">
+                <div class="source-header">
+                    <div class="source-institution">${escapeHtml(PARTICIPANTS[source.institution]?.name || source.institution)}</div>
+                    <div>
+                        <span class="source-status ${statusClass}">${statusLabel}</span>
+                        ${isActive ? `<button class="btn-danger-outline" onclick="removeSource(${source.id})" style="margin-left:8px;">✕ Remove</button>` : ''}
+                    </div>
+                </div>
+                <div class="source-details">
+                    ${assetIcon} ${assetLabel} · ${escapeHtml(source.identifier || source.source_identifier)}
+                    ${source.account_name ? ` · ${escapeHtml(source.account_name)}` : ''}
+                    ${source.currency ? ` · ${source.currency}` : ''}
+                    ${source.confirmed_at ? ` · Confirmed: ${new Date(source.confirmed_at).toLocaleDateString()}` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+    
+    return `
+        <div style="margin-bottom:16px;">
+            <button class="btn btn-primary btn-sm" onclick="openAddSource()">➕ Add New Source</button>
+            <span style="font-size:12px;color:var(--text-muted);margin-left:12px;">${userSources.length} source(s) linked</span>
+        </div>
+        <div>${sourceList}</div>
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);font-size:11px;color:var(--text-dim);">
+            💡 You can add Accounts, Wallets, or Cards. Vouchers and Bank-Wallets are added manually by admin.
+        </div>
+    `;
+}
+
+function openAddSource() {
+    const instOptions = Object.keys(PARTICIPANTS).map(code => 
+        `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`
+    ).join('');
+    
+    const body = `
+        <div style="margin-bottom:16px;">
+            <div style="font-size:14px;font-weight:600;margin-bottom:4px;">Link a new source</div>
+            <div style="font-size:12px;color:var(--text-muted);">Your bank will verify ownership via OTP or OAuth.</div>
+        </div>
+        <div class="field-group">
+            <label>Institution</label>
+            <select id="addSourceInst" onchange="onAddSourceInstChange(this.value)">
+                <option value="">Select institution</option>
+                ${instOptions}
+            </select>
+        </div>
+        <div class="field-group" id="addSourceAssetGroup" style="display:none;">
+            <label>Asset Type</label>
+            <select id="addSourceAssetType"></select>
+            <div class="help">Users can only add Accounts, Wallets, or Cards.</div>
+        </div>
+        <div class="field-group">
+            <label>Identifier</label>
+            <input id="addSourceIdentifier" placeholder="Account number, phone, or card number">
+            <div class="help">The number that identifies your account at this institution.</div>
+        </div>
+        <div class="field-group">
+            <label>Account Name (optional)</label>
+            <input id="addSourceAccountName" placeholder="e.g. My Main Account">
+        </div>
+        <div id="addSourceOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📱 Verify with OTP</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;" id="otpMessage">A verification code has been sent to your registered phone.</div>
+            <div class="otp-input-group">
+                <input type="text" id="addSourceOtp" placeholder="Enter code" inputmode="numeric" maxlength="8">
+                <button class="btn btn-primary btn-sm" onclick="completeSourceOtp()">Verify</button>
+            </div>
+        </div>
+        <div class="cta-row">
+            <button class="btn btn-secondary" onclick="openMySources()">Cancel</button>
+            <button class="btn btn-primary" id="addSourceSubmitBtn" onclick="submitAddSource()">🔗 Link Source</button>
+        </div>
+    `;
+    
+    openModal('Add Source', body);
+}
+
+let addSourceState = {
+    attemptId: null,
+    requiresOtp: false,
+    requiresRedirect: false,
+    redirectUrl: null,
+    institution: null,
+    assetType: null,
+    identifier: null
+};
+
+function onAddSourceInstChange(code) {
+    const group = document.getElementById('addSourceAssetGroup');
+    const sel = document.getElementById('addSourceAssetType');
+    if (!code) { group.style.display = 'none'; sel.innerHTML = ''; return; }
+    
+    const inst = PARTICIPANTS[code];
+    const allTypes = inst?.asset_types || [];
+    // Users can only add ACCOUNT, WALLET, CARD
+    const eligibleTypes = allTypes.filter(t => 
+        ['ACCOUNT', 'WALLET', 'CARD'].includes(String(t).toUpperCase())
+    );
+    
+    if (eligibleTypes.length === 0) {
+        group.style.display = 'block';
+        sel.innerHTML = '<option value="">No eligible account types at this institution</option>';
+        return;
+    }
+    
+    sel.innerHTML = eligibleTypes.map(t => 
+        `<option value="${t}">${getAssetConfig(t)?.icon || '📦'} ${getAssetConfig(t)?.label || t}</option>`
+    ).join('');
+    group.style.display = 'block';
+}
+
+async function submitAddSource() {
+    const institution = document.getElementById('addSourceInst').value;
+    const assetType = document.getElementById('addSourceAssetType').value;
+    const identifier = document.getElementById('addSourceIdentifier').value.trim();
+    const accountName = document.getElementById('addSourceAccountName').value.trim();
+    
+    if (!institution) { showMessage('Select an institution.', 'warning'); return; }
+    if (!assetType) { showMessage('Select an asset type.', 'warning'); return; }
+    if (!identifier) { showMessage('Enter your account identifier.', 'warning'); return; }
+    
+    const btn = document.getElementById('addSourceSubmitBtn');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ Registering...';
+    
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/add_source.php', {
+        institution: institution,
+        asset_type: assetType,
+        identifier: identifier,
+        account_name: accountName || undefined
+    });
+    
+    btn.disabled = false;
+    btn.textContent = original;
+    
+    if (!result.ok) {
+        showMessage('Failed to add source: ' + result.error, 'error');
+        return;
+    }
+    
+    const data = result.body.data || {};
+    addSourceState.attemptId = data.attempt_id || null;
+    addSourceState.requiresOtp = data.requires_otp || false;
+    addSourceState.requiresRedirect = data.requires_redirect || false;
+    addSourceState.redirectUrl = data.redirect_url || null;
+    addSourceState.institution = institution;
+    addSourceState.assetType = assetType;
+    addSourceState.identifier = identifier;
+    
+    if (data.requires_redirect) {
+        showMessage('Redirecting to your bank for verification...', 'info');
+        setTimeout(() => {
+            window.location.href = data.redirect_url;
+        }, 1500);
+        return;
+    }
+    
+    if (data.requires_otp) {
+        document.getElementById('addSourceOtpFields').style.display = 'block';
+        document.getElementById('otpMessage').textContent = data.message || 'A verification code has been sent to your registered phone.';
+        document.getElementById('addSourceSubmitBtn').style.display = 'none';
+        showMessage('OTP sent! Enter the code to verify.', 'success');
+        return;
+    }
+    
+    // No OTP required (fallback mode)
+    showMessage(data.message || 'Source added!', 'success');
+    setTimeout(() => {
+        loadUserSources();
+        openMySources();
+    }, 1500);
+}
+
+async function completeSourceOtp() {
+    const otp = document.getElementById('addSourceOtp').value.trim();
+    if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
+    if (!addSourceState.attemptId) { showMessage('No pending verification attempt.', 'error'); return; }
+    
+    const btn = document.querySelector('#addSourceOtpFields .btn-primary');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ Verifying...';
+    
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/verify_source.php', {
+        attempt_id: addSourceState.attemptId,
+        otp: otp
+    });
+    
+    btn.disabled = false;
+    btn.textContent = original;
+    
+    if (!result.ok) {
+        showMessage('Verification failed: ' + result.error, 'error');
+        return;
+    }
+    
+    showMessage('✅ Source verified and activated!', 'success');
+    setTimeout(() => {
+        loadUserSources();
+        openMySources();
+    }, 1500);
+}
+
+async function removeSource(sourceId) {
+    if (!confirm('Remove this source? You can add it again later.')) return;
+    
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/sources/delete.php', {
+        source_id: sourceId
+    });
+    
+    if (!result.ok) {
+        showMessage('Failed to remove source: ' + result.error, 'error');
+        return;
+    }
+    
+    showMessage('Source removed.', 'success');
+    loadUserSources();
+    openMySources();
+}
+
+// ============================================================
+// END USER SOURCE MANAGEMENT
+// ============================================================
+
 function openProfileModal() { openModal('My Profile', renderProfileModal()); }
 function renderProfileModal() {
     const rows = savedIdentities.length ? savedIdentities.map((id, i) => `
@@ -885,9 +1163,7 @@ async function openAgentModal() {
     document.getElementById('modalBody').innerHTML = renderAgentModal();
 }
 
-// FIXED: renderAgentModal with Cancel button - filters out cancelled records
 function renderAgentModal() {
-    // Filter out cancelled records (they have status 'cancelled' or deleted_at set)
     const activeDestinations = agentStatus.all_destinations.filter(d => 
         d.status !== 'cancelled' && !d.deleted_at
     );
@@ -926,7 +1202,6 @@ function renderAgentModal() {
         </div>`;
 }
 
-// NEW: Cancel agent destination function
 async function cancelAgentDestination(destinationId) {
     if (!confirm('Cancel this registration? You can register again later.')) return;
     
@@ -940,7 +1215,7 @@ async function cancelAgentDestination(destinationId) {
     }
     
     showMessage('Registration cancelled successfully.', 'success');
-    openAgentModal(); // Refresh the modal
+    openAgentModal();
 }
 
 async function submitAgentDestination() {
@@ -1038,9 +1313,6 @@ async function searchAgentClaim() {
         </div>`).join('');
 }
 
-// ============================================================
-// UPDATED: Single form, one submit, split-capable
-// ============================================================
 function openAgentFinalizeForm(claim) {
     agentSearchResult = claim;
     if (!agentStatus.approved_destinations || agentStatus.approved_destinations.length === 0) {
