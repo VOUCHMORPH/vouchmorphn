@@ -1,5 +1,5 @@
 <?php
-// api/v1/agent/finalize_claim.php - Agent deposits a client's identity-swap money into their own approved account
+// api/v1/agent/finalize_claim.php - Agent deposits a client's AGGREGATED identity balance into their own approved account
 declare(strict_types=1);
 
 header('Content-Type: application/json');
@@ -25,18 +25,28 @@ if (empty($userId)) {
 }
 
 $body = json_decode(file_get_contents('php://input'), true) ?? [];
-$swapReference = $body['swap_reference'] ?? null;
+
+// ============================================================
+// CHANGED: keyed by identity_type + identity_value now, not a
+// single swap_reference - the whole point is claiming everything
+// pending for this identity in one PIN check.
+// ============================================================
+$identityType = strtolower(trim($body['identity_type'] ?? ''));
+$identityValue = trim($body['identity_value'] ?? '');
 $pin = (string)($body['pin'] ?? '');
 $documentVerified = ($body['identity_document_verified'] ?? false) === true;
 $destinationAccountId = (int)($body['destination_account_id'] ?? 0);
-
-// NEW: how much cash the client wants right now. Defaults to null,
-// which finalize resolves as "everything" — see below.
 $cashNowAmountRaw = $body['cash_now_amount'] ?? null;
 
-if (!$swapReference) {
+$agentVerifiableTypes = ['national_id', 'birth_certificate', 'voter_id'];
+if (!in_array($identityType, $agentVerifiableTypes, true)) {
     http_response_code(400);
-    echo json_encode(['success' => false, 'error' => 'swap_reference is required']);
+    echo json_encode(['success' => false, 'error' => 'Agents can only claim document-based identities.']);
+    exit;
+}
+if ($identityValue === '') {
+    http_response_code(400);
+    echo json_encode(['success' => false, 'error' => 'identity_value is required']);
     exit;
 }
 if (!$documentVerified) {
@@ -72,12 +82,8 @@ use Core\Config\LoadCountry;
 try {
     $db = DBConnection::getConnection();
 
-    // ============================================================
-    // SECURITY: keep the same ownership check that was here before -
-    // this is still the first, cheapest gate. finalizeIdentityClaimSplit()
-    // repeats it server-side too, so this is defense-in-depth, not the
-    // only check.
-    // ============================================================
+    // Ownership check stays as first, cheap gate. finalizeAggregatedIdentityClaim()
+    // repeats it server-side too, so this is defense-in-depth, not the only check.
     $stmt = $db->prepare("
         SELECT id FROM agent_destination_accounts
         WHERE id = :id AND user_id = :user_id AND status = 'active' AND deleted_at IS NULL
@@ -98,22 +104,28 @@ try {
         exit;
     }
 
-    // If cash_now_amount wasn't sent, default to "give the client everything" -
-    // preserves old one-shot behavior for callers that haven't updated their UI yet.
+    // If cash_now_amount wasn't sent, default to "give the client
+    // everything" - look up the aggregate first to know the full amount.
     if ($cashNowAmountRaw === null) {
-        $identitySwap = $swapService->getIdentitySwapByReference($swapReference);
-        if (!$identitySwap) {
+        $aggregate = $swapService->getAggregatedIdentityBalance($identityType, $identityValue);
+        if ($aggregate === null) {
             http_response_code(404);
-            echo json_encode(['success' => false, 'error' => 'Identity swap not found']);
+            echo json_encode(['success' => false, 'error' => 'No pending balance found for this identity']);
             exit;
         }
-        $cashNowAmount = (float)$identitySwap['amount'];
+        if (!empty($aggregate['multi_currency'])) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'This identity has balances in multiple currencies - specify cash_now_amount and claim one currency at a time.']);
+            exit;
+        }
+        $cashNowAmount = (float)$aggregate['total_amount'];
     } else {
         $cashNowAmount = (float)$cashNowAmountRaw;
     }
 
-    $result = $swapService->finalizeIdentityClaimSplit(
-        $swapReference,
+    $result = $swapService->finalizeAggregatedIdentityClaim(
+        $identityType,
+        $identityValue,
         $pin,
         'agent',
         (int)$userId,
