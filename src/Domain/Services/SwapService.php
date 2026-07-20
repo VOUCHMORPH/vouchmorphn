@@ -5441,8 +5441,12 @@ private function trackIdentityOtpSmsAttempt(
     string $status,
     ?string $providerError = null
 ): void {
+    // Generate a unique message_id if the table requires it
+    $messageId = 'SMS_' . uniqid() . '_' . substr($swapRef, 0, 10);
+    
     $sql = "
         INSERT INTO message_outbox (
+            message_id,
             channel,
             destination,
             payload,
@@ -5450,6 +5454,7 @@ private function trackIdentityOtpSmsAttempt(
             created_at,
             sent_at
         ) VALUES (
+            :message_id,
             'SMS',
             :destination,
             :payload::jsonb,
@@ -5462,6 +5467,7 @@ private function trackIdentityOtpSmsAttempt(
     try {
         $stmt = $this->swapDB->prepare($sql);
         $stmt->execute([
+            ':message_id' => $messageId,
             ':destination' => $phone,
             ':payload' => json_encode([
                 'phone' => $phone,
@@ -5474,7 +5480,7 @@ private function trackIdentityOtpSmsAttempt(
             ':sent_at' => $status === 'queued' ? date('Y-m-d H:i:s') : null,
         ]);
 
-        error_log("[SwapService] Identity OTP SMS attempt tracked: swap_ref={$swapRef}, phone={$phone}, status={$status}");
+        error_log("[SwapService] Identity OTP SMS attempt tracked: swap_ref={$swapRef}, phone={$phone}, status={$status}, message_id={$messageId}");
     } catch (PDOException $e) {
         // Non-fatal by design, same reasoning as the rest of populateTrackingTables():
         // the identity swap itself must not fail just because tracking failed.
