@@ -4352,6 +4352,7 @@ public function completeAgentDestinationRegistrationByState(string $oauthState, 
         throw new RuntimeException($verifyResult['message'] ?? 'Bank login could not be verified.');
     }
 
+    // ↓↓↓ THIS is the block you replace ↓↓↓
     $id = $this->insertAgentDestinationAccount(
         (int)$attempt['user_id'],
         $attempt['institution'],
@@ -4363,22 +4364,25 @@ public function completeAgentDestinationRegistrationByState(string $oauthState, 
         true,
         $verifyResult['access_token'] ?? null,
         $verifyResult['refresh_token'] ?? null,
-        $verifyResult['expires_at'] ?? null
+        $verifyResult['expires_at'] ?? null,
+        'active',
+        'SYSTEM_OAUTH_VERIFICATION'
     );
+    // ↑↑↑ replaces the old call (which had no 'active' / 'SYSTEM_OAUTH_VERIFICATION' args) ↑↑↑
 
     $stmt = $this->swapDB->prepare("
         UPDATE agent_registration_attempts SET status = 'completed', completed_at = NOW() WHERE id = :id
     ");
     $stmt->execute([':id' => $attempt['id']]);
 
-    error_log("[SwapService] Agent destination {$id} created via OAuth");
+    error_log("[SwapService] Agent destination {$id} created via OAuth and auto-activated");
 
     return [
         'id' => $id,
-        'status' => 'pending_confirmation',
+        'status' => 'active',
         'account_type' => $attempt['account_type'],
         'institution' => $attempt['institution'],
-        'message' => "Bank login verified. Awaiting approval.",
+        'message' => "Bank login verified. Your account is now active.",
     ];
 }
 
