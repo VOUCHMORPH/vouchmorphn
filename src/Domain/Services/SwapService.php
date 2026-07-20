@@ -4456,30 +4456,53 @@ public function finalizeAggregatedIdentityClaim(
  * Execute a single hold as its own independent transaction
  * This ensures that if one hold fails, others are not affected
  */
+ */
 private function executeSingleHoldTransaction(array $hold, array $confirmationPayload): array
 {
-    // Generate a unique reference for this hold's transaction
-    $holdRef = 'HOLD_TX_' . $hold['hold_id'] . '_' . time();
-    
-    // Start a NEW transaction for THIS hold only
-    $this->swapDB->beginTransaction();
-    
+    $holdId = $hold['hold_id'];
+ 
+    error_log("[DEBUG][agg_claim] executeSingleHoldTransaction START hold_id={$holdId} swap_reference={$hold['swap_reference']} pdo_in_transaction_before=" . ($this->swapDB->inTransaction() ? 'true' : 'false') . " service_inAtomicSwap_before=" . ($this->inAtomicSwap ? 'true' : 'false'));
+ 
     try {
-        // Process the hold using existing logic
+        // finalizeIdentityHoldNoPin() owns the transaction lifecycle itself
+        // (begin/commit/rollback + state reset) via its own openedHere logic.
+        // Do NOT wrap it in another beginTransaction()/commit() here.
         $result = $this->finalizeIdentityHoldNoPin($hold, $confirmationPayload);
-        
-        // Commit THIS hold's transaction
-        $this->swapDB->commit();
-        
+ 
+        error_log("[DEBUG][agg_claim] executeSingleHoldTransaction SUCCESS hold_id={$holdId} pdo_in_transaction_after=" . ($this->swapDB->inTransaction() ? 'true' : 'false') . " service_inAtomicSwap_after=" . ($this->inAtomicSwap ? 'true' : 'false'));
+ 
         return $result;
-        
+ 
     } catch (Exception $e) {
-        // Rollback ONLY this hold's transaction
-        $this->swapDB->rollBack();
-        error_log("[SwapService] Single hold transaction failed for hold {$hold['hold_id']}: " . $e->getMessage());
+        error_log("[DEBUG][agg_claim] executeSingleHoldTransaction FAILED hold_id={$holdId} error=" . $e->getMessage() . " pdo_in_transaction_after_failure=" . ($this->swapDB->inTransaction() ? 'true' : 'false') . " service_inAtomicSwap_after_failure=" . ($this->inAtomicSwap ? 'true' : 'false'));
+ 
+        // Defensive safety net: if finalizeIdentityHoldNoPin's own
+        // rollback somehow didn't clear PDO's transaction state (e.g. an
+        // exception was thrown from somewhere unexpected), don't let a
+        // dangling transaction poison the next hold in the loop.
+        if ($this->swapDB->inTransaction()) {
+            error_log("[DEBUG][agg_claim] WARNING - PDO still in transaction after hold_id={$holdId} failure. Forcing rollback to protect subsequent holds.");
+            try {
+                $this->swapDB->rollBack();
+            } catch (Exception $rollbackError) {
+                error_log("[DEBUG][agg_claim] Forced rollback also failed: " . $rollbackError->getMessage());
+            }
+        }
+ 
+        // Defensive safety net: if the service-level flag was left set
+        // (shouldn't happen anymore, but guard against future regressions
+        // of the same class of bug), reset it so the NEXT hold in the
+        // loop isn't corrupted by this one's failure.
+        if ($this->inAtomicSwap) {
+            error_log("[DEBUG][agg_claim] WARNING - inAtomicSwap flag still true after hold_id={$holdId} failure. Forcibly resetting to protect subsequent holds.");
+            $this->resetAtomicState();
+        }
+ 
+        error_log("[SwapService] Single hold transaction failed for hold {$holdId}: " . $e->getMessage());
         throw $e;
     }
 }
+
 // ============================================================================
 // AGENT DESTINATION REGISTRATION METHODS
 // ============================================================================
