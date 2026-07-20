@@ -4525,26 +4525,41 @@ public function finalizeIdentityClaimSplit(
 
     $response = ['deposit' => $depositResult, 'remainder_reswap' => null];
 
-    // STEP 2: Store remainder for processing after atomic transaction commits
+    // STEP 2: Process remainder swap AFTER the deposit atomic transaction is complete
     if ($remainder > 0) {
-        $this->pendingRemainder = [
-            'swap_reference' => $swapReference,
-            'amount' => $remainder,
-            'from_institution' => $destAccount['institution'],
-            'source_identifier' => $destAccount['identifier'],
-            'source_identifier_type' => $destAccount['identifier_type'],
-            'asset_type' => $destAccount['asset_type'],
-            'currency' => $identitySwap['currency'] ?? 'BWP',
-            'identity_type' => $identitySwap['identity_type'],
-            'identity_value' => $identitySwap['identity_value'],
-            'beneficiary_phone' => $beneficiaryPhone,
-        ];
-        
-        $response['remainder_reswap'] = [
-            'status' => 'pending',
-            'amount' => $remainder,
-            'message' => 'Remainder will be automatically swapped back to identity after deposit completes'
-        ];
+        try {
+            error_log("[SwapService] Processing remainder swap for {$swapReference}: {$remainder}");
+
+            $result = $this->executeAtomicSwap([
+                'swap_type' => 'IDENTITY',
+                'reference' => $swapReference . '_REMAIN_' . time(),
+                'from_institution' => $destAccount['institution'],
+                'source_institution' => $destAccount['institution'],
+                'source_identifier' => $destAccount['identifier'],
+                'source_identifier_type' => $destAccount['identifier_type'],
+                'asset_type' => $destAccount['asset_type'],
+                'amount' => $remainder,
+                'currency' => $identitySwap['currency'] ?? 'BWP',
+                'identity_type' => $identitySwap['identity_type'],
+                'identity_value' => $identitySwap['identity_value'],
+                'beneficiary_phone' => $beneficiaryPhone,
+                'notification_phone' => $beneficiaryPhone,
+            ]);
+
+            $response['remainder_reswap'] = [
+                'status' => 'completed',
+                'amount' => $remainder,
+                'result' => $result
+            ];
+
+        } catch (Exception $e) {
+            error_log("[SwapService] ERROR processing remainder for {$swapReference}: " . $e->getMessage());
+            $response['remainder_reswap'] = [
+                'status' => 'failed',
+                'amount' => $remainder,
+                'error' => $e->getMessage()
+            ];
+        }
     }
 
     return $response;
