@@ -4425,6 +4425,100 @@ public function completeAgentDestinationRegistrationByState(string $oauthState, 
     ];
 }
 
+public function finalizeIdentityClaimSplit(
+    string $swapReference,
+    string $pin,
+    string $confirmedByType,
+    ?int $confirmedById,
+    int $destinationAccountId,
+    float $cashNowAmount,
+    ?int $agentUserId = null
+): array {
+    $sql = "
+        SELECT institution, identifier, identifier_type, asset_type
+        FROM agent_destination_accounts
+        WHERE id = :id AND status = 'active' AND deleted_at IS NULL
+    ";
+    $params = [':id' => $destinationAccountId];
+
+    if ($agentUserId !== null) {
+        $sql .= " AND user_id = :user_id";
+        $params[':user_id'] = $agentUserId;
+    }
+
+    $stmt = $this->swapDB->prepare($sql);
+    $stmt->execute($params);
+    $destAccount = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$destAccount) {
+        throw new RuntimeException("Agent destination account not found, not active, or not owned by this agent.");
+    }
+
+    $identitySwap = $this->getIdentitySwapByReference($swapReference);
+    if (!$identitySwap) {
+        throw new RuntimeException("Identity swap not found: {$swapReference}");
+    }
+
+    $fullAmount = (float)$identitySwap['amount'];
+    if ($cashNowAmount < 0 || $cashNowAmount > $fullAmount) {
+        throw new RuntimeException("Requested cash amount must be between 0 and {$fullAmount}.");
+    }
+
+    $remainder = round($fullAmount - $cashNowAmount, 2);
+
+    $depositResult = $this->confirmAndFinalizeIdentitySwap([
+        'swap_reference' => $swapReference,
+        'pin' => $pin,
+        'confirmed_by_type' => $confirmedByType,
+        'confirmed_by_id' => $confirmedById,
+        'identity_document_verified' => true,
+        'destination_type' => 'DEPOSIT',
+        'destination_institution' => $destAccount['institution'],
+        'destination_identifier' => $destAccount['identifier'],
+        'destination_identifier_type' => $destAccount['identifier_type'],
+        'destination_asset_type' => $destAccount['asset_type'],
+    ]);
+
+    $response = ['deposit' => $depositResult, 'cash_now' => null, 'remainder_reswap' => null];
+
+    if ($remainder > 0) {
+        $response['remainder_reswap'] = $this->executeAtomicSwap([
+            'swap_type' => 'IDENTITY',
+            'reference' => $swapReference . '_REMAIN_' . time(),
+            'from_institution' => $destAccount['institution'],
+            'source_institution' => $destAccount['institution'],
+            'source_identifier' => $destAccount['identifier'],
+            'source_identifier_type' => $destAccount['identifier_type'],
+            'asset_type' => $destAccount['asset_type'],
+            'amount' => $remainder,
+            'currency' => $identitySwap['currency'] ?? 'BWP',
+            'identity_type' => $identitySwap['identity_type'],
+            'identity_value' => $identitySwap['identity_value'],
+            'beneficiary_phone' => $identitySwap['otp_pin_sent_to'] ?? null,
+            'notification_phone' => $identitySwap['otp_pin_sent_to'] ?? null,
+        ]);
+    }
+
+    if ($cashNowAmount > 0) {
+        $response['cash_now'] = $this->executeAtomicSwap([
+            'swap_type' => 'CASHOUT',
+            'reference' => $swapReference . '_CASHNOW_' . time(),
+            'from_institution' => $destAccount['institution'],
+            'source_institution' => $destAccount['institution'],
+            'source_identifier' => $destAccount['identifier'],
+            'source_identifier_type' => $destAccount['identifier_type'],
+            'asset_type' => $destAccount['asset_type'],
+            'amount' => $cashNowAmount,
+            'currency' => $identitySwap['currency'] ?? 'BWP',
+            'destination_currency' => $identitySwap['currency'] ?? 'BWP',
+            'to_institution' => $destAccount['institution'],
+            'destination_institution' => $destAccount['institution'],
+            'delivery_method' => 'ATM',
+        ]);
+    }
+
+    return $response;
+}
+    
 /**
  * Insert agent destination account (shared helper)
  */
