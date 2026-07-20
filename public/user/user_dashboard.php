@@ -1115,9 +1115,6 @@ function useSourceForSwap(sourceId) {
     }, 300);
 }
 
-// ... rest of the functions remain the same (openAddSource, submitAddSource, completeSourceOtp, removeSource, etc.)
-// I'll include the rest below but they're identical to your original code
-
 function openAddSource() {
     const instOptions = Object.keys(PARTICIPANTS).map(code => 
         `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`
@@ -1311,18 +1308,6 @@ async function removeSource(sourceId) {
 // ============================================================
 // END USER SOURCE MANAGEMENT
 // ============================================================
-
-// ... (the rest of your functions remain the same: openProfileModal, renderProfileModal, 
-// addSavedIdentity, removeSavedIdentity, useSavedIdentity, setTransactionPin, 
-// checkPendingClaims, openClaimsModal, openClaimForm, toggleClaimDestFields, 
-// submitClaim, loadAgentStatus, openAgentModal, renderAgentModal, 
-// cancelAgentDestination, submitAgentDestination, renderAgentOtpStep, 
-// verifyAgentOtp, onAgentInstChange, openAgentToolsModal, renderAgentToolsSearch, 
-// searchAgentClaim, openAgentFinalizeFormAggregated, submitAgentFinalizeAggregated, 
-// openAgentFinalizeForm, submitAgentFinalize, openSwapHistory, renderSwapHistory, 
-// viewSwapDetail, renderSwapDetail, openModal, closeModal, showMessage, escapeHtml)
-
-// I'll include the remaining critical functions that were in your original code
 
 function openProfileModal() { openModal('My Profile', renderProfileModal()); }
 function renderProfileModal() {
@@ -1571,7 +1556,7 @@ function onAgentInstChange(code) {
 }
 
 // ============================================================
-// AGENT TOOLS - SEARCH WITH AGGREGATED DATA (keep from your original)
+// AGENT TOOLS - SEARCH WITH AGGREGATED DATA (FIXED CURRENCY)
 // ============================================================
 
 function openAgentToolsModal() { 
@@ -1618,18 +1603,25 @@ async function searchAgentClaim() {
     
     agentSearchData = data;
     
+    // ✅ FIX: Properly escape and format values
     if (data.multi_currency) {
         let html = '<div style="margin-bottom:12px;"><strong>Multiple currencies found for this identity:</strong></div>';
         data.balances.forEach((b, index) => {
+            const currency = escapeHtml(b.currency);
+            const totalAmount = parseFloat(b.total_amount).toFixed(2);
+            const swapCount = parseInt(b.swap_count);
+            const identityTypeEscaped = escapeHtml(data.identity_type);
+            const identityValueEscaped = escapeHtml(data.identity_value);
+            
             html += `
                 <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                         <div>
-                            <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${escapeHtml(b.total_amount)} ${escapeHtml(b.currency)}</div>
-                            <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(b.swap_count)} different source(s)</div>
+                            <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${totalAmount} ${currency}</div>
+                            <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
                             <div style="font-size:11px;color:var(--text-dim);">Expires ${b.earliest_expires_at ? new Date(b.earliest_expires_at).toLocaleString() : 'soon'}</div>
                         </div>
-                        <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${escapeHtml(data.identity_type)}', '${escapeHtml(data.identity_value)}', '${escapeHtml(b.currency)}', ${escapeHtml(b.total_amount)}, ${escapeHtml(b.swap_count)})">💰 Claim</button>
+                        <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">💰 Claim</button>
                     </div>
                 </div>
             `;
@@ -1638,21 +1630,31 @@ async function searchAgentClaim() {
         return;
     }
     
+    // ✅ FIX: Single currency - properly format and escape
+    const currency = escapeHtml(data.currency);
+    const totalAmount = parseFloat(data.total_amount).toFixed(2);
+    const swapCount = parseInt(data.swap_count);
+    const identityTypeEscaped = escapeHtml(data.identity_type);
+    const identityValueEscaped = escapeHtml(data.identity_value);
+    
     resultsBox.innerHTML = `
         <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                 <div>
-                    <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${escapeHtml(data.total_amount)} ${escapeHtml(data.currency)}</div>
-                    <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(data.swap_count)} different source(s)</div>
+                    <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${totalAmount} ${currency}</div>
+                    <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
                     <div style="font-size:11px;color:var(--text-dim);">Expires ${data.earliest_expires_at ? new Date(data.earliest_expires_at).toLocaleString() : 'soon'}</div>
                 </div>
-                <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${escapeHtml(data.identity_type)}', '${escapeHtml(data.identity_value)}', '${escapeHtml(data.currency)}', ${escapeHtml(data.total_amount)}, ${escapeHtml(data.swap_count)})">💰 Claim</button>
+                <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">💰 Claim</button>
             </div>
         </div>
     `;
 }
 
-// Keep the aggregated claim functions from your original code
+// ============================================================
+// AGGREGATED CLAIM FINALIZATION (FIXED CURRENCY)
+// ============================================================
+
 function openAgentFinalizeFormAggregated(identityType, identityValue, currency, totalAmount, swapCount) {
     const data = agentSearchData;
     if (!data) {
@@ -1674,9 +1676,9 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
     const body = `
         <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:14px;margin-bottom:14px;">
             <div style="font-size:12px;color:var(--text-muted);">Client's total balance</div>
-            <div style="font-size:24px;font-weight:700;color:var(--primary-dark);">${escapeHtml(totalAmount)} ${escapeHtml(currency)}</div>
+            <div style="font-size:24px;font-weight:700;color:var(--primary-dark);">${totalAmount} ${currency}</div>
             <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">
-                This is an aggregated balance from ${escapeHtml(swapCount)} different source(s).
+                This is an aggregated balance from ${swapCount} different source(s).
                 The full amount deposits into your account. Whatever the client doesn't take as cash today 
                 is instantly sent back to their identity as a new claim.
             </div>
@@ -1700,7 +1702,7 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
         </div>
         <div class="cta-row">
             <button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back to Search</button>
-            <button class="btn btn-primary" onclick="submitAgentFinalizeAggregated('${escapeHtml(identityType)}', '${escapeHtml(identityValue)}', ${escapeHtml(totalAmount)}, ${escapeHtml(currency)})">✅ Process</button>
+            <button class="btn btn-primary" onclick="submitAgentFinalizeAggregated('${escapeHtml(identityType)}', '${escapeHtml(identityValue)}', ${totalAmount}, '${currency}')">✅ Process</button>
         </div>
     `;
     
