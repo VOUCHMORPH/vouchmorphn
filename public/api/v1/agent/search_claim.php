@@ -1,145 +1,72 @@
 <?php
-// api/v1/agent/search_claim.php - Agent looks up a client's identity by aggregated balance
+// api/v1/agent/search_claim.php
 declare(strict_types=1);
+
 header('Content-Type: application/json');
+
 require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
 use Application\Utils\SessionManager;
+
 SessionManager::start();
+
 if (!SessionManager::isLoggedIn()) {
     http_response_code(401);
     echo json_encode(['success' => false, 'error' => 'Not logged in']);
     exit;
 }
+
 $userData = SessionManager::getUser();
 $userId = $userData['id'] ?? $userData['user_id'] ?? null;
+
 if (empty($userId)) {
     http_response_code(400);
     echo json_encode(['success' => false, 'error' => 'Session has no user id']);
     exit;
 }
+
 $body = json_decode(file_get_contents('php://input'), true) ?? [];
-$identityType = strtolower(trim($body['identity_type'] ?? ''));
-$identityValue = trim($body['identity_value'] ?? '');
 
-// ============================================================
-// DEBUG: mark start of a search_claim call so it's easy to grep
-// and correlate with the matching finalize_claim call in logs.
-// ============================================================
-error_log("=== [DEBUG][search_claim] BEGIN user_id={$userId} identity_type={$identityType} identity_value={$identityValue} at " . date('c'));
+$identityType = (string)($body['identity_type'] ?? '');
+$identityValue = (string)($body['identity_value'] ?? '');
 
-// Must stay in sync with SwapService::IDENTITY_TYPES_AGENT_VERIFIABLE -
-// agents can only handle document types they can physically inspect,
-// never phone/email (those are self-service only).
-$agentVerifiableTypes = ['national_id', 'birth_certificate', 'voter_id'];
-if (!in_array($identityType, $agentVerifiableTypes, true)) {
-    error_log("[DEBUG][search_claim] REJECTED - not agent-verifiable type: {$identityType}");
+if (!$identityType || !$identityValue) {
     http_response_code(400);
-    echo json_encode([
-        'success' => false,
-        'error' => 'Agents can only search document-based identities (National ID, Birth Certificate, Voter ID).'
-    ]);
+    echo json_encode(['success' => false, 'error' => 'identity_type and identity_value are required']);
     exit;
 }
-if ($identityValue === '') {
-    error_log("[DEBUG][search_claim] REJECTED - empty identity_value");
-    http_response_code(400);
-    echo json_encode(['success' => false, 'error' => 'Identity value is required']);
-    exit;
-}
+
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 require_once __DIR__ . '/../../../../src/Domain/Services/SwapService.php';
 require_once __DIR__ . '/../../../../src/Core/Config/LoadCountry.php';
+
 use Core\Database\DBConnection;
 use Domain\Services\SwapService;
 use Core\Config\LoadCountry;
+
 try {
     $db = DBConnection::getConnection();
     $country = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
     $swapService = new SwapService($db, LoadCountry::getConfig(), $country);
 
-    // Gate: only approved agents may search identities at all.
-    $isApproved = $swapService->isApprovedAgent((int)$userId);
-    error_log("[DEBUG][search_claim] isApprovedAgent(user_id={$userId}) = " . ($isApproved ? 'true' : 'false'));
-    if (!$isApproved) {
+    if (!$swapService->isApprovedAgent((int)$userId)) {
         http_response_code(403);
-        echo json_encode(['success' => false, 'error' => 'You do not have an approved agent destination account yet.']);
+        echo json_encode(['success' => false, 'error' => 'Not an approved agent']);
         exit;
     }
 
-    // ============================================================
-    // CHANGED: aggregated lookup instead of one row per swap.
-    // Returns null (no pending balance) or a single grouped figure -
-    // or, in the multi_currency edge case, a small list of per-currency
-    // groups rather than one merged (and wrong) total.
-    // ============================================================
-    $aggregate = $swapService->getAggregatedIdentityBalance($identityType, $identityValue);
+    // Get aggregated identity balance - shows ALL holds grouped
+    $result = $swapService->getAggregatedIdentityBalance($identityType, $identityValue);
 
-    // ============================================================
-    // DEBUG: dump the FULL aggregate structure, including any
-    // hold_ids / swap_references it contains, before we strip
-    // it down to the "safe" response. This is the ground truth
-    // for "how many holds did search actually find".
-    // ============================================================
-    error_log("[DEBUG][search_claim] RAW aggregate result: " . json_encode($aggregate));
-    if ($aggregate !== null && empty($aggregate['multi_currency'])) {
-        error_log("[DEBUG][search_claim] single-currency swap_count={$aggregate['swap_count']} total_amount={$aggregate['total_amount']} currency={$aggregate['currency']}");
-        if (isset($aggregate['hold_ids'])) {
-            error_log("[DEBUG][search_claim] hold_ids in aggregate: " . json_encode($aggregate['hold_ids']));
-        } else {
-            error_log("[DEBUG][search_claim] WARNING - aggregate has NO hold_ids/swap_references key. finalize will have to re-derive matching holds independently.");
-        }
-    } elseif ($aggregate !== null) {
-        foreach ($aggregate['balances'] as $b) {
-            error_log("[DEBUG][search_claim] multi-currency bucket currency={$b['currency']} swap_count={$b['swap_count']} total_amount={$b['total_amount']}");
-        }
-    }
-
-    if ($aggregate === null) {
-        error_log("[DEBUG][search_claim] No pending balance found for identity_type={$identityType} identity_value={$identityValue}");
-        echo json_encode(['success' => true, 'data' => null, 'message' => 'No pending balance found for this identity.']);
+    if ($result === null) {
+        echo json_encode(['success' => true, 'data' => null, 'message' => 'No pending balance found']);
         exit;
     }
 
-    // Never leak PIN hashes, raw source_payload, or metadata to the client.
-    // hold_ids/swap_references are fine to expose - they're opaque
-    // identifiers the agent never types, just references finalize_claim
-    // will send back.
-    if (!empty($aggregate['multi_currency'])) {
-        $safe = [
-            'multi_currency' => true,
-            'identity_type' => $aggregate['identity_type'],
-            'identity_value' => $aggregate['identity_value'],
-            'balances' => array_map(function ($b) {
-                return [
-                    'currency' => $b['currency'],
-                    'total_amount' => $b['total_amount'],
-                    'swap_count' => $b['swap_count'],
-                    'newest_created_at' => $b['newest_created_at'],
-                    'earliest_expires_at' => $b['earliest_expires_at'],
-                ];
-            }, $aggregate['balances']),
-        ];
-    } else {
-        $safe = [
-            'multi_currency' => false,
-            'identity_type' => $aggregate['identity_type'],
-            'identity_value' => $aggregate['identity_value'],
-            'currency' => $aggregate['currency'],
-            'total_amount' => $aggregate['total_amount'],
-            'swap_count' => $aggregate['swap_count'],
-            'newest_created_at' => $aggregate['newest_created_at'],
-            'earliest_expires_at' => $aggregate['earliest_expires_at'],
-        ];
-    }
-
-    error_log("[DEBUG][search_claim] RESPONSE to client: " . json_encode($safe));
-    error_log("=== [DEBUG][search_claim] END user_id={$userId}");
-
-    echo json_encode(['success' => true, 'data' => $safe]);
+    echo json_encode(['success' => true, 'data' => $result]);
+    
 } catch (\Throwable $e) {
-    error_log("[DEBUG][search_claim] EXCEPTION: " . $e->getMessage() . " | " . $e->getTraceAsString());
-    error_log("[agent/search_claim] Error for user {$userId}: " . $e->getMessage());
-    http_response_code(500);
-    echo json_encode(['success' => false, 'error' => 'Search failed']);
+    error_log("[agent/search_claim] Error: " . $e->getMessage());
+    http_response_code(400);
+    echo json_encode(['success' => false, 'error' => $e->getMessage()]);
 }
