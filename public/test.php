@@ -1,8 +1,8 @@
 <?php
 // test_sms.php — run directly on the VouchMorph server/container
-require_once __DIR__ . '/vendor/autoload.php';
-require_once __DIR__ . '/src/Core/Config/LoadCountry.php';
-require_once __DIR__ . '/src/Infrastructure/SMS/SmsNotificationService.php';
+require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/../src/Core/Config/LoadCountry.php';
+require_once __DIR__ . '/../src/Infrastructure/SMS/SmsNotificationService.php';
 
 use Core\Config\LoadCountry;
 use Infrastructure\SMS\SmsNotificationService;
