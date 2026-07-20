@@ -3112,13 +3112,6 @@ private function finalizeIdentityHoldNoPin(array $identitySwap, array $payload):
         throw new RuntimeException("destination_type must be 'CASHOUT' or 'DEPOSIT'");
     }
 
-    $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'confirmed', [
-        'confirmed_by_type' => $confirmedByType,
-        'confirmed_by_id' => $confirmedById,
-        'confirmation_method' => $payload['confirmation_method'] ?? ($confirmedByType === 'user' ? 'dashboard' : 'agent_portal'),
-        'destination_type' => $destinationType
-    ]);
-
     $sourcePayload = json_decode($identitySwap['source_payload'], true);
     $sourceInstitution = $identitySwap['source_institution'];
 
@@ -3136,12 +3129,21 @@ private function finalizeIdentityHoldNoPin(array $identitySwap, array $payload):
     }
 
     try {
+        // MOVED INSIDE the transaction: if anything below throws, this
+        // write rolls back too, and the hold correctly reverts to
+        // 'pending' — retryable — instead of getting permanently
+        // orphaned at 'confirmed' with no money moved and no way to
+        // ever claim it again.
+        $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'confirmed', [
+            'confirmed_by_type' => $confirmedByType,
+            'confirmed_by_id' => $confirmedById,
+            'confirmation_method' => $payload['confirmation_method'] ?? ($confirmedByType === 'user' ? 'dashboard' : 'agent_portal'),
+            'destination_type' => $destinationType
+        ]);
+
         error_log("[SwapService] Re-verifying asset availability for institution: {$sourceInstitution}");
         $verificationResult = $this->verifyAssetSigned($sourcePayload, $sourceInstitution);
         if (!($verificationResult['verified'] ?? false)) {
-            $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'cancelled', [
-                'cancellation_reason' => 'Funds no longer available'
-            ]);
             throw new RuntimeException("Source funds no longer available. Swap cancelled.");
         }
 
