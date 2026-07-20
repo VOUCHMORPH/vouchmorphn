@@ -434,88 +434,63 @@ if (!empty($commConfig)) {
     }
 
     public function getHookedSources(int $userId): array
-    {
-        error_log("[SwapService] getHookedSources called for user: {$userId}");
-        
-        $sql = "SELECT * FROM user_authorized_sources WHERE user_id = :user_id AND status = 'active'";
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([':user_id' => $userId]);
-        $sources = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        foreach ($sources as &$source) {
-            if ($this->isTokenExpired($source['token_expires_at'])) {
-                try {
-                    $refreshed = $this->refreshHookedSource($userId, $source['source_reference']);
-                    $source['access_token'] = $refreshed['access_token'];
-                    $source['token_expires_at'] = $refreshed['expires_at'];
-                } catch (Exception $e) {
-                    error_log("[SwapService] Failed to refresh token for source: " . $source['source_reference']);
-                    $source['status'] = 'expired';
-                }
+{
+    $sql = "SELECT * FROM user_source_accounts WHERE user_id = :user_id AND status = 'active' AND deleted_at IS NULL";
+    $stmt = $this->swapDB->prepare($sql);
+    $stmt->execute([':user_id' => $userId]);
+    $sources = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($sources as &$source) {
+        if ($this->isTokenExpired($source['token_expires_at'])) {
+            try {
+                $refreshed = $this->refreshHookedSource($userId, $source['source_reference']);
+                $source['access_token'] = $refreshed['access_token'];
+                $source['token_expires_at'] = $refreshed['expires_at'];
+            } catch (Exception $e) {
+                error_log("[SwapService] Failed to refresh token for source: " . $source['source_reference']);
+                $source['status'] = 'expired';
             }
         }
-        
-        return $sources;
     }
+    return $sources;
+}
 
-    public function refreshHookedSource(int $userId, string $sourceReference): array
-    {
-        error_log("[SwapService] refreshHookedSource: {$sourceReference}");
-        
-        $sql = "SELECT * FROM user_authorized_sources WHERE source_reference = :source_ref AND user_id = :user_id";
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([':source_ref' => $sourceReference, ':user_id' => $userId]);
-        $source = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$source) {
-            throw new RuntimeException("Source not found");
-        }
-        
-        $adapter = $this->adapterFactory->getAdapter($source['institution']);
-        $result = $adapter->refreshSourceToken(['refresh_token' => $source['refresh_token']]);
-        
-        if (!$result['success']) {
-            throw new RuntimeException("Failed to refresh token: " . ($result['message'] ?? 'Unknown error'));
-        }
-        
-        $sql = "UPDATE user_authorized_sources SET access_token = :access_token, token_expires_at = :expires_at WHERE source_reference = :source_ref";
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([
-            ':access_token' => $result['access_token'],
-            ':expires_at' => $result['expires_at'],
-            ':source_ref' => $sourceReference
-        ]);
-        
-        return [
-            'success' => true,
-            'access_token' => $result['access_token'],
-            'expires_at' => $result['expires_at']
-        ];
+public function refreshHookedSource(int $userId, string $sourceReference): array
+{
+    $sql = "SELECT * FROM user_source_accounts WHERE source_reference = :source_ref AND user_id = :user_id";
+    $stmt = $this->swapDB->prepare($sql);
+    $stmt->execute([':source_ref' => $sourceReference, ':user_id' => $userId]);
+    $source = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$source) {
+        throw new RuntimeException("Source not found");
     }
-
-    public function revokeHookedSource(int $userId, string $sourceReference): array
-    {
-        error_log("[SwapService] revokeHookedSource: {$sourceReference}");
-        
-        $sql = "SELECT * FROM user_authorized_sources WHERE source_reference = :source_ref AND user_id = :user_id";
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([':source_ref' => $sourceReference, ':user_id' => $userId]);
-        $source = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$source) {
-            throw new RuntimeException("Source not found");
-        }
-        
-        $adapter = $this->adapterFactory->getAdapter($source['institution']);
-        $adapter->revokeSourceToken(['token' => $source['access_token']]);
-        
-        $sql = "UPDATE user_authorized_sources SET status = 'revoked' WHERE source_reference = :source_ref";
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([':source_ref' => $sourceReference]);
-        
-        return ['success' => true, 'message' => 'Source revoked successfully'];
+    $adapter = $this->adapterFactory->getAdapter($source['institution']);
+    $result = $adapter->refreshSourceToken(['refresh_token' => $source['refresh_token']]);
+    if (!$result['success']) {
+        throw new RuntimeException("Failed to refresh token: " . ($result['message'] ?? 'Unknown error'));
     }
+    $stmt = $this->swapDB->prepare("
+        UPDATE user_source_accounts SET access_token = :access_token, token_expires_at = :expires_at WHERE source_reference = :source_ref
+    ");
+    $stmt->execute([':access_token' => $result['access_token'], ':expires_at' => $result['expires_at'], ':source_ref' => $sourceReference]);
+    return ['success' => true, 'access_token' => $result['access_token'], 'expires_at' => $result['expires_at']];
+}
 
+public function revokeHookedSource(int $userId, string $sourceReference): array
+{
+    $sql = "SELECT * FROM user_source_accounts WHERE source_reference = :source_ref AND user_id = :user_id";
+    $stmt = $this->swapDB->prepare($sql);
+    $stmt->execute([':source_ref' => $sourceReference, ':user_id' => $userId]);
+    $source = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$source) {
+        throw new RuntimeException("Source not found");
+    }
+    $adapter = $this->adapterFactory->getAdapter($source['institution']);
+    $adapter->revokeSourceToken(['token' => $source['access_token']]);
+    $stmt = $this->swapDB->prepare("UPDATE user_source_accounts SET status = 'revoked', deleted_at = NOW() WHERE source_reference = :source_ref");
+    $stmt->execute([':source_ref' => $sourceReference]);
+    return ['success' => true, 'message' => 'Source revoked successfully'];
+}
     private function isTokenExpired(?string $expiresAt): bool
     {
         if (!$expiresAt) return true;
