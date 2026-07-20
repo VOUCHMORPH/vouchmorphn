@@ -97,6 +97,7 @@ class SwapService
     private array $executedSteps = [];
     private array $stepResults = [];
     private array $signedPayloads = [];
+    private array $pendingRemainder = [];
 
     public function __construct(
         PDO $swapDB, 
@@ -4497,6 +4498,16 @@ public function finalizeIdentityClaimSplit(
 
     $remainder = round($fullAmount - $cashNowAmount, 2);
 
+    // Get beneficiary phone
+    $beneficiaryPhone = $identitySwap['otp_pin_sent_to'] ?? null;
+    if (empty($beneficiaryPhone)) {
+        $sourcePayload = json_decode($identitySwap['source_payload'], true);
+        $beneficiaryPhone = $sourcePayload['notification_phone'] ?? 
+                           $sourcePayload['beneficiary_phone'] ?? 
+                           null;
+    }
+
+    // STEP 1: Deposit full amount into agent's account
     $depositResult = $this->confirmAndFinalizeIdentitySwap([
         'swap_reference' => $swapReference,
         'pin' => $pin,
@@ -4508,44 +4519,32 @@ public function finalizeIdentityClaimSplit(
         'destination_identifier' => $destAccount['identifier'],
         'destination_identifier_type' => $destAccount['identifier_type'],
         'destination_asset_type' => $destAccount['asset_type'],
+        'client_phone' => $beneficiaryPhone,
+        'beneficiary_phone' => $beneficiaryPhone,
     ]);
 
-    $response = ['deposit' => $depositResult, 'cash_now' => null, 'remainder_reswap' => null];
+    $response = ['deposit' => $depositResult, 'remainder_reswap' => null];
 
+    // STEP 2: Store remainder for processing after atomic transaction commits
     if ($remainder > 0) {
-        $response['remainder_reswap'] = $this->executeAtomicSwap([
-            'swap_type' => 'IDENTITY',
-            'reference' => $swapReference . '_REMAIN_' . time(),
+        $this->pendingRemainder = [
+            'swap_reference' => $swapReference,
+            'amount' => $remainder,
             'from_institution' => $destAccount['institution'],
-            'source_institution' => $destAccount['institution'],
             'source_identifier' => $destAccount['identifier'],
             'source_identifier_type' => $destAccount['identifier_type'],
             'asset_type' => $destAccount['asset_type'],
-            'amount' => $remainder,
             'currency' => $identitySwap['currency'] ?? 'BWP',
             'identity_type' => $identitySwap['identity_type'],
             'identity_value' => $identitySwap['identity_value'],
-            'beneficiary_phone' => $identitySwap['otp_pin_sent_to'] ?? null,
-            'notification_phone' => $identitySwap['otp_pin_sent_to'] ?? null,
-        ]);
-    }
-
-    if ($cashNowAmount > 0) {
-        $response['cash_now'] = $this->executeAtomicSwap([
-            'swap_type' => 'CASHOUT',
-            'reference' => $swapReference . '_CASHNOW_' . time(),
-            'from_institution' => $destAccount['institution'],
-            'source_institution' => $destAccount['institution'],
-            'source_identifier' => $destAccount['identifier'],
-            'source_identifier_type' => $destAccount['identifier_type'],
-            'asset_type' => $destAccount['asset_type'],
-            'amount' => $cashNowAmount,
-            'currency' => $identitySwap['currency'] ?? 'BWP',
-            'destination_currency' => $identitySwap['currency'] ?? 'BWP',
-            'to_institution' => $destAccount['institution'],
-            'destination_institution' => $destAccount['institution'],
-            'delivery_method' => 'ATM',
-        ]);
+            'beneficiary_phone' => $beneficiaryPhone,
+        ];
+        
+        $response['remainder_reswap'] = [
+            'status' => 'pending',
+            'amount' => $remainder,
+            'message' => 'Remainder will be automatically swapped back to identity after deposit completes'
+        ];
     }
 
     return $response;
@@ -6177,7 +6176,53 @@ private function findAuthorization(string $swapReference = null, int $authId = n
         
         $this->logger->info("Atomic swap committed", $result);
         $this->resetAtomicState();
+        
+        // Process pending remainder AFTER the transaction is committed
+        $this->processPendingRemainder();
+        
         return $result;
+    }
+
+    /**
+     * Process pending remainder swap after atomic transaction commits
+     */
+    private function processPendingRemainder(): void
+    {
+        if (empty($this->pendingRemainder)) {
+            return;
+        }
+
+        $remainder = $this->pendingRemainder;
+        
+        try {
+            error_log("[SwapService] Processing pending remainder for {$remainder['swap_reference']}: {$remainder['amount']}");
+
+            $result = $this->executeAtomicSwap([
+                'swap_type' => 'IDENTITY',
+                'reference' => $remainder['swap_reference'] . '_REMAIN_' . time(),
+                'from_institution' => $remainder['from_institution'],
+                'source_institution' => $remainder['from_institution'],
+                'source_identifier' => $remainder['source_identifier'],
+                'source_identifier_type' => $remainder['source_identifier_type'],
+                'asset_type' => $remainder['asset_type'],
+                'amount' => $remainder['amount'],
+                'currency' => $remainder['currency'],
+                'identity_type' => $remainder['identity_type'],
+                'identity_value' => $remainder['identity_value'],
+                'beneficiary_phone' => $remainder['beneficiary_phone'],
+                'notification_phone' => $remainder['beneficiary_phone'],
+            ]);
+
+            error_log("[SwapService] Remainder reswap completed: " . json_encode($result));
+            
+            // Clear pending remainder
+            $this->pendingRemainder = [];
+            
+        } catch (Exception $e) {
+            error_log("[SwapService] ERROR processing remainder for {$remainder['swap_reference']}: " . $e->getMessage());
+            // Clear it so we don't retry infinitely
+            $this->pendingRemainder = [];
+        }
     }
 
     private function rollbackAtomicSwap(string $reason): array
