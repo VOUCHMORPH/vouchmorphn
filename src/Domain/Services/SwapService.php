@@ -40,6 +40,13 @@ use Infrastructure\Crypto\AggregateSigner;
  *   - Institution-specific authentication methods
  * - PIN is OPTIONAL - only forwarded if present (backward compatibility)
  * - Destination operations (deposit, credit, transfer) do NOT require PIN
+ * 
+ * IDENTITY PIN FLOW:
+ * - Each hold gets its own unique PIN (sent via SMS)
+ * - PIN is the "GREEN LIGHT" - one PIN verification authorizes the ENTIRE identity
+ * - After PIN verification, ALL holds for that identity are marked as "authorized"
+ * - Authorization expires after 1 hour (security)
+ * - This allows agents to finalize multiple holds with one PIN entry
  */
 class SwapService
 {
@@ -3083,13 +3090,10 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
 
 /**
  * ============================================================
- * REPLACES: finalizeIdentityHoldNoPin()
+ * finalizeIdentityHoldNoPin()
  * ============================================================
- * Same logic as before, but the beginAtomicSwap() call is now INSIDE
- * the try block (previously it was outside, so a failure there could
- * never be caught/rolled back by this method - it just propagated
- * raw to the caller with $this->inAtomicSwap already corrupted).
- * Also adds debug logging around the per-hold transaction boundary.
+ * Now respects the _skip_pin_verification flag for aggregated claims.
+ * If the identity is already authorized, PIN verification is skipped.
  */
 private function finalizeIdentityHoldNoPin(array $identitySwap, array $payload): array
 {
@@ -3117,27 +3121,38 @@ private function finalizeIdentityHoldNoPin(array $identitySwap, array $payload):
     error_log("[DEBUG][agg_claim] finalizeIdentityHoldNoPin hold_id={$holdId} swap_reference={$swapRef} openedHere=" . ($openedHere ? 'true' : 'false') . " (inAtomicSwap was " . ($this->inAtomicSwap ? 'true' : 'false') . " on entry)");
  
     try {
-        // FIX: beginAtomicSwap() call moved INSIDE the try block. Previously
-        // this sat outside, so if it threw (e.g. nested-transaction
-        // PDOException), the exception skipped this catch entirely and
-        // propagated with $this->inAtomicSwap already corrupted to true,
-        // with no rollback and no state reset.
         if ($openedHere) {
             $this->beginAtomicSwap($swapRef);
         } else {
             $this->currentSwapRef = $swapRef;
         }
  
-        // MOVED INSIDE the transaction: if anything below throws, this
-        // write rolls back too, and the hold correctly reverts to
-        // 'pending' — retryable — instead of getting permanently
-        // orphaned at 'confirmed' with no money moved and no way to
-        // ever claim it again.
+        // ============================================================
+        // FIX: If PIN verification is skipped (identity authorized),
+        // don't call verifyIdentityClaimPin again
+        // ============================================================
+        $skipPinVerification = $payload['_skip_pin_verification'] ?? false;
+        $isAuthorized = $this->isIdentityAuthorized(
+            $identitySwap['identity_type'], 
+            $identitySwap['identity_value']
+        );
+        
+        if (!$skipPinVerification && !$isAuthorized) {
+            // Only verify PIN if not already authorized
+            // This is for single hold finalization (not aggregated)
+            $suppliedPin = (string)($payload['pin'] ?? '');
+            $this->verifyIdentityClaimPin($identitySwap, $suppliedPin);
+        } else {
+            error_log("[DEBUG][agg_claim] finalizeIdentityHoldNoPin: Skipping PIN verification for hold {$holdId} (identity already authorized)");
+        }
+ 
+        // MOVED INSIDE the transaction
         $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'confirmed', [
             'confirmed_by_type' => $confirmedByType,
             'confirmed_by_id' => $confirmedById,
             'confirmation_method' => $payload['confirmation_method'] ?? ($confirmedByType === 'user' ? 'dashboard' : 'agent_portal'),
-            'destination_type' => $destinationType
+            'destination_type' => $destinationType,
+            'authorized_skip' => $skipPinVerification || $isAuthorized ? true : false
         ]);
  
         error_log("[SwapService] Re-verifying asset availability for institution: {$sourceInstitution}");
@@ -3397,18 +3412,6 @@ return $result;
     }
 
 /**
- * PATCH FOR: src/Domain/Services/SwapService.php
- * (continuation - apply after SwapService_hold_release_patch.php)
- * =================================================================
- */
- 
- 
-/* =================================================================
- * EDIT 1 — ADD these new methods anywhere in the class (e.g. near
- * the identity swap helper methods).
- * ================================================================= */
- 
-/**
  * Called once identity-swap money has actually landed in a
  * destination account (after a successful DEPOSIT finalization).
  * Creates VouchMorph's own tracking ledger for that earmarked
@@ -3460,22 +3463,13 @@ private function createEarmarkedBalance(
         return $id;
     } catch (PDOException $e) {
         error_log("[SwapService] Failed to create earmarked balance: " . $e->getMessage());
-        // Non-fatal by design: the deposit itself already succeeded and
-        // real money already moved. Failing to create the tracking
-        // ledger shouldn't roll back a completed deposit - but it does
-        // mean this account's earmarked money goes untracked, which
-        // needs manual reconciliation. Logged loudly for that reason.
         return 0;
     }
 }
  
 /**
  * Aggregates all OPEN earmarked balances for a given account into a
- * single figure to check a withdrawal against. Multiple identity
- * deposits into the same account (over time) are summed; the most
- * conservative (largest) threshold among them is used, so a
- * withdrawal can never slip through on a looser number from an
- * older entry.
+ * single figure to check a withdrawal against.
  */
 private function getOpenEarmarkedSummary(string $institution, string $identifier): ?array
 {
@@ -3504,33 +3498,25 @@ private function getOpenEarmarkedSummary(string $institution, string $identifier
     return [
         'total_remaining' => (float)$totalRemaining,
         'threshold' => $maxThreshold,
-        'entries' => $rows, // ordered oldest-first for FIFO consumption
+        'entries' => $rows,
     ];
 }
  
 /**
  * Enforces the partial-withdrawal rule against any open earmarked
- * balance on this account: a withdrawal is only valid if it leaves
- * the earmarked remainder at exactly zero, or strictly above
- * (smallest note + total cashout fee). Does NOT mutate anything -
- * pure validation, safe to call before a hold is placed. Silently
- * returns (no-op) if the account has no open earmarked balance at
- * all - ordinary funds are never restricted by this rule.
+ * balance on this account.
  */
 private function validateEarmarkedWithdrawal(string $institution, string $identifier, float $requestedAmount): void
 {
     $summary = $this->getOpenEarmarkedSummary($institution, $identifier);
     if ($summary === null) {
-        return; // No earmarked money on this account - unrestricted.
+        return;
     }
  
     $remaining = $summary['total_remaining'];
     $threshold = $summary['threshold'];
  
     if ($requestedAmount >= $remaining) {
-        // Fully consumes (or exceeds, if mixed with the account's own
-        // funds) the earmarked balance - always allowed, since the
-        // earmarked portion hits exactly zero.
         return;
     }
  
@@ -3586,15 +3572,13 @@ private function validateAgentMinimumBalance(string $institution, string $identi
     
 /**
  * Actually decrements the earmarked ledger, FIFO across open entries,
- * after a withdrawal has genuinely succeeded (called post-debit, never
- * pre-emptively - a validated-but-failed cashout must not consume the
- * ledger). Marks entries 'depleted' once their remaining hits zero.
+ * after a withdrawal has genuinely succeeded.
  */
 private function consumeEarmarkedBalance(string $institution, string $identifier, float $amountWithdrawn, ?string $swapReference = null): void
 {
     $summary = $this->getOpenEarmarkedSummary($institution, $identifier);
     if ($summary === null) {
-        return; // Nothing earmarked on this account - ordinary withdrawal, nothing to track.
+        return;
     }
  
     $remainingToConsume = $amountWithdrawn;
@@ -3819,44 +3803,24 @@ public function cancelExpiredIdentitySwaps(): array
 
     /**
      * Confirm cashout - Handles both destination bank verification AND ATM callbacks
-     * 
-     * SCENARIO 1: Manual/Agent confirmation (is_callback=false)
-     *   - Verifies with destination institution before processing
-     *   - Uses BankAPIInterface::confirmCashout() to confirm with destination bank
-     * 
-     * SCENARIO 2: ATM Callback (is_callback=true)
-     *   - Called by atm_cashout_voucher.php when bank calls Vouchmorph
-     *   - Skips destination verification (ATM already verified)
-     *   - Debits source hold immediately
-     * 
-     * SECURITY: Amount, source_institution, hold_reference are pulled from
-     * OUR OWN stored authorization record via findAuthorization(),
-     * NOT from the bank's webhook body. The webhook only tells us WHICH
-     * voucher/swap to confirm, never HOW MUCH to debit.
      */
     public function confirmCashout(array $payload): array
     {
         error_log("[SwapService] ===== confirmCashout START =====");
         error_log("[SwapService] Payload keys: " . implode(', ', array_keys($payload)));
 
-        // ============================================================
-        // 1. EXTRACT PAYLOAD - ONLY IDENTIFIERS, NOT MONEY AMOUNTS
-        // ============================================================
         $swapReference = $payload['swap_reference'] ?? null;
         $authId = $payload['auth_id'] ?? null;
         $code = $payload['code'] ?? null;
         $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
         $cashoutPoint = $payload['cashout_point'] ?? 'ATM';
 
-        // Callback-specific fields (identifiers only — NOT money amounts)
         $voucherNumber = $payload['voucher_number'] ?? null;
         $atmId = $payload['atm_id'] ?? null;
         $cashoutReference = $payload['cashout_reference'] ?? null;
         $requester = $payload['requester'] ?? 'SYSTEM';
         $isCallback = $payload['is_callback'] ?? false;
 
-        // Override fields — trusted-internal-caller-only.
-        // The webhook controller must NOT populate these from the raw bank payload.
         $sourceInstitutionOverride = $payload['_source_institution'] ?? null;
         $amountOverride = $payload['_amount'] ?? null;
         $feeOverride = $payload['_fee_amount'] ?? null;
@@ -3875,9 +3839,6 @@ public function cancelExpiredIdentitySwaps(): array
             error_log("[SwapService] Mode: MANUAL VERIFICATION - dest={$destinationInstitution}");
         }
 
-        // ============================================================
-        // 2. FIND AUTHORIZATION — source of truth for amount/institution
-        // ============================================================
         $authorization = $this->findAuthorization($swapReference, $authId, $voucherNumber);
 
         if (!$authorization) {
@@ -3887,9 +3848,6 @@ public function cancelExpiredIdentitySwaps(): array
         $authId = $authorization['auth_id'];
         $swapRef = $authorization['swap_reference'];
 
-        // Overrides only apply if explicitly passed by a TRUSTED INTERNAL
-        // caller that has already validated them — the webhook controller
-        // deliberately never sets these.
         $sourceInstitution = $sourceInstitutionOverride ?? $authorization['source_institution'];
         $destinationInstitution = $destinationInstitution ?? $authorization['destination_institution'] ?? 'ATM';
         $amountToSend = $amountOverride ?? (float)$authorization['amount'];
@@ -3900,9 +3858,6 @@ public function cancelExpiredIdentitySwaps(): array
 
         error_log("[SwapService] Auth: id={$authId}, swap={$swapRef}, source={$sourceInstitution}, amount={$amountToSend}");
 
-        // ============================================================
-        // 3. IDEMPOTENCY — webhook retries must not double-debit
-        // ============================================================
         if ($authorization['status'] === 'COMPLETED') {
             error_log("[SwapService] Cashout already completed");
             return [
@@ -3914,9 +3869,6 @@ public function cancelExpiredIdentitySwaps(): array
             ];
         }
 
-        // ============================================================
-        // 4. DESTINATION VERIFICATION (MANUAL MODE ONLY)
-        // ============================================================
         if (!$isCallback) {
             if (!$destinationInstitution) {
                 throw new RuntimeException("Destination institution required for manual confirmation");
@@ -3959,9 +3911,6 @@ public function cancelExpiredIdentitySwaps(): array
                 throw new RuntimeException("Destination verification failed: " . $e->getMessage());
             }
         } else {
-            // ATM/bank callback — cash is already dispensed, nothing to verify.
-            // "destination_institution" here is 'ATM'/'AGENT', not a
-            // BankAPIInterface participant, so we never call an adapter.
             error_log("[SwapService] ATM Callback - skipping destination verification (cash already dispensed)");
 
             if ($voucherNumber) {
@@ -3985,9 +3934,6 @@ public function cancelExpiredIdentitySwaps(): array
             }
         }
 
-        // ============================================================
-        // 5. DEBIT SOURCE HOLD — amount always comes from OUR record
-        // ============================================================
         error_log("[SwapService] Debiting source: {$sourceInstitution}, amount: " . ($amountToSend + $feeAmount));
 
         try {
@@ -4019,19 +3965,11 @@ if (!$debitSuccess) {
 
         error_log("[SwapService] Debit successful");
 
-         
-error_log("[SwapService] Debit successful");
- 
-// Consume the earmarked ledger now that money has actually, 
-// successfully left the account - never before this point.
 try {
     $sourceIdentifierForLedger = $authorization['source_identifier'] ?? null;
 if ($sourceIdentifierForLedger) {
     $this->consumeEarmarkedBalance($sourceInstitution, $sourceIdentifierForLedger, $amountToSend + $feeAmount, $swapRef);
 } else {
-    // Older authorizations created before this fix will have no
-    // source_identifier on record - log it so it's visible in
-    // reconciliation rather than silently skipping ledger consumption.
     error_log("[SwapService] No source_identifier on cashout_authorizations for auth_id={$authId} (swap_ref={$swapRef}) - cannot consume earmarked balance, likely a pre-migration record.");
 }
 
@@ -4041,16 +3979,10 @@ if ($sourceIdentifierForLedger) {
  
 
 
-        // ============================================================
-        // 6. UPDATE STATUSES
-        // ============================================================
         $this->updateCashoutAuthorizationStatus($authId, 'COMPLETED', $cashoutPoint);
         $this->updateHoldForSwap($swapRef, 'DEBITED');
         $this->updateSwapRequestStatus($swapRef, 'completed');
 
-        // ============================================================
-        // 7. SETTLEMENT
-        // ============================================================
         $settlementResult = null;
         try {
             $settlementResult = $this->settlement->updateNetPosition(
@@ -4076,9 +4008,6 @@ if ($sourceIdentifierForLedger) {
             error_log("[SwapService] Settlement warning: " . $e->getMessage());
         }
 
-        // ============================================================
-        // 8. AUDIT LOG
-        // ============================================================
         try {
             $auditStmt = $this->swapDB->prepare("
                 INSERT INTO audit_logs
@@ -4105,9 +4034,6 @@ if ($sourceIdentifierForLedger) {
             error_log("[SwapService] Audit log warning: " . $e->getMessage());
         }
 
-        // ============================================================
-        // 9. RESPONSE
-        // ============================================================
         $response = [
             'status' => 'completed',
             'swap_reference' => $swapRef,
@@ -4138,7 +4064,7 @@ if ($sourceIdentifierForLedger) {
  /**
  * Single-identity aggregate: what an agent sees after searching one
  * national_id. Sums all pending, non-expired holds for that identity
- * into one figure. Refuses to mix currencies rather than guessing.
+ * into one figure.
  */
 public function getAggregatedIdentityBalance(string $identityType, string $identityValue): ?array
 {
@@ -4168,9 +4094,6 @@ public function getAggregatedIdentityBalance(string $identityType, string $ident
         }
 
         if (count($rows) > 1) {
-            // Multiple currencies pending on the same identity - deliberately
-            // NOT merged or converted. Surface all of them so the caller can
-            // decide, rather than silently picking one or averaging.
             error_log("[SwapService] Identity {$identityType}={$identityValue} has pending balances in " . count($rows) . " different currencies");
             return [
                 'identity_type' => $identityType,
@@ -4241,22 +4164,83 @@ public function getAgentPendingSwapsAggregated(array $filters = []): array
 }
 
 /**
- * The core bundling operation. One PIN check (against the most
- * recently-issued PIN across all pending holds for this identity),
- * then N individual deposits into the agent's account - each with
- * its own fee calc and its own audit trail, same as if the agent had
- * claimed each source separately. Remainder (if any) re-swaps back to
- * the SAME identity as ONE fresh pending hold, not one per source.
- *
- * FIX: cash_now_amount and the remainder are now computed against
- * the NET total actually deposited into the agent's account (i.e.
- * gross minus the per-hold fees already paid at deposit time), not
- * the gross total. The agent's account only ever holds the net
- * figure - fees are deducted at deposit time and are gone, paid to
- * settlement. Using gross here was telling the client a remainder
- * balance larger than what the agent's account actually contained,
- * meaning the client could effectively consume the "fee" portion
- * for free while the agent silently absorbed the shortfall.
+ * ============================================================
+ * IDENTITY AUTHORIZATION METHODS - The "Green Light"
+ * ============================================================
+ * These methods handle the PIN verification and authorization flow.
+ * One PIN verification grants authorization for ALL holds under an identity.
+ * Authorization expires after 1 hour.
+ */
+
+/**
+ * Check if an identity is already authorized (PIN verified)
+ * This is the "green light" that allows finalizing all holds
+ */
+private function isIdentityAuthorized(string $identityType, string $identityValue): bool
+{
+    $sql = "
+        SELECT 1 FROM identity_swap_holds 
+        WHERE identity_type = :type 
+          AND identity_value = :value 
+          AND status = 'pending'
+          AND authorized_at IS NOT NULL
+          AND authorized_at > NOW() - INTERVAL '1 hour'
+        LIMIT 1
+    ";
+    
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([':type' => $identityType, ':value' => $identityValue]);
+        return (bool)$stmt->fetchColumn();
+    } catch (PDOException $e) {
+        error_log("[SwapService] Failed to check identity authorization: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Mark all pending holds for an identity as "authorized"
+ * This means the PIN has been verified and the agent can finalize them
+ * This is the "green light" - one PIN verification grants access to ALL holds
+ */
+private function markIdentityHoldsAuthorized(string $identityType, string $identityValue, string $authorizedBy = 'pin_verification'): int
+{
+    $sql = "
+        UPDATE identity_swap_holds 
+        SET 
+            authorized_at = NOW(),
+            authorized_by = :authorized_by,
+            authorization_type = 'otp_pin_verified',
+            otp_pin_attempts = 0
+        WHERE identity_type = :type 
+          AND identity_value = :value 
+          AND status = 'pending'
+          AND hold_expires_at > NOW()
+    ";
+    
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':type' => $identityType,
+            ':value' => $identityValue,
+            ':authorized_by' => $authorizedBy
+        ]);
+        $count = $stmt->rowCount();
+        error_log("[SwapService] Marked {$count} holds as authorized for identity {$identityType}={$identityValue}");
+        return $count;
+    } catch (PDOException $e) {
+        error_log("[SwapService] Failed to mark identity as authorized: " . $e->getMessage());
+        return 0;
+    }
+}
+
+/**
+ * ============================================================
+ * The core bundling operation. One PIN check (against any hold),
+ * then N individual deposits into the agent's account.
+ * ============================================================
+ * The PIN is the "GREEN LIGHT" - once verified, ALL holds are authorized.
+ * This allows the agent to finalize multiple holds with one PIN entry.
  */
 public function finalizeAggregatedIdentityClaim(
     string $identityType,
@@ -4315,25 +4299,39 @@ public function finalizeAggregatedIdentityClaim(
         throw new RuntimeException("Requested cash amount must be between 0 and {$fullAmount}.");
     }
 
-    // 4. PIN check happens ONCE, against whichever hold most recently sent a PIN
-    usort($pendingHolds, function ($a, $b) {
-        $aKey = $a['otp_pin_sent_at'] ?? $a['created_at'];
-        $bKey = $b['otp_pin_sent_at'] ?? $b['created_at'];
-        return strtotime($bKey) <=> strtotime($aKey);
-    });
-    $latestHold = $pendingHolds[0];
-    $this->verifyIdentityClaimPin($latestHold, $pin);
+    // 4. ============================================================
+    // PIN check happens ONCE against ANY hold with a valid PIN hash.
+    // This is the "GREEN LIGHT" - it authorizes the ENTIRE identity.
+    // ============================================================
+    
+    // Find a hold that has a valid PIN hash
+    $holdWithPin = null;
+    foreach ($pendingHolds as $hold) {
+        if (!empty($hold['otp_pin_hash'])) {
+            $holdWithPin = $hold;
+            break;
+        }
+    }
 
-    // Re-sort back to chronological (oldest first) for the deposit loop
-    usort($pendingHolds, fn($a, $b) => strtotime($a['created_at']) <=> strtotime($b['created_at']));
+    if (!$holdWithPin) {
+        throw new RuntimeException("No PIN has been set for this identity. Please initiate a new swap.");
+    }
 
-    $beneficiaryPhone = $latestHold['otp_pin_sent_to'] ?? null;
+    // Verify the PIN against this hold - this gives the "green light"
+    $this->verifyIdentityClaimPin($holdWithPin, $pin);
+    
+    // After verifyIdentityClaimPin() marks the identity as authorized,
+    // all holds are now authorized (the green light is ON)
+
+    $beneficiaryPhone = $holdWithPin['otp_pin_sent_to'] ?? null;
     if (empty($beneficiaryPhone)) {
-        $latestSourcePayload = json_decode($latestHold['source_payload'], true);
+        $latestSourcePayload = json_decode($holdWithPin['source_payload'], true);
         $beneficiaryPhone = $latestSourcePayload['notification_phone'] ?? $latestSourcePayload['beneficiary_phone'] ?? null;
     }
 
     // 5. Process EACH hold as a SEPARATE transaction
+    // NOW we can finalize ALL holds because the identity is authorized
+    // The PIN verification happens ONCE, then all holds are finalized
     $depositResults = [];
     $failedHolds = [];
     $totalDepositedNet = 0.0;
@@ -4350,11 +4348,13 @@ public function finalizeAggregatedIdentityClaim(
             'destination_asset_type' => $destAccount['asset_type'],
             'client_phone' => $beneficiaryPhone,
             'beneficiary_phone' => $beneficiaryPhone,
+            // These flags tell finalizeIdentityHoldNoPin to skip PIN verification
+            '_skip_pin_verification' => true,
+            '_authorized_by' => 'identity_authorization',
         ];
 
         try {
-            // Process each hold as its own independent atomic transaction -
-            // if ONE hold fails, the others still succeed.
+            // Process each hold as its own independent atomic transaction
             $result = $this->executeSingleHoldTransaction($hold, $confirmationPayload);
 
             $netAmount = $result['result']['amount'] ?? $hold['amount'];
@@ -4390,13 +4390,7 @@ public function finalizeAggregatedIdentityClaim(
     $actuallyClaimedGross = round((float)array_sum(array_column($depositResults, 'gross_amount')), 2);
     $actuallyClaimedNet = round($totalDepositedNet, 2);
 
-    // ============================================================
-    // FIX: cash_now and remainder are computed against NET (what the
-    // agent's account actually holds after fees), not gross. Gross
-    // was overstating the remainder by the exact sum of all per-hold
-    // fees already paid - money that no longer exists in the agent's
-    // account to back a re-swap.
-    // ============================================================
+    // cash_now and remainder are computed against NET (what the agent's account actually holds after fees)
     $adjustedCashNow = min($cashNowAmount, $actuallyClaimedNet);
     $adjustedRemainder = round($actuallyClaimedNet - $adjustedCashNow, 2);
 
@@ -4419,8 +4413,6 @@ public function finalizeAggregatedIdentityClaim(
     // 7. Handle remainder re-swap (if any)
     if ($adjustedRemainder > 0) {
         try {
-            // The remainder re-swap is ONE transaction for the total
-            // remainder (now correctly net-based).
             $result = $this->executeAtomicSwap([
                 'swap_type' => 'IDENTITY',
                 'reference' => 'AGG_REMAIN_' . time() . '_' . bin2hex(random_bytes(4)),
@@ -4460,32 +4452,26 @@ public function finalizeAggregatedIdentityClaim(
  * Execute a single hold as its own independent transaction
  * This ensures that if one hold fails, others are not affected
  */
-
 private function executeSingleHoldTransaction(array $hold, array $confirmationPayload): array
 {
     $holdId = $hold['hold_id'];
  
-    error_log("[DEBUG][agg_claim] executeSingleHoldTransaction START hold_id={$holdId} swap_reference={$hold['swap_reference']} pdo_in_transaction_before=" . ($this->swapDB->inTransaction() ? 'true' : 'false') . " service_inAtomicSwap_before=" . ($this->inAtomicSwap ? 'true' : 'false'));
+    error_log("[DEBUG][agg_claim] executeSingleHoldTransaction START hold_id={$holdId} swap_reference={$hold['swap_reference']}");
  
     try {
         // finalizeIdentityHoldNoPin() owns the transaction lifecycle itself
-        // (begin/commit/rollback + state reset) via its own openedHere logic.
-        // Do NOT wrap it in another beginTransaction()/commit() here.
         $result = $this->finalizeIdentityHoldNoPin($hold, $confirmationPayload);
  
-        error_log("[DEBUG][agg_claim] executeSingleHoldTransaction SUCCESS hold_id={$holdId} pdo_in_transaction_after=" . ($this->swapDB->inTransaction() ? 'true' : 'false') . " service_inAtomicSwap_after=" . ($this->inAtomicSwap ? 'true' : 'false'));
+        error_log("[DEBUG][agg_claim] executeSingleHoldTransaction SUCCESS hold_id={$holdId}");
  
         return $result;
  
     } catch (Exception $e) {
-        error_log("[DEBUG][agg_claim] executeSingleHoldTransaction FAILED hold_id={$holdId} error=" . $e->getMessage() . " pdo_in_transaction_after_failure=" . ($this->swapDB->inTransaction() ? 'true' : 'false') . " service_inAtomicSwap_after_failure=" . ($this->inAtomicSwap ? 'true' : 'false'));
- 
-        // Defensive safety net: if finalizeIdentityHoldNoPin's own
-        // rollback somehow didn't clear PDO's transaction state (e.g. an
-        // exception was thrown from somewhere unexpected), don't let a
-        // dangling transaction poison the next hold in the loop.
+        error_log("[DEBUG][agg_claim] executeSingleHoldTransaction FAILED hold_id={$holdId} error=" . $e->getMessage());
+        
+        // Defensive safety net
         if ($this->swapDB->inTransaction()) {
-            error_log("[DEBUG][agg_claim] WARNING - PDO still in transaction after hold_id={$holdId} failure. Forcing rollback to protect subsequent holds.");
+            error_log("[DEBUG][agg_claim] WARNING - PDO still in transaction after hold_id={$holdId} failure. Forcing rollback.");
             try {
                 $this->swapDB->rollBack();
             } catch (Exception $rollbackError) {
@@ -4493,12 +4479,8 @@ private function executeSingleHoldTransaction(array $hold, array $confirmationPa
             }
         }
  
-        // Defensive safety net: if the service-level flag was left set
-        // (shouldn't happen anymore, but guard against future regressions
-        // of the same class of bug), reset it so the NEXT hold in the
-        // loop isn't corrupted by this one's failure.
         if ($this->inAtomicSwap) {
-            error_log("[DEBUG][agg_claim] WARNING - inAtomicSwap flag still true after hold_id={$holdId} failure. Forcibly resetting to protect subsequent holds.");
+            error_log("[DEBUG][agg_claim] WARNING - inAtomicSwap flag still true after hold_id={$holdId} failure. Forcibly resetting.");
             $this->resetAtomicState();
         }
  
@@ -4513,11 +4495,6 @@ private function executeSingleHoldTransaction(array $hold, array $confirmationPa
 
 /**
  * Phase 1: Verify account + trigger OTP/OAuth, then create pending attempt
- * Does NOT create the agent_destination_accounts row yet
- */
-/**
- * Phase 1: Verify account + trigger OTP/OAuth, then create pending attempt
- * Does NOT create the agent_destination_accounts row yet
  */
 public function initiateAgentDestinationRegistration(
     int $userId,
@@ -4535,24 +4512,18 @@ public function initiateAgentDestinationRegistration(
         throw new RuntimeException("Agent destinations must be Account, Wallet, or Card - '{$assetType}' is not eligible.");
     }
 
-    // ============================================================
-    // FIX: Auto-set identifier_type based on asset_type
-    // This ensures the bank adapter knows what kind of identifier
-    // it's looking at (phone for wallets, card_number for cards, etc.)
-    // ============================================================
     $identifierType = match($assetType) {
-        'WALLET', 'BANK-WALLET' => 'phone',        // Wallets use phone numbers
-        'CARD' => 'card_number',                    // Cards use card numbers
-        'ACCOUNT' => 'account_number',             // Accounts use account numbers
+        'WALLET', 'BANK-WALLET' => 'phone',
+        'CARD' => 'card_number',
+        'ACCOUNT' => 'account_number',
         default => 'account_number'
     };
 
-    // Verify account exists and is business type
     $verifyPayload = [
         'action' => 'VERIFY_ACCOUNT',
         'reference' => 'AGENT_DEST_' . $userId . '_' . time(),
         'account_identifier' => $identifier,
-        'identifier_type' => $identifierType,      // Now correctly set
+        'identifier_type' => $identifierType,
         'requester' => 'VOUCHMORPH',
         'timestamp' => time(),
         'destination_asset_type' => $assetType,
@@ -4605,7 +4576,6 @@ public function initiateAgentDestinationRegistration(
         throw new RuntimeException("A verification attempt is already pending for this account.");
     }
 
-    // Trigger OAuth or OTP
     $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
         . '/api/v1/agent/oauth_callback.php';
 
@@ -4614,7 +4584,7 @@ public function initiateAgentDestinationRegistration(
         $linkResult = $this->initiateSourceLink([
             'institution' => $institution,
             'identifier' => $identifier,
-            'identifier_type' => $identifierType,  // Pass correct type
+            'identifier_type' => $identifierType,
             'asset_type' => $assetType,
             'user_id' => $userId,
             'redirect_uri' => $callbackUrl,
@@ -4628,7 +4598,6 @@ public function initiateAgentDestinationRegistration(
     $isOauth = $linkSucceeded && ($linkResult['auth_type'] ?? null) === 'oauth';
 
     if (!$linkSucceeded) {
-        // No OTP/OAuth support - register without ownership proof
         error_log("[SwapService] {$institution} has no OTP/OAuth support - registering without ownership proof");
 
         $id = $this->insertAgentDestinationAccount(
@@ -4651,7 +4620,6 @@ public function initiateAgentDestinationRegistration(
     }
 
     if ($isOauth) {
-        // OAuth path - store attempt with state
         $stmt = $this->swapDB->prepare("
             INSERT INTO agent_registration_attempts (
                 user_id, institution, asset_type, identifier, identifier_type,
@@ -4731,13 +4699,11 @@ public function initiateAgentDestinationRegistration(
 
 /**
  * Cancel a pending agent destination registration
- * Allows users to cancel pending or rejected registrations
  */
 public function cancelAgentDestination(int $userId, int $destinationId): array
 {
     error_log("[SwapService] cancelAgentDestination: user={$userId}, destination_id={$destinationId}");
     
-    // First check if this destination belongs to the user
     $stmt = $this->swapDB->prepare("
         SELECT id, status, institution, identifier, asset_type 
         FROM agent_destination_accounts 
@@ -4750,12 +4716,10 @@ public function cancelAgentDestination(int $userId, int $destinationId): array
         throw new RuntimeException("Destination account not found or does not belong to you.");
     }
     
-    // Only allow cancellation if status is pending or rejected
     if (!in_array($destination['status'], ['pending_confirmation', 'rejected'])) {
         throw new RuntimeException("This account cannot be cancelled (status: {$destination['status']}).");
     }
     
-    // Soft delete - set deleted_at and status to cancelled
     $stmt = $this->swapDB->prepare("
         UPDATE agent_destination_accounts 
         SET status = 'cancelled', 
@@ -4765,7 +4729,6 @@ public function cancelAgentDestination(int $userId, int $destinationId): array
     ");
     $stmt->execute([':id' => $destinationId, ':user_id' => $userId]);
     
-    // Also cancel any pending registration attempts for this destination
     $stmt = $this->swapDB->prepare("
         UPDATE agent_registration_attempts 
         SET status = 'cancelled', 
@@ -4886,7 +4849,6 @@ public function completeAgentDestinationRegistrationByState(string $oauthState, 
         throw new RuntimeException($verifyResult['message'] ?? 'Bank login could not be verified.');
     }
 
-    // ↓↓↓ THIS is the block you replace ↓↓↓
     $id = $this->insertAgentDestinationAccount(
         (int)$attempt['user_id'],
         $attempt['institution'],
@@ -4902,7 +4864,6 @@ public function completeAgentDestinationRegistrationByState(string $oauthState, 
         'active',
          null
     );
-    // ↑↑↑ replaces the old call (which had no 'active' / 'SYSTEM_OAUTH_VERIFICATION' args) ↑↑↑
 
     $stmt = $this->swapDB->prepare("
         UPDATE agent_registration_attempts SET status = 'completed', completed_at = NOW() WHERE id = :id
@@ -4958,7 +4919,6 @@ public function finalizeIdentityClaimSplit(
         throw new RuntimeException("Requested cash amount must be between 0 and {$fullAmount}.");
     }
 
-    // Get beneficiary phone
     $beneficiaryPhone = $identitySwap['otp_pin_sent_to'] ?? null;
     if (empty($beneficiaryPhone)) {
         $sourcePayload = json_decode($identitySwap['source_payload'], true);
@@ -4983,17 +4943,6 @@ public function finalizeIdentityClaimSplit(
         'beneficiary_phone' => $beneficiaryPhone,
     ]);
 
-    // ============================================================
-    // FIX: the remainder must be computed against the NET amount
-    // actually deposited into the agent's account, not the hold's
-    // gross amount. confirmAndFinalizeIdentitySwap() deducts a fee
-    // at deposit time - that money is gone, paid to settlement, and
-    // never sits in the agent's account. Using $fullAmount here
-    // overstated the remainder by exactly the fee, meaning the
-    // re-swapped balance promised the client more than the agent's
-    // account actually held to back it. Same fix as
-    // finalizeAggregatedIdentityClaim().
-    // ============================================================
     $netDeposited = (float)($depositResult['result']['amount'] ?? $fullAmount);
     $adjustedCashNow = min($cashNowAmount, $netDeposited);
     $remainder = round($netDeposited - $adjustedCashNow, 2);
@@ -5051,12 +5000,6 @@ public function finalizeIdentityClaimSplit(
 // USER SOURCE ACCOUNT REGISTRATION - mirrors agent destination registration
 // ============================================================================
 
-/**
- * Phase 1: verify the account exists (via the SOURCE-role verifyAsset,
- * not verifyAccount - a source needs to prove funds/existence, not
- * business-account-type eligibility like agent destinations do), then
- * trigger OTP/OAuth ownership proof.
- */
 public function initiateUserSourceRegistration(
     int $userId,
     string $institution,
@@ -5080,8 +5023,6 @@ public function initiateUserSourceRegistration(
         default => 'account_number'
     };
 
-    // Verify the account/asset actually exists at the bank before we
-    // bother with OTP/OAuth - same defensive pattern as agent registration.
     $verifyPayload = [
         'action' => 'VERIFY_ASSET',
         'reference' => 'USER_SRC_' . $userId . '_' . time(),
@@ -5109,7 +5050,6 @@ public function initiateUserSourceRegistration(
         throw new RuntimeException("Account not found or not verifiable at {$institution}: " . ($verifyResult['message'] ?? 'Unknown reason'));
     }
 
-    // Duplicate check
     $stmt = $this->swapDB->prepare("
         SELECT id, status FROM user_source_accounts
         WHERE user_id = :user_id AND institution = :institution AND identifier = :identifier
@@ -5120,7 +5060,6 @@ public function initiateUserSourceRegistration(
         throw new RuntimeException("You already have this account registered as a source (status: {$existing['status']}).");
     }
 
-    // Pending attempt check
     $stmt = $this->swapDB->prepare("
         SELECT id FROM user_source_registration_attempts
         WHERE user_id = :user_id AND institution = :institution AND identifier = :identifier
@@ -5153,8 +5092,6 @@ public function initiateUserSourceRegistration(
     $isOauth = $linkSucceeded && ($linkResult['auth_type'] ?? null) === 'oauth';
 
     if (!$linkSucceeded) {
-        // Bank has no OTP/OAuth support - register without ownership proof,
-        // flagged for manual review rather than silently trusting it.
         error_log("[SwapService] {$institution} has no OTP/OAuth support for sources - registering without ownership proof");
         $id = $this->insertUserSourceAccount(
             $userId, $institution, $assetType, $identifier, $identifierType,
@@ -5202,7 +5139,6 @@ public function initiateUserSourceRegistration(
         ];
     }
 
-    // OTP path - bank sends the code to the phone IT has on file
     $stmt = $this->swapDB->prepare("
         INSERT INTO user_source_registration_attempts (
             user_id, institution, asset_type, identifier, identifier_type,
@@ -5235,7 +5171,6 @@ public function initiateUserSourceRegistration(
     ];
 }
 
-/** Phase 2: complete OTP verification - creates the active source row */
 public function completeUserSourceRegistration(int $userId, int $attemptId, string $otp): array
 {
     $stmt = $this->swapDB->prepare("
@@ -5282,7 +5217,6 @@ public function completeUserSourceRegistration(int $userId, int $attemptId, stri
     return ['id' => $id, 'status' => 'active', 'message' => "Ownership verified. Account added as a source."];
 }
 
-/** OAuth completion by state token - mirrors agent OAuth completion */
 public function completeUserSourceRegistrationByState(string $oauthState, string $code): array
 {
     $stmt = $this->swapDB->prepare("
@@ -5331,16 +5265,13 @@ private function insertUserSourceAccount(
     string $identifierType, ?string $accountName, string $currency, bool $isHooked,
     ?string $accessToken, ?string $refreshToken, ?string $tokenExpiresAt, string $status
 ): int {
-    // Validate asset type for users
     $userEligibleAssetTypes = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
     if (!in_array($assetType, $userEligibleAssetTypes, true)) {
         throw new RuntimeException("Invalid asset type for user source: {$assetType}. Users can only add Account, Wallet, or Card.");
     }
     
-    // Generate unique source reference
     $sourceReference = 'SRC_' . $userId . '_' . bin2hex(random_bytes(6));
     
-    // Encrypt tokens if provided
     $encryptedAccess = $accessToken ? $this->encryptSourceSecret($accessToken) : null;
     $encryptedRefresh = $refreshToken ? $this->encryptSourceSecret($refreshToken) : null;
     
@@ -5380,7 +5311,6 @@ private function insertUserSourceAccount(
     return $row ? (int)$row['id'] : 0;
 }
 
-/** Cancel a pending/rejected source registration - mirrors cancelAgentDestination */
 public function cancelUserSourceAccount(int $userId, int $sourceId): array
 {
     $stmt = $this->swapDB->prepare("
@@ -5447,7 +5377,7 @@ private function insertAgentDestinationAccount(
         ':refresh_token' => $refreshToken,
         ':token_expires_at' => $tokenExpiresAt,
         ':status' => $status,
-        ':status2' => $status,   // same value, separate placeholder
+        ':status2' => $status,
         ':confirmed_by' => $confirmedBy,
     ]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -5475,10 +5405,7 @@ public function proposeAgentDestinationAccount(
 }
  
 /**
- * Returns this user's APPROVED (active) agent destination accounts,
- * for pre-filling the destination fields when they finalize an
- * identity swap via deposit - so an approved agent never has to
- * manually re-type their own account each time.
+ * Returns this user's APPROVED (active) agent destination accounts
  */
 public function getApprovedAgentDestinations(int $userId): array
 {
@@ -5493,8 +5420,7 @@ public function getApprovedAgentDestinations(int $userId): array
 }
  
 /**
- * Whether this user has at least one approved agent destination -
- * cheap check for "should the dashboard show them as an agent at all".
+ * Whether this user has at least one approved agent destination
  */
 public function isApprovedAgent(int $userId): bool
 {
@@ -6346,10 +6272,6 @@ public function isApprovedAgent(int $userId): bool
     $identityType = strtolower($payload['identity_type']);
     $identityValue = $payload['identity_value'];
  
-    // Decide claim path: is this identity already a VERIFIED owner
-    // in our system? If so, they'll use their personal account PIN
-    // at claim time. If not, this is a first-time/unregistered
-    // recipient and needs a one-time OTP PIN.
     $owner = $this->findVerifiedIdentityOwner($identityType, $identityValue);
     $notificationPhone = $payload['notification_phone'] ?? $payload['beneficiary_phone'] ?? null;
 
@@ -6380,16 +6302,9 @@ public function isApprovedAgent(int $userId): bool
             $this->trackIdentityOtpSmsAttempt($swapRef, $notificationPhone, 'skipped_no_provider');
         }
     } else {
-        // No registered owner AND no phone to send an OTP to.
-        // This is the hard case flagged in review: an agent's word
-        // alone must never be sufficient to release funds here.
-        // Dual confirmation (two independent agents, or one agent +
-        // a VouchMorph ops reviewer) is required, but that reviewer
-        // workflow isn't built yet — so we deliberately block single-
-        // actor finalization rather than silently allowing it.
         $claimType = 'dual_confirmation';
         $requiresDual = true;
-        error_log("[SwapService] WARNING: Identity {$identityType}={$identityValue} has no registered owner and no phone - flagged for dual confirmation (not yet implemented; finalization will be blocked until built)");
+        error_log("[SwapService] WARNING: Identity {$identityType}={$identityValue} has no registered owner and no phone - flagged for dual confirmation");
     }
  
     $sql = "
@@ -6448,11 +6363,7 @@ public function isApprovedAgent(int $userId): bool
 
 
 /**
- * Track an identity-swap OTP PIN send attempt in message_outbox, mirroring
- * populateMessageOutbox()'s pattern for cashout codes. This is the only
- * place that records whether an identity-swap PIN SMS was ever queued -
- * without it, there's no way to distinguish "PIN generated but SMS never
- * attempted" from "SMS attempted but provider rejected it" after the fact.
+ * Track an identity-swap OTP PIN send attempt in message_outbox
  */
 private function trackIdentityOtpSmsAttempt(
     string $swapRef,
@@ -6460,7 +6371,6 @@ private function trackIdentityOtpSmsAttempt(
     string $status,
     ?string $providerError = null
 ): void {
-    // Generate a unique message_id if the table requires it
     $messageId = 'SMS_' . uniqid() . '_' . substr($swapRef, 0, 10);
     
     $sql = "
@@ -6501,8 +6411,6 @@ private function trackIdentityOtpSmsAttempt(
 
         error_log("[SwapService] Identity OTP SMS attempt tracked: swap_ref={$swapRef}, phone={$phone}, status={$status}, message_id={$messageId}");
     } catch (PDOException $e) {
-        // Non-fatal by design, same reasoning as the rest of populateTrackingTables():
-        // the identity swap itself must not fail just because tracking failed.
         error_log("[SwapService] Failed to track identity OTP SMS attempt: " . $e->getMessage());
     }
 }
@@ -6582,11 +6490,6 @@ private function generateOtpPin(): string
     return str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
 }
  
-/**
- * Look up whether an identity_type/identity_value pair belongs to
- * a registered user with a VERIFIED (KYC-approved) identity record.
- * Returns the owning user's id if so, null otherwise.
- */
 private function findVerifiedIdentityOwner(string $identityType, string $identityValue): ?array
 {
     try {
@@ -6605,15 +6508,18 @@ private function findVerifiedIdentityOwner(string $identityType, string $identit
 }
  
 /**
- * Verifies the PIN supplied at claim time against whichever claim
- * path was decided at initiation (account_pin / otp_pin /
- * dual_confirmation), with attempt-based lockout on both paths.
- * Throws on any failure - callers never get a silent pass.
+ * Verifies the PIN supplied at claim time.
+ * 
+ * FIX: This now marks the IDENTITY as authorized (the "green light")
+ * instead of clearing the PIN hash. This allows one PIN verification
+ * to authorize ALL holds for the identity.
  */
 private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin): void
 {
     $claimType = $identitySwap['claim_type'] ?? null;
     $holdId = (int)$identitySwap['hold_id'];
+    $identityType = $identitySwap['identity_type'];
+    $identityValue = $identitySwap['identity_value'];
  
     if ($suppliedPin === '') {
         throw new RuntimeException("A PIN is required to finalize this claim.");
@@ -6636,21 +6542,35 @@ private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin
             throw new RuntimeException("Incorrect claim PIN.");
         }
  
-        // Single-use: clear it so it can't be replayed.
+        // ============================================================
+        // FIX: DON'T clear the PIN hash immediately!
+        // The PIN is the "green light" - it authorizes the identity
+        // Mark the identity as authorized so ALL holds can be finalized
+        // The PIN remains valid for 1 hour (authorization expiry)
+        // ============================================================
+        
+        // Record that this PIN was verified
         $stmt = $this->swapDB->prepare("
             UPDATE identity_swap_holds
-            SET otp_pin_hash = NULL, otp_pin_attempts = 0
+            SET 
+                otp_pin_verified_at = NOW(),
+                otp_pin_attempts = 0,
+                authorized_at = NOW(),
+                authorized_by = 'pin_verification',
+                authorization_type = 'otp_pin_verified'
             WHERE hold_id = :id
         ");
         $stmt->execute([':id' => $holdId]);
+        
+        // Mark ALL holds for this identity as authorized (the green light)
+        $this->markIdentityHoldsAuthorized($identityType, $identityValue, 'pin_verification');
+ 
         return;
     }
  
     if ($claimType === 'account_pin') {
         $owner = $this->findVerifiedIdentityOwner($identitySwap['identity_type'], $identitySwap['identity_value']);
         if (!$owner) {
-            // Identity was verified at initiation time but no longer is
-            // (or was removed) - fail closed, don't fall back to OTP.
             throw new RuntimeException("This identity's verification status changed - claim cannot proceed. Contact support.");
         }
  
@@ -6672,9 +6592,11 @@ private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin
             throw new RuntimeException("Incorrect transaction PIN.");
         }
  
-        // Reset attempt counter on success.
         $stmt = $this->swapDB->prepare("UPDATE users SET transaction_pin_attempts = 0 WHERE user_id = :id");
         $stmt->execute([':id' => $owner['user_id']]);
+        
+        // For account PIN, also mark identity as authorized
+        $this->markIdentityHoldsAuthorized($identityType, $identityValue, 'account_pin_verification');
         return;
     }
  
@@ -6725,12 +6647,6 @@ private function recordFailedAccountPinAttempt(int $userId, int $currentAttempts
     }
 }
  
-/**
- * Sets/replaces a user's personal transaction PIN. Called from the
- * new set_pin.php endpoint. Requires the user to already be
- * authenticated (session) - this does not verify identity itself,
- * the login session already did that.
- */
 public function setUserTransactionPin(int $userId, string $pin): void
 {
     if (!preg_match('/^\d{4,6}$/', $pin)) {
@@ -6746,11 +6662,6 @@ public function setUserTransactionPin(int $userId, string $pin): void
     $stmt->execute([':hash' => $hash, ':id' => $userId]);
 }
  
-/**
- * Returns pending identity swaps for every VERIFIED identity a given
- * user owns - used by the new pending_claims.php endpoint to power
- * the "money waiting for you" banner in user_dashboard.php.
- */
 public function getPendingClaimsForUser(int $userId): array
 {
     $stmt = $this->swapDB->prepare("
@@ -6942,11 +6853,7 @@ private function storeCashoutAuthorization(
     // SUPPORTING METHODS FOR CONFIRM CASHOUT
     // ============================================================================
 
-    /**
- * Find authorization by swap reference, auth_id, or voucher number
- * Source of truth for amount/institution - NOT from webhook payload
- */
-private function findAuthorization(string $swapReference = null, int $authId = null, string $voucherNumber = null): ?array
+    private function findAuthorization(string $swapReference = null, int $authId = null, string $voucherNumber = null): ?array
 {
     $sql = "SELECT * FROM cashout_authorizations WHERE 1=1";
     $params = [];
@@ -6995,15 +6902,8 @@ private function findAuthorization(string $swapReference = null, int $authId = n
 
     
 /**
- * ============================================================
- * REPLACES: beginAtomicSwap()
- * ============================================================
- * Hardened so $this->inAtomicSwap is only set to true AFTER the PDO
- * transaction has actually started successfully. Previously the flag
- * was set first, so if swapDB->beginTransaction() threw (e.g. because
- * a transaction was already active - the exact bug this patch fixes
- * upstream), the flag was left permanently true with nothing to reset
- * it, corrupting every subsequent atomic-swap call in the request.
+ * beginAtomicSwap() - Hardened so $this->inAtomicSwap is only set to true AFTER the PDO
+ * transaction has actually started successfully.
  */
 private function beginAtomicSwap(string $reference): void
 {
@@ -7013,8 +6913,6 @@ private function beginAtomicSwap(string $reference): void
  
     error_log("[DEBUG][agg_claim] beginAtomicSwap reference={$reference} pdo_in_transaction=" . ($this->swapDB->inTransaction() ? 'true' : 'false'));
  
-    // Start the real transaction FIRST. Only flip service-level state
-    // once we know PDO actually accepted it.
     $this->swapDB->beginTransaction();
  
     $this->currentSwapRef = $reference;
@@ -7041,7 +6939,6 @@ private function beginAtomicSwap(string $reference): void
         $this->logger->info("Atomic swap committed", $result);
         $this->resetAtomicState();
         
-        // Process pending remainder AFTER the transaction is committed
         $this->processPendingRemainder();
         
         return $result;
@@ -7078,13 +6975,10 @@ private function beginAtomicSwap(string $reference): void
             ]);
 
             error_log("[SwapService] Remainder reswap completed: " . json_encode($result));
-            
-            // Clear pending remainder
             $this->pendingRemainder = [];
             
         } catch (Exception $e) {
             error_log("[SwapService] ERROR processing remainder for {$remainder['swap_reference']}: " . $e->getMessage());
-            // Clear it so we don't retry infinitely
             $this->pendingRemainder = [];
         }
     }
