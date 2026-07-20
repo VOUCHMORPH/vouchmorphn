@@ -4396,19 +4396,23 @@ private function insertAgentDestinationAccount(
     bool $isHooked,
     ?string $accessToken,
     ?string $refreshToken,
-    ?string $tokenExpiresAt
+    ?string $tokenExpiresAt,
+    string $status = 'pending_confirmation',
+    ?string $confirmedBy = null   // NEW
 ): int {
     $sql = "
         INSERT INTO agent_destination_accounts (
             user_id, institution, asset_type, identifier, identifier_type,
             account_name, account_type, account_type_verified,
             is_hooked, access_token, refresh_token, token_expires_at,
-            status, proposed_by, proposed_at
+            status, proposed_by, proposed_at,
+            confirmed_by, confirmed_at
         ) VALUES (
             :user_id, :institution, :asset_type, :identifier, :identifier_type,
             :account_name, :account_type, true,
             :is_hooked, :access_token, :refresh_token, :token_expires_at,
-            'pending_confirmation', :user_id, NOW()
+            :status, :user_id, NOW(),
+            :confirmed_by, CASE WHEN :status = 'active' THEN NOW() ELSE NULL END
         ) RETURNING id
     ";
     $stmt = $this->swapDB->prepare($sql);
@@ -4424,6 +4428,8 @@ private function insertAgentDestinationAccount(
         ':access_token' => $accessToken,
         ':refresh_token' => $refreshToken,
         ':token_expires_at' => $tokenExpiresAt,
+        ':status' => $status,
+        ':confirmed_by' => $confirmedBy,   // NEW
     ]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     return $row ? (int)$row['id'] : 0;
