@@ -3082,53 +3082,52 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
 }
 
 /**
- * Everything that happens AFTER the claim PIN is verified: re-verify
- * source funds, move money to the chosen destination, mark the hold
- * completed. Deliberately takes the already-fetched $identitySwap row
- * rather than re-querying by reference, so the aggregated-claim loop
- * (finalizeAggregatedIdentityClaim) can call this once per underlying
- * hold without re-doing the PIN check each time.
- *
- * FIX: tracks whether THIS call opened the atomic transaction
- * ($openedHere). Only the opener commits/rolls back - a caller that's
- * already inside an outer atomic swap (via executeAtomicSwap) is left
- * alone, since that dispatcher owns the commit. Previously this method
- * always checked !$this->inAtomicSwap at both entry and in the catch
- * block separately, which meant a standalone call (like this one, or
- * the multi-destination identity path) opened a transaction it then
- * never committed - it just returned successfully with the DB
- * transaction left open, so any subsequent executeAtomicSwap() call
- * in the same request (e.g. a remainder re-swap) hit
- * "Already in atomic swap" and silently failed.
+ * ============================================================
+ * REPLACES: finalizeIdentityHoldNoPin()
+ * ============================================================
+ * Same logic as before, but the beginAtomicSwap() call is now INSIDE
+ * the try block (previously it was outside, so a failure there could
+ * never be caught/rolled back by this method - it just propagated
+ * raw to the caller with $this->inAtomicSwap already corrupted).
+ * Also adds debug logging around the per-hold transaction boundary.
  */
 private function finalizeIdentityHoldNoPin(array $identitySwap, array $payload): array
 {
     $swapRef = $identitySwap['swap_reference'];
+    $holdId = $identitySwap['hold_id'];
     $confirmedByType = $payload['confirmed_by_type'] ?? 'agent';
     $confirmedById = $payload['confirmed_by_id'] ?? null;
-
+ 
     $destinationType = strtoupper($payload['destination_type'] ?? 'CASHOUT');
     if (!in_array($destinationType, ['CASHOUT', 'DEPOSIT'])) {
         throw new RuntimeException("destination_type must be 'CASHOUT' or 'DEPOSIT'");
     }
-
+ 
     $sourcePayload = json_decode($identitySwap['source_payload'], true);
     $sourceInstitution = $identitySwap['source_institution'];
-
+ 
     $sourcePayload['from_institution'] = $sourceInstitution;
     $sourcePayload['source_institution'] = $sourceInstitution;
     $sourcePayload['amount'] = (float)$identitySwap['amount'];
     $sourcePayload['currency'] = $identitySwap['currency'] ?? 'BWP';
     $sourcePayload['asset_type'] = $identitySwap['source_asset_type'] ?? 'ACCOUNT';
-
+ 
     $openedHere = !$this->inAtomicSwap;
-    if ($openedHere) {
-        $this->beginAtomicSwap($swapRef);
-    } else {
-        $this->currentSwapRef = $swapRef;
-    }
-
+ 
+    error_log("[DEBUG][agg_claim] finalizeIdentityHoldNoPin hold_id={$holdId} swap_reference={$swapRef} openedHere=" . ($openedHere ? 'true' : 'false') . " (inAtomicSwap was " . ($this->inAtomicSwap ? 'true' : 'false') . " on entry)");
+ 
     try {
+        // FIX: beginAtomicSwap() call moved INSIDE the try block. Previously
+        // this sat outside, so if it threw (e.g. nested-transaction
+        // PDOException), the exception skipped this catch entirely and
+        // propagated with $this->inAtomicSwap already corrupted to true,
+        // with no rollback and no state reset.
+        if ($openedHere) {
+            $this->beginAtomicSwap($swapRef);
+        } else {
+            $this->currentSwapRef = $swapRef;
+        }
+ 
         // MOVED INSIDE the transaction: if anything below throws, this
         // write rolls back too, and the hold correctly reverts to
         // 'pending' — retryable — instead of getting permanently
@@ -3140,34 +3139,37 @@ private function finalizeIdentityHoldNoPin(array $identitySwap, array $payload):
             'confirmation_method' => $payload['confirmation_method'] ?? ($confirmedByType === 'user' ? 'dashboard' : 'agent_portal'),
             'destination_type' => $destinationType
         ]);
-
+ 
         error_log("[SwapService] Re-verifying asset availability for institution: {$sourceInstitution}");
         $verificationResult = $this->verifyAssetSigned($sourcePayload, $sourceInstitution);
         if (!($verificationResult['verified'] ?? false)) {
             throw new RuntimeException("Source funds no longer available. Swap cancelled.");
         }
-
+ 
         $this->currentHoldReference = $identitySwap['hold_reference'];
         $this->currentHoldId = $identitySwap['hold_id'];
-
+ 
         if ($destinationType === 'CASHOUT') {
             $result = $this->completeIdentitySwapAsCashout($sourcePayload, $identitySwap, $payload);
         } else {
             $result = $this->completeIdentitySwapAsDeposit($sourcePayload, $identitySwap, $payload);
         }
-
+ 
         $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'completed', [
             'final_destination_type' => $destinationType,
             'final_destination_payload' => $payload['destination_details'] ?? [],
             'final_transaction_reference' => $result['transaction_reference'] ?? null
         ]);
-
+ 
         $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
-
+ 
         if ($openedHere) {
+            error_log("[DEBUG][agg_claim] finalizeIdentityHoldNoPin hold_id={$holdId} committing (openedHere=true)");
             $this->commitAtomicSwap();
+        } else {
+            error_log("[DEBUG][agg_claim] finalizeIdentityHoldNoPin hold_id={$holdId} NOT committing here - outer caller owns the transaction (openedHere=false)");
         }
-
+ 
         return [
             'status' => 'completed',
             'swap_reference' => $swapRef,
@@ -3179,15 +3181,17 @@ private function finalizeIdentityHoldNoPin(array $identitySwap, array $payload):
             'message' => "Identity swap completed via {$destinationType}",
             'result' => $result
         ];
-
+ 
     } catch (\Throwable $e) {
         error_log("[SwapService] finalizeIdentityHoldNoPin FAILED (" . get_class($e) . "): " . $e->getMessage());
+        error_log("[DEBUG][agg_claim] finalizeIdentityHoldNoPin hold_id={$holdId} EXCEPTION openedHere={$openedHere} - " . ($openedHere ? 'rolling back (this call owns the transaction)' : 'NOT rolling back here - outer caller owns it'));
         if ($openedHere) {
             $this->rollbackAtomicSwap($e->getMessage());
         }
         throw $e;
     }
 }
+
 
     private function completeIdentitySwapAsDeposit(array $sourcePayload, array $identitySwap, array $confirmationPayload): array
     {
