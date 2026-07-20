@@ -433,6 +433,16 @@ if (!empty($commConfig)) {
         return $adapter->verifySourceLink($params);
     }
 
+public function getUserSourceAccounts(int $userId): array
+{
+    $stmt = $this->swapDB->prepare("
+        SELECT id, institution, asset_type, identifier, identifier_type, account_name, currency, status, confirmed_at, last_used_at
+        FROM user_source_accounts WHERE user_id = :user_id AND deleted_at IS NULL ORDER BY institution
+    ");
+    $stmt->execute([':user_id' => $userId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+    
     public function getHookedSources(int $userId): array
 {
     $sql = "SELECT * FROM user_source_accounts WHERE user_id = :user_id AND status = 'active' AND deleted_at IS NULL";
