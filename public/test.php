@@ -13,11 +13,11 @@ use Core\Config\LoadCountry;
 use Domain\Services\SwapService;
 
 // ============================================================
-// CONFIGURATION - CHANGE THESE TO MATCH YOUR TEST
+// CONFIGURATION - UPDATED WITH CORRECT PIN
 // ============================================================
 $identityType = 'national_id';
-$identityValue = 'ID123456789';  // CHANGE THIS to your test identity
-$testPin = '641904';  // CHANGE THIS to the actual PIN
+$identityValue = 'ID123456789';
+$testPin = '963633';  // CORRECT PIN FROM SMS
 $destinationAccountId = 7;  // Agent's destination account ID
 $agentUserId = 12;  // Agent's user ID
 $cashNowAmount = 200.00;  // Amount to give client in cash
@@ -30,7 +30,7 @@ $config = LoadCountry::getConfig();
 $swapService = new SwapService($db, $config, 'Botswana');
 
 echo "\n" . str_repeat('=', 80) . "\n";
-echo "  AGGRESSIVE TEST: FINALIZE ALL HOLDS\n";
+echo "  AGGRESSIVE TEST: FINALIZE ALL HOLDS (WITH CORRECT PIN)\n";
 echo str_repeat('=', 80) . "\n";
 
 // ============================================================
@@ -69,9 +69,9 @@ if (empty($pendingHolds)) {
 }
 
 // ============================================================
-// STEP 2: CHECK IF IDENTITY IS ALREADY AUTHORIZED (DIRECT SQL)
+// STEP 2: CHECK IF IDENTITY IS ALREADY AUTHORIZED
 // ============================================================
-echo "\n🔑 STEP 2: CHECKING AUTHORIZATION STATUS (via SQL)\n";
+echo "\n🔑 STEP 2: CHECKING AUTHORIZATION STATUS\n";
 echo str_repeat('-', 40) . "\n";
 
 $stmt = $db->prepare("
@@ -89,12 +89,12 @@ $isAuthorized = (bool)$stmt->fetchColumn();
 echo "Identity authorized (green light): " . ($isAuthorized ? 'YES ✅' : 'NO ❌') . "\n";
 
 // ============================================================
-// STEP 3: GET THE LATEST PIN
+// STEP 3: VERIFY THE PIN WORKS
 // ============================================================
-echo "\n📱 STEP 3: CHECKING PIN\n";
+echo "\n🔐 STEP 3: VERIFYING PIN\n";
 echo str_repeat('-', 40) . "\n";
 
-// Find a hold with a PIN hash
+// Find a hold with a PIN hash and test the PIN
 $holdWithPin = null;
 foreach ($pendingHolds as $hold) {
     if (!empty($hold['otp_pin_hash'])) {
@@ -104,26 +104,14 @@ foreach ($pendingHolds as $hold) {
 }
 
 if ($holdWithPin) {
-    echo "Found hold with PIN: Hold {$holdWithPin['hold_id']}\n";
-    echo "PIN sent to: {$holdWithPin['otp_pin_sent_to']}\n";
-    echo "Using test PIN: {$testPin}\n";
-} else {
-    echo "⚠️ No hold with PIN found. You may need to create a new hold first.\n";
-}
-
-// ============================================================
-// STEP 3.5: VERIFY THE PIN WORKS FIRST
-// ============================================================
-echo "\n🔐 STEP 3.5: VERIFYING PIN AGAINST A HOLD\n";
-echo str_repeat('-', 40) . "\n";
-
-if ($holdWithPin) {
     $hash = $holdWithPin['otp_pin_hash'];
     $pinMatches = password_verify($testPin, $hash);
-    echo "PIN verification test: " . ($pinMatches ? '✅ SUCCESS - PIN matches!' : '❌ FAILED - PIN does NOT match!') . "\n";
+    echo "PIN verification test against hold {$holdWithPin['hold_id']}: " . ($pinMatches ? '✅ SUCCESS - PIN matches!' : '❌ FAILED - PIN does NOT match!') . "\n";
+    
     if (!$pinMatches) {
-        echo "   The test PIN '{$testPin}' does NOT match the stored hash for hold {$holdWithPin['hold_id']}.\n";
-        echo "   You need to use the correct PIN. Check the SMS logs.\n";
+        echo "   The test PIN '{$testPin}' does NOT match the stored hash.\n";
+        echo "   Please check the correct PIN from SMS logs.\n";
+        exit(1);
     }
 } else {
     echo "⚠️ No hold with PIN to test against.\n";
@@ -135,30 +123,30 @@ if ($holdWithPin) {
 echo "\n🚀 STEP 4: FINALIZING ALL HOLDS\n";
 echo str_repeat('-', 40) . "\n";
 
-if (!$pinMatches && $holdWithPin) {
-    echo "⚠️ SKIPPING finalization because PIN doesn't match.\n";
-    echo "   Please update \$testPin to the correct PIN from the SMS.\n";
-} else {
-    try {
-        // This is the critical call - it should process ALL holds
-        $result = $swapService->finalizeAggregatedIdentityClaim(
-            $identityType,
-            $identityValue,
-            $testPin,
-            'agent',
-            $agentUserId,
-            $destinationAccountId,
-            $cashNowAmount,
-            $agentUserId
-        );
-        
-        echo "✅ SUCCESS! Result:\n";
-        echo json_encode($result, JSON_PRETTY_PRINT) . "\n";
-        
-    } catch (\Throwable $e) {
-        echo "❌ FAILED: " . $e->getMessage() . "\n";
-        echo "Trace: " . $e->getTraceAsString() . "\n";
-    }
+try {
+    $startTime = microtime(true);
+    
+    $result = $swapService->finalizeAggregatedIdentityClaim(
+        $identityType,
+        $identityValue,
+        $testPin,
+        'agent',
+        $agentUserId,
+        $destinationAccountId,
+        $cashNowAmount,
+        $agentUserId
+    );
+    
+    $endTime = microtime(true);
+    $duration = round($endTime - $startTime, 2);
+    
+    echo "✅ SUCCESS in {$duration} seconds!\n";
+    echo "Result:\n";
+    echo json_encode($result, JSON_PRETTY_PRINT) . "\n";
+    
+} catch (\Throwable $e) {
+    echo "❌ FAILED: " . $e->getMessage() . "\n";
+    echo "Trace: " . $e->getTraceAsString() . "\n";
 }
 
 // ============================================================
@@ -187,7 +175,8 @@ foreach ($allHolds as $hold) {
     $status = $hold['status'];
     $hasPinNow = !empty($hold['otp_pin_hash']) ? 'has PIN' : 'PIN cleared';
     $authAt = !empty($hold['authorized_at']) ? "auth: {$hold['authorized_at']}" : 'not auth';
-    echo "  - Hold {$hold['hold_id']}: {$hold['amount']} BWP, status: {$status}, {$hasPinNow}, {$authAt}\n";
+    $completedAt = !empty($hold['completed_at']) ? "completed: {$hold['completed_at']}" : '';
+    echo "  - Hold {$hold['hold_id']}: {$hold['amount']} BWP, status: {$status}, {$hasPinNow}, {$authAt} {$completedAt}\n";
     if ($status === 'completed') $completedCount++;
     elseif ($status === 'pending') $pendingCount++;
     elseif ($status === 'confirmed') $confirmedCount++;
@@ -195,74 +184,69 @@ foreach ($allHolds as $hold) {
 }
 echo "Completed: {$completedCount}, Confirmed: {$confirmedCount}, Pending: {$pendingCount}, Failed: {$failedCount}\n";
 
-// Check deposit transactions
+// ============================================================
+// STEP 6: CHECK THE 6 PENDING HOLDS SPECIFICALLY
+// ============================================================
+echo "\n📊 STEP 6: SPECIFIC CHECK OF THE 6 PENDING HOLDS\n";
+echo str_repeat('-', 40) . "\n";
+
+$pendingIds = [400, 401, 415, 422, 423, 424];
+$placeholders = implode(',', array_fill(0, count($pendingIds), '?'));
+$stmt = $db->prepare("
+    SELECT hold_id, amount, status, otp_pin_hash, authorized_at, completed_at
+    FROM identity_swap_holds 
+    WHERE hold_id IN ({$placeholders})
+");
+$stmt->execute($pendingIds);
+$specificHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+foreach ($specificHolds as $hold) {
+    echo "Hold {$hold['hold_id']}: {$hold['amount']} BWP, status: {$hold['status']}\n";
+    echo "  - has PIN hash: " . (!empty($hold['otp_pin_hash']) ? 'YES' : 'NO') . "\n";
+    echo "  - authorized_at: " . ($hold['authorized_at'] ?? 'NULL') . "\n";
+    echo "  - completed_at: " . ($hold['completed_at'] ?? 'NULL') . "\n";
+}
+
+// ============================================================
+// STEP 7: CHECK DEPOSIT TRANSACTIONS
+// ============================================================
+echo "\n📊 STEP 7: RECENT DEPOSIT TRANSACTIONS\n";
+echo str_repeat('-', 40) . "\n";
+
 $stmt = $db->prepare("
     SELECT transaction_reference, amount, currency, status, created_at
     FROM deposit_transactions 
     WHERE transaction_reference LIKE 'AGG_REMAIN_%' 
        OR transaction_reference LIKE 'SWAP_REMAINDER_%'
-       OR transaction_reference LIKE 'SWAP_%'
     ORDER BY created_at DESC
-    LIMIT 15
+    LIMIT 10
 ");
 $stmt->execute();
 $deposits = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-echo "\nRecent deposit transactions:\n";
 foreach ($deposits as $dep) {
     echo "  - {$dep['transaction_reference']}: {$dep['amount']} {$dep['currency']} - {$dep['status']} at {$dep['created_at']}\n";
 }
 
 // ============================================================
-// STEP 6: WHAT WENT WRONG?
+// STEP 8: DIAGNOSTIC ANALYSIS
 // ============================================================
-echo "\n🔍 STEP 6: DIAGNOSTIC ANALYSIS\n";
+echo "\n🔍 STEP 8: DIAGNOSTIC ANALYSIS\n";
 echo str_repeat('-', 40) . "\n";
 
 if ($completedCount === 0 && $pendingCount > 0 && $confirmedCount === 0) {
-    echo "❌ CRITICAL: No holds were completed or confirmed!\n";
-    echo "   This means finalizeAggregatedIdentityClaim() is not processing holds.\n";
-    echo "   Possible causes:\n";
-    echo "   1. The PIN verification failed (check STEP 3.5)\n";
-    echo "   2. The identity is not properly authorized\n";
-    echo "   3. The destination account is invalid\n";
+    echo "❌ CRITICAL: No holds were completed!\n";
+    echo "   Check the error message above.\n";
 } elseif ($confirmedCount > 0 && $completedCount === 0) {
     echo "⚠️ HOLDS STUCK AT 'confirmed': {$confirmedCount} hold(s)\n";
     echo "   This means the PIN passed but the transaction failed.\n";
-    echo "   Check:\n";
-    echo "   1. The source account has sufficient balance\n";
-    echo "   2. The destination account is valid and active\n";
-    echo "   3. The bank adapter is working properly\n";
 } elseif ($completedCount > 0 && $pendingCount > 0) {
-    echo "⚠️ PARTIAL: Only {$completedCount} of " . ($completedCount + $pendingCount + $confirmedCount) . " holds completed.\n";
+    echo "⚠️ PARTIAL: Only {$completedCount} holds completed. {$pendingCount} still pending.\n";
     echo "   This means the loop ran but some holds failed.\n";
-    echo "   Check the failed/confirmed holds for errors.\n";
+    echo "   Check STEP 6 for details on which holds are still pending.\n";
 } elseif ($completedCount === count($allHolds)) {
     echo "✅ SUCCESS: All holds were completed!\n";
     echo "   The aggregated claim is working correctly.\n";
-}
-
-// ============================================================
-// STEP 7: SPECIFIC HOLD ANALYSIS
-// ============================================================
-echo "\n🔍 STEP 7: DETAILED HOLD ANALYSIS\n";
-echo str_repeat('-', 40) . "\n";
-
-foreach ($allHolds as $hold) {
-    if ($hold['status'] === 'confirmed') {
-        echo "⚠️ Hold {$hold['hold_id']} is stuck at 'confirmed'.\n";
-        echo "   This usually means the transaction started but failed mid-way.\n";
-        echo "   Check the source balance and destination account.\n";
-    }
-    if ($hold['status'] === 'pending' && empty($hold['otp_pin_hash'])) {
-        echo "ℹ️ Hold {$hold['hold_id']} is pending with no PIN hash.\n";
-        echo "   This means the PIN was cleared but the hold wasn't completed.\n";
-        echo "   The PIN was probably verified but the finalization failed.\n";
-    }
-    if ($hold['status'] === 'pending' && !empty($hold['otp_pin_hash'])) {
-        echo "ℹ️ Hold {$hold['hold_id']} is pending with PIN still intact.\n";
-        echo "   This hold was never processed.\n";
-    }
 }
 
 echo "\nTest completed at " . date('Y-m-d H:i:s') . "\n";
