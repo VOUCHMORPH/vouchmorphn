@@ -6506,8 +6506,7 @@ private function findVerifiedIdentityOwner(string $identityType, string $identit
         return null;
     }
 }
- 
-/**
+ /**
  * Verifies the PIN supplied at claim time.
  * 
  * FIX: This now checks ALL pending holds for the identity to find a matching PIN.
@@ -6534,10 +6533,7 @@ private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin
     }
  
     if ($claimType === 'otp_pin') {
-        // ============================================================
         // Check ALL pending holds for this identity to find a matching PIN
-        // ============================================================
-        
         $stmt = $this->swapDB->prepare("
             SELECT hold_id, otp_pin_hash, otp_pin_locked_until, otp_pin_attempts
             FROM identity_swap_holds 
@@ -6585,19 +6581,13 @@ private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin
             throw new RuntimeException("Incorrect claim PIN.");
         }
  
-        // ============================================================
-        // FIX: CLEAR the PIN hash - SINGLE USE!
-        // The PIN is the "green light" - it authorizes the identity
-        // But the PIN itself should NOT be reusable
-        // ============================================================
-        
-        // Clear the PIN hash on the matched hold (single-use)
+        // Clear the PIN hash on the matched hold - SINGLE USE
         $stmt = $this->swapDB->prepare("
             UPDATE identity_swap_holds
             SET 
                 otp_pin_verified_at = NOW(),
                 otp_pin_attempts = 0,
-                otp_pin_hash = NULL  // <-- CLEAR THE PIN! SINGLE USE!
+                otp_pin_hash = NULL
             WHERE hold_id = :id
         ");
         $stmt->execute([':id' => $matchedHold['hold_id']]);
