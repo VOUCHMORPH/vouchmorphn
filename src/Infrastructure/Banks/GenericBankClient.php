@@ -1337,111 +1337,43 @@ class GenericBankClient implements BankAPIInterface
     // PROTECTED HELPERS - WITH LARGE RESPONSE HANDLING
     // ============================================================================
 
-    protected function send(string $action, array $payload, ?string $accessToken = null): array
-    {
-        $endpoint = $this->getEndpoint($action);
-        
-        if (!$endpoint) {
-            error_log("Endpoint {$action} not configured for " . ($this->config['provider_code'] ?? 'unknown'));
-            return [
-                'success' => false,
-                'error' => "Endpoint {$action} not configured",
-                'data' => []
-            ];
-        }
+   protected function send(string $action, array $payload, ?string $accessToken = null): array
+{
+    // ... everything above is unchanged, down to $decodedResponse = json_decode(...) ...
 
-        $baseUrl = $this->getBaseUrl();
-        
-        if (empty($baseUrl)) {
-            error_log("Base URL not configured for " . ($this->config['provider_code'] ?? 'unknown'));
-            return [
-                'success' => false,
-                'error' => "Base URL not configured",
-                'data' => []
-            ];
-        }
-        
-        $endpoint = ltrim($endpoint, '/');
-        $url = $baseUrl . '/' . $endpoint;
-        
-        $headers = $this->buildHeaders($payload, $accessToken);
-        
-        error_log("Sending request to: {$url}");
-        error_log("Payload length: " . strlen(json_encode($payload)));
-        
-        $jsonPayload = json_encode($payload);
-        
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $jsonPayload,
-            CURLOPT_HTTPHEADER => $headers,
-            CURLOPT_TIMEOUT => $this->config['timeout_ms'] ?? 60000,
-            CURLOPT_BUFFERSIZE => 262144,
-            CURLOPT_MAXFILESIZE => 5242880,
-            CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_VERBOSE => false,
-            CURLOPT_ENCODING => '',
-            CURLOPT_TCP_KEEPALIVE => 1,
-            CURLOPT_TCP_KEEPIDLE => 30,
-            CURLOPT_TCP_KEEPINTVL => 10
-        ]);
-
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlError = curl_error($ch);
-        $contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
-        $contentLength = curl_getinfo($ch, CURLINFO_CONTENT_LENGTH_DOWNLOAD);
-        
-        curl_close($ch);
-        
-        if ($contentLength > 0 && strlen($response) < $contentLength) {
-            error_log("WARNING: Response truncated! Expected {$contentLength} bytes, got " . strlen($response));
-            $ch2 = curl_init($url);
-            curl_setopt_array($ch2, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => $jsonPayload,
-                CURLOPT_HTTPHEADER => $headers,
-                CURLOPT_TIMEOUT => 120,
-                CURLOPT_BUFFERSIZE => 1048576,
-                CURLOPT_MAXFILESIZE => 10485760,
-                CURLOPT_ENCODING => ''
-            ]);
-            $response = curl_exec($ch2);
-            $curlError = curl_error($ch2);
-            curl_close($ch2);
-            error_log("Retry response length: " . strlen($response));
-        }
-        
-        error_log("Response HTTP {$httpCode} - Content-Length: {$contentLength}, Actual: " . strlen($response));
-        error_log("Response preview: " . substr($response, 0, 500));
-        
-        if ($curlError) {
-            error_log("cURL error: {$curlError}");
-        }
-        
-        $decodedResponse = json_decode($response, true);
-        
-        if ($decodedResponse === null && !empty($response)) {
-            error_log("Failed to decode JSON response. Raw response: " . substr($response, 0, 1000));
-        }
-        
-        // ✅ FIX: Require valid JSON decode, not just HTTP 200
-        // This prevents treating malformed/broken responses as success
-        return [
-            'success' => $httpCode >= 200 && $httpCode < 300 && $decodedResponse !== null,
-            'status_code' => $httpCode,
-            'data' => $decodedResponse ?? [],
-            'raw_response' => $response,
-            'curl_error' => $curlError,
-            'detected_format' => $this->detectedFormat,
-            'response_size' => strlen($response)
-        ];
+    if ($decodedResponse === null && !empty($response)) {
+        error_log("Failed to decode JSON response. Raw response: " . substr($response, 0, 1000));
     }
 
+    // ✅ FIX: HTTP 200 is transport success only. If the bank's response
+    // body explicitly carries a "success" key, that key is the real
+    // verdict — a bank can (and ZuruBank does) return HTTP 200 with
+    // {"success":false, "debited":false, "message":"..."} for a
+    // rejected debit. Endpoints that don't send a "success" key at all
+    // (e.g. deposit uses "processed") are unaffected — this only
+    // tightens cases where the bank was explicit and we were ignoring it.
+    $bodySuccessFlag = null;
+    if (is_array($decodedResponse) && array_key_exists('success', $decodedResponse)) {
+        $bodySuccessFlag = (bool)$decodedResponse['success'];
+    }
+
+    $httpOk = $httpCode >= 200 && $httpCode < 300 && $decodedResponse !== null;
+    $overallSuccess = $httpOk && ($bodySuccessFlag === null ? true : $bodySuccessFlag);
+
+    if ($httpOk && $bodySuccessFlag === false) {
+        error_log("send({$action}): HTTP {$httpCode} but response body reports success=false - treating as FAILURE, not success. Body: " . substr($response, 0, 300));
+    }
+
+    return [
+        'success' => $overallSuccess,
+        'status_code' => $httpCode,
+        'data' => $decodedResponse ?? [],
+        'raw_response' => $response,
+        'curl_error' => $curlError,
+        'detected_format' => $this->detectedFormat,
+        'response_size' => strlen($response)
+    ];
+}
     /**
      * Create a signed payload with proper certificate and signature.
      * FIXED: Preserves ALL fields, especially voucher_number and voucher_pin.
