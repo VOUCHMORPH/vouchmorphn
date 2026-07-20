@@ -1037,6 +1037,10 @@ async function searchAgentClaim() {
             </div>
         </div>`).join('');
 }
+
+// ============================================================
+// UPDATED: Single form, one submit, split-capable
+// ============================================================
 function openAgentFinalizeForm(claim) {
     agentSearchResult = claim;
     if (!agentStatus.approved_destinations || agentStatus.approved_destinations.length === 0) {
@@ -1047,26 +1051,61 @@ function openAgentFinalizeForm(claim) {
     const searchTypeLabel = IDENTITY_TYPE_LABELS[document.getElementById('agentSearchType')?.value] || 'document';
     const body = `
         <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:14px;margin-bottom:14px;">
-            <div style="font-size:12px;color:var(--text-muted);">Amount to deposit</div>
+            <div style="font-size:12px;color:var(--text-muted);">Client's total balance</div>
             <div style="font-size:24px;font-weight:700;color:var(--primary-dark);">${escapeHtml(claim.amount)} ${escapeHtml(claim.currency)}</div>
-            <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">This is the client's full payment. It cannot be split — deposit the whole amount now, then give the client their cash or goods for what they need today.</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">The full amount deposits into your account. Whatever the client doesn't take as cash today is instantly sent back to their identity as a new claim — they'll get a new SMS PIN and can collect it later, anywhere.</div>
         </div>
         <div class="field-group"><label>Deposit into</label><select id="agentDestSelect">${destOptions}</select></div>
+        <div class="field-group">
+            <label>Cash to give the client now</label>
+            <input type="number" id="cashNowAmount" min="0" max="${claim.amount}" step="0.01" value="${claim.amount}">
+            <div class="help">Leave less than the full amount to split — the rest becomes a new claim for them to collect elsewhere.</div>
+        </div>
+        <div class="quick-actions" style="margin:-4px 0 12px;">
+            <span class="quick-link" onclick="document.getElementById('cashNowAmount').value=${claim.amount}">Give it all</span>
+            <span class="quick-link muted" onclick="document.getElementById('cashNowAmount').value=0">Give none now</span>
+        </div>
         <div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;"><input type="checkbox" id="agentDocVerified"> I have physically verified the client's ${searchTypeLabel}</label></div>
         <div class="field-group"><label>Client's Claim PIN</label><input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for their PIN"><div class="help">The client must tell you this themselves — never accept a claim without it.</div></div>
-        <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back to Search</button><button class="btn btn-primary" onclick="submitAgentFinalize()">✅ Deposit Now</button></div>`;
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back to Search</button><button class="btn btn-primary" onclick="submitAgentFinalize()">✅ Process</button></div>`;
     openModal('Confirm Deposit', body);
 }
+
 async function submitAgentFinalize() {
     const destinationAccountId = document.getElementById('agentDestSelect').value;
     const docVerified = document.getElementById('agentDocVerified').checked;
     const pin = document.getElementById('agentClaimPin').value.trim();
+    const cashNowAmount = parseFloat(document.getElementById('cashNowAmount').value);
+
     if (!docVerified) { showMessage('You must confirm you verified the client\'s physical document.', 'warning'); return; }
     if (!pin) { showMessage('Enter the client\'s claim PIN.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', { swap_reference: agentSearchResult.swap_reference, pin, identity_document_verified: true, destination_account_id: parseInt(destinationAccountId, 10) });
-    if (!result.ok) { showMessage('Deposit failed: ' + result.error, 'error'); return; }
+    if (isNaN(cashNowAmount) || cashNowAmount < 0 || cashNowAmount > agentSearchResult.amount) {
+        showMessage(`Cash amount must be between 0 and ${agentSearchResult.amount}.`, 'warning');
+        return;
+    }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', {
+        swap_reference: agentSearchResult.swap_reference,
+        pin,
+        identity_document_verified: true,
+        destination_account_id: parseInt(destinationAccountId, 10),
+        cash_now_amount: cashNowAmount
+    });
+
+    if (!result.ok) { showMessage('Failed: ' + result.error, 'error'); return; }
+
+    const data = result.body.data || {};
     closeModal();
-    showMessage(`Deposited ${agentSearchResult.amount} ${agentSearchResult.currency} into your account. You can now give the client their cash or goods.`, 'success');
+
+    const gaveCash = cashNowAmount > 0;
+    const leftRemainder = cashNowAmount < agentSearchResult.amount;
+    let msg = gaveCash
+        ? `Deposited and gave the client ${cashNowAmount} ${agentSearchResult.currency} in cash.`
+        : `Deposited into your account — nothing given as cash yet.`;
+    if (leftRemainder) {
+        msg += ` The remaining ${(agentSearchResult.amount - cashNowAmount).toFixed(2)} ${agentSearchResult.currency} was sent back to their identity — a new PIN was texted to them.`;
+    }
+    showMessage(msg, 'success');
     agentSearchResult = null;
 }
 
