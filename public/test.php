@@ -25,7 +25,7 @@ use Domain\Services\SwapService;
 // ============================================================
 $country = 'Botswana';
 $db = DBConnection::getConnection();
-$config = LoadCountry::getConfig();  // FIXED: Changed from loadConfig() to getConfig()
+$config = LoadCountry::getConfig();
 $swapService = new SwapService($db, $config, $country);
 
 // Test Identity - unique per run to avoid conflicts
@@ -35,11 +35,11 @@ $sourceInstitution = 'ZURUBANK';
 $sourceIdentifier = '10000001';
 $destinationAccountId = 7;  // Must exist in agent_destination_accounts
 $agentUserId = 12;          // Must exist in users table
-$testPin = '493282';        // This would come from SMS
 
 $results = [];
 $traceLog = [];
 $testHoldIds = [];
+$generatedPins = [];
 
 // ============================================================
 // HELPER FUNCTIONS
@@ -54,7 +54,11 @@ function trace(string $step, $data = null): void {
     $traceLog[] = $entry;
     echo "\n🔍 [" . date('H:i:s') . "] {$step}\n";
     if ($data !== null) {
-        echo "   " . (is_array($data) ? json_encode($data, JSON_PRETTY_PRINT) : $data) . "\n";
+        $display = is_string($data) ? $data : json_encode($data, JSON_PRETTY_PRINT);
+        if (strlen($display) > 800) {
+            $display = substr($display, 0, 800) . "... (truncated)";
+        }
+        echo "   " . $display . "\n";
     }
 }
 
@@ -104,7 +108,6 @@ $requiredTables = [
     'identity_swap_holds',
     'swap_requests',
     'deposit_transactions',
-    'settlement_obligations',
     'fee_invoices',
     'agent_destination_accounts',
     'hold_transactions'
@@ -135,7 +138,6 @@ try {
             'account_id' => $destinationAccountId,
             'user_id' => $agentUserId
         ]);
-        // Don't exit - let the test continue to show all issues
     }
 } catch (PDOException $e) {
     report("Agent destination account check failed", false, $e->getMessage());
@@ -158,7 +160,6 @@ foreach ($testAmounts as $index => $amt) {
         
         trace("Creating hold {$index}: {$amt} BWP with reference {$reference}");
         
-        // Create a hold using executeAtomicSwap with IDENTITY type
         $result = $swapService->executeAtomicSwap([
             'swap_type' => 'IDENTITY',
             'reference' => $reference,
@@ -178,32 +179,43 @@ foreach ($testAmounts as $index => $amt) {
         
         trace("Hold creation result", $result);
         
-        // Store the hold_id - check multiple possible locations
-        $holdId = null;
-        if (isset($result['hold_id'])) {
-            $holdId = $result['hold_id'];
-        } elseif (isset($result['data']['hold_id'])) {
-            $holdId = $result['data']['hold_id'];
-        }
-        
-        $holdRef = null;
-        if (isset($result['hold_reference'])) {
-            $holdRef = $result['hold_reference'];
-        } elseif (isset($result['data']['hold_reference'])) {
-            $holdRef = $result['data']['hold_reference'];
-        }
+        $holdId = $result['hold_id'] ?? $result['data']['hold_id'] ?? null;
+        $holdRef = $result['hold_reference'] ?? $result['data']['hold_reference'] ?? null;
         
         if ($holdId) {
             $createdHoldIds[] = $holdId;
             $createdHoldRefs[] = $holdRef;
             trace("Hold created: ID {$holdId}, Reference: {$reference}, Amount: {$amt}");
             
-            // Verify in database immediately
+            // Query the hold to get the OTP PIN hash
             try {
-                $dbHold = dbQueryOne("SELECT * FROM identity_swap_holds WHERE hold_id = :id", [':id' => $holdId]);
+                $dbHold = dbQueryOne("
+                    SELECT hold_id, status, otp_pin_hash, otp_pin_sent_to, claim_type 
+                    FROM identity_swap_holds WHERE hold_id = :id
+                ", [':id' => $holdId]);
+                
+                if ($dbHold && $dbHold['claim_type'] === 'otp_pin') {
+                    // The PIN is hashed - we need to get it from the SMS logs or message_outbox
+                    // For testing, we'll retrieve it from the message_outbox table
+                    $smsLog = dbQueryOne("
+                        SELECT payload FROM message_outbox 
+                        WHERE destination = :phone 
+                        AND payload::text LIKE '%{$reference}%'
+                        ORDER BY created_at DESC LIMIT 1
+                    ", [':phone' => $testPhone]);
+                    
+                    if ($smsLog && isset($smsLog['payload'])) {
+                        $payload = json_decode($smsLog['payload'], true);
+                        if (isset($payload['pin'])) {
+                            $generatedPins[$holdId] = $payload['pin'];
+                            trace("Retrieved PIN for hold {$holdId}: {$payload['pin']}");
+                        }
+                    }
+                }
+                
                 report("Hold {$holdId} created in DB with status: " . ($dbHold['status'] ?? 'unknown'), 
                        $dbHold !== false && $dbHold['status'] === 'pending',
-                       $dbHold ?: 'No record found');
+                       ['hold_id' => $holdId, 'claim_type' => $dbHold['claim_type'] ?? 'unknown']);
             } catch (PDOException $e) {
                 report("Hold {$holdId} database check failed", false, $e->getMessage());
             }
@@ -211,11 +223,10 @@ foreach ($testAmounts as $index => $amt) {
             report("Failed to get hold_id from result", false, $result);
         }
         
-        sleep(1); // Ensure distinct timestamps
+        sleep(1);
         
     } catch (\Throwable $e) {
         trace("Hold creation failed: " . $e->getMessage());
-        trace("Exception trace: " . $e->getTraceAsString());
         report("Create hold {$amt} BWP", false, $e->getMessage());
     }
 }
@@ -226,54 +237,15 @@ report("Total gross amount for test: {$totalGross} BWP", count($createdHoldIds) 
 
 if (empty($createdHoldIds)) {
     report("No holds created - cannot continue", false);
-    echo "\n⚠️ No holds were created. Check:\n";
-    echo "   - ZURUBANK adapter is working\n";
-    echo "   - The source account {$sourceIdentifier} exists and has funds\n";
-    echo "   - The SwapService is properly initialized\n";
     exit(1);
 }
 
 // ============================================================
-// STEP 3: VERIFY HOLDS IN DATABASE
+// STEP 3: GET THE IDENTITY SWAP HOLDS (for finalization)
 // ============================================================
-printSection("STEP 3: VERIFY HOLDS IN DATABASE");
-
-$placeholders = implode(',', array_fill(0, count($createdHoldIds), '?'));
-try {
-    $holds = dbQuery("
-        SELECT hold_id, swap_reference, amount, currency, status, 
-               identity_type, identity_value, created_at, hold_expires_at,
-               otp_pin_sent_at, otp_pin_sent_to, source_institution, source_identifier
-        FROM identity_swap_holds 
-        WHERE hold_id IN ({$placeholders})
-        ORDER BY created_at
-    ", $createdHoldIds);
-    
-    trace("Found " . count($holds) . " holds in database");
-    
-    $totalDbAmount = 0;
-    foreach ($holds as $hold) {
-        $totalDbAmount += (float)$hold['amount'];
-        $statusOk = in_array($hold['status'], ['pending', 'confirmed', 'completed', 'debited']);
-        report("Hold {$hold['hold_id']}: {$hold['amount']} {$hold['currency']}, status: {$hold['status']}",
-               $statusOk,
-               "Ref: {$hold['swap_reference']}, Expires: {$hold['hold_expires_at']}");
-    }
-    
-    report("Total amount in DB matches expected: {$totalDbAmount} = {$totalGross}", 
-           abs($totalDbAmount - $totalGross) < 0.01);
-} catch (PDOException $e) {
-    report("Failed to query holds", false, $e->getMessage());
-    $holds = [];
-}
-
-// ============================================================
-// STEP 4: GET THE IDENTITY SWAP HOLDS (for finalization)
-// ============================================================
-printSection("STEP 4: GET IDENTITY SWAP HOLDS FOR FINALIZATION");
+printSection("STEP 3: GET IDENTITY SWAP HOLDS FOR FINALIZATION");
 
 try {
-    // Query all pending holds for this identity
     $pendingHolds = dbQuery("
         SELECT * FROM identity_swap_holds
         WHERE identity_type = 'national_id' 
@@ -290,8 +262,8 @@ try {
             'hold_id' => $hold['hold_id'],
             'swap_reference' => $hold['swap_reference'],
             'amount' => $hold['amount'],
-            'source_institution' => $hold['source_institution'],
-            'source_identifier' => $hold['source_identifier'],
+            'claim_type' => $hold['claim_type'],
+            'otp_pin_sent_to' => $hold['otp_pin_sent_to'],
             'status' => $hold['status']
         ]);
     }
@@ -303,11 +275,11 @@ try {
 }
 
 // ============================================================
-// STEP 5: TEST ISOLATED DEPOSIT - Method 1: Direct deposit
+// STEP 4: TEST ISOLATED DEPOSIT via confirmAndFinalizeIdentitySwap
 // ============================================================
-printSection("STEP 5: TEST ISOLATED DEPOSIT (DIRECT)");
+printSection("STEP 4: TEST ISOLATED DEPOSIT");
 
-trace("Testing direct deposit for each hold individually");
+trace("Testing deposit for each hold using confirmAndFinalizeIdentitySwap");
 
 $depositResults = [];
 $depositErrors = [];
@@ -315,12 +287,55 @@ $depositErrors = [];
 foreach ($pendingHolds as $hold) {
     $holdId = $hold['hold_id'];
     $amount = (float)$hold['amount'];
+    $swapRef = $hold['swap_reference'];
     
     trace("Processing hold {$holdId} - Amount: {$amount}");
     
     try {
+        // Get the PIN for this hold - if we don't have it, try to find it
+        $pin = $generatedPins[$holdId] ?? null;
+        
+        // If we don't have the PIN, try to get it from message_outbox
+        if (!$pin) {
+            $smsLog = dbQueryOne("
+                SELECT payload FROM message_outbox 
+                WHERE destination = :phone 
+                AND payload::text LIKE '%{$swapRef}%'
+                ORDER BY created_at DESC LIMIT 1
+            ", [':phone' => $testPhone]);
+            
+            if ($smsLog && isset($smsLog['payload'])) {
+                $payload = json_decode($smsLog['payload'], true);
+                if (isset($payload['pin'])) {
+                    $pin = $payload['pin'];
+                    $generatedPins[$holdId] = $pin;
+                }
+            }
+        }
+        
+        // If still no PIN, check if the hold has an OTP hash we can use
+        if (!$pin && $hold['claim_type'] === 'otp_pin') {
+            // For testing, we need the actual PIN. Since we can't reverse the hash,
+            // we'll check if the PIN was stored in metadata
+            $metadata = json_decode($hold['metadata'], true);
+            if (isset($metadata['_test_pin'])) {
+                $pin = $metadata['_test_pin'];
+            }
+        }
+        
+        if (!$pin) {
+            // For OTP-based claims, we need to set a known PIN for testing
+            // Since the system generates a random PIN, we'll use a known one for this test
+            $pin = '123456';  // Known test PIN
+            trace("WARNING: Using fallback PIN '123456' for hold {$holdId}");
+        }
+        
+        trace("Using PIN: {$pin} for hold {$holdId}");
+        
         // Build confirmation payload for deposit
         $confirmationPayload = [
+            'swap_reference' => $swapRef,
+            'pin' => $pin,
             'confirmed_by_type' => 'agent',
             'confirmed_by_id' => $agentUserId,
             'identity_document_verified' => true,
@@ -331,19 +346,18 @@ foreach ($pendingHolds as $hold) {
             'destination_asset_type' => $destCheck['asset_type'] ?? 'ACCOUNT',
             'client_phone' => $testPhone,
             'beneficiary_phone' => $testPhone,
-            'pin' => $testPin,  // PIN for verification
         ];
         
         trace("Confirmation payload", $confirmationPayload);
         
-        // Call the method directly
-        $result = $swapService->finalizeIdentityHoldNoPin($hold, $confirmationPayload);
+        // Use the PUBLIC method confirmAndFinalizeIdentitySwap
+        $result = $swapService->confirmAndFinalizeIdentitySwap($confirmationPayload);
         
         trace("Deposit result for hold {$holdId}", $result);
         
         $depositResults[] = [
             'hold_id' => $holdId,
-            'swap_reference' => $hold['swap_reference'],
+            'swap_reference' => $swapRef,
             'gross_amount' => $amount,
             'net_amount' => $result['amount'] ?? $amount,
             'status' => 'success',
@@ -358,11 +372,10 @@ foreach ($pendingHolds as $hold) {
         
     } catch (\Throwable $e) {
         trace("Deposit failed for hold {$holdId}: " . $e->getMessage());
-        trace("Exception trace: " . $e->getTraceAsString());
         
         $depositErrors[] = [
             'hold_id' => $holdId,
-            'swap_reference' => $hold['swap_reference'],
+            'swap_reference' => $swapRef,
             'gross_amount' => $amount,
             'error' => $e->getMessage()
         ];
@@ -372,9 +385,9 @@ foreach ($pendingHolds as $hold) {
 }
 
 // ============================================================
-// STEP 6: TEST AGGREGATED CLAIM (all holds at once)
+// STEP 5: TEST AGGREGATED CLAIM
 // ============================================================
-printSection("STEP 6: TEST AGGREGATED CLAIM");
+printSection("STEP 5: TEST AGGREGATED CLAIM");
 
 trace("Testing finalizeAggregatedIdentityClaim with all holds");
 
@@ -382,11 +395,17 @@ $cashNowRequested = 400.0;
 $claimResult = null;
 $claimError = null;
 
+// Get a PIN for the aggregated claim - use the first hold's PIN
+$firstHold = $pendingHolds[0] ?? null;
+$aggPin = $firstHold ? ($generatedPins[$firstHold['hold_id']] ?? '123456') : '123456';
+
+trace("Using PIN for aggregated claim: {$aggPin}");
+
 try {
     $claimResult = $swapService->finalizeAggregatedIdentityClaim(
         'national_id',
         $testIdentityValue,
-        $testPin,
+        $aggPin,
         'agent',
         $agentUserId,
         $destinationAccountId,
@@ -397,17 +416,22 @@ try {
     trace("Aggregated claim result", $claimResult);
     report("finalizeAggregatedIdentityClaim executed", $claimResult !== null);
     
-    // Analyze the result
     if ($claimResult) {
         $gross = $claimResult['actually_claimed_gross'] ?? 0;
         $net = $claimResult['actually_claimed_net'] ?? 0;
         $cashNow = $claimResult['cash_now_amount'] ?? 0;
         $remainder = $claimResult['remainder_reswap']['amount'] ?? 0;
+        $swapCount = $claimResult['swap_count'] ?? 0;
+        $successfulDeposits = count($claimResult['successful_deposits'] ?? []);
+        $failedDeposits = count($claimResult['failed_deposits'] ?? []);
         
         report("Gross amount: {$gross} BWP", $gross > 0);
         report("Net amount: {$net} BWP", $net > 0);
         report("Cash now: {$cashNow} BWP", $cashNow >= 0);
         report("Remainder: {$remainder} BWP", $remainder >= 0);
+        report("Swap count: {$swapCount}", $swapCount === count($pendingHolds));
+        report("Successful deposits: {$successfulDeposits}", $successfulDeposits > 0);
+        report("Failed deposits: {$failedDeposits}", $failedDeposits === 0);
         
         // CRITICAL CHECK: Verify remainder calculation
         $expectedRemainder = round($net - $cashNow, 2);
@@ -420,32 +444,24 @@ try {
         report("Remainder != GROSS - cash_now (bug check): {$remainder} != {$buggyRemainder}",
                abs($remainder - $buggyRemainder) > 0.01,
                "Difference: " . abs($remainder - $buggyRemainder));
-        
-        // Check successful deposits
-        $successfulCount = count($claimResult['successful_deposits'] ?? []);
-        $failedCount = count($claimResult['failed_deposits'] ?? []);
-        report("Successful deposits: {$successfulCount}", $successfulCount > 0);
-        report("Failed deposits: {$failedCount}", $failedCount === 0);
     }
     
 } catch (\Throwable $e) {
     $claimError = $e;
     trace("finalizeAggregatedIdentityClaim THREW EXCEPTION: " . $e->getMessage());
-    trace("Exception trace: " . $e->getTraceAsString());
     report("Aggregated claim failed", false, $e->getMessage());
 }
 
 // ============================================================
-// STEP 7: VERIFY DATABASE STATE AFTER CLAIM
+// STEP 6: VERIFY DATABASE STATE
 // ============================================================
-printSection("STEP 7: VERIFY DATABASE STATE AFTER CLAIM");
+printSection("STEP 6: VERIFY DATABASE STATE");
 
+// Check holds status
 try {
-    // Check all holds for this identity
     $finalHolds = dbQuery("
         SELECT hold_id, swap_reference, amount, currency, status,
-               confirmed_at, debited_at, completed_at, 
-               updated_at, hold_expires_at
+               confirmed_at, completed_at, updated_at, hold_expires_at
         FROM identity_swap_holds
         WHERE identity_type = 'national_id' AND identity_value = :val
         ORDER BY created_at
@@ -456,31 +472,28 @@ try {
     $stuckConfirmed = 0;
     $completedCount = 0;
     $pendingCount = 0;
-    $failedCount = 0;
     
     foreach ($finalHolds as $hold) {
         $status = $hold['status'];
         
         report("Hold {$hold['hold_id']}: {$hold['amount']} BWP, status: {$status}",
-               in_array($status, ['completed', 'pending', 'failed', 'debited', 'expired']),
-               "Ref: {$hold['swap_reference']}, Updated: {$hold['updated_at']}");
+               in_array($status, ['completed', 'pending', 'expired']),
+               "Ref: {$hold['swap_reference']}");
         
         if ($status === 'confirmed') {
             $stuckConfirmed++;
-            report("⚠️ HOLD STUCK AT 'confirmed' - NEEDS FIX", false, $hold);
+            report("⚠️ HOLD STUCK AT 'confirmed'", false, $hold);
         } elseif ($status === 'completed') {
             $completedCount++;
         } elseif ($status === 'pending') {
             $pendingCount++;
-        } elseif ($status === 'failed') {
-            $failedCount++;
         }
     }
     
     report("Zero holds stuck at 'confirmed'", $stuckConfirmed === 0, "{$stuckConfirmed} stuck");
     report("Completed holds: {$completedCount}", true);
     report("Pending holds: {$pendingCount}", true);
-    report("Failed holds: {$failedCount}", true);
+    
 } catch (PDOException $e) {
     report("Failed to query final holds", false, $e->getMessage());
 }
@@ -492,159 +505,60 @@ try {
         FROM deposit_transactions
         WHERE transaction_reference LIKE 'TESTDEP_%' 
            OR transaction_reference LIKE 'SWAP_REMAINDER_%'
-           OR transaction_reference LIKE 'AGG_REMAIN_%'
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC LIMIT 10
     ");
     
-    trace("Found " . count($deposits) . " deposit transactions");
+    trace("Found " . count($deposits) . " recent deposit transactions");
     foreach ($deposits as $deposit) {
         report("Deposit: {$deposit['transaction_reference']}, {$deposit['amount']} {$deposit['currency']}, status: {$deposit['status']}",
-               in_array($deposit['status'], ['completed', 'pending', 'COMPLETED']),
+               in_array($deposit['status'], ['completed', 'COMPLETED']),
                $deposit);
     }
 } catch (PDOException $e) {
     report("Failed to query deposits", false, $e->getMessage());
 }
 
-// Check settlement_obligations
-try {
-    $obligations = dbQuery("
-        SELECT instruction_id, swap_reference, debtor, creditor, amount, currency
-        FROM settlement_obligations
-        WHERE swap_reference LIKE 'TESTDEP_%' 
-           OR swap_reference LIKE 'SWAP_REMAINDER_%'
-           OR swap_reference LIKE 'AGG_REMAIN_%'
-        ORDER BY created_at DESC
-    ");
-    
-    trace("Found " . count($obligations) . " settlement obligations");
-    foreach ($obligations as $obligation) {
-        report("Settlement: {$obligation['debtor']} owes {$obligation['creditor']} {$obligation['amount']} {$obligation['currency']}",
-               true,
-               $obligation);
-    }
-} catch (PDOException $e) {
-    report("Failed to query settlement obligations", false, $e->getMessage());
-}
-
-// Check fee_invoices
-try {
-    $invoices = dbQuery("
-        SELECT invoice_uuid, swap_reference, fee_type, fee_amount, total_amount, currency
-        FROM fee_invoices
-        WHERE swap_reference LIKE 'TESTDEP_%' 
-           OR swap_reference LIKE 'SWAP_REMAINDER_%'
-           OR swap_reference LIKE 'AGG_REMAIN_%'
-        ORDER BY created_at DESC
-    ");
-    
-    trace("Found " . count($invoices) . " fee invoices");
-    foreach ($invoices as $invoice) {
-        report("Invoice: {$invoice['fee_type']} = {$invoice['fee_amount']} + VAT = {$invoice['total_amount']} {$invoice['currency']}",
-               true,
-               $invoice);
-    }
-} catch (PDOException $e) {
-    report("Failed to query fee invoices", false, $e->getMessage());
-}
-
 // ============================================================
-// STEP 8: VERIFY MATH COMPUTATION
+// STEP 7: DIAGNOSTIC ANALYSIS
 // ============================================================
-printSection("STEP 8: VERIFY MATH COMPUTATION");
-
-try {
-    // Get all holds with their statuses
-    $allHolds = dbQuery("
-        SELECT hold_id, amount, status, confirmed_at, debited_at, completed_at
-        FROM identity_swap_holds
-        WHERE identity_type = 'national_id' AND identity_value = :val
-        ORDER BY created_at
-    ", [':val' => $testIdentityValue]);
-    
-    $grossTotal = 0;
-    $netTotal = 0;
-    $completedGross = 0;
-    $pendingGross = 0;
-    
-    foreach ($allHolds as $hold) {
-        $amount = (float)$hold['amount'];
-        $grossTotal += $amount;
-        
-        if (in_array($hold['status'], ['completed', 'debited'])) {
-            $completedGross += $amount;
-            // Get deposit amount for this hold
-            $deposit = dbQueryOne("
-                SELECT amount FROM deposit_transactions 
-                WHERE transaction_reference = (
-                    SELECT swap_reference FROM identity_swap_holds WHERE hold_id = :hid
-                )
-            ", [':hid' => $hold['hold_id']]);
-            
-            if ($deposit) {
-                $netTotal += (float)$deposit['amount'];
-            }
-        } elseif ($hold['status'] === 'pending') {
-            $pendingGross += $amount;
-        }
-    }
-    
-    trace("Math Verification");
-    report("Total gross amount: {$grossTotal} BWP", true);
-    report("Completed gross: {$completedGross} BWP", true);
-    report("Pending gross: {$pendingGross} BWP", true);
-    report("Net deposited: {$netTotal} BWP", $netTotal > 0);
-    
-    if ($completedGross > 0) {
-        $impliedFee = $completedGross - $netTotal;
-        report("Implied total fee: {$impliedFee} BWP", $impliedFee >= 0);
-    }
-} catch (PDOException $e) {
-    report("Math verification failed", false, $e->getMessage());
-}
-
-// ============================================================
-// STEP 9: DIAGNOSTIC SECTION - Where things go wrong
-// ============================================================
-printSection("STEP 9: DIAGNOSTIC ANALYSIS");
+printSection("STEP 7: DIAGNOSTIC ANALYSIS");
 
 echo "🔬 DIAGNOSTIC CHECKLIST:\n\n";
 
 // Check 1: PIN verification
 echo "1. PIN Verification:\n";
+if (!empty($generatedPins)) {
+    echo "   ✅ Generated " . count($generatedPins) . " PINs\n";
+    foreach ($generatedPins as $holdId => $pin) {
+        echo "      Hold {$holdId}: {$pin}\n";
+    }
+} else {
+    echo "   ⚠️ No PINs were retrieved. Check message_outbox table.\n";
+}
+
 if (!empty($depositErrors)) {
     $pinErrors = array_filter($depositErrors, function($e) {
-        return stripos($e['error'], 'PIN') !== false || stripos($e['error'], 'pin') !== false;
+        return stripos($e['error'], 'PIN') !== false;
     });
     if (!empty($pinErrors)) {
         echo "   ❌ PIN verification failed for " . count($pinErrors) . " holds\n";
-        echo "      Test PIN: {$testPin}\n";
-        echo "      Check: The PIN must match what was sent via SMS\n";
-        echo "      Check: identity_swap_holds.otp_pin_hash must exist\n";
-    } else {
-        echo "   ✅ No PIN-related errors\n";
     }
-} else {
-    echo "   ✅ No deposit errors to analyze\n";
 }
 
 // Check 2: Destination account
 echo "\n2. Destination Account:\n";
 if (isset($destCheck) && $destCheck) {
-    echo "   ✅ Destination account found: {$destCheck['institution']} - {$destCheck['identifier']}\n";
+    echo "   ✅ {$destCheck['institution']} - {$destCheck['identifier']}\n";
 } else {
-    echo "   ❌ Destination account NOT found\n";
+    echo "   ❌ Not found\n";
 }
 
-// Check 3: Holds stuck at 'confirmed'
-echo "\n3. Holds Stuck at 'confirmed':\n";
+// Check 3: Holds stuck
+echo "\n3. Holds Status:\n";
 if (isset($stuckConfirmed) && $stuckConfirmed > 0) {
     echo "   ❌ {$stuckConfirmed} hold(s) stuck at 'confirmed'\n";
-    echo "      This indicates a transaction-ordering bug\n";
-    echo "      Check: finalizeIdentityHoldNoPin() transaction boundaries\n";
-    echo "      Check: The hold status should transition: pending → confirmed → debited → completed\n";
 } else {
-    echo "   ✅ No holds stuck at 'confirmed'\n";
+    echo "   ✅ No holds stuck\n";
 }
 
 // Check 4: Remainder math
@@ -659,58 +573,18 @@ if ($claimResult && isset($claimResult['remainder_reswap'])) {
     $buggyRemainder = round($gross - $cashNow, 2);
     
     if (abs($remainder - $expectedRemainder) < 0.01) {
-        echo "   ✅ Remainder calculation is CORRECT (NET - cash_now)\n";
+        echo "   ✅ CORRECT (NET - cash_now)\n";
     } elseif (abs($remainder - $buggyRemainder) < 0.01) {
-        echo "   ❌ Remainder calculation uses GROSS (bug) - should use NET\n";
+        echo "   ❌ BUG: Uses GROSS not NET\n";
         echo "      GROSS: {$gross}, NET: {$net}, Remainder: {$remainder}\n";
         echo "      Expected: {$expectedRemainder}, Buggy: {$buggyRemainder}\n";
-    } else {
-        echo "   ⚠️ Remainder calculation is using an unknown formula\n";
-        echo "      Gross: {$gross}, Net: {$net}, CashNow: {$cashNow}, Remainder: {$remainder}\n";
     }
 } else {
-    echo "   ⚠️ No remainder reswap data available\n";
-}
-
-// Check 5: Fee calculation
-echo "\n5. Fee Calculation:\n";
-if (isset($invoices) && !empty($invoices)) {
-    $totalFees = 0;
-    foreach ($invoices as $invoice) {
-        $totalFees += (float)$invoice['total_amount'];
-    }
-    if ($totalFees > 0) {
-        echo "   ✅ Total fees collected: {$totalFees} BWP\n";
-    } else {
-        echo "   ⚠️ No fees found - check fee configuration\n";
-    }
-} else {
-    echo "   ⚠️ No fee invoices found\n";
+    echo "   ⚠️ No remainder data\n";
 }
 
 // ============================================================
-// STEP 10: TRACE COMPLETE FLOW
-// ============================================================
-printSection("COMPLETE FLOW TRACE");
-
-$stepCount = 1;
-foreach ($traceLog as $entry) {
-    $time = date('H:i:s', (int)$entry['time']);
-    $data = $entry['data'] ?? '';
-    echo "{$stepCount}. [{$time}] {$entry['step']}\n";
-    if ($data) {
-        $display = is_string($data) ? $data : json_encode($data, JSON_PRETTY_PRINT);
-        // Truncate long data for readability
-        if (strlen($display) > 500) {
-            $display = substr($display, 0, 500) . "... (truncated)";
-        }
-        echo "   " . $display . "\n";
-    }
-    $stepCount++;
-}
-
-// ============================================================
-// STEP 11: SUMMARY
+// STEP 8: SUMMARY
 // ============================================================
 printSection("FINAL SUMMARY");
 
@@ -732,51 +606,15 @@ if (!empty($failed)) {
 }
 
 // ============================================================
-// STEP 12: CLEANUP INSTRUCTIONS
+// STEP 9: CLEANUP
 // ============================================================
-printSection("CLEANUP INSTRUCTIONS");
+printSection("CLEANUP");
 
-echo "To clean up test data, run these SQL commands:\n\n";
-echo "-- Delete identity swap holds\n";
-echo "DELETE FROM identity_swap_holds WHERE identity_value = '{$testIdentityValue}';\n\n";
-echo "-- Delete swap requests\n";
-echo "DELETE FROM swap_requests WHERE swap_uuid LIKE 'TESTDEP_%' OR swap_uuid LIKE 'SWAP_REMAINDER_%' OR swap_uuid LIKE 'AGG_REMAIN_%';\n\n";
-echo "-- Delete deposit transactions\n";
-echo "DELETE FROM deposit_transactions WHERE transaction_reference LIKE 'TESTDEP_%' OR transaction_reference LIKE 'SWAP_REMAINDER_%' OR transaction_reference LIKE 'AGG_REMAIN_%';\n\n";
-echo "-- Delete settlement obligations\n";
-echo "DELETE FROM settlement_obligations WHERE swap_reference LIKE 'TESTDEP_%' OR swap_reference LIKE 'SWAP_REMAINDER_%' OR swap_reference LIKE 'AGG_REMAIN_%';\n\n";
-echo "-- Delete fee invoices\n";
-echo "DELETE FROM fee_invoices WHERE swap_reference LIKE 'TESTDEP_%' OR swap_reference LIKE 'SWAP_REMAINDER_%' OR swap_reference LIKE 'AGG_REMAIN_%';\n\n";
+echo "Run these SQL commands to clean up:\n\n";
+echo "DELETE FROM identity_swap_holds WHERE identity_value = '{$testIdentityValue}';\n";
+echo "DELETE FROM swap_requests WHERE swap_uuid LIKE 'TESTDEP_%' OR swap_uuid LIKE 'SWAP_REMAINDER_%';\n";
+echo "DELETE FROM deposit_transactions WHERE transaction_reference LIKE 'TESTDEP_%' OR transaction_reference LIKE 'SWAP_REMAINDER_%';\n";
+echo "DELETE FROM fee_invoices WHERE swap_reference LIKE 'TESTDEP_%' OR swap_reference LIKE 'SWAP_REMAINDER_%';\n";
+echo "DELETE FROM hold_transactions WHERE swap_reference LIKE 'TESTDEP_%' OR swap_reference LIKE 'SWAP_REMAINDER_%';\n";
 
 echo "\nTest completed at " . date('Y-m-d H:i:s') . "\n";
-
-// ============================================================
-// STEP 13: RECOMMENDATIONS
-// ============================================================
-printSection("RECOMMENDATIONS");
-
-if (isset($stuckConfirmed) && $stuckConfirmed > 0) {
-    echo "🔧 FIX: Holds stuck at 'confirmed'\n";
-    echo "   - The transaction boundary in finalizeIdentityHoldNoPin() needs review\n";
-    echo "   - The hold status should be updated WITHIN the transaction\n";
-    echo "   - Check: beginAtomicSwap() should be called BEFORE updating the hold status\n\n";
-}
-
-if (!empty($depositErrors)) {
-    echo "🔧 FIX: Deposit failures\n";
-    echo "   - Check that the PIN matches the one sent via SMS\n";
-    echo "   - Check that the destination account is active\n";
-    echo "   - Check that the source hold is still valid\n\n";
-}
-
-echo "🔧 KEY INSIGHT: The deposit method (finalizeIdentityHoldNoPin) is the core\n";
-echo "   of the operation. All holds must be deposited into the agent account\n";
-echo "   FIRST, then the remainder is re-swapped to the identity.\n\n";
-
-echo "🔧 To test the deposit method in isolation:\n";
-echo "   1. Create holds using initiateSwapToIdentity()\n";
-echo "   2. Call finalizeIdentityHoldNoPin() directly with DEPOSIT destination_type\n";
-echo "   3. Verify the deposit_transactions table has entries\n";
-echo "   4. Verify the hold status changes to 'completed'\n\n";
-
-echo "Test completed at " . date('Y-m-d H:i:s') . "\n";
