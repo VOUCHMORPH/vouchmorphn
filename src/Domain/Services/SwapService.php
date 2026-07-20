@@ -2940,172 +2940,155 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
     public function confirmAndFinalizeIdentitySwap(array $payload): array
 {
     error_log("[SwapService] ===== confirmAndFinalizeIdentitySwap =====");
-    
+
     $swapRef = $payload['swap_reference'] ?? null;
     if (!$swapRef) {
         throw new RuntimeException("swap_reference required");
     }
-    
+
     $identitySwap = $this->getIdentitySwapByReference($swapRef);
     if (!$identitySwap) {
         throw new RuntimeException("Identity swap not found: {$swapRef}");
     }
-    
+
     if ($identitySwap['status'] !== 'pending') {
         throw new RuntimeException("Swap is not pending. Current status: " . $identitySwap['status']);
     }
-    
+
     if (strtotime($identitySwap['hold_expires_at']) < time()) {
         throw new RuntimeException("Swap has expired (24hrs). Please initiate a new swap.");
     }
-    
+
     $confirmedByType = $payload['confirmed_by_type'] ?? null;
-$confirmedById = $payload['confirmed_by_id'] ?? null;
-$identityType = $identitySwap['identity_type'];
-$identityValue = $identitySwap['identity_value'];
-$suppliedPin = (string)($payload['pin'] ?? '');
- 
-if (!in_array($confirmedByType, ['user', 'agent'], true)) {
-    throw new RuntimeException("confirmed_by_type must be 'user' or 'agent'");
-}
- 
-if ($confirmedByType === 'agent') {
-    if (!$this->isAgentVerifiableIdentityType($identityType)) {
-        throw new RuntimeException("Agents can only confirm document-based identity types (" . implode(', ', self::IDENTITY_TYPES_AGENT_VERIFIABLE) . "), not {$identityType}");
-    }
-    // Physical document check stays as an ADDITIONAL agent-side
-    // control (matches how agents work in practice) - it does not
-    // replace the PIN check below, both are required.
-    $documentVerified = ($payload['identity_document_verified'] ?? null) === true
-        || ($payload['national_id_verified'] ?? null) === true;
-    if (!$documentVerified) {
-        throw new RuntimeException("Agent must verify the physical {$identityType} first");
-    }
-}
- 
-// PIN check applies REGARDLESS of confirmed_by_type - a person
-// relaying their PIN through an agent still must supply it. This
-// is what stops a dishonest agent from finalizing alone.
-$this->verifyIdentityClaimPin($identitySwap, $suppliedPin);
- 
+    $identityType = $identitySwap['identity_type'];
+    $suppliedPin = (string)($payload['pin'] ?? '');
 
-        
-        $destinationType = strtoupper($payload['destination_type'] ?? 'CASHOUT');
-        if (!in_array($destinationType, ['CASHOUT', 'DEPOSIT'])) {
-            throw new RuntimeException("destination_type must be 'CASHOUT' or 'DEPOSIT'");
+    if (!in_array($confirmedByType, ['user', 'agent'], true)) {
+        throw new RuntimeException("confirmed_by_type must be 'user' or 'agent'");
+    }
+
+    if ($confirmedByType === 'agent') {
+        if (!$this->isAgentVerifiableIdentityType($identityType)) {
+            throw new RuntimeException("Agents can only confirm document-based identity types (" . implode(', ', self::IDENTITY_TYPES_AGENT_VERIFIABLE) . "), not {$identityType}");
         }
-        
-        $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'confirmed', [
-            'confirmed_by_type' => $confirmedByType,
-            'confirmed_by_id' => $confirmedById,
-            'confirmation_method' => $payload['confirmation_method'] ?? ($confirmedByType === 'user' ? 'dashboard' : 'agent_portal'),
-            'destination_type' => $destinationType
-        ]);
-        
-        $sourcePayload = json_decode($identitySwap['source_payload'], true);
-        $sourceInstitution = $identitySwap['source_institution'];
-        
-        $sourcePayload['from_institution'] = $sourceInstitution;
-        $sourcePayload['source_institution'] = $sourceInstitution;
-        $sourcePayload['amount'] = (float)$identitySwap['amount'];
-        $sourcePayload['currency'] = $identitySwap['currency'] ?? 'BWP';
-        $sourcePayload['asset_type'] = $identitySwap['source_asset_type'] ?? 'ACCOUNT';
-        
-        if (!$this->inAtomicSwap) {
-            $this->beginAtomicSwap($swapRef);
-        } else {
-            $this->currentSwapRef = $swapRef;
+        $documentVerified = ($payload['identity_document_verified'] ?? null) === true
+            || ($payload['national_id_verified'] ?? null) === true;
+        if (!$documentVerified) {
+            throw new RuntimeException("Agent must verify the physical {$identityType} first");
         }
-        
-        try {
-            error_log("[SwapService] Re-verifying asset availability for institution: {$sourceInstitution}");
-            $verificationResult = $this->verifyAssetSigned($sourcePayload, $sourceInstitution);
-            if (!($verificationResult['verified'] ?? false)) {
-                $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'cancelled', [
-                    'cancellation_reason' => 'Funds no longer available'
-                ]);
-                throw new RuntimeException("Source funds no longer available. Swap cancelled.");
-            }
-            
-            $this->currentHoldReference = $identitySwap['hold_reference'];
-            $this->currentHoldId = $identitySwap['hold_id'];
-            
-            if ($destinationType === 'CASHOUT') {
-                $result = $this->completeIdentitySwapAsCashout($sourcePayload, $identitySwap, $payload);
-            } else {
-                $result = $this->completeIdentitySwapAsDeposit($sourcePayload, $identitySwap, $payload);
-            }
-            
-            $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'completed', [
-                'final_destination_type' => $destinationType,
-                'final_destination_payload' => $payload['destination_details'] ?? [],
-                'final_transaction_reference' => $result['transaction_reference'] ?? null
+    }
+
+    // PIN check applies REGARDLESS of confirmed_by_type.
+    $this->verifyIdentityClaimPin($identitySwap, $suppliedPin);
+
+    return $this->finalizeIdentityHoldNoPin($identitySwap, $payload);
+}
+
+/**
+ * Everything that happens AFTER the claim PIN is verified: re-verify
+ * source funds, move money to the chosen destination, mark the hold
+ * completed. Deliberately takes the already-fetched $identitySwap row
+ * rather than re-querying by reference, so the aggregated-claim loop
+ * (finalizeAggregatedIdentityClaim) can call this once per underlying
+ * hold without re-doing the PIN check each time.
+ *
+ * FIX: tracks whether THIS call opened the atomic transaction
+ * ($openedHere). Only the opener commits/rolls back - a caller that's
+ * already inside an outer atomic swap (via executeAtomicSwap) is left
+ * alone, since that dispatcher owns the commit. Previously this method
+ * always checked !$this->inAtomicSwap at both entry and in the catch
+ * block separately, which meant a standalone call (like this one, or
+ * the multi-destination identity path) opened a transaction it then
+ * never committed - it just returned successfully with the DB
+ * transaction left open, so any subsequent executeAtomicSwap() call
+ * in the same request (e.g. a remainder re-swap) hit
+ * "Already in atomic swap" and silently failed.
+ */
+private function finalizeIdentityHoldNoPin(array $identitySwap, array $payload): array
+{
+    $swapRef = $identitySwap['swap_reference'];
+    $confirmedByType = $payload['confirmed_by_type'] ?? 'agent';
+    $confirmedById = $payload['confirmed_by_id'] ?? null;
+
+    $destinationType = strtoupper($payload['destination_type'] ?? 'CASHOUT');
+    if (!in_array($destinationType, ['CASHOUT', 'DEPOSIT'])) {
+        throw new RuntimeException("destination_type must be 'CASHOUT' or 'DEPOSIT'");
+    }
+
+    $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'confirmed', [
+        'confirmed_by_type' => $confirmedByType,
+        'confirmed_by_id' => $confirmedById,
+        'confirmation_method' => $payload['confirmation_method'] ?? ($confirmedByType === 'user' ? 'dashboard' : 'agent_portal'),
+        'destination_type' => $destinationType
+    ]);
+
+    $sourcePayload = json_decode($identitySwap['source_payload'], true);
+    $sourceInstitution = $identitySwap['source_institution'];
+
+    $sourcePayload['from_institution'] = $sourceInstitution;
+    $sourcePayload['source_institution'] = $sourceInstitution;
+    $sourcePayload['amount'] = (float)$identitySwap['amount'];
+    $sourcePayload['currency'] = $identitySwap['currency'] ?? 'BWP';
+    $sourcePayload['asset_type'] = $identitySwap['source_asset_type'] ?? 'ACCOUNT';
+
+    $openedHere = !$this->inAtomicSwap;
+    if ($openedHere) {
+        $this->beginAtomicSwap($swapRef);
+    } else {
+        $this->currentSwapRef = $swapRef;
+    }
+
+    try {
+        error_log("[SwapService] Re-verifying asset availability for institution: {$sourceInstitution}");
+        $verificationResult = $this->verifyAssetSigned($sourcePayload, $sourceInstitution);
+        if (!($verificationResult['verified'] ?? false)) {
+            $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'cancelled', [
+                'cancellation_reason' => 'Funds no longer available'
             ]);
-            
-            $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
-            
-            // ✅ ADD THIS ONE LINE
-            $this->commitAtomicSwap();
-            
-            return [
-                'status' => 'completed',
-                'swap_reference' => $swapRef,
-                'hold_id' => $identitySwap['hold_id'],
-                'destination_type' => $destinationType,
-                'amount' => (float)$identitySwap['amount'],
-                'currency' => $identitySwap['currency'] ?? 'BWP',
-                'transaction_reference' => $result['transaction_reference'] ?? null,
-                'message' => "Identity swap completed via {$destinationType}",
-                'result' => $result
-            ];
-            
-                } catch (\Throwable $e) {
-            error_log("[SwapService] confirmAndFinalizeIdentitySwap FAILED (" . get_class($e) . "): " . $e->getMessage());
-            if (!$this->inAtomicSwap) {
-                $this->rollbackAtomicSwap($e->getMessage());
-            }
-            throw $e;
+            throw new RuntimeException("Source funds no longer available. Swap cancelled.");
         }
-    }
 
-    private function completeIdentitySwapAsCashout(array $sourcePayload, array $identitySwap, array $confirmationPayload): array
-    {
-        $sourceInstitution = $identitySwap['source_institution'];
-        $destinationInstitution = $confirmationPayload['destination_institution'] ?? 'ATM';
-        
-        $cashoutPayload = [
-            'swap_type' => 'CASHOUT',
-            'reference' => $identitySwap['swap_reference'],
-            'from_institution' => $sourceInstitution,
-            'source_institution' => $sourceInstitution,
-            'source_identifier' => $identitySwap['source_identifier'],
-            'asset_type' => $identitySwap['source_asset_type'] ?? 'ACCOUNT',
+        $this->currentHoldReference = $identitySwap['hold_reference'];
+        $this->currentHoldId = $identitySwap['hold_id'];
+
+        if ($destinationType === 'CASHOUT') {
+            $result = $this->completeIdentitySwapAsCashout($sourcePayload, $identitySwap, $payload);
+        } else {
+            $result = $this->completeIdentitySwapAsDeposit($sourcePayload, $identitySwap, $payload);
+        }
+
+        $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'completed', [
+            'final_destination_type' => $destinationType,
+            'final_destination_payload' => $payload['destination_details'] ?? [],
+            'final_transaction_reference' => $result['transaction_reference'] ?? null
+        ]);
+
+        $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
+
+        if ($openedHere) {
+            $this->commitAtomicSwap();
+        }
+
+        return [
+            'status' => 'completed',
+            'swap_reference' => $swapRef,
+            'hold_id' => $identitySwap['hold_id'],
+            'destination_type' => $destinationType,
             'amount' => (float)$identitySwap['amount'],
             'currency' => $identitySwap['currency'] ?? 'BWP',
-            'to_institution' => $destinationInstitution,
-            'destination_institution' => $destinationInstitution,
-            'delivery_method' => $confirmationPayload['delivery_method'] ?? 'ATM',
-            'beneficiary_phone' => $confirmationPayload['beneficiary_phone'] ?? null,
-            'beneficiary_identifier' => $confirmationPayload['beneficiary_identifier'] ?? null,
-            'client_phone' => $confirmationPayload['client_phone'] ?? null,
-            '_skip_hold' => true,
+            'transaction_reference' => $result['transaction_reference'] ?? null,
+            'message' => "Identity swap completed via {$destinationType}",
+            'result' => $result
         ];
-        
-        $fieldsToCopy = ['_is_hooked', 'access_token', 'source_reference', 'wallet_pin', 'pin'];
-        foreach ($fieldsToCopy as $field) {
-            if (isset($sourcePayload[$field])) {
-                $cashoutPayload[$field] = $sourcePayload[$field];
-            }
+
+    } catch (\Throwable $e) {
+        error_log("[SwapService] finalizeIdentityHoldNoPin FAILED (" . get_class($e) . "): " . $e->getMessage());
+        if ($openedHere) {
+            $this->rollbackAtomicSwap($e->getMessage());
         }
-        
-        $cashoutPayload['_identity_confirmed'] = true;
-        $cashoutPayload['_identity_type'] = $identitySwap['identity_type'];
-        $cashoutPayload['_identity_value'] = $identitySwap['identity_value'];
-        $cashoutPayload['_confirmed_by_type'] = $confirmationPayload['confirmed_by_type'] ?? 'user';
-        $cashoutPayload['_confirmed_by_id'] = $confirmationPayload['confirmed_by_id'] ?? 0;
-        
-        return $this->executeSignedCashout($cashoutPayload);
+        throw $e;
     }
+}
 
     private function completeIdentitySwapAsDeposit(array $sourcePayload, array $identitySwap, array $confirmationPayload): array
     {
