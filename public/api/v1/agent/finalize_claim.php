@@ -30,6 +30,10 @@ $pin = (string)($body['pin'] ?? '');
 $documentVerified = ($body['identity_document_verified'] ?? false) === true;
 $destinationAccountId = (int)($body['destination_account_id'] ?? 0);
 
+// NEW: how much cash the client wants right now. Defaults to null,
+// which finalize resolves as "everything" — see below.
+$cashNowAmountRaw = $body['cash_now_amount'] ?? null;
+
 if (!$swapReference) {
     http_response_code(400);
     echo json_encode(['success' => false, 'error' => 'swap_reference is required']);
@@ -50,6 +54,11 @@ if (!$destinationAccountId) {
     echo json_encode(['success' => false, 'error' => 'Select which of your agent accounts to deposit into']);
     exit;
 }
+if ($cashNowAmountRaw !== null && !is_numeric($cashNowAmountRaw)) {
+    http_response_code(400);
+    echo json_encode(['success' => false, 'error' => 'cash_now_amount must be a number']);
+    exit;
+}
 
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../../../vendor/autoload.php';
@@ -64,21 +73,17 @@ try {
     $db = DBConnection::getConnection();
 
     // ============================================================
-    // SECURITY: NEVER trust destination_institution/identifier from
-    // the client directly - that would let a compromised agent
-    // session redirect a deposit to an account the agent doesn't
-    // actually own or isn't approved for. Look it up server-side
-    // from THIS agent's own approved destinations only.
+    // SECURITY: keep the same ownership check that was here before -
+    // this is still the first, cheapest gate. finalizeIdentityClaimSplit()
+    // repeats it server-side too, so this is defense-in-depth, not the
+    // only check.
     // ============================================================
     $stmt = $db->prepare("
-        SELECT institution, asset_type, identifier, identifier_type
-        FROM agent_destination_accounts
+        SELECT id FROM agent_destination_accounts
         WHERE id = :id AND user_id = :user_id AND status = 'active' AND deleted_at IS NULL
     ");
     $stmt->execute([':id' => $destinationAccountId, ':user_id' => $userId]);
-    $destAccount = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$destAccount) {
+    if (!$stmt->fetch()) {
         http_response_code(403);
         echo json_encode(['success' => false, 'error' => 'That destination account is not one of your approved agent accounts.']);
         exit;
@@ -93,20 +98,29 @@ try {
         exit;
     }
 
-    $result = $swapService->executeAtomicSwap([
-        'swap_type' => 'CONFIRM_IDENTITY',
-        'swap_reference' => $swapReference,
-        'confirmed_by_type' => 'agent',
-        'confirmed_by_id' => (int)$userId,
-        'confirmation_method' => 'agent_portal',
-        'destination_type' => 'DEPOSIT',
-        'pin' => $pin,
-        'identity_document_verified' => true,
-        // Server-verified values only - never from $body.
-        'destination_institution' => $destAccount['institution'],
-        'destination_identifier' => $destAccount['identifier'],
-        'destination_identifier_type' => $destAccount['identifier_type'],
-    ]);
+    // If cash_now_amount wasn't sent, default to "give the client everything" -
+    // preserves old one-shot behavior for callers that haven't updated their UI yet.
+    if ($cashNowAmountRaw === null) {
+        $identitySwap = $swapService->getIdentitySwapByReference($swapReference);
+        if (!$identitySwap) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'error' => 'Identity swap not found']);
+            exit;
+        }
+        $cashNowAmount = (float)$identitySwap['amount'];
+    } else {
+        $cashNowAmount = (float)$cashNowAmountRaw;
+    }
+
+    $result = $swapService->finalizeIdentityClaimSplit(
+        $swapReference,
+        $pin,
+        'agent',
+        (int)$userId,
+        $destinationAccountId,
+        $cashNowAmount,
+        (int)$userId   // agentUserId — enforces ownership again inside SwapService
+    );
 
     echo json_encode(['success' => true, 'data' => $result]);
 } catch (\Throwable $e) {
