@@ -1034,50 +1034,44 @@ class GenericBankClient implements BankAPIInterface
     // DEBIT FUNDS WITH CERTIFICATE AND HOLD_REFERENCE
     // ============================================================================
 
-    public function debitFunds(array $payload): array
-    {
-        error_log("=== GENERIC BANK CLIENT: debitFunds ===");
-        error_log("[GenericBankClient] debitFunds received payload keys: " . implode(', ', array_keys($payload)));
-        
-        // Extract hold_reference from payload
-        $holdRef = $payload['hold_reference'] ?? $payload['reference'] ?? null;
-        error_log("[GenericBankClient] debitFunds: hold_reference extracted: " . ($holdRef ?? 'NULL'));
-        
-        // Create signed payload with certificate
-        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
-        
-        // Ensure required fields are present
-        if (!isset($signedPayload['from_institution']) && isset($payload['from_institution'])) {
-            $signedPayload['from_institution'] = $payload['from_institution'];
-        }
-        if (!isset($signedPayload['source_institution']) && isset($payload['source_institution'])) {
-            $signedPayload['source_institution'] = $payload['source_institution'];
-        }
-        
-        // CRITICAL: Ensure hold_reference is in the signed payload
-        if ($holdRef) {
-            $signedPayload['hold_reference'] = $holdRef;
-            $signedPayload['reference'] = $holdRef;
-            error_log("[GenericBankClient] debitFunds: Set hold_reference={$holdRef} in signed payload");
-        } else {
-            error_log("[GenericBankClient] debitFunds: WARNING - No hold_reference found!");
-        }
-        
-        // Add action if not present
-        if (!isset($signedPayload['action'])) {
-            $signedPayload['action'] = 'DEBIT_FUNDS';
-        }
-        
-        // Ensure amount is present
-        if (!isset($signedPayload['amount']) && isset($payload['amount'])) {
-            $signedPayload['amount'] = $payload['amount'];
-        }
-        
-        error_log("[GenericBankClient] debitFunds final: from_institution={$signedPayload['from_institution']}, amount={$signedPayload['amount']}, hold_reference={$signedPayload['hold_reference']}");
-        error_log("[GenericBankClient] debitFunds signed payload keys: " . implode(', ', array_keys($signedPayload)));
-        
-        return $this->send('debit_funds', $signedPayload, $signedPayload['access_token'] ?? null);
+   public function debitFunds(array $payload): array
+{
+    error_log("=== GENERIC BANK CLIENT: debitFunds ===");
+    error_log("[GenericBankClient] debitFunds received payload keys: " . implode(', ', array_keys($payload)));
+    
+    // Extract hold_reference from payload
+    $holdRef = $payload['hold_reference'] ?? $payload['reference'] ?? null;
+    error_log("[GenericBankClient] debitFunds: hold_reference extracted: " . ($holdRef ?? 'NULL'));
+    
+    // ✅ FIX: Add hold_reference to the payload BEFORE signing
+    if ($holdRef) {
+        $payload['hold_reference'] = $holdRef;
+        $payload['reference'] = $holdRef;
     }
+    
+    // Ensure required fields are present in payload BEFORE signing
+    if (!isset($payload['from_institution'])) {
+        $payload['from_institution'] = $payload['source_institution'] ?? $this->bankPrefix;
+    }
+    if (!isset($payload['source_institution'])) {
+        $payload['source_institution'] = $payload['from_institution'] ?? $this->bankPrefix;
+    }
+    if (!isset($payload['action'])) {
+        $payload['action'] = 'DEBIT_FUNDS';
+    }
+    
+    // ✅ Create signed payload - NOW all fields are INCLUDED in the signed JSON
+    $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+    
+    // ✅ DO NOT MODIFY $signedPayload after this point!
+    // The signature is already calculated. Any modification invalidates it.
+    // All required fields were added to $payload BEFORE signing.
+    
+    error_log("[GenericBankClient] debitFunds final: from_institution={$signedPayload['from_institution']}, amount={$signedPayload['amount']}, hold_reference={$signedPayload['hold_reference']}");
+    error_log("[GenericBankClient] debitFunds signed payload keys: " . implode(', ', array_keys($signedPayload)));
+    
+    return $this->send('debit_funds', $signedPayload, $signedPayload['access_token'] ?? null);
+}
 
     /**
      * @deprecated Use debitFunds() directly instead. debitHold() reconstructs
