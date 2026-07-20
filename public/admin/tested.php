@@ -1,125 +1,199 @@
 <?php
-/**
- * check_missing_leg.php
- *
- * Read-only. Cross-checks a specific hold_transactions row that came back
- * NOT_FOUND during reconciliation against its parent multi_destination_swaps
- * record, to answer: did the original PLACE_HOLD for this leg ever actually
- * run, or did this leg fail before a hold was placed (in which case
- * NOT_FOUND is correct and expected, not a bug)?
- *
- * USAGE: ?ref=DISP_20260715_202327_F3CF14_DEST_0
- * (or any hold_transactions.swap_reference value)
- */
+// test_remainder_flow.php - Full flow test for identity swap split
 
-declare(strict_types=1);
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-session_start();
-
-define('PROJECT_ROOT', dirname(__DIR__, 2));
-require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
-require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
+require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../vendor/autoload.php';
+require_once __DIR__ . '/../../src/Domain/Services/SwapService.php';
+require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
 
 use Core\Database\DBConnection;
-use Application\Utils\SessionManager;
+use Domain\Services\SwapService;
+use Core\Config\LoadCountry;
 
-if (!SessionManager::isAdminLoggedIn()) {
-    die("Not logged in as admin.");
-}
+header('Content-Type: application/json');
 
-function h($v): string { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
+echo "=== TEST REMAINDER FLOW ===\n\n";
 
 try {
     $db = DBConnection::getConnection();
-    $db->query("SELECT 1");
-} catch (Throwable $e) {
-    die("DB connection failed: " . h($e->getMessage()));
+    $country = 'Botswana';
+    $swapService = new SwapService($db, LoadCountry::getConfig(), $country);
+
+    // ============================================================
+    // STEP 1: Create identity swap
+    // ============================================================
+    echo "STEP 1: Creating identity swap...\n";
+    
+    $testId = 'TEST_ID_' . time();
+    $swapPayload = [
+        'swap_type' => 'IDENTITY',
+        'reference' => 'TEST_SWAP_' . time(),
+        'amount' => 1500.00,
+        'currency' => 'BWP',
+        'destination_currency' => 'BWP',
+        'from_institution' => 'ZURUBANK',
+        'source_institution' => 'ZURUBANK',
+        'source_identifier' => 'SAV00000018',
+        'source_identifier_type' => 'account',
+        'asset_type' => 'ACCOUNT',
+        'user_id' => 1,
+        'requester' => 'VOUCHMORPH',
+        'timestamp' => time(),
+        'identity_type' => 'national_id',
+        'identity_value' => $testId,
+        'notification_phone' => '+26770000000',
+        'beneficiary_phone' => '+26770000000'
+    ];
+
+    $result = $swapService->executeAtomicSwap($swapPayload);
+    echo "Identity swap created:\n";
+    echo json_encode($result, JSON_PRETTY_PRINT) . "\n\n";
+
+    $swapReference = $result['swap_reference'];
+    echo "Swap Reference: $swapReference\n";
+    echo "Identity: $testId\n\n";
+
+    // Get the identity swap record to find the OTP
+    $identitySwap = $swapService->getIdentitySwapByReference($swapReference);
+    echo "Identity swap record:\n";
+    echo json_encode($identitySwap, JSON_PRETTY_PRINT) . "\n\n";
+
+    // ============================================================
+    // STEP 2: Show OTP PIN info
+    // ============================================================
+    if ($identitySwap && $identitySwap['claim_type'] === 'otp_pin') {
+        echo "========================================\n";
+        echo "OTP PIN GENERATED\n";
+        echo "========================================\n";
+        echo "The OTP PIN was sent to: " . $identitySwap['otp_pin_sent_to'] . "\n";
+        echo "OTP Hash: " . $identitySwap['otp_pin_hash'] . "\n";
+        
+        // Try to find the actual PIN from message_outbox
+        $stmt = $db->prepare("
+            SELECT payload FROM message_outbox 
+            WHERE destination = :phone 
+            ORDER BY created_at DESC LIMIT 1
+        ");
+        $stmt->execute([':phone' => $identitySwap['otp_pin_sent_to']]);
+        $message = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($message) {
+            $payload = json_decode($message['payload'], true);
+            if (isset($payload['message'])) {
+                // Extract PIN from message
+                preg_match('/PIN: (\d{6})/', $payload['message'], $matches);
+                if (isset($matches[1])) {
+                    echo "Found OTP PIN from message_outbox: " . $matches[1] . "\n";
+                    $pin = $matches[1];
+                }
+            }
+        }
+        
+        if (!isset($pin)) {
+            echo "\n⚠️ Could not extract PIN from message. Please check the SMS.\n";
+            echo "Enter the PIN you received via SMS: ";
+            $pin = trim(fgets(STDIN));
+        }
+        echo "\n";
+    } else {
+        echo "No OTP PIN generated (claim_type: " . ($identitySwap['claim_type'] ?? 'unknown') . ")\n";
+        die("Cannot proceed without PIN\n");
+    }
+
+    // ============================================================
+    // STEP 3: Get agent destination accounts
+    // ============================================================
+    echo "\nSTEP 3: Getting agent destination accounts...\n";
+    $agentDestinations = $swapService->getApprovedAgentDestinations(12);
+    echo "Agent destinations:\n";
+    echo json_encode($agentDestinations, JSON_PRETTY_PRINT) . "\n\n";
+
+    if (empty($agentDestinations)) {
+        die("No agent destination accounts found for user 12\n");
+    }
+
+    $destinationAccountId = $agentDestinations[0]['id'];
+    echo "Using destination account: $destinationAccountId\n\n";
+
+    // ============================================================
+    // STEP 4: Test finalizeIdentityClaimSplit with remainder
+    // ============================================================
+    echo "STEP 4: Testing finalizeIdentityClaimSplit with remainder...\n";
+    echo "Swap Reference: $swapReference\n";
+    echo "PIN: $pin\n";
+    echo "Destination Account ID: $destinationAccountId\n";
+    echo "Cash Now Amount: 1000\n";
+    echo "Remainder should be: 500\n\n";
+
+    try {
+        $result = $swapService->finalizeIdentityClaimSplit(
+            $swapReference,
+            $pin,
+            'agent',
+            12,
+            $destinationAccountId,
+            1000.00,
+            12
+        );
+
+        echo "finalizeIdentityClaimSplit result:\n";
+        echo json_encode($result, JSON_PRETTY_PRINT) . "\n\n";
+
+        // ============================================================
+        // STEP 5: Check if remainder was created
+        // ============================================================
+        echo "STEP 5: Checking if remainder swap was created...\n";
+        
+        $stmt = $db->prepare("
+            SELECT * FROM identity_swap_holds 
+            WHERE swap_reference LIKE :pattern
+            ORDER BY hold_id DESC
+        ");
+        $stmt->execute([':pattern' => $swapReference . '%']);
+        $allSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        echo "All swaps for this reference:\n";
+        echo json_encode($allSwaps, JSON_PRETTY_PRINT) . "\n\n";
+
+        // Check for remainder swap
+        $remainderSwaps = array_filter($allSwaps, function($s) use ($swapReference) {
+            return strpos($s['swap_reference'], '_REMAIN_') !== false;
+        });
+
+        if (!empty($remainderSwaps)) {
+            echo "✅ REMAINDER SWAP CREATED SUCCESSFULLY!\n";
+            echo "Remainder swap details:\n";
+            echo json_encode($remainderSwaps, JSON_PRETTY_PRINT) . "\n";
+        } else {
+            echo "❌ NO REMAINDER SWAP FOUND!\n";
+            echo "The remainder was not automatically swapped back to identity.\n";
+            echo "\nChecking if any error occurred during finalizeIdentityClaimSplit...\n";
+            
+            // Check logs for errors
+            $logFile = '/var/log/php_errors.log';
+            if (file_exists($logFile)) {
+                $logs = shell_exec("tail -50 $logFile | grep -i 'remainder\\|finalizeIdentityClaimSplit'");
+                echo "Recent logs:\n$logs\n";
+            }
+        }
+
+        // ============================================================
+        // STEP 6: Check the final status
+        // ============================================================
+        echo "\nSTEP 6: Checking final status...\n";
+        $stmt = $db->prepare("SELECT * FROM identity_swap_holds WHERE swap_reference = :swap_ref");
+        $stmt->execute([':swap_ref' => $swapReference]);
+        $finalStatus = $stmt->fetch(PDO::FETCH_ASSOC);
+        echo "Final status of original swap:\n";
+        echo json_encode($finalStatus, JSON_PRETTY_PRINT) . "\n";
+
+    } catch (Exception $e) {
+        echo "❌ ERROR in finalizeIdentityClaimSplit:\n";
+        echo "Error: " . $e->getMessage() . "\n";
+        echo "Trace: " . $e->getTraceAsString() . "\n";
+    }
+
+} catch (Exception $e) {
+    echo "❌ ERROR: " . $e->getMessage() . "\n";
+    echo "Trace: " . $e->getTraceAsString() . "\n";
 }
-
-$ref = trim($_GET['ref'] ?? '');
-
-?>
-<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Check Missing Leg</title>
-<style>
-body{font-family:'IBM Plex Mono',monospace;background:#f7f9fc;color:#001B44;padding:24px;max-width:1000px;margin:0 auto;}
-.section{background:#fff;border:2px solid #001B44;border-radius:6px;padding:16px;margin-bottom:16px;}
-input[type=text]{padding:8px;border:2px solid #001B44;border-radius:4px;font-family:monospace;min-width:400px;}
-.btn{padding:8px 16px;background:#001B44;color:#fff;border:none;border-radius:4px;cursor:pointer;font-family:monospace;font-weight:700;}
-pre{background:#1e293b;color:#4ade80;padding:12px;border-radius:4px;overflow-x:auto;font-size:0.75rem;}
-.verdict{padding:12px;border-radius:6px;font-weight:700;margin-bottom:12px;}
-.verdict.expected{background:#d4edda;color:#155724;}
-.verdict.unclear{background:#fff3cd;color:#856404;}
-</style>
-</head>
-<body>
-<h1>🔍 Check Missing Leg</h1>
-<form method="get" style="margin-bottom:20px;">
-    <input type="text" name="ref" placeholder="e.g. DISP_20260715_202327_F3CF14_DEST_0" value="<?php echo h($ref); ?>">
-    <button type="submit" class="btn">CHECK</button>
-</form>
-
-<?php if ($ref === ''): ?>
-<div class="section">Enter the swap_reference (or sub-reference) that came back NOT_FOUND during reconciliation.</div>
-<?php else:
-    // Derive the parent reference by stripping any _DEST_N or _ID_N suffix.
-    $parentRef = preg_replace('/_(DEST|ID)_\d+$/', '', $ref);
-    ?>
-
-<div class="section">
-    <strong>Looking up:</strong> <?php echo h($ref); ?><br>
-    <strong>Derived parent reference:</strong> <?php echo h($parentRef); ?>
-</div>
-
-<?php
-try {
-    $stmt = $db->prepare("SELECT * FROM multi_destination_swaps WHERE reference = :ref LIMIT 1");
-    $stmt->execute([':ref' => $parentRef]);
-    $parent = $stmt->fetch(PDO::FETCH_ASSOC);
-} catch (Throwable $e) {
-    $parent = null;
-    echo "<div class='section' style='color:#dc3545;'>Query failed: " . h($e->getMessage()) . "</div>";
-}
-?>
-
-<?php if (!$parent): ?>
-<div class="section">
-    <div class="verdict unclear">No parent multi_destination_swaps record found for "<?php echo h($parentRef); ?>". This might not be a multi-destination sub-leg at all - check hold_transactions directly for this reference.</div>
-</div>
-<?php else:
-    $results = json_decode($parent['results_payload'] ?? '[]', true) ?: [];
-    $destinations = json_decode($parent['destinations_payload'] ?? '[]', true) ?: [];
-
-    // Find the specific leg's index from the suffix.
-    preg_match('/_(DEST|ID)_(\d+)$/', $ref, $m);
-    $idx = isset($m[2]) ? (int)$m[2] : null;
-    $legResult = $idx !== null ? ($results[$idx] ?? null) : null;
-?>
-<div class="section">
-    <strong>Parent swap:</strong> <?php echo h($parent['reference']); ?> — status: <?php echo h($parent['status']); ?>,
-    <?php echo h($parent['successful_count']); ?> succeeded / <?php echo h($parent['failed_count']); ?> failed
-    out of <?php echo h($parent['total_destinations']); ?> total destinations.
-</div>
-
-<?php if ($legResult === null): ?>
-<div class="section">
-    <div class="verdict unclear">Could not find a result entry at index <?php echo h((string)$idx); ?> in this swap's results_payload. Showing the full payload below for manual inspection.</div>
-    <pre><?php echo h(json_encode($results, JSON_PRETTY_PRINT)); ?></pre>
-</div>
-<?php else: ?>
-<div class="section">
-    <?php if (($legResult['status'] ?? '') === 'failed'): ?>
-    <div class="verdict expected">✅ Expected: this leg is recorded as FAILED in VOUCHMORPH's own records. Error was: "<?php echo h($legResult['error'] ?? 'unknown'); ?>". A failed leg's hold likely never reached the PLACE_HOLD step successfully (or was released immediately on failure), so NOT_FOUND at SACCUSSALIS is consistent, not a mystery. No reconciliation action needed for this one - it correctly failed and (per the code) any hold it did place should already have been released via the normal failure-handling path.</div>
-    <?php else: ?>
-    <div class="verdict unclear">⚠️ This leg is recorded as "<?php echo h($legResult['status'] ?? 'unknown'); ?>" in VOUCHMORPH's own records - NOT failed. That means VOUCHMORPH believes this leg succeeded, but no hold exists for it at SACCUSSALIS. This is worth investigating directly - possibly a case where the hold placement itself hit the earlier duplicate-reference bug and silently didn't create a row, while downstream code still marked it as processed.</div>
-    <?php endif; ?>
-    <pre><?php echo h(json_encode($legResult, JSON_PRETTY_PRINT)); ?></pre>
-</div>
-<?php endif; ?>
-<?php endif; ?>
-<?php endif; ?>
-
-</body>
-</html>
