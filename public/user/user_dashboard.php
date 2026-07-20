@@ -266,6 +266,16 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .otp-input-group { display: flex; gap: 8px; margin: 12px 0; }
 .otp-input-group input { flex: 1; }
 .otp-input-group button { flex-shrink: 0; }
+
+/* Quick source chips */
+.source-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 4px 12px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border); background: #fff; transition: all 0.2s; }
+.source-chip:hover { background: var(--primary); color: #fff; border-color: var(--primary); }
+.source-chip .chip-icon { font-size: 12px; }
+.source-chip .chip-label { }
+.source-chip .chip-identifier { font-weight: 400; color: var(--text-muted); font-size: 10px; }
+.source-chip:hover .chip-identifier { color: rgba(255,255,255,0.8); }
+.source-chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.source-chip.active .chip-identifier { color: rgba(255,255,255,0.8); }
 </style>
 </head>
 <body>
@@ -298,6 +308,20 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
     <div class="swap-columns">
     <div class="section" id="fromSection">
         <div class="section-title"><span class="n">1</span> From</div>
+        
+        <!-- ============================================================ -->
+        <!-- QUICK SOURCE SELECTION CHIPS - NEW -->
+        <!-- ============================================================ -->
+        <div id="savedSourcesContainer" style="margin-bottom:12px;display:none;">
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;">
+                <span style="font-size:11px;color:var(--text-muted);font-weight:600;">🔗 Quick Select:</span>
+                <div id="savedSourcesChips" style="display:inline-flex;flex-wrap:wrap;gap:6px;"></div>
+                <span class="quick-link muted" onclick="clearSourceSelection()" style="font-size:10px;padding:2px 8px;display:none;" id="clearSourceBtn">✕ Clear</span>
+            </div>
+            <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">Click a saved source to auto-fill your details. You only need to enter the amount.</div>
+        </div>
+        <!-- ============================================================ -->
+        
         <div class="field-group">
             <label>Institution</label>
             <select id="fromInstSelect" onchange="selectFromInst(this.value)"><option value="">Select institution</option></select>
@@ -313,6 +337,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <span class="currency-suffix" id="fromCurrencyLabel"><?php echo htmlspecialchars($userCurrency); ?></span>
             <div class="help" id="fromLimitsHelp"></div>
             <div class="help" id="fromCurrencyInfo" style="font-size:11px;color:var(--text-dim);margin-top:2px;"></div>
+            <div class="help" id="sourceSelectedHelp" style="font-size:11px;color:var(--primary-dark);margin-top:2px;display:none;">✅ Source auto-filled. Enter amount above.</div>
         </div>
     </div>
     <div class="swap-divider"><span>⇅</span></div>
@@ -436,7 +461,8 @@ let state = {
 let savedIdentities = [];
 let userSources = [];
 let agentSearchResult = null;
-let agentSearchData = null; // Store the full aggregated data
+let agentSearchData = null;
+let selectedSourceId = null; // Track which source is selected
 
 function getInstitutionCurrency(instCode) {
     if (!instCode) return CONFIG.CURRENCY;
@@ -517,6 +543,14 @@ function selectFromInst(code) {
     document.getElementById('fromLimitsHelp').textContent = inst.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
     if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectFromAsset(assetTypes[0]); } else { document.getElementById('fromFields').innerHTML = ''; }
     updateCurrencyDisplay(); refreshUI();
+    
+    // If a source was selected, re-fill its fields
+    if (selectedSourceId) {
+        const source = userSources.find(s => s.id === selectedSourceId);
+        if (source && source.institution === code) {
+            setTimeout(() => fillSourceIdentifierFields(source), 200);
+        }
+    }
 }
 function selectFromAsset(type) {
     state.fromAsset = type || null; state.fromFields = {};
@@ -524,6 +558,15 @@ function selectFromAsset(type) {
     if (!type) { box.style.display = 'none'; box.innerHTML = ''; refreshUI(); return; }
     box.style.display = 'block';
     renderDynamicFields('fromFields', type, 'fromField_', updateFromField, true);
+    
+    // If a source was selected, re-fill its fields
+    if (selectedSourceId) {
+        const source = userSources.find(s => s.id === selectedSourceId);
+        if (source && source.asset_type === type) {
+            setTimeout(() => fillSourceIdentifierFields(source), 200);
+        }
+    }
+    
     refreshUI();
 }
 function updateFromField(name, value) { state.fromFields[name] = value; refreshUI(); }
@@ -653,7 +696,9 @@ function multiSourcesValid() {
         return fieldsValidForAsset(s.assetType, s.fields, true);
     });
 }
-function refreshUI() { document.getElementById('reviewBtn').disabled = !isSwapReady(); }
+function refreshUI() { 
+    document.getElementById('reviewBtn').disabled = !isSwapReady(); 
+}
 function isSwapReady() {
     if (state.swapType === 'MULTI_SOURCE') return multiSourcesValid() && state.toInst && state.toAsset && fieldsValidForAsset(state.toAsset, state.toFields, false);
     const hasSource = state.fromInst && state.fromAsset;
@@ -780,7 +825,7 @@ function showResultModal(response) {
 const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'Birth Certificate', voter_id: 'Voter ID', phone: 'Phone Number', email: 'Email' };
 
 // ============================================================
-// USER SOURCE MANAGEMENT
+// USER SOURCE MANAGEMENT - UPDATED WITH QUICK SELECT
 // ============================================================
 
 async function loadUserSources() {
@@ -788,6 +833,223 @@ async function loadUserSources() {
     const result = await callApi(CONFIG.API_BASE + '/api/v1/user/sources.php', {});
     if (!result.ok) return;
     userSources = result.body.data?.sources || [];
+    renderSavedSourceChips(); // Render quick-select chips
+}
+
+function renderSavedSourceChips() {
+    const container = document.getElementById('savedSourcesContainer');
+    const chipsContainer = document.getElementById('savedSourcesChips');
+    const clearBtn = document.getElementById('clearSourceBtn');
+    
+    if (!container || !chipsContainer) return;
+    
+    // Only show active sources
+    const activeSources = userSources.filter(s => s.status === 'active');
+    
+    if (activeSources.length === 0) {
+        container.style.display = 'none';
+        return;
+    }
+    
+    container.style.display = 'block';
+    
+    chipsContainer.innerHTML = activeSources.map(source => {
+        const assetIcon = ASSETS[source.asset_type]?.icon || '📦';
+        const instName = PARTICIPANTS[source.institution]?.name || source.institution;
+        const identifier = source.identifier || source.source_identifier || '';
+        const shortId = identifier.length > 15 ? identifier.substring(0, 12) + '…' : identifier;
+        const isSelected = selectedSourceId === source.id;
+        
+        return `
+            <span class="source-chip ${isSelected ? 'active' : ''}" 
+                  onclick="selectSavedSource(${source.id})"
+                  title="${escapeHtml(instName)} - ${escapeHtml(identifier)}">
+                <span class="chip-icon">${assetIcon}</span>
+                <span class="chip-label">${escapeHtml(instName)}</span>
+                <span class="chip-identifier">${escapeHtml(shortId)}</span>
+            </span>
+        `;
+    }).join('');
+    
+    // Show/hide clear button
+    if (selectedSourceId) {
+        clearBtn.style.display = 'inline-flex';
+    } else {
+        clearBtn.style.display = 'none';
+    }
+}
+
+function selectSavedSource(sourceId) {
+    const source = userSources.find(s => s.id === sourceId);
+    if (!source) {
+        showMessage('Source not found.', 'error');
+        return;
+    }
+    
+    // Track selected source
+    selectedSourceId = sourceId;
+    
+    // 1. Auto-select Institution
+    const instSelect = document.getElementById('fromInstSelect');
+    instSelect.value = source.institution;
+    selectFromInst(source.institution);
+    
+    // 2. Auto-select Asset Type
+    setTimeout(() => {
+        const assetSelect = document.getElementById('fromAssetSelect');
+        if (assetSelect) {
+            const checkAsset = setInterval(() => {
+                if (assetSelect.options.length > 1) {
+                    assetSelect.value = source.asset_type;
+                    selectFromAsset(source.asset_type);
+                    clearInterval(checkAsset);
+                    
+                    // 3. Auto-fill identifier fields
+                    setTimeout(() => {
+                        fillSourceIdentifierFields(source);
+                    }, 150);
+                }
+            }, 100);
+            setTimeout(() => clearInterval(checkAsset), 3000);
+        }
+    }, 200);
+    
+    // 4. Show source selected help
+    const helpEl = document.getElementById('sourceSelectedHelp');
+    if (helpEl) {
+        helpEl.style.display = 'block';
+        helpEl.textContent = `✅ Source selected: ${source.institution} - ${source.identifier || ''}`;
+    }
+    
+    // 5. Focus on amount field
+    setTimeout(() => {
+        const amountField = document.getElementById('fromAmount');
+        if (amountField) {
+            amountField.focus();
+            amountField.select();
+        }
+        showMessage(`✅ Source selected: ${source.institution} - ${source.identifier || 'Ready for amount'}`, 'success');
+    }, 400);
+    
+    // Update chips
+    renderSavedSourceChips();
+    refreshUI();
+}
+
+function fillSourceIdentifierFields(source) {
+    const assetConfig = ASSETS[source.asset_type];
+    if (!assetConfig) return;
+    
+    const fields = assetConfig.fields || [];
+    
+    // Find the identifier field (not PIN, not amount)
+    const identifierField = fields.find(f => 
+        f.vault_field !== 'pin' && 
+        f.name !== 'amount' &&
+        (f.name === 'identifier' || f.name === 'account' || f.name === 'phone' || f.name === 'card_number' || f.name === 'wallet_id')
+    );
+    
+    // Find PIN field
+    const pinField = fields.find(f => f.vault_field === 'pin');
+    
+    // Clear previous disabled state
+    document.querySelectorAll('#fromFields input[disabled]').forEach(input => {
+        input.disabled = false;
+        input.style.background = '#fff';
+        input.style.color = 'var(--text)';
+    });
+    
+    // Fill identifier field
+    if (identifierField) {
+        const fieldId = `fromField_${identifierField.name}`;
+        const input = document.getElementById(fieldId);
+        if (input) {
+            const identifier = source.identifier || source.source_identifier || '';
+            input.value = identifier;
+            if (typeof updateFromField === 'function') {
+                updateFromField(identifierField.name, identifier);
+            }
+            input.disabled = true;
+            input.style.background = '#f0f0f0';
+            input.style.color = '#555';
+            // Add note
+            const helpText = input.parentElement?.querySelector('.help');
+            if (helpText) {
+                helpText.textContent = '🔒 Auto-filled from your saved source';
+                helpText.style.color = 'var(--primary-dark)';
+            }
+        }
+    }
+    
+    // Fill PIN field if it exists and is saved
+    if (pinField && source.pin) {
+        const pinInput = document.getElementById(`fromField_${pinField.name}`);
+        if (pinInput) {
+            pinInput.value = source.pin;
+            if (typeof updateFromField === 'function') {
+                updateFromField(pinField.name, source.pin);
+            }
+            pinInput.disabled = true;
+            pinInput.style.background = '#f0f0f0';
+            pinInput.style.color = '#555';
+        }
+    }
+    
+    // Show help message
+    const helpEl = document.getElementById('sourceSelectedHelp');
+    if (helpEl) {
+        helpEl.style.display = 'block';
+        helpEl.textContent = `✅ Source "${source.institution}" auto-filled. Enter amount below.`;
+    }
+    
+    refreshUI();
+}
+
+function clearSourceSelection() {
+    selectedSourceId = null;
+    
+    // Re-enable all disabled fields
+    document.querySelectorAll('#fromFields input[disabled]').forEach(input => {
+        input.disabled = false;
+        input.style.background = '#fff';
+        input.style.color = 'var(--text)';
+    });
+    
+    // Clear help text
+    document.querySelectorAll('#fromFields .help').forEach(help => {
+        help.textContent = '';
+        help.style.color = 'var(--text-dim)';
+    });
+    
+    // Hide source selected help
+    const helpEl = document.getElementById('sourceSelectedHelp');
+    if (helpEl) {
+        helpEl.style.display = 'none';
+    }
+    
+    // Reset amount field
+    const amountField = document.getElementById('fromAmount');
+    if (amountField) {
+        amountField.value = '';
+        amountField.focus();
+    }
+    
+    // Reset institution and asset type
+    const instSelect = document.getElementById('fromInstSelect');
+    if (instSelect) {
+        instSelect.value = '';
+        selectFromInst('');
+    }
+    
+    const assetSelect = document.getElementById('fromAssetSelect');
+    if (assetSelect) {
+        assetSelect.value = '';
+        selectFromAsset('');
+    }
+    
+    showMessage('Source selection cleared. You can manually enter details.', 'info');
+    renderSavedSourceChips();
+    refreshUI();
 }
 
 function openMySources() {
@@ -819,7 +1081,8 @@ function renderMySources() {
                     <div class="source-institution">${escapeHtml(PARTICIPANTS[source.institution]?.name || source.institution)}</div>
                     <div>
                         <span class="source-status ${statusClass}">${statusLabel}</span>
-                        ${isActive ? `<button class="btn-danger-outline" onclick="removeSource(${source.id})" style="margin-left:8px;">✕ Remove</button>` : ''}
+                        ${isActive ? `<button class="btn-primary btn-sm" onclick="useSourceForSwap(${source.id})" style="margin-left:8px;">Use</button>` : ''}
+                        ${isActive ? `<button class="btn-danger-outline" onclick="removeSource(${source.id})" style="margin-left:4px;">✕</button>` : ''}
                     </div>
                 </div>
                 <div class="source-details">
@@ -840,9 +1103,20 @@ function renderMySources() {
         <div>${sourceList}</div>
         <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);font-size:11px;color:var(--text-dim);">
             💡 You can add Accounts, Wallets, or Cards. Vouchers and Bank-Wallets are added manually by admin.
+            <br>Click <strong>Use</strong> on any active source to auto-fill the swap form.
         </div>
     `;
 }
+
+function useSourceForSwap(sourceId) {
+    closeModal();
+    setTimeout(() => {
+        selectSavedSource(sourceId);
+    }, 300);
+}
+
+// ... rest of the functions remain the same (openAddSource, submitAddSource, completeSourceOtp, removeSource, etc.)
+// I'll include the rest below but they're identical to your original code
 
 function openAddSource() {
     const instOptions = Object.keys(PARTICIPANTS).map(code => 
@@ -1037,6 +1311,18 @@ async function removeSource(sourceId) {
 // ============================================================
 // END USER SOURCE MANAGEMENT
 // ============================================================
+
+// ... (the rest of your functions remain the same: openProfileModal, renderProfileModal, 
+// addSavedIdentity, removeSavedIdentity, useSavedIdentity, setTransactionPin, 
+// checkPendingClaims, openClaimsModal, openClaimForm, toggleClaimDestFields, 
+// submitClaim, loadAgentStatus, openAgentModal, renderAgentModal, 
+// cancelAgentDestination, submitAgentDestination, renderAgentOtpStep, 
+// verifyAgentOtp, onAgentInstChange, openAgentToolsModal, renderAgentToolsSearch, 
+// searchAgentClaim, openAgentFinalizeFormAggregated, submitAgentFinalizeAggregated, 
+// openAgentFinalizeForm, submitAgentFinalize, openSwapHistory, renderSwapHistory, 
+// viewSwapDetail, renderSwapDetail, openModal, closeModal, showMessage, escapeHtml)
+
+// I'll include the remaining critical functions that were in your original code
 
 function openProfileModal() { openModal('My Profile', renderProfileModal()); }
 function renderProfileModal() {
@@ -1285,7 +1571,7 @@ function onAgentInstChange(code) {
 }
 
 // ============================================================
-// AGENT TOOLS - SEARCH WITH AGGREGATED DATA
+// AGENT TOOLS - SEARCH WITH AGGREGATED DATA (keep from your original)
 // ============================================================
 
 function openAgentToolsModal() { 
@@ -1325,16 +1611,13 @@ async function searchAgentClaim() {
     
     const data = result.body.data;
     
-    // No data found
     if (!data) {
         resultsBox.innerHTML = '<div style="font-size:12px;color:var(--text-dim);">No pending payment found for this identity.</div>';
         return;
     }
     
-    // Store the full data for the claim function
     agentSearchData = data;
     
-    // Handle multi-currency case
     if (data.multi_currency) {
         let html = '<div style="margin-bottom:12px;"><strong>Multiple currencies found for this identity:</strong></div>';
         data.balances.forEach((b, index) => {
@@ -1355,7 +1638,6 @@ async function searchAgentClaim() {
         return;
     }
     
-    // Single currency - show one combined balance
     resultsBox.innerHTML = `
         <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
@@ -1370,12 +1652,8 @@ async function searchAgentClaim() {
     `;
 }
 
-// ============================================================
-// AGGREGATED CLAIM FINALIZATION
-// ============================================================
-
+// Keep the aggregated claim functions from your original code
 function openAgentFinalizeFormAggregated(identityType, identityValue, currency, totalAmount, swapCount) {
-    // Use the stored data
     const data = agentSearchData;
     if (!data) {
         showMessage('Search data not found. Please search again.', 'error');
@@ -1478,13 +1756,8 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
     agentSearchResult = null;
 }
 
-// ============================================================
-// ORIGINAL AGENT TOOLS - LEGACY SINGLE CLAIM (keep for backward compatibility)
-// ============================================================
-
-// Keep the original openAgentFinalizeForm for individual claims if needed
+// Legacy single claim function (keep for compatibility)
 function openAgentFinalizeForm(claim) {
-    // If this is called with aggregated data, use the new function instead
     if (claim && claim.total_amount !== undefined) {
         openAgentFinalizeFormAggregated(
             claim.identity_type, 
@@ -1529,8 +1802,6 @@ function openAgentFinalizeForm(claim) {
 }
 
 async function submitAgentFinalize() {
-    // This is the legacy single-claim finalization
-    // The new aggregated version is above
     const destinationAccountId = document.getElementById('agentDestSelect').value;
     const docVerified = document.getElementById('agentDocVerified').checked;
     const pin = document.getElementById('agentClaimPin').value.trim();
