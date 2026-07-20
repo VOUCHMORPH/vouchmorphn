@@ -481,8 +481,10 @@ class GenericBankClient implements BankAPIInterface
         if ($oauthConfig || $isOAuthEndpoint) {
             error_log("[GenericBankClient] OAuth detected! endpoint={$endpoint}, isOAuthEndpoint=" . ($isOAuthEndpoint ? 'YES' : 'NO'));
             
-            // FIX: Use ?: operator to properly handle falsy values
-            $clientId = $oauthConfig['client_id'] ?: (getenv('CLIENT_ID') ?: 'VOUCHMORPH_APP_ID');
+            // FIX: Safely check oauthConfig before accessing array keys
+            $clientId = (is_array($oauthConfig) && !empty($oauthConfig['client_id']))
+                ? $oauthConfig['client_id']
+                : (getenv('CLIENT_ID') ?: 'VOUCHMORPH_APP_ID');
             $redirectUri = $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn-production.up.railway.app/api/v1/agent/oauth_callback.php';
             $state = $params['state'] ?? bin2hex(random_bytes(16));
             $scopes = $params['scope'] ?? $oauthConfig['scopes'] ?? ['read_balance', 'read_transactions', 'payments'];
@@ -573,13 +575,17 @@ class GenericBankClient implements BankAPIInterface
         if ($oauthConfig || $isOAuthEndpoint || $hasCode) {
             error_log("[GenericBankClient] OAuth verification detected! endpoint={$endpoint}, hasCode=" . ($hasCode ? 'YES' : 'NO'));
             
-            // FIX: Use ?: operator to properly handle falsy values
+            // FIX: Safely check oauthConfig before accessing array keys
             $payload = [
                 'grant_type' => 'authorization_code',
                 'code' => $params['code'],
                 'redirect_uri' => $params['redirect_uri'] ?? $oauthConfig['redirect_uri'] ?? 'https://vouchmorphn-production.up.railway.app/api/v1/agent/oauth_callback.php',
-                'client_id' => $oauthConfig['client_id'] ?: (getenv('CLIENT_ID') ?: 'VOUCHMORPH_APP_ID'),
-                'client_secret' => $oauthConfig['client_secret'] ?: (getenv('CLIENT_SECRET') ?: 'YOUR_BANK_SECRET')
+                'client_id' => (is_array($oauthConfig) && !empty($oauthConfig['client_id']))
+                    ? $oauthConfig['client_id']
+                    : (getenv('CLIENT_ID') ?: 'VOUCHMORPH_APP_ID'),
+                'client_secret' => (is_array($oauthConfig) && !empty($oauthConfig['client_secret']))
+                    ? $oauthConfig['client_secret']
+                    : (getenv('CLIENT_SECRET') ?: 'YOUR_BANK_SECRET')
             ];
             
             $result = $this->sendSourceLinkingRequest('verify', $payload, 'application/x-www-form-urlencoded');
@@ -656,7 +662,7 @@ class GenericBankClient implements BankAPIInterface
         
         if ($oauthConfig) {
             $payload['grant_type'] = 'refresh_token';
-            // FIX: Use ?: operator to properly handle falsy values
+            // Already inside if ($oauthConfig) so it's safe
             $payload['client_id'] = $oauthConfig['client_id'] ?: (getenv('CLIENT_ID') ?: 'VOUCHMORPH_APP_ID');
             $payload['client_secret'] = $oauthConfig['client_secret'] ?: (getenv('CLIENT_SECRET') ?: 'YOUR_BANK_SECRET');
         }
@@ -695,7 +701,7 @@ class GenericBankClient implements BankAPIInterface
         ];
         
         if ($oauthConfig) {
-            // FIX: Use ?: operator to properly handle falsy values
+            // Already inside if ($oauthConfig) so it's safe
             $payload['client_id'] = $oauthConfig['client_id'] ?: (getenv('CLIENT_ID') ?: 'VOUCHMORPH_APP_ID');
             $payload['client_secret'] = $oauthConfig['client_secret'] ?: (getenv('CLIENT_SECRET') ?: 'YOUR_BANK_SECRET');
         }
