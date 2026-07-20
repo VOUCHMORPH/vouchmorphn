@@ -393,6 +393,16 @@ class SmsNotificationService
     
     /**
      * Update SMS log status
+     *
+     * FIX: :status was previously bound once but referenced in two
+     * different expression contexts (SET status = :status, and inside
+     * CASE WHEN :status IN (...)). Postgres deduces conflicting types
+     * for that single placeholder across the two contexts, throwing
+     * SQLSTATE[42P08]. Since this runs on the SAME PDO connection/
+     * transaction as the enclosing atomic swap, that error poisons the
+     * whole transaction — every subsequent query in the swap then fails
+     * with 25P02 until rollback. Fixed by binding two separate named
+     * placeholders to the same value, each with an explicit cast.
      */
     private function updateSmsLog(?int $logId, string $status, ?string $messageId = null, ?string $error = null): void
     {
@@ -401,15 +411,16 @@ class SmsNotificationService
         try {
             $stmt = $this->db->prepare("
                 UPDATE sms_logs 
-                SET status = :status,
+                SET status = :status::varchar,
                     message_id = :message_id,
                     error_message = :error,
-                    sent_at = CASE WHEN :status IN ('SENT', 'MOCK_SENT') THEN NOW() ELSE sent_at END
+                    sent_at = CASE WHEN :status2::varchar IN ('SENT', 'MOCK_SENT') THEN NOW() ELSE sent_at END
                 WHERE id = :id
             ");
             $stmt->execute([
                 ':id' => $logId,
                 ':status' => $status,
+                ':status2' => $status,
                 ':message_id' => $messageId,
                 ':error' => $error
             ]);
