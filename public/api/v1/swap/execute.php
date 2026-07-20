@@ -14,6 +14,13 @@ declare(strict_types=1);
  *  - Refuses to silently fall back to the default country's config
  *    when X-Country-Code doesn't resolve (previously executed the
  *    swap under whatever the registry's default_country was).
+ *  - NEW: derives a deterministic idempotency_key from the request's
+ *    semantic content when the caller doesn't supply one, so a
+ *    retried/duplicated POST within the same short window collapses
+ *    to a single processed swap instead of placing a second hold.
+ *    Confirmed in production: two structurally-identical IDENTITY
+ *    swap requests, three seconds apart, each opened its own hold
+ *    and sent its own OTP because neither carried an idempotency key.
  */
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 
@@ -108,6 +115,43 @@ function getApiKeyFromRequest(): ?string {
 }
 
 // ============================================
+// 2b. IDEMPOTENCY KEY DERIVATION
+// ============================================
+
+/**
+ * Derives a stable idempotency key from the semantic content of a
+ * swap request when the caller didn't supply one. Deliberately
+ * excludes 'reference' and any raw timestamp field from the input —
+ * those are commonly generated fresh per-attempt by the caller
+ * (e.g. via time()), and including them here would defeat the whole
+ * point: two retries of "the same" request would each get a
+ * different derived key and never collapse.
+ *
+ * Keyed on the fields that describe WHAT is being requested (type,
+ * source, amount, destination/identity), plus a coarse 60-second time
+ * bucket — so a genuine retry within the same window collapses to one
+ * processed swap, while a legitimately new request (e.g. sending money
+ * to the same person again an hour later) still gets its own key.
+ */
+function generateDeterministicIdempotencyKey(array $input): string {
+    $swapType = $input['swap_type'] ?? 'STANDARD';
+    $keyParts = [
+        $swapType,
+        $input['from_institution'] ?? $input['source_institution'] ?? '',
+        $input['source_identifier'] ?? '',
+        $input['amount'] ?? '',
+        $input['currency'] ?? '',
+        $input['identity_type'] ?? '',
+        $input['identity_value'] ?? '',
+        $input['destination_identifier'] ?? '',
+        $input['to_institution'] ?? $input['destination_institution'] ?? '',
+        // 60-second bucket
+        (string)floor(time() / 60),
+    ];
+    return 'AUTO_' . hash('sha256', implode('|', $keyParts));
+}
+
+// ============================================
 // 3. MAIN EXECUTION
 // ============================================
 
@@ -135,6 +179,17 @@ try {
     $input = json_decode(file_get_contents('php://input'), true);
     if (!$input) {
         throw new Exception('Invalid JSON payload', 400);
+    }
+
+    // ============================================================
+    // NEW: enforce idempotency even when the caller doesn't supply
+    // idempotency_key. SwapService::executeAtomicSwap() already
+    // checks/stores idempotency results when the key is present in
+    // the payload — this just guarantees a key always exists.
+    // ============================================================
+    if (empty($input['idempotency_key']) && empty($input['idempotencyKey'])) {
+        $input['idempotency_key'] = generateDeterministicIdempotencyKey($input);
+        error_log("[EXECUTE] No idempotency_key supplied by caller - derived: {$input['idempotency_key']}");
     }
 
     $headers = getallheaders();
