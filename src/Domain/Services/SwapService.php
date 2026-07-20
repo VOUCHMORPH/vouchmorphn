@@ -4048,6 +4048,303 @@ if ($sourceIdentifierForLedger) {
         return $response;
     }
 
+
+ /**
+ * Single-identity aggregate: what an agent sees after searching one
+ * national_id. Sums all pending, non-expired holds for that identity
+ * into one figure. Refuses to mix currencies rather than guessing.
+ */
+public function getAggregatedIdentityBalance(string $identityType, string $identityValue): ?array
+{
+    $sql = "
+        SELECT identity_type, identity_value, currency,
+               SUM(amount) AS total_amount,
+               COUNT(*) AS swap_count,
+               json_agg(hold_id ORDER BY created_at) AS hold_ids_json,
+               json_agg(swap_reference ORDER BY created_at) AS swap_refs_json,
+               MAX(created_at) AS newest_created_at,
+               MIN(hold_expires_at) AS earliest_expires_at
+        FROM identity_swap_holds
+        WHERE identity_type = :identity_type
+          AND identity_value = :identity_value
+          AND status = 'pending'
+          AND hold_expires_at > NOW()
+        GROUP BY identity_type, identity_value, currency
+    ";
+
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([':identity_type' => $identityType, ':identity_value' => $identityValue]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (empty($rows)) {
+            return null;
+        }
+
+        if (count($rows) > 1) {
+            // Multiple currencies pending on the same identity - deliberately
+            // NOT merged or converted. Surface all of them so the caller can
+            // decide, rather than silently picking one or averaging.
+            error_log("[SwapService] Identity {$identityType}={$identityValue} has pending balances in " . count($rows) . " different currencies");
+            return [
+                'identity_type' => $identityType,
+                'identity_value' => $identityValue,
+                'multi_currency' => true,
+                'balances' => array_map(function ($row) {
+                    $row['hold_ids'] = json_decode($row['hold_ids_json'], true);
+                    unset($row['hold_ids_json'], $row['swap_refs_json']);
+                    return $row;
+                }, $rows)
+            ];
+        }
+
+        $row = $rows[0];
+        $row['hold_ids'] = json_decode($row['hold_ids_json'], true);
+        $row['swap_references'] = json_decode($row['swap_refs_json'], true);
+        unset($row['hold_ids_json'], $row['swap_refs_json']);
+        $row['multi_currency'] = false;
+
+        return $row;
+
+    } catch (PDOException $e) {
+        error_log("[SwapService] getAggregatedIdentityBalance failed: " . $e->getMessage());
+        throw new RuntimeException("Failed to look up identity balance: " . $e->getMessage());
+    }
+}
+
+/**
+ * Browse/list version for the agent portal search results - one row
+ * per identity (grouped), not one row per underlying swap.
+ */
+public function getAgentPendingSwapsAggregated(array $filters = []): array
+{
+    $sql = "
+        SELECT identity_type, identity_value, currency,
+               SUM(amount) AS total_amount,
+               COUNT(*) AS swap_count,
+               json_agg(hold_id ORDER BY created_at) AS hold_ids_json,
+               MAX(created_at) AS newest_created_at,
+               MIN(hold_expires_at) AS earliest_expires_at
+        FROM identity_swap_holds
+        WHERE identity_type = 'national_id'
+          AND status = 'pending'
+          AND hold_expires_at > NOW()
+    ";
+    $params = [];
+    if (!empty($filters['search'])) {
+        $sql .= " AND identity_value LIKE :search";
+        $params[':search'] = '%' . $filters['search'] . '%';
+    }
+    $sql .= " GROUP BY identity_type, identity_value, currency ORDER BY newest_created_at DESC LIMIT 100";
+
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($rows as &$row) {
+            $row['hold_ids'] = json_decode($row['hold_ids_json'], true);
+            unset($row['hold_ids_json']);
+        }
+        return $rows;
+
+    } catch (PDOException $e) {
+        error_log("[SwapService] getAgentPendingSwapsAggregated failed: " . $e->getMessage());
+        throw new RuntimeException("Failed to get aggregated pending swaps: " . $e->getMessage());
+    }
+}
+
+/**
+ * The core bundling operation. One PIN check (against the most
+ * recently-issued PIN across all pending holds for this identity),
+ * then N individual deposits into the agent's account - each with
+ * its own fee calc and its own audit trail, same as if the agent had
+ * claimed each source separately. Remainder (if any) re-swaps back to
+ * the SAME identity as ONE fresh pending hold, not one per source.
+ */
+public function finalizeAggregatedIdentityClaim(
+    string $identityType,
+    string $identityValue,
+    string $pin,
+    string $confirmedByType,
+    ?int $confirmedById,
+    int $destinationAccountId,
+    float $cashNowAmount,
+    ?int $agentUserId = null
+): array {
+    $sql = "
+        SELECT institution, identifier, identifier_type, asset_type
+        FROM agent_destination_accounts
+        WHERE id = :id AND status = 'active' AND deleted_at IS NULL
+    ";
+    $params = [':id' => $destinationAccountId];
+    if ($agentUserId !== null) {
+        $sql .= " AND user_id = :user_id";
+        $params[':user_id'] = $agentUserId;
+    }
+    $stmt = $this->swapDB->prepare($sql);
+    $stmt->execute($params);
+    $destAccount = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$destAccount) {
+        throw new RuntimeException("Agent destination account not found, not active, or not owned by this agent.");
+    }
+
+    $stmt = $this->swapDB->prepare("
+        SELECT * FROM identity_swap_holds
+        WHERE identity_type = :identity_type AND identity_value = :identity_value
+          AND status = 'pending' AND hold_expires_at > NOW()
+        ORDER BY created_at ASC
+    ");
+    $stmt->execute([':identity_type' => $identityType, ':identity_value' => $identityValue]);
+    $pendingHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    if (empty($pendingHolds)) {
+        throw new RuntimeException("No pending balance found for this identity.");
+    }
+
+    $currencies = array_unique(array_column($pendingHolds, 'currency'));
+    if (count($currencies) > 1) {
+        throw new RuntimeException(
+            "This identity has pending balances in multiple currencies (" . implode(', ', $currencies) . "). " .
+            "Claim each currency separately, or contact VouchMorph support."
+        );
+    }
+    $currency = $currencies[0] ?? 'BWP';
+
+    $fullAmount = round((float)array_sum(array_column($pendingHolds, 'amount')), 2);
+    if ($cashNowAmount < 0 || $cashNowAmount > $fullAmount) {
+        throw new RuntimeException("Requested cash amount must be between 0 and {$fullAmount}.");
+    }
+
+    // PIN check happens ONCE, against whichever hold most recently sent a
+    // PIN (falls back to most recently created for account_pin claim types,
+    // which never set otp_pin_sent_at).
+    usort($pendingHolds, function ($a, $b) {
+        $aKey = $a['otp_pin_sent_at'] ?? $a['created_at'];
+        $bKey = $b['otp_pin_sent_at'] ?? $b['created_at'];
+        return strtotime($bKey) <=> strtotime($aKey);
+    });
+    $latestHold = $pendingHolds[0];
+    $this->verifyIdentityClaimPin($latestHold, $pin);
+    // Re-sort back to chronological (oldest first) for the deposit loop -
+    // purely cosmetic/FIFO ordering, not security-relevant.
+    usort($pendingHolds, fn($a, $b) => strtotime($a['created_at']) <=> strtotime($b['created_at']));
+
+    $beneficiaryPhone = $latestHold['otp_pin_sent_to'] ?? null;
+    if (empty($beneficiaryPhone)) {
+        $latestSourcePayload = json_decode($latestHold['source_payload'], true);
+        $beneficiaryPhone = $latestSourcePayload['notification_phone'] ?? $latestSourcePayload['beneficiary_phone'] ?? null;
+    }
+
+    $depositResults = [];
+    $failedHolds = [];
+    $totalDepositedNet = 0.0;
+
+    foreach ($pendingHolds as $hold) {
+        $confirmationPayload = [
+            'confirmed_by_type' => $confirmedByType,
+            'confirmed_by_id' => $confirmedById,
+            'identity_document_verified' => true,
+            'destination_type' => 'DEPOSIT',
+            'destination_institution' => $destAccount['institution'],
+            'destination_identifier' => $destAccount['identifier'],
+            'destination_identifier_type' => $destAccount['identifier_type'],
+            'destination_asset_type' => $destAccount['asset_type'],
+            'client_phone' => $beneficiaryPhone,
+            'beneficiary_phone' => $beneficiaryPhone,
+        ];
+
+        try {
+            $result = $this->finalizeIdentityHoldNoPin($hold, $confirmationPayload);
+            $netAmount = $result['result']['amount'] ?? $hold['amount'];
+
+            $depositResults[] = [
+                'hold_id' => $hold['hold_id'],
+                'swap_reference' => $hold['swap_reference'],
+                'gross_amount' => (float)$hold['amount'],
+                'net_deposited' => (float)$netAmount,
+                'status' => 'completed',
+            ];
+            $totalDepositedNet += (float)$netAmount;
+
+        } catch (Exception $e) {
+            error_log("[SwapService] finalizeAggregatedIdentityClaim: hold {$hold['hold_id']} FAILED: " . $e->getMessage());
+            $failedHolds[] = [
+                'hold_id' => $hold['hold_id'],
+                'swap_reference' => $hold['swap_reference'],
+                'gross_amount' => (float)$hold['amount'],
+                'status' => 'failed',
+                'error' => $e->getMessage(),
+            ];
+            // A single source failing (e.g. its bank briefly unreachable)
+            // doesn't block the others - it stays 'pending' and can be
+            // retried on the next claim attempt.
+        }
+    }
+
+    if (empty($depositResults)) {
+        throw new RuntimeException("All underlying swaps failed to deposit - nothing was claimed. See individual errors and retry.");
+    }
+
+    $actuallyClaimedGross = round((float)array_sum(array_column($depositResults, 'gross_amount')), 2);
+    $adjustedCashNow = min($cashNowAmount, $actuallyClaimedGross);
+    $adjustedRemainder = round($actuallyClaimedGross - $adjustedCashNow, 2);
+
+    $response = [
+        'status' => empty($failedHolds) ? 'success' : 'partial_success',
+        'identity_type' => $identityType,
+        'identity_value' => $identityValue,
+        'currency' => $currency,
+        'requested_full_amount' => $fullAmount,
+        'actually_claimed_gross' => $actuallyClaimedGross,
+        'total_deposited_net' => round($totalDepositedNet, 2),
+        'swap_count' => count($pendingHolds),
+        'successful_deposits' => $depositResults,
+        'failed_deposits' => $failedHolds,
+        'cash_now_amount' => $adjustedCashNow,
+        'remainder_reswap' => null,
+    ];
+
+    if ($adjustedRemainder > 0) {
+        try {
+            $result = $this->executeAtomicSwap([
+                'swap_type' => 'IDENTITY',
+                'reference' => 'AGG_REMAIN_' . time() . '_' . bin2hex(random_bytes(4)),
+                'from_institution' => $destAccount['institution'],
+                'source_institution' => $destAccount['institution'],
+                'source_identifier' => $destAccount['identifier'],
+                'source_identifier_type' => $destAccount['identifier_type'],
+                'asset_type' => $destAccount['asset_type'],
+                'amount' => $adjustedRemainder,
+                'currency' => $currency,
+                'identity_type' => $identityType,
+                'identity_value' => $identityValue,
+                'beneficiary_phone' => $beneficiaryPhone,
+                'notification_phone' => $beneficiaryPhone,
+            ]);
+            $response['remainder_reswap'] = [
+                'status' => 'completed',
+                'amount' => $adjustedRemainder,
+                'result' => $result,
+            ];
+        } catch (Exception $e) {
+            error_log("[SwapService] finalizeAggregatedIdentityClaim: remainder reswap FAILED: " . $e->getMessage());
+            $response['remainder_reswap'] = [
+                'status' => 'failed',
+                'amount' => $adjustedRemainder,
+                'error' => $e->getMessage(),
+            ];
+            // Money already landed in the agent's account for the FULL
+            // claimed amount at this point - a failed remainder reswap
+            // here is a real, uncompensated loss to the client, not just
+            // a log line. Flag it loudly for manual reconciliation.
+            $response['status'] = 'partial_success';
+            $response['requires_manual_reconciliation'] = true;
+        }
+    }
+
+    return $response;
+}   
 // ============================================================================
 // AGENT DESTINATION REGISTRATION METHODS
 // ============================================================================
