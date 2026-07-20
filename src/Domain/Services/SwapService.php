@@ -976,86 +976,89 @@ if (!empty($commConfig)) {
     }
     
     private function populateDepositTransaction(string $swapRef, array $swapData, array $details, ?int $userId = null): void
-    {
-        $sql = "
-            INSERT INTO deposit_transactions (
-                transaction_reference,
-                client_phone,
-                source_type,
-                source_institution,
-                source_account,
-                destination_type,
-                destination_institution,
-                destination_account,
-                amount,
-                currency,
-                fee_amount,
-                status,
-                created_at,
-                updated_at,
-                metadata,
-                user_id
-            ) VALUES (
-                :tx_ref,
-                :client_phone,
-                :source_type,
-                :source_inst,
-                :source_account,
-                :dest_type,
-                :dest_inst,
-                :dest_account,
-                :amount,
-                :currency,
-                :fee_amount,
-                :status,
-                :created_at,
-                :updated_at,
-                :metadata::jsonb,
-                :user_id
-            ) ON CONFLICT (transaction_reference) DO UPDATE SET
-                status = EXCLUDED.status,
-                updated_at = NOW(),
-                completed_at = CASE WHEN EXCLUDED.status = 'COMPLETED' THEN NOW() ELSE completed_at END,
-                user_id = EXCLUDED.user_id
-        ";
-        
-        $status = 'COMPLETED';
-        if (isset($swapData['status'])) {
-            $status = strtoupper($swapData['status']);
-        } elseif (isset($details['status'])) {
-            $status = strtoupper($details['status']);
-        }
-        
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':tx_ref' => $swapRef,
-                ':client_phone' => $details['client_phone'] ?? $details['beneficiary_phone'] ?? null,
-                ':source_type' => $details['asset_type'] ?? $swapData['asset_type'] ?? 'ACCOUNT',
-                ':source_inst' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
-                ':source_account' => $details['source_identifier'] ?? null,
-                ':dest_type' => $details['destination_asset_type'] ?? $swapData['destination_asset_type'] ?? 'ACCOUNT',
-                ':dest_inst' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
-                ':dest_account' => $details['destination_identifier'] ?? null,
-                ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
-                ':currency' => $swapData['currency'] ?? $details['currency'] ?? 'BWP',
-                ':fee_amount' => $details['fee_amount'] ?? 0,
-                ':status' => $status,
-                ':created_at' => date('Y-m-d H:i:s'),
-                ':updated_at' => date('Y-m-d H:i:s'),
-                ':metadata' => json_encode([
-                    'source' => 'swap_service',
-                    'hold_id' => $this->currentHoldId
-                ]),
-                ':user_id' => $userId
-            ]);
-            
-            $this->logger->debug("deposit_transactions populated", ['tx_ref' => $swapRef, 'user_id' => $userId]);
-            
-        } catch (PDOException $e) {
-            $this->logger->error("Failed to populate deposit_transactions", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
-        }
+{
+    $sql = "
+        INSERT INTO deposit_transactions (
+            transaction_reference,
+            client_phone,
+            source_type,
+            source_institution,
+            source_account,
+            destination_type,
+            destination_institution,
+            destination_account,
+            amount,
+            currency,
+            fee_amount,
+            status,
+            created_at,
+            updated_at,
+            metadata,
+            user_id
+        ) VALUES (
+            :tx_ref,
+            :client_phone,
+            :source_type,
+            :source_inst,
+            :source_account,
+            :dest_type,
+            :dest_inst,
+            :dest_account,
+            :amount,
+            :currency,
+            :fee_amount,
+            :status,
+            :created_at,
+            :updated_at,
+            :metadata::jsonb,
+            :user_id
+        ) ON CONFLICT (transaction_reference) DO UPDATE SET
+            status = EXCLUDED.status,
+            updated_at = NOW(),
+            completed_at = CASE 
+                WHEN EXCLUDED.status = 'COMPLETED' THEN NOW() 
+                ELSE deposit_transactions.completed_at 
+            END,
+            user_id = EXCLUDED.user_id
+    ";
+    
+    $status = 'COMPLETED';
+    if (isset($swapData['status'])) {
+        $status = strtoupper($swapData['status']);
+    } elseif (isset($details['status'])) {
+        $status = strtoupper($details['status']);
     }
+    
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':tx_ref' => $swapRef,
+            ':client_phone' => $details['client_phone'] ?? $details['beneficiary_phone'] ?? null,
+            ':source_type' => $details['asset_type'] ?? $swapData['asset_type'] ?? 'ACCOUNT',
+            ':source_inst' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
+            ':source_account' => $details['source_identifier'] ?? null,
+            ':dest_type' => $details['destination_asset_type'] ?? $swapData['destination_asset_type'] ?? 'ACCOUNT',
+            ':dest_inst' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
+            ':dest_account' => $details['destination_identifier'] ?? null,
+            ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
+            ':currency' => $swapData['currency'] ?? $details['currency'] ?? 'BWP',
+            ':fee_amount' => $details['fee_amount'] ?? 0,
+            ':status' => $status,
+            ':created_at' => date('Y-m-d H:i:s'),
+            ':updated_at' => date('Y-m-d H:i:s'),
+            ':metadata' => json_encode([
+                'source' => 'swap_service',
+                'hold_id' => $this->currentHoldId
+            ]),
+            ':user_id' => $userId
+        ]);
+        
+        $this->logger->debug("deposit_transactions populated", ['tx_ref' => $swapRef, 'user_id' => $userId]);
+        
+    } catch (PDOException $e) {
+        $this->logger->error("Failed to populate deposit_transactions", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
+    }
+}
 
     /**
      * Populate message_outbox table
