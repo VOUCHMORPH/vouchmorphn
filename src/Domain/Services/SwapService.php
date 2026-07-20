@@ -183,10 +183,10 @@ class SwapService
         );
         $this->feeService->setParticipants($this->participants);
         
-        $smsConfig = $this->participants['sms'] ?? [];
-        if (!empty($smsConfig)) {
-            $this->smsService = new SmsNotificationService($smsConfig);
-        }
+       $commConfig = $countryConfig['communication'] ?? [];
+if (!empty($commConfig)) {
+    $this->smsService = new SmsNotificationService($this->swapDB, $commConfig);
+}
         
         $vouchmorphConfig = $this->participants['vouchmorph'] ?? [];
         if (!empty($vouchmorphConfig)) {
