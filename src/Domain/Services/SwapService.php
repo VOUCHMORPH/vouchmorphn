@@ -5343,7 +5343,7 @@ public function isApprovedAgent(int $userId): bool
     if ($owner) {
         $claimType = 'account_pin';
         error_log("[SwapService] Identity {$identityType}={$identityValue} is a VERIFIED registered owner (user_id={$owner['user_id']}) - claim will require their account PIN");
-    } elseif ($notificationPhone) {
+   } elseif ($notificationPhone) {
         $claimType = 'otp_pin';
         $otp = $this->generateOtpPin();
         $otpHash = password_hash($otp, PASSWORD_DEFAULT);
@@ -5351,9 +5351,14 @@ public function isApprovedAgent(int $userId): bool
         if ($this->smsService) {
             try {
                 $this->smsService->sendCashoutCode($notificationPhone, $otp, (float)$payload['amount'], $swapRef);
+                $this->trackIdentityOtpSmsAttempt($swapRef, $notificationPhone, 'queued');
             } catch (Exception $e) {
                 error_log("[SwapService] Failed to SMS claim PIN: " . $e->getMessage());
+                $this->trackIdentityOtpSmsAttempt($swapRef, $notificationPhone, 'failed', $e->getMessage());
             }
+        } else {
+            error_log("[SwapService] SMS service not configured - claim PIN generated but never sent to {$notificationPhone}");
+            $this->trackIdentityOtpSmsAttempt($swapRef, $notificationPhone, 'skipped_no_provider');
         }
     } else {
         // No registered owner AND no phone to send an OTP to.
@@ -5423,6 +5428,60 @@ public function isApprovedAgent(int $userId): bool
 }
 
 
+/**
+ * Track an identity-swap OTP PIN send attempt in message_outbox, mirroring
+ * populateMessageOutbox()'s pattern for cashout codes. This is the only
+ * place that records whether an identity-swap PIN SMS was ever queued -
+ * without it, there's no way to distinguish "PIN generated but SMS never
+ * attempted" from "SMS attempted but provider rejected it" after the fact.
+ */
+private function trackIdentityOtpSmsAttempt(
+    string $swapRef,
+    string $phone,
+    string $status,
+    ?string $providerError = null
+): void {
+    $sql = "
+        INSERT INTO message_outbox (
+            channel,
+            destination,
+            payload,
+            status,
+            created_at,
+            sent_at
+        ) VALUES (
+            'SMS',
+            :destination,
+            :payload::jsonb,
+            :status,
+            :created_at,
+            :sent_at
+        )
+    ";
+
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([
+            ':destination' => $phone,
+            ':payload' => json_encode([
+                'phone' => $phone,
+                'swap_reference' => $swapRef,
+                'message_type' => 'identity_swap_otp_pin',
+                'provider_error' => $providerError,
+            ]),
+            ':status' => $status,
+            ':created_at' => date('Y-m-d H:i:s'),
+            ':sent_at' => $status === 'queued' ? date('Y-m-d H:i:s') : null,
+        ]);
+
+        error_log("[SwapService] Identity OTP SMS attempt tracked: swap_ref={$swapRef}, phone={$phone}, status={$status}");
+    } catch (PDOException $e) {
+        // Non-fatal by design, same reasoning as the rest of populateTrackingTables():
+        // the identity swap itself must not fail just because tracking failed.
+        error_log("[SwapService] Failed to track identity OTP SMS attempt: " . $e->getMessage());
+    }
+}
+    
     private function updateIdentityHoldStatus(int $holdId, string $status, array $additionalData = []): void
     {
         $validStatuses = ['pending', 'confirmed', 'completed', 'expired', 'cancelled'];
