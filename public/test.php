@@ -104,8 +104,7 @@ try {
     // NOTE: you'll need the real OTP here (read from your test SMS
     // path / debug log, since it's hashed in the DB) — same as prior
     // tests this session.
-    $testPin = getenv('TEST_KNOWN_OTP') ?: '000000';
-
+$testPin = '711501';
     $claimResult = $swapService->finalizeAggregatedIdentityClaim(
         'national_id',
         $testIdentityValue,
