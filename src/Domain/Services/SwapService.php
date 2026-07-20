@@ -4931,14 +4931,12 @@ public function finalizeIdentityClaimSplit(
         throw new RuntimeException("Requested cash amount must be between 0 and {$fullAmount}.");
     }
 
-    $remainder = round($fullAmount - $cashNowAmount, 2);
-
     // Get beneficiary phone
     $beneficiaryPhone = $identitySwap['otp_pin_sent_to'] ?? null;
     if (empty($beneficiaryPhone)) {
         $sourcePayload = json_decode($identitySwap['source_payload'], true);
-        $beneficiaryPhone = $sourcePayload['notification_phone'] ?? 
-                           $sourcePayload['beneficiary_phone'] ?? 
+        $beneficiaryPhone = $sourcePayload['notification_phone'] ??
+                           $sourcePayload['beneficiary_phone'] ??
                            null;
     }
 
@@ -4958,12 +4956,33 @@ public function finalizeIdentityClaimSplit(
         'beneficiary_phone' => $beneficiaryPhone,
     ]);
 
-    $response = ['deposit' => $depositResult, 'remainder_reswap' => null];
+    // ============================================================
+    // FIX: the remainder must be computed against the NET amount
+    // actually deposited into the agent's account, not the hold's
+    // gross amount. confirmAndFinalizeIdentitySwap() deducts a fee
+    // at deposit time - that money is gone, paid to settlement, and
+    // never sits in the agent's account. Using $fullAmount here
+    // overstated the remainder by exactly the fee, meaning the
+    // re-swapped balance promised the client more than the agent's
+    // account actually held to back it. Same fix as
+    // finalizeAggregatedIdentityClaim().
+    // ============================================================
+    $netDeposited = (float)($depositResult['result']['amount'] ?? $fullAmount);
+    $adjustedCashNow = min($cashNowAmount, $netDeposited);
+    $remainder = round($netDeposited - $adjustedCashNow, 2);
+
+    $response = [
+        'deposit' => $depositResult,
+        'gross_amount' => $fullAmount,
+        'net_deposited' => $netDeposited,
+        'cash_now_amount' => $adjustedCashNow,
+        'remainder_reswap' => null,
+    ];
 
     // STEP 2: Process remainder swap AFTER the deposit atomic transaction is complete
     if ($remainder > 0) {
         try {
-            error_log("[SwapService] Processing remainder swap for {$swapReference}: {$remainder}");
+            error_log("[SwapService] Processing remainder swap for {$swapReference}: {$remainder} (net-based)");
 
             $result = $this->executeAtomicSwap([
                 'swap_type' => 'IDENTITY',
