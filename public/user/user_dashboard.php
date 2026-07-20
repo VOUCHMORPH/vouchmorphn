@@ -184,12 +184,6 @@ foreach ($assets as $assetKey => $assetConfig) {
     --radius: 16px; --radius-sm: 10px;
     --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    --debug-bg: #1a1a2e;
-    --debug-text: #e0e0e0;
-    --debug-success: #4ade80;
-    --debug-error: #f87171;
-    --debug-warning: #fbbf24;
-    --debug-info: #60a5fa;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; line-height: 1.5; padding: 24px 16px; display: flex; flex-direction: column; align-items: center; }
@@ -203,9 +197,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .role-badge { font-size: 10px; color: var(--primary); border: 1px solid var(--primary); padding: 2px 10px; border-radius: 20px; text-transform: uppercase; font-weight: 700; }
 .agent-badge { font-size: 10px; color: #fff; background: var(--primary-dark); padding: 2px 10px; border-radius: 20px; text-transform: uppercase; font-weight: 700; }
 .test-mode-badge { font-size: 10px; color: #b23b3b; border: 1px solid #b23b3b; padding: 2px 10px; border-radius: 20px; text-transform: uppercase; animation: pulse 2s infinite; font-weight: 700; }
-.debug-badge { font-size: 10px; color: #8a2be2; border: 1px solid #8a2be2; padding: 2px 10px; border-radius: 20px; text-transform: uppercase; font-weight: 700; cursor: pointer; transition: var(--transition); }
-.debug-badge.active { background: #8a2be2; color: #fff; }
-.debug-badge:hover { opacity: 0.8; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 .message { padding: 12px 16px; border-radius: var(--radius-sm); margin: 0 0 16px; font-size: 13px; display: none; font-weight: 500; }
 .message.show { display: block; }
@@ -232,21 +223,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .amount-field .currency-suffix { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 12px; font-weight: 700; }
 .asset-fields { margin: 4px 0 12px; padding: 14px; background: rgba(0,0,0,0.02); border-radius: var(--radius-sm); }
 .identity-field { margin: 4px 0 12px; padding: 14px; background: rgba(0,160,173,0.06); border: 1px dashed var(--primary); border-radius: var(--radius-sm); }
-.cta-row { display: flex; justify-content: center; margin-top: 24px; gap: 12px; flex-wrap: wrap; }
-.btn { padding: 14px 40px; border: none; border-radius: 999px; font-size: 14px; font-weight: 700; font-family: var(--font); cursor: pointer; transition: var(--transition); }
+.cta-row { display: flex; justify-content: center; margin-top: 24px; gap: 12px; }
+.btn { padding: 14px 40px; border: none; border-radius: 999px; font-size: 14px; font-weight: 700; font-family: var(--font); cursor: pointer; }
 .btn-primary { background: var(--gradient); color: #fff; }
 .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-primary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,160,173,0.3); }
 .btn-secondary { background: #fff; color: var(--text); border: 1px solid var(--border); padding: 14px 32px; border-radius: 999px; font-weight: 600; cursor: pointer; }
-.btn-secondary:hover { background: var(--surface-hover); }
 .btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid rgba(211,47,47,0.35); padding: 6px 14px; border-radius: 999px; font-size: 11px; cursor: pointer; font-weight: 600; }
 .btn-sm { padding: 8px 18px !important; font-size: 12px; }
-.btn-debug { background: #1a1a2e; color: var(--debug-text); border: 1px solid #333; padding: 8px 16px; border-radius: 999px; font-size: 11px; cursor: pointer; font-weight: 600; font-family: monospace; }
-.btn-debug:hover { background: #2a2a4e; }
-.btn-debug.active { background: #8a2be2; color: #fff; border-color: #8a2be2; }
 .quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 12px; }
-.quick-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: var(--primary-dark); background: rgba(0,160,173,0.08); border: 1px solid rgba(0,160,173,0.2); padding: 5px 12px; border-radius: 999px; cursor: pointer; transition: var(--transition); }
-.quick-link:hover { background: rgba(0,160,173,0.15); }
+.quick-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: var(--primary-dark); background: rgba(0,160,173,0.08); border: 1px solid rgba(0,160,173,0.2); padding: 5px 12px; border-radius: 999px; cursor: pointer; }
 .quick-link.muted { color: var(--text-muted); background: rgba(0,0,0,0.04); border-color: var(--border); }
 .quick-link.danger { color: var(--danger); background: rgba(211,47,47,0.06); border-color: rgba(211,47,47,0.2); }
 .source-row { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 10px; background: #fff; }
@@ -256,7 +241,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 @keyframes spin { to { transform: rotate(360deg); } }
 .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(20,15,5,0.55); backdrop-filter: blur(6px); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
 .modal-overlay.active { display: flex; }
-.modal { background: #fff; border-radius: var(--radius); max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 24px; }
+.modal { background: #fff; border-radius: var(--radius); max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 24px; }
 .modal-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
 .modal-close { background: none; border: none; color: var(--text-muted); font-size: 24px; cursor: pointer; }
 .preview-box { background: rgba(0,0,0,0.02); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; margin: 12px 0; }
@@ -269,6 +254,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .raw-json { text-align: left; font-size: 11px; background: #f4efe4; border-radius: var(--radius-sm); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-muted); margin-top: 12px; max-height: 200px; overflow-y: auto; }
 @media (max-width: 480px) { body { padding: 12px; } .btn, .btn-secondary { padding: 12px 24px; width: 100%; } .cta-row { flex-direction: column; } .topbar { flex-direction: column; align-items: stretch; } }
 
+/* Source management styles */
 .source-card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 10px; }
 .source-card .source-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .source-card .source-institution { font-weight: 600; font-size: 16px; }
@@ -281,32 +267,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .otp-input-group input { flex: 1; }
 .otp-input-group button { flex-shrink: 0; }
 
+/* Quick source chips */
 .source-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 4px 12px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border); background: #fff; transition: all 0.2s; }
 .source-chip:hover { background: var(--primary); color: #fff; border-color: var(--primary); }
 .source-chip .chip-icon { font-size: 12px; }
+.source-chip .chip-label { }
 .source-chip .chip-identifier { font-weight: 400; color: var(--text-muted); font-size: 10px; }
 .source-chip:hover .chip-identifier { color: rgba(255,255,255,0.8); }
 .source-chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
 .source-chip.active .chip-identifier { color: rgba(255,255,255,0.8); }
-
-/* Debug Styles */
-.debug-panel { background: var(--debug-bg); color: var(--debug-text); border-radius: var(--radius-sm); padding: 16px; margin-top: 16px; font-family: 'Courier New', monospace; font-size: 12px; max-height: 400px; overflow-y: auto; display: none; border: 1px solid #333; }
-.debug-panel.show { display: block; }
-.debug-panel .log-line { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
-.debug-panel .log-time { color: #666; }
-.debug-panel .log-success { color: var(--debug-success); }
-.debug-panel .log-error { color: var(--debug-error); }
-.debug-panel .log-warning { color: var(--debug-warning); }
-.debug-panel .log-info { color: var(--debug-info); }
-.debug-panel .log-data { color: #a78bfa; font-size: 11px; white-space: pre-wrap; margin-left: 16px; padding: 4px 8px; background: rgba(255,255,255,0.05); border-radius: 4px; }
-.debug-panel .log-separator { border-top: 1px solid rgba(255,255,255,0.1); margin: 8px 0; }
-
-.hold-detail-card { background: #f8f6f0; border-radius: var(--radius-sm); padding: 12px; margin-bottom: 8px; border-left: 3px solid var(--primary); }
-.hold-detail-card.success { border-left-color: var(--success); }
-.hold-detail-card.failed { border-left-color: var(--danger); }
-.hold-detail-card .hold-amount { font-weight: 700; font-size: 16px; }
-.hold-detail-card .hold-status { font-size: 11px; }
-.hold-detail-card .hold-error { color: var(--danger); font-size: 12px; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -318,7 +287,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         <span class="role-badge"><?php echo htmlspecialchars(strtoupper($userRole)); ?></span>
         <span class="agent-badge" id="agentBadge" style="display:none;">🏪 Agent</span>
         <?php if ($isTestMode): ?><span class="test-mode-badge">🔓 TEST MODE</span><?php endif; ?>
-        <span class="debug-badge" id="debugBadge" onclick="toggleDebugMode()">🐛 Debug: OFF</span>
         <select class="country-selector" id="countrySelector" onchange="switchCountry(this.value)">
             <?php foreach ($availableCountries as $country): ?>
             <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $userCountry ? 'selected' : ''; ?>><?php echo htmlspecialchars($country); ?></option>
@@ -336,23 +304,14 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 
 <div id="mainMessage" class="message"></div>
 
-<!-- Debug Panel -->
-<div class="debug-panel" id="debugPanel">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-        <span style="font-weight:700;color:var(--debug-info);">🐛 DEBUG LOG</span>
-        <div>
-            <button class="btn-debug btn-sm" onclick="clearDebugLog()" style="margin-right:4px;">Clear</button>
-            <button class="btn-debug btn-sm" onclick="toggleDebugPanel()">Toggle</button>
-        </div>
-    </div>
-    <div id="debugLogContent"></div>
-</div>
-
 <div class="card">
     <div class="swap-columns">
     <div class="section" id="fromSection">
         <div class="section-title"><span class="n">1</span> From</div>
         
+        <!-- ============================================================ -->
+        <!-- QUICK SOURCE SELECTION CHIPS - NEW -->
+        <!-- ============================================================ -->
         <div id="savedSourcesContainer" style="margin-bottom:12px;display:none;">
             <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;">
                 <span style="font-size:11px;color:var(--text-muted);font-weight:600;">🔗 Quick Select:</span>
@@ -361,6 +320,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             </div>
             <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">Click a saved source to auto-fill your details. You only need to enter the amount.</div>
         </div>
+        <!-- ============================================================ -->
         
         <div class="field-group">
             <label>Institution</label>
@@ -502,85 +462,12 @@ let savedIdentities = [];
 let userSources = [];
 let agentSearchResult = null;
 let agentSearchData = null;
-let agentSearchRaw = null;
-let selectedSourceId = null;
-let debugMode = false;
-let debugLogs = [];
-
-// ============================================================
-// DEBUG FUNCTIONS
-// ============================================================
-
-function toggleDebugMode() {
-    debugMode = !debugMode;
-    const badge = document.getElementById('debugBadge');
-    const panel = document.getElementById('debugPanel');
-    
-    if (debugMode) {
-        badge.textContent = '🐛 Debug: ON';
-        badge.classList.add('active');
-        panel.classList.add('show');
-        addDebugLog('🐛 Debug mode ENABLED');
-        addDebugLog('ℹ️ All API calls and operations will be logged');
-    } else {
-        badge.textContent = '🐛 Debug: OFF';
-        badge.classList.remove('active');
-        panel.classList.remove('show');
-    }
-}
-
-function toggleDebugPanel() {
-    const panel = document.getElementById('debugPanel');
-    panel.classList.toggle('show');
-}
-
-function clearDebugLog() {
-    debugLogs = [];
-    document.getElementById('debugLogContent').innerHTML = '';
-    addDebugLog('🗑️ Log cleared');
-}
-
-function addDebugLog(message, data = null) {
-    if (!debugMode) return;
-    
-    const timestamp = new Date().toLocaleTimeString();
-    let logEntry = { timestamp, message, data };
-    debugLogs.push(logEntry);
-    
-    // Determine log level
-    let level = 'info';
-    if (message.includes('✅') || message.includes('success')) level = 'success';
-    else if (message.includes('❌') || message.includes('error') || message.includes('failed')) level = 'error';
-    else if (message.includes('⚠️') || message.includes('warning')) level = 'warning';
-    
-    const container = document.getElementById('debugLogContent');
-    if (!container) return;
-    
-    let html = `<div class="log-line">`;
-    html += `<span class="log-time">[${timestamp}]</span> `;
-    html += `<span class="log-${level}">${escapeHtml(message)}</span>`;
-    if (data) {
-        const jsonStr = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
-        html += `<div class="log-data">${escapeHtml(jsonStr)}</div>`;
-    }
-    html += `</div>`;
-    
-    container.innerHTML += html;
-    container.scrollTop = container.scrollHeight;
-    
-    // Also log to console for debugging
-    console.log(`[${timestamp}] ${message}`, data || '');
-}
-
-// ============================================================
-// UI HELPERS
-// ============================================================
+let selectedSourceId = null; // Track which source is selected
 
 function getInstitutionCurrency(instCode) {
     if (!instCode) return CONFIG.CURRENCY;
     return PARTICIPANTS[instCode]?.limits?.currency || CONFIG.CURRENCY;
 }
-
 function updateCurrencyDisplay() {
     const fromCurrency = getInstitutionCurrency(state.fromInst);
     const fromLabel = document.getElementById('fromCurrencyLabel');
@@ -588,10 +475,36 @@ function updateCurrencyDisplay() {
     const fromInfo = document.getElementById('fromCurrencyInfo');
     if (fromInfo) fromInfo.textContent = state.fromInst ? `💰 Source currency: ${fromCurrency}` : '';
 }
-
 function switchCountry(country) {
     if (country !== CONFIG.COUNTRY_CODE) window.location.href = '?country=' + encodeURIComponent(country);
 }
+
+document.addEventListener('DOMContentLoaded', function() {
+    const fromSelect = document.getElementById('fromInstSelect');
+    const toSelect = document.getElementById('toInstSelect');
+    if (!fromSelect || !toSelect) { showMessage('Dashboard initialization error. Please refresh.', 'error'); return; }
+    const instOptions = Object.keys(PARTICIPANTS);
+    if (instOptions.length === 0) {
+        showMessage('No institutions found for this country.', 'error');
+        return;
+    }
+    fromSelect.innerHTML = '<option value="">Select institution</option>';
+    toSelect.innerHTML = '<option value="">Select institution</option>';
+    instOptions.forEach(code => {
+        const name = PARTICIPANTS[code]?.name || code;
+        fromSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${name}</option>`);
+        toSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${name}</option>`);
+    });
+    updateCurrencyDisplay();
+    document.getElementById('fromAmount').addEventListener('input', function() {
+        state.fromAmount = parseFloat(this.value) || 0;
+        refreshUI();
+    });
+    refreshUI();
+    checkPendingClaims();
+    loadAgentStatus();
+    loadUserSources();
+});
 
 function buildHeaders() {
     const headers = { 'Content-Type': 'application/json' };
@@ -599,124 +512,1064 @@ function buildHeaders() {
     if (CONFIG.API_KEY && !CONFIG.IS_TEST_MODE) headers['X-API-Key'] = CONFIG.API_KEY;
     return headers;
 }
-
 async function callApi(endpoint, payload) {
     let url = endpoint;
     if (CONFIG.IS_TEST_MODE) url += (url.includes('?') ? '&' : '?') + 'test_mode=1';
-    
-    addDebugLog(`📡 Calling API: ${url}`, payload);
-    
     let response, body;
     try {
         response = await fetch(url, { method: 'POST', headers: buildHeaders(), body: JSON.stringify(payload) });
     } catch (networkErr) {
-        addDebugLog(`❌ Network error: ${networkErr.message}`);
         return { ok: false, error: 'Network error: could not reach ' + url + ' (' + networkErr.message + ')' };
     }
-    
     try { body = await response.json(); } catch (parseErr) {
-        addDebugLog(`❌ Parse error: ${parseErr.message}`);
         return { ok: false, error: 'Server returned a non-JSON response (HTTP ' + response.status + ')' };
     }
-    
-    addDebugLog(`📦 Response (${response.status}):`, body);
-    
-    if (!response.ok || body.success === false) {
-        return { ok: false, error: body.error || ('HTTP ' + response.status), body };
-    }
+    if (!response.ok || body.success === false) return { ok: false, error: body.error || ('HTTP ' + response.status), body };
     return { ok: true, body };
 }
 
-function escapeHtml(str) { 
-    if (str == null) return '';
-    const div = document.createElement('div'); 
-    div.textContent = String(str); 
-    return div.innerHTML; 
-}
-
-function showMessage(text, type = 'info') {
-    const el = document.getElementById('mainMessage');
-    el.textContent = text; 
-    el.className = `message show ${type}`;
-    clearTimeout(showMessage._t);
-    showMessage._t = setTimeout(() => el.classList.remove('show'), 6000);
+function selectFromInst(code) {
+    state.fromInst = code || null; state.fromAsset = null; state.fromFields = {};
+    const assetGroup = document.getElementById('fromAssetGroup');
+    if (!code) { assetGroup.style.display = 'none'; document.getElementById('fromFields').innerHTML = ''; updateCurrencyDisplay(); refreshUI(); return; }
+    const inst = PARTICIPANTS[code];
+    if (!inst) { showMessage('Institution not found: ' + code, 'error'); return; }
+    const sel = document.getElementById('fromAssetSelect');
+    const assetTypes = inst.asset_types || [];
+    sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.icon || '📦'} ${getAssetConfig(t)?.label || t}</option>`).join('');
+    assetGroup.style.display = 'block';
+    const currency = inst.limits?.currency || CONFIG.CURRENCY;
+    document.getElementById('fromCurrencyLabel').textContent = currency;
+    document.getElementById('fromLimitsHelp').textContent = inst.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
+    if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectFromAsset(assetTypes[0]); } else { document.getElementById('fromFields').innerHTML = ''; }
+    updateCurrencyDisplay(); refreshUI();
     
-    if (debugMode) {
-        addDebugLog(`📢 [${type}] ${text}`);
+    // If a source was selected, re-fill its fields
+    if (selectedSourceId) {
+        const source = userSources.find(s => s.id === selectedSourceId);
+        if (source && source.institution === code) {
+            setTimeout(() => fillSourceIdentifierFields(source), 200);
+        }
     }
 }
-
-function openModal(title, bodyHtml) {
-    document.getElementById('modalTitle').textContent = title;
-    document.getElementById('modalBody').innerHTML = bodyHtml;
-    document.getElementById('modal').classList.add('active');
-}
-
-function closeModal() { 
-    document.getElementById('modal').classList.remove('active'); 
-}
-
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
-
-// ============================================================
-// INSTRUMENTATION - Wrapped functions for debugging
-// ============================================================
-
-// Wrap the original callApi to ensure debug logging
-const originalCallApi = callApi;
-callApi = async function(endpoint, payload) {
-    addDebugLog(`📡 Calling: ${endpoint}`);
-    const result = await originalCallApi(endpoint, payload);
-    if (endpoint.includes('finalize_claim')) {
-        addDebugLog(`📦 Finalize response:`, result);
+function selectFromAsset(type) {
+    state.fromAsset = type || null; state.fromFields = {};
+    const box = document.getElementById('fromFields');
+    if (!type) { box.style.display = 'none'; box.innerHTML = ''; refreshUI(); return; }
+    box.style.display = 'block';
+    renderDynamicFields('fromFields', type, 'fromField_', updateFromField, true);
+    
+    // If a source was selected, re-fill its fields
+    if (selectedSourceId) {
+        const source = userSources.find(s => s.id === selectedSourceId);
+        if (source && source.asset_type === type) {
+            setTimeout(() => fillSourceIdentifierFields(source), 200);
+        }
     }
-    return result;
-};
-
-// ============================================================
-// REST OF THE DASHBOARD FUNCTIONS (same as before with debug hooks)
-// ============================================================
-
-// [Include all the existing dashboard functions here - selectFromInst, 
-// selectFromAsset, renderDynamicFields, etc. from the original]
-
-// ============================================================
-// AGENT TOOLS WITH DEBUGGING - ENHANCED
-// ============================================================
-
-function renderAgentToolsSearch() {
-    return `
-        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">
-            Search for a client's pending identity payment. You'll need to physically verify their document 
-            and have them tell you their claim PIN before you can finalize.
-            ${debugMode ? '<span style="color:var(--debug-info);">🐛 Debug mode is ON - all steps will be logged.</span>' : ''}
+    
+    refreshUI();
+}
+function updateFromField(name, value) { state.fromFields[name] = value; refreshUI(); }
+function assetHasAmountField(assetType) { return (getAssetConfig(assetType)?.fields || []).some(f => f.name === 'amount'); }
+function renderDynamicFields(containerId, assetType, prefix, onChange, includePin) {
+    const container = document.getElementById(containerId);
+    const fields = (getAssetConfig(assetType)?.fields || []).filter(f => includePin || f.vault_field !== 'pin').filter(f => f.name !== 'amount');
+    if (!fields || fields.length === 0) { container.innerHTML = ''; return; }
+    container.innerHTML = fields.map(f => {
+        const attrs = [];
+        if (f.pattern) attrs.push(`pattern="${f.pattern}"`);
+        if (f.min_length) attrs.push(`minlength="${f.min_length}"`);
+        if (f.max_length) attrs.push(`maxlength="${f.max_length}"`);
+        if (f.required) attrs.push('required');
+        if (f.type === 'select') {
+            return `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label><select id="${prefix}${f.name}" onchange="window['${onChange.name}']('${f.name}', this.value)"><option value="">${f.placeholder || 'Select'}</option>${(f.options || []).map(o => `<option value="${o}">${o}</option>`).join('')}</select></div>`;
+        }
+        return `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label><input type="${f.type}" id="${prefix}${f.name}" placeholder="${f.placeholder || ''}" ${attrs.join(' ')} oninput="window['${onChange.name}']('${f.name}', this.value)"></div>`;
+    }).join('');
+}
+function fieldsValidForAsset(assetType, values, includePin) {
+    const fields = (getAssetConfig(assetType)?.fields || []).filter(f => includePin || f.vault_field !== 'pin').filter(f => f.name !== 'amount');
+    return fields.every(f => {
+        const val = values[f.name];
+        if (!f.required) return true;
+        if (!val || String(val).trim().length === 0) return false;
+        if (val && f.pattern && !new RegExp(f.pattern).test(val)) return false;
+        return true;
+    });
+}
+function extractPinFromFields(assetType, values) {
+    const pinField = (getAssetConfig(assetType)?.fields || []).find(f => f.vault_field === 'pin');
+    return pinField ? (values[pinField.name] || '') : '';
+}
+function amountWithinLimits(instCode, amount) {
+    const limits = PARTICIPANTS[instCode]?.limits;
+    if (!limits) return true;
+    return amount >= limits.min_amount && amount <= limits.max_amount;
+}
+function selectToInst(code) {
+    state.toInst = code || null; state.toAsset = null; state.toFields = {};
+    if (state.swapType === 'DEPOSIT' || state.swapType === 'MULTI_SOURCE') {
+        const sel = document.getElementById('toAssetSelect');
+        const group = document.getElementById('toAssetSection');
+        if (!code) { group.style.display = 'none'; document.getElementById('toFields').style.display = 'none'; refreshUI(); return; }
+        const inst = PARTICIPANTS[code];
+        if (!inst) { showMessage('Institution not found: ' + code, 'error'); return; }
+        const assetTypes = inst.asset_types || [];
+        sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.icon || '📦'} ${getAssetConfig(t)?.label || t}</option>`).join('');
+        group.style.display = 'block';
+        if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectToAsset(assetTypes[0]); } else { document.getElementById('toFields').style.display = 'none'; }
+        updateCurrencyDisplay();
+    }
+    refreshUI();
+}
+function selectToAsset(type) {
+    state.toAsset = type || null; state.toFields = {};
+    const box = document.getElementById('toFields');
+    if (!type) { box.style.display = 'none'; box.innerHTML = ''; refreshUI(); return; }
+    box.style.display = 'block';
+    renderDynamicFields('toFields', type, 'toField_', updateToField, false);
+    refreshUI();
+}
+function updateToField(name, value) { state.toFields[name] = value; refreshUI(); }
+function setDeliveryMethod(method) { state.deliveryMethod = method; refreshUI(); }
+function setSwapType(type) {
+    state.swapType = type;
+    const isIdentity = type === 'IDENTITY', isMulti = type === 'MULTI_SOURCE', isDeposit = type === 'DEPOSIT', isCashout = type === 'CASHOUT';
+    document.getElementById('identityFields').style.display = isIdentity ? 'block' : 'none';
+    document.getElementById('multiSourceFields').style.display = isMulti ? 'block' : 'none';
+    document.getElementById('cashoutFields').style.display = isCashout ? 'block' : 'none';
+    document.getElementById('toInstSection').style.display = (isDeposit || isCashout || isMulti) ? 'block' : 'none';
+    document.getElementById('toAssetSection').style.display = (isDeposit || isMulti) && state.toAsset ? 'block' : 'none';
+    document.getElementById('toFields').style.display = (isDeposit || isMulti) && state.toAsset ? 'block' : 'none';
+    document.getElementById('fromSection').style.display = isMulti ? 'none' : 'block';
+    document.querySelector('.swap-divider').style.display = isMulti ? 'none' : 'flex';
+    if (isIdentity) updateIdentityHelp();
+    updateCurrencyDisplay();
+    if (isMulti && state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
+    refreshUI();
+}
+function updateIdentityHelp() {
+    const type = document.getElementById('identityType').value;
+    const hint = document.getElementById('identityHint');
+    if (!hint) return;
+    const documentTypes = ['national_id', 'birth_certificate', 'voter_id'];
+    if (documentTypes.includes(type)) {
+        hint.textContent = `This is a physical document that can be verified by an agent in person. The recipient will also receive a notification and can claim via dashboard within 24 hours.`;
+    } else {
+        hint.textContent = `The recipient will be notified via ${type === 'phone' ? 'SMS' : 'email'} and can claim the funds within 24 hours.`;
+    }
+}
+function quickSetSwapType(type) {
+    document.getElementById('swapTypeSelect').value = type;
+    setSwapType(type);
+    const target = type === 'IDENTITY' ? document.getElementById('identityFields') : document.getElementById('multiSourceFields');
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+let multiSourceSeq = 0;
+function addMultiSourceRow() { state.multiSources.push({ id: ++multiSourceSeq, institution: null, assetType: null, fields: {}, amount: 0 }); renderMultiSourceRows(); }
+function removeMultiSourceRow(id) { state.multiSources = state.multiSources.filter(s => s.id !== id); renderMultiSourceRows(); }
+function renderMultiSourceRows() {
+    const container = document.getElementById('multiSourceList');
+    container.innerHTML = state.multiSources.map((src, idx) => `
+        <div class="source-row">
+            <div class="source-row-head"><span>Source ${idx + 1}</span>${state.multiSources.length > 2 ? `<button class="btn-danger-outline" onclick="removeMultiSourceRow(${src.id})">Remove</button>` : ''}</div>
+            <div class="field-group"><label>Institution</label><select onchange="setMultiSourceInst(${src.id}, this.value)"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}" ${src.institution === code ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
+            ${src.institution ? `<div class="field-group"><label>Asset Type</label><select onchange="setMultiSourceAsset(${src.id}, this.value)"><option value="">Select asset type</option>${(PARTICIPANTS[src.institution]?.asset_types || []).map(t => `<option value="${t}" ${src.assetType === t ? 'selected' : ''}>${getAssetConfig(t)?.label || t}</option>`).join('')}</select></div>` : ''}
+            ${src.assetType ? (getAssetConfig(src.assetType)?.fields || []).filter(f => f.name !== 'amount').map(f => `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label><input type="${f.type === 'select' ? 'text' : f.type}" value="${src.fields[f.name] || ''}" placeholder="${f.placeholder || ''}" oninput="setMultiSourceField(${src.id}, '${f.name}', this.value)"></div>`).join('') : ''}
+            <div class="field-group"><label>Amount to pull from this source</label><input type="number" min="0.01" step="0.01" value="${src.amount || ''}" placeholder="0.00" oninput="setMultiSourceAmount(${src.id}, this.value)"></div>
         </div>
-        <div class="field-group">
-            <label>Document Type</label>
-            <select id="agentSearchType">
-                <option value="national_id">National ID</option>
-                <option value="birth_certificate">Birth Certificate</option>
-                <option value="voter_id">Voter ID</option>
-            </select>
-        </div>
-        <div class="field-group">
-            <label>Document Number</label>
-            <input id="agentSearchValue" placeholder="Enter the client's ID number">
+    `).join('');
+    updateMultiTotal(); refreshUI();
+}
+function setMultiSourceInst(id, code) { const src = state.multiSources.find(s => s.id === id); src.institution = code || null; src.assetType = null; src.fields = {}; renderMultiSourceRows(); }
+function setMultiSourceAsset(id, type) { const src = state.multiSources.find(s => s.id === id); src.assetType = type || null; src.fields = {}; renderMultiSourceRows(); }
+function setMultiSourceField(id, name, value) { state.multiSources.find(s => s.id === id).fields[name] = value; refreshUI(); }
+function setMultiSourceAmount(id, value) { state.multiSources.find(s => s.id === id).amount = parseFloat(value) || 0; updateMultiTotal(); refreshUI(); }
+function updateMultiTotal() { const total = state.multiSources.reduce((sum, s) => sum + (s.amount || 0), 0); document.getElementById('multiTotal').textContent = `${CONFIG.CURRENCY} ${total.toFixed(2)}`; }
+function multiSourcesValid() {
+    if (state.multiSources.length < 2) return false;
+    return state.multiSources.every(s => {
+        if (!s.institution || !s.assetType || !(s.amount > 0)) return false;
+        const pin = extractPinFromFields(s.assetType, s.fields);
+        const needsPin = getAssetConfig(s.assetType)?.fields?.some(f => f.vault_field === 'pin');
+        if (needsPin && pin.length < 4) return false;
+        return fieldsValidForAsset(s.assetType, s.fields, true);
+    });
+}
+function refreshUI() { 
+    document.getElementById('reviewBtn').disabled = !isSwapReady(); 
+}
+function isSwapReady() {
+    if (state.swapType === 'MULTI_SOURCE') return multiSourcesValid() && state.toInst && state.toAsset && fieldsValidForAsset(state.toAsset, state.toFields, false);
+    const hasSource = state.fromInst && state.fromAsset;
+    if (!hasSource) return false;
+    if (!(state.fromAmount > 0) || !amountWithinLimits(state.fromInst, state.fromAmount)) return false;
+    if (!fieldsValidForAsset(state.fromAsset, state.fromFields, true)) return false;
+    if (state.swapType === 'IDENTITY') return !!state.toIdentityValue;
+    if (state.swapType === 'CASHOUT') return !!state.toInst;
+    return !!(state.toInst && state.toAsset && fieldsValidForAsset(state.toAsset, state.toFields, false));
+}
+function buildPayload() {
+    const reference = 'SWAP_' + Date.now();
+    const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    if (state.swapType === 'MULTI_SOURCE') {
+        const sources = state.multiSources.map(s => {
+            const pin = extractPinFromFields(s.assetType, s.fields);
+            const identifierField = (ASSETS[s.assetType]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+            const assetFields = { ...s.fields };
+            if (assetHasAmountField(s.assetType)) assetFields.amount = s.amount;
+            return { institution: s.institution, asset_type: s.assetType, identifier: identifierField ? s.fields[identifierField.name] : null, amount: s.amount, wallet_pin: pin || undefined, pin: pin || undefined, asset_fields: assetFields };
+        });
+        const totalAmount = sources.reduce((sum, s) => sum + s.amount, 0);
+        const destFields = { ...state.toFields };
+        if (assetHasAmountField(state.toAsset)) destFields.amount = totalAmount;
+        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency || CONFIG.CURRENCY;
+        const payload = { swap_type: 'MULTI_SOURCE', reference, idempotency_key: idempotencyKey, user_id: CONFIG.USER_ID, amount: totalAmount, currency: CONFIG.CURRENCY, destination_currency: destCurrency, contribution_strategy: 'USER_SPECIFIED', sources, to_institution: state.toInst, destination_institution: state.toInst, destination_asset_type: state.toAsset, asset_type: state.toAsset, destination_asset_fields: destFields };
+        for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
+        if (destIdField) payload.destination_identifier = state.toFields[destIdField.name];
+        return payload;
+    }
+    const pin = extractPinFromFields(state.fromAsset, state.fromFields);
+    const sourceAssetFields = { ...state.fromFields };
+    if (assetHasAmountField(state.fromAsset)) sourceAssetFields.amount = state.fromAmount;
+    const sourceCurrency = PARTICIPANTS[state.fromInst]?.limits?.currency || CONFIG.CURRENCY;
+    const payload = { swap_type: state.swapType, reference, idempotency_key: idempotencyKey, user_id: CONFIG.USER_ID, from_institution: state.fromInst, source_institution: state.fromInst, asset_type: state.fromAsset, amount: state.fromAmount, currency: sourceCurrency, wallet_pin: pin || undefined, pin: pin || undefined, asset_fields: sourceAssetFields, ...sourceAssetFields };
+    payload.amount = state.fromAmount;
+    const idField = (ASSETS[state.fromAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    if (idField) payload.source_identifier = state.fromFields[idField.name];
+    if (state.swapType === 'IDENTITY') {
+        payload.identity_type = state.toIdentityType;
+        payload.identity_value = state.toIdentityValue;
+        if (state.toIdentitySms) payload.notification_phone = state.toIdentitySms;
+        payload.destination_currency = sourceCurrency;
+    } else if (state.swapType === 'CASHOUT') {
+        payload.to_institution = state.toInst;
+        payload.destination_institution = state.toInst;
+        payload.delivery_method = state.deliveryMethod;
+        if (state.beneficiaryPhone) { payload.beneficiary_phone = state.beneficiaryPhone; payload.client_phone = state.beneficiaryPhone; }
+        payload.destination_currency = PARTICIPANTS[state.toInst]?.limits?.currency || CONFIG.CURRENCY;
+    } else {
+        payload.to_institution = state.toInst;
+        payload.destination_institution = state.toInst;
+        payload.destination_asset_type = state.toAsset;
+        payload.destination_currency = PARTICIPANTS[state.toInst]?.limits?.currency || sourceCurrency;
+        const destFields = { ...state.toFields };
+        if (assetHasAmountField(state.toAsset)) destFields.amount = state.fromAmount;
+        payload.destination_asset_fields = destFields;
+        for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
+        payload.amount = state.fromAmount;
+        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        if (destIdField) payload.destination_identifier = state.toFields[destIdField.name];
+    }
+    return payload;
+}
+async function previewSwap() {
+    if (!isSwapReady()) { showMessage('Please fill in all required fields.', 'warning'); return; }
+    const payload = buildPayload();
+    state.swapPayload = payload;
+    const btn = document.getElementById('reviewBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Calculating…';
+    const result = await callApi(CONFIG.PREVIEW_ENDPOINT, payload);
+    btn.disabled = false; btn.innerHTML = original; refreshUI();
+    if (!result.ok) { showMessage('Preview failed: ' + result.error, 'error'); return; }
+    showPreviewModal(result.body);
+}
+function showPreviewModal(previewData) {
+    const data = previewData.preview || {};
+    const swapType = state.swapPayload.swap_type;
+    const bodyHtml = `
+        <div class="preview-box">
+            <div class="preview-row"><span>Swap Type</span><span class="value">${swapType}</span></div>
+            <div class="preview-row"><span>Source</span><span class="value">${data.source_institution || '—'}</span></div>
+            <div class="preview-row"><span>Destination</span><span class="value">${data.destination_institution || '—'}</span></div>
+            <div class="preview-row"><span>Amount Requested</span><span class="value">${data.amount_requested} ${data.source_currency}</span></div>
+            <div class="preview-row" style="border-top:2px solid var(--border);padding-top:8px;"><span style="font-weight:700;">Total Fee</span><span class="value" style="color:var(--danger);">${data.total_fee} ${data.source_currency}</span></div>
+            <div class="preview-row" style="border-top:2px solid var(--primary);padding-top:8px;"><span style="font-weight:700;font-size:16px;">Net Amount</span><span class="value highlight">${data.net_amount_destination_currency || data.net_amount} ${data.destination_currency || data.source_currency}</span></div>
         </div>
         <div class="cta-row">
-            <button class="btn btn-primary" onclick="searchAgentClaim()">🔍 Search</button>
-            <button class="btn btn-secondary" onclick="toggleDebugMode()" id="agentDebugToggle">
-                🐛 Debug: ${debugMode ? 'ON' : 'OFF'}
-            </button>
-            ${debugMode ? `<button class="btn-debug" onclick="clearDebugLog()">🗑️ Clear Log</button>` : ''}
+            <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;">Cancel</button>
+            <button class="btn btn-primary" onclick="confirmSwap()" style="flex:1;">✅ Confirm & Execute</button>
+        </div>`;
+    state.lastPreview = previewData;
+    openModal('Swap Preview', bodyHtml);
+}
+async function confirmSwap() {
+    closeModal();
+    const payload = state.swapPayload;
+    if (!payload) { showMessage('No swap payload to execute', 'error'); return; }
+    const btn = document.getElementById('reviewBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Executing…';
+    const result = await callApi(CONFIG.EXECUTE_ENDPOINT, payload);
+    btn.disabled = false; btn.innerHTML = original; refreshUI();
+    if (!result.ok) { showMessage('Swap failed: ' + result.error, 'error'); return; }
+    showResultModal(result.body);
+}
+function showResultModal(response) {
+    const data = response.data || {};
+    const swapType = state.swapPayload.swap_type;
+    const reference = response.swap_reference || data.reference || '—';
+    let inner = '';
+    if (swapType === 'CASHOUT') {
+        inner = `<div class="icon">💰</div><div style="font-size:18px;font-weight:700;">Cashout Code Generated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div>${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}<div style="margin-top:12px;"><div style="font-size:24px;font-weight:700;">${data.amount ?? state.swapPayload.amount} ${state.swapPayload.currency || CONFIG.CURRENCY}</div></div>`;
+    } else if (swapType === 'IDENTITY') {
+        inner = `<div class="icon">🔑</div><div style="font-size:18px;font-weight:700;">Identity Swap Initiated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:24px;font-weight:700;">${data.amount ?? state.swapPayload.amount} ${data.currency || CONFIG.CURRENCY}</div>`;
+    } else {
+        inner = `<div class="icon">✅</div><div style="font-size:18px;font-weight:700;">Swap Completed</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="font-size:24px;font-weight:700;margin-top:12px;">${data.amount ?? state.swapPayload.amount} ${CONFIG.CURRENCY}</div>`;
+    }
+    openModal('Swap Result', `<div class="result-box">${inner}<div class="cta-row"><button class="btn btn-primary" onclick="closeModal(); location.reload();">Done</button></div></div>`);
+}
+
+const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'Birth Certificate', voter_id: 'Voter ID', phone: 'Phone Number', email: 'Email' };
+
+// ============================================================
+// USER SOURCE MANAGEMENT - UPDATED WITH QUICK SELECT
+// ============================================================
+
+async function loadUserSources() {
+    if (!CONFIG.USER_ID) return;
+    const result = await callApi(CONFIG.API_BASE + '/user/sources.php', {});
+    if (!result.ok) return;
+    userSources = result.body.data?.sources || [];
+    renderSavedSourceChips(); // Render quick-select chips
+}
+
+function renderSavedSourceChips() {
+    const container = document.getElementById('savedSourcesContainer');
+    const chipsContainer = document.getElementById('savedSourcesChips');
+    const clearBtn = document.getElementById('clearSourceBtn');
+    
+    if (!container || !chipsContainer) return;
+    
+    // Only show active sources
+    const activeSources = userSources.filter(s => s.status === 'active');
+    
+    if (activeSources.length === 0) {
+        container.style.display = 'none';
+        return;
+    }
+    
+    container.style.display = 'block';
+    
+    chipsContainer.innerHTML = activeSources.map(source => {
+        const assetIcon = ASSETS[source.asset_type]?.icon || '📦';
+        const instName = PARTICIPANTS[source.institution]?.name || source.institution;
+        const identifier = source.identifier || source.source_identifier || '';
+        const shortId = identifier.length > 15 ? identifier.substring(0, 12) + '…' : identifier;
+        const isSelected = selectedSourceId === source.id;
+        
+        return `
+            <span class="source-chip ${isSelected ? 'active' : ''}" 
+                  onclick="selectSavedSource(${source.id})"
+                  title="${escapeHtml(instName)} - ${escapeHtml(identifier)}">
+                <span class="chip-icon">${assetIcon}</span>
+                <span class="chip-label">${escapeHtml(instName)}</span>
+                <span class="chip-identifier">${escapeHtml(shortId)}</span>
+            </span>
+        `;
+    }).join('');
+    
+    // Show/hide clear button
+    if (selectedSourceId) {
+        clearBtn.style.display = 'inline-flex';
+    } else {
+        clearBtn.style.display = 'none';
+    }
+}
+
+function selectSavedSource(sourceId) {
+    const source = userSources.find(s => s.id === sourceId);
+    if (!source) {
+        showMessage('Source not found.', 'error');
+        return;
+    }
+    
+    // Track selected source
+    selectedSourceId = sourceId;
+    
+    // 1. Auto-select Institution
+    const instSelect = document.getElementById('fromInstSelect');
+    instSelect.value = source.institution;
+    selectFromInst(source.institution);
+    
+    // 2. Auto-select Asset Type
+    setTimeout(() => {
+        const assetSelect = document.getElementById('fromAssetSelect');
+        if (assetSelect) {
+            const checkAsset = setInterval(() => {
+                if (assetSelect.options.length > 1) {
+                    assetSelect.value = source.asset_type;
+                    selectFromAsset(source.asset_type);
+                    clearInterval(checkAsset);
+                    
+                    // 3. Auto-fill identifier fields
+                    setTimeout(() => {
+                        fillSourceIdentifierFields(source);
+                    }, 150);
+                }
+            }, 100);
+            setTimeout(() => clearInterval(checkAsset), 3000);
+        }
+    }, 200);
+    
+    // 4. Show source selected help
+    const helpEl = document.getElementById('sourceSelectedHelp');
+    if (helpEl) {
+        helpEl.style.display = 'block';
+        helpEl.textContent = `✅ Source selected: ${source.institution} - ${source.identifier || ''}`;
+    }
+    
+    // 5. Focus on amount field
+    setTimeout(() => {
+        const amountField = document.getElementById('fromAmount');
+        if (amountField) {
+            amountField.focus();
+            amountField.select();
+        }
+        showMessage(`✅ Source selected: ${source.institution} - ${source.identifier || 'Ready for amount'}`, 'success');
+    }, 400);
+    
+    // Update chips
+    renderSavedSourceChips();
+    refreshUI();
+}
+
+function fillSourceIdentifierFields(source) {
+    const assetConfig = ASSETS[source.asset_type];
+    if (!assetConfig) return;
+    
+    const fields = assetConfig.fields || [];
+    
+    // Find the identifier field (not PIN, not amount)
+    const identifierField = fields.find(f => 
+        f.vault_field !== 'pin' && 
+        f.name !== 'amount' &&
+        (f.name === 'identifier' || f.name === 'account' || f.name === 'phone' || f.name === 'card_number' || f.name === 'wallet_id')
+    );
+    
+    // Find PIN field
+    const pinField = fields.find(f => f.vault_field === 'pin');
+    
+    // Clear previous disabled state
+    document.querySelectorAll('#fromFields input[disabled]').forEach(input => {
+        input.disabled = false;
+        input.style.background = '#fff';
+        input.style.color = 'var(--text)';
+    });
+    
+    // Fill identifier field
+    if (identifierField) {
+        const fieldId = `fromField_${identifierField.name}`;
+        const input = document.getElementById(fieldId);
+        if (input) {
+            const identifier = source.identifier || source.source_identifier || '';
+            input.value = identifier;
+            if (typeof updateFromField === 'function') {
+                updateFromField(identifierField.name, identifier);
+            }
+            input.disabled = true;
+            input.style.background = '#f0f0f0';
+            input.style.color = '#555';
+            // Add note
+            const helpText = input.parentElement?.querySelector('.help');
+            if (helpText) {
+                helpText.textContent = '🔒 Auto-filled from your saved source';
+                helpText.style.color = 'var(--primary-dark)';
+            }
+        }
+    }
+    
+    // Fill PIN field if it exists and is saved
+    if (pinField && source.pin) {
+        const pinInput = document.getElementById(`fromField_${pinField.name}`);
+        if (pinInput) {
+            pinInput.value = source.pin;
+            if (typeof updateFromField === 'function') {
+                updateFromField(pinField.name, source.pin);
+            }
+            pinInput.disabled = true;
+            pinInput.style.background = '#f0f0f0';
+            pinInput.style.color = '#555';
+        }
+    }
+    
+    // Show help message
+    const helpEl = document.getElementById('sourceSelectedHelp');
+    if (helpEl) {
+        helpEl.style.display = 'block';
+        helpEl.textContent = `✅ Source "${source.institution}" auto-filled. Enter amount below.`;
+    }
+    
+    refreshUI();
+}
+
+function clearSourceSelection() {
+    selectedSourceId = null;
+    
+    // Re-enable all disabled fields
+    document.querySelectorAll('#fromFields input[disabled]').forEach(input => {
+        input.disabled = false;
+        input.style.background = '#fff';
+        input.style.color = 'var(--text)';
+    });
+    
+    // Clear help text
+    document.querySelectorAll('#fromFields .help').forEach(help => {
+        help.textContent = '';
+        help.style.color = 'var(--text-dim)';
+    });
+    
+    // Hide source selected help
+    const helpEl = document.getElementById('sourceSelectedHelp');
+    if (helpEl) {
+        helpEl.style.display = 'none';
+    }
+    
+    // Reset amount field
+    const amountField = document.getElementById('fromAmount');
+    if (amountField) {
+        amountField.value = '';
+        amountField.focus();
+    }
+    
+    // Reset institution and asset type
+    const instSelect = document.getElementById('fromInstSelect');
+    if (instSelect) {
+        instSelect.value = '';
+        selectFromInst('');
+    }
+    
+    const assetSelect = document.getElementById('fromAssetSelect');
+    if (assetSelect) {
+        assetSelect.value = '';
+        selectFromAsset('');
+    }
+    
+    showMessage('Source selection cleared. You can manually enter details.', 'info');
+    renderSavedSourceChips();
+    refreshUI();
+}
+
+function openMySources() {
+    openModal('🔗 My Sources', renderMySources());
+}
+
+function renderMySources() {
+    if (userSources.length === 0) {
+        return `
+            <div style="text-align:center;padding:20px;">
+                <div style="font-size:48px;">📭</div>
+                <div style="font-weight:600;margin:8px 0;">No sources added yet</div>
+                <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">Link your bank accounts, wallets, or cards to use them as swap sources.</div>
+                <button class="btn btn-primary" onclick="openAddSource()">+ Add Source</button>
+            </div>
+        `;
+    }
+    
+    const sourceList = userSources.map(source => {
+        const statusClass = source.status === 'active' ? 'active' : source.status === 'pending_confirmation' ? 'pending' : 'inactive';
+        const statusLabel = source.status === 'active' ? '✅ Active' : source.status === 'pending_confirmation' ? '⏳ Pending' : '❌ Inactive';
+        const isActive = source.status === 'active';
+        const assetIcon = ASSETS[source.asset_type]?.icon || '📦';
+        const assetLabel = ASSETS[source.asset_type]?.label || source.asset_type;
+        
+        return `
+            <div class="source-card">
+                <div class="source-header">
+                    <div class="source-institution">${escapeHtml(PARTICIPANTS[source.institution]?.name || source.institution)}</div>
+                    <div>
+                        <span class="source-status ${statusClass}">${statusLabel}</span>
+                        ${isActive ? `<button class="btn-primary btn-sm" onclick="useSourceForSwap(${source.id})" style="margin-left:8px;">Use</button>` : ''}
+                        ${isActive ? `<button class="btn-danger-outline" onclick="removeSource(${source.id})" style="margin-left:4px;">✕</button>` : ''}
+                    </div>
+                </div>
+                <div class="source-details">
+                    ${assetIcon} ${assetLabel} · ${escapeHtml(source.identifier || source.source_identifier)}
+                    ${source.account_name ? ` · ${escapeHtml(source.account_name)}` : ''}
+                    ${source.currency ? ` · ${source.currency}` : ''}
+                    ${source.confirmed_at ? ` · Confirmed: ${new Date(source.confirmed_at).toLocaleDateString()}` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+    
+    return `
+        <div style="margin-bottom:16px;">
+            <button class="btn btn-primary btn-sm" onclick="openAddSource()">➕ Add New Source</button>
+            <span style="font-size:12px;color:var(--text-muted);margin-left:12px;">${userSources.length} source(s) linked</span>
         </div>
-        <div id="agentSearchResults" style="margin-top:16px;"></div>
+        <div>${sourceList}</div>
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);font-size:11px;color:var(--text-dim);">
+            💡 You can add Accounts, Wallets, or Cards. Vouchers and Bank-Wallets are added manually by admin.
+            <br>Click <strong>Use</strong> on any active source to auto-fill the swap form.
+        </div>
     `;
 }
 
+function useSourceForSwap(sourceId) {
+    closeModal();
+    setTimeout(() => {
+        selectSavedSource(sourceId);
+    }, 300);
+}
+
+function openAddSource() {
+    const instOptions = Object.keys(PARTICIPANTS).map(code => 
+        `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`
+    ).join('');
+    
+    const body = `
+        <div style="margin-bottom:16px;">
+            <div style="font-size:14px;font-weight:600;margin-bottom:4px;">Link a new source</div>
+            <div style="font-size:12px;color:var(--text-muted);">Your bank will verify ownership via OTP or OAuth.</div>
+        </div>
+        <div class="field-group">
+            <label>Institution</label>
+            <select id="addSourceInst" onchange="onAddSourceInstChange(this.value)">
+                <option value="">Select institution</option>
+                ${instOptions}
+            </select>
+        </div>
+        <div class="field-group" id="addSourceAssetGroup" style="display:none;">
+            <label>Asset Type</label>
+            <select id="addSourceAssetType"></select>
+            <div class="help">Users can only add Accounts, Wallets, or Cards.</div>
+        </div>
+        <div class="field-group">
+            <label>Identifier</label>
+            <input id="addSourceIdentifier" placeholder="Account number, phone, or card number">
+            <div class="help">The number that identifies your account at this institution.</div>
+        </div>
+        <div class="field-group">
+            <label>Account Name (optional)</label>
+            <input id="addSourceAccountName" placeholder="e.g. My Main Account">
+        </div>
+        <div id="addSourceOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📱 Verify with OTP</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;" id="otpMessage">A verification code has been sent to your registered phone.</div>
+            <div class="otp-input-group">
+                <input type="text" id="addSourceOtp" placeholder="Enter code" inputmode="numeric" maxlength="8">
+                <button class="btn btn-primary btn-sm" onclick="completeSourceOtp()">Verify</button>
+            </div>
+        </div>
+        <div class="cta-row">
+            <button class="btn btn-secondary" onclick="openMySources()">Cancel</button>
+            <button class="btn btn-primary" id="addSourceSubmitBtn" onclick="submitAddSource()">🔗 Link Source</button>
+        </div>
+    `;
+    
+    openModal('Add Source', body);
+}
+
+let addSourceState = {
+    attemptId: null,
+    requiresOtp: false,
+    requiresRedirect: false,
+    redirectUrl: null,
+    institution: null,
+    assetType: null,
+    identifier: null
+};
+
+function onAddSourceInstChange(code) {
+    const group = document.getElementById('addSourceAssetGroup');
+    const sel = document.getElementById('addSourceAssetType');
+    if (!code) { group.style.display = 'none'; sel.innerHTML = ''; return; }
+    
+    const inst = PARTICIPANTS[code];
+    const allTypes = inst?.asset_types || [];
+    const eligibleTypes = allTypes.filter(t => 
+        ['ACCOUNT', 'WALLET', 'CARD'].includes(String(t).toUpperCase())
+    );
+    
+    if (eligibleTypes.length === 0) {
+        group.style.display = 'block';
+        sel.innerHTML = '<option value="">No eligible account types at this institution</option>';
+        return;
+    }
+    
+    sel.innerHTML = eligibleTypes.map(t => 
+        `<option value="${t}">${getAssetConfig(t)?.icon || '📦'} ${getAssetConfig(t)?.label || t}</option>`
+    ).join('');
+    group.style.display = 'block';
+}
+
+async function submitAddSource() {
+    const institution = document.getElementById('addSourceInst').value;
+    const assetType = document.getElementById('addSourceAssetType').value;
+    const identifier = document.getElementById('addSourceIdentifier').value.trim();
+    const accountName = document.getElementById('addSourceAccountName').value.trim();
+    
+    if (!institution) { showMessage('Select an institution.', 'warning'); return; }
+    if (!assetType) { showMessage('Select an asset type.', 'warning'); return; }
+    if (!identifier) { showMessage('Enter your account identifier.', 'warning'); return; }
+    
+    const btn = document.getElementById('addSourceSubmitBtn');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ Registering...';
+    
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/add_source.php', {
+        institution: institution,
+        asset_type: assetType,
+        identifier: identifier,
+        account_name: accountName || undefined
+    });
+    
+    btn.disabled = false;
+    btn.textContent = original;
+    
+    if (!result.ok) {
+        showMessage('Failed to add source: ' + result.error, 'error');
+        return;
+    }
+    
+    const data = result.body.data || {};
+    addSourceState.attemptId = data.attempt_id || null;
+    addSourceState.requiresOtp = data.requires_otp || false;
+    addSourceState.requiresRedirect = data.requires_redirect || false;
+    addSourceState.redirectUrl = data.redirect_url || null;
+    addSourceState.institution = institution;
+    addSourceState.assetType = assetType;
+    addSourceState.identifier = identifier;
+    
+    if (data.requires_redirect) {
+        showMessage('Redirecting to your bank for verification...', 'info');
+        setTimeout(() => {
+            window.location.href = data.redirect_url;
+        }, 1500);
+        return;
+    }
+    
+    if (data.requires_otp) {
+        document.getElementById('addSourceOtpFields').style.display = 'block';
+        document.getElementById('otpMessage').textContent = data.message || 'A verification code has been sent to your registered phone.';
+        document.getElementById('addSourceSubmitBtn').style.display = 'none';
+        showMessage('OTP sent! Enter the code to verify.', 'success');
+        return;
+    }
+    
+    showMessage(data.message || 'Source added!', 'success');
+    setTimeout(() => {
+        loadUserSources();
+        openMySources();
+    }, 1500);
+}
+
+async function completeSourceOtp() {
+    const otp = document.getElementById('addSourceOtp').value.trim();
+    if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
+    if (!addSourceState.attemptId) { showMessage('No pending verification attempt.', 'error'); return; }
+    
+    const btn = document.querySelector('#addSourceOtpFields .btn-primary');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ Verifying...';
+    
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/verify_source.php', {
+        attempt_id: addSourceState.attemptId,
+        otp: otp
+    });
+    
+    btn.disabled = false;
+    btn.textContent = original;
+    
+    if (!result.ok) {
+        showMessage('Verification failed: ' + result.error, 'error');
+        return;
+    }
+    
+    showMessage('✅ Source verified and activated!', 'success');
+    setTimeout(() => {
+        loadUserSources();
+        openMySources();
+    }, 1500);
+}
+
+async function removeSource(sourceId) {
+    if (!confirm('Remove this source? You can add it again later.')) return;
+    
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/sources/delete.php', {
+        source_id: sourceId
+    });
+    
+    if (!result.ok) {
+        showMessage('Failed to remove source: ' + result.error, 'error');
+        return;
+    }
+    
+    showMessage('Source removed.', 'success');
+    loadUserSources();
+    openMySources();
+}
+
+// ============================================================
+// END USER SOURCE MANAGEMENT
+// ============================================================
+
+function openProfileModal() { openModal('My Profile', renderProfileModal()); }
+function renderProfileModal() {
+    const rows = savedIdentities.length ? savedIdentities.map((id, i) => `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
+            <div><div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div><div style="font-size:14px;font-weight:600;">${escapeHtml(id.value)}</div></div>
+            <div class="quick-actions" style="margin:0;"><span class="quick-link" onclick="useSavedIdentity(${i})">✓ Use</span><span class="quick-link danger" onclick="removeSavedIdentity(${i})">✕ Remove</span></div>
+        </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);">No saved identities yet.</div>`;
+    return `
+        <div style="margin-bottom:12px;">${rows}</div>
+        <div class="field-group"><label>Identity Type</label><select id="newIdentityType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option><option value="phone">Phone Number</option><option value="email">Email</option></select></div>
+        <div class="field-group"><label>Identity Value</label><input id="newIdentityValue" placeholder="Enter the identity value"></div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="addSavedIdentity()">+ Add Identity</button></div>
+        <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+            <div class="field-label" style="margin-bottom:8px;">🔒 Transaction PIN</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Required to claim money sent to your verified identity — whether you finalize it yourself here, or relay it to an agent in person. Never share it over SMS.</div>
+            <div class="field-group"><label>New PIN (4-6 digits)</label><input type="password" id="newPin" inputmode="numeric" maxlength="6" placeholder="••••"></div>
+            <div class="field-group"><label>Confirm PIN</label><input type="password" id="confirmPin" inputmode="numeric" maxlength="6" placeholder="••••"></div>
+            <div class="cta-row"><button class="btn btn-primary" onclick="setTransactionPin()">Set PIN</button></div>
+        </div>`;
+}
+function addSavedIdentity() {
+    const type = document.getElementById('newIdentityType').value;
+    const value = document.getElementById('newIdentityValue').value.trim();
+    if (!value) { showMessage('Enter an identity value first', 'error'); return; }
+    savedIdentities.push({ type, value });
+    document.getElementById('modalBody').innerHTML = renderProfileModal();
+}
+function removeSavedIdentity(idx) { savedIdentities.splice(idx, 1); document.getElementById('modalBody').innerHTML = renderProfileModal(); }
+function useSavedIdentity(idx) {
+    const id = savedIdentities[idx];
+    if (!id) return;
+    closeModal(); quickSetSwapType('IDENTITY');
+    state.toIdentityType = id.type; state.toIdentityValue = id.value;
+    document.getElementById('identityType').value = id.type;
+    document.getElementById('identityValue').value = id.value;
+    updateIdentityHelp(); refreshUI();
+    showMessage(`Using saved ${IDENTITY_TYPE_LABELS[id.type] || id.type}: ${id.value}`, 'success');
+}
+async function setTransactionPin() {
+    const pin = document.getElementById('newPin').value.trim();
+    const confirmPin = document.getElementById('confirmPin').value.trim();
+    if (!/^\d{4,6}$/.test(pin)) { showMessage('PIN must be 4-6 digits.', 'warning'); return; }
+    if (pin !== confirmPin) { showMessage('PIN and confirmation do not match.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/set_pin.php', { pin, confirm_pin: confirmPin });
+    if (!result.ok) { showMessage('Could not set PIN: ' + result.error, 'error'); return; }
+    showMessage('Transaction PIN set. Keep it private.', 'success');
+    closeModal();
+}
+
+let pendingClaims = [];
+async function checkPendingClaims() {
+    if (!CONFIG.USER_ID) return;
+    try {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {});
+        if (!result.ok) return;
+        pendingClaims = result.body.data || [];
+        const btn = document.getElementById('claimsButton');
+        const badge = document.getElementById('claimsBadge');
+        if (pendingClaims.length > 0) { btn.style.display = 'inline-flex'; badge.textContent = pendingClaims.length; } else { btn.style.display = 'none'; }
+    } catch (e) { console.error('[claims] Failed to check pending claims', e); }
+}
+function openClaimsModal() {
+    if (pendingClaims.length === 0) { openModal('Claim Money', '<div style="font-size:12px;color:var(--text-dim);">No money currently waiting for your verified identities.</div>'); return; }
+    const rows = pendingClaims.map((c, i) => `
+        <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+                <div><div style="font-weight:700;font-size:16px;color:var(--primary-dark);">${escapeHtml(c.amount)} ${escapeHtml(c.currency)}</div><div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(c.source_institution || 'Unknown')}</div><div style="font-size:11px;color:var(--text-dim);">Expires ${c.hold_expires_at ? new Date(c.hold_expires_at).toLocaleString() : 'soon'}</div></div>
+                <button class="btn btn-primary btn-sm" onclick="openClaimForm(${i})">Claim</button>
+            </div>
+        </div>`).join('');
+    openModal('💰 Claim Money', `<div>${rows}</div>`);
+}
+function openClaimForm(idx) {
+    const claim = pendingClaims[idx];
+    if (!claim) return;
+    const pinHint = claim.claim_type === 'otp_pin' ? 'Use the one-time PIN sent by SMS when this money was sent.' : 'Use your VouchMorph transaction PIN.';
+    const body = `
+        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:14px;margin-bottom:14px;">
+            <div style="font-size:20px;font-weight:700;color:var(--primary-dark);">${escapeHtml(claim.amount)} ${escapeHtml(claim.currency)}</div>
+            <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(claim.source_institution || 'Unknown')}</div>
+        </div>
+        <div class="field-group"><label>Claim PIN</label><input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="••••"><div class="help">${pinHint}</div></div>
+        <div class="field-group"><label>Receive as</label><select id="claimDestType" onchange="toggleClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option></select></div>
+        <div id="claimDepositFields" style="display:none;">
+            <div class="field-group"><label>Destination Institution</label><select id="claimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
+            <div class="field-group"><label>Account / Wallet Number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div>
+        </div>
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openClaimsModal()">← Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">✅ Claim Funds</button></div>`;
+    openModal('Claim Money', body);
+}
+function toggleClaimDestFields(type) { document.getElementById('claimDepositFields').style.display = type === 'DEPOSIT' ? 'block' : 'none'; }
+async function submitClaim(swapReference) {
+    const pin = document.getElementById('claimPin').value.trim();
+    const destType = document.getElementById('claimDestType').value;
+    if (!pin) { showMessage('Enter your claim PIN.', 'warning'); return; }
+    const payload = { swap_reference: swapReference, pin, destination_type: destType };
+    if (destType === 'DEPOSIT') {
+        payload.destination_institution = document.getElementById('claimDestInst').value;
+        payload.destination_identifier = document.getElementById('claimDestIdentifier').value.trim();
+        if (!payload.destination_institution || !payload.destination_identifier) { showMessage('Select a destination institution and enter an account/wallet number.', 'warning'); return; }
+    }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', payload);
+    if (!result.ok) { showMessage('Claim failed: ' + result.error, 'error'); return; }
+    closeModal(); showMessage('Funds claimed successfully!', 'success'); checkPendingClaims();
+}
+
+let agentStatus = { is_agent: false, approved_destinations: [], all_destinations: [] };
+async function loadAgentStatus() {
+    if (!CONFIG.USER_ID) return;
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
+    if (!result.ok) return;
+    agentStatus = result.body.data;
+    document.getElementById('agentToolsButton').style.display = agentStatus.is_agent ? 'inline-flex' : 'none';
+    document.getElementById('agentBadge').style.display = agentStatus.is_agent ? 'inline-block' : 'none';
+}
+async function openAgentModal() {
+    openModal('Agent Account', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);">Failed to load agent status: ${escapeHtml(result.error)}</div>`; return; }
+    agentStatus = result.body.data;
+    document.getElementById('agentToolsButton').style.display = agentStatus.is_agent ? 'inline-flex' : 'none';
+    document.getElementById('agentBadge').style.display = agentStatus.is_agent ? 'inline-block' : 'none';
+    document.getElementById('modalBody').innerHTML = renderAgentModal();
+}
+
+function renderAgentModal() {
+    const activeDestinations = agentStatus.all_destinations.filter(d => 
+        d.status !== 'cancelled' && !d.deleted_at
+    );
+    
+    const statusRows = activeDestinations.length ? activeDestinations.map(d => {
+        const isPending = d.status === 'pending_confirmation';
+        const isRejected = d.status === 'rejected';
+        const canCancel = isPending || isRejected;
+        
+        const badge = d.status === 'active' ? '<span style="background:#dcfce7;color:#166534;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">Active</span>'
+            : isPending ? '<span style="background:#fef3c7;color:#8a5a0b;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">⏳ Pending Approval</span>'
+            : isRejected ? '<span style="background:#fbeceb;color:var(--danger);padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">Rejected</span>'
+            : '<span style="background:#fbeceb;color:var(--danger);padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">' + (d.status || 'Unknown') + '</span>';
+            
+        return `<div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-bottom:8px;background:#fff;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+                <div><div style="font-weight:600;">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(d.identifier)} · ${escapeHtml(d.account_type || d.asset_type)}</div></div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    ${badge}
+                    ${canCancel ? `<button class="btn-danger-outline" onclick="cancelAgentDestination(${d.id})" style="font-size:10px;padding:4px 10px;">✕ Cancel</button>` : ''}
+                </div>
+            </div>${d.status === 'rejected' && d.rejection_reason ? `<div style="font-size:12px;color:var(--danger);margin-top:6px;">Reason: ${escapeHtml(d.rejection_reason)}</div>` : ''}
+        </div>`;
+    }).join('') : '<div style="font-size:12px;color:var(--text-dim);">You have no agent destination accounts registered yet.</div>';
+    
+    return `
+        <div style="margin-bottom:16px;"><div class="field-label" style="margin-bottom:8px;">Your Agent Accounts</div>${statusRows}</div>
+        <div style="border-top:1px solid var(--border);padding-top:16px;">
+            <div class="field-label" style="margin-bottom:8px;">Register a New Agent Destination</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Register a business/agent account you hold at a participating institution. Only business or agent-designated accounts are eligible. Approval required before activation.</div>
+            <div class="field-group"><label>Institution</label><select id="agentInst" onchange="onAgentInstChange(this.value)"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
+            <div class="field-group" id="agentAssetTypeGroup" style="display:none;"><label>Account Type</label><select id="agentAssetType"></select><div class="help">Only Account, Wallet, or Card can be used — vouchers stay manual, never registered as a destination.</div></div>
+            <div class="field-group"><label>Account / Wallet / Card Number</label><input id="agentIdentifier" placeholder="Your business account number"></div>
+            <div class="field-group"><label>Account Name (optional)</label><input id="agentAccountName" placeholder="e.g. Thabo's General Store"></div>
+            <div class="cta-row"><button class="btn btn-primary" onclick="submitAgentDestination()">Register & Verify</button></div>
+        </div>`;
+}
+
+async function cancelAgentDestination(destinationId) {
+    if (!confirm('Cancel this registration? You can register again later.')) return;
+    
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/cancel_destination.php', {
+        destination_id: destinationId
+    });
+    
+    if (!result.ok) {
+        showMessage('Failed to cancel: ' + result.error, 'error');
+        return;
+    }
+    
+    showMessage('Registration cancelled successfully.', 'success');
+    openAgentModal();
+}
+
+async function submitAgentDestination() {
+    const institution = document.getElementById('agentInst').value;
+    const assetType = document.getElementById('agentAssetType').value;
+    const identifier = document.getElementById('agentIdentifier').value.trim();
+    const accountName = document.getElementById('agentAccountName').value.trim();
+    if (!institution || !identifier) { showMessage('Select an institution and enter your account number.', 'warning'); return; }
+    if (!assetType) { showMessage('Select whether this is an Account, Wallet, or Card.', 'warning'); return; }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/propose_destination.php', { institution, asset_type: assetType, identifier, account_name: accountName || undefined });
+    if (!result.ok) { showMessage('Could not register: ' + result.error, 'error'); return; }
+
+    const data = result.body.data;
+
+    if (data.requires_redirect) {
+        showMessage(data.message || 'Redirecting you to your bank to confirm this account...', 'info');
+        window.location.href = data.redirect_url;
+        return;
+    }
+
+    if (!data.requires_otp) {
+        showMessage(data.message, data.otp_supported ? 'success' : 'warning');
+        openAgentModal();
+        return;
+    }
+
+    document.getElementById('modalBody').innerHTML = renderAgentOtpStep(data);
+}
+
+function renderAgentOtpStep(data) {
+    return `
+        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:14px;margin-bottom:16px;">
+            <div style="font-weight:600;margin-bottom:4px;">📱 Verification code sent</div>
+            <div style="font-size:12px;color:var(--text-muted);">${escapeHtml(data.message)}</div>
+        </div>
+        <div class="field-group"><label>Enter the code</label><input type="text" id="agentOtpCode" inputmode="numeric" maxlength="8" placeholder="Code from your bank"></div>
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentModal()">Cancel</button><button class="btn btn-primary" onclick="verifyAgentOtp(${data.attempt_id})">Verify & Register</button></div>
+    `;
+}
+
+async function verifyAgentOtp(attemptId) {
+    const otp = document.getElementById('agentOtpCode').value.trim();
+    if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/verify_destination_otp.php', { attempt_id: attemptId, otp });
+    if (!result.ok) { showMessage('Verification failed: ' + result.error, 'error'); return; }
+    showMessage(result.body.data.message || 'Account verified and registered.', 'success');
+    openAgentModal();
+}
+
+const AGENT_ELIGIBLE_ASSET_TYPES = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
+
+function onAgentInstChange(code) {
+    const group = document.getElementById('agentAssetTypeGroup');
+    const sel = document.getElementById('agentAssetType');
+    if (!code) { group.style.display = 'none'; sel.innerHTML = ''; return; }
+    const inst = PARTICIPANTS[code];
+    const allTypes = inst?.asset_types || [];
+    const eligible = allTypes.filter(t => AGENT_ELIGIBLE_ASSET_TYPES.includes(String(t).toUpperCase()));
+    if (eligible.length === 0) {
+        group.style.display = 'block';
+        sel.innerHTML = '<option value="">No eligible account types at this institution</option>';
+        return;
+    }
+    sel.innerHTML = eligible.map(t => `<option value="${t}">${getAssetConfig(t)?.icon || '📦'} ${getAssetConfig(t)?.label || t}</option>`).join('');
+    group.style.display = 'block';
+}
+
+// ============================================================
+// AGENT TOOLS - SEARCH WITH AGGREGATED DATA (FIXED CURRENCY)
+// ============================================================
+
 function openAgentToolsModal() { 
-    addDebugLog('🔓 Opening Agent Tools');
     openModal('🏪 Agent Tools', renderAgentToolsSearch()); 
+}
+
+function renderAgentToolsSearch() {
+    return `
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Search for a client's pending identity payment. You'll need to physically verify their document and have them tell you their claim PIN before you can finalize.</div>
+        <div class="field-group"><label>Document Type</label><select id="agentSearchType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option></select></div>
+        <div class="field-group"><label>Document Number</label><input id="agentSearchValue" placeholder="Enter the client's ID number"></div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="searchAgentClaim()">🔍 Search</button></div>
+        <div id="agentSearchResults" style="margin-top:16px;"></div>`;
 }
 
 async function searchAgentClaim() {
@@ -730,175 +1583,76 @@ async function searchAgentClaim() {
     }
     
     resultsBox.innerHTML = '<div style="text-align:center;padding:16px;"><div class="spinner"></div> Searching...</div>';
-    addDebugLog(`🔍 Searching for: ${identityType}=${identityValue}`);
     
-    try {
-        const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/search_claim.php', { 
-            identity_type: identityType, 
-            identity_value: identityValue 
-        });
-        
-        agentSearchRaw = result;
-        addDebugLog(`📦 Search response:`, result);
-        
-        if (!result.ok) { 
-            resultsBox.innerHTML = `<div style="color:var(--danger);">❌ ${escapeHtml(result.error)}</div>`;
-            addDebugLog(`❌ Search failed: ${result.error}`);
-            return; 
-        }
-        
-        const data = result.body.data;
-        agentSearchData = data;
-        
-        if (!data) {
-            resultsBox.innerHTML = '<div style="font-size:12px;color:var(--text-dim);">No pending payment found for this identity.</div>';
-            addDebugLog('ℹ️ No pending holds found');
-            return;
-        }
-        
-        // Display results with debug info
-        if (data.multi_currency) {
-            let html = `
-                <div style="margin-bottom:12px;">
-                    <strong>Multiple currencies found for this identity:</strong>
-                    <span style="font-size:11px;color:var(--text-muted);margin-left:8px;">(Click Claim to see all holds)</span>
-                </div>`;
-            data.balances.forEach((b, index) => {
-                const currency = escapeHtml(b.currency);
-                const totalAmount = parseFloat(b.total_amount).toFixed(2);
-                const swapCount = parseInt(b.swap_count);
-                const identityTypeEscaped = escapeHtml(data.identity_type);
-                const identityValueEscaped = escapeHtml(data.identity_value);
-                
-                html += `
-                    <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;">
-                        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
-                            <div>
-                                <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${totalAmount} ${currency}</div>
-                                <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
-                                <div style="font-size:11px;color:var(--text-dim);">Expires ${b.earliest_expires_at ? new Date(b.earliest_expires_at).toLocaleString() : 'soon'}</div>
-                                ${debugMode ? `<div style="font-size:10px;color:var(--text-dim);margin-top:4px;">Hold IDs: ${(b.hold_ids || []).join(', ')}</div>` : ''}
-                            </div>
-                            <div>
-                                <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">💰 Claim</button>
-                                ${debugMode ? `<button class="btn-debug btn-sm" onclick="showHoldDetails()" style="margin-top:4px;">🔍 Debug</button>` : ''}
-                            </div>
-                        </div>
-                        ${debugMode ? `<div style="margin-top:8px;padding:8px;background:#f8f6f0;border-radius:4px;font-size:10px;font-family:monospace;white-space:pre-wrap;">Hold IDs: ${JSON.stringify(b.hold_ids || [])}\nReferences: ${JSON.stringify(b.swap_references || [])}</div>` : ''}
-                    </div>
-                `;
-            });
-            resultsBox.innerHTML = html;
-            addDebugLog(`✅ Found ${data.balances.length} currency groups`);
-            return;
-        }
-        
-        // Single currency
-        const currency = escapeHtml(data.currency);
-        const totalAmount = parseFloat(data.total_amount).toFixed(2);
-        const swapCount = parseInt(data.swap_count);
-        const identityTypeEscaped = escapeHtml(data.identity_type);
-        const identityValueEscaped = escapeHtml(data.identity_value);
-        const holdIds = data.hold_ids || [];
-        const swapRefs = data.swap_references || [];
-        
-        addDebugLog(`✅ Found ${swapCount} holds totaling ${totalAmount} ${currency}`);
-        addDebugLog(`📋 Hold IDs:`, holdIds);
-        addDebugLog(`📋 Swap References:`, swapRefs);
-        
-        resultsBox.innerHTML = `
-            <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;">
-                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
-                    <div>
-                        <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${totalAmount} ${currency}</div>
-                        <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
-                        <div style="font-size:11px;color:var(--text-dim);">Expires ${data.earliest_expires_at ? new Date(data.earliest_expires_at).toLocaleString() : 'soon'}</div>
-                        ${debugMode ? `<div style="font-size:10px;color:var(--text-dim);margin-top:4px;">Hold IDs: ${holdIds.join(', ')}</div>` : ''}
-                    </div>
-                    <div>
-                        <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">💰 Claim</button>
-                        ${debugMode ? `<button class="btn-debug btn-sm" onclick="showHoldDetails()" style="margin-top:4px;">🔍 Debug</button>` : ''}
-                    </div>
-                </div>
-                ${debugMode ? `
-                <div style="margin-top:8px;padding:8px;background:#f8f6f0;border-radius:4px;font-size:10px;font-family:monospace;white-space:pre-wrap;">
-                    📋 Hold IDs: ${JSON.stringify(holdIds)}
-                    📋 References: ${JSON.stringify(swapRefs)}
-                    📋 Identity: ${identityTypeEscaped}=${identityValueEscaped}
-                </div>` : ''}
-            </div>
-        `;
-        
-    } catch (error) {
-        resultsBox.innerHTML = `<div style="color:var(--danger);">❌ Error: ${escapeHtml(error.message)}</div>`;
-        addDebugLog(`❌ Exception in search: ${error.message}`);
-        console.error('[searchAgentClaim] Error:', error);
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/search_claim.php', { 
+        identity_type: identityType, 
+        identity_value: identityValue 
+    });
+    
+    if (!result.ok) { 
+        resultsBox.innerHTML = `<div style="color:var(--danger);">${escapeHtml(result.error)}</div>`; 
+        return; 
     }
-}
-
-function showHoldDetails() {
-    if (!agentSearchData) {
-        showMessage('No search data available. Search first.', 'warning');
+    
+    const data = result.body.data;
+    
+    if (!data) {
+        resultsBox.innerHTML = '<div style="font-size:12px;color:var(--text-dim);">No pending payment found for this identity.</div>';
         return;
     }
     
-    const data = agentSearchData;
-    let html = `
-        <div style="font-weight:600;margin-bottom:12px;">🔍 Hold Details</div>
-        <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
-            Identity: ${escapeHtml(data.identity_type)} = ${escapeHtml(data.identity_value)}
-        </div>
-    `;
+    agentSearchData = data;
     
+    // ✅ FIX: Properly escape and format values
     if (data.multi_currency) {
-        data.balances.forEach(b => {
+        let html = '<div style="margin-bottom:12px;"><strong>Multiple currencies found for this identity:</strong></div>';
+        data.balances.forEach((b, index) => {
+            const currency = escapeHtml(b.currency);
+            const totalAmount = parseFloat(b.total_amount).toFixed(2);
+            const swapCount = parseInt(b.swap_count);
+            const identityTypeEscaped = escapeHtml(data.identity_type);
+            const identityValueEscaped = escapeHtml(data.identity_value);
+            
             html += `
-                <div class="hold-detail-card">
-                    <div style="font-weight:600;font-size:16px;color:var(--primary-dark);">${b.total_amount} ${b.currency}</div>
-                    <div style="font-size:11px;color:var(--text-muted);">${b.swap_count} holds</div>
-                    <div style="font-size:10px;font-family:monospace;margin-top:4px;">
-                        Hold IDs: ${(b.hold_ids || []).join(', ')}
-                    </div>
-                    <div style="font-size:10px;font-family:monospace;">
-                        References: ${(b.swap_references || []).join(', ')}
-                    </div>
-                    <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">
-                        Expires: ${b.earliest_expires_at ? new Date(b.earliest_expires_at).toLocaleString() : 'unknown'}
+                <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+                        <div>
+                            <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${totalAmount} ${currency}</div>
+                            <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
+                            <div style="font-size:11px;color:var(--text-dim);">Expires ${b.earliest_expires_at ? new Date(b.earliest_expires_at).toLocaleString() : 'soon'}</div>
+                        </div>
+                        <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">💰 Claim</button>
                     </div>
                 </div>
             `;
         });
-    } else {
-        html += `
-            <div class="hold-detail-card">
-                <div style="font-weight:600;font-size:16px;color:var(--primary-dark);">${data.total_amount} ${data.currency}</div>
-                <div style="font-size:11px;color:var(--text-muted);">${data.swap_count} holds</div>
-                <div style="font-size:10px;font-family:monospace;margin-top:4px;">
-                    Hold IDs: ${(data.hold_ids || []).join(', ')}
-                </div>
-                <div style="font-size:10px;font-family:monospace;">
-                    References: ${(data.swap_references || []).join(', ')}
-                </div>
-                <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">
-                    Expires: ${data.earliest_expires_at ? new Date(data.earliest_expires_at).toLocaleString() : 'unknown'}
-                </div>
-            </div>
-        `;
+        resultsBox.innerHTML = html;
+        return;
     }
     
-    // Add debug info
-    html += `
-        <div style="margin-top:16px;padding:12px;background:#f8f6f0;border-radius:var(--radius-sm);font-size:10px;font-family:monospace;">
-            <div style="font-weight:600;margin-bottom:4px;">🐛 Raw Data:</div>
-            <pre style="white-space:pre-wrap;word-break:break-all;">${escapeHtml(JSON.stringify(data, null, 2))}</pre>
+    // ✅ FIX: Single currency - properly format and escape
+    const currency = escapeHtml(data.currency);
+    const totalAmount = parseFloat(data.total_amount).toFixed(2);
+    const swapCount = parseInt(data.swap_count);
+    const identityTypeEscaped = escapeHtml(data.identity_type);
+    const identityValueEscaped = escapeHtml(data.identity_value);
+    
+    resultsBox.innerHTML = `
+        <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+                <div>
+                    <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${totalAmount} ${currency}</div>
+                    <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
+                    <div style="font-size:11px;color:var(--text-dim);">Expires ${data.earliest_expires_at ? new Date(data.earliest_expires_at).toLocaleString() : 'soon'}</div>
+                </div>
+                <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">💰 Claim</button>
+            </div>
         </div>
     `;
-    
-    openModal('🔍 Hold Details', html);
 }
 
 // ============================================================
-// AGGREGATED CLAIM FINALIZATION WITH DEBUGGING
+// AGGREGATED CLAIM FINALIZATION (FIXED CURRENCY)
 // ============================================================
 
 function openAgentFinalizeFormAggregated(identityType, identityValue, currency, totalAmount, swapCount) {
@@ -913,35 +1667,13 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
         return;
     }
     
-    // Debug: Show what holds will be claimed
-    const holdIds = data.multi_currency ? 
-        data.balances.flatMap(b => b.hold_ids || []) : 
-        (data.hold_ids || []);
-    const swapRefs = data.multi_currency ? 
-        data.balances.flatMap(b => b.swap_references || []) : 
-        (data.swap_references || []);
-    
-    addDebugLog(`📋 Claiming ${holdIds.length} holds for ${identityValue}`);
-    addDebugLog(`📋 Hold IDs:`, holdIds);
-    addDebugLog(`📋 References:`, swapRefs);
-    
     const destOptions = agentStatus.approved_destinations.map(d => 
         `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} - ${escapeHtml(d.identifier)}</option>`
     ).join('');
     
     const searchTypeLabel = IDENTITY_TYPE_LABELS[document.getElementById('agentSearchType')?.value] || 'document';
     
-    // Show debug info about holds being claimed
-    const holdDebugHtml = debugMode ? `
-        <div style="margin-top:8px;padding:8px;background:#f8f6f0;border-radius:4px;font-size:10px;font-family:monospace;white-space:pre-wrap;max-height:100px;overflow-y:auto;">
-            📋 Holds to claim (${holdIds.length}):
-            IDs: ${holdIds.join(', ')}
-            References: ${swapRefs.join(', ')}
-        </div>
-    ` : '';
-    
-    // Build the form
-    let body = `
+    const body = `
         <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:14px;margin-bottom:14px;">
             <div style="font-size:12px;color:var(--text-muted);">Client's total balance</div>
             <div style="font-size:24px;font-weight:700;color:var(--primary-dark);">${totalAmount} ${currency}</div>
@@ -950,12 +1682,8 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
                 The full amount deposits into your account. Whatever the client doesn't take as cash today 
                 is instantly sent back to their identity as a new claim.
             </div>
-            ${holdDebugHtml}
         </div>
-        <div class="field-group">
-            <label>Deposit into</label>
-            <select id="agentDestSelect">${destOptions}</select>
-        </div>
+        <div class="field-group"><label>Deposit into</label><select id="agentDestSelect">${destOptions}</select></div>
         <div class="field-group">
             <label>Cash to give the client now</label>
             <input type="number" id="cashNowAmount" min="0" max="${totalAmount}" step="0.01" value="${totalAmount}">
@@ -965,33 +1693,12 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
             <span class="quick-link" onclick="document.getElementById('cashNowAmount').value=${totalAmount}">Give it all</span>
             <span class="quick-link muted" onclick="document.getElementById('cashNowAmount').value=0">Give none now</span>
         </div>
-        <div class="field-group">
-            <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;">
-                <input type="checkbox" id="agentDocVerified"> I have physically verified the client's ${searchTypeLabel}
-            </label>
-        </div>
-        <div class="field-group">
-            <label>Client's Claim PIN</label>
+        <div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;">
+            <input type="checkbox" id="agentDocVerified"> I have physically verified the client's ${searchTypeLabel}
+        </label></div>
+        <div class="field-group"><label>Client's Claim PIN</label>
             <input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for their PIN">
             <div class="help">The client must tell you this themselves — never accept a claim without it.</div>
-        </div>
-    `;
-    
-    // Add debug buttons
-    if (debugMode) {
-        body += `
-            <div class="cta-row" style="margin-top:12px;">
-                <button class="btn-debug" onclick="testPinVerification('${escapeHtml(identityType)}', '${escapeHtml(identityValue)}')">🔍 Test PIN</button>
-                <button class="btn-debug" onclick="fetchHoldStatus('${escapeHtml(identityType)}', '${escapeHtml(identityValue)}')">📊 Hold Status</button>
-            </div>
-        `;
-    }
-    
-    // Add debug output area
-    body += `
-        <div id="finalizeDebugOutput" style="display:none;margin-top:16px;padding:12px;background:#f8f6f0;border-radius:var(--radius-sm);border:1px solid var(--border);">
-            <div style="font-weight:600;margin-bottom:8px;">🐛 Finalize Debug Output</div>
-            <div id="finalizeDebugContent" style="font-size:11px;font-family:monospace;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow-y:auto;background:#fff;padding:8px;border-radius:4px;"></div>
         </div>
         <div class="cta-row">
             <button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back to Search</button>
@@ -1000,7 +1707,6 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
     `;
     
     openModal('Confirm Deposit', body);
-    addDebugLog(`🔓 Opened finalize form for ${identityValue}`);
 }
 
 async function submitAgentFinalizeAggregated(identityType, identityValue, totalAmount, currency) {
@@ -1009,255 +1715,204 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
     const pin = document.getElementById('agentClaimPin').value.trim();
     const cashNowAmount = parseFloat(document.getElementById('cashNowAmount').value);
     
-    // Show debug output
-    const debugDiv = document.getElementById('finalizeDebugOutput');
-    const debugContent = document.getElementById('finalizeDebugContent');
-    if (debugDiv) {
-        debugDiv.style.display = 'block';
-        debugContent.textContent = '⏳ Processing...\n\n';
-    }
-    
-    addDebugLog(`🚀 Submitting claim for ${identityValue} with PIN: ${pin ? '****' : '[EMPTY]'}`);
-    addDebugLog(`📊 Cash amount: ${cashNowAmount}, Total: ${totalAmount}`);
-    
     if (!docVerified) { 
-        const msg = 'You must confirm you verified the client\'s physical document.';
-        showMessage(msg, 'warning');
-        addDebugLog('❌ ' + msg);
-        if (debugContent) debugContent.textContent += '❌ ' + msg + '\n';
+        showMessage('You must confirm you verified the client\'s physical document.', 'warning'); 
         return; 
     }
     if (!pin) { 
-        const msg = 'Enter the client\'s claim PIN.';
-        showMessage(msg, 'warning');
-        addDebugLog('❌ ' + msg);
-        if (debugContent) debugContent.textContent += '❌ ' + msg + '\n';
+        showMessage('Enter the client\'s claim PIN.', 'warning'); 
         return; 
     }
     if (isNaN(cashNowAmount) || cashNowAmount < 0 || cashNowAmount > totalAmount) {
-        const msg = `Cash amount must be between 0 and ${totalAmount}.`;
-        showMessage(msg, 'warning');
-        addDebugLog('❌ ' + msg);
-        if (debugContent) debugContent.textContent += '❌ ' + msg + '\n';
+        showMessage(`Cash amount must be between 0 and ${totalAmount}.`, 'warning');
         return;
     }
     
-    const payload = {
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', {
         identity_type: identityType,
         identity_value: identityValue,
         pin: pin,
         identity_document_verified: true,
         destination_account_id: parseInt(destinationAccountId, 10),
         cash_now_amount: cashNowAmount
-    };
+    });
     
-    addDebugLog(`📦 Finalize Payload:`, payload);
-    if (debugContent) {
-        debugContent.textContent += '📦 Payload:\n' + JSON.stringify(payload, null, 2) + '\n\n';
+    if (!result.ok) { 
+        showMessage('Failed: ' + result.error, 'error'); 
+        return; 
     }
     
-    try {
-        const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', payload);
-        
-        addDebugLog(`📦 Finalize Response:`, result);
-        if (debugContent) {
-            debugContent.textContent += '📦 Response:\n' + JSON.stringify(result, null, 2) + '\n\n';
-        }
-        
-        if (!result.ok) { 
-            const errorMsg = 'Failed: ' + result.error;
-            showMessage(errorMsg, 'error');
-            addDebugLog('❌ ' + errorMsg);
-            if (debugContent) {
-                debugContent.textContent += '❌ ERROR: ' + result.error + '\n';
-                if (result.body) {
-                    debugContent.textContent += '📦 Body: ' + JSON.stringify(result.body, null, 2) + '\n';
-                }
-            }
-            return; 
-        }
-        
-        const data = result.body.data || {};
-        addDebugLog('✅ Success! Data:', data);
-        
-        // Log each hold result
-        if (data.successful_deposits) {
-            addDebugLog(`✅ ${data.successful_deposits.length} successful deposits`);
-            data.successful_deposits.forEach((d, i) => {
-                addDebugLog(`  ✅ Hold ${d.hold_id}: ${d.net_deposited} ${currency} (gross: ${d.gross_amount})`);
-            });
-        }
-        if (data.failed_deposits && data.failed_deposits.length > 0) {
-            addDebugLog(`❌ ${data.failed_deposits.length} failed deposits`);
-            data.failed_deposits.forEach((d, i) => {
-                addDebugLog(`  ❌ Hold ${d.hold_id}: ${d.error || 'Unknown error'}`);
-            });
-        }
-        if (data.remainder_reswap) {
-            addDebugLog(`🔄 Remainder re-swap: ${data.remainder_reswap.status}`, data.remainder_reswap);
-        }
-        
-        if (debugContent) {
-            debugContent.textContent += '✅ SUCCESS\n';
-            debugContent.textContent += '📊 ' + data.successful_deposits?.length + ' holds completed\n';
-            if (data.failed_deposits?.length > 0) {
-                debugContent.textContent += '❌ ' + data.failed_deposits.length + ' holds failed\n';
-                data.failed_deposits.forEach(d => {
-                    debugContent.textContent += `  ❌ Hold ${d.hold_id}: ${d.error || 'Unknown'}\n`;
-                });
-            }
-            debugContent.textContent += '\n🔄 Remainder: ' + (data.remainder_reswap?.status || 'none');
-        }
-        
-        closeModal();
-        
-        const gaveCash = cashNowAmount > 0;
-        const leftRemainder = cashNowAmount < totalAmount;
-        let msg = gaveCash
-            ? `Deposited and gave the client ${cashNowAmount} ${currency} in cash.`
-            : `Deposited into your account — nothing given as cash yet.`;
-        if (leftRemainder) {
-            msg += ` The remaining ${(totalAmount - cashNowAmount).toFixed(2)} ${currency} was sent back to their identity — a new PIN was texted to them.`;
-        }
-        if (data.failed_deposits?.length > 0) {
-            msg += ` ⚠️ ${data.failed_deposits.length} hold(s) failed. Check debug for details.`;
-        }
-        showMessage(msg, data.failed_deposits?.length > 0 ? 'warning' : 'success');
-        
-        agentSearchData = null;
-        agentSearchResult = null;
-        
-    } catch (error) {
-        const errorMsg = 'Exception: ' + error.message;
-        showMessage(errorMsg, 'error');
-        addDebugLog('❌ ' + errorMsg);
-        console.error('[submitAgentFinalizeAggregated] Error:', error);
-        if (debugContent) {
-            debugContent.textContent += '❌ EXCEPTION: ' + error.message + '\n';
-            debugContent.textContent += error.stack || '';
-        }
+    const data = result.body.data || {};
+    closeModal();
+    
+    const gaveCash = cashNowAmount > 0;
+    const leftRemainder = cashNowAmount < totalAmount;
+    let msg = gaveCash
+        ? `Deposited and gave the client ${cashNowAmount} ${currency} in cash.`
+        : `Deposited into your account — nothing given as cash yet.`;
+    if (leftRemainder) {
+        msg += ` The remaining ${(totalAmount - cashNowAmount).toFixed(2)} ${currency} was sent back to their identity — a new PIN was texted to them.`;
     }
+    showMessage(msg, 'success');
+    agentSearchData = null;
+    agentSearchResult = null;
+}
+
+// Legacy single claim function (keep for compatibility)
+function openAgentFinalizeForm(claim) {
+    if (claim && claim.total_amount !== undefined) {
+        openAgentFinalizeFormAggregated(
+            claim.identity_type, 
+            claim.identity_value, 
+            claim.currency, 
+            claim.total_amount, 
+            claim.swap_count
+        );
+        return;
+    }
+    
+    agentSearchResult = claim;
+    if (!agentStatus.approved_destinations || agentStatus.approved_destinations.length === 0) {
+        openModal('Agent Tools', '<div style="color:var(--danger);">You have no approved agent destination account. Register one first.</div>');
+        return;
+    }
+    const destOptions = agentStatus.approved_destinations.map(d => 
+        `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} - ${escapeHtml(d.identifier)}</option>`
+    ).join('');
+    const searchTypeLabel = IDENTITY_TYPE_LABELS[document.getElementById('agentSearchType')?.value] || 'document';
+    const body = `
+        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:14px;margin-bottom:14px;">
+            <div style="font-size:12px;color:var(--text-muted);">Client's balance</div>
+            <div style="font-size:24px;font-weight:700;color:var(--primary-dark);">${escapeHtml(claim.amount)} ${escapeHtml(claim.currency)}</div>
+        </div>
+        <div class="field-group"><label>Deposit into</label><select id="agentDestSelect">${destOptions}</select></div>
+        <div class="field-group">
+            <label>Cash to give the client now</label>
+            <input type="number" id="cashNowAmount" min="0" max="${claim.amount}" step="0.01" value="${claim.amount}">
+        </div>
+        <div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;">
+            <input type="checkbox" id="agentDocVerified"> I have physically verified the client's ${searchTypeLabel}
+        </label></div>
+        <div class="field-group"><label>Client's Claim PIN</label>
+            <input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for their PIN">
+        </div>
+        <div class="cta-row">
+            <button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back</button>
+            <button class="btn btn-primary" onclick="submitAgentFinalize()">✅ Process</button>
+        </div>`;
+    openModal('Confirm Deposit', body);
+}
+
+async function submitAgentFinalize() {
+    const destinationAccountId = document.getElementById('agentDestSelect').value;
+    const docVerified = document.getElementById('agentDocVerified').checked;
+    const pin = document.getElementById('agentClaimPin').value.trim();
+    const cashNowAmount = parseFloat(document.getElementById('cashNowAmount').value);
+
+    if (!docVerified) { showMessage('You must confirm you verified the client\'s physical document.', 'warning'); return; }
+    if (!pin) { showMessage('Enter the client\'s claim PIN.', 'warning'); return; }
+    if (isNaN(cashNowAmount) || cashNowAmount < 0 || cashNowAmount > agentSearchResult.amount) {
+        showMessage(`Cash amount must be between 0 and ${agentSearchResult.amount}.`, 'warning');
+        return;
+    }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', {
+        swap_reference: agentSearchResult.swap_reference,
+        pin,
+        identity_document_verified: true,
+        destination_account_id: parseInt(destinationAccountId, 10),
+        cash_now_amount: cashNowAmount
+    });
+
+    if (!result.ok) { showMessage('Failed: ' + result.error, 'error'); return; }
+
+    const data = result.body.data || {};
+    closeModal();
+
+    const gaveCash = cashNowAmount > 0;
+    const leftRemainder = cashNowAmount < agentSearchResult.amount;
+    let msg = gaveCash
+        ? `Deposited and gave the client ${cashNowAmount} ${agentSearchResult.currency} in cash.`
+        : `Deposited into your account — nothing given as cash yet.`;
+    if (leftRemainder) {
+        msg += ` The remaining ${(agentSearchResult.amount - cashNowAmount).toFixed(2)} ${agentSearchResult.currency} was sent back to their identity — a new PIN was texted to them.`;
+    }
+    showMessage(msg, 'success');
+    agentSearchResult = null;
 }
 
 // ============================================================
-// DEBUG HELPER FUNCTIONS
+// SWAP HISTORY
 // ============================================================
 
-async function testPinVerification(identityType, identityValue) {
-    const pin = document.getElementById('agentClaimPin')?.value.trim() || '';
-    const debugContent = document.getElementById('finalizeDebugContent');
-    const debugDiv = document.getElementById('finalizeDebugOutput');
-    
-    if (debugDiv) debugDiv.style.display = 'block';
-    if (debugContent) {
-        debugContent.textContent = '🔍 Testing PIN verification...\n\n';
-        debugContent.textContent += `Identity: ${identityType}=${identityValue}\n`;
-        debugContent.textContent += `PIN: ${pin ? '****' : '[EMPTY]'}\n\n`;
+async function openSwapHistory() {
+    openModal('Swap History', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading swaps...</div>');
+    if (!CONFIG.USER_ID) {
+        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--danger);"><div style="font-size:48px;">⚠️</div><div style="font-weight:600;">Could not identify your account</div><div style="font-size:13px;color:var(--text-muted);margin-top:8px;">Your session doesn't have a user ID attached. Try logging out and back in.</div></div>`;
+        return;
     }
-    
-    addDebugLog(`🔍 Testing PIN for ${identityValue}`);
-    
-    try {
-        // Call a debug endpoint to get hold details
-        const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/debug_hold.php', {
-            identity_type: identityType,
-            identity_value: identityValue
-        });
-        
-        if (debugContent) {
-            debugContent.textContent += '📦 Hold Debug:\n' + JSON.stringify(result, null, 2) + '\n\n';
-            
-            if (result.body && result.body.data) {
-                const holds = result.body.data.holds || [];
-                holds.forEach(h => {
-                    debugContent.textContent += `Hold ${h.hold_id}:\n`;
-                    debugContent.textContent += `  Status: ${h.status}\n`;
-                    debugContent.textContent += `  Amount: ${h.amount} ${h.currency}\n`;
-                    debugContent.textContent += `  PIN Sent To: ${h.otp_pin_sent_to || 'N/A'}\n`;
-                    debugContent.textContent += `  PIN Sent At: ${h.otp_pin_sent_at || 'N/A'}\n`;
-                    debugContent.textContent += `  Hashed PIN: ${h.otp_pin_hash ? '***' : 'N/A'}\n`;
-                    debugContent.textContent += `  Expires: ${h.hold_expires_at}\n\n`;
-                });
-            }
-        }
-        
-        showMessage('Debug info displayed in debug panel', 'info');
-        
-    } catch (error) {
-        addDebugLog('❌ Debug error: ' + error.message);
-        if (debugContent) {
-            debugContent.textContent += '❌ Error: ' + error.message + '\n';
-        }
-        showMessage('Debug error: ' + error.message, 'error');
-    }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/history.php', { user_id: CONFIG.USER_ID, limit: 50 });
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">❌ Failed to load swap history: ${escapeHtml(result.error)}</div>`; return; }
+    renderSwapHistory(result.body);
 }
-
-async function fetchHoldStatus(identityType, identityValue) {
-    const debugContent = document.getElementById('finalizeDebugContent');
-    const debugDiv = document.getElementById('finalizeDebugOutput');
-    
-    if (debugDiv) debugDiv.style.display = 'block';
-    if (debugContent) {
-        debugContent.textContent = '📊 Fetching hold status...\n\n';
-    }
-    
-    addDebugLog(`📊 Fetching hold status for ${identityValue}`);
-    
-    try {
-        const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/debug_hold.php', {
-            identity_type: identityType,
-            identity_value: identityValue
-        });
-        
-        if (debugContent) {
-            debugContent.textContent += '📦 Hold Status:\n' + JSON.stringify(result, null, 2) + '\n';
-        }
-        
-        showMessage('Hold status displayed in debug panel', 'info');
-        
-    } catch (error) {
-        addDebugLog('❌ Status error: ' + error.message);
-        if (debugContent) {
-            debugContent.textContent += '❌ Error: ' + error.message + '\n';
-        }
-        showMessage('Status error: ' + error.message, 'error');
-    }
+function renderSwapHistory(data) {
+    const swaps = data.data || data.swaps || [];
+    if (swaps.length === 0) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-size:48px;">📭</div><div style="font-weight:600;">No swaps found</div></div>`; return; }
+    let historyHtml = `<div style="max-height:60vh;overflow-y:auto;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
+    swaps.forEach((swap) => {
+        const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
+        const statusIcon = swap.status === 'completed' || swap.status === 'success' ? '✅' : swap.status === 'pending' ? '⏳' : '❌';
+        historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
+            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                <div><div style="font-weight:600;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
+                <div style="text-align:right;"><div style="font-weight:700;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || CONFIG.CURRENCY}</div><div style="font-size:11px;color:${statusColor};">${statusIcon} ${swap.status || 'unknown'}</div></div>
+            </div></div>`;
+    });
+    historyHtml += `</div>`;
+    document.getElementById('modalBody').innerHTML = historyHtml;
+}
+async function viewSwapDetail(reference) {
+    openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: reference });
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">❌ Failed to load swap details: ${escapeHtml(result.error)}</div>`; return; }
+    renderSwapDetail(result.body);
+}
+function renderSwapDetail(data) {
+    const swap = data.swap || data.data || {};
+    document.getElementById('modalBody').innerHTML = `
+        <div style="max-height:70vh;overflow-y:auto;">
+            <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:16px;margin-bottom:12px;">
+                <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                    <div><div style="font-size:12px;color:var(--text-muted);">Reference</div><div style="font-weight:600;">${swap.reference || swap.swap_reference || 'N/A'}</div></div>
+                    <div><div style="font-size:12px;color:var(--text-muted);">Status</div><div style="font-weight:600;">${swap.status || 'unknown'}</div></div>
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+                <div style="background:rgba(0,0,0,0.02);border-radius:var(--radius-sm);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Swap Type</div><div style="font-weight:600;">${swap.swap_type || 'N/A'}</div></div>
+                <div style="background:rgba(0,0,0,0.02);border-radius:var(--radius-sm);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || CONFIG.CURRENCY}</div></div>
+            </div>
+            <div style="margin-top:12px;"><button class="btn btn-secondary" onclick="openSwapHistory()" style="width:100%;">← Back to History</button></div>
+        </div>`;
 }
 
 // ============================================================
-// Placeholder for IDENTITY_TYPE_LABELS
+// UI HELPERS
 // ============================================================
-const IDENTITY_TYPE_LABELS = { 
-    national_id: 'National ID', 
-    birth_certificate: 'Birth Certificate', 
-    voter_id: 'Voter ID', 
-    phone: 'Phone Number', 
-    email: 'Email' 
-};
 
-// ============================================================
-// Placeholder agent status
-// ============================================================
-let agentStatus = { is_agent: false, approved_destinations: [], all_destinations: [] };
-
-// ============================================================
-// INITIALIZATION
-// ============================================================
-document.addEventListener('DOMContentLoaded', function() {
-    // Initialize the dashboard
-    console.log('🏪 VouchMorph Dashboard loaded');
-    console.log('🐛 Debug mode available - click "Debug: OFF" to enable');
-    
-    // Check for debug mode from URL
-    if (window.location.search.includes('debug=1')) {
-        toggleDebugMode();
-    }
-});
-
-console.log('🐛 Debug functions available:');
-console.log('  - toggleDebugMode() - Enable/disable debug logging');
-console.log('  - clearDebugLog() - Clear the debug panel');
-console.log('  - addDebugLog(message, data) - Add a log entry');
+function openModal(title, bodyHtml) {
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalBody').innerHTML = bodyHtml;
+    document.getElementById('modal').classList.add('active');
+}
+function closeModal() { document.getElementById('modal').classList.remove('active'); }
+function showMessage(text, type = 'info') {
+    const el = document.getElementById('mainMessage');
+    el.textContent = text; el.className = `message show ${type}`;
+    clearTimeout(showMessage._t);
+    showMessage._t = setTimeout(() => el.classList.remove('show'), 6000);
+}
+function escapeHtml(str) { const div = document.createElement('div'); div.textContent = str == null ? '' : String(str); return div.innerHTML; }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 </script>
 </body>
 </html>
