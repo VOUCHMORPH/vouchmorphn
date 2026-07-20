@@ -1652,7 +1652,7 @@ async function searchAgentClaim() {
 }
 
 // ============================================================
-// AGGREGATED CLAIM FINALIZATION (FIXED CURRENCY)
+// AGGREGATED CLAIM FINALIZATION - UPDATED TO USE BACKEND DATA
 // ============================================================
 
 function openAgentFinalizeFormAggregated(identityType, identityValue, currency, totalAmount, swapCount) {
@@ -1745,20 +1745,65 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
     const data = result.body.data || {};
     closeModal();
     
-    const gaveCash = cashNowAmount > 0;
-    const leftRemainder = cashNowAmount < totalAmount;
-    let msg = gaveCash
-        ? `Deposited and gave the client ${cashNowAmount} ${currency} in cash.`
-        : `Deposited into your account — nothing given as cash yet.`;
-    if (leftRemainder) {
-        msg += ` The remaining ${(totalAmount - cashNowAmount).toFixed(2)} ${currency} was sent back to their identity — a new PIN was texted to them.`;
+    // ============================================================
+    // FIX: Use the backend's calculated values
+    // The backend already does: NET = GROSS - FEES
+    // And: Remainder = NET - Cash Given
+    // ============================================================
+    const netDeposited = data.actually_claimed_net || totalAmount;
+    const grossAmount = data.actually_claimed_gross || totalAmount;
+    const remainder = data.remainder_reswap?.amount || 0;
+    const cashGiven = data.cash_now_amount || cashNowAmount;
+    const successfulSwaps = data.swap_count || 0;
+    const failedSwaps = data.failed_deposits ? data.failed_deposits.length : 0;
+    const totalFees = parseFloat(grossAmount) - parseFloat(netDeposited);
+    
+    // Build the message using backend data
+    let msg = '';
+    
+    // Part 1: What happened to the money
+    if (netDeposited > 0) {
+        msg += `✅ Deposited ${netDeposited.toFixed(2)} ${currency} into your account`;
+        if (totalFees > 0) {
+            msg += ` (fee: ${totalFees.toFixed(2)} ${currency})`;
+        }
+        msg += '. ';
     }
+    
+    // Part 2: Cash given to client
+    if (cashGiven > 0) {
+        msg += `Gave client ${cashGiven.toFixed(2)} ${currency} in cash. `;
+    } else {
+        msg += `No cash given now. `;
+    }
+    
+    // Part 3: Remainder re-swapped (if any)
+    if (remainder > 0) {
+        msg += `The remaining ${remainder.toFixed(2)} ${currency} was sent back to their identity — a new PIN was texted to them. `;
+    }
+    
+    // Part 4: Summary stats
+    if (successfulSwaps > 1) {
+        msg += `(Processed ${successfulSwaps} source(s)`;
+        if (failedSwaps > 0) {
+            msg += `, ${failedSwaps} failed`;
+        }
+        msg += `)`;
+    } else if (failedSwaps > 0) {
+        msg += `(${failedSwaps} source(s) failed)`;
+    }
+    
+    // Part 5: Status
+    if (data.status === 'partial_success') {
+        msg += ' ⚠️ Partial success - some sources failed.';
+    }
+    
     showMessage(msg, 'success');
     agentSearchData = null;
     agentSearchResult = null;
 }
 
-// Legacy single claim function (keep for compatibility)
+// Legacy single claim function - also updated to use backend data
 function openAgentFinalizeForm(claim) {
     if (claim && claim.total_amount !== undefined) {
         openAgentFinalizeFormAggregated(
@@ -1829,14 +1874,29 @@ async function submitAgentFinalize() {
     const data = result.body.data || {};
     closeModal();
 
-    const gaveCash = cashNowAmount > 0;
-    const leftRemainder = cashNowAmount < agentSearchResult.amount;
-    let msg = gaveCash
-        ? `Deposited and gave the client ${cashNowAmount} ${agentSearchResult.currency} in cash.`
-        : `Deposited into your account — nothing given as cash yet.`;
-    if (leftRemainder) {
-        msg += ` The remaining ${(agentSearchResult.amount - cashNowAmount).toFixed(2)} ${agentSearchResult.currency} was sent back to their identity — a new PIN was texted to them.`;
+    // Use backend data if available
+    const netDeposited = data.actually_claimed_net || agentSearchResult.amount;
+    const remainder = data.remainder_reswap?.amount || 0;
+    const cashGiven = data.cash_now_amount || cashNowAmount;
+    const totalFees = data.total_fee || 0;
+    
+    let msg = '';
+    if (netDeposited > 0) {
+        msg += `✅ Deposited ${netDeposited.toFixed(2)} ${agentSearchResult.currency} into your account`;
+        if (totalFees > 0) {
+            msg += ` (fee: ${totalFees.toFixed(2)} ${agentSearchResult.currency})`;
+        }
+        msg += '. ';
     }
+    if (cashGiven > 0) {
+        msg += `Gave client ${cashGiven.toFixed(2)} ${agentSearchResult.currency} in cash. `;
+    } else {
+        msg += `No cash given now. `;
+    }
+    if (remainder > 0) {
+        msg += `The remaining ${remainder.toFixed(2)} ${agentSearchResult.currency} was sent back to their identity — a new PIN was texted to them.`;
+    }
+    
     showMessage(msg, 'success');
     agentSearchResult = null;
 }
