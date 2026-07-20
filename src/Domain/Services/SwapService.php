@@ -2938,28 +2938,28 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
     }
 
     public function confirmAndFinalizeIdentitySwap(array $payload): array
-    {
-        error_log("[SwapService] ===== confirmAndFinalizeIdentitySwap =====");
-        
-        $swapRef = $payload['swap_reference'] ?? null;
-        if (!$swapRef) {
-            throw new RuntimeException("swap_reference required");
-        }
-        
-        $identitySwap = $this->getIdentitySwapByReference($swapRef);
-        if (!$identitySwap) {
-            throw new RuntimeException("Identity swap not found: {$swapRef}");
-        }
-        
-        if ($identitySwap['status'] !== 'pending') {
-            throw new RuntimeException("Swap is not pending. Current status: " . $identitySwap['status']);
-        }
-        
-        if (strtotime($identitySwap['hold_expires_at']) < time()) {
-            throw new RuntimeException("Swap has expired (24hrs). Please initiate a new swap.");
-        }
-        
-        $confirmedByType = $payload['confirmed_by_type'] ?? null;
+{
+    error_log("[SwapService] ===== confirmAndFinalizeIdentitySwap =====");
+    
+    $swapRef = $payload['swap_reference'] ?? null;
+    if (!$swapRef) {
+        throw new RuntimeException("swap_reference required");
+    }
+    
+    $identitySwap = $this->getIdentitySwapByReference($swapRef);
+    if (!$identitySwap) {
+        throw new RuntimeException("Identity swap not found: {$swapRef}");
+    }
+    
+    if ($identitySwap['status'] !== 'pending') {
+        throw new RuntimeException("Swap is not pending. Current status: " . $identitySwap['status']);
+    }
+    
+    if (strtotime($identitySwap['hold_expires_at']) < time()) {
+        throw new RuntimeException("Swap has expired (24hrs). Please initiate a new swap.");
+    }
+    
+    $confirmedByType = $payload['confirmed_by_type'] ?? null;
 $confirmedById = $payload['confirmed_by_id'] ?? null;
 $identityType = $identitySwap['identity_type'];
 $identityValue = $identitySwap['identity_value'];
@@ -3043,6 +3043,9 @@ $this->verifyIdentityClaimPin($identitySwap, $suppliedPin);
             ]);
             
             $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
+            
+            // ✅ ADD THIS ONE LINE
+            $this->commitAtomicSwap();
             
             return [
                 'status' => 'completed',
