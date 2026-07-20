@@ -4243,6 +4243,16 @@ public function getAgentPendingSwapsAggregated(array $filters = []): array
  * its own fee calc and its own audit trail, same as if the agent had
  * claimed each source separately. Remainder (if any) re-swaps back to
  * the SAME identity as ONE fresh pending hold, not one per source.
+ *
+ * FIX: cash_now_amount and the remainder are now computed against
+ * the NET total actually deposited into the agent's account (i.e.
+ * gross minus the per-hold fees already paid at deposit time), not
+ * the gross total. The agent's account only ever holds the net
+ * figure - fees are deducted at deposit time and are gone, paid to
+ * settlement. Using gross here was telling the client a remainder
+ * balance larger than what the agent's account actually contained,
+ * meaning the client could effectively consume the "fee" portion
+ * for free while the agent silently absorbed the shortfall.
  */
 public function finalizeAggregatedIdentityClaim(
     string $identityType,
@@ -4309,7 +4319,7 @@ public function finalizeAggregatedIdentityClaim(
     });
     $latestHold = $pendingHolds[0];
     $this->verifyIdentityClaimPin($latestHold, $pin);
-    
+
     // Re-sort back to chronological (oldest first) for the deposit loop
     usort($pendingHolds, fn($a, $b) => strtotime($a['created_at']) <=> strtotime($b['created_at']));
 
@@ -4339,10 +4349,10 @@ public function finalizeAggregatedIdentityClaim(
         ];
 
         try {
-            // ✅ CRITICAL FIX: Process each hold as its OWN atomic transaction
-            // This way if ONE hold fails, the others still succeed
+            // Process each hold as its own independent atomic transaction -
+            // if ONE hold fails, the others still succeed.
             $result = $this->executeSingleHoldTransaction($hold, $confirmationPayload);
-            
+
             $netAmount = $result['result']['amount'] ?? $hold['amount'];
 
             $depositResults[] = [
@@ -4374,8 +4384,17 @@ public function finalizeAggregatedIdentityClaim(
 
     // 6. Calculate totals from successful deposits ONLY
     $actuallyClaimedGross = round((float)array_sum(array_column($depositResults, 'gross_amount')), 2);
-    $adjustedCashNow = min($cashNowAmount, $actuallyClaimedGross);
-    $adjustedRemainder = round($actuallyClaimedGross - $adjustedCashNow, 2);
+    $actuallyClaimedNet = round($totalDepositedNet, 2);
+
+    // ============================================================
+    // FIX: cash_now and remainder are computed against NET (what the
+    // agent's account actually holds after fees), not gross. Gross
+    // was overstating the remainder by the exact sum of all per-hold
+    // fees already paid - money that no longer exists in the agent's
+    // account to back a re-swap.
+    // ============================================================
+    $adjustedCashNow = min($cashNowAmount, $actuallyClaimedNet);
+    $adjustedRemainder = round($actuallyClaimedNet - $adjustedCashNow, 2);
 
     $response = [
         'status' => empty($failedHolds) ? 'success' : 'partial_success',
@@ -4384,7 +4403,8 @@ public function finalizeAggregatedIdentityClaim(
         'currency' => $currency,
         'requested_full_amount' => $fullAmount,
         'actually_claimed_gross' => $actuallyClaimedGross,
-        'total_deposited_net' => round($totalDepositedNet, 2),
+        'actually_claimed_net' => $actuallyClaimedNet,
+        'total_deposited_net' => $actuallyClaimedNet,
         'swap_count' => count($pendingHolds),
         'successful_deposits' => $depositResults,
         'failed_deposits' => $failedHolds,
@@ -4395,7 +4415,8 @@ public function finalizeAggregatedIdentityClaim(
     // 7. Handle remainder re-swap (if any)
     if ($adjustedRemainder > 0) {
         try {
-            // ✅ The remainder re-swap is ONE transaction for the total remainder
+            // The remainder re-swap is ONE transaction for the total
+            // remainder (now correctly net-based).
             $result = $this->executeAtomicSwap([
                 'swap_type' => 'IDENTITY',
                 'reference' => 'AGG_REMAIN_' . time() . '_' . bin2hex(random_bytes(4)),
