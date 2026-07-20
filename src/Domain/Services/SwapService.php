@@ -443,14 +443,26 @@ public function getUserSourceAccounts(int $userId): array
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
     
-    public function getHookedSources(int $userId): array
+   public function getHookedSources(int $userId): array
 {
-    $sql = "SELECT * FROM user_source_accounts WHERE user_id = :user_id AND status = 'active' AND deleted_at IS NULL";
+    $sql = "SELECT * FROM source_accounts 
+            WHERE user_id = :user_id 
+            AND status = 'active' 
+            AND is_active = true 
+            AND deleted_at IS NULL";
     $stmt = $this->swapDB->prepare($sql);
     $stmt->execute([':user_id' => $userId]);
     $sources = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     foreach ($sources as &$source) {
+        // Decrypt the tokens for use
+        if (!empty($source['access_token'])) {
+            $source['access_token'] = $this->decryptSourceSecret($source['access_token']);
+        }
+        if (!empty($source['refresh_token'])) {
+            $source['refresh_token'] = $this->decryptSourceSecret($source['refresh_token']);
+        }
+        
         if ($this->isTokenExpired($source['token_expires_at'])) {
             try {
                 $refreshed = $this->refreshHookedSource($userId, $source['source_reference']);
@@ -464,28 +476,55 @@ public function getUserSourceAccounts(int $userId): array
     }
     return $sources;
 }
-
 public function refreshHookedSource(int $userId, string $sourceReference): array
 {
-    $sql = "SELECT * FROM user_source_accounts WHERE source_reference = :source_ref AND user_id = :user_id";
+    $sql = "SELECT * FROM source_accounts 
+            WHERE source_reference = :source_ref 
+            AND user_id = :user_id 
+            AND deleted_at IS NULL";
     $stmt = $this->swapDB->prepare($sql);
     $stmt->execute([':source_ref' => $sourceReference, ':user_id' => $userId]);
     $source = $stmt->fetch(PDO::FETCH_ASSOC);
+    
     if (!$source) {
         throw new RuntimeException("Source not found");
     }
+    
+    // Decrypt refresh token before using
+    $refreshToken = $this->decryptSourceSecret($source['refresh_token']);
+    if (!$refreshToken) {
+        throw new RuntimeException("Invalid refresh token");
+    }
+    
     $adapter = $this->adapterFactory->getAdapter($source['institution']);
-    $result = $adapter->refreshSourceToken(['refresh_token' => $source['refresh_token']]);
+    $result = $adapter->refreshSourceToken(['refresh_token' => $refreshToken]);
+    
     if (!$result['success']) {
         throw new RuntimeException("Failed to refresh token: " . ($result['message'] ?? 'Unknown error'));
     }
+    
+    // Encrypt the new tokens
+    $encryptedToken = $this->encryptSourceSecret($result['access_token']);
+    
     $stmt = $this->swapDB->prepare("
-        UPDATE user_source_accounts SET access_token = :access_token, token_expires_at = :expires_at WHERE source_reference = :source_ref
+        UPDATE source_accounts 
+        SET access_token = :access_token, 
+            token_expires_at = :expires_at, 
+            updated_at = NOW() 
+        WHERE source_reference = :source_ref
     ");
-    $stmt->execute([':access_token' => $result['access_token'], ':expires_at' => $result['expires_at'], ':source_ref' => $sourceReference]);
-    return ['success' => true, 'access_token' => $result['access_token'], 'expires_at' => $result['expires_at']];
+    $stmt->execute([
+        ':access_token' => $encryptedToken,
+        ':expires_at' => $result['expires_at'],
+        ':source_ref' => $sourceReference
+    ]);
+    
+    return [
+        'success' => true, 
+        'access_token' => $result['access_token'], 
+        'expires_at' => $result['expires_at']
+    ];
 }
-
 public function revokeHookedSource(int $userId, string $sourceReference): array
 {
     $sql = "SELECT * FROM user_source_accounts WHERE source_reference = :source_ref AND user_id = :user_id";
