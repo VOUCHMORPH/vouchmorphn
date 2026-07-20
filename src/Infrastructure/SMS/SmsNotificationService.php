@@ -10,36 +10,112 @@ use Exception;
 /**
  * SMS Notification Service
  * Handles all SMS communications with customers
+ * 
+ * TELCO-AWARE ROUTING: resolves phone numbers to specific telcos
+ * (Cazacom, Mascom, Orange) based on prefix, using communication.json
  */
 class SmsNotificationService
 {
     private PDO $db;
-    private ?SmsGatewayClient $smsGateway;
     private array $config;
+    private array $gatewayCache = [];
     
     private const LOG_FILE = '/tmp/vouchmorph_sms_service.log';
     
     public function __construct(PDO $db, array $config = [])
     {
         $this->db = $db;
-        $this->config = $config;
-        $this->smsGateway = null;
-        
-        // Initialize SMS Gateway if configured
-        try {
-            // Check if SmsGatewayClient class exists
-            if (class_exists('\\Infrastructure\\SMS\\SmsGatewayClient')) {
-                $this->smsGateway = new SmsGatewayClient($config);
-                $this->log("SmsGatewayClient initialized successfully");
-            } else {
-                $this->log("SmsGatewayClient class not found - SMS will be in mock mode");
-            }
-        } catch (Exception $e) {
-            $this->smsGateway = null;
-            $this->log("Failed to initialize SmsGatewayClient: " . $e->getMessage());
-        }
-        
+        $this->config = $config; // full communication.json: {sms_gateway, telcos}
+        $this->gatewayCache = []; // no longer built at construction time — built per-send, per-telco
+
         $this->ensureSmsLogsTable();
+    }
+    
+    /**
+     * Match a phone number to its telco by prefix, per communication.json's
+     * routing table. Returns null if no enabled telco matches — e.g. a
+     * Mascom/Orange number today, since only Cazacom has real credentials.
+     */
+    private function resolveTelcoForPhone(string $phoneNumber): ?array
+    {
+        $telcos = $this->config['telcos'] ?? [];
+        $digits = preg_replace('/[^0-9]/', '', $phoneNumber);
+
+        // Strip Botswana country code (267) if present, to compare against
+        // the two-digit local prefixes telcos are keyed by.
+        if (str_starts_with($digits, '267')) {
+            $digits = substr($digits, 3);
+        }
+        $localPrefix = substr($digits, 0, 2);
+
+        foreach ($telcos as $telcoKey => $telco) {
+            if (empty($telco['enabled']) || empty($telco['sms_enabled'])) {
+                continue; // e.g. mascom/orange — present in config but not live
+            }
+            if (in_array($localPrefix, $telco['prefixes'] ?? [], true)) {
+                return [$telcoKey, $telco];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Translate communication.json's flat telco shape into the nested shape
+     * SmsGatewayClient::validateConfiguration() actually requires.
+     */
+    private function normalizeTelcoConfig(string $telcoKey, array $telco): array
+    {
+        return [
+            'provider' => $telcoKey,
+            'base_url' => $telco['base_url'] ?? '',
+            'api_key_ref' => $telco['api_key_env'] ?? '',
+            'sender' => $telco['sender_id'] ?? null,
+            'timeout' => $telco['timeout'] ?? 30,
+            'endpoints' => [
+                'send' => $telco['endpoint'] ?? '',
+            ],
+            'payload_template' => $telco['payload_template'] ?? [],
+            'authentication' => [
+                'type' => 'header',
+                'key' => $telco['api_key_header'] ?? 'X-API-Key',
+            ],
+            'response_mappings' => [
+                'message_id' => $telco['response_message_id_path'] ?? 'message_id',
+                'status' => $telco['response_status_path'] ?? 'status',
+            ],
+        ];
+    }
+
+    /**
+     * Get (or lazily build) a gateway client for whichever telco this phone
+     * number routes to. One instance per telco is cached for the lifetime
+     * of this service instance.
+     */
+    private function getGatewayForPhone(string $phoneNumber): ?SmsGatewayClient
+    {
+        $match = $this->resolveTelcoForPhone($phoneNumber);
+        if ($match === null) {
+            $this->log("No enabled telco matches phone: {$phoneNumber}");
+            return null;
+        }
+
+        [$telcoKey, $telco] = $match;
+
+        if (isset($this->gatewayCache[$telcoKey])) {
+            return $this->gatewayCache[$telcoKey];
+        }
+
+        try {
+            $normalized = $this->normalizeTelcoConfig($telcoKey, $telco);
+            $gateway = new SmsGatewayClient($normalized);
+            $this->gatewayCache[$telcoKey] = $gateway;
+            $this->log("SmsGatewayClient initialized for telco: {$telcoKey}");
+            return $gateway;
+        } catch (Exception $e) {
+            $this->log("Failed to initialize gateway for {$telcoKey}: " . $e->getMessage());
+            return null;
+        }
     }
     
     /**
@@ -88,48 +164,59 @@ class SmsNotificationService
     public function sendSms(string $phoneNumber, string $message, array $options = []): array
     {
         $this->log("Sending SMS to: {$phoneNumber}");
-        
-        // Clean phone number
+
         $phoneNumber = $this->cleanPhoneNumber($phoneNumber);
-        
-        // Log attempt
         $logId = $this->logSmsAttempt($phoneNumber, $message, $options);
-        
-        // If gateway is not available, return mock success (for development)
-        if (!$this->smsGateway) {
-            $this->log("SMS Gateway not available - SMS would be sent to: {$phoneNumber}");
-            $this->updateSmsLog($logId, 'MOCK_SENT', null, 'Mock mode - gateway not configured');
-            
+
+        $gateway = $this->getGatewayForPhone($phoneNumber);
+
+        if (!$gateway) {
+            $this->log("No gateway available for {$phoneNumber} — mock mode");
+            $this->updateSmsLog($logId, 'MOCK_SENT', null, 'No enabled telco matched this number');
+
             return [
                 'success' => true,
                 'message_id' => 'MOCK-' . uniqid(),
-                'message' => 'SMS would be sent (gateway not configured)'
+                'message' => 'SMS would be sent (no matching telco configured)'
             ];
         }
-        
+
         try {
-            // Send via gateway
-            $result = $this->smsGateway->sendSms($phoneNumber, $message, $options);
-            
+            $result = $gateway->send($phoneNumber, $message, $options['reference'] ?? '');
+
             if ($result['success']) {
                 $this->updateSmsLog($logId, 'SENT', $result['message_id'] ?? null);
                 $this->log("SMS sent successfully to: {$phoneNumber}");
             } else {
-                $this->updateSmsLog($logId, 'FAILED', null, $result['message'] ?? 'Unknown error');
-                $this->log("SMS failed to: {$phoneNumber} - " . ($result['message'] ?? 'Unknown error'));
+                $this->updateSmsLog($logId, 'FAILED', null, $result['error'] ?? 'Unknown error');
+                $this->log("SMS failed to: {$phoneNumber} - " . ($result['error'] ?? 'Unknown error'));
             }
-            
+
             return $result;
-            
+
         } catch (Exception $e) {
             $this->updateSmsLog($logId, 'FAILED', null, $e->getMessage());
             $this->log("SMS exception for {$phoneNumber}: " . $e->getMessage());
-            
-            return [
-                'success' => false,
-                'message' => $e->getMessage()
-            ];
+
+            return ['success' => false, 'message' => $e->getMessage()];
         }
+    }
+    
+    /**
+     * Send cashout code (alias for SwapService compatibility)
+     */
+    public function sendCashoutCode(string $phoneNumber, string $code, float $amount, string $reference = ''): array
+    {
+        return $this->sendWithdrawalCode($phoneNumber, $code, $amount, 'BWP', ['reference' => $reference]);
+    }
+    
+    /**
+     * Send voucher code (alias for SwapService compatibility)
+     */
+    public function sendVoucherCode(string $phoneNumber, string $code, float $amount, string $voucherType = 'GENERIC'): array
+    {
+        $message = "🎟️ VouchMorph Voucher\nCode: {$code}\nAmount: " . number_format($amount, 2) . " BWP\nType: {$voucherType}\nValid for 24 hours.";
+        return $this->sendSms($phoneNumber, $message, ['reference' => 'VOUCHER-' . uniqid(), 'type' => 'voucher_code']);
     }
     
     /**
@@ -146,7 +233,7 @@ class SmsNotificationService
         
         return $this->sendSms($phoneNumber, $message, [
             'priority' => 'high',
-            'reference' => 'WDL-' . uniqid(),
+            'reference' => $additionalInfo['reference'] ?? 'WDL-' . uniqid(),
             'type' => 'withdrawal_code'
         ]);
     }
@@ -418,7 +505,7 @@ class SmsNotificationService
      */
     public function isConfigured(): bool
     {
-        return $this->smsGateway !== null && $this->smsGateway->isConfigured();
+        return !empty($this->config['telcos']);
     }
     
     /**
