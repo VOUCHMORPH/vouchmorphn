@@ -10,7 +10,7 @@
  * Run this in the same environment SwapService normally runs in.
  */
 
-require_once __DIR__ . '/vendor/autoload.php'; // adjust to your bootstrap
+require_once __DIR__ . '/../vendor/autoload.php'; // adjust to your bootstrap
 use Core\Database\DBConnection;
 use Domain\Services\SwapService;
 
