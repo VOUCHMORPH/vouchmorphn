@@ -830,7 +830,7 @@ const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'B
 
 async function loadUserSources() {
     if (!CONFIG.USER_ID) return;
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/sources.php', {});
+    const result = await callApi(CONFIG.API_BASE + '/user/sources.php', {});
     if (!result.ok) return;
     userSources = result.body.data?.sources || [];
     renderSavedSourceChips(); // Render quick-select chips
