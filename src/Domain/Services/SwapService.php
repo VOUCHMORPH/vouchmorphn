@@ -3422,7 +3422,46 @@ private function validateEarmarkedWithdrawal(string $institution, string $identi
         );
     }
 }
- 
+
+private function isAgentAccount(string $institution, string $identifier): bool
+{
+    try {
+        $stmt = $this->swapDB->prepare("
+            SELECT 1 FROM agent_destination_accounts
+            WHERE institution = :institution AND identifier = :identifier
+            AND status = 'active' AND deleted_at IS NULL
+            LIMIT 1
+        ");
+        $stmt->execute([':institution' => $institution, ':identifier' => $identifier]);
+        return (bool)$stmt->fetchColumn();
+    } catch (PDOException $e) {
+        error_log("[SwapService] isAgentAccount check failed: " . $e->getMessage());
+        return false;
+    }
+}
+
+private function validateAgentMinimumBalance(string $institution, string $identifier, float $amountBeingDebited): void
+{
+    if (!$this->isAgentAccount($institution, $identifier)) {
+        return;
+    }
+
+    $currentBalance = $this->getSourceAvailableBalance([
+        'institution' => $institution,
+        'identifier' => $identifier,
+        'asset_type' => 'ACCOUNT',
+    ]);
+
+    $resultingBalance = round($currentBalance - $amountBeingDebited, 2);
+
+    if ($resultingBalance < 1.00) {
+        throw new RuntimeException(
+            "This would leave your agent account at {$resultingBalance} {$this->config['currency']}, below the required minimum of 1.00. " .
+            "Please deposit funds into your agent account before completing this transaction."
+        );
+    }
+}
+    
 /**
  * Actually decrements the earmarked ledger, FIFO across open entries,
  * after a withdrawal has genuinely succeeded (called post-debit, never
