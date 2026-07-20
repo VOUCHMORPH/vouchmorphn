@@ -655,6 +655,74 @@ public function revokeHookedSource(int $userId, string $sourceReference): array
         return $this->executeAtomicSwap($multiPayload);
     }
 
+/**
+ * Decrypt a source secret (access_token or refresh_token)
+ * Matches the encryption used in enterprise add_source.php
+ * 
+ * @param string|null $encrypted Base64-encoded encrypted string
+ * @return string|null Decrypted plain text or null if invalid
+ */
+private function decryptSourceSecret(?string $encrypted): ?string
+{
+    if (empty($encrypted)) {
+        return null;
+    }
+    
+    $key = getenv('VOUCHMORPH_TOKEN_ENC_KEY');
+    if (!$key) {
+        error_log("[SwapService] VOUCHMORPH_TOKEN_ENC_KEY not set - cannot decrypt");
+        return null;
+    }
+    
+    $data = base64_decode($encrypted);
+    if ($data === false || strlen($data) < 16) {
+        error_log("[SwapService] Invalid encrypted data format");
+        return null;
+    }
+    
+    // Extract IV (first 16 bytes) and ciphertext (rest)
+    $iv = substr($data, 0, 16);
+    $ciphertext = substr($data, 16);
+    
+    $decrypted = openssl_decrypt(
+        $ciphertext,
+        'AES-256-CBC',
+        $key,
+        0,
+        $iv
+    );
+    
+    if ($decrypted === false) {
+        error_log("[SwapService] Decryption failed: " . openssl_error_string());
+        return null;
+    }
+    
+    return $decrypted;
+}
+
+/**
+ * Get a decrypted access token from source_accounts
+ * This should be used whenever we need to use the token for API calls
+ */
+private function getDecryptedAccessToken(array $source): ?string
+{
+    if (empty($source['access_token'])) {
+        return null;
+    }
+    return $this->decryptSourceSecret($source['access_token']);
+}
+
+/**
+ * Get a decrypted refresh token from source_accounts
+ */
+private function getDecryptedRefreshToken(array $source): ?string
+{
+    if (empty($source['refresh_token'])) {
+        return null;
+    }
+    return $this->decryptSourceSecret($source['refresh_token']);
+}
+    
     // ============================================================================
     // TABLE POPULATION METHODS - UPDATED WITH FIXES
     // ============================================================================
