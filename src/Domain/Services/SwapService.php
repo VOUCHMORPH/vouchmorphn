@@ -6511,8 +6511,8 @@ private function findVerifiedIdentityOwner(string $identityType, string $identit
  * Verifies the PIN supplied at claim time.
  * 
  * FIX: This now checks ALL pending holds for the identity to find a matching PIN.
- * Once a match is found, it marks the IDENTITY as authorized (the "green light")
- * allowing ALL holds for this identity to be finalized.
+ * Once a match is found, it CLEARS the PIN hash (single-use) and marks the 
+ * IDENTITY as authorized (the "green light") allowing ALL holds to be finalized.
  */
 private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin): void
 {
@@ -6535,10 +6535,9 @@ private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin
  
     if ($claimType === 'otp_pin') {
         // ============================================================
-        // FIX: Check ALL pending holds for this identity to find a matching PIN
+        // Check ALL pending holds for this identity to find a matching PIN
         // ============================================================
         
-        // Get ALL pending holds for this identity that have a PIN hash
         $stmt = $this->swapDB->prepare("
             SELECT hold_id, otp_pin_hash, otp_pin_locked_until, otp_pin_attempts
             FROM identity_swap_holds 
@@ -6564,7 +6563,6 @@ private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin
         $firstHold = $allHolds[0];
         
         foreach ($allHolds as $hold) {
-            // Check if this hold is locked
             $this->assertNotLocked($hold['otp_pin_locked_until'] ?? null, 'claim PIN');
             
             if (!empty($hold['otp_pin_hash']) && password_verify($suppliedPin, $hold['otp_pin_hash'])) {
@@ -6574,7 +6572,6 @@ private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin
         }
         
         if (!$matchedHold) {
-            // Record failed attempt on the first hold (or the one with most attempts)
             $targetHold = $firstHold;
             foreach ($allHolds as $hold) {
                 if ((int)($hold['otp_pin_attempts'] ?? 0) > (int)($targetHold['otp_pin_attempts'] ?? 0)) {
@@ -6589,18 +6586,18 @@ private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin
         }
  
         // ============================================================
-        // FIX: DON'T clear the PIN hash immediately!
+        // FIX: CLEAR the PIN hash - SINGLE USE!
         // The PIN is the "green light" - it authorizes the identity
-        // Mark the identity as authorized so ALL holds can be finalized
-        // The PIN remains valid for 1 hour (authorization expiry)
+        // But the PIN itself should NOT be reusable
         // ============================================================
         
-        // Record that this PIN was verified on the matched hold
+        // Clear the PIN hash on the matched hold (single-use)
         $stmt = $this->swapDB->prepare("
             UPDATE identity_swap_holds
             SET 
                 otp_pin_verified_at = NOW(),
-                otp_pin_attempts = 0
+                otp_pin_attempts = 0,
+                otp_pin_hash = NULL  // <-- CLEAR THE PIN! SINGLE USE!
             WHERE hold_id = :id
         ");
         $stmt->execute([':id' => $matchedHold['hold_id']]);
@@ -6638,7 +6635,6 @@ private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin
         $stmt = $this->swapDB->prepare("UPDATE users SET transaction_pin_attempts = 0 WHERE user_id = :id");
         $stmt->execute([':id' => $owner['user_id']]);
         
-        // For account PIN, also mark identity as authorized
         $this->markIdentityHoldsAuthorized($identityType, $identityValue, 'account_pin_verification');
         return;
     }
