@@ -17,7 +17,7 @@ use Domain\Services\SwapService;
 // ============================================================
 $identityType = 'national_id';
 $identityValue = 'ID123456789';  // CHANGE THIS to your test identity
-$testPin = '123456';  // CHANGE THIS to the actual PIN
+$testPin = '641904';  // CHANGE THIS to the actual PIN
 $destinationAccountId = 7;  // Agent's destination account ID
 $agentUserId = 12;  // Agent's user ID
 $cashNowAmount = 200.00;  // Amount to give client in cash
