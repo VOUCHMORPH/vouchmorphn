@@ -1,5 +1,5 @@
 <?php
-// test_remainder_flow.php - Full flow test for identity swap split
+// tested.php - Full flow test for identity swap split
 
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../vendor/autoload.php';
@@ -55,17 +55,17 @@ try {
 
     // Get the identity swap record to find the OTP
     $identitySwap = $swapService->getIdentitySwapByReference($swapReference);
-    echo "Identity swap record:\n";
-    echo json_encode($identitySwap, JSON_PRETTY_PRINT) . "\n\n";
-
+    
     // ============================================================
-    // STEP 2: Show OTP PIN info
+    // STEP 2: Get OTP PIN from message_outbox
     // ============================================================
+    $pin = null;
+    
     if ($identitySwap && $identitySwap['claim_type'] === 'otp_pin') {
         echo "========================================\n";
         echo "OTP PIN GENERATED\n";
         echo "========================================\n";
-        echo "The OTP PIN was sent to: " . $identitySwap['otp_pin_sent_to'] . "\n";
+        echo "Sent to: " . $identitySwap['otp_pin_sent_to'] . "\n";
         echo "OTP Hash: " . $identitySwap['otp_pin_hash'] . "\n";
         
         // Try to find the actual PIN from message_outbox
@@ -89,10 +89,31 @@ try {
             }
         }
         
-        if (!isset($pin)) {
-            echo "\n⚠️ Could not extract PIN from message. Please check the SMS.\n";
-            echo "Enter the PIN you received via SMS: ";
-            $pin = trim(fgets(STDIN));
+        if (!$pin) {
+            echo "\n⚠️ Could not extract PIN from message_outbox.\n";
+            echo "Please check the SMS sent to +26770000000\n";
+            echo "The SMS should contain a 6-digit PIN\n\n";
+            
+            // Try to get from the SMS logs
+            $logFile = '/var/log/php_errors.log';
+            if (file_exists($logFile)) {
+                $logs = shell_exec("tail -100 $logFile | grep -i 'PIN:'");
+                if ($logs) {
+                    echo "Found in logs:\n$logs\n";
+                    preg_match('/PIN: (\d{6})/', $logs, $matches);
+                    if (isset($matches[1])) {
+                        $pin = $matches[1];
+                        echo "PIN from logs: $pin\n";
+                    }
+                }
+            }
+        }
+        
+        // If still no PIN, we'll use a default for testing
+        if (!$pin) {
+            echo "\n⚠️ No PIN found. Using default '123456' for testing.\n";
+            echo "WARNING: This will likely fail if the OTP doesn't match.\n";
+            $pin = '123456';
         }
         echo "\n";
     } else {
@@ -167,14 +188,6 @@ try {
         } else {
             echo "❌ NO REMAINDER SWAP FOUND!\n";
             echo "The remainder was not automatically swapped back to identity.\n";
-            echo "\nChecking if any error occurred during finalizeIdentityClaimSplit...\n";
-            
-            // Check logs for errors
-            $logFile = '/var/log/php_errors.log';
-            if (file_exists($logFile)) {
-                $logs = shell_exec("tail -50 $logFile | grep -i 'remainder\\|finalizeIdentityClaimSplit'");
-                echo "Recent logs:\n$logs\n";
-            }
         }
 
         // ============================================================
