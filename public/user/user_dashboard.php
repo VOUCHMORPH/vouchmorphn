@@ -160,7 +160,7 @@ if (is_dir($countriesDir)) {
 $assetTypes = [];
 foreach ($assets as $assetKey => $assetConfig) {
     $assetTypes[$assetKey] = [
-        'icon' => $assetConfig['icon'] ?? '📦',
+        'icon' => $assetConfig['icon'] ?? '',
         'label' => $assetConfig['label'] ?? $assetKey,
         'fields' => $assetConfig['fields'] ?? []
     ];
@@ -176,90 +176,112 @@ foreach ($assets as $assetKey => $assetConfig) {
 <style>
 :root {
     --bg: #FAF3E0; --surface: rgba(0,0,0,0.04); --surface-hover: rgba(0,0,0,0.08);
-    --border: rgba(0,0,0,0.12); --border-active: rgba(0,150,160,0.4);
-    --text: #2b2418; --text-muted: #5c5346; --text-dim: #8f8570;
+    --border: rgba(0,0,0,0.16); --border-active: rgba(0,150,160,0.5);
+    /* Dark, near-black text throughout. Colored accents (primary/success/warning/danger) are untouched. */
+    --text: #0d0d0d; --text-muted: #1f1f1f; --text-dim: #3a3a3a;
     --primary: #00a0ad; --primary-dark: #007d88;
     --gradient: linear-gradient(135deg, #00a0ad 0%, #8a2be2 100%);
     --success: #1a9e5c; --warning: #b8860b; --danger: #d32f2f;
-    --radius: 16px; --radius-sm: 10px;
+    /* Sharp edges everywhere. */
+    --radius: 0px; --radius-sm: 0px;
     --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition: all 0.2s ease;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; line-height: 1.5; padding: 24px 16px; display: flex; flex-direction: column; align-items: center; }
-.container { width: 100%; max-width: 1040px; margin: 0 auto; }
+.container { width: 100%; max-width: 960px; margin: 0 auto; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
-.logo { font-size: 22px; font-weight: 800; background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-.topbar-right { display: flex; align-items: center; gap: 16px; font-size: 14px; flex-wrap: wrap; }
+.logo { font-size: 22px; font-weight: 800; background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: 0.3px; }
+.topbar-right { display: flex; align-items: center; gap: 14px; font-size: 14px; flex-wrap: wrap; }
 .topbar-right .greeting { color: var(--text-muted); }
-.country-selector { background: rgba(0,0,0,0.04); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 10px; color: var(--text-muted); font-size: 12px; cursor: pointer; font-family: var(--font); }
-.logout-btn { color: var(--text-muted); text-decoration: none; padding: 6px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.role-badge { font-size: 10px; color: var(--primary); border: 1px solid var(--primary); padding: 2px 10px; border-radius: 20px; text-transform: uppercase; font-weight: 700; }
-.agent-badge { font-size: 10px; color: #fff; background: var(--primary-dark); padding: 2px 10px; border-radius: 20px; text-transform: uppercase; font-weight: 700; }
-.test-mode-badge { font-size: 10px; color: #b23b3b; border: 1px solid #b23b3b; padding: 2px 10px; border-radius: 20px; text-transform: uppercase; animation: pulse 2s infinite; font-weight: 700; }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
-.message { padding: 12px 16px; border-radius: var(--radius-sm); margin: 0 0 16px; font-size: 13px; display: none; font-weight: 500; }
+.country-selector { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px; color: var(--text-muted); font-size: 12px; cursor: pointer; font-family: var(--font); }
+.logout-btn { color: var(--text-muted); text-decoration: none; padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius); font-weight: 600; font-size: 13px; }
+.logout-btn:hover { border-color: var(--danger); color: var(--danger); }
+.role-badge { font-size: 10px; color: var(--primary-dark); border: 1px solid var(--primary); padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
+.agent-badge { font-size: 10px; color: #fff; background: var(--primary-dark); padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
+.test-mode-badge { font-size: 10px; color: #791f1f; border: 1px solid #d32f2f; padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
+
+/* Toolbox trigger — one door into everything that used to crowd the topbar */
+.toolbox-btn { position: relative; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: #fff; background: var(--text); border: none; padding: 9px 18px; border-radius: var(--radius); cursor: pointer; }
+.toolbox-btn:hover { background: #000; }
+.toolbox-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; border-radius: var(--radius); display: inline-flex; align-items: center; justify-content: center; }
+
+.message { padding: 12px 16px; border-radius: var(--radius); margin: 0 0 16px; font-size: 13px; display: none; font-weight: 600; }
 .message.show { display: block; }
-.message.info { background: rgba(0,160,173,0.12); border-left: 3px solid var(--primary); color: #00707a; }
-.message.success { background: rgba(26,158,92,0.12); border-left: 3px solid var(--success); color: #146b40; }
-.message.error { background: rgba(211,47,47,0.1); border-left: 3px solid var(--danger); color: #a12525; }
-.message.warning { background: rgba(184,134,11,0.12); border-left: 3px solid var(--warning); color: #8a6508; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
-.section-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; margin-bottom: 12px; }
-.section-title .n { width: 20px; height: 20px; border-radius: 50%; background: var(--gradient); color: #fff; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center; }
-.swap-columns { display: flex; align-items: flex-start; gap: 28px; }
+.message.info { background: rgba(0,160,173,0.10); border-left: 3px solid var(--primary); color: #00707a; }
+.message.success { background: rgba(26,158,92,0.10); border-left: 3px solid var(--success); color: #146b40; }
+.message.error { background: rgba(211,47,47,0.08); border-left: 3px solid var(--danger); color: #a12525; }
+.message.warning { background: rgba(184,134,11,0.10); border-left: 3px solid var(--warning); color: #8a6508; }
+
+.card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; }
+.section-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; margin-bottom: 14px; color: var(--text); }
+.section-title .n { width: 20px; height: 20px; border-radius: var(--radius); background: var(--text); color: #fff; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center; }
+.swap-columns { display: flex; align-items: flex-start; gap: 32px; }
 .swap-columns > .section { flex: 1 1 0; min-width: 0; }
 @media (max-width: 860px) { .container { max-width: 560px; } .swap-columns { flex-direction: column; } }
-.swap-divider { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 20px 0; color: var(--text-dim); }
+.swap-divider { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 22px 0; color: var(--text-dim); }
 .swap-divider::before, .swap-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
-.field-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; display: block; margin-bottom: 4px; font-weight: 700; }
+
+.field-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; display: block; margin-bottom: 4px; font-weight: 700; letter-spacing: 0.3px; }
 .field-group { margin-bottom: 12px; }
-.field-group label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; }
-.field-group input, .field-group select { width: 100%; padding: 12px 14px; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-size: 16px; font-family: var(--font); }
+.field-group label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; letter-spacing: 0.3px; }
+.field-group input, .field-group select { width: 100%; padding: 12px 14px; background: #fff; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 16px; font-family: var(--font); }
+.field-group input:focus, .field-group select:focus { outline: none; border-color: var(--primary); }
 .field-group input.invalid { border-color: var(--danger); }
 .field-group .help { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
 .amount-field { position: relative; }
-.amount-field input { padding-right: 64px; font-size: 18px; font-weight: 600; }
+.amount-field input { padding-right: 64px; font-size: 18px; font-weight: 700; }
 .amount-field .currency-suffix { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 12px; font-weight: 700; }
-.asset-fields { margin: 4px 0 12px; padding: 14px; background: rgba(0,0,0,0.02); border-radius: var(--radius-sm); }
-.identity-field { margin: 4px 0 12px; padding: 14px; background: rgba(0,160,173,0.06); border: 1px dashed var(--primary); border-radius: var(--radius-sm); }
+.asset-fields { margin: 4px 0 12px; padding: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.identity-field { margin: 4px 0 12px; padding: 14px; background: rgba(0,160,173,0.05); border: 1px dashed var(--primary); border-radius: var(--radius); }
 .cta-row { display: flex; justify-content: center; margin-top: 24px; gap: 12px; }
-.btn { padding: 14px 40px; border: none; border-radius: 999px; font-size: 14px; font-weight: 700; font-family: var(--font); cursor: pointer; }
-.btn-primary { background: var(--gradient); color: #fff; }
-.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-secondary { background: #fff; color: var(--text); border: 1px solid var(--border); padding: 14px 32px; border-radius: 999px; font-weight: 600; cursor: pointer; }
-.btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid rgba(211,47,47,0.35); padding: 6px 14px; border-radius: 999px; font-size: 11px; cursor: pointer; font-weight: 600; }
+.btn { padding: 14px 40px; border: none; border-radius: var(--radius); font-size: 14px; font-weight: 700; font-family: var(--font); cursor: pointer; }
+.btn-primary { background: var(--text); color: #fff; }
+.btn-primary:hover { background: #000; }
+.btn-primary:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn-secondary { background: #fff; color: var(--text); border: 1px solid var(--border); padding: 14px 32px; border-radius: var(--radius); font-weight: 700; cursor: pointer; }
+.btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid rgba(211,47,47,0.4); padding: 6px 14px; border-radius: var(--radius); font-size: 11px; cursor: pointer; font-weight: 700; }
 .btn-sm { padding: 8px 18px !important; font-size: 12px; }
 .quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 12px; }
-.quick-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: var(--primary-dark); background: rgba(0,160,173,0.08); border: 1px solid rgba(0,160,173,0.2); padding: 5px 12px; border-radius: 999px; cursor: pointer; }
-.quick-link.muted { color: var(--text-muted); background: rgba(0,0,0,0.04); border-color: var(--border); }
-.quick-link.danger { color: var(--danger); background: rgba(211,47,47,0.06); border-color: rgba(211,47,47,0.2); }
-.source-row { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 10px; background: #fff; }
+.quick-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: var(--primary-dark); background: rgba(0,160,173,0.07); border: 1px solid rgba(0,160,173,0.25); padding: 6px 12px; border-radius: var(--radius); cursor: pointer; }
+.quick-link.muted { color: var(--text-muted); background: var(--surface); border-color: var(--border); }
+.quick-link.danger { color: var(--danger); background: rgba(211,47,47,0.05); border-color: rgba(211,47,47,0.25); }
+.source-row { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 10px; background: #fff; }
 .source-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.multi-total { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 12px; }
+.multi-total { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 12px; font-weight: 600; }
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(20,15,5,0.55); backdrop-filter: blur(6px); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(10,10,10,0.6); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
 .modal-overlay.active { display: flex; }
-.modal { background: #fff; border-radius: var(--radius); max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 24px; }
+.modal { background: #fff; border-radius: var(--radius); max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 24px; border: 1px solid var(--border); }
 .modal-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
-.modal-close { background: none; border: none; color: var(--text-muted); font-size: 24px; cursor: pointer; }
-.preview-box { background: rgba(0,0,0,0.02); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; margin: 12px 0; }
-.preview-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(0,0,0,0.06); gap: 12px; }
-.preview-row .value.highlight { color: var(--primary-dark); font-size: 20px; }
+.modal-header h2 { font-size: 16px; font-weight: 700; }
+.modal-close { background: none; border: none; color: var(--text-muted); font-size: 22px; cursor: pointer; line-height: 1; }
+.preview-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; }
+.preview-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); gap: 12px; font-size: 13px; }
+.preview-row .value.highlight { color: var(--primary-dark); font-size: 20px; font-weight: 700; }
 .result-box { text-align: center; padding: 12px 0; }
-.result-box .icon { font-size: 48px; }
-.result-box .atm-code { margin: 12px 0; padding: 16px; background: rgba(0,160,173,0.08); border: 2px solid var(--primary); border-radius: var(--radius-sm); }
-.result-box .atm-code .code { font-size: 28px; font-weight: 700; font-family: monospace; letter-spacing: 4px; color: var(--primary-dark); }
-.raw-json { text-align: left; font-size: 11px; background: #f4efe4; border-radius: var(--radius-sm); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-muted); margin-top: 12px; max-height: 200px; overflow-y: auto; }
+.result-box .icon { font-size: 40px; }
+.result-box .atm-code { margin: 12px 0; padding: 16px; background: rgba(0,160,173,0.06); border: 2px solid var(--primary); border-radius: var(--radius); }
+.result-box .atm-code .code { font-size: 26px; font-weight: 700; font-family: monospace; letter-spacing: 4px; color: var(--primary-dark); }
+.raw-json { text-align: left; font-size: 11px; background: var(--surface); border-radius: var(--radius); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-dim); margin-top: 12px; max-height: 200px; overflow-y: auto; }
 @media (max-width: 480px) { body { padding: 12px; } .btn, .btn-secondary { padding: 12px 24px; width: 100%; } .cta-row { flex-direction: column; } .topbar { flex-direction: column; align-items: stretch; } }
 
+/* Source category tabs (Wallet/Account, Card, Voucher) */
+.type-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+.type-tab { flex: 1; padding: 11px 10px; font-size: 12px; font-weight: 700; text-align: center; background: #fff; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-family: var(--font); }
+.type-tab:hover { border-color: var(--primary); color: var(--primary-dark); }
+.type-tab.active { background: var(--text); color: #fff; border-color: var(--text); }
+.source-panel { margin-bottom: 4px; }
+.empty-source-box { text-align: center; padding: 18px 12px; border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface); }
+.empty-source-box p { font-size: 12px; color: var(--text-dim); margin-bottom: 10px; }
+
 /* Source management styles */
-.source-card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 10px; }
+.source-card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 10px; }
 .source-card .source-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.source-card .source-institution { font-weight: 600; font-size: 16px; }
+.source-card .source-institution { font-weight: 700; font-size: 15px; }
 .source-card .source-details { font-size: 13px; color: var(--text-muted); }
-.source-card .source-status { font-size: 11px; padding: 2px 10px; border-radius: 10px; }
+.source-card .source-status { font-size: 11px; padding: 3px 10px; border-radius: var(--radius); font-weight: 700; }
 .source-status.active { background: #dcfce7; color: #166534; }
 .source-status.pending { background: #fef3c7; color: #8a5a0b; }
 .source-status.inactive { background: #fbeceb; color: var(--danger); }
@@ -267,15 +289,21 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .otp-input-group input { flex: 1; }
 .otp-input-group button { flex-shrink: 0; }
 
-/* Quick source chips */
-.source-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 4px 12px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border); background: #fff; transition: all 0.2s; }
-.source-chip:hover { background: var(--primary); color: #fff; border-color: var(--primary); }
-.source-chip .chip-icon { font-size: 12px; }
-.source-chip .chip-label { }
-.source-chip .chip-identifier { font-weight: 400; color: var(--text-muted); font-size: 10px; }
-.source-chip:hover .chip-identifier { color: rgba(255,255,255,0.8); }
-.source-chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
-.source-chip.active .chip-identifier { color: rgba(255,255,255,0.8); }
+/* Quick source chips (Wallet/Account only) */
+.source-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; padding: 6px 12px; border-radius: var(--radius); cursor: pointer; border: 1px solid var(--border); background: #fff; }
+.source-chip:hover { background: var(--text); color: #fff; border-color: var(--text); }
+.source-chip .chip-identifier { font-weight: 400; color: var(--text-dim); font-size: 10px; }
+.source-chip:hover .chip-identifier { color: rgba(255,255,255,0.75); }
+.source-chip.active { background: var(--text); color: #fff; border-color: var(--text); }
+.source-chip.active .chip-identifier { color: rgba(255,255,255,0.75); }
+
+/* Toolbox modal rows */
+.toolbox-list { display: flex; flex-direction: column; gap: 2px; }
+.toolbox-row { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; margin-bottom: 6px; background: #fff; }
+.toolbox-row:hover { background: var(--surface); border-color: var(--text); }
+.toolbox-row-icon { width: 22px; text-align: center; font-size: 15px; }
+.toolbox-row-label { flex: 1; font-size: 14px; font-weight: 600; color: var(--text); }
+.toolbox-row-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; border-radius: var(--radius); display: inline-flex; align-items: center; justify-content: center; }
 </style>
 </head>
 <body>
@@ -285,19 +313,17 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
     <div class="topbar-right">
         <span class="greeting">Hello, <span id="userName"><?php echo htmlspecialchars($userName); ?></span></span>
         <span class="role-badge"><?php echo htmlspecialchars(strtoupper($userRole)); ?></span>
-        <span class="agent-badge" id="agentBadge" style="display:none;">🏪 Agent</span>
-        <?php if ($isTestMode): ?><span class="test-mode-badge">🔓 TEST MODE</span><?php endif; ?>
+        <span class="agent-badge" id="agentBadge" style="display:none;">Agent</span>
+        <?php if ($isTestMode): ?><span class="test-mode-badge">Test mode</span><?php endif; ?>
         <select class="country-selector" id="countrySelector" onchange="switchCountry(this.value)">
             <?php foreach ($availableCountries as $country): ?>
             <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $userCountry ? 'selected' : ''; ?>><?php echo htmlspecialchars($country); ?></option>
             <?php endforeach; ?>
         </select>
-        <span class="quick-link" onclick="openMySources()">🔗 My Sources</span>
-        <span class="quick-link" onclick="openSwapHistory()">📋 History</span>
-        <span class="quick-link" id="claimsButton" onclick="openClaimsModal()" style="display:none;">💰 Claim Money <span id="claimsBadge" style="background:var(--danger);color:#fff;border-radius:10px;padding:1px 6px;font-size:10px;margin-left:4px;"></span></span>
-        <span class="quick-link" id="agentToolsButton" onclick="openAgentToolsModal()" style="display:none;">🏪 Agent Tools</span>
-        <span class="quick-link muted" onclick="openAgentModal()">🤝 Become an Agent</span>
-        <span class="quick-link muted" onclick="openProfileModal()">👤 My Profile</span>
+        <button class="toolbox-btn" onclick="openToolbox()">
+            Toolbox
+            <span id="toolboxBadge" class="toolbox-badge" style="display:none;"></span>
+        </button>
         <a href="logout.php" class="logout-btn">Logout</a>
     </div>
 </div>
@@ -308,39 +334,48 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
     <div class="swap-columns">
     <div class="section" id="fromSection">
         <div class="section-title"><span class="n">1</span> From</div>
-        
-        <!-- ============================================================ -->
-        <!-- QUICK SOURCE SELECTION CHIPS - NEW -->
-        <!-- ============================================================ -->
-        <div id="savedSourcesContainer" style="margin-bottom:12px;display:none;">
-            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;">
-                <span style="font-size:11px;color:var(--text-muted);font-weight:600;">🔗 Quick Select:</span>
-                <div id="savedSourcesChips" style="display:inline-flex;flex-wrap:wrap;gap:6px;"></div>
-                <span class="quick-link muted" onclick="clearSourceSelection()" style="font-size:10px;padding:2px 8px;display:none;" id="clearSourceBtn">✕ Clear</span>
+
+        <div class="type-tabs" id="sourceTypeTabs">
+            <button type="button" class="type-tab active" data-cat="WALLET" onclick="selectSourceCategory('WALLET')">Wallet / Account</button>
+            <button type="button" class="type-tab" data-cat="CARD" onclick="selectSourceCategory('CARD')">Card</button>
+            <button type="button" class="type-tab" data-cat="VOUCHER" onclick="selectSourceCategory('VOUCHER')">Voucher</button>
+        </div>
+
+        <!-- WALLET / ACCOUNT: saved sources, or a prompt to add one -->
+        <div id="walletPanel" class="source-panel">
+            <div id="savedSourcesContainer" style="margin-bottom:12px;display:none;">
+                <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;">
+                    <div id="savedSourcesChips" style="display:inline-flex;flex-wrap:wrap;gap:6px;"></div>
+                    <span class="quick-link muted" onclick="clearSourceSelection()" style="font-size:10px;padding:4px 10px;display:none;" id="clearSourceBtn">Clear</span>
+                </div>
+                <div style="font-size:10px;color:var(--text-dim);margin-top:6px;">Tap a saved source to auto-fill it, then just enter the amount. <span class="quick-link muted" style="padding:3px 9px;font-size:10px;" onclick="openAddSource()">+ Add another</span></div>
             </div>
-            <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">Click a saved source to auto-fill your details. You only need to enter the amount.</div>
+            <div id="noSourcesPrompt" class="empty-source-box" style="display:none;">
+                <p>No linked wallet or account yet.</p>
+                <button class="btn btn-primary btn-sm" onclick="openAddSource()">Add wallet or account</button>
+            </div>
         </div>
-        <!-- ============================================================ -->
-        
-        <div class="field-group">
-            <label>Institution</label>
-            <select id="fromInstSelect" onchange="selectFromInst(this.value)"><option value="">Select institution</option></select>
+
+        <!-- CARD / VOUCHER: institution + dynamic fields entered fresh each time -->
+        <div id="instAssetPanel" class="source-panel" style="display:none;">
+            <div class="field-group">
+                <label>Institution</label>
+                <select id="fromInstSelect" onchange="selectFromInst(this.value)"><option value="">Select institution</option></select>
+            </div>
         </div>
-        <div class="field-group" id="fromAssetGroup" style="display:none;">
-            <label>Asset Type</label>
-            <select id="fromAssetSelect" onchange="selectFromAsset(this.value)"></select>
-        </div>
-        <div class="asset-fields" id="fromFields"></div>
+
+        <div class="asset-fields" id="fromFields" style="display:none;"></div>
+
         <div class="field-group amount-field">
             <label>Amount</label>
             <input type="number" id="fromAmount" placeholder="0.00" step="0.01" min="0.01">
             <span class="currency-suffix" id="fromCurrencyLabel"><?php echo htmlspecialchars($userCurrency); ?></span>
             <div class="help" id="fromLimitsHelp"></div>
             <div class="help" id="fromCurrencyInfo" style="font-size:11px;color:var(--text-dim);margin-top:2px;"></div>
-            <div class="help" id="sourceSelectedHelp" style="font-size:11px;color:var(--primary-dark);margin-top:2px;display:none;">✅ Source auto-filled. Enter amount above.</div>
+            <div class="help" id="sourceSelectedHelp" style="font-size:11px;color:var(--primary-dark);margin-top:2px;display:none;"></div>
         </div>
     </div>
-    <div class="swap-divider"><span>⇅</span></div>
+    <div class="swap-divider"><span>&#8645;</span></div>
     <div class="section" id="toSection">
         <div class="section-title"><span class="n">2</span> To</div>
         <div class="field-group">
@@ -353,8 +388,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             </select>
         </div>
         <div class="quick-actions">
-            <span class="quick-link" onclick="quickSetSwapType('IDENTITY')">🔑 Swap to Identity</span>
-            <span class="quick-link" onclick="quickSetSwapType('MULTI_SOURCE')">🧩 Multi-Source</span>
+            <span class="quick-link" onclick="quickSetSwapType('IDENTITY')">Swap to identity</span>
+            <span class="quick-link" onclick="quickSetSwapType('MULTI_SOURCE')">Multi-source</span>
         </div>
         <div id="toInstSection">
             <div class="field-group">
@@ -371,8 +406,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <div class="field-group">
                 <label>Delivery Method</label>
                 <select id="deliveryMethodSelect" onchange="setDeliveryMethod(this.value)">
-                    <option value="ATM">🏧 ATM</option>
-                    <option value="AGENT">🧑‍💼 Agent</option>
+                    <option value="ATM">ATM</option>
+                    <option value="AGENT">Agent</option>
                 </select>
             </div>
             <div class="field-group">
@@ -405,13 +440,13 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         <div id="multiSourceFields" style="display:none;">
             <label class="field-label">Sources (minimum 2)</label>
             <div id="multiSourceList"></div>
-            <span class="quick-link" onclick="addMultiSourceRow()">➕ Add another source</span>
+            <span class="quick-link" onclick="addMultiSourceRow()">+ Add another source</span>
             <div class="multi-total">Total requested: <span class="amt" id="multiTotal"><?php echo $userCurrency; ?> 0.00</span></div>
         </div>
     </div>
     </div>
     <div class="cta-row">
-        <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()" disabled>Review Swap →</button>
+        <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()" disabled>Review Swap &rarr;</button>
     </div>
 </div>
 </div>
@@ -420,7 +455,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
     <div class="modal" id="modalContent">
         <div class="modal-header">
             <h2 id="modalTitle">Swap Preview</h2>
-            <button class="modal-close" onclick="closeModal()">✕</button>
+            <button class="modal-close" onclick="closeModal()">&times;</button>
         </div>
         <div id="modalBody"></div>
     </div>
@@ -452,7 +487,7 @@ function getAssetConfig(type) {
 }
 
 let state = {
-    fromInst: null, fromAsset: null, fromFields: {}, fromAmount: 0,
+    fromCategory: 'WALLET', fromInst: null, fromAsset: null, fromFields: {}, fromAmount: 0,
     swapType: 'DEPOSIT', toInst: null, toAsset: null, toFields: {},
     deliveryMethod: 'ATM', beneficiaryPhone: '',
     toIdentityType: 'national_id', toIdentityValue: '', toIdentitySms: '',
@@ -462,7 +497,9 @@ let savedIdentities = [];
 let userSources = [];
 let agentSearchResult = null;
 let agentSearchData = null;
-let selectedSourceId = null; // Track which source is selected
+let selectedSourceId = null;
+let pendingClaims = [];
+let agentStatus = { is_agent: false, approved_destinations: [], all_destinations: [] };
 
 function getInstitutionCurrency(instCode) {
     if (!instCode) return CONFIG.CURRENCY;
@@ -473,26 +510,71 @@ function updateCurrencyDisplay() {
     const fromLabel = document.getElementById('fromCurrencyLabel');
     if (fromLabel) fromLabel.textContent = fromCurrency;
     const fromInfo = document.getElementById('fromCurrencyInfo');
-    if (fromInfo) fromInfo.textContent = state.fromInst ? `💰 Source currency: ${fromCurrency}` : '';
+    if (fromInfo) fromInfo.textContent = state.fromInst ? `Source currency: ${fromCurrency}` : '';
 }
 function switchCountry(country) {
     if (country !== CONFIG.COUNTRY_CODE) window.location.href = '?country=' + encodeURIComponent(country);
 }
 
+// ============================================================
+// SOURCE CATEGORY (Wallet/Account, Card, Voucher)
+// ============================================================
+
+function selectSourceCategory(cat) {
+    state.fromCategory = cat;
+    state.fromInst = null; state.fromAsset = null; state.fromFields = {};
+    selectedSourceId = null;
+
+    document.querySelectorAll('.type-tab').forEach(b => b.classList.toggle('active', b.dataset.cat === cat));
+
+    const walletPanel = document.getElementById('walletPanel');
+    const instAssetPanel = document.getElementById('instAssetPanel');
+    const fieldsBox = document.getElementById('fromFields');
+    const helpEl = document.getElementById('sourceSelectedHelp');
+
+    fieldsBox.innerHTML = ''; fieldsBox.style.display = 'none';
+    if (helpEl) helpEl.style.display = 'none';
+
+    if (cat === 'WALLET') {
+        walletPanel.style.display = 'block';
+        instAssetPanel.style.display = 'none';
+        renderSavedSourceChips();
+    } else {
+        walletPanel.style.display = 'none';
+        instAssetPanel.style.display = 'block';
+        state.fromAsset = cat;
+        populateInstitutionsForAsset(cat);
+        document.getElementById('fromInstSelect').value = '';
+    }
+    updateCurrencyDisplay();
+    refreshUI();
+}
+
+function populateInstitutionsForAsset(assetType) {
+    const sel = document.getElementById('fromInstSelect');
+    const codes = Object.keys(PARTICIPANTS).filter(code =>
+        (PARTICIPANTS[code].asset_types || []).map(t => String(t).toUpperCase()).includes(assetType)
+    );
+    if (codes.length === 0) {
+        sel.innerHTML = `<option value="">No institutions support ${assetType.toLowerCase()} right now</option>`;
+        return;
+    }
+    sel.innerHTML = '<option value="">Select institution</option>' + codes.map(code =>
+        `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`
+    ).join('');
+}
+
 document.addEventListener('DOMContentLoaded', function() {
-    const fromSelect = document.getElementById('fromInstSelect');
     const toSelect = document.getElementById('toInstSelect');
-    if (!fromSelect || !toSelect) { showMessage('Dashboard initialization error. Please refresh.', 'error'); return; }
+    if (!toSelect) { showMessage('Dashboard initialization error. Please refresh.', 'error'); return; }
     const instOptions = Object.keys(PARTICIPANTS);
     if (instOptions.length === 0) {
         showMessage('No institutions found for this country.', 'error');
         return;
     }
-    fromSelect.innerHTML = '<option value="">Select institution</option>';
     toSelect.innerHTML = '<option value="">Select institution</option>';
     instOptions.forEach(code => {
         const name = PARTICIPANTS[code]?.name || code;
-        fromSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${name}</option>`);
         toSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${name}</option>`);
     });
     updateCurrencyDisplay();
@@ -500,7 +582,7 @@ document.addEventListener('DOMContentLoaded', function() {
         state.fromAmount = parseFloat(this.value) || 0;
         refreshUI();
     });
-    refreshUI();
+    selectSourceCategory('WALLET');
     checkPendingClaims();
     loadAgentStatus();
     loadUserSources();
@@ -528,45 +610,22 @@ async function callApi(endpoint, payload) {
     return { ok: true, body };
 }
 
+// ============================================================
+// FROM SIDE: institution + fields (used by Card/Voucher, and by
+// the Wallet/Account "saved source" auto-fill)
+// ============================================================
+
 function selectFromInst(code) {
-    state.fromInst = code || null; state.fromAsset = null; state.fromFields = {};
-    const assetGroup = document.getElementById('fromAssetGroup');
-    if (!code) { assetGroup.style.display = 'none'; document.getElementById('fromFields').innerHTML = ''; updateCurrencyDisplay(); refreshUI(); return; }
+    state.fromInst = code || null;
+    state.fromFields = {};
+    const box = document.getElementById('fromFields');
+    if (!code) { box.innerHTML = ''; box.style.display = 'none'; updateCurrencyDisplay(); refreshUI(); return; }
     const inst = PARTICIPANTS[code];
     if (!inst) { showMessage('Institution not found: ' + code, 'error'); return; }
-    const sel = document.getElementById('fromAssetSelect');
-    const assetTypes = inst.asset_types || [];
-    sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.icon || '📦'} ${getAssetConfig(t)?.label || t}</option>`).join('');
-    assetGroup.style.display = 'block';
-    const currency = inst.limits?.currency || CONFIG.CURRENCY;
-    document.getElementById('fromCurrencyLabel').textContent = currency;
     document.getElementById('fromLimitsHelp').textContent = inst.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
-    if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectFromAsset(assetTypes[0]); } else { document.getElementById('fromFields').innerHTML = ''; }
-    updateCurrencyDisplay(); refreshUI();
-    
-    // If a source was selected, re-fill its fields
-    if (selectedSourceId) {
-        const source = userSources.find(s => s.id === selectedSourceId);
-        if (source && source.institution === code) {
-            setTimeout(() => fillSourceIdentifierFields(source), 200);
-        }
-    }
-}
-function selectFromAsset(type) {
-    state.fromAsset = type || null; state.fromFields = {};
-    const box = document.getElementById('fromFields');
-    if (!type) { box.style.display = 'none'; box.innerHTML = ''; refreshUI(); return; }
     box.style.display = 'block';
-    renderDynamicFields('fromFields', type, 'fromField_', updateFromField, true);
-    
-    // If a source was selected, re-fill its fields
-    if (selectedSourceId) {
-        const source = userSources.find(s => s.id === selectedSourceId);
-        if (source && source.asset_type === type) {
-            setTimeout(() => fillSourceIdentifierFields(source), 200);
-        }
-    }
-    
+    renderDynamicFields('fromFields', state.fromAsset, 'fromField_', updateFromField, true);
+    updateCurrencyDisplay();
     refreshUI();
 }
 function updateFromField(name, value) { state.fromFields[name] = value; refreshUI(); }
@@ -615,7 +674,7 @@ function selectToInst(code) {
         const inst = PARTICIPANTS[code];
         if (!inst) { showMessage('Institution not found: ' + code, 'error'); return; }
         const assetTypes = inst.asset_types || [];
-        sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.icon || '📦'} ${getAssetConfig(t)?.label || t}</option>`).join('');
+        sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
         group.style.display = 'block';
         if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectToAsset(assetTypes[0]); } else { document.getElementById('toFields').style.display = 'none'; }
         updateCurrencyDisplay();
@@ -696,8 +755,8 @@ function multiSourcesValid() {
         return fieldsValidForAsset(s.assetType, s.fields, true);
     });
 }
-function refreshUI() { 
-    document.getElementById('reviewBtn').disabled = !isSwapReady(); 
+function refreshUI() {
+    document.getElementById('reviewBtn').disabled = !isSwapReady();
 }
 function isSwapReady() {
     if (state.swapType === 'MULTI_SOURCE') return multiSourcesValid() && state.toInst && state.toAsset && fieldsValidForAsset(state.toAsset, state.toFields, false);
@@ -790,7 +849,7 @@ function showPreviewModal(previewData) {
         </div>
         <div class="cta-row">
             <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;">Cancel</button>
-            <button class="btn btn-primary" onclick="confirmSwap()" style="flex:1;">✅ Confirm & Execute</button>
+            <button class="btn btn-primary" onclick="confirmSwap()" style="flex:1;">Confirm &amp; execute</button>
         </div>`;
     state.lastPreview = previewData;
     openModal('Swap Preview', bodyHtml);
@@ -813,11 +872,11 @@ function showResultModal(response) {
     const reference = response.swap_reference || data.reference || '—';
     let inner = '';
     if (swapType === 'CASHOUT') {
-        inner = `<div class="icon">💰</div><div style="font-size:18px;font-weight:700;">Cashout Code Generated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div>${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}<div style="margin-top:12px;"><div style="font-size:24px;font-weight:700;">${data.amount ?? state.swapPayload.amount} ${state.swapPayload.currency || CONFIG.CURRENCY}</div></div>`;
+        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Cashout Code Generated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div>${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}<div style="margin-top:12px;"><div style="font-size:24px;font-weight:700;">${data.amount ?? state.swapPayload.amount} ${state.swapPayload.currency || CONFIG.CURRENCY}</div></div>`;
     } else if (swapType === 'IDENTITY') {
-        inner = `<div class="icon">🔑</div><div style="font-size:18px;font-weight:700;">Identity Swap Initiated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:24px;font-weight:700;">${data.amount ?? state.swapPayload.amount} ${data.currency || CONFIG.CURRENCY}</div>`;
+        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Identity Swap Initiated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:24px;font-weight:700;">${data.amount ?? state.swapPayload.amount} ${data.currency || CONFIG.CURRENCY}</div>`;
     } else {
-        inner = `<div class="icon">✅</div><div style="font-size:18px;font-weight:700;">Swap Completed</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="font-size:24px;font-weight:700;margin-top:12px;">${data.amount ?? state.swapPayload.amount} ${CONFIG.CURRENCY}</div>`;
+        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Swap Completed</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="font-size:24px;font-weight:700;margin-top:12px;">${data.amount ?? state.swapPayload.amount} ${CONFIG.CURRENCY}</div>`;
     }
     openModal('Swap Result', `<div class="result-box">${inner}<div class="cta-row"><button class="btn btn-primary" onclick="closeModal(); location.reload();">Done</button></div></div>`);
 }
@@ -825,7 +884,7 @@ function showResultModal(response) {
 const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'Birth Certificate', voter_id: 'Voter ID', phone: 'Phone Number', email: 'Email' };
 
 // ============================================================
-// USER SOURCE MANAGEMENT - UPDATED WITH QUICK SELECT
+// WALLET/ACCOUNT SAVED SOURCES
 // ============================================================
 
 async function loadUserSources() {
@@ -833,105 +892,77 @@ async function loadUserSources() {
     const result = await callApi(CONFIG.API_BASE + '/user/sources.php', {});
     if (!result.ok) return;
     userSources = result.body.data?.sources || [];
-    renderSavedSourceChips(); // Render quick-select chips
+    if (state.fromCategory === 'WALLET') renderSavedSourceChips();
+}
+
+function walletEligibleSources() {
+    return userSources.filter(s => s.status === 'active' && ['WALLET', 'ACCOUNT'].includes(String(s.asset_type).toUpperCase()));
 }
 
 function renderSavedSourceChips() {
     const container = document.getElementById('savedSourcesContainer');
     const chipsContainer = document.getElementById('savedSourcesChips');
     const clearBtn = document.getElementById('clearSourceBtn');
-    
+    const emptyPrompt = document.getElementById('noSourcesPrompt');
     if (!container || !chipsContainer) return;
-    
-    // Only show active sources
-    const activeSources = userSources.filter(s => s.status === 'active');
-    
+
+    const activeSources = walletEligibleSources();
+
     if (activeSources.length === 0) {
         container.style.display = 'none';
+        emptyPrompt.style.display = 'block';
         return;
     }
-    
+    emptyPrompt.style.display = 'none';
     container.style.display = 'block';
-    
+
     chipsContainer.innerHTML = activeSources.map(source => {
-        const assetIcon = ASSETS[source.asset_type]?.icon || '📦';
         const instName = PARTICIPANTS[source.institution]?.name || source.institution;
         const identifier = source.identifier || source.source_identifier || '';
         const shortId = identifier.length > 15 ? identifier.substring(0, 12) + '…' : identifier;
         const isSelected = selectedSourceId === source.id;
-        
         return `
-            <span class="source-chip ${isSelected ? 'active' : ''}" 
+            <span class="source-chip ${isSelected ? 'active' : ''}"
                   onclick="selectSavedSource(${source.id})"
                   title="${escapeHtml(instName)} - ${escapeHtml(identifier)}">
-                <span class="chip-icon">${assetIcon}</span>
-                <span class="chip-label">${escapeHtml(instName)}</span>
+                <span>${escapeHtml(instName)}</span>
                 <span class="chip-identifier">${escapeHtml(shortId)}</span>
             </span>
         `;
     }).join('');
-    
-    // Show/hide clear button
-    if (selectedSourceId) {
-        clearBtn.style.display = 'inline-flex';
-    } else {
-        clearBtn.style.display = 'none';
-    }
+
+    clearBtn.style.display = selectedSourceId ? 'inline-flex' : 'none';
 }
 
 function selectSavedSource(sourceId) {
     const source = userSources.find(s => s.id === sourceId);
-    if (!source) {
-        showMessage('Source not found.', 'error');
-        return;
-    }
-    
-    // Track selected source
+    if (!source) { showMessage('Source not found.', 'error'); return; }
+
     selectedSourceId = sourceId;
-    
-    // 1. Auto-select Institution
-    const instSelect = document.getElementById('fromInstSelect');
-    instSelect.value = source.institution;
-    selectFromInst(source.institution);
-    
-    // 2. Auto-select Asset Type
-    setTimeout(() => {
-        const assetSelect = document.getElementById('fromAssetSelect');
-        if (assetSelect) {
-            const checkAsset = setInterval(() => {
-                if (assetSelect.options.length > 1) {
-                    assetSelect.value = source.asset_type;
-                    selectFromAsset(source.asset_type);
-                    clearInterval(checkAsset);
-                    
-                    // 3. Auto-fill identifier fields
-                    setTimeout(() => {
-                        fillSourceIdentifierFields(source);
-                    }, 150);
-                }
-            }, 100);
-            setTimeout(() => clearInterval(checkAsset), 3000);
-        }
-    }, 200);
-    
-    // 4. Show source selected help
+    state.fromInst = source.institution;
+    state.fromAsset = source.asset_type;
+    state.fromFields = {};
+
+    const inst = PARTICIPANTS[source.institution];
+    document.getElementById('fromLimitsHelp').textContent = inst?.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
+
+    const fieldsBox = document.getElementById('fromFields');
+    fieldsBox.style.display = 'block';
+    renderDynamicFields('fromFields', source.asset_type, 'fromField_', updateFromField, true);
+    setTimeout(() => fillSourceIdentifierFields(source), 30);
+
     const helpEl = document.getElementById('sourceSelectedHelp');
     if (helpEl) {
         helpEl.style.display = 'block';
-        helpEl.textContent = `✅ Source selected: ${source.institution} - ${source.identifier || ''}`;
+        helpEl.textContent = `Source selected: ${inst?.name || source.institution} — ${source.identifier || ''}. Enter the amount below.`;
     }
-    
-    // 5. Focus on amount field
+
     setTimeout(() => {
-        const amountField = document.getElementById('fromAmount');
-        if (amountField) {
-            amountField.focus();
-            amountField.select();
-        }
-        showMessage(`✅ Source selected: ${source.institution} - ${source.identifier || 'Ready for amount'}`, 'success');
-    }, 400);
-    
-    // Update chips
+        document.getElementById('fromAmount')?.focus();
+        showMessage(`Source selected: ${inst?.name || source.institution}`, 'success');
+    }, 200);
+
+    updateCurrencyDisplay();
     renderSavedSourceChips();
     refreshUI();
 }
@@ -939,142 +970,84 @@ function selectSavedSource(sourceId) {
 function fillSourceIdentifierFields(source) {
     const assetConfig = ASSETS[source.asset_type];
     if (!assetConfig) return;
-    
     const fields = assetConfig.fields || [];
-    
-    // Find the identifier field (not PIN, not amount)
-    const identifierField = fields.find(f => 
-        f.vault_field !== 'pin' && 
+
+    const identifierField = fields.find(f =>
+        f.vault_field !== 'pin' &&
         f.name !== 'amount' &&
         (f.name === 'identifier' || f.name === 'account' || f.name === 'phone' || f.name === 'card_number' || f.name === 'wallet_id')
     );
-    
-    // Find PIN field
     const pinField = fields.find(f => f.vault_field === 'pin');
-    
-    // Clear previous disabled state
+
     document.querySelectorAll('#fromFields input[disabled]').forEach(input => {
         input.disabled = false;
         input.style.background = '#fff';
         input.style.color = 'var(--text)';
     });
-    
-    // Fill identifier field
+
     if (identifierField) {
-        const fieldId = `fromField_${identifierField.name}`;
-        const input = document.getElementById(fieldId);
+        const input = document.getElementById(`fromField_${identifierField.name}`);
         if (input) {
             const identifier = source.identifier || source.source_identifier || '';
             input.value = identifier;
-            if (typeof updateFromField === 'function') {
-                updateFromField(identifierField.name, identifier);
-            }
+            updateFromField(identifierField.name, identifier);
             input.disabled = true;
-            input.style.background = '#f0f0f0';
-            input.style.color = '#555';
-            // Add note
+            input.style.background = 'var(--surface)';
+            input.style.color = 'var(--text-dim)';
             const helpText = input.parentElement?.querySelector('.help');
-            if (helpText) {
-                helpText.textContent = '🔒 Auto-filled from your saved source';
-                helpText.style.color = 'var(--primary-dark)';
-            }
+            if (helpText) { helpText.textContent = 'Auto-filled from your saved source'; helpText.style.color = 'var(--primary-dark)'; }
         }
     }
-    
-    // Fill PIN field if it exists and is saved
     if (pinField && source.pin) {
         const pinInput = document.getElementById(`fromField_${pinField.name}`);
         if (pinInput) {
             pinInput.value = source.pin;
-            if (typeof updateFromField === 'function') {
-                updateFromField(pinField.name, source.pin);
-            }
+            updateFromField(pinField.name, source.pin);
             pinInput.disabled = true;
-            pinInput.style.background = '#f0f0f0';
-            pinInput.style.color = '#555';
+            pinInput.style.background = 'var(--surface)';
+            pinInput.style.color = 'var(--text-dim)';
         }
     }
-    
-    // Show help message
-    const helpEl = document.getElementById('sourceSelectedHelp');
-    if (helpEl) {
-        helpEl.style.display = 'block';
-        helpEl.textContent = `✅ Source "${source.institution}" auto-filled. Enter amount below.`;
-    }
-    
     refreshUI();
 }
 
 function clearSourceSelection() {
     selectedSourceId = null;
-    
-    // Re-enable all disabled fields
-    document.querySelectorAll('#fromFields input[disabled]').forEach(input => {
-        input.disabled = false;
-        input.style.background = '#fff';
-        input.style.color = 'var(--text)';
-    });
-    
-    // Clear help text
-    document.querySelectorAll('#fromFields .help').forEach(help => {
-        help.textContent = '';
-        help.style.color = 'var(--text-dim)';
-    });
-    
-    // Hide source selected help
+    state.fromInst = null; state.fromAsset = null; state.fromFields = {};
+
+    document.getElementById('fromFields').innerHTML = '';
+    document.getElementById('fromFields').style.display = 'none';
+
     const helpEl = document.getElementById('sourceSelectedHelp');
-    if (helpEl) {
-        helpEl.style.display = 'none';
-    }
-    
-    // Reset amount field
+    if (helpEl) helpEl.style.display = 'none';
+
     const amountField = document.getElementById('fromAmount');
-    if (amountField) {
-        amountField.value = '';
-        amountField.focus();
-    }
-    
-    // Reset institution and asset type
-    const instSelect = document.getElementById('fromInstSelect');
-    if (instSelect) {
-        instSelect.value = '';
-        selectFromInst('');
-    }
-    
-    const assetSelect = document.getElementById('fromAssetSelect');
-    if (assetSelect) {
-        assetSelect.value = '';
-        selectFromAsset('');
-    }
-    
-    showMessage('Source selection cleared. You can manually enter details.', 'info');
+    if (amountField) { amountField.value = ''; amountField.focus(); }
+
+    showMessage('Source selection cleared.', 'info');
+    updateCurrencyDisplay();
     renderSavedSourceChips();
     refreshUI();
 }
 
 function openMySources() {
-    openModal('🔗 My Sources', renderMySources());
+    openModal('My sources', renderMySources());
 }
-
 function renderMySources() {
     if (userSources.length === 0) {
         return `
             <div style="text-align:center;padding:20px;">
-                <div style="font-size:48px;">📭</div>
-                <div style="font-weight:600;margin:8px 0;">No sources added yet</div>
+                <div style="font-weight:700;margin:8px 0;">No sources added yet</div>
                 <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">Link your bank accounts, wallets, or cards to use them as swap sources.</div>
                 <button class="btn btn-primary" onclick="openAddSource()">+ Add Source</button>
             </div>
         `;
     }
-    
     const sourceList = userSources.map(source => {
         const statusClass = source.status === 'active' ? 'active' : source.status === 'pending_confirmation' ? 'pending' : 'inactive';
-        const statusLabel = source.status === 'active' ? '✅ Active' : source.status === 'pending_confirmation' ? '⏳ Pending' : '❌ Inactive';
+        const statusLabel = source.status === 'active' ? 'Active' : source.status === 'pending_confirmation' ? 'Pending' : 'Inactive';
         const isActive = source.status === 'active';
-        const assetIcon = ASSETS[source.asset_type]?.icon || '📦';
         const assetLabel = ASSETS[source.asset_type]?.label || source.asset_type;
-        
         return `
             <div class="source-card">
                 <div class="source-header">
@@ -1082,11 +1055,11 @@ function renderMySources() {
                     <div>
                         <span class="source-status ${statusClass}">${statusLabel}</span>
                         ${isActive ? `<button class="btn-primary btn-sm" onclick="useSourceForSwap(${source.id})" style="margin-left:8px;">Use</button>` : ''}
-                        ${isActive ? `<button class="btn-danger-outline" onclick="removeSource(${source.id})" style="margin-left:4px;">✕</button>` : ''}
+                        ${isActive ? `<button class="btn-danger-outline" onclick="removeSource(${source.id})" style="margin-left:4px;">Remove</button>` : ''}
                     </div>
                 </div>
                 <div class="source-details">
-                    ${assetIcon} ${assetLabel} · ${escapeHtml(source.identifier || source.source_identifier)}
+                    ${assetLabel} · ${escapeHtml(source.identifier || source.source_identifier)}
                     ${source.account_name ? ` · ${escapeHtml(source.account_name)}` : ''}
                     ${source.currency ? ` · ${source.currency}` : ''}
                     ${source.confirmed_at ? ` · Confirmed: ${new Date(source.confirmed_at).toLocaleDateString()}` : ''}
@@ -1094,35 +1067,31 @@ function renderMySources() {
             </div>
         `;
     }).join('');
-    
     return `
         <div style="margin-bottom:16px;">
-            <button class="btn btn-primary btn-sm" onclick="openAddSource()">➕ Add New Source</button>
+            <button class="btn btn-primary btn-sm" onclick="openAddSource()">+ Add New Source</button>
             <span style="font-size:12px;color:var(--text-muted);margin-left:12px;">${userSources.length} source(s) linked</span>
         </div>
         <div>${sourceList}</div>
         <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);font-size:11px;color:var(--text-dim);">
-            💡 You can add Accounts, Wallets, or Cards. Vouchers and Bank-Wallets are added manually by admin.
+            You can add Accounts, Wallets, or Cards here. Vouchers and Bank-Wallets are added manually by admin.
             <br>Click <strong>Use</strong> on any active source to auto-fill the swap form.
         </div>
     `;
 }
-
 function useSourceForSwap(sourceId) {
     closeModal();
-    setTimeout(() => {
-        selectSavedSource(sourceId);
-    }, 300);
+    selectSourceCategory('WALLET');
+    setTimeout(() => { selectSavedSource(sourceId); }, 200);
 }
 
 function openAddSource() {
-    const instOptions = Object.keys(PARTICIPANTS).map(code => 
+    const instOptions = Object.keys(PARTICIPANTS).map(code =>
         `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`
     ).join('');
-    
     const body = `
         <div style="margin-bottom:16px;">
-            <div style="font-size:14px;font-weight:600;margin-bottom:4px;">Link a new source</div>
+            <div style="font-size:14px;font-weight:700;margin-bottom:4px;">Link a new source</div>
             <div style="font-size:12px;color:var(--text-muted);">Your bank will verify ownership via OTP or OAuth.</div>
         </div>
         <div class="field-group">
@@ -1147,7 +1116,7 @@ function openAddSource() {
             <input id="addSourceAccountName" placeholder="e.g. My Main Account">
         </div>
         <div id="addSourceOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
-            <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📱 Verify with OTP</div>
+            <div style="font-size:13px;font-weight:700;margin-bottom:8px;">Verify with OTP</div>
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;" id="otpMessage">A verification code has been sent to your registered phone.</div>
             <div class="otp-input-group">
                 <input type="text" id="addSourceOtp" placeholder="Enter code" inputmode="numeric" maxlength="8">
@@ -1156,43 +1125,27 @@ function openAddSource() {
         </div>
         <div class="cta-row">
             <button class="btn btn-secondary" onclick="openMySources()">Cancel</button>
-            <button class="btn btn-primary" id="addSourceSubmitBtn" onclick="submitAddSource()">🔗 Link Source</button>
+            <button class="btn btn-primary" id="addSourceSubmitBtn" onclick="submitAddSource()">Link source</button>
         </div>
     `;
-    
     openModal('Add Source', body);
 }
 
-let addSourceState = {
-    attemptId: null,
-    requiresOtp: false,
-    requiresRedirect: false,
-    redirectUrl: null,
-    institution: null,
-    assetType: null,
-    identifier: null
-};
+let addSourceState = { attemptId: null, requiresOtp: false, requiresRedirect: false, redirectUrl: null, institution: null, assetType: null, identifier: null };
 
 function onAddSourceInstChange(code) {
     const group = document.getElementById('addSourceAssetGroup');
     const sel = document.getElementById('addSourceAssetType');
     if (!code) { group.style.display = 'none'; sel.innerHTML = ''; return; }
-    
     const inst = PARTICIPANTS[code];
     const allTypes = inst?.asset_types || [];
-    const eligibleTypes = allTypes.filter(t => 
-        ['ACCOUNT', 'WALLET', 'CARD'].includes(String(t).toUpperCase())
-    );
-    
+    const eligibleTypes = allTypes.filter(t => ['ACCOUNT', 'WALLET', 'CARD'].includes(String(t).toUpperCase()));
     if (eligibleTypes.length === 0) {
         group.style.display = 'block';
         sel.innerHTML = '<option value="">No eligible account types at this institution</option>';
         return;
     }
-    
-    sel.innerHTML = eligibleTypes.map(t => 
-        `<option value="${t}">${getAssetConfig(t)?.icon || '📦'} ${getAssetConfig(t)?.label || t}</option>`
-    ).join('');
+    sel.innerHTML = eligibleTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
     group.style.display = 'block';
 }
 
@@ -1201,31 +1154,25 @@ async function submitAddSource() {
     const assetType = document.getElementById('addSourceAssetType').value;
     const identifier = document.getElementById('addSourceIdentifier').value.trim();
     const accountName = document.getElementById('addSourceAccountName').value.trim();
-    
+
     if (!institution) { showMessage('Select an institution.', 'warning'); return; }
     if (!assetType) { showMessage('Select an asset type.', 'warning'); return; }
     if (!identifier) { showMessage('Enter your account identifier.', 'warning'); return; }
-    
+
     const btn = document.getElementById('addSourceSubmitBtn');
     const original = btn.textContent;
     btn.disabled = true;
-    btn.textContent = '⏳ Registering...';
-    
-    const result = await callApi(CONFIG.API_BASE + '/user/add_source.php', {
-        institution: institution,
-        asset_type: assetType,
-        identifier: identifier,
-        account_name: accountName || undefined
+    btn.textContent = 'Registering...';
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/add_source.php', {
+        institution: institution, asset_type: assetType, identifier: identifier, account_name: accountName || undefined
     });
-    
+
     btn.disabled = false;
     btn.textContent = original;
-    
-    if (!result.ok) {
-        showMessage('Failed to add source: ' + result.error, 'error');
-        return;
-    }
-    
+
+    if (!result.ok) { showMessage('Failed to add source: ' + result.error, 'error'); return; }
+
     const data = result.body.data || {};
     addSourceState.attemptId = data.attempt_id || null;
     addSourceState.requiresOtp = data.requires_otp || false;
@@ -1234,15 +1181,12 @@ async function submitAddSource() {
     addSourceState.institution = institution;
     addSourceState.assetType = assetType;
     addSourceState.identifier = identifier;
-    
+
     if (data.requires_redirect) {
         showMessage('Redirecting to your bank for verification...', 'info');
-        setTimeout(() => {
-            window.location.href = data.redirect_url;
-        }, 1500);
+        setTimeout(() => { window.location.href = data.redirect_url; }, 1500);
         return;
     }
-    
     if (data.requires_otp) {
         document.getElementById('addSourceOtpFields').style.display = 'block';
         document.getElementById('otpMessage').textContent = data.message || 'A verification code has been sent to your registered phone.';
@@ -1250,71 +1194,112 @@ async function submitAddSource() {
         showMessage('OTP sent! Enter the code to verify.', 'success');
         return;
     }
-    
     showMessage(data.message || 'Source added!', 'success');
-    setTimeout(() => {
-        loadUserSources();
-        openMySources();
-    }, 1500);
+    setTimeout(() => { loadUserSources(); openMySources(); }, 1500);
 }
 
 async function completeSourceOtp() {
     const otp = document.getElementById('addSourceOtp').value.trim();
     if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
     if (!addSourceState.attemptId) { showMessage('No pending verification attempt.', 'error'); return; }
-    
+
     const btn = document.querySelector('#addSourceOtpFields .btn-primary');
     const original = btn.textContent;
     btn.disabled = true;
-    btn.textContent = '⏳ Verifying...';
-    
-    const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', {
-        attempt_id: addSourceState.attemptId,
-        otp: otp
-    });
-    
+    btn.textContent = 'Verifying...';
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/verify_source.php', { attempt_id: addSourceState.attemptId, otp: otp });
+
     btn.disabled = false;
     btn.textContent = original;
-    
-    if (!result.ok) {
-        showMessage('Verification failed: ' + result.error, 'error');
-        return;
-    }
-    
-    showMessage('✅ Source verified and activated!', 'success');
-    setTimeout(() => {
-        loadUserSources();
-        openMySources();
-    }, 1500);
+
+    if (!result.ok) { showMessage('Verification failed: ' + result.error, 'error'); return; }
+    showMessage('Source verified and activated!', 'success');
+    setTimeout(() => { loadUserSources(); openMySources(); }, 1500);
 }
 
 async function removeSource(sourceId) {
     if (!confirm('Remove this source? You can add it again later.')) return;
-    
-    const result = await callApi(CONFIG.API_BASE + '/user/delete.php', {
-        source_id: sourceId
-    });
-    
-    if (!result.ok) {
-        showMessage('Failed to remove source: ' + result.error, 'error');
-        return;
-    }
-    
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/sources/delete.php', { source_id: sourceId });
+    if (!result.ok) { showMessage('Failed to remove source: ' + result.error, 'error'); return; }
     showMessage('Source removed.', 'success');
     loadUserSources();
     openMySources();
 }
 
 // ============================================================
-// END USER SOURCE MANAGEMENT
+// TOOLBOX — single entry point for everything that used to
+// crowd the topbar: sources, history, claims, agent tools,
+// profile, help, terms.
 // ============================================================
+
+function openToolbox() { openModal('Toolbox', renderToolbox()); }
+
+function renderToolbox() {
+    const claimCount = pendingClaims.length;
+    const rows = [
+        { label: 'Claim money', badge: claimCount > 0 ? claimCount : null, action: 'openClaimsModal()' },
+        { label: 'My sources', action: 'openMySources()' },
+        { label: 'Swap history', action: 'openSwapHistory()' },
+    ];
+    if (agentStatus.is_agent) rows.push({ label: 'Agent tools', action: 'openAgentToolsModal()' });
+    rows.push({ label: 'Become an agent', action: 'openAgentModal()' });
+    rows.push({ label: 'My profile', action: 'openProfileModal()' });
+    rows.push({ label: 'Help', action: 'openHelpModal()' });
+    rows.push({ label: 'Terms & conditions', action: 'openTermsModal()' });
+
+    return `<div class="toolbox-list">${rows.map(r => `
+        <div class="toolbox-row" onclick="${r.action}">
+            <span class="toolbox-row-label">${r.label}</span>
+            ${r.badge ? `<span class="toolbox-row-badge">${r.badge}</span>` : ''}
+        </div>`).join('')}</div>`;
+}
+
+function openHelpModal() {
+    openModal('Help', `
+        <div style="font-size:13px;line-height:1.7;color:var(--text);">
+            <p style="font-weight:700;margin-bottom:6px;">Sending money</p>
+            <ol style="padding-left:18px;margin-bottom:16px;">
+                <li>Choose Wallet/Account, Card, or Voucher as your source.</li>
+                <li>Pick where it should go: Deposit, Cashout, Send to identity, or Multi-source.</li>
+                <li>Enter the amount, review the fee, and confirm.</li>
+            </ol>
+            <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
+            <ol style="padding-left:18px;margin-bottom:16px;">
+                <li>Open Toolbox &rarr; Claim money.</li>
+                <li>Enter your claim PIN and choose how to receive it.</li>
+            </ol>
+            <p style="font-weight:700;margin-bottom:6px;">Becoming an agent</p>
+            <ol style="padding-left:18px;">
+                <li>Open Toolbox &rarr; Become an agent and register a business account.</li>
+                <li>Once approved, use Agent tools to search and finalize client claims.</li>
+            </ol>
+        </div>
+    `);
+}
+
+function openTermsModal() {
+    openModal('Terms &amp; conditions', `
+        <div style="font-size:13px;line-height:1.7;color:var(--text);">
+            <p style="font-weight:700;margin-bottom:6px;">1. The service</p>
+            <p style="margin-bottom:14px;">VouchMorph facilitates transfers, cashouts, and identity-based payments between participating institutions on your instruction. We act as an intermediary; the underlying funds remain with the institutions holding your linked sources until a swap completes.</p>
+            <p style="font-weight:700;margin-bottom:6px;">2. Your responsibilities</p>
+            <p style="margin-bottom:14px;">You are responsible for keeping your PIN, claim codes, and linked source credentials confidential. VouchMorph staff will never ask for your PIN.</p>
+            <p style="font-weight:700;margin-bottom:6px;">3. Fees</p>
+            <p style="margin-bottom:14px;">Applicable fees are shown before you confirm any swap. Fees vary by swap type, delivery method, and destination institution.</p>
+            <p style="font-weight:700;margin-bottom:6px;">4. Identity swaps</p>
+            <p style="margin-bottom:14px;">Money sent to an identity (national ID, phone, email, etc.) is held for the recipient for a limited window and requires verification to claim.</p>
+            <p style="margin-top:16px;color:var(--text-dim);font-size:11px;">This is placeholder text for structure only — replace with your reviewed legal terms before launch.</p>
+        </div>
+    `);
+}
 
 function openProfileModal() { openModal('My Profile', renderProfileModal()); }
 function renderProfileModal() {
     const rows = savedIdentities.length ? savedIdentities.map((id, i) => `
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
-            <div><div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div><div style="font-size:14px;font-weight:600;">${escapeHtml(id.value)}</div></div>
-            <div class="quick-actions" style="margin:0;"><span class="quick-link" onclick="useSavedIdentity(${i})">✓ Use</span><span class="quick-link danger" onclick="removeSavedIdentity(${i})">✕ Remove</span></div>
+            <div><div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div><div style="font-size:14px;font-weight:700;">${escapeHtml(id.value)}</div></div>
+            <div class="quick-actions" style="margin:0;"><span class="quick-link" onclick="useSavedIdentity(${i})">Use</span><span class="quick-link danger" onclick="removeSavedIdentity(${i})">Remove</span></div>
         </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);">No saved identities yet.</div>`;
     return `
         <div style="margin-bottom:12px;">${rows}</div>
@@ -1322,8 +1307,8 @@ function renderProfileModal() {
         <div class="field-group"><label>Identity Value</label><input id="newIdentityValue" placeholder="Enter the identity value"></div>
         <div class="cta-row"><button class="btn btn-primary" onclick="addSavedIdentity()">+ Add Identity</button></div>
         <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
-            <div class="field-label" style="margin-bottom:8px;">🔒 Transaction PIN</div>
-            <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Required to claim money sent to your verified identity — whether you finalize it yourself here, or relay it to an agent in person. Never share it over SMS.</div>
+            <div class="field-label" style="margin-bottom:8px;">Transaction PIN</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Required to claim money sent to your verified identity. Never share it over SMS.</div>
             <div class="field-group"><label>New PIN (4-6 digits)</label><input type="password" id="newPin" inputmode="numeric" maxlength="6" placeholder="••••"></div>
             <div class="field-group"><label>Confirm PIN</label><input type="password" id="confirmPin" inputmode="numeric" maxlength="6" placeholder="••••"></div>
             <div class="cta-row"><button class="btn btn-primary" onclick="setTransactionPin()">Set PIN</button></div>
@@ -1358,35 +1343,33 @@ async function setTransactionPin() {
     closeModal();
 }
 
-let pendingClaims = [];
 async function checkPendingClaims() {
     if (!CONFIG.USER_ID) return;
     try {
         const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {});
         if (!result.ok) return;
         pendingClaims = result.body.data || [];
-        const btn = document.getElementById('claimsButton');
-        const badge = document.getElementById('claimsBadge');
-        if (pendingClaims.length > 0) { btn.style.display = 'inline-flex'; badge.textContent = pendingClaims.length; } else { btn.style.display = 'none'; }
+        const badge = document.getElementById('toolboxBadge');
+        if (pendingClaims.length > 0) { badge.style.display = 'inline-flex'; badge.textContent = pendingClaims.length; } else { badge.style.display = 'none'; }
     } catch (e) { console.error('[claims] Failed to check pending claims', e); }
 }
 function openClaimsModal() {
     if (pendingClaims.length === 0) { openModal('Claim Money', '<div style="font-size:12px;color:var(--text-dim);">No money currently waiting for your verified identities.</div>'); return; }
     const rows = pendingClaims.map((c, i) => `
-        <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;">
+        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                 <div><div style="font-weight:700;font-size:16px;color:var(--primary-dark);">${escapeHtml(c.amount)} ${escapeHtml(c.currency)}</div><div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(c.source_institution || 'Unknown')}</div><div style="font-size:11px;color:var(--text-dim);">Expires ${c.hold_expires_at ? new Date(c.hold_expires_at).toLocaleString() : 'soon'}</div></div>
                 <button class="btn btn-primary btn-sm" onclick="openClaimForm(${i})">Claim</button>
             </div>
         </div>`).join('');
-    openModal('💰 Claim Money', `<div>${rows}</div>`);
+    openModal('Claim Money', `<div>${rows}</div>`);
 }
 function openClaimForm(idx) {
     const claim = pendingClaims[idx];
     if (!claim) return;
     const pinHint = claim.claim_type === 'otp_pin' ? 'Use the one-time PIN sent by SMS when this money was sent.' : 'Use your VouchMorph transaction PIN.';
     const body = `
-        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:14px;margin-bottom:14px;">
+        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:14px;margin-bottom:14px;">
             <div style="font-size:20px;font-weight:700;color:var(--primary-dark);">${escapeHtml(claim.amount)} ${escapeHtml(claim.currency)}</div>
             <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(claim.source_institution || 'Unknown')}</div>
         </div>
@@ -1396,7 +1379,7 @@ function openClaimForm(idx) {
             <div class="field-group"><label>Destination Institution</label><select id="claimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
             <div class="field-group"><label>Account / Wallet Number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div>
         </div>
-        <div class="cta-row"><button class="btn btn-secondary" onclick="openClaimsModal()">← Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">✅ Claim Funds</button></div>`;
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openClaimsModal()">← Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Claim funds</button></div>`;
     openModal('Claim Money', body);
 }
 function toggleClaimDestFields(type) { document.getElementById('claimDepositFields').style.display = type === 'DEPOSIT' ? 'block' : 'none'; }
@@ -1415,13 +1398,11 @@ async function submitClaim(swapReference) {
     closeModal(); showMessage('Funds claimed successfully!', 'success'); checkPendingClaims();
 }
 
-let agentStatus = { is_agent: false, approved_destinations: [], all_destinations: [] };
 async function loadAgentStatus() {
     if (!CONFIG.USER_ID) return;
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
     if (!result.ok) return;
     agentStatus = result.body.data;
-    document.getElementById('agentToolsButton').style.display = agentStatus.is_agent ? 'inline-flex' : 'none';
     document.getElementById('agentBadge').style.display = agentStatus.is_agent ? 'inline-block' : 'none';
 }
 async function openAgentModal() {
@@ -1429,37 +1410,31 @@ async function openAgentModal() {
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
     if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);">Failed to load agent status: ${escapeHtml(result.error)}</div>`; return; }
     agentStatus = result.body.data;
-    document.getElementById('agentToolsButton').style.display = agentStatus.is_agent ? 'inline-flex' : 'none';
     document.getElementById('agentBadge').style.display = agentStatus.is_agent ? 'inline-block' : 'none';
     document.getElementById('modalBody').innerHTML = renderAgentModal();
 }
 
 function renderAgentModal() {
-    const activeDestinations = agentStatus.all_destinations.filter(d => 
-        d.status !== 'cancelled' && !d.deleted_at
-    );
-    
+    const activeDestinations = agentStatus.all_destinations.filter(d => d.status !== 'cancelled' && !d.deleted_at);
     const statusRows = activeDestinations.length ? activeDestinations.map(d => {
         const isPending = d.status === 'pending_confirmation';
         const isRejected = d.status === 'rejected';
         const canCancel = isPending || isRejected;
-        
-        const badge = d.status === 'active' ? '<span style="background:#dcfce7;color:#166534;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">Active</span>'
-            : isPending ? '<span style="background:#fef3c7;color:#8a5a0b;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">⏳ Pending Approval</span>'
-            : isRejected ? '<span style="background:#fbeceb;color:var(--danger);padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">Rejected</span>'
-            : '<span style="background:#fbeceb;color:var(--danger);padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;">' + (d.status || 'Unknown') + '</span>';
-            
-        return `<div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-bottom:8px;background:#fff;">
+        const badge = d.status === 'active' ? '<span style="background:#dcfce7;color:#166534;padding:3px 10px;border-radius:0;font-size:11px;font-weight:700;">Active</span>'
+            : isPending ? '<span style="background:#fef3c7;color:#8a5a0b;padding:3px 10px;border-radius:0;font-size:11px;font-weight:700;">Pending approval</span>'
+            : isRejected ? '<span style="background:#fbeceb;color:var(--danger);padding:3px 10px;border-radius:0;font-size:11px;font-weight:700;">Rejected</span>'
+            : '<span style="background:#fbeceb;color:var(--danger);padding:3px 10px;border-radius:0;font-size:11px;font-weight:700;">' + (d.status || 'Unknown') + '</span>';
+        return `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:8px;background:#fff;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
-                <div><div style="font-weight:600;">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(d.identifier)} · ${escapeHtml(d.account_type || d.asset_type)}</div></div>
+                <div><div style="font-weight:700;">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(d.identifier)} · ${escapeHtml(d.account_type || d.asset_type)}</div></div>
                 <div style="display:flex;align-items:center;gap:8px;">
                     ${badge}
-                    ${canCancel ? `<button class="btn-danger-outline" onclick="cancelAgentDestination(${d.id})" style="font-size:10px;padding:4px 10px;">✕ Cancel</button>` : ''}
+                    ${canCancel ? `<button class="btn-danger-outline" onclick="cancelAgentDestination(${d.id})" style="font-size:10px;padding:4px 10px;">Cancel</button>` : ''}
                 </div>
             </div>${d.status === 'rejected' && d.rejection_reason ? `<div style="font-size:12px;color:var(--danger);margin-top:6px;">Reason: ${escapeHtml(d.rejection_reason)}</div>` : ''}
         </div>`;
     }).join('') : '<div style="font-size:12px;color:var(--text-dim);">You have no agent destination accounts registered yet.</div>';
-    
+
     return `
         <div style="margin-bottom:16px;"><div class="field-label" style="margin-bottom:8px;">Your Agent Accounts</div>${statusRows}</div>
         <div style="border-top:1px solid var(--border);padding-top:16px;">
@@ -1469,22 +1444,14 @@ function renderAgentModal() {
             <div class="field-group" id="agentAssetTypeGroup" style="display:none;"><label>Account Type</label><select id="agentAssetType"></select><div class="help">Only Account, Wallet, or Card can be used — vouchers stay manual, never registered as a destination.</div></div>
             <div class="field-group"><label>Account / Wallet / Card Number</label><input id="agentIdentifier" placeholder="Your business account number"></div>
             <div class="field-group"><label>Account Name (optional)</label><input id="agentAccountName" placeholder="e.g. Thabo's General Store"></div>
-            <div class="cta-row"><button class="btn btn-primary" onclick="submitAgentDestination()">Register & Verify</button></div>
+            <div class="cta-row"><button class="btn btn-primary" onclick="submitAgentDestination()">Register &amp; verify</button></div>
         </div>`;
 }
 
 async function cancelAgentDestination(destinationId) {
     if (!confirm('Cancel this registration? You can register again later.')) return;
-    
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/cancel_destination.php', {
-        destination_id: destinationId
-    });
-    
-    if (!result.ok) {
-        showMessage('Failed to cancel: ' + result.error, 'error');
-        return;
-    }
-    
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/cancel_destination.php', { destination_id: destinationId });
+    if (!result.ok) { showMessage('Failed to cancel: ' + result.error, 'error'); return; }
     showMessage('Registration cancelled successfully.', 'success');
     openAgentModal();
 }
@@ -1501,30 +1468,27 @@ async function submitAgentDestination() {
     if (!result.ok) { showMessage('Could not register: ' + result.error, 'error'); return; }
 
     const data = result.body.data;
-
     if (data.requires_redirect) {
         showMessage(data.message || 'Redirecting you to your bank to confirm this account...', 'info');
         window.location.href = data.redirect_url;
         return;
     }
-
     if (!data.requires_otp) {
         showMessage(data.message, data.otp_supported ? 'success' : 'warning');
         openAgentModal();
         return;
     }
-
     document.getElementById('modalBody').innerHTML = renderAgentOtpStep(data);
 }
 
 function renderAgentOtpStep(data) {
     return `
-        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:14px;margin-bottom:16px;">
-            <div style="font-weight:600;margin-bottom:4px;">📱 Verification code sent</div>
+        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:14px;margin-bottom:16px;">
+            <div style="font-weight:700;margin-bottom:4px;">Verification code sent</div>
             <div style="font-size:12px;color:var(--text-muted);">${escapeHtml(data.message)}</div>
         </div>
         <div class="field-group"><label>Enter the code</label><input type="text" id="agentOtpCode" inputmode="numeric" maxlength="8" placeholder="Code from your bank"></div>
-        <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentModal()">Cancel</button><button class="btn btn-primary" onclick="verifyAgentOtp(${data.attempt_id})">Verify & Register</button></div>
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentModal()">Cancel</button><button class="btn btn-primary" onclick="verifyAgentOtp(${data.attempt_id})">Verify &amp; register</button></div>
     `;
 }
 
@@ -1551,24 +1515,18 @@ function onAgentInstChange(code) {
         sel.innerHTML = '<option value="">No eligible account types at this institution</option>';
         return;
     }
-    sel.innerHTML = eligible.map(t => `<option value="${t}">${getAssetConfig(t)?.icon || '📦'} ${getAssetConfig(t)?.label || t}</option>`).join('');
+    sel.innerHTML = eligible.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
     group.style.display = 'block';
 }
 
-// ============================================================
-// AGENT TOOLS - SEARCH WITH AGGREGATED DATA (FIXED CURRENCY)
-// ============================================================
-
-function openAgentToolsModal() { 
-    openModal('🏪 Agent Tools', renderAgentToolsSearch()); 
-}
+function openAgentToolsModal() { openModal('Agent Tools', renderAgentToolsSearch()); }
 
 function renderAgentToolsSearch() {
     return `
         <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Search for a client's pending identity payment. You'll need to physically verify their document and have them tell you their claim PIN before you can finalize.</div>
         <div class="field-group"><label>Document Type</label><select id="agentSearchType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option></select></div>
         <div class="field-group"><label>Document Number</label><input id="agentSearchValue" placeholder="Enter the client's ID number"></div>
-        <div class="cta-row"><button class="btn btn-primary" onclick="searchAgentClaim()">🔍 Search</button></div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="searchAgentClaim()">Search</button></div>
         <div id="agentSearchResults" style="margin-top:16px;"></div>`;
 }
 
@@ -1576,110 +1534,80 @@ async function searchAgentClaim() {
     const identityType = document.getElementById('agentSearchType').value;
     const identityValue = document.getElementById('agentSearchValue').value.trim();
     const resultsBox = document.getElementById('agentSearchResults');
-    
-    if (!identityValue) { 
-        showMessage('Enter the document number to search.', 'warning'); 
-        return; 
-    }
-    
+    if (!identityValue) { showMessage('Enter the document number to search.', 'warning'); return; }
     resultsBox.innerHTML = '<div style="text-align:center;padding:16px;"><div class="spinner"></div> Searching...</div>';
-    
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/search_claim.php', { 
-        identity_type: identityType, 
-        identity_value: identityValue 
-    });
-    
-    if (!result.ok) { 
-        resultsBox.innerHTML = `<div style="color:var(--danger);">${escapeHtml(result.error)}</div>`; 
-        return; 
-    }
-    
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/search_claim.php', { identity_type: identityType, identity_value: identityValue });
+    if (!result.ok) { resultsBox.innerHTML = `<div style="color:var(--danger);">${escapeHtml(result.error)}</div>`; return; }
+
     const data = result.body.data;
-    
-    if (!data) {
-        resultsBox.innerHTML = '<div style="font-size:12px;color:var(--text-dim);">No pending payment found for this identity.</div>';
-        return;
-    }
-    
+    if (!data) { resultsBox.innerHTML = '<div style="font-size:12px;color:var(--text-dim);">No pending payment found for this identity.</div>'; return; }
+
     agentSearchData = data;
-    
-    // ✅ FIX: Properly escape and format values
+
     if (data.multi_currency) {
         let html = '<div style="margin-bottom:12px;"><strong>Multiple currencies found for this identity:</strong></div>';
-        data.balances.forEach((b, index) => {
+        data.balances.forEach((b) => {
             const currency = escapeHtml(b.currency);
             const totalAmount = parseFloat(b.total_amount).toFixed(2);
             const swapCount = parseInt(b.swap_count);
             const identityTypeEscaped = escapeHtml(data.identity_type);
             const identityValueEscaped = escapeHtml(data.identity_value);
-            
             html += `
-                <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;">
+                <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                         <div>
                             <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${totalAmount} ${currency}</div>
                             <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
                             <div style="font-size:11px;color:var(--text-dim);">Expires ${b.earliest_expires_at ? new Date(b.earliest_expires_at).toLocaleString() : 'soon'}</div>
                         </div>
-                        <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">💰 Claim</button>
+                        <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">Claim</button>
                     </div>
-                </div>
-            `;
+                </div>`;
         });
         resultsBox.innerHTML = html;
         return;
     }
-    
-    // ✅ FIX: Single currency - properly format and escape
+
     const currency = escapeHtml(data.currency);
     const totalAmount = parseFloat(data.total_amount).toFixed(2);
     const swapCount = parseInt(data.swap_count);
     const identityTypeEscaped = escapeHtml(data.identity_type);
     const identityValueEscaped = escapeHtml(data.identity_value);
-    
+
     resultsBox.innerHTML = `
-        <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;">
+        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                 <div>
                     <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${totalAmount} ${currency}</div>
                     <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
                     <div style="font-size:11px;color:var(--text-dim);">Expires ${data.earliest_expires_at ? new Date(data.earliest_expires_at).toLocaleString() : 'soon'}</div>
                 </div>
-                <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">💰 Claim</button>
+                <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">Claim</button>
             </div>
         </div>
     `;
 }
 
-// ============================================================
-// AGGREGATED CLAIM FINALIZATION - UPDATED TO USE BACKEND DATA
-// ============================================================
-
 function openAgentFinalizeFormAggregated(identityType, identityValue, currency, totalAmount, swapCount) {
     const data = agentSearchData;
-    if (!data) {
-        showMessage('Search data not found. Please search again.', 'error');
-        return;
-    }
-    
+    if (!data) { showMessage('Search data not found. Please search again.', 'error'); return; }
     if (!agentStatus.approved_destinations || agentStatus.approved_destinations.length === 0) {
         openModal('Agent Tools', '<div style="color:var(--danger);">You have no approved agent destination account. Register one first.</div>');
         return;
     }
-    
-    const destOptions = agentStatus.approved_destinations.map(d => 
+    const destOptions = agentStatus.approved_destinations.map(d =>
         `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} - ${escapeHtml(d.identifier)}</option>`
     ).join('');
-    
     const searchTypeLabel = IDENTITY_TYPE_LABELS[document.getElementById('agentSearchType')?.value] || 'document';
-    
+
     const body = `
-        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:14px;margin-bottom:14px;">
+        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:14px;margin-bottom:14px;">
             <div style="font-size:12px;color:var(--text-muted);">Client's total balance</div>
             <div style="font-size:24px;font-weight:700;color:var(--primary-dark);">${totalAmount} ${currency}</div>
             <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">
                 This is an aggregated balance from ${swapCount} different source(s).
-                The full amount deposits into your account. Whatever the client doesn't take as cash today 
+                The full amount deposits into your account. Whatever the client doesn't take as cash today
                 is instantly sent back to their identity as a new claim.
             </div>
         </div>
@@ -1702,10 +1630,9 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
         </div>
         <div class="cta-row">
             <button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back to Search</button>
-            <button class="btn btn-primary" onclick="submitAgentFinalizeAggregated('${escapeHtml(identityType)}', '${escapeHtml(identityValue)}', ${totalAmount}, '${currency}')">✅ Process</button>
+            <button class="btn btn-primary" onclick="submitAgentFinalizeAggregated('${escapeHtml(identityType)}', '${escapeHtml(identityValue)}', ${totalAmount}, '${currency}')">Process</button>
         </div>
     `;
-    
     openModal('Confirm Deposit', body);
 }
 
@@ -1714,42 +1641,24 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
     const docVerified = document.getElementById('agentDocVerified').checked;
     const pin = document.getElementById('agentClaimPin').value.trim();
     const cashNowAmount = parseFloat(document.getElementById('cashNowAmount').value);
-    
-    if (!docVerified) { 
-        showMessage('You must confirm you verified the client\'s physical document.', 'warning'); 
-        return; 
-    }
-    if (!pin) { 
-        showMessage('Enter the client\'s claim PIN.', 'warning'); 
-        return; 
-    }
+
+    if (!docVerified) { showMessage('You must confirm you verified the client\'s physical document.', 'warning'); return; }
+    if (!pin) { showMessage('Enter the client\'s claim PIN.', 'warning'); return; }
     if (isNaN(cashNowAmount) || cashNowAmount < 0 || cashNowAmount > totalAmount) {
         showMessage(`Cash amount must be between 0 and ${totalAmount}.`, 'warning');
         return;
     }
-    
+
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', {
-        identity_type: identityType,
-        identity_value: identityValue,
-        pin: pin,
-        identity_document_verified: true,
-        destination_account_id: parseInt(destinationAccountId, 10),
-        cash_now_amount: cashNowAmount
+        identity_type: identityType, identity_value: identityValue, pin: pin,
+        identity_document_verified: true, destination_account_id: parseInt(destinationAccountId, 10), cash_now_amount: cashNowAmount
     });
-    
-    if (!result.ok) { 
-        showMessage('Failed: ' + result.error, 'error'); 
-        return; 
-    }
-    
+
+    if (!result.ok) { showMessage('Failed: ' + result.error, 'error'); return; }
+
     const data = result.body.data || {};
     closeModal();
-    
-    // ============================================================
-    // FIX: Use the backend's calculated values
-    // The backend already does: NET = GROSS - FEES
-    // And: Remainder = NET - Cash Given
-    // ============================================================
+
     const netDeposited = data.actually_claimed_net || totalAmount;
     const grossAmount = data.actually_claimed_gross || totalAmount;
     const remainder = data.remainder_reswap?.amount || 0;
@@ -1757,76 +1666,46 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
     const successfulSwaps = data.swap_count || 0;
     const failedSwaps = data.failed_deposits ? data.failed_deposits.length : 0;
     const totalFees = parseFloat(grossAmount) - parseFloat(netDeposited);
-    
-    // Build the message using backend data
+
     let msg = '';
-    
-    // Part 1: What happened to the money
     if (netDeposited > 0) {
-        msg += `✅ Deposited ${netDeposited.toFixed(2)} ${currency} into your account`;
-        if (totalFees > 0) {
-            msg += ` (fee: ${totalFees.toFixed(2)} ${currency})`;
-        }
+        msg += `Deposited ${netDeposited.toFixed(2)} ${currency} into your account`;
+        if (totalFees > 0) msg += ` (fee: ${totalFees.toFixed(2)} ${currency})`;
         msg += '. ';
     }
-    
-    // Part 2: Cash given to client
-    if (cashGiven > 0) {
-        msg += `Gave client ${cashGiven.toFixed(2)} ${currency} in cash. `;
-    } else {
-        msg += `No cash given now. `;
-    }
-    
-    // Part 3: Remainder re-swapped (if any)
-    if (remainder > 0) {
-        msg += `The remaining ${remainder.toFixed(2)} ${currency} was sent back to their identity — a new PIN was texted to them. `;
-    }
-    
-    // Part 4: Summary stats
+    if (cashGiven > 0) msg += `Gave client ${cashGiven.toFixed(2)} ${currency} in cash. `;
+    else msg += `No cash given now. `;
+    if (remainder > 0) msg += `The remaining ${remainder.toFixed(2)} ${currency} was sent back to their identity — a new PIN was texted to them. `;
     if (successfulSwaps > 1) {
         msg += `(Processed ${successfulSwaps} source(s)`;
-        if (failedSwaps > 0) {
-            msg += `, ${failedSwaps} failed`;
-        }
+        if (failedSwaps > 0) msg += `, ${failedSwaps} failed`;
         msg += `)`;
     } else if (failedSwaps > 0) {
         msg += `(${failedSwaps} source(s) failed)`;
     }
-    
-    // Part 5: Status
-    if (data.status === 'partial_success') {
-        msg += ' ⚠️ Partial success - some sources failed.';
-    }
-    
+    if (data.status === 'partial_success') msg += ' Partial success — some sources failed.';
+
     showMessage(msg, 'success');
     agentSearchData = null;
     agentSearchResult = null;
 }
 
-// Legacy single claim function - also updated to use backend data
 function openAgentFinalizeForm(claim) {
     if (claim && claim.total_amount !== undefined) {
-        openAgentFinalizeFormAggregated(
-            claim.identity_type, 
-            claim.identity_value, 
-            claim.currency, 
-            claim.total_amount, 
-            claim.swap_count
-        );
+        openAgentFinalizeFormAggregated(claim.identity_type, claim.identity_value, claim.currency, claim.total_amount, claim.swap_count);
         return;
     }
-    
     agentSearchResult = claim;
     if (!agentStatus.approved_destinations || agentStatus.approved_destinations.length === 0) {
         openModal('Agent Tools', '<div style="color:var(--danger);">You have no approved agent destination account. Register one first.</div>');
         return;
     }
-    const destOptions = agentStatus.approved_destinations.map(d => 
+    const destOptions = agentStatus.approved_destinations.map(d =>
         `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} - ${escapeHtml(d.identifier)}</option>`
     ).join('');
     const searchTypeLabel = IDENTITY_TYPE_LABELS[document.getElementById('agentSearchType')?.value] || 'document';
     const body = `
-        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:14px;margin-bottom:14px;">
+        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:14px;margin-bottom:14px;">
             <div style="font-size:12px;color:var(--text-muted);">Client's balance</div>
             <div style="font-size:24px;font-weight:700;color:var(--primary-dark);">${escapeHtml(claim.amount)} ${escapeHtml(claim.currency)}</div>
         </div>
@@ -1843,7 +1722,7 @@ function openAgentFinalizeForm(claim) {
         </div>
         <div class="cta-row">
             <button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back</button>
-            <button class="btn btn-primary" onclick="submitAgentFinalize()">✅ Process</button>
+            <button class="btn btn-primary" onclick="submitAgentFinalize()">Process</button>
         </div>`;
     openModal('Confirm Deposit', body);
 }
@@ -1862,11 +1741,8 @@ async function submitAgentFinalize() {
     }
 
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', {
-        swap_reference: agentSearchResult.swap_reference,
-        pin,
-        identity_document_verified: true,
-        destination_account_id: parseInt(destinationAccountId, 10),
-        cash_now_amount: cashNowAmount
+        swap_reference: agentSearchResult.swap_reference, pin, identity_document_verified: true,
+        destination_account_id: parseInt(destinationAccountId, 10), cash_now_amount: cashNowAmount
     });
 
     if (!result.ok) { showMessage('Failed: ' + result.error, 'error'); return; }
@@ -1874,58 +1750,45 @@ async function submitAgentFinalize() {
     const data = result.body.data || {};
     closeModal();
 
-    // Use backend data if available
     const netDeposited = data.actually_claimed_net || agentSearchResult.amount;
     const remainder = data.remainder_reswap?.amount || 0;
     const cashGiven = data.cash_now_amount || cashNowAmount;
     const totalFees = data.total_fee || 0;
-    
+
     let msg = '';
     if (netDeposited > 0) {
-        msg += `✅ Deposited ${netDeposited.toFixed(2)} ${agentSearchResult.currency} into your account`;
-        if (totalFees > 0) {
-            msg += ` (fee: ${totalFees.toFixed(2)} ${agentSearchResult.currency})`;
-        }
+        msg += `Deposited ${netDeposited.toFixed(2)} ${agentSearchResult.currency} into your account`;
+        if (totalFees > 0) msg += ` (fee: ${totalFees.toFixed(2)} ${agentSearchResult.currency})`;
         msg += '. ';
     }
-    if (cashGiven > 0) {
-        msg += `Gave client ${cashGiven.toFixed(2)} ${agentSearchResult.currency} in cash. `;
-    } else {
-        msg += `No cash given now. `;
-    }
-    if (remainder > 0) {
-        msg += `The remaining ${remainder.toFixed(2)} ${agentSearchResult.currency} was sent back to their identity — a new PIN was texted to them.`;
-    }
-    
+    if (cashGiven > 0) msg += `Gave client ${cashGiven.toFixed(2)} ${agentSearchResult.currency} in cash. `;
+    else msg += `No cash given now. `;
+    if (remainder > 0) msg += `The remaining ${remainder.toFixed(2)} ${agentSearchResult.currency} was sent back to their identity — a new PIN was texted to them.`;
+
     showMessage(msg, 'success');
     agentSearchResult = null;
 }
 
-// ============================================================
-// SWAP HISTORY
-// ============================================================
-
 async function openSwapHistory() {
     openModal('Swap History', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading swaps...</div>');
     if (!CONFIG.USER_ID) {
-        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--danger);"><div style="font-size:48px;">⚠️</div><div style="font-weight:600;">Could not identify your account</div><div style="font-size:13px;color:var(--text-muted);margin-top:8px;">Your session doesn't have a user ID attached. Try logging out and back in.</div></div>`;
+        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--danger);"><div style="font-weight:700;">Could not identify your account</div><div style="font-size:13px;color:var(--text-muted);margin-top:8px;">Your session doesn't have a user ID attached. Try logging out and back in.</div></div>`;
         return;
     }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/history.php', { user_id: CONFIG.USER_ID, limit: 50 });
-    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">❌ Failed to load swap history: ${escapeHtml(result.error)}</div>`; return; }
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap history: ${escapeHtml(result.error)}</div>`; return; }
     renderSwapHistory(result.body);
 }
 function renderSwapHistory(data) {
     const swaps = data.data || data.swaps || [];
-    if (swaps.length === 0) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-size:48px;">📭</div><div style="font-weight:600;">No swaps found</div></div>`; return; }
+    if (swaps.length === 0) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps found</div></div>`; return; }
     let historyHtml = `<div style="max-height:60vh;overflow-y:auto;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
     swaps.forEach((swap) => {
         const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
-        const statusIcon = swap.status === 'completed' || swap.status === 'success' ? '✅' : swap.status === 'pending' ? '⏳' : '❌';
-        historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
+        historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
             <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-                <div><div style="font-weight:600;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
-                <div style="text-align:right;"><div style="font-weight:700;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || CONFIG.CURRENCY}</div><div style="font-size:11px;color:${statusColor};">${statusIcon} ${swap.status || 'unknown'}</div></div>
+                <div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
+                <div style="text-align:right;"><div style="font-weight:700;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || CONFIG.CURRENCY}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div>
             </div></div>`;
     });
     historyHtml += `</div>`;
@@ -1934,30 +1797,26 @@ function renderSwapHistory(data) {
 async function viewSwapDetail(reference) {
     openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: reference });
-    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">❌ Failed to load swap details: ${escapeHtml(result.error)}</div>`; return; }
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap details: ${escapeHtml(result.error)}</div>`; return; }
     renderSwapDetail(result.body);
 }
 function renderSwapDetail(data) {
     const swap = data.swap || data.data || {};
     document.getElementById('modalBody').innerHTML = `
         <div style="max-height:70vh;overflow-y:auto;">
-            <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius-sm);padding:16px;margin-bottom:12px;">
+            <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:16px;margin-bottom:12px;">
                 <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-                    <div><div style="font-size:12px;color:var(--text-muted);">Reference</div><div style="font-weight:600;">${swap.reference || swap.swap_reference || 'N/A'}</div></div>
-                    <div><div style="font-size:12px;color:var(--text-muted);">Status</div><div style="font-weight:600;">${swap.status || 'unknown'}</div></div>
+                    <div><div style="font-size:12px;color:var(--text-muted);">Reference</div><div style="font-weight:700;">${swap.reference || swap.swap_reference || 'N/A'}</div></div>
+                    <div><div style="font-size:12px;color:var(--text-muted);">Status</div><div style="font-weight:700;">${swap.status || 'unknown'}</div></div>
                 </div>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
-                <div style="background:rgba(0,0,0,0.02);border-radius:var(--radius-sm);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Swap Type</div><div style="font-weight:600;">${swap.swap_type || 'N/A'}</div></div>
-                <div style="background:rgba(0,0,0,0.02);border-radius:var(--radius-sm);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || CONFIG.CURRENCY}</div></div>
+                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Swap Type</div><div style="font-weight:700;">${swap.swap_type || 'N/A'}</div></div>
+                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || CONFIG.CURRENCY}</div></div>
             </div>
             <div style="margin-top:12px;"><button class="btn btn-secondary" onclick="openSwapHistory()" style="width:100%;">← Back to History</button></div>
         </div>`;
 }
-
-// ============================================================
-// UI HELPERS
-// ============================================================
 
 function openModal(title, bodyHtml) {
     document.getElementById('modalTitle').textContent = title;
