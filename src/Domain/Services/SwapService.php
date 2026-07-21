@@ -5106,7 +5106,7 @@ public function initiateUserSourceRegistration(
     }
 
     $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
-        . '/api/v1/user/source_oauth_callback.php';
+        . '/user/source_oauth_callback.php';
 
     // ============================================================
     // Initiate OAuth or OTP - this does NOT verify the account
@@ -5304,7 +5304,7 @@ public function completeUserSourceRegistrationByState(string $oauthState, string
     }
 
     $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
-        . '/api/v1/user/source_oauth_callback.php';
+        . '/user/source_oauth_callback.php';
 
     try {
         $verifyResult = $this->verifySourceLink([
