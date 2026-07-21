@@ -1,3 +1,6 @@
+# Complete Updated SwapService.php
+
+```php
 <?php
 declare(strict_types=1);
 
@@ -166,7 +169,9 @@ class SwapService
         
         $this->participants = $countryConfig['participants'] ?? [];
         $this->feesConfig = $countryConfig['fees'] ?? [];
-        $this->atmNotes = $countryConfig['atm_notes'] ?? [];
+        
+        // ✅ STRICT: Load atm_notes with NO fallbacks
+        $this->loadAtmNotesStrict($country);
         
         error_log("[SwapService] Loaded fees config from LoadCountry");
         error_log("[SwapService] Config keys: " . implode(', ', array_keys($this->feesConfig)));
@@ -3041,12 +3046,14 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
         }
 
         error_log("[SwapService] STEP 3: Store identity mapping (PAUSED)");
-        $identityHoldId = $this->storeIdentityHold(
+        $identityHoldStored = $this->storeIdentityHold(
             $payload,
             $swapRef,
             $holdResult,
             $this->currentHoldId
         );
+        $identityHoldId = $identityHoldStored['hold_id'];
+        $claimPin = $identityHoldStored['claim_pin'];
 
         $this->updateHoldStatus($this->currentHoldId, 'PENDING_IDENTITY');
 
@@ -3068,6 +3075,7 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
             'identity_value' => $payload['identity_value'],
             'source_institution' => $sourceInstitution,
             'expires_at' => $expiresAt,
+            'claim_pin' => $claimPin, // NEW - plaintext, shown once to the sender's dashboard
             'message' => 'Swap paused. Recipient must confirm identity and choose destination within 24 hours.',
             'access_methods' => $this->getIdentityAccessMethods($identityType, $payload['identity_value'])
         ];
@@ -3464,7 +3472,15 @@ private function createEarmarkedBalance(
     float $amount,
     string $currency
 ): int {
-    $denominations = $this->atmNotes[$currency] ?? [200, 100, 50, 20, 10];
+    // ✅ STRICT: Must have denominations
+    if (!isset($this->atmNotes[$currency])) {
+        throw new RuntimeException(
+            "Cannot create earmarked balance for currency {$currency}: " .
+            "No ATM denominations configured. Add '{$currency}' to atm_notes.json."
+        );
+    }
+    
+    $denominations = $this->atmNotes[$currency];
     $smallestNote = min($denominations);
     $totalCashoutFee = (float)($this->feesConfig['CASHOUT']['fee_components']['F1']['amount'] ?? 0);
  
@@ -5607,23 +5623,64 @@ public function isApprovedAgent(int $userId): bool
     // PRIVATE HELPER METHODS
     // ============================================================================
 
-    private function loadAtmNotes(string $country): void
+    /**
+     * STRICT loader - NO FALLBACKS
+     * Must find atm_notes.json in country folder
+     */
+    private function loadAtmNotesStrict(string $country): void
     {
-        $atmNotesPath = __DIR__ . '/../../Core/Config/Countries/' . $country . '/atm_notes.json';
+        $countryFolder = __DIR__ . '/../../Core/Config/Countries/' . $country;
+        $atmNotesPath = $countryFolder . '/atm_notes.json';
         
-        if (file_exists($atmNotesPath)) {
-            $this->atmNotes = json_decode(file_get_contents($atmNotesPath), true);
-            error_log("[SwapService] Loaded ATM notes for {$country}: " . json_encode($this->atmNotes));
-        } else {
-            $currency = $this->config['currency'] ?? 'BWP';
-            $this->atmNotes[$currency] = [200, 100, 50, 20, 10];
-            error_log("[SwapService] Using default ATM notes for {$currency}: " . json_encode($this->atmNotes[$currency]));
+        if (!file_exists($atmNotesPath)) {
+            throw new RuntimeException(
+                "Required file not found: {$atmNotesPath}. " .
+                "Country '{$country}' must have atm_notes.json in its config folder."
+            );
         }
+        
+        $content = file_get_contents($atmNotesPath);
+        if ($content === false) {
+            throw new RuntimeException("Failed to read atm_notes.json from {$countryFolder}");
+        }
+        
+        $this->atmNotes = json_decode($content, true);
+        
+        if (!is_array($this->atmNotes) || empty($this->atmNotes)) {
+            throw new RuntimeException(
+                "Invalid atm_notes.json in {$countryFolder}. " .
+                "Must contain a valid JSON object with currency denominations."
+            );
+        }
+        
+        // Validate each currency has denominations
+        foreach ($this->atmNotes as $currency => $denominations) {
+            if (!is_array($denominations) || empty($denominations)) {
+                throw new RuntimeException(
+                    "Currency '{$currency}' in atm_notes.json has no denominations. " .
+                    "Each currency must have an array of note values."
+                );
+            }
+            
+            // Sort descending for proper calculation
+            rsort($denominations);
+            $this->atmNotes[$currency] = $denominations;
+        }
+        
+        error_log("[SwapService] Loaded ATM notes from {$atmNotesPath}: " . json_encode($this->atmNotes));
     }
 
     private function validateCashoutAmount(float $requestedAmount, string $currency): array
     {
-        $denominations = $this->atmNotes[$currency] ?? [200, 100, 50, 20, 10];
+        // ✅ STRICT: Must have denominations
+        if (!isset($this->atmNotes[$currency])) {
+            throw new RuntimeException(
+                "No ATM denominations configured for currency: {$currency}. " .
+                "Cannot validate cashout amount."
+            );
+        }
+        
+        $denominations = $this->atmNotes[$currency];
         sort($denominations);
         
         $remaining = $requestedAmount;
@@ -5669,8 +5726,23 @@ public function isApprovedAgent(int $userId): bool
         $exchangeRate = $feeResult['forex']['rate'] ?? 1.0;
         $netAmountDestCurrency = $feeResult['net_amount_destination_currency'] ?? $netAmountSourceCurrency;
         
-        $denominations = $this->atmNotes[$destinationCurrency] ?? [200, 100, 50, 20, 10];
-        $multiplier = $denominations[0] ?? 100;
+        // ✅ STRICT: Must have denominations for this currency
+        if (!isset($this->atmNotes[$destinationCurrency])) {
+            throw new RuntimeException(
+                "No ATM denominations configured for currency: {$destinationCurrency}. " .
+                "Please add '{$destinationCurrency}' to atm_notes.json in the country config."
+            );
+        }
+        
+        $denominations = $this->atmNotes[$destinationCurrency];
+        $multiplier = $denominations[0] ?? null;
+        
+        if ($multiplier === null) {
+            throw new RuntimeException(
+                "Invalid denominations for currency {$destinationCurrency}: " . 
+                json_encode($denominations)
+            );
+        }
         
         $dispensableAmount = $multiplier * floor($netAmountDestCurrency / $multiplier);
         $remainderBalance = $netAmountDestCurrency - $dispensableAmount;
@@ -6331,7 +6403,7 @@ public function isApprovedAgent(int $userId): bool
     // IDENTITY SWAP HELPER METHODS
     // ============================================================================
 
-    private function storeIdentityHold(array $payload, string $swapRef, array $holdResult, int $holdId): int
+    private function storeIdentityHold(array $payload, string $swapRef, array $holdResult, int $holdId): array
 {
     $sourceInstitution = $this->extractSourceInstitution($payload);
     $identityType = strtolower($payload['identity_type']);
@@ -6344,6 +6416,7 @@ public function isApprovedAgent(int $userId): bool
  
     $claimType = null;
     $otpHash = null;
+    $otpPlaintext = null; // NEW - only ever held in memory for this one request/response
     $requiresDual = false;
  
     if ($owner) {
@@ -6352,6 +6425,7 @@ public function isApprovedAgent(int $userId): bool
    } elseif ($notificationPhone) {
         $claimType = 'otp_pin';
         $otp = $this->generateOtpPin();
+        $otpPlaintext = $otp; // NEW - kept only long enough to return to the sender once
         $otpHash = password_hash($otp, PASSWORD_DEFAULT);
         error_log("[SwapService] Identity {$identityType}={$identityValue} is UNREGISTERED - generated one-time claim PIN, sending to {$notificationPhone}");
         if ($this->smsService) {
@@ -6418,14 +6492,21 @@ public function isApprovedAgent(int $userId): bool
         ]);
  
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        return $row ? (int)$row['hold_id'] : 0;
+
+        // CHANGED: return array instead of bare int, so the caller can
+        // also get the plaintext OTP (never persisted anywhere in
+        // plaintext - this is the one moment it exists outside the SMS).
+        return [
+            'hold_id' => $row ? (int)$row['hold_id'] : 0,
+            'claim_pin' => $otpPlaintext,
+            'claim_type' => $claimType,
+        ];
  
     } catch (PDOException $e) {
         error_log("[SwapService] Failed to store identity hold: " . $e->getMessage());
         throw new RuntimeException("Failed to store identity hold: " . $e->getMessage());
     }
 }
-
 
 /**
  * Track an identity-swap OTP PIN send attempt in message_outbox
@@ -7407,7 +7488,14 @@ private function updateHoldExpiry(?int $holdId, string $expiresAt): void
 
     public function getAtmDenominations(string $currency): array
     {
-        return $this->atmNotes[$currency] ?? [200, 100, 50, 20, 10];
+        if (!isset($this->atmNotes[$currency])) {
+            throw new RuntimeException(
+                "No ATM denominations configured for currency: {$currency}. " .
+                "Please check atm_notes.json in the country config."
+            );
+        }
+        
+        return $this->atmNotes[$currency];
     }
 
     public function calculateNoteBreakdown(float $amount, string $currency): array
@@ -7477,4 +7565,180 @@ private function updateHoldExpiry(?int $holdId, string $expiresAt): void
             ];
         }
     }
+
+    /**
+     * Lets a logged-in user attach an identity to their own account.
+     *
+     * Enforces global uniqueness across ALL users: if identity_type +
+     * identity_value is already registered (in any status) to a DIFFERENT
+     * user, this is rejected outright - nobody can claim someone else's
+     * national ID / phone / email as their own to intercept future funds
+     * sent to it.
+     *
+     * Phone numbers: an OTP is texted immediately; the identity only
+     * becomes 'verified' (and thus usable for claim_type='account_pin')
+     * after verifyUserIdentityOtp() succeeds.
+     *
+     * national_id / birth_certificate / voter_id: there's no way to prove
+     * physical document ownership from a dashboard form alone, so these
+     * are inserted as 'pending_review' and require manual/ops approval
+     * before they flip to 'verified' - same posture already used for
+     * agent destination accounts and user source accounts elsewhere in
+     * this file when a bank offers no OTP/OAuth proof.
+     *
+     * email: also inserted as 'pending_review' for now (no email-OTP
+     * channel wired up in this codebase yet) - flagged here rather than
+     * silently trusting it.
+     */
+    public function registerUserIdentity(int $userId, string $identityType, string $identityValue): array
+    {
+        $identityType = strtolower(trim($identityType));
+        $identityValue = trim($identityValue);
+
+        if (!$this->isValidIdentityType($identityType)) {
+            throw new RuntimeException("Invalid identity_type. Must be one of: " . $this->validIdentityTypesLabel());
+        }
+        if ($identityValue === '') {
+            throw new RuntimeException("identity_value is required");
+        }
+
+        // ============================================================
+        // UNIQUENESS: reject if this identity is already registered to
+        // a DIFFERENT user, in any status (pending_review counts too -
+        // first claimant wins the review queue, not a race at verify time).
+        // ============================================================
+        $stmt = $this->swapDB->prepare("
+            SELECT user_id, status FROM user_identities
+            WHERE identity_type = :type AND identity_value = :value
+            LIMIT 1
+        ");
+        $stmt->execute([':type' => $identityType, ':value' => $identityValue]);
+        $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($existing && (int)$existing['user_id'] !== $userId) {
+            error_log("[SwapService] registerUserIdentity: REJECTED - {$identityType}={$identityValue} already registered to a different user_id={$existing['user_id']}");
+            throw new RuntimeException("This identity is already registered to another VouchMorph account. If this is a mistake, contact support.");
+        }
+
+        if ($existing && (int)$existing['user_id'] === $userId) {
+            // Already theirs - idempotent response rather than an error.
+            if ($existing['status'] === 'verified') {
+                return [
+                    'requires_otp' => false,
+                    'status' => 'verified',
+                    'message' => 'This identity is already verified on your account.',
+                ];
+            }
+            return [
+                'requires_otp' => false,
+                'status' => $existing['status'],
+                'message' => 'This identity is already registered and awaiting verification.',
+            ];
+        }
+
+        // Self-service phone OTP path.
+        if ($identityType === 'phone') {
+            if (!$this->smsService) {
+                throw new RuntimeException("SMS verification is not available right now - try again later.");
+            }
+
+            $otp = $this->generateOtpPin();
+            $otpHash = password_hash($otp, PASSWORD_DEFAULT);
+
+            $stmt = $this->swapDB->prepare("
+                INSERT INTO user_identities (
+                    user_id, identity_type, identity_value, status,
+                    otp_pin_hash, otp_expires_at, created_at
+                ) VALUES (
+                    :user_id, :type, :value, 'pending_otp',
+                    :otp_hash, :otp_expires_at, NOW()
+                ) RETURNING id
+            ");
+            $stmt->execute([
+                ':user_id' => $userId,
+                ':type' => $identityType,
+                ':value' => $identityValue,
+                ':otp_hash' => $otpHash,
+                ':otp_expires_at' => date('Y-m-d H:i:s', time() + 600),
+            ]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            $attemptId = $row ? (int)$row['id'] : 0;
+
+            try {
+                $this->smsService->sendCashoutCode($identityValue, $otp, 0, 'IDENTITY_VERIFY_' . $attemptId);
+            } catch (Exception $e) {
+                error_log("[SwapService] registerUserIdentity: failed to SMS verification code: " . $e->getMessage());
+                throw new RuntimeException("Could not send the verification code - try again.");
+            }
+
+            error_log("[SwapService] registerUserIdentity: OTP sent for phone identity, user_id={$userId}, attempt_id={$attemptId}");
+
+            return [
+                'requires_otp' => true,
+                'attempt_id' => $attemptId,
+                'status' => 'pending_otp',
+                'message' => 'A verification code has been texted to this number.',
+            ];
+        }
+
+        // Document / email path - no self-service proof available yet.
+        $stmt = $this->swapDB->prepare("
+            INSERT INTO user_identities (
+                user_id, identity_type, identity_value, status, created_at
+            ) VALUES (
+                :user_id, :type, :value, 'pending_review', NOW()
+            ) RETURNING id
+        ");
+        $stmt->execute([
+            ':user_id' => $userId,
+            ':type' => $identityType,
+            ':value' => $identityValue,
+        ]);
+
+        error_log("[SwapService] registerUserIdentity: {$identityType}={$identityValue} submitted for manual review, user_id={$userId}");
+
+        return [
+            'requires_otp' => false,
+            'status' => 'pending_review',
+            'message' => 'Submitted for review. Document-based identities are verified manually before they can be used with your transaction PIN.',
+        ];
+    }
+
+    /**
+     * Completes phone-based identity registration.
+     */
+    public function verifyUserIdentityOtp(int $userId, int $attemptId, string $otp): array
+    {
+        $stmt = $this->swapDB->prepare("
+            SELECT * FROM user_identities
+            WHERE id = :id AND user_id = :user_id AND status = 'pending_otp'
+        ");
+        $stmt->execute([':id' => $attemptId, ':user_id' => $userId]);
+        $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$attempt) {
+            throw new RuntimeException("Verification attempt not found.");
+        }
+        if (strtotime($attempt['otp_expires_at']) < time()) {
+            throw new RuntimeException("Verification code expired. Start again.");
+        }
+        if (empty($attempt['otp_pin_hash']) || !password_verify($otp, $attempt['otp_pin_hash'])) {
+            throw new RuntimeException("Incorrect verification code.");
+        }
+
+        $stmt = $this->swapDB->prepare("
+            UPDATE user_identities
+            SET status = 'verified', otp_pin_hash = NULL, verified_at = NOW()
+            WHERE id = :id
+        ");
+        $stmt->execute([':id' => $attemptId]);
+
+        error_log("[SwapService] verifyUserIdentityOtp: identity id={$attemptId} verified for user_id={$userId}");
+
+        return [
+            'status' => 'verified',
+            'message' => 'Identity verified. You can now finalize identity swaps sent to it with your transaction PIN.',
+        ];
+    }
 }
+```
