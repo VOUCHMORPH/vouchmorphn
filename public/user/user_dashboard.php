@@ -220,14 +220,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .message.error { background: rgba(211,47,47,0.08); border-left: 3px solid var(--danger); color: #a12525; }
 .message.warning { background: rgba(184,134,11,0.10); border-left: 3px solid var(--warning); color: #8a6508; }
 
-.card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; }
+.card { background: transparent; border: none; padding: 0; }
+.section.split-box { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
+.swap-columns { display: flex; align-items: stretch; gap: 18px; }
+.swap-columns > .section { flex: 1 1 0; min-width: 0; }
+@media (max-width: 860px) { .container { max-width: 560px; } .swap-columns { flex-direction: column; } .swap-divider span { transform: rotate(0deg) !important; } }
+.swap-divider { display: flex; align-items: center; justify-content: center; margin: 0; color: var(--text-dim); flex: 0 0 auto; }
+.swap-divider span { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border: 1px solid var(--border); background: #fff; border-radius: var(--radius); font-size: 15px; transform: rotate(90deg); }
 .section-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; margin-bottom: 14px; color: var(--text); }
 .section-title .n { width: 20px; height: 20px; border-radius: var(--radius); background: var(--text); color: #fff; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center; }
-.swap-columns { display: flex; align-items: flex-start; gap: 32px; }
-.swap-columns > .section { flex: 1 1 0; min-width: 0; }
-@media (max-width: 860px) { .container { max-width: 560px; } .swap-columns { flex-direction: column; } }
-.swap-divider { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 22px 0; color: var(--text-dim); }
-.swap-divider::before, .swap-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
 
 .field-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; display: block; margin-bottom: 4px; font-weight: 700; letter-spacing: 0.3px; }
 .field-group { margin-bottom: 12px; }
@@ -339,7 +340,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 
 <div class="card">
     <div class="swap-columns">
-    <div class="section" id="fromSection">
+    <div class="section split-box" id="fromSection">
         <div class="section-title"><span class="n">1</span> From</div>
 
         <div class="type-tabs" id="sourceTypeTabs">
@@ -383,7 +384,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         </div>
     </div>
     <div class="swap-divider"><span>&#8645;</span></div>
-    <div class="section" id="toSection">
+    <div class="section split-box" id="toSection">
         <div class="section-title"><span class="n">2</span> To</div>
         <div class="field-group">
             <label>Swap Type</label>
