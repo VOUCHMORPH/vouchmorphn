@@ -1432,10 +1432,27 @@ public function debitFunds(array $payload): array
         // rejected debit. Endpoints that don't send a "success" key at all
         // (e.g. deposit uses "processed") are unaffected — this only
         // tightens cases where the bank was explicit and we were ignoring it.
-        $bodySuccessFlag = null;
-        if (is_array($decodedResponse) && array_key_exists('success', $decodedResponse)) {
-            $bodySuccessFlag = (bool)$decodedResponse['success'];
+               $bodySuccessFlag = null;
+        if (is_array($decodedResponse)) {
+            if (array_key_exists('success', $decodedResponse)) {
+                $bodySuccessFlag = (bool)$decodedResponse['success'];
+            } elseif (array_key_exists('status', $decodedResponse)) {
+                // ZuruBank's hold.php family (place_hold / release_hold / its
+                // internal debit branch) reports outcome via "status":
+                // "SUCCESS" | "ERROR" instead of a "success" boolean, and
+                // always returns HTTP 200 regardless. Without this branch,
+                // an explicit ERROR from this endpoint family was
+                // indistinguishable from a genuine success.
+                $bodySuccessFlag = strtoupper((string)$decodedResponse['status']) === 'SUCCESS';
+            } elseif (array_key_exists('hold_placed', $decodedResponse) && $action === 'place_hold') {
+                // Defense in depth for place_hold specifically, in case a
+                // future response variant carries hold_placed but no status
+                // key at all.
+                $bodySuccessFlag = (bool)$decodedResponse['hold_placed'];
+            }
         }
+ 
+
 
         $httpOk = $httpCode >= 200 && $httpCode < 300 && $decodedResponse !== null;
         $overallSuccess = $httpOk && ($bodySuccessFlag === null ? true : $bodySuccessFlag);
