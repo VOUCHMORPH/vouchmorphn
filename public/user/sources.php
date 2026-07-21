@@ -1,41 +1,44 @@
 <?php
 /**
- * List user's source accounts
- * GET /api/v1/user/sources.php
- * 
- * Response:
- * {
- *   "sources": [
- *     {
- *       "id": 456,
- *       "institution": "BankName",
- *       "asset_type": "ACCOUNT",
- *       "source_identifier": "1234567890",
- *       "account_name": "My Account",
- *       "currency": "BWP",
- *       "status": "active",
- *       "is_hooked": true,
- *       "confirmed_at": "2024-01-01 12:00:00"
- *     }
- *   ]
- * }
+ * Get user's source accounts
+ * GET /user/sources.php
  */
 
-require_once __DIR__ . '/../../../bootstrap.php';
-require_once __DIR__ . '/../../../src/Services/SwapService.php';
+require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
+require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
+require_once __DIR__ . '/../../src/Domain/Services/SwapService.php';
 
-use VouchMorph\Services\SwapService;
+use Application\Utils\SessionManager;
+use Core\Database\DBConnection;
+use Core\Config\LoadCountry;
+use Domain\Services\SwapService;
 
 header('Content-Type: application/json');
 
 try {
-    // Authenticate user
-    $userId = authenticateUser();
+    SessionManager::start();
     
-    // Initialize SwapService
-    $swapService = new SwapService();
+    if (!SessionManager::isLoggedIn()) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'error' => 'Not logged in']);
+        exit;
+    }
     
-    // Get sources
+    $userData = SessionManager::getUser();
+    $userId = $userData['id'] ?? $userData['user_id'] ?? null;
+    
+    if (empty($userId)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => 'Session has no user id']);
+        exit;
+    }
+    
+    $db = DBConnection::getConnection();
+    $country = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
+    $config = LoadCountry::getConfig();
+    
+    $swapService = new SwapService($db, $config, $country);
     $sources = $swapService->getUserSourceAccounts($userId);
     
     echo json_encode([
@@ -47,6 +50,6 @@ try {
     http_response_code(400);
     echo json_encode([
         'success' => false,
-        'message' => $e->getMessage()
+        'error' => $e->getMessage()
     ]);
 }
