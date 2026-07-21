@@ -37,7 +37,7 @@ header('Content-Type: application/json');
 
 try {
     // ============================================================
-    // FIX: Use SessionManager instead of undefined authenticateUser()
+    // Use SessionManager for authentication
     // ============================================================
     SessionManager::start();
     
@@ -74,6 +74,16 @@ try {
     $identifier = trim($input['identifier']);
     $accountName = $input['account_name'] ?? null;
     
+    // ============================================================
+    // FIX: Determine identifier type based on asset_type
+    // ============================================================
+    $identifierType = match($assetType) {
+        'WALLET', 'BANK-WALLET' => 'phone',
+        'CARD' => 'card_number',
+        'ACCOUNT' => 'account_number',
+        default => 'account_number'
+    };
+    
     // Initialize database and config
     $db = DBConnection::getConnection();
     $country = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
@@ -82,13 +92,13 @@ try {
     // Initialize SwapService
     $swapService = new SwapService($db, $config, $country);
     
-    // Initiate registration
+    // Initiate registration - pass the identifier type
     $result = $swapService->initiateUserSourceRegistration(
         $userId,
         $institution,
         $assetType,
         $identifier,
-        null, // Will be auto-detected
+        $identifierType,  // <-- FIXED: Pass string, not null
         $accountName
     );
     
