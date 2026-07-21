@@ -189,7 +189,8 @@ foreach ($assets as $assetKey => $assetConfig) {
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; line-height: 1.5; padding: 24px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-.container { width: 100%; max-width: 960px; margin: 6vh auto 0; }
+.container { width: 100%; max-width: 960px; margin: 6vh auto 0; position: relative; z-index: 1; }
+.doodle-bg { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 0; pointer-events: none; overflow: hidden; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
 .logo { font-size: 22px; font-weight: 800; color: var(--text); letter-spacing: 0.3px; }
 .logo sup { font-size: 11px; font-weight: 700; margin-left: 2px; }
@@ -315,6 +316,121 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 </style>
 </head>
 <body>
+<div class="doodle-bg" aria-hidden="true">
+<svg width="100%" height="100%" viewBox="0 0 1440 1000" preserveAspectRatio="xMidYMid slice" focusable="false">
+<defs>
+<symbol id="d-wallet" viewBox="0 0 40 40"><rect x="4" y="10" width="32" height="22" rx="2"/><path d="M4 16h32"/><circle cx="28" cy="23" r="2.2"/></symbol>
+<symbol id="d-coin" viewBox="0 0 40 40"><circle cx="20" cy="20" r="14"/><path d="M20 13v14M16 16h6a3 3 0 0 1 0 6h-4a3 3 0 0 0 0 6h6"/></symbol>
+<symbol id="d-card" viewBox="0 0 40 40"><rect x="3" y="9" width="34" height="22" rx="2"/><path d="M3 16h34"/><path d="M9 25h8"/></symbol>
+<symbol id="d-swap" viewBox="0 0 40 40"><path d="M6 14h22"/><path d="M22 8l6 6-6 6"/><path d="M34 26H12"/><path d="M18 32l-6-6 6-6"/></symbol>
+<symbol id="d-phone" viewBox="0 0 40 40"><rect x="11" y="4" width="18" height="32" rx="3"/><path d="M18 32h4"/></symbol>
+<symbol id="d-bank" viewBox="0 0 40 40"><path d="M20 4l16 9H4z"/><path d="M7 15v16M15 15v16M25 15v16M33 15v16"/><path d="M4 35h32"/></symbol>
+<symbol id="d-envelope" viewBox="0 0 40 40"><rect x="3" y="8" width="34" height="24" rx="2"/><path d="M3 10l17 13L37 10"/></symbol>
+<symbol id="d-check" viewBox="0 0 40 40"><circle cx="20" cy="20" r="15"/><path d="M13 20l5 5 10-11"/></symbol>
+</defs>
+<g fill="none" stroke="#0d0d0d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+<use href="#d-phone" transform="translate(75.7 26.0) rotate(-15) scale(0.68) translate(-20.0 -20.0)" opacity="0.093"/>
+<use href="#d-coin" transform="translate(209.3 80.0) rotate(35) scale(0.8) translate(-20.0 -20.0)" opacity="0.047"/>
+<use href="#d-wallet" transform="translate(306.6 55.9) rotate(25) scale(0.67) translate(-20.0 -20.0)" opacity="0.087"/>
+<use href="#d-phone" transform="translate(461.5 38.2) rotate(-40) scale(1.01) translate(-20.0 -20.0)" opacity="0.055"/>
+<use href="#d-swap" transform="translate(583.4 41.7) rotate(10) scale(0.61) translate(-20.0 -20.0)" opacity="0.07"/>
+<use href="#d-phone" transform="translate(709.7 45.8) rotate(-40) scale(0.99) translate(-20.0 -20.0)" opacity="0.08"/>
+<use href="#d-phone" transform="translate(885.6 48.0) rotate(45) scale(0.92) translate(-20.0 -20.0)" opacity="0.101"/>
+<use href="#d-wallet" transform="translate(987.5 68.3) rotate(45) scale(0.69) translate(-20.0 -20.0)" opacity="0.064"/>
+<use href="#d-coin" transform="translate(1081.9 38.9) rotate(15) scale(0.72) translate(-20.0 -20.0)" opacity="0.086"/>
+<use href="#d-swap" transform="translate(1233.7 47.5) rotate(45) scale(0.71) translate(-20.0 -20.0)" opacity="0.106"/>
+<use href="#d-card" transform="translate(1385.4 62.3) rotate(25) scale(0.99) translate(-20.0 -20.0)" opacity="0.056"/>
+<use href="#d-swap" transform="translate(56.6 197.1) rotate(45) scale(0.74) translate(-20.0 -20.0)" opacity="0.095"/>
+<use href="#d-bank" transform="translate(163.8 186.7) rotate(15) scale(0.71) translate(-20.0 -20.0)" opacity="0.059"/>
+<use href="#d-bank" transform="translate(359.7 190.1) rotate(-15) scale(0.94) translate(-20.0 -20.0)" opacity="0.071"/>
+<use href="#d-phone" transform="translate(488.6 164.1) rotate(-20) scale(0.7) translate(-20.0 -20.0)" opacity="0.081"/>
+<use href="#d-envelope" transform="translate(571.7 171.9) rotate(10) scale(0.68) translate(-20.0 -20.0)" opacity="0.11"/>
+<use href="#d-wallet" transform="translate(720.7 141.2) rotate(-30) scale(0.64) translate(-20.0 -20.0)" opacity="0.055"/>
+<use href="#d-envelope" transform="translate(864.1 172.7) rotate(15) scale(0.91) translate(-20.0 -20.0)" opacity="0.075"/>
+<use href="#d-wallet" transform="translate(963.6 170.0) rotate(45) scale(0.98) translate(-20.0 -20.0)" opacity="0.089"/>
+<use href="#d-bank" transform="translate(1115.4 152.2) rotate(-30) scale(0.73) translate(-20.0 -20.0)" opacity="0.055"/>
+<use href="#d-phone" transform="translate(1207.2 180.5) rotate(25) scale(1.01) translate(-20.0 -20.0)" opacity="0.078"/>
+<use href="#d-swap" transform="translate(1345.7 174.5) rotate(-20) scale(0.77) translate(-20.0 -20.0)" opacity="0.056"/>
+<use href="#d-wallet" transform="translate(98.7 304.1) rotate(35) scale(0.74) translate(-20.0 -20.0)" opacity="0.046"/>
+<use href="#d-phone" transform="translate(227.8 301.3) rotate(-15) scale(0.58) translate(-20.0 -20.0)" opacity="0.102"/>
+<use href="#d-check" transform="translate(360.0 252.0) rotate(-30) scale(1.14) translate(-20.0 -20.0)" opacity="0.08"/>
+<use href="#d-card" transform="translate(430.7 287.7) rotate(0) scale(0.87) translate(-20.0 -20.0)" opacity="0.084"/>
+<use href="#d-swap" transform="translate(623.1 304.5) rotate(60) scale(0.74) translate(-20.0 -20.0)" opacity="0.11"/>
+<use href="#d-check" transform="translate(731.0 273.9) rotate(-30) scale(0.7) translate(-20.0 -20.0)" opacity="0.049"/>
+<use href="#d-swap" transform="translate(815.8 281.1) rotate(-40) scale(0.59) translate(-20.0 -20.0)" opacity="0.086"/>
+<use href="#d-bank" transform="translate(961.9 303.0) rotate(-30) scale(0.86) translate(-20.0 -20.0)" opacity="0.063"/>
+<use href="#d-check" transform="translate(1111.7 280.2) rotate(-15) scale(1.02) translate(-20.0 -20.0)" opacity="0.097"/>
+<use href="#d-envelope" transform="translate(1220.9 252.7) rotate(10) scale(0.8) translate(-20.0 -20.0)" opacity="0.075"/>
+<use href="#d-coin" transform="translate(1391.3 288.6) rotate(-40) scale(0.79) translate(-20.0 -20.0)" opacity="0.067"/>
+<use href="#d-swap" transform="translate(92.0 373.2) rotate(25) scale(0.82) translate(-20.0 -20.0)" opacity="0.072"/>
+<use href="#d-coin" transform="translate(180.1 373.3) rotate(20) scale(1.03) translate(-20.0 -20.0)" opacity="0.101"/>
+<use href="#d-wallet" transform="translate(297.8 398.4) rotate(-30) scale(1.11) translate(-20.0 -20.0)" opacity="0.1"/>
+<use href="#d-swap" transform="translate(433.7 388.0) rotate(15) scale(1.09) translate(-20.0 -20.0)" opacity="0.056"/>
+<use href="#d-check" transform="translate(552.6 382.1) rotate(0) scale(0.8) translate(-20.0 -20.0)" opacity="0.107"/>
+<use href="#d-check" transform="translate(756.3 392.4) rotate(-20) scale(0.66) translate(-20.0 -20.0)" opacity="0.059"/>
+<use href="#d-wallet" transform="translate(818.5 403.6) rotate(60) scale(0.74) translate(-20.0 -20.0)" opacity="0.048"/>
+<use href="#d-card" transform="translate(980.1 415.0) rotate(-40) scale(1.13) translate(-20.0 -20.0)" opacity="0.05"/>
+<use href="#d-swap" transform="translate(1089.7 394.8) rotate(15) scale(0.62) translate(-20.0 -20.0)" opacity="0.103"/>
+<use href="#d-coin" transform="translate(1225.0 394.8) rotate(15) scale(0.94) translate(-20.0 -20.0)" opacity="0.082"/>
+<use href="#d-bank" transform="translate(1361.1 374.0) rotate(-15) scale(0.71) translate(-20.0 -20.0)" opacity="0.054"/>
+<use href="#d-coin" transform="translate(76.1 497.3) rotate(-40) scale(0.82) translate(-20.0 -20.0)" opacity="0.11"/>
+<use href="#d-swap" transform="translate(232.7 473.4) rotate(25) scale(0.71) translate(-20.0 -20.0)" opacity="0.106"/>
+<use href="#d-bank" transform="translate(355.2 523.6) rotate(0) scale(0.64) translate(-20.0 -20.0)" opacity="0.099"/>
+<use href="#d-wallet" transform="translate(473.1 506.9) rotate(45) scale(1.04) translate(-20.0 -20.0)" opacity="0.064"/>
+<use href="#d-card" transform="translate(601.1 527.3) rotate(0) scale(0.62) translate(-20.0 -20.0)" opacity="0.052"/>
+<use href="#d-swap" transform="translate(723.9 485.8) rotate(60) scale(0.76) translate(-20.0 -20.0)" opacity="0.09"/>
+<use href="#d-phone" transform="translate(876.8 500.3) rotate(-40) scale(0.61) translate(-20.0 -20.0)" opacity="0.073"/>
+<use href="#d-card" transform="translate(965.4 469.1) rotate(45) scale(1.14) translate(-20.0 -20.0)" opacity="0.056"/>
+<use href="#d-wallet" transform="translate(1108.5 512.8) rotate(-30) scale(0.6) translate(-20.0 -20.0)" opacity="0.102"/>
+<use href="#d-bank" transform="translate(1273.2 502.8) rotate(35) scale(0.88) translate(-20.0 -20.0)" opacity="0.073"/>
+<use href="#d-wallet" transform="translate(1341.0 491.6) rotate(10) scale(0.68) translate(-20.0 -20.0)" opacity="0.061"/>
+<use href="#d-envelope" transform="translate(36.3 628.5) rotate(35) scale(1.0) translate(-20.0 -20.0)" opacity="0.105"/>
+<use href="#d-card" transform="translate(177.1 590.1) rotate(15) scale(0.56) translate(-20.0 -20.0)" opacity="0.093"/>
+<use href="#d-swap" transform="translate(315.0 637.9) rotate(0) scale(0.65) translate(-20.0 -20.0)" opacity="0.091"/>
+<use href="#d-check" transform="translate(449.6 582.4) rotate(-15) scale(0.67) translate(-20.0 -20.0)" opacity="0.105"/>
+<use href="#d-swap" transform="translate(578.1 631.1) rotate(-15) scale(0.56) translate(-20.0 -20.0)" opacity="0.058"/>
+<use href="#d-phone" transform="translate(707.4 633.8) rotate(10) scale(0.93) translate(-20.0 -20.0)" opacity="0.071"/>
+<use href="#d-wallet" transform="translate(886.2 613.4) rotate(-30) scale(1.08) translate(-20.0 -20.0)" opacity="0.062"/>
+<use href="#d-wallet" transform="translate(987.7 641.2) rotate(-30) scale(0.91) translate(-20.0 -20.0)" opacity="0.067"/>
+<use href="#d-coin" transform="translate(1133.7 607.2) rotate(15) scale(1.09) translate(-20.0 -20.0)" opacity="0.057"/>
+<use href="#d-swap" transform="translate(1210.2 607.1) rotate(10) scale(0.81) translate(-20.0 -20.0)" opacity="0.107"/>
+<use href="#d-coin" transform="translate(1405.4 618.8) rotate(60) scale(1.09) translate(-20.0 -20.0)" opacity="0.078"/>
+<use href="#d-phone" transform="translate(77.7 711.4) rotate(25) scale(0.63) translate(-20.0 -20.0)" opacity="0.072"/>
+<use href="#d-card" transform="translate(228.6 733.3) rotate(35) scale(0.89) translate(-20.0 -20.0)" opacity="0.071"/>
+<use href="#d-swap" transform="translate(351.7 710.0) rotate(15) scale(1.02) translate(-20.0 -20.0)" opacity="0.084"/>
+<use href="#d-swap" transform="translate(445.2 718.6) rotate(25) scale(0.83) translate(-20.0 -20.0)" opacity="0.104"/>
+<use href="#d-coin" transform="translate(610.8 701.7) rotate(0) scale(0.86) translate(-20.0 -20.0)" opacity="0.086"/>
+<use href="#d-swap" transform="translate(707.9 742.0) rotate(45) scale(0.74) translate(-20.0 -20.0)" opacity="0.097"/>
+<use href="#d-check" transform="translate(825.1 694.0) rotate(35) scale(1.06) translate(-20.0 -20.0)" opacity="0.05"/>
+<use href="#d-swap" transform="translate(975.5 730.3) rotate(60) scale(0.97) translate(-20.0 -20.0)" opacity="0.077"/>
+<use href="#d-wallet" transform="translate(1094.0 731.9) rotate(-30) scale(1.02) translate(-20.0 -20.0)" opacity="0.059"/>
+<use href="#d-check" transform="translate(1265.9 734.4) rotate(-40) scale(0.88) translate(-20.0 -20.0)" opacity="0.105"/>
+<use href="#d-check" transform="translate(1346.8 699.4) rotate(45) scale(0.87) translate(-20.0 -20.0)" opacity="0.081"/>
+<use href="#d-check" transform="translate(52.1 849.2) rotate(35) scale(1.04) translate(-20.0 -20.0)" opacity="0.103"/>
+<use href="#d-check" transform="translate(191.0 858.6) rotate(-20) scale(1.0) translate(-20.0 -20.0)" opacity="0.076"/>
+<use href="#d-phone" transform="translate(309.6 817.6) rotate(25) scale(0.84) translate(-20.0 -20.0)" opacity="0.061"/>
+<use href="#d-swap" transform="translate(453.8 846.6) rotate(0) scale(0.75) translate(-20.0 -20.0)" opacity="0.103"/>
+<use href="#d-envelope" transform="translate(558.3 811.6) rotate(60) scale(0.64) translate(-20.0 -20.0)" opacity="0.059"/>
+<use href="#d-check" transform="translate(713.8 822.8) rotate(15) scale(0.59) translate(-20.0 -20.0)" opacity="0.099"/>
+<use href="#d-wallet" transform="translate(842.8 850.1) rotate(35) scale(0.78) translate(-20.0 -20.0)" opacity="0.045"/>
+<use href="#d-envelope" transform="translate(971.0 849.1) rotate(25) scale(1.0) translate(-20.0 -20.0)" opacity="0.08"/>
+<use href="#d-swap" transform="translate(1120.3 815.9) rotate(0) scale(0.81) translate(-20.0 -20.0)" opacity="0.047"/>
+<use href="#d-envelope" transform="translate(1231.6 844.5) rotate(60) scale(0.65) translate(-20.0 -20.0)" opacity="0.075"/>
+<use href="#d-wallet" transform="translate(1347.2 840.9) rotate(15) scale(0.91) translate(-20.0 -20.0)" opacity="0.088"/>
+<use href="#d-check" transform="translate(35.0 940.0) rotate(-20) scale(0.58) translate(-20.0 -20.0)" opacity="0.07"/>
+<use href="#d-envelope" transform="translate(175.2 933.7) rotate(0) scale(1.0) translate(-20.0 -20.0)" opacity="0.099"/>
+<use href="#d-wallet" transform="translate(309.1 918.4) rotate(60) scale(0.87) translate(-20.0 -20.0)" opacity="0.11"/>
+<use href="#d-wallet" transform="translate(447.2 953.8) rotate(-40) scale(1.12) translate(-20.0 -20.0)" opacity="0.058"/>
+<use href="#d-card" transform="translate(553.9 922.8) rotate(20) scale(0.95) translate(-20.0 -20.0)" opacity="0.082"/>
+<use href="#d-bank" transform="translate(699.3 956.9) rotate(-20) scale(0.91) translate(-20.0 -20.0)" opacity="0.108"/>
+<use href="#d-card" transform="translate(866.9 961.7) rotate(0) scale(0.61) translate(-20.0 -20.0)" opacity="0.047"/>
+<use href="#d-envelope" transform="translate(968.0 955.5) rotate(15) scale(1.11) translate(-20.0 -20.0)" opacity="0.058"/>
+<use href="#d-swap" transform="translate(1119.5 965.0) rotate(-30) scale(0.97) translate(-20.0 -20.0)" opacity="0.065"/>
+<use href="#d-wallet" transform="translate(1257.1 963.5) rotate(10) scale(0.87) translate(-20.0 -20.0)" opacity="0.088"/>
+<use href="#d-wallet" transform="translate(1342.9 953.6) rotate(15) scale(1.04) translate(-20.0 -20.0)" opacity="0.052"/>
+</g>
+</svg>
+</div>
 <div class="container">
 <div class="topbar">
     <div class="logo">VOUCHMORPH<sup>TM</sup></div>
