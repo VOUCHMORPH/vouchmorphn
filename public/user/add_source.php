@@ -22,16 +22,39 @@
  * }
  */
 
+require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/bootstrap.php';
+require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
 require_once __DIR__ . '/../../src/Domain/Services/SwapService.php';
 
-use VouchMorph\Services\SwapService;
+use Application\Utils\SessionManager;
+use Core\Database\DBConnection;
+use Core\Config\LoadCountry;
+use Domain\Services\SwapService;
 
 header('Content-Type: application/json');
 
 try {
-    // Authenticate user
-    $userId = authenticateUser(); // Your auth function
+    // ============================================================
+    // FIX: Use SessionManager instead of undefined authenticateUser()
+    // ============================================================
+    SessionManager::start();
+    
+    if (!SessionManager::isLoggedIn()) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'error' => 'Not logged in']);
+        exit;
+    }
+    
+    $userData = SessionManager::getUser();
+    $userId = $userData['id'] ?? $userData['user_id'] ?? null;
+    
+    if (empty($userId)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => 'Session has no user id']);
+        exit;
+    }
     
     // Get and validate input
     $input = json_decode(file_get_contents('php://input'), true);
@@ -51,8 +74,13 @@ try {
     $identifier = trim($input['identifier']);
     $accountName = $input['account_name'] ?? null;
     
+    // Initialize database and config
+    $db = DBConnection::getConnection();
+    $country = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
+    $config = LoadCountry::getConfig();
+    
     // Initialize SwapService
-    $swapService = new SwapService();
+    $swapService = new SwapService($db, $config, $country);
     
     // Initiate registration
     $result = $swapService->initiateUserSourceRegistration(
@@ -73,6 +101,6 @@ try {
     http_response_code(400);
     echo json_encode([
         'success' => false,
-        'message' => $e->getMessage()
+        'error' => $e->getMessage()
     ]);
 }
