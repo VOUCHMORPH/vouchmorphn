@@ -1325,7 +1325,7 @@ async function submitAddSource() {
     btn.disabled = true;
     btn.textContent = 'Registering...';
 
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/add_source.php', {
+    const result = await callApi(CONFIG.API_BASE + '/user/add_source.php', {
         institution: institution, asset_type: assetType, identifier: identifier, account_name: accountName || undefined
     });
 
@@ -1369,7 +1369,7 @@ async function completeSourceOtp() {
     btn.disabled = true;
     btn.textContent = 'Verifying...';
 
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/verify_source.php', { attempt_id: addSourceState.attemptId, otp: otp });
+    const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', { attempt_id: addSourceState.attemptId, otp: otp });
 
     btn.disabled = false;
     btn.textContent = original;
@@ -1381,7 +1381,7 @@ async function completeSourceOtp() {
 
 async function removeSource(sourceId) {
     if (!confirm('Remove this source? You can add it again later.')) return;
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/sources/delete.php', { source_id: sourceId });
+    const result = await callApi(CONFIG.API_BASE + '/user/sources/delete.php', { source_id: sourceId });
     if (!result.ok) { showMessage('Failed to remove source: ' + result.error, 'error'); return; }
     showMessage('Source removed.', 'success');
     loadUserSources();
