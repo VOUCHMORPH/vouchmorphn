@@ -7741,4 +7741,3 @@ private function updateHoldExpiry(?int $holdId, string $expiresAt): void
         ];
     }
 }
-```
