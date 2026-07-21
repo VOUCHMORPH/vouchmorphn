@@ -188,10 +188,17 @@ foreach ($assets as $assetKey => $assetConfig) {
     --transition: all 0.2s ease;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; line-height: 1.5; padding: 24px 16px; display: flex; flex-direction: column; align-items: center; }
-.container { width: 100%; max-width: 960px; margin: 0 auto; }
+body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; line-height: 1.5; padding: 24px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.container { width: 100%; max-width: 960px; margin: 6vh auto 0; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
-.logo { font-size: 22px; font-weight: 800; background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: 0.3px; }
+.logo { font-size: 22px; font-weight: 800; color: var(--text); letter-spacing: 0.3px; }
+.logo sup { font-size: 11px; font-weight: 700; margin-left: 2px; }
+.page-footer { max-width: 960px; width: 100%; margin: 40px auto 0; text-align: center; }
+.page-footer p { font-size: 13px; color: var(--text-dim); line-height: 1.7; max-width: 620px; margin: 0 auto 14px; }
+.page-footer .footer-links { display: flex; gap: 18px; justify-content: center; font-size: 12px; }
+.page-footer .footer-links span { color: var(--text-muted); font-weight: 700; cursor: pointer; }
+.page-footer .footer-links span:hover { color: var(--text); }
+.page-footer .footer-mark { font-size: 11px; color: var(--text-dim); margin-top: 16px; }
 .topbar-right { display: flex; align-items: center; gap: 14px; font-size: 14px; flex-wrap: wrap; }
 .topbar-right .greeting { color: var(--text-muted); }
 .country-selector { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px; color: var(--text-muted); font-size: 12px; cursor: pointer; font-family: var(--font); }
@@ -309,7 +316,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 <body>
 <div class="container">
 <div class="topbar">
-    <div class="logo">VOUCHMORPH</div>
+    <div class="logo">VOUCHMORPH<sup>TM</sup></div>
     <div class="topbar-right">
         <span class="greeting">Hello, <span id="userName"><?php echo htmlspecialchars($userName); ?></span></span>
         <span class="role-badge"><?php echo htmlspecialchars(strtoupper($userRole)); ?></span>
@@ -448,6 +455,16 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
     <div class="cta-row">
         <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()" disabled>Review Swap &rarr;</button>
     </div>
+</div>
+
+<div class="page-footer">
+    <p>VOUCHMORPH connects wallets, bank accounts, cards and vouchers across participating institutions, so a swap started in one place can be claimed in another — by an account, a phone number, or a national ID — in minutes.</p>
+    <div class="footer-links">
+        <span onclick="openHelpModal()">Help</span>
+        <span onclick="openTermsModal()">Terms &amp; conditions</span>
+        <span onclick="openMySources()">My sources</span>
+    </div>
+    <div class="footer-mark">VOUCHMORPH<sup>TM</sup> &middot; <?php echo htmlspecialchars($userCountry); ?></div>
 </div>
 </div>
 
