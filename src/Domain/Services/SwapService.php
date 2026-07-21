@@ -663,6 +663,45 @@ public function revokeHookedSource(int $userId, string $sourceReference): array
     }
 
 /**
+ * Encrypt a source secret (access_token or refresh_token)
+ * Matches the encryption used in enterprise add_source.php
+ * 
+ * @param string|null $plaintext The plain text to encrypt
+ * @return string|null Base64-encoded encrypted string or null if invalid
+ */
+private function encryptSourceSecret(?string $plaintext): ?string
+{
+    if (empty($plaintext)) {
+        return null;
+    }
+    
+    $key = getenv('VOUCHMORPH_TOKEN_ENC_KEY');
+    if (!$key) {
+        error_log("[SwapService] VOUCHMORPH_TOKEN_ENC_KEY not set - cannot encrypt");
+        return null;
+    }
+    
+    // Generate a random IV
+    $iv = openssl_random_pseudo_bytes(16);
+    
+    $encrypted = openssl_encrypt(
+        $plaintext,
+        'AES-256-CBC',
+        $key,
+        0,
+        $iv
+    );
+    
+    if ($encrypted === false) {
+        error_log("[SwapService] Encryption failed: " . openssl_error_string());
+        return null;
+    }
+    
+    // Combine IV + encrypted data and base64 encode
+    return base64_encode($iv . $encrypted);
+}
+    
+/**
  * Decrypt a source secret (access_token or refresh_token)
  * Matches the encryption used in enterprise add_source.php
  * 
