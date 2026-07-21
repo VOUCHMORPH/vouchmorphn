@@ -1034,19 +1034,6 @@ class GenericBankClient implements BankAPIInterface
     // DEBIT FUNDS WITH CERTIFICATE AND HOLD_REFERENCE
     // ============================================================================
 
-public function releaseHold(array $payload): array
-{
-    error_log("=== GENERIC BANK CLIENT: releaseHold ===");
-    // FIX: this was sending the raw, unsigned payload — no certificate
-    // attached at all — while every other bank-facing method here
-    // (placeHold, debitFunds, verifyAssetSigned, processDepositWithProof)
-    // signs via createSignedPayload() first. Certificate-requiring banks
-    // (ZuruBank included) reject an unsigned release_hold outright with
-    // "Certificate required", meaning holds could fail to release on
-    // rollback while looking fine in the request path.
-    $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
-    return $this->send('release_hold', $signedPayload, $signedPayload['access_token'] ?? null);
-}
 // ============================================================================
 // DEBIT FUNDS WITH CERTIFICATE AND HOLD_REFERENCE
 // ============================================================================
