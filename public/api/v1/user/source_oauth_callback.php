@@ -5,19 +5,30 @@
  * 
  * Response: HTML page with success/error message
  */
+require_once __DIR__ . '/../../../../vendor/autoload.php';
 
+// Core
 require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../../../src/Core/Config/LoadCountry.php';
-// ============================================================
-// FIX: Include all required Infrastructure classes
-// ============================================================
+
+// Domain Services
+require_once __DIR__ . '/../../../../src/Domain/Services/SwapService.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/Settlement/HybridSettlementStrategy.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/FeeService.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/ForexService.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/CardService.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/ContributionCalculator.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/MultiSourceFeeCalculator.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/MultiSource/MultiSourceSwapOrchestrator.php';
+
+// Infrastructure
+require_once __DIR__ . '/../../../../src/Infrastructure/Adapters/InstitutionAdapterFactory.php';
 require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/MessageSigner.php';
 require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/SignatureVerifier.php';
 require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/CertificateManager.php';
 require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/AggregateSigner.php';
-require_once __DIR__ . '/../../../../src/Infrastructure/Adapters/InstitutionAdapterFactory.php';
-require_once __DIR__ . '/../../../../src/Domain/Services/SwapService.php';
+require_once __DIR__ . '/../../../../src/Infrastructure/SMS/SmsNotificationService.php';
 
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
