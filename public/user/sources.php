@@ -3,6 +3,7 @@
  * Get user's source accounts
  * GET /user/sources.php
  */
+require_once __DIR__ . '/../../vendor/autoload.php';
 
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
