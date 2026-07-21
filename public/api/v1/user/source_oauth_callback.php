@@ -94,7 +94,7 @@ try {
             <h1 class="success">✓ Source Verified!</h1>
             <p>Your <?php echo htmlspecialchars($result['institution'] ?? 'bank'); ?> account has been successfully added as a source.</p>
             <p>You can now use this source for swaps.</p>
-            <p><a href="/dashboard.php">Return to Dashboard</a></p>
+            <p><a href="/../../user/dashboard.php">Return to Dashboard</a></p>
         </div>
     </body>
     </html>
