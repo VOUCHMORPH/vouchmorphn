@@ -5023,33 +5023,12 @@ public function initiateUserSourceRegistration(
         default => 'account_number'
     };
 
-    $verifyPayload = [
-        'action' => 'VERIFY_ASSET',
-        'reference' => 'USER_SRC_' . $userId . '_' . time(),
-        'source_identifier' => $identifier,
-        'identifier_type' => $identifierType,
-        'asset_type' => $assetType,
-        'requester' => 'VOUCHMORPH',
-        'timestamp' => time(),
-        'from_institution' => $institution,
-        'source_institution' => $institution,
-    ];
+    // ============================================================
+    // FIX: SKIP verifyAsset here - the bank doesn't know the user yet
+    // The account will be verified during the OTP/OAuth completion
+    // ============================================================
 
-    try {
-        $adapter = $this->adapterFactory->getAdapter($institution);
-        $verifyResult = $adapter->verifyAsset($verifyPayload, [
-            'institution' => $institution,
-            'purpose' => 'user_source_registration',
-        ]);
-    } catch (Exception $e) {
-        error_log("[SwapService] User source verification failed: " . $e->getMessage());
-        throw new RuntimeException("Could not verify this account with {$institution}: " . $e->getMessage());
-    }
-
-    if (!($verifyResult['verified'] ?? false)) {
-        throw new RuntimeException("Account not found or not verifiable at {$institution}: " . ($verifyResult['message'] ?? 'Unknown reason'));
-    }
-
+    // Check for duplicates in user_source_accounts
     $stmt = $this->swapDB->prepare("
         SELECT id, status FROM user_source_accounts
         WHERE user_id = :user_id AND institution = :institution AND identifier = :identifier
@@ -5060,6 +5039,7 @@ public function initiateUserSourceRegistration(
         throw new RuntimeException("You already have this account registered as a source (status: {$existing['status']}).");
     }
 
+    // Check for pending attempts
     $stmt = $this->swapDB->prepare("
         SELECT id FROM user_source_registration_attempts
         WHERE user_id = :user_id AND institution = :institution AND identifier = :identifier
@@ -5073,6 +5053,10 @@ public function initiateUserSourceRegistration(
     $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
         . '/api/v1/user/source_oauth_callback.php';
 
+    // ============================================================
+    // Initiate OAuth or OTP - this does NOT verify the account
+    // It just starts the flow with the bank
+    // ============================================================
     $linkResult = null;
     try {
         $linkResult = $this->initiateSourceLink([
@@ -5092,11 +5076,13 @@ public function initiateUserSourceRegistration(
     $isOauth = $linkSucceeded && ($linkResult['auth_type'] ?? null) === 'oauth';
 
     if (!$linkSucceeded) {
+        // No OTP/OAuth support - register without ownership proof
+        // This should be rare and flagged for manual review
         error_log("[SwapService] {$institution} has no OTP/OAuth support for sources - registering without ownership proof");
         $id = $this->insertUserSourceAccount(
             $userId, $institution, $assetType, $identifier, $identifierType,
-            $accountName ?? $verifyResult['account_name'] ?? null,
-            $verifyResult['currency'] ?? 'BWP',
+            $accountName ?? null,
+            'BWP',
             false, null, null, null, 'pending_confirmation'
         );
         return [
@@ -5110,6 +5096,7 @@ public function initiateUserSourceRegistration(
     }
 
     if ($isOauth) {
+        // OAuth path - store attempt with state
         $stmt = $this->swapDB->prepare("
             INSERT INTO user_source_registration_attempts (
                 user_id, institution, asset_type, identifier, identifier_type,
@@ -5125,7 +5112,7 @@ public function initiateUserSourceRegistration(
             ':asset_type' => $assetType,
             ':identifier' => $identifier,
             ':identifier_type' => $identifierType,
-            ':account_name' => $accountName ?? $verifyResult['account_name'] ?? null,
+            ':account_name' => $accountName ?? null,
             ':oauth_state' => $linkResult['state'],
         ]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -5139,6 +5126,7 @@ public function initiateUserSourceRegistration(
         ];
     }
 
+    // OTP path - bank sends the code to the phone IT has on file
     $stmt = $this->swapDB->prepare("
         INSERT INTO user_source_registration_attempts (
             user_id, institution, asset_type, identifier, identifier_type,
@@ -5154,7 +5142,7 @@ public function initiateUserSourceRegistration(
         ':asset_type' => $assetType,
         ':identifier' => $identifier,
         ':identifier_type' => $identifierType,
-        ':account_name' => $accountName ?? $verifyResult['account_name'] ?? null,
+        ':account_name' => $accountName ?? null,
         ':auth_id' => $linkResult['auth_id'] ?? null,
         ':method' => $linkResult['method'] ?? 'sms',
         ':expires_at' => date('Y-m-d H:i:s', time() + (int)($linkResult['expires_in'] ?? 300)),
@@ -5201,10 +5189,42 @@ public function completeUserSourceRegistration(int $userId, int $attemptId, stri
         throw new RuntimeException($verifyResult['message'] ?? 'Incorrect or expired code.');
     }
 
+    // ============================================================
+    // FIX: NOW verify the account exists - we have authorization!
+    // ============================================================
+    $adapter = $this->adapterFactory->getAdapter($attempt['institution']);
+    $verifyPayload = [
+        'action' => 'VERIFY_ASSET',
+        'reference' => 'USER_SRC_' . $userId . '_' . time(),
+        'source_identifier' => $attempt['identifier'],
+        'identifier_type' => $attempt['identifier_type'],
+        'asset_type' => $attempt['asset_type'],
+        'requester' => 'VOUCHMORPH',
+        'timestamp' => time(),
+        'from_institution' => $attempt['institution'],
+        'source_institution' => $attempt['institution'],
+        'access_token' => $verifyResult['access_token'] ?? null,
+    ];
+    
+    $assetVerification = $adapter->verifyAsset($verifyPayload, [
+        'institution' => $attempt['institution'],
+        'purpose' => 'user_source_verification',
+    ]);
+
+    if (!($assetVerification['verified'] ?? false)) {
+        throw new RuntimeException("Account not found or not verifiable at {$attempt['institution']}: " . ($assetVerification['message'] ?? 'Unknown reason'));
+    }
+
+    // Insert the source account
     $id = $this->insertUserSourceAccount(
-        (int)$attempt['user_id'], $attempt['institution'], $attempt['asset_type'],
-        $attempt['identifier'], $attempt['identifier_type'], $attempt['account_name'],
-        'BWP', true,
+        (int)$attempt['user_id'],
+        $attempt['institution'],
+        $attempt['asset_type'],
+        $attempt['identifier'],
+        $attempt['identifier_type'],
+        $attempt['account_name'],
+        $assetVerification['currency'] ?? 'BWP',
+        true,
         $verifyResult['access_token'] ?? null,
         $verifyResult['refresh_token'] ?? null,
         $verifyResult['expires_at'] ?? null,
