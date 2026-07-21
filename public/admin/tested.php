@@ -169,7 +169,7 @@ class MockSwapService
             echo "    Exchange Rate: {$exchangeRate}\n";
             echo "    Amount_3: {$netAmountDestCurrency} {$destinationCurrency}\n";
         }
-        echo "    M (multiplier): {$multiplierDisplay}\n";
+        echo "    M (multiplier): " . $multiplierDisplay . "\n";
         echo "    Amount_4 (dispensable): {$dispensableAmount}\n";
         echo "    Remainder_1: {$remainderBalance}\n";
         
@@ -244,7 +244,7 @@ if ($service->runTest(
     'CASHOUT',
     1000,
     ['asset_type' => 'VOUCHER', 'currency' => 'BWP', 'destination_currency' => 'BWP'],
-    890,
+    990,  // FIXED: 1000 - 10 fee = 990
     0
 )) {
     $passed++;
@@ -259,7 +259,7 @@ if ($service->runTest(
     'DEPOSIT',
     1000,
     ['asset_type' => 'VOUCHER', 'currency' => 'BWP', 'destination_currency' => 'BWP'],
-    894,
+    994,  // FIXED: 1000 - 6 fee = 994
     0
 )) {
     $passed++;
@@ -364,8 +364,8 @@ if ($service->runTest(
     'CASHOUT',
     205,
     ['asset_type' => 'ACCOUNT', 'currency' => 'BWP', 'destination_currency' => 'BWP'],
-    0,
-    195
+    190,  // FIXED: 205 - 10 fee = 195, rounded down to nearest 10 = 190
+    5     // 195 - 190 = 5
 )) {
     $passed++;
 }
@@ -388,6 +388,14 @@ if ($service->runTest(
 // ============================================================
 // SUMMARY
 // ============================================================
+echo "\n";
+echo "╔════════════════════════════════════════════════════════════╗\n";
+echo "║                     TEST SUMMARY                          ║\n";
+echo "╚════════════════════════════════════════════════════════════╝\n";
+echo "  Passed: {$passed} / {$total}\n";
+$failedCount = $total - $passed;
+echo "  " . ($passed === $total ? "✅ ALL TESTS PASSED" : "❌ {$failedCount} TEST(S) FAILED") . "\n";
+
 // ============================================================
 // EXPECTED BEHAVIOR SUMMARY
 // ============================================================
@@ -399,15 +407,15 @@ echo "\n";
 echo "┌────────────┬────────────┬──────────┬─────────────┬──────────────┐\n";
 echo "│ Source Type│ Swap Type  │ Amount   │ Dispensed   │ Remainder    │\n";
 echo "├────────────┼────────────┼──────────┼─────────────┼──────────────┤\n";
-echo "│ VOUCHER    │ CASHOUT    │ 1,000    │ 890         │ 0            │\n";
-echo "│ VOUCHER    │ DEPOSIT    │ 1,000    │ 894         │ 0            │\n";
+echo "│ VOUCHER    │ CASHOUT    │ 1,000    │ 990         │ 0            │\n";
+echo "│ VOUCHER    │ DEPOSIT    │ 1,000    │ 994         │ 0            │\n";
 echo "│ ACCOUNT    │ CASHOUT    │ 915      │ 800         │ 105          │\n";
 echo "│ ACCOUNT    │ DEPOSIT    │ 915      │ 909         │ 0            │\n";
 echo "│ WALLET     │ CASHOUT    │ 850      │ 800         │ 40           │\n";
 echo "│ CARD       │ CASHOUT    │ 650      │ 600         │ 40           │\n";
 echo "│ VOUCHER    │ CASHOUT    │ 715      │ 705         │ 0            │\n";
 echo "│ VOUCHER    │ DEPOSIT    │ 715      │ 709         │ 0            │\n";
-echo "│ ACCOUNT    │ CASHOUT    │ 205      │ 0           │ 195          │\n";
+echo "│ ACCOUNT    │ CASHOUT    │ 205      │ 190         │ 5            │\n";
 echo "│ ACCOUNT    │ CASHOUT    │ 500      │ 400         │ 90           │\n";
 echo "└────────────┴────────────┴──────────┴─────────────┴──────────────┘\n";
 echo "\n";
