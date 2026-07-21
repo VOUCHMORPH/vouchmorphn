@@ -9,6 +9,14 @@
 require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../../../src/Core/Config/LoadCountry.php';
+// ============================================================
+// FIX: Include all required Infrastructure classes
+// ============================================================
+require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/MessageSigner.php';
+require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/SignatureVerifier.php';
+require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/CertificateManager.php';
+require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/AggregateSigner.php';
+require_once __DIR__ . '/../../../../src/Infrastructure/Adapters/InstitutionAdapterFactory.php';
 require_once __DIR__ . '/../../../../src/Domain/Services/SwapService.php';
 
 use Application\Utils\SessionManager;
