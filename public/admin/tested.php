@@ -87,7 +87,8 @@ class MockSwapService
             $multiplier = null;
             $denominations = [];
             
-            echo "  [FULL DELIVERY] " . ($isDeposit ? "DEPOSIT" : "VOUCHER") . " - amount: {$dispensableAmount} {$destinationCurrency}\n";
+            $deliveryType = $isDeposit ? "DEPOSIT" : "VOUCHER";
+            echo "  [FULL DELIVERY] {$deliveryType} - amount: {$dispensableAmount} {$destinationCurrency}\n";
             
         } else {
             // CASHOUT with non-voucher (ACCOUNT, WALLET, CARD, etc.) - apply ATM rounding
@@ -158,6 +159,8 @@ class MockSwapService
             ]
         ];
         
+        $multiplierDisplay = $multiplier ?? 'N/A (FULL DELIVERY)';
+        
         echo "\n  Mathematical calculation:\n";
         echo "    Amount_1: {$amount} {$sourceCurrency}\n";
         echo "    F1 (fee): {$totalFee} {$sourceCurrency}\n";
@@ -166,7 +169,7 @@ class MockSwapService
             echo "    Exchange Rate: {$exchangeRate}\n";
             echo "    Amount_3: {$netAmountDestCurrency} {$destinationCurrency}\n";
         }
-        echo "    M (multiplier): " . ($multiplier ?? 'N/A (FULL DELIVERY)') . "\n";
+        echo "    M (multiplier): {$multiplierDisplay}\n";
         echo "    Amount_4 (dispensable): {$dispensableAmount}\n";
         echo "    Remainder_1: {$remainderBalance}\n";
         
@@ -241,7 +244,7 @@ if ($service->runTest(
     'CASHOUT',
     1000,
     ['asset_type' => 'VOUCHER', 'currency' => 'BWP', 'destination_currency' => 'BWP'],
-    890,  // 1000 - 10 fee
+    890,
     0
 )) {
     $passed++;
@@ -256,7 +259,7 @@ if ($service->runTest(
     'DEPOSIT',
     1000,
     ['asset_type' => 'VOUCHER', 'currency' => 'BWP', 'destination_currency' => 'BWP'],
-    894,  // 1000 - 6 fee
+    894,
     0
 )) {
     $passed++;
@@ -271,8 +274,8 @@ if ($service->runTest(
     'CASHOUT',
     915,
     ['asset_type' => 'ACCOUNT', 'currency' => 'BWP', 'destination_currency' => 'BWP'],
-    800,  // 915 - 10 fee = 905, rounded down to nearest 200 = 800
-    105   // 905 - 800 = 105
+    800,
+    105
 )) {
     $passed++;
 }
@@ -286,7 +289,7 @@ if ($service->runTest(
     'DEPOSIT',
     915,
     ['asset_type' => 'ACCOUNT', 'currency' => 'BWP', 'destination_currency' => 'BWP'],
-    909,  // 915 - 6 fee
+    909,
     0
 )) {
     $passed++;
@@ -301,8 +304,8 @@ if ($service->runTest(
     'CASHOUT',
     850,
     ['asset_type' => 'WALLET', 'currency' => 'BWP', 'destination_currency' => 'BWP'],
-    800,  // 850 - 10 fee = 840, rounded down to nearest 200 = 800
-    40    // 840 - 800 = 40
+    800,
+    40
 )) {
     $passed++;
 }
@@ -316,8 +319,8 @@ if ($service->runTest(
     'CASHOUT',
     650,
     ['asset_type' => 'CARD', 'currency' => 'BWP', 'destination_currency' => 'BWP'],
-    600,  // 650 - 10 fee = 640, rounded down to nearest 200 = 600
-    40    // 640 - 600 = 40
+    600,
+    40
 )) {
     $passed++;
 }
@@ -331,7 +334,7 @@ if ($service->runTest(
     'CASHOUT',
     715,
     ['asset_type' => 'VOUCHER', 'currency' => 'BWP', 'destination_currency' => 'BWP'],
-    705,  // 715 - 10 fee
+    705,
     0
 )) {
     $passed++;
@@ -346,7 +349,7 @@ if ($service->runTest(
     'DEPOSIT',
     715,
     ['asset_type' => 'VOUCHER', 'currency' => 'BWP', 'destination_currency' => 'BWP'],
-    709,  // 715 - 6 fee
+    709,
     0
 )) {
     $passed++;
@@ -361,8 +364,8 @@ if ($service->runTest(
     'CASHOUT',
     205,
     ['asset_type' => 'ACCOUNT', 'currency' => 'BWP', 'destination_currency' => 'BWP'],
-    0,    // 205 - 10 fee = 195, rounded down to nearest 200 = 0
-    195   // 195 - 0 = 195
+    0,
+    195
 )) {
     $passed++;
 }
@@ -376,8 +379,8 @@ if ($service->runTest(
     'CASHOUT',
     500,
     ['asset_type' => 'ACCOUNT', 'currency' => 'BWP', 'destination_currency' => 'BWP'],
-    400,  // 500 - 10 fee = 490, rounded down to nearest 200 = 400
-    90    // 490 - 400 = 90
+    400,
+    90
 )) {
     $passed++;
 }
