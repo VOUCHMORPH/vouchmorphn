@@ -7,7 +7,7 @@
  */
 
 require_once __DIR__ . '/../../../../src/bootstrap.php';
-require_once __DIR__ . '/../../../../src/Services/SwapService.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/SwapService.php';
 
 use Domain\Services\SwapService;
 
