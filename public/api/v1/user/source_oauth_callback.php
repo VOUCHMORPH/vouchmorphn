@@ -6,12 +6,33 @@
  * Response: HTML page with success/error message
  */
 
-require_once __DIR__ . '/../../../../src/bootstrap.php';
+require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
+require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../../../src/Core/Config/LoadCountry.php';
 require_once __DIR__ . '/../../../../src/Domain/Services/SwapService.php';
 
+use Application\Utils\SessionManager;
+use Core\Database\DBConnection;
+use Core\Config\LoadCountry;
 use Domain\Services\SwapService;
 
 try {
+    // ============================================================
+    // FIX: Use SessionManager for authentication
+    // ============================================================
+    SessionManager::start();
+    
+    if (!SessionManager::isLoggedIn()) {
+        throw new RuntimeException("You must be logged in to complete source registration.");
+    }
+    
+    $userData = SessionManager::getUser();
+    $userId = $userData['id'] ?? $userData['user_id'] ?? null;
+    
+    if (empty($userId)) {
+        throw new RuntimeException("Session has no user id.");
+    }
+    
     // Get query parameters
     $state = $_GET['state'] ?? null;
     $code = $_GET['code'] ?? null;
@@ -25,8 +46,14 @@ try {
         throw new RuntimeException("Missing required parameters: state, code");
     }
     
-    // Initialize SwapService
-    $swapService = new SwapService();
+    // ============================================================
+    // FIX: Initialize SwapService with required parameters
+    // ============================================================
+    $db = DBConnection::getConnection();
+    $country = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
+    $config = LoadCountry::getConfig();
+    
+    $swapService = new SwapService($db, $config, $country);
     
     // Complete registration
     $result = $swapService->completeUserSourceRegistrationByState($state, $code);
@@ -71,7 +98,7 @@ try {
         <div class="container">
             <h1 class="error">✗ Verification Failed</h1>
             <p><?php echo htmlspecialchars($e->getMessage()); ?></p>
-            <p><a href="/add_source.php">Try Again</a></p>
+            <p><a href="/user_dashboard.php">Return to Dashboard</a></p>
         </div>
     </body>
     </html>
