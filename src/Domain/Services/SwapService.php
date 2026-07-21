@@ -5324,28 +5324,34 @@ private function insertUserSourceAccount(
     string $identifierType, ?string $accountName, string $currency, bool $isHooked,
     ?string $accessToken, ?string $refreshToken, ?string $tokenExpiresAt, string $status
 ): int {
+    // Validate asset type for users
     $userEligibleAssetTypes = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
     if (!in_array($assetType, $userEligibleAssetTypes, true)) {
         throw new RuntimeException("Invalid asset type for user source: {$assetType}. Users can only add Account, Wallet, or Card.");
     }
     
+    // Generate unique source reference
     $sourceReference = 'SRC_' . $userId . '_' . bin2hex(random_bytes(6));
     
+    // Encrypt tokens if provided
     $encryptedAccess = $accessToken ? $this->encryptSourceSecret($accessToken) : null;
     $encryptedRefresh = $refreshToken ? $this->encryptSourceSecret($refreshToken) : null;
     
+    // ============================================================
+    // FIX: Remove created_at column - it doesn't exist in the table
+    // ============================================================
     $stmt = $this->swapDB->prepare("
         INSERT INTO user_source_accounts (
             user_id, institution, asset_type, identifier, identifier_type,
             account_name, currency, is_hooked, access_token, refresh_token,
-            token_expires_at, source_reference, status, proposed_at, confirmed_at, created_at, updated_at
+            token_expires_at, source_reference, status, proposed_at, confirmed_at, updated_at
         ) VALUES (
             :user_id, :institution, :asset_type, :identifier, :identifier_type,
             :account_name, :currency, :is_hooked, :access_token, :refresh_token,
             :token_expires_at, :source_reference, :status,
             NOW(),
             CASE WHEN :status_active = 'active' THEN NOW() ELSE NULL END,
-            NOW(), NOW()
+            NOW()
         ) RETURNING id
     ");
     
