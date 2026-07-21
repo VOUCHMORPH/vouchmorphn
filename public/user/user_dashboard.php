@@ -1035,7 +1035,12 @@ function showResultModal(response) {
     if (swapType === 'CASHOUT') {
         inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Cashout Code Generated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div>${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}<div style="margin-top:12px;"><div style="font-size:24px;font-weight:700;">${data.amount ?? state.swapPayload.amount} ${state.swapPayload.currency || CONFIG.CURRENCY}</div></div>`;
     } else if (swapType === 'IDENTITY') {
-        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Identity Swap Initiated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:24px;font-weight:700;">${data.amount ?? state.swapPayload.amount} ${data.currency || CONFIG.CURRENCY}</div>`;
+        const claimPinBox = data.claim_pin ? `
+            <div class="atm-code" style="margin-top:12px;">
+                <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Backup PIN — only share this if the recipient doesn't get the SMS</div>
+                <div class="code">${escapeHtml(data.claim_pin)}</div>
+            </div>` : '';
+        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Identity Swap Initiated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:24px;font-weight:700;">${data.amount ?? state.swapPayload.amount} ${data.currency || CONFIG.CURRENCY}</div>${claimPinBox}`;
     } else {
         inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Swap Completed</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="font-size:24px;font-weight:700;margin-top:12px;">${data.amount ?? state.swapPayload.amount} ${CONFIG.CURRENCY}</div>`;
     }
@@ -1325,7 +1330,7 @@ async function submitAddSource() {
     btn.disabled = true;
     btn.textContent = 'Registering...';
 
-    const result = await callApi(CONFIG.API_BASE + '/user/add_source.php', {
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/add_source.php', {
         institution: institution, asset_type: assetType, identifier: identifier, account_name: accountName || undefined
     });
 
@@ -1369,7 +1374,7 @@ async function completeSourceOtp() {
     btn.disabled = true;
     btn.textContent = 'Verifying...';
 
-    const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', { attempt_id: addSourceState.attemptId, otp: otp });
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/verify_source.php', { attempt_id: addSourceState.attemptId, otp: otp });
 
     btn.disabled = false;
     btn.textContent = original;
@@ -1381,7 +1386,7 @@ async function completeSourceOtp() {
 
 async function removeSource(sourceId) {
     if (!confirm('Remove this source? You can add it again later.')) return;
-    const result = await callApi(CONFIG.API_BASE + '/user/sources/delete.php', { source_id: sourceId });
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/sources/delete.php', { source_id: sourceId });
     if (!result.ok) { showMessage('Failed to remove source: ' + result.error, 'error'); return; }
     showMessage('Source removed.', 'success');
     loadUserSources();
@@ -1399,7 +1404,7 @@ function openToolbox() { openModal('Toolbox', renderToolbox()); }
 function renderToolbox() {
     const claimCount = pendingClaims.length;
     const rows = [
-        { label: 'Claim money', badge: claimCount > 0 ? claimCount : null, action: 'openClaimsModal()' },
+        { label: 'Finalize identity swap', badge: claimCount > 0 ? claimCount : null, action: 'openFinalizeIdentityModal()' },
         { label: 'My sources', action: 'openMySources()' },
         { label: 'Swap history', action: 'openSwapHistory()' },
     ];
@@ -1514,17 +1519,98 @@ async function checkPendingClaims() {
         if (pendingClaims.length > 0) { badge.style.display = 'inline-flex'; badge.textContent = pendingClaims.length; } else { badge.style.display = 'none'; }
     } catch (e) { console.error('[claims] Failed to check pending claims', e); }
 }
-function openClaimsModal() {
-    if (pendingClaims.length === 0) { openModal('Claim Money', '<div style="font-size:12px;color:var(--text-dim);">No money currently waiting for your verified identities.</div>'); return; }
-    const rows = pendingClaims.map((c, i) => `
-        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
-            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
-                <div><div style="font-weight:700;font-size:16px;color:var(--primary-dark);">${escapeHtml(c.amount)} ${escapeHtml(c.currency)}</div><div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(c.source_institution || 'Unknown')}</div><div style="font-size:11px;color:var(--text-dim);">Expires ${c.hold_expires_at ? new Date(c.hold_expires_at).toLocaleString() : 'soon'}</div></div>
-                <button class="btn btn-primary btn-sm" onclick="openClaimForm(${i})">Claim</button>
-            </div>
-        </div>`).join('');
-    openModal('Claim Money', `<div>${rows}</div>`);
+function openFinalizeIdentityModal() {
+    openModal('Finalize Identity Swap', renderFinalizeIdentityModal());
 }
+
+function renderFinalizeIdentityModal() {
+    const claimsHtml = pendingClaims.length === 0
+        ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;">No identity money is currently waiting for you.</div>`
+        : `<div style="margin-bottom:16px;">${pendingClaims.map((c, i) => {
+            const pinLabel = c.claim_type === 'otp_pin' ? 'the OTP PIN sent by SMS' : 'your transaction PIN';
+            return `
+            <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+                    <div>
+                        <div style="font-weight:700;font-size:16px;color:var(--primary-dark);">${escapeHtml(c.amount)} ${escapeHtml(c.currency)}</div>
+                        <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(c.source_institution || 'Unknown')}</div>
+                        <div style="font-size:11px;color:var(--text-dim);">Needs ${pinLabel} · Expires ${c.hold_expires_at ? new Date(c.hold_expires_at).toLocaleString() : 'soon'}</div>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="openClaimForm(${i})">Finalize</button>
+                </div>
+            </div>`;
+        }).join('')}</div>`;
+
+    return `
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Money sent to your national ID, phone, or email shows up here.</div>
+        ${claimsHtml}
+        <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:4px;">
+            <div class="field-label" style="margin-bottom:6px;">Don't want to depend on SMS?</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Register an identity to your account and set a transaction PIN. Once verified, future identity swaps sent to it can be finalized with your own PIN instead of waiting on an OTP text.</div>
+            <div class="field-group"><label>Identity Type</label>
+                <select id="regIdentityType">
+                    <option value="national_id">National ID</option>
+                    <option value="phone">Phone Number</option>
+                    <option value="email">Email</option>
+                    <option value="birth_certificate">Birth Certificate</option>
+                    <option value="voter_id">Voter ID</option>
+                </select>
+            </div>
+            <div class="field-group"><label>Identity Value</label><input id="regIdentityValue" placeholder="Enter the ID number, phone, or email"></div>
+            <div class="help" style="margin-bottom:10px;">Phone numbers are confirmed instantly by SMS code. National ID / birth certificate / voter ID go to manual review before they're usable.</div>
+            <div class="cta-row"><button class="btn btn-primary btn-sm" onclick="submitRegisterIdentity()">Register identity</button></div>
+            <div id="regIdentityOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;" id="regIdentityOtpMessage"></div>
+                <div class="otp-input-group">
+                    <input type="text" id="regIdentityOtp" placeholder="Enter code" inputmode="numeric" maxlength="8">
+                    <button class="btn btn-primary btn-sm" onclick="submitVerifyIdentityOtp()">Verify</button>
+                </div>
+            </div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;">
+            <span class="quick-link muted" onclick="openProfileModal()">Set / change transaction PIN</span>
+        </div>
+    `;
+}
+
+let regIdentityState = { attemptId: null, identityType: null, identityValue: null };
+
+async function submitRegisterIdentity() {
+    const identityType = document.getElementById('regIdentityType').value;
+    const identityValue = document.getElementById('regIdentityValue').value.trim();
+    if (!identityValue) { showMessage('Enter the identity value.', 'warning'); return; }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/add_identity.php', {
+        identity_type: identityType, identity_value: identityValue
+    });
+    if (!result.ok) { showMessage('Could not register identity: ' + result.error, 'error'); return; }
+
+    const data = result.body.data || {};
+    regIdentityState.identityType = identityType;
+    regIdentityState.identityValue = identityValue;
+
+    if (data.requires_otp) {
+        regIdentityState.attemptId = data.attempt_id || null;
+        document.getElementById('regIdentityOtpFields').style.display = 'block';
+        document.getElementById('regIdentityOtpMessage').textContent = data.message || 'Enter the code we texted you to confirm this is yours.';
+        showMessage('Verification code sent.', 'success');
+        return;
+    }
+
+    showMessage(data.message || 'Identity submitted for review.', 'success');
+}
+
+async function submitVerifyIdentityOtp() {
+    const otp = document.getElementById('regIdentityOtp').value.trim();
+    if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/user/verify_identity_otp.php', {
+        attempt_id: regIdentityState.attemptId, otp
+    });
+    if (!result.ok) { showMessage('Verification failed: ' + result.error, 'error'); return; }
+    showMessage('Identity verified. You can now use your transaction PIN for this identity.', 'success');
+    openFinalizeIdentityModal();
+}
+
 function openClaimForm(idx) {
     const claim = pendingClaims[idx];
     if (!claim) return;
@@ -1540,9 +1626,10 @@ function openClaimForm(idx) {
             <div class="field-group"><label>Destination Institution</label><select id="claimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
             <div class="field-group"><label>Account / Wallet Number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div>
         </div>
-        <div class="cta-row"><button class="btn btn-secondary" onclick="openClaimsModal()">← Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Claim funds</button></div>`;
-    openModal('Claim Money', body);
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">← Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Finalize</button></div>`;
+    openModal('Finalize Identity Swap', body);
 }
+
 function toggleClaimDestFields(type) { document.getElementById('claimDepositFields').style.display = type === 'DEPOSIT' ? 'block' : 'none'; }
 async function submitClaim(swapReference) {
     const pin = document.getElementById('claimPin').value.trim();
@@ -1684,7 +1771,7 @@ function openAgentToolsModal() { openModal('Agent Tools', renderAgentToolsSearch
 
 function renderAgentToolsSearch() {
     return `
-        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Search for a client's pending identity payment. You'll need to physically verify their document and have them tell you their claim PIN before you can finalize.</div>
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Search for a client's pending identity payment. You'll need to physically verify their document and have them tell you the OTP PIN texted to them — never their personal VouchMorph transaction PIN — before you can finalize.</div>
         <div class="field-group"><label>Document Type</label><select id="agentSearchType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option></select></div>
         <div class="field-group"><label>Document Number</label><input id="agentSearchValue" placeholder="Enter the client's ID number"></div>
         <div class="cta-row"><button class="btn btn-primary" onclick="searchAgentClaim()">Search</button></div>
@@ -1785,9 +1872,9 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
         <div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;">
             <input type="checkbox" id="agentDocVerified"> I have physically verified the client's ${searchTypeLabel}
         </label></div>
-        <div class="field-group"><label>Client's Claim PIN</label>
-            <input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for their PIN">
-            <div class="help">The client must tell you this themselves — never accept a claim without it.</div>
+        <div class="field-group"><label>Client's OTP PIN</label>
+            <input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for the PIN texted to them">
+            <div class="help">This is the OTP PIN sent by SMS — never a personal transaction PIN. The client must tell you this themselves; never accept a claim without it.</div>
         </div>
         <div class="cta-row">
             <button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back to Search</button>
@@ -1878,8 +1965,9 @@ function openAgentFinalizeForm(claim) {
         <div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;">
             <input type="checkbox" id="agentDocVerified"> I have physically verified the client's ${searchTypeLabel}
         </label></div>
-        <div class="field-group"><label>Client's Claim PIN</label>
-            <input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for their PIN">
+        <div class="field-group"><label>Client's OTP PIN</label>
+            <input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for the PIN texted to them">
+            <div class="help">This is the OTP PIN sent by SMS — never a personal transaction PIN.</div>
         </div>
         <div class="cta-row">
             <button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back</button>
@@ -1946,9 +2034,10 @@ function renderSwapHistory(data) {
     let historyHtml = `<div style="max-height:60vh;overflow-y:auto;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
     swaps.forEach((swap) => {
         const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
+        const hasCode = !!(swap.swap_code || swap.voucher_number || swap.pin_code || swap.atm_code);
         historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
             <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-                <div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
+                <div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span>${hasCode ? '<span style="font-size:10px;color:var(--primary-dark);margin-left:6px;">· code available</span>' : ''}</div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
                 <div style="text-align:right;"><div style="font-weight:700;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || CONFIG.CURRENCY}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div>
             </div></div>`;
     });
@@ -1963,6 +2052,14 @@ async function viewSwapDetail(reference) {
 }
 function renderSwapDetail(data) {
     const swap = data.swap || data.data || {};
+    const code = swap.swap_code || swap.voucher_number || null;
+    const pin = swap.pin_code || swap.atm_code || null;
+    const codeBox = (code || pin) ? `
+        <div class="atm-code" style="margin-bottom:12px;">
+            ${code ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Cashout / Voucher Code</div><div class="code">${escapeHtml(code)}</div>` : ''}
+            ${pin ? `<div style="font-size:11px;color:var(--text-muted);margin:${code ? '10px' : '0'} 0 4px;">PIN</div><div class="code">${escapeHtml(pin)}</div>` : ''}
+            ${swap.code_expiry ? `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Expires ${new Date(swap.code_expiry).toLocaleString()}</div>` : ''}
+        </div>` : '';
     document.getElementById('modalBody').innerHTML = `
         <div style="max-height:70vh;overflow-y:auto;">
             <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:16px;margin-bottom:12px;">
@@ -1975,6 +2072,7 @@ function renderSwapDetail(data) {
                 <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Swap Type</div><div style="font-weight:700;">${swap.swap_type || 'N/A'}</div></div>
                 <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || CONFIG.CURRENCY}</div></div>
             </div>
+            ${codeBox}
             <div style="margin-top:12px;"><button class="btn btn-secondary" onclick="openSwapHistory()" style="width:100%;">← Back to History</button></div>
         </div>`;
 }
