@@ -1298,14 +1298,14 @@ function onAddSourceInstChange(code) {
     const group = document.getElementById('addSourceAssetGroup');
     const sel = document.getElementById('addSourceAssetType');
     if (!code) { group.style.display = 'none'; sel.innerHTML = ''; return; }
-    const inst = PARTICIPANTS[code];
-    const allTypes = inst?.asset_types || [];
-    const eligibleTypes = allTypes.filter(t => ['ACCOUNT', 'WALLET', 'CARD'].includes(String(t).toUpperCase()));
-    if (eligibleTypes.length === 0) {
-        group.style.display = 'block';
-        sel.innerHTML = '<option value="">No eligible account types at this institution</option>';
-        return;
-    }
+    // Hardcoded rather than filtered from PARTICIPANTS[code].asset_types --
+    // that config list is per-institution and has been found incomplete
+    // (e.g. an institution supporting WALLET but missing it from its
+    // asset_types entry). Account/Wallet/Card are always offered as
+    // addable source types; the bank adapter itself will reject the
+    // combination server-side if a given institution genuinely doesn't
+    // support one of them.
+    const eligibleTypes = ['ACCOUNT', 'WALLET', 'CARD'];
     sel.innerHTML = eligibleTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
     group.style.display = 'block';
 }
