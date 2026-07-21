@@ -98,7 +98,7 @@ try {
         <div class="container">
             <h1 class="error">✗ Verification Failed</h1>
             <p><?php echo htmlspecialchars($e->getMessage()); ?></p>
-            <p><a href="/user_dashboard.php">Return to Dashboard</a></p>
+            <p><a href="/../../user/user_dashboard.php">Return to Dashboard</a></p>
         </div>
     </body>
     </html>
