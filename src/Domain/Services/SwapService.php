@@ -5745,22 +5745,42 @@ public function isApprovedAgent(int $userId): bool
     }
 
     private function calculateFeesWithDetails(string $feeType, float $amount, array $payload): array
-    {
-        $this->feeCalculationDetails = [];
+{
+    $this->feeCalculationDetails = [];
+    
+    $sourceCurrency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
+    $destinationCurrency = $payload['destination_currency'] ?? $sourceCurrency;
+    
+    $feeResult = $this->feeService->calculateFees($feeType, $amount, $payload);
+    
+    $totalFee = $feeResult['total_fee'] ?? 0;
+    $netAmountSourceCurrency = $feeResult['net_amount_source_currency'] ?? ($amount - $totalFee);
+    
+    $forexApplied = $feeResult['forex']['applied'] ?? false;
+    $exchangeRate = $feeResult['forex']['rate'] ?? 1.0;
+    $netAmountDestCurrency = $feeResult['net_amount_destination_currency'] ?? $netAmountSourceCurrency;
+    
+    // ============================================================
+    // BUSINESS RULES:
+    // 1. DEPOSIT: Always deliver FULL amount (no ATM rounding)
+    // 2. CASHOUT with VOUCHER: Apply ATM rounding, but if amount < smallest note, FAIL
+    // 3. CASHOUT with other assets: Apply ATM rounding, remainder stays at source
+    // ============================================================
+    $isDeposit = ($feeType === 'DEPOSIT');
+    $assetType = strtoupper($payload['asset_type'] ?? '');
+    $isVoucher = ($assetType === 'VOUCHER');
+    
+    // DEPOSIT always delivers full amount (no ATM rounding)
+    if ($isDeposit) {
+        $dispensableAmount = $netAmountDestCurrency;
+        $remainderBalance = 0;
+        $multiplier = null;
+        $denominations = [];
         
-        $sourceCurrency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
-        $destinationCurrency = $payload['destination_currency'] ?? $sourceCurrency;
+        error_log("[SwapService] FULL delivery: DEPOSIT - amount: {$dispensableAmount} {$destinationCurrency}");
         
-        $feeResult = $this->feeService->calculateFees($feeType, $amount, $payload);
-        
-        $totalFee = $feeResult['total_fee'] ?? 0;
-        $netAmountSourceCurrency = $feeResult['net_amount_source_currency'] ?? ($amount - $totalFee);
-        
-        $forexApplied = $feeResult['forex']['applied'] ?? false;
-        $exchangeRate = $feeResult['forex']['rate'] ?? 1.0;
-        $netAmountDestCurrency = $feeResult['net_amount_destination_currency'] ?? $netAmountSourceCurrency;
-        
-        // ✅ STRICT: Must have denominations for this currency
+    } else {
+        // CASHOUT - apply ATM rounding for ALL asset types
         if (!isset($this->atmNotes[$destinationCurrency])) {
             throw new RuntimeException(
                 "No ATM denominations configured for currency: {$destinationCurrency}. " .
@@ -5769,85 +5789,123 @@ public function isApprovedAgent(int $userId): bool
         }
         
         $denominations = $this->atmNotes[$destinationCurrency];
-        $multiplier = $denominations[0] ?? null;
+        $smallestDenom = min($denominations);
+        $largestDenom = $denominations[0] ?? null;
         
-        if ($multiplier === null) {
+        if ($largestDenom === null) {
             throw new RuntimeException(
                 "Invalid denominations for currency {$destinationCurrency}: " . 
                 json_encode($denominations)
             );
         }
         
-        $dispensableAmount = $multiplier * floor($netAmountDestCurrency / $multiplier);
+        // Check if VOUCHER amount is less than smallest denomination
+        if ($isVoucher && $netAmountDestCurrency < $smallestDenom) {
+            throw new RuntimeException(
+                "Voucher cashout amount ({$netAmountDestCurrency} {$destinationCurrency}) is below the minimum ATM denomination ({$smallestDenom} {$destinationCurrency}). " .
+                "Please request a larger amount or use DEPOSIT instead."
+            );
+        }
+        
+        // Round down to nearest largest denomination first
+        $dispensableAmount = $largestDenom * floor($netAmountDestCurrency / $largestDenom);
         $remainderBalance = $netAmountDestCurrency - $dispensableAmount;
         
+        // If nothing fits in largest denomination, try smallest denomination
         if ($dispensableAmount <= 0 && $netAmountDestCurrency > 0) {
-            $smallestDenom = min($denominations);
             $dispensableAmount = $smallestDenom * floor($netAmountDestCurrency / $smallestDenom);
             $remainderBalance = $netAmountDestCurrency - $dispensableAmount;
             $multiplier = $smallestDenom;
             error_log("[SwapService] Using smallest denomination {$smallestDenom} for amount {$netAmountDestCurrency} {$destinationCurrency}");
+        } else {
+            $multiplier = $largestDenom;
         }
         
-        $this->feeCalculationDetails = [
-            'fee_type' => $feeType,
-            'original_amount' => $amount,
-            'original_currency' => $sourceCurrency,
-            'total_fee' => $totalFee,
-            'total_fee_currency' => $sourceCurrency,
-            'net_amount_source_currency' => $netAmountSourceCurrency,
-            'forex_applied' => $forexApplied,
-            'exchange_rate' => $exchangeRate,
-            'net_amount_destination_currency' => $netAmountDestCurrency,
-            'destination_currency' => $destinationCurrency,
-            'multiplier' => $multiplier,
-            'dispensable_amount' => $dispensableAmount,
-            'remainder_balance' => $remainderBalance,
-            'denominations' => $denominations,
-            'breakdown' => $feeResult['breakdown'] ?? [],
-            'revenue_split' => $feeResult['distribution'] ?? [],
-            'destination_split' => $feeResult['destination_split'] ?? [],
-            'mathematical_formulas' => [
-                'Amount_1' => $amount,
-                'F1' => $totalFee,
-                'Amount_2' => $netAmountSourceCurrency,
-                'Exchange_Rate' => $exchangeRate,
-                'Amount_3' => $netAmountDestCurrency,
-                'M' => $multiplier,
-                'Amount_4' => $dispensableAmount,
-                'Remainder_1' => $remainderBalance
-            ]
-        ];
-        
-        error_log("[SwapService] Mathematical calculation:");
-        error_log("  Amount_1: {$amount} {$sourceCurrency}");
-        error_log("  F1 (fee): {$totalFee} {$sourceCurrency}");
-        error_log("  Amount_2: {$netAmountSourceCurrency} {$sourceCurrency}");
-        if ($forexApplied) {
-            error_log("  Exchange Rate: {$exchangeRate}");
-            error_log("  Amount_3: {$netAmountDestCurrency} {$destinationCurrency}");
+        // For VOUCHER, if dispensable amount is 0 (shouldn't happen due to check above)
+        if ($isVoucher && $dispensableAmount <= 0) {
+            throw new RuntimeException(
+                "Voucher cashout amount ({$netAmountDestCurrency} {$destinationCurrency}) cannot be dispensed by ATM. " .
+                "Please request a larger amount or use DEPOSIT instead."
+            );
         }
-        error_log("  M (multiplier): {$multiplier}");
-        error_log("  Amount_4 (dispensable): {$dispensableAmount}");
-        error_log("  Remainder_1: {$remainderBalance}");
         
-        return [
-            'total_fee' => $totalFee,
-            'total_fee_currency' => $sourceCurrency,
-            'net_amount' => $netAmountDestCurrency,
-            'net_amount_source_currency' => $netAmountSourceCurrency,
-            'net_amount_destination_currency' => $netAmountDestCurrency,
-            'dispensable_amount' => $dispensableAmount,
-            'remainder_balance' => $remainderBalance,
-            'exchange_rate' => $exchangeRate,
-            'forex_applied' => $forexApplied,
-            'source_currency' => $sourceCurrency,
-            'destination_currency' => $destinationCurrency,
-            'multiplier' => $multiplier,
-            'denominations' => $denominations,
-            'components' => $this->feeCalculationDetails
-        ];
+        error_log("[SwapService] ATM rounding applied for {$assetType} - dispensable: {$dispensableAmount}, remainder: {$remainderBalance}");
     }
+    
+    $this->feeCalculationDetails = [
+        'fee_type' => $feeType,
+        'original_amount' => $amount,
+        'original_currency' => $sourceCurrency,
+        'total_fee' => $totalFee,
+        'total_fee_currency' => $sourceCurrency,
+        'net_amount_source_currency' => $netAmountSourceCurrency,
+        'forex_applied' => $forexApplied,
+        'exchange_rate' => $exchangeRate,
+        'net_amount_destination_currency' => $netAmountDestCurrency,
+        'destination_currency' => $destinationCurrency,
+        'multiplier' => $multiplier,
+        'dispensable_amount' => $dispensableAmount,
+        'remainder_balance' => $remainderBalance,
+        'denominations' => $denominations ?? [],
+        'is_deposit' => $isDeposit,
+        'is_voucher' => $isVoucher,
+        'breakdown' => $feeResult['breakdown'] ?? [],
+        'revenue_split' => $feeResult['distribution'] ?? [],
+        'destination_split' => $feeResult['destination_split'] ?? [],
+        'mathematical_formulas' => [
+            'Amount_1' => $amount,
+            'F1' => $totalFee,
+            'Amount_2' => $netAmountSourceCurrency,
+            'Exchange_Rate' => $exchangeRate,
+            'Amount_3' => $netAmountDestCurrency,
+            'M' => $multiplier,
+            'Amount_4' => $dispensableAmount,
+            'Remainder_1' => $remainderBalance,
+            'is_deposit' => $isDeposit,
+            'is_voucher' => $isVoucher
+        ]
+    ];
+    
+    $multiplierDisplay = $multiplier ?? 'N/A (DEPOSIT)';
+    
+    error_log("[SwapService] Mathematical calculation:");
+    error_log("  Amount_1: {$amount} {$sourceCurrency}");
+    error_log("  F1 (fee): {$totalFee} {$sourceCurrency}");
+    error_log("  Amount_2: {$netAmountSourceCurrency} {$sourceCurrency}");
+    if ($forexApplied) {
+        error_log("  Exchange Rate: {$exchangeRate}");
+        error_log("  Amount_3: {$netAmountDestCurrency} {$destinationCurrency}");
+    }
+    error_log("  M (multiplier): {$multiplierDisplay}");
+    error_log("  Amount_4 (dispensable): {$dispensableAmount}");
+    error_log("  Remainder_1: {$remainderBalance}");
+    if ($isDeposit) {
+        error_log("  [DEPOSIT] Full delivery - no ATM rounding applied");
+    } elseif ($isVoucher) {
+        error_log("  [VOUCHER CASHOUT] ATM rounding applied - must meet minimum denomination");
+    } else {
+        error_log("  [CASHOUT] ATM rounding applied - remainder stays at source");
+    }
+    
+    return [
+        'total_fee' => $totalFee,
+        'total_fee_currency' => $sourceCurrency,
+        'net_amount' => $netAmountDestCurrency,
+        'net_amount_source_currency' => $netAmountSourceCurrency,
+        'net_amount_destination_currency' => $netAmountDestCurrency,
+        'dispensable_amount' => $dispensableAmount,
+        'remainder_balance' => $remainderBalance,
+        'exchange_rate' => $exchangeRate,
+        'forex_applied' => $forexApplied,
+        'source_currency' => $sourceCurrency,
+        'destination_currency' => $destinationCurrency,
+        'multiplier' => $multiplier,
+        'denominations' => $denominations ?? [],
+        'is_deposit' => $isDeposit,
+        'is_voucher' => $isVoucher,
+        'components' => $this->feeCalculationDetails
+    ];
+}
 
     private function adjustAmountForDelivery(float $amount, string $deliveryMethod, string $currency): array
     {
