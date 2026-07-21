@@ -7741,9 +7741,9 @@ private function updateHoldExpiry(?int $holdId, string $expiresAt): void
         ];
     }
 
-    /**
-     * Completes phone-based identity registration.
-     */
+
+  // Completes phone-based identity registration.
+    
     public function verifyUserIdentityOtp(int $userId, int $attemptId, string $otp): array
     {
         $stmt = $this->swapDB->prepare("
