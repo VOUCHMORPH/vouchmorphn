@@ -1610,7 +1610,7 @@ private function getDecryptedRefreshToken(array $source): ?string
                 
                 $destHoldRef = $holdResult['hold_reference'];
                 $destHoldId = $holdResult['local_hold_id'];
-                $totalHeld += ($destAmount + $feeAmount);
+                $totalHeld += ($destAmount);
                 
                 error_log("[SwapService] Hold placed for destination " . ($idx + 1) . ": {$destHoldRef}");
                 
@@ -1801,7 +1801,7 @@ private function getDecryptedRefreshToken(array $source): ?string
                 
                 $destHoldRef = $holdResult['hold_reference'];
                 $destHoldId = $holdResult['local_hold_id'];
-                $totalHeld += ($amount + $feeAmount);
+                $totalHeld += ($amount);
                 
                 error_log("[SwapService] Hold placed for identity " . ($idx + 1) . ": {$destHoldRef}");
                 
@@ -1841,7 +1841,7 @@ private function getDecryptedRefreshToken(array $source): ?string
                 $debitPayload = [
                     'reference' => $subRef,
                     'hold_reference' => $destHoldRef,
-                    'amount' => $amount + $feeAmount,
+                    'amount' => $amount,
                     'reason' => 'Multi-destination identity - ' . ($idx + 1),
                     'from_institution' => $sourceInstitution,
                     'source_institution' => $sourceInstitution
