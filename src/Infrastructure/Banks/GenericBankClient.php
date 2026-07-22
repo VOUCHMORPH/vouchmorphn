@@ -1170,10 +1170,9 @@ $this->certManager = new CertificateManager('VOUCHMORPH');
     // DESTINATION METHODS - STANDARDIZED
     // ============================================================================
 
-    public function generateToken(array $payload): array
+   public function generateToken(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: generateToken (CASHOUT TOKEN) ===");
-
         // FIX: Avoid double-signing. If this payload was already signed
         // upstream (e.g. by generateTokenWithProof(), which calls
         // createSignedPayload() before handing off to this method),
@@ -1187,19 +1186,27 @@ $this->certManager = new CertificateManager('VOUCHMORPH');
         } else {
             $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
         }
-
         $result = $this->send('generate_token', $signedPayload);
         
         $data = $result['data'] ?? [];
         
+        // FIX: Some destination banks (e.g. SACCUSSALIS) return their
+        // transaction identifier as 'sat_number' rather than any of
+        // 'cashout_code' / 'code' / 'voucher_number' / 'swap_code'.
+        // Without this fallback, the code is silently lost — the bank
+        // genuinely generated a valid token, but cashout_code,
+        // voucher_number, and swap_code all resolve to null here, and
+        // that null gets persisted into cashout_authorizations, so the
+        // client-facing swap code never displays even though the PIN
+        // (atm_pin) does, since that field was already mapped correctly.
         return [
             'success' => $result['success'] ?? false,
-            'cashout_code' => $data['cashout_code'] ?? $data['code'] ?? null,
+            'cashout_code' => $data['cashout_code'] ?? $data['code'] ?? $data['sat_number'] ?? null,
             'atm_pin' => $data['atm_pin'] ?? $data['pin'] ?? null,
-            'voucher_number' => $data['voucher_number'] ?? null,
-            'swap_code' => $data['swap_code'] ?? $data['voucher_number'] ?? null,
+            'voucher_number' => $data['voucher_number'] ?? $data['sat_number'] ?? null,
+            'swap_code' => $data['swap_code'] ?? $data['voucher_number'] ?? $data['sat_number'] ?? null,
             'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
-            'transaction_reference' => $data['transaction_reference'] ?? null,
+            'transaction_reference' => $data['transaction_reference'] ?? $data['sat_number'] ?? null,
             'data' => $data,
             'message' => $data['message'] ?? ($result['success'] ? 'Token generated' : 'Token generation failed'),
             'status_code' => $result['status_code'] ?? 0,
