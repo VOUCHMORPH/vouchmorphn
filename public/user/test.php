@@ -1,5 +1,5 @@
 <?php
-require_once '/var/www/html/src/Infrastructure/Crypto/CertificateManager.php';
+require_once '../../../src/Infrastructure/Crypto/CertificateManager.php';
 
 echo "========================================\n";
 echo "AGGRESSIVE DIAGNOSTIC TEST - VOUCHMORPH\n";
