@@ -5990,10 +5990,10 @@ public function isApprovedAgent(int $userId): bool
         }
     }
 
-    // ============================================================================
-    // ADAPTER-BASED PRIVATE METHODS
-    // ============================================================================
-
+   /**
+     * Verify asset at source institution
+     * STANDARD: Returns consistent structure with verification proof
+     */
     public function verifyAssetSigned(array $payload, string $institution): array
     {
         $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
@@ -6022,15 +6022,41 @@ public function isApprovedAgent(int $userId): bool
         }
 
         $adapter = $this->adapterFactory->getAdapter($institution);
-        return $adapter->verifyAsset($verifyPayload, [
+        $result = $adapter->verifyAsset($verifyPayload, [
             'swap_reference' => $this->currentSwapRef,
             'institution' => $institution,
             'source_identifier' => $sourceId['identifier'] ?? null,
             'signed_payloads' => $this->signedPayloads,
             'timestamp' => $timestamp
         ]);
+
+        // ============================================================
+        // STANDARDIZED RESPONSE STRUCTURE
+        // ============================================================
+        return [
+            'success' => $result['success'] ?? $result['verified'] ?? false,
+            'verified' => $result['verified'] ?? false,
+            'message' => $result['message'] ?? 'Asset verification completed',
+            'asset_id' => $result['asset_id'] ?? null,
+            'account_id' => $result['account_id'] ?? null,
+            'account_name' => $result['account_name'] ?? null,
+            'balance' => $result['balance'] ?? 0,
+            'currency' => $result['currency'] ?? $payload['currency'] ?? 'BWP',
+            'original_payload' => $result['original_payload'] ?? $verifyPayload,
+            'signature' => $result['signature'] ?? null,
+            'certificate' => $result['certificate'] ?? null,
+            'timestamp' => $result['timestamp'] ?? $timestamp,
+            'status_code' => $result['status_code'] ?? 0,
+            'curl_error' => $result['curl_error'] ?? null,
+            'raw_response' => $result['raw_response'] ?? null,
+            'data' => $result['data'] ?? []
+        ];
     }
 
+    /**
+     * Place hold on source institution
+     * STANDARD: Returns consistent structure with hold proof
+     */
     public function placeHoldSigned(array $payload, string $institution, array $verificationResult): array
     {
         $assetType = strtoupper($payload['asset_type'] ?? 'ACCOUNT');
@@ -6074,46 +6100,91 @@ public function isApprovedAgent(int $userId): bool
             'timestamp' => $timestamp
         ]);
 
-        if (!($result['hold_placed'] ?? false)) {
-            return $result;
+        $holdPlaced = $result['hold_placed'] ?? false;
+
+        if ($holdPlaced) {
+            $holdId = $this->createLocalHold($payload, $institution, $result['hold_reference'] ?? null);
+            $this->currentHoldId = $holdId;
+            $this->currentHoldReference = $result['hold_reference'] ?? $this->currentHoldReference;
+            $this->currentHoldInstitution = $institution;
+            $result['local_hold_id'] = $holdId;
         }
 
-        $holdId = $this->createLocalHold($payload, $institution, $result['hold_reference'] ?? null);
-        $this->currentHoldId = $holdId;
-        $this->currentHoldReference = $result['hold_reference'] ?? $this->currentHoldReference;
-        $this->currentHoldInstitution = $institution;
-        $result['local_hold_id'] = $holdId;
-
-        return $result;
+        // ============================================================
+        // STANDARDIZED RESPONSE STRUCTURE
+        // ============================================================
+        return [
+            'success' => $holdPlaced,
+            'hold_placed' => $holdPlaced,
+            'hold_reference' => $result['hold_reference'] ?? null,
+            'hold_id' => $result['hold_id'] ?? null,
+            'local_hold_id' => $result['local_hold_id'] ?? null,
+            'status' => $result['status'] ?? ($holdPlaced ? 'ACTIVE' : 'FAILED'),
+            'original_payload' => $result['original_payload'] ?? $holdPayload,
+            'signature' => $result['signature'] ?? null,
+            'certificate' => $result['certificate'] ?? null,
+            'timestamp' => $result['timestamp'] ?? $timestamp,
+            'message' => $result['message'] ?? ($holdPlaced ? 'Hold placed successfully' : 'Hold placement failed'),
+            'status_code' => $result['status_code'] ?? 0,
+            'curl_error' => $result['curl_error'] ?? null,
+            'raw_response' => $result['raw_response'] ?? null,
+            'data' => $result['data'] ?? []
+        ];
     }
 
+    /**
+     * Debit source institution
+     * STANDARD: Uses debitFunds not debitHold
+     */
     public function debitSource(array $payload, string $institution): array
-{
-    $sourceId = $this->extractSourceIdentifier($payload);
-    if ($sourceId['has_value']) {
-        $this->validateAgentMinimumBalance($institution, $sourceId['identifier'], (float)($payload['amount'] ?? 0));
+    {
+        $sourceId = $this->extractSourceIdentifier($payload);
+        if ($sourceId['has_value']) {
+            $this->validateAgentMinimumBalance($institution, $sourceId['identifier'], (float)($payload['amount'] ?? 0));
+        }
+
+        $debitPayload = [
+            'reference' => $payload['reference'] ?? $this->currentSwapRef,
+            'hold_reference' => $payload['hold_reference'] ?? $this->currentHoldReference,
+            'amount' => $payload['amount'] ?? 0,
+            'reason' => $payload['reason'] ?? 'Swap completed successfully',
+            'from_institution' => $institution,
+            'source_institution' => $institution,
+            'action' => 'DEBIT_FUNDS'
+        ];
+
+        $this->forwardPin($payload, $debitPayload);
+
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        $result = $adapter->debit($debitPayload, [
+            'swap_reference' => $this->currentSwapRef,
+            'institution' => $institution,
+            'hold_reference' => $this->currentHoldReference,
+            'signed_payloads' => $this->signedPayloads
+        ]);
+
+        $debited = $result['debited'] ?? false;
+
+        // ============================================================
+        // STANDARDIZED RESPONSE STRUCTURE
+        // ============================================================
+        return [
+            'success' => $debited,
+            'debited' => $debited,
+            'transaction_reference' => $result['transaction_reference'] ?? null,
+            'status' => $result['status'] ?? ($debited ? 'COMPLETED' : 'FAILED'),
+            'message' => $result['message'] ?? ($debited ? 'Debit completed' : 'Debit failed'),
+            'status_code' => $result['status_code'] ?? 0,
+            'curl_error' => $result['curl_error'] ?? null,
+            'raw_response' => $result['raw_response'] ?? null,
+            'data' => $result['data'] ?? []
+        ];
     }
 
-    $debitPayload = [
-        'reference' => $payload['reference'] ?? $this->currentSwapRef,
-        'hold_reference' => $payload['hold_reference'] ?? $this->currentHoldReference,
-        'amount' => $payload['amount'] ?? 0,
-        'reason' => $payload['reason'] ?? 'Swap completed successfully',
-        'from_institution' => $institution,
-        'source_institution' => $institution
-    ];
-
-    $this->forwardPin($payload, $debitPayload);
-
-    $adapter = $this->adapterFactory->getAdapter($institution);
-    return $adapter->debit($debitPayload, [
-        'swap_reference' => $this->currentSwapRef,
-        'institution' => $institution,
-        'hold_reference' => $this->currentHoldReference,
-        'signed_payloads' => $this->signedPayloads
-    ]);
-}
-
+    /**
+     * Release hold
+     * STANDARD: Consistent with adapter and bank client
+     */
     public function releaseHold(
         array $sourcePayload,
         string $institution,
@@ -6135,7 +6206,13 @@ public function isApprovedAgent(int $userId): bool
             ]);
             return [
                 'success' => false,
-                'message' => 'No hold reference available for release'
+                'released' => false,
+                'message' => 'No hold reference available for release',
+                'hold_reference' => null,
+                'status_code' => 0,
+                'curl_error' => null,
+                'raw_response' => null,
+                'data' => []
             ];
         }
 
@@ -6144,7 +6221,8 @@ public function isApprovedAgent(int $userId): bool
             'hold_reference' => $holdRef,
             'reason' => 'Multi-source swap rolled back',
             'from_institution' => $institution,
-            'source_institution' => $institution
+            'source_institution' => $institution,
+            'reference' => $this->currentSwapRef ?? 'RELEASE_' . uniqid()
         ];
 
         $this->forwardPin($sourcePayload, $releasePayload);
@@ -6166,16 +6244,28 @@ public function isApprovedAgent(int $userId): bool
                 $this->updateHoldStatus((int)$holdId, 'RELEASED');
             }
 
+            $released = $result['released'] ?? $result['success'] ?? false;
+
             $this->logger->info("Hold released successfully", [
                 'institution' => $institution,
                 'hold_reference' => $holdRef,
-                'success' => $result['success'] ?? false
+                'success' => $released
             ]);
 
+            // ============================================================
+            // STANDARDIZED RESPONSE STRUCTURE
+            // ============================================================
             return [
-                'success' => $result['success'] ?? false,
-                'message' => $result['message'] ?? 'Hold released',
-                'hold_reference' => $holdRef
+                'success' => $released,
+                'released' => $released,
+                'message' => $result['message'] ?? ($released ? 'Hold released' : 'Release failed'),
+                'hold_reference' => $holdRef,
+                'status' => $result['status'] ?? ($released ? 'RELEASED' : 'FAILED'),
+                'released_at' => $result['released_at'] ?? date('Y-m-d H:i:s'),
+                'status_code' => $result['status_code'] ?? 0,
+                'curl_error' => $result['curl_error'] ?? null,
+                'raw_response' => $result['raw_response'] ?? null,
+                'data' => $result['data'] ?? []
             ];
 
         } catch (Exception $e) {
@@ -6189,39 +6279,27 @@ public function isApprovedAgent(int $userId): bool
                 $this->updateHoldStatus((int)$holdId, 'RELEASED');
             }
 
+            // ============================================================
+            // STANDARDIZED ERROR RESPONSE STRUCTURE
+            // ============================================================
             return [
                 'success' => false,
+                'released' => false,
                 'message' => 'Failed to release hold: ' . $e->getMessage(),
                 'hold_reference' => $holdRef,
-                'error' => $e->getMessage()
+                'status' => 'FAILED',
+                'status_code' => 500,
+                'curl_error' => null,
+                'raw_response' => null,
+                'data' => ['error' => $e->getMessage()]
             ];
         }
     }
 
-    public function getForexRate(string $fromCurrency, string $toCurrency, string $clientTier = 'retail'): array
-    {
-        if (strtoupper($fromCurrency) === strtoupper($toCurrency)) {
-            return [
-                'rate' => 1.0,
-                'wholesale_rate' => 1.0,
-                'from_currency' => $fromCurrency,
-                'to_currency' => $toCurrency,
-                'applied' => false,
-            ];
-        }
-
-        $clientRate = $this->forexService->getClientRate($fromCurrency, $toCurrency, $clientTier);
-        $wholesaleRate = $this->forexService->getWholesaleRate($fromCurrency, $toCurrency);
-
-        return [
-            'rate' => $clientRate,
-            'wholesale_rate' => $wholesaleRate,
-            'from_currency' => $fromCurrency,
-            'to_currency' => $toCurrency,
-            'applied' => true,
-        ];
-    }
-
+    /**
+     * Credit destination (pool credit)
+     * STANDARD: Returns consistent credit response
+     */
     public function creditDestination(array $payload, string $institution): array
     {
         error_log("[SwapService] creditDestination called for institution: {$institution}");
@@ -6242,7 +6320,7 @@ public function isApprovedAgent(int $userId): bool
             'source_type' => 'VIRTUAL_POOL',
             'pool_id' => $payload['pool_id'] ?? null,
             'master_signature' => $payload['master_signature'] ?? null,
-            'user_id' => $payload['user_id'] ?? 0, 
+            'user_id' => $payload['user_id'] ?? 0,
         ];
 
         if ($destId['has_value']) {
@@ -6267,8 +6345,18 @@ public function isApprovedAgent(int $userId): bool
             'pool_id' => $payload['pool_id'] ?? null,
         ]);
 
-        if (!($result['credited'] ?? false)) {
-            return ['success' => false, 'message' => $result['message'] ?? 'Pool credit failed'];
+        $credited = $result['credited'] ?? false;
+
+        if (!$credited) {
+            return [
+                'success' => false,
+                'credited' => false,
+                'message' => $result['message'] ?? 'Pool credit failed',
+                'status_code' => $result['status_code'] ?? 0,
+                'curl_error' => $result['curl_error'] ?? null,
+                'raw_response' => $result['raw_response'] ?? null,
+                'data' => $result['data'] ?? []
+            ];
         }
 
         $this->assertStepIntegrity(
@@ -6278,13 +6366,25 @@ public function isApprovedAgent(int $userId): bool
             'CREDIT_DESTINATION'
         );
 
+        // ============================================================
+        // STANDARDIZED RESPONSE STRUCTURE
+        // ============================================================
         return [
             'success' => true,
+            'credited' => true,
             'transaction_reference' => $result['transaction_reference'] ?? null,
             'message' => $result['message'] ?? 'Pool credit successful',
+            'status_code' => $result['status_code'] ?? 0,
+            'curl_error' => $result['curl_error'] ?? null,
+            'raw_response' => $result['raw_response'] ?? null,
+            'data' => $result['data'] ?? []
         ];
     }
 
+    /**
+     * Generate cashout token
+     * STANDARD: Consistent with adapter and bank client
+     */
     private function generateCashoutToken(array $payload, string $institution, float $amount): array
     {
         $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
@@ -6310,7 +6410,7 @@ public function isApprovedAgent(int $userId): bool
         }
 
         $adapter = $this->adapterFactory->getAdapter($institution);
-        return $adapter->generateCashoutToken($tokenPayload, [
+        $result = $adapter->generateCashoutToken($tokenPayload, [
             'swap_reference' => $this->currentSwapRef,
             'source_institution' => $sourceInstitution,
             'destination_institution' => $institution,
@@ -6318,8 +6418,32 @@ public function isApprovedAgent(int $userId): bool
             'beneficiary_phone' => $beneficiaryPhone,
             'signed_payloads' => $this->signedPayloads
         ]);
+
+        $success = $result['success'] ?? false;
+
+        // ============================================================
+        // STANDARDIZED RESPONSE STRUCTURE
+        // ============================================================
+        return [
+            'success' => $success,
+            'cashout_code' => $result['cashout_code'] ?? null,
+            'atm_pin' => $result['atm_pin'] ?? null,
+            'voucher_number' => $result['voucher_number'] ?? null,
+            'swap_code' => $result['swap_code'] ?? null,
+            'expires_at' => $result['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
+            'transaction_reference' => $result['transaction_reference'] ?? null,
+            'message' => $result['message'] ?? ($success ? 'Token generated' : 'Token generation failed'),
+            'status_code' => $result['status_code'] ?? 0,
+            'curl_error' => $result['curl_error'] ?? null,
+            'raw_response' => $result['raw_response'] ?? null,
+            'data' => $result['data'] ?? []
+        ];
     }
 
+    /**
+     * Verify destination account
+     * STANDARD: Returns consistent verification structure
+     */
     private function verifyAccount(array $payload, string $institution, array $destinationIdentifier): array
     {
         $sourceInstitution = $this->extractSourceInstitution($payload);
@@ -6340,7 +6464,7 @@ public function isApprovedAgent(int $userId): bool
         ];
 
         $adapter = $this->adapterFactory->getAdapter($institution);
-        return $adapter->verifyAccount($verifyPayload, [
+        $result = $adapter->verifyAccount($verifyPayload, [
             'swap_reference' => $this->currentSwapRef,
             'source_institution' => $sourceInstitution,
             'destination_institution' => $institution,
@@ -6348,8 +6472,34 @@ public function isApprovedAgent(int $userId): bool
             'destination_asset_type' => $destinationAssetType,
             'signed_payloads' => $this->signedPayloads
         ]);
+
+        $verified = $result['verified'] ?? false;
+        $success = $result['success'] ?? $verified;
+
+        // ============================================================
+        // STANDARDIZED RESPONSE STRUCTURE
+        // ============================================================
+        return [
+            'success' => $success,
+            'verified' => $verified,
+            'message' => $result['message'] ?? 'Account verification completed',
+            'account_name' => $result['account_name'] ?? null,
+            'account_type' => $result['account_type'] ?? null,
+            'status' => $result['status'] ?? 'ACTIVE',
+            'currency' => $result['currency'] ?? null,
+            'account_identifier' => $destinationIdentifier['identifier'],
+            'identifier_type' => $destinationIdentifier['type'],
+            'status_code' => $result['status_code'] ?? 0,
+            'curl_error' => $result['curl_error'] ?? null,
+            'raw_response' => $result['raw_response'] ?? null,
+            'data' => $result['data'] ?? []
+        ];
     }
 
+    /**
+     * Process deposit with proof
+     * STANDARD: Consistent across all layers
+     */
     private function processDepositWithProof(array $payload, string $institution, float $amount): array
     {
         error_log("[SwapService] processDepositWithProof called for institution: {$institution}");
@@ -6377,7 +6527,7 @@ public function isApprovedAgent(int $userId): bool
             'bank' => $sourceInstitution,
             'destination_asset_type' => $destinationAssetType,
             'asset_type' => $destinationAssetType,
-            'user_id' => $payload['user_id'] ?? 0, 
+            'user_id' => $payload['user_id'] ?? 0,
         ];
         
         if ($sourceId['has_value']) {
@@ -6426,18 +6576,46 @@ public function isApprovedAgent(int $userId): bool
             'signed_payloads' => $this->signedPayloads
         ]);
         
-        if (!($result['credited'] ?? false)) {
-            return ['success' => false, 'message' => $result['message'] ?? 'Deposit failed'];
+        $credited = $result['credited'] ?? false;
+
+        if (!$credited) {
+            // ============================================================
+            // STANDARDIZED ERROR RESPONSE STRUCTURE
+            // ============================================================
+            return [
+                'success' => false,
+                'credited' => false,
+                'message' => $result['message'] ?? 'Deposit failed',
+                'transaction_reference' => $result['transaction_reference'] ?? null,
+                'status' => 'FAILED',
+                'status_code' => $result['status_code'] ?? 0,
+                'curl_error' => $result['curl_error'] ?? null,
+                'raw_response' => $result['raw_response'] ?? null,
+                'data' => $result['data'] ?? []
+            ];
         }
-        
+
+        // ============================================================
+        // STANDARDIZED RESPONSE STRUCTURE
+        // ============================================================
         return [
             'success' => true,
+            'credited' => true,
             'transaction_reference' => $result['transaction_reference'] ?? null,
             'message' => $result['message'] ?? 'Deposit successful',
-            'credited' => true
+            'status' => $result['status'] ?? 'COMPLETED',
+            'new_balance' => $result['new_balance'] ?? null,
+            'status_code' => $result['status_code'] ?? 0,
+            'curl_error' => $result['curl_error'] ?? null,
+            'raw_response' => $result['raw_response'] ?? null,
+            'data' => $result['data'] ?? []
         ];
     }
 
+    /**
+     * Process destination with proof (for standard swaps)
+     * STANDARD: Returns consistent response
+     */
     private function processDestinationWithProof(array $payload, string $institution, float $amount): array
     {
         $destId = $this->extractDestinationIdentifier($payload);
@@ -6470,18 +6648,42 @@ public function isApprovedAgent(int $userId): bool
             'destination_identifier' => $destId['identifier'] ?? null,
             'signed_payloads' => $this->signedPayloads
         ]);
-        
-        if (!($result['success'] ?? false)) {
-            return ['success' => false, 'message' => $result['message'] ?? 'Destination processing failed'];
+
+        $success = $result['success'] ?? false;
+
+        if (!$success) {
+            return [
+                'success' => false,
+                'credited' => false,
+                'message' => $result['message'] ?? 'Destination processing failed',
+                'transaction_reference' => $result['transaction_reference'] ?? null,
+                'status' => 'FAILED',
+                'status_code' => $result['status_code'] ?? 0,
+                'curl_error' => $result['curl_error'] ?? null,
+                'raw_response' => $result['raw_response'] ?? null,
+                'data' => $result['data'] ?? []
+            ];
         }
-        
+
+        // ============================================================
+        // STANDARDIZED RESPONSE STRUCTURE
+        // ============================================================
         return [
             'success' => true,
             'credited' => true,
             'transaction_reference' => $result['transaction_reference'] ?? null,
-            'message' => $result['message'] ?? 'Destination processed successfully'
+            'message' => $result['message'] ?? 'Destination processed successfully',
+            'status' => 'COMPLETED',
+            'status_code' => $result['status_code'] ?? 0,
+            'curl_error' => $result['curl_error'] ?? null,
+            'raw_response' => $result['raw_response'] ?? null,
+            'data' => $result['data'] ?? []
         ];
     }
+
+    // ============================================================================
+    // REMAINING PRIVATE METHODS - KEEP AS IS
+    // ============================================================================
 
     private function executeCardIssuance(array $payload): array
     {
