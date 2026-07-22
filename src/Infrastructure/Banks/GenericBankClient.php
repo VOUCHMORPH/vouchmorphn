@@ -1569,7 +1569,7 @@ $this->certManager = new CertificateManager('VOUCHMORPH');
         error_log("Sending request to: {$url}");
         error_log("Payload length: " . strlen(json_encode($payload)));
         
-        $jsonPayload = json_encode($payload);
+$jsonPayload = json_encode($payload, JSON_UNESCAPED_SLASHES);        
         
         $ch = curl_init($url);
         curl_setopt_array($ch, [
