@@ -5770,6 +5770,9 @@ public function isApprovedAgent(int $userId): bool
     $assetType = strtoupper($payload['asset_type'] ?? '');
     $isVoucher = ($assetType === 'VOUCHER');
     
+    $noteBreakdown = [];
+    $multiplier = null;
+    
     // DEPOSIT always delivers full amount (no ATM rounding)
     if ($isDeposit) {
         $dispensableAmount = $netAmountDestCurrency;
@@ -5790,14 +5793,6 @@ public function isApprovedAgent(int $userId): bool
         
         $denominations = $this->atmNotes[$destinationCurrency];
         $smallestDenom = min($denominations);
-        $largestDenom = $denominations[0] ?? null;
-        
-        if ($largestDenom === null) {
-            throw new RuntimeException(
-                "Invalid denominations for currency {$destinationCurrency}: " . 
-                json_encode($denominations)
-            );
-        }
         
         // Check if VOUCHER amount is less than smallest denomination
         if ($isVoucher && $netAmountDestCurrency < $smallestDenom) {
@@ -5807,19 +5802,29 @@ public function isApprovedAgent(int $userId): bool
             );
         }
         
-        // Round down to nearest largest denomination first
-        $dispensableAmount = $largestDenom * floor($netAmountDestCurrency / $largestDenom);
-        $remainderBalance = $netAmountDestCurrency - $dispensableAmount;
+        // ============================================================
+        // FIX: Proper greedy multi-denomination breakdown instead of
+        // "largest note only". This mirrors validateCashoutAmount()'s
+        // already-correct algorithm, which was never being used on
+        // this path. Previously, 990 BWP with [200,100,50,20,10] would
+        // compute dispensable=800 (4x200) and leave 190 as remainder,
+        // even though 990 is exactly dispensable with a proper mix
+        // (4x200 + 1x100 + 1x50 + 2x20 = 990, remainder 0).
+        // ============================================================
+        $sortedDesc = $denominations;
+        rsort($sortedDesc);
         
-        // If nothing fits in largest denomination, try smallest denomination
-        if ($dispensableAmount <= 0 && $netAmountDestCurrency > 0) {
-            $dispensableAmount = $smallestDenom * floor($netAmountDestCurrency / $smallestDenom);
-            $remainderBalance = $netAmountDestCurrency - $dispensableAmount;
-            $multiplier = $smallestDenom;
-            error_log("[SwapService] Using smallest denomination {$smallestDenom} for amount {$netAmountDestCurrency} {$destinationCurrency}");
-        } else {
-            $multiplier = $largestDenom;
+        $remaining = $netAmountDestCurrency;
+        foreach ($sortedDesc as $note) {
+            if ($remaining >= $note) {
+                $count = floor($remaining / $note);
+                $noteBreakdown[$note] = $count;
+                $remaining = round($remaining - ($note * $count), 2);
+            }
         }
+        
+        $dispensableAmount = round($netAmountDestCurrency - $remaining, 2);
+        $remainderBalance = $remaining;
         
         // For VOUCHER, if dispensable amount is 0 (shouldn't happen due to check above)
         if ($isVoucher && $dispensableAmount <= 0) {
@@ -5829,7 +5834,7 @@ public function isApprovedAgent(int $userId): bool
             );
         }
         
-        error_log("[SwapService] ATM rounding applied for {$assetType} - dispensable: {$dispensableAmount}, remainder: {$remainderBalance}");
+        error_log("[SwapService] ATM rounding applied for {$assetType} - dispensable: {$dispensableAmount}, remainder: {$remainderBalance}, breakdown: " . json_encode($noteBreakdown));
     }
     
     $this->feeCalculationDetails = [
@@ -5844,6 +5849,7 @@ public function isApprovedAgent(int $userId): bool
         'net_amount_destination_currency' => $netAmountDestCurrency,
         'destination_currency' => $destinationCurrency,
         'multiplier' => $multiplier,
+        'note_breakdown' => $noteBreakdown,
         'dispensable_amount' => $dispensableAmount,
         'remainder_balance' => $remainderBalance,
         'denominations' => $denominations ?? [],
@@ -5859,14 +5865,13 @@ public function isApprovedAgent(int $userId): bool
             'Exchange_Rate' => $exchangeRate,
             'Amount_3' => $netAmountDestCurrency,
             'M' => $multiplier,
+            'note_breakdown' => $noteBreakdown,
             'Amount_4' => $dispensableAmount,
             'Remainder_1' => $remainderBalance,
             'is_deposit' => $isDeposit,
             'is_voucher' => $isVoucher
         ]
     ];
-    
-    $multiplierDisplay = $multiplier ?? 'N/A (DEPOSIT)';
     
     error_log("[SwapService] Mathematical calculation:");
     error_log("  Amount_1: {$amount} {$sourceCurrency}");
@@ -5876,7 +5881,7 @@ public function isApprovedAgent(int $userId): bool
         error_log("  Exchange Rate: {$exchangeRate}");
         error_log("  Amount_3: {$netAmountDestCurrency} {$destinationCurrency}");
     }
-    error_log("  M (multiplier): {$multiplierDisplay}");
+    error_log("  Note breakdown: " . json_encode($noteBreakdown));
     error_log("  Amount_4 (dispensable): {$dispensableAmount}");
     error_log("  Remainder_1: {$remainderBalance}");
     if ($isDeposit) {
@@ -5900,6 +5905,7 @@ public function isApprovedAgent(int $userId): bool
         'source_currency' => $sourceCurrency,
         'destination_currency' => $destinationCurrency,
         'multiplier' => $multiplier,
+        'note_breakdown' => $noteBreakdown,
         'denominations' => $denominations ?? [],
         'is_deposit' => $isDeposit,
         'is_voucher' => $isVoucher,
