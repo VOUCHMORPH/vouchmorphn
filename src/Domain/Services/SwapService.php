@@ -1756,7 +1756,7 @@ private function getDecryptedRefreshToken(array $source): ?string
             $deliveryMethod = $identityDest['delivery_method'];
             $subRef = $multiDestRef . '_ID_' . $idx;
             
-            error_log("[SwapService] Processing identity destination " . ($idx + 1) . ": {$identityType}={$identityValue}, amount={$amount}");
+            error_log("[SwapService] Processing identity destination " . ($idx + 1) . ": {$identityType}={$identityValue}, amount={$amount}"); 
             
             $destHoldRef = null;
             $destHoldId = null;
