@@ -15,11 +15,17 @@ echo "1. GenericBankClient CertificateManager:\n";
 $config = ['provider_code' => 'ZURUBANK'];
 $gbc = new GenericBankClient($config);
 
-if ($gbc->certManager) {
-    echo "   myName: " . $gbc->certManager->myName . "\n";
-    echo "   Configured: " . ($gbc->certManager->isConfigured() ? "✅ YES" : "❌ NO") . "\n";
-    echo "   Private key length: " . ($gbc->certManager->myPrivateKey ? strlen($gbc->certManager->myPrivateKey) : '0') . "\n";
-    echo "   Certificate length: " . ($gbc->certManager->myCertificate ? strlen($gbc->certManager->myCertificate) : '0') . "\n\n";
+// Use reflection to access protected property
+$reflection = new ReflectionClass($gbc);
+$property = $reflection->getProperty('certManager');
+$property->setAccessible(true);
+$certManager = $property->getValue($gbc);
+
+if ($certManager) {
+    echo "   myName: " . $certManager->myName . "\n";
+    echo "   Configured: " . ($certManager->isConfigured() ? "✅ YES" : "❌ NO") . "\n";
+    echo "   Private key length: " . ($certManager->myPrivateKey ? strlen($certManager->myPrivateKey) : '0') . "\n";
+    echo "   Certificate length: " . ($certManager->myCertificate ? strlen($certManager->myCertificate) : '0') . "\n\n";
 } else {
     echo "   ❌ No CertificateManager!\n\n";
 }
