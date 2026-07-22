@@ -56,7 +56,7 @@ class GenericBankClient implements BankAPIInterface
         
         // Initialize CertificateManager for Visa/Mastercard style PKI
         try {
-            $this->certManager = new CertificateManager();
+$this->certManager = new CertificateManager('VOUCHMORPH');
             if ($this->certManager->isConfigured()) {
                 error_log("GenericBankClient: CertificateManager initialized for {$this->bankPrefix}");
             }
