@@ -5,14 +5,10 @@ require_once '../../src/Infrastructure/Crypto/MessageSigner.php';
 
 use Infrastructure\Banks\GenericBankClient;
 
-echo "========================================\n";
-echo "TESTING SEND METHOD\n";
-echo "========================================\n\n";
-
 $config = ['provider_code' => 'SACCUSSALIS'];
 $gbc = new GenericBankClient($config);
 
-// Create a test payload
+// Create test payload
 $payload = [
     'action' => 'GENERATE_TOKEN',
     'amount' => 400,
@@ -20,42 +16,37 @@ $payload = [
     'currency' => 'BWP',
     'destination_institution' => 'SACCUSSALIS',
     'from_institution' => 'ZURUBANK',
-    'hold_reference' => 'SEND_TEST_' . time(),
-    'reference' => 'SEND_TEST_' . time(),
+    'hold_reference' => 'PAYLOAD_TEST_' . time(),
+    'reference' => 'PAYLOAD_TEST_' . time(),
     'requester' => 'VOUCHMORPH',
     'source_institution' => 'ZURUBANK',
     'to_institution' => 'SACCUSSALIS'
 ];
 
-// Sign the payload
+// Sign
 $reflection = new ReflectionClass($gbc);
 $method = $reflection->getMethod('createSignedPayload');
 $method->setAccessible(true);
 $signed = $method->invoke($gbc, $payload, 'VOUCHMORPH');
 
-echo "1. Signed payload keys: " . implode(', ', array_keys($signed)) . "\n";
-echo "   Signature present: " . (isset($signed['signature']) ? 'YES' : 'NO') . "\n";
-echo "   Certificate present: " . (isset($signed['certificate']) ? 'YES' : 'NO') . "\n\n";
+// The original signature
+echo "1. Original signature:\n" . $signed['signature'] . "\n\n";
 
-// Now check what send() does with it
-$sendMethod = $reflection->getMethod('send');
-$sendMethod->setAccessible(true);
+// JSON encode and decode (what happens during transmission)
+$json = json_encode($signed);
+$decoded = json_decode($json, true);
 
-// Just test the JSON encoding, not the actual send
-$jsonPayload = json_encode($signed);
-echo "2. JSON payload (first 500 chars):\n" . substr($jsonPayload, 0, 500) . "...\n\n";
+echo "2. Signature after JSON encode/decode:\n" . $decoded['signature'] . "\n\n";
 
-// Check if the signature survived JSON encoding
-$decoded = json_decode($jsonPayload, true);
-echo "3. After JSON decode:\n";
-echo "   Signature present: " . (isset($decoded['signature']) ? 'YES' : 'NO') . "\n";
-echo "   Certificate present: " . (isset($decoded['certificate']) ? 'YES' : 'NO') . "\n";
-
-if (isset($decoded['signature']) && isset($decoded['certificate'])) {
-    echo "   Signature length: " . strlen($decoded['signature']) . "\n";
-    echo "   Certificate length: " . strlen($decoded['certificate']) . "\n";
-    echo "\n✅ Signature and certificate survived JSON encoding!\n";
-    echo "The problem must be on the SACCUSSALIS receiving side or network transmission.\n";
+// Compare
+if ($signed['signature'] === $decoded['signature']) {
+    echo "✅ Signatures match! JSON encoding is not the problem.\n";
 } else {
-    echo "\n❌ Signature or certificate was lost in JSON encoding!\n";
+    echo "❌ Signatures DO NOT match! JSON encoding is corrupting the signature.\n";
+}
+
+// Check if the signature has escaped slashes
+if (strpos($json, '\\/') !== false) {
+    echo "\n⚠️ WARNING: JSON contains escaped slashes '\\/' which could be the problem!\n";
+    echo "The signature might be getting corrupted when the slash is escaped.\n";
 }
