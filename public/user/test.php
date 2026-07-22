@@ -22,10 +22,25 @@ $property->setAccessible(true);
 $certManager = $property->getValue($gbc);
 
 if ($certManager) {
-    echo "   myName: " . $certManager->myName . "\n";
+    // Use reflection to access private properties
+    $cmReflection = new ReflectionClass($certManager);
+    
+    $nameProp = $cmReflection->getProperty('myName');
+    $nameProp->setAccessible(true);
+    $myName = $nameProp->getValue($certManager);
+    
+    $keyProp = $cmReflection->getProperty('myPrivateKey');
+    $keyProp->setAccessible(true);
+    $privateKey = $keyProp->getValue($certManager);
+    
+    $certProp = $cmReflection->getProperty('myCertificate');
+    $certProp->setAccessible(true);
+    $certificate = $certProp->getValue($certManager);
+    
+    echo "   myName: " . $myName . "\n";
     echo "   Configured: " . ($certManager->isConfigured() ? "✅ YES" : "❌ NO") . "\n";
-    echo "   Private key length: " . ($certManager->myPrivateKey ? strlen($certManager->myPrivateKey) : '0') . "\n";
-    echo "   Certificate length: " . ($certManager->myCertificate ? strlen($certManager->myCertificate) : '0') . "\n\n";
+    echo "   Private key length: " . ($privateKey ? strlen($privateKey) : '0') . "\n";
+    echo "   Certificate length: " . ($certificate ? strlen($certificate) : '0') . "\n\n";
 } else {
     echo "   ❌ No CertificateManager!\n\n";
 }
@@ -74,7 +89,6 @@ if (isset($signed['signature']) && isset($signed['certificate'])) {
     if ($result !== 1) {
         echo "\n❌ THE SIGNATURE FROM GENERICBANKCLIENT IS INVALID!\n";
         echo "This means the private key used by GenericBankClient does NOT match the certificate.\n";
-        echo "Check what private key GenericBankClient is loading.\n";
     }
 } else {
     echo "   ❌ Failed to create signature\n";
