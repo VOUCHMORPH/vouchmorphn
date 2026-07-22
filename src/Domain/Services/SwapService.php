@@ -1578,7 +1578,7 @@ private function getDecryptedRefreshToken(array $source): ?string
                 }
                 
                 $holdPayload = $payload;
-                $holdPayload['amount'] = $destAmount + $feeAmount;
+                $holdPayload['amount'] = $destAmount;
                 $holdPayload['hold_reason'] = 'MULTI_DESTINATION_DEST_' . $idx;
                 $holdPayload['reference'] = $subRef;
                 $holdPayload['to_institution'] = $destInstitution;
