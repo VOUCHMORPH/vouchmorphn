@@ -48,7 +48,7 @@ if ($certManager) {
 // 2. Check VOUCHMORPH_PARTNER_NAME environment variable
 echo "2. VOUCHMORPH_PARTNER_NAME: " . (getenv('VOUCHMORPH_PARTNER_NAME') ?: 'NOT SET') . "\n\n";
 
-// 3. Sign a payload with GenericBankClient and check the signature
+// 3. Sign a payload with GenericBankClient using reflection
 echo "3. Sign with GenericBankClient:\n";
 $payload = [
     'action' => 'GENERATE_TOKEN',
@@ -64,7 +64,10 @@ $payload = [
     'to_institution' => 'SACCUSSALIS'
 ];
 
-$signed = $gbc->createSignedPayload($payload, 'VOUCHMORPH');
+// Use reflection to call protected method
+$method = $reflection->getMethod('createSignedPayload');
+$method->setAccessible(true);
+$signed = $method->invoke($gbc, $payload, 'VOUCHMORPH');
 
 if (isset($signed['signature']) && isset($signed['certificate'])) {
     echo "   ✅ Signature created\n";
@@ -89,6 +92,9 @@ if (isset($signed['signature']) && isset($signed['certificate'])) {
     if ($result !== 1) {
         echo "\n❌ THE SIGNATURE FROM GENERICBANKCLIENT IS INVALID!\n";
         echo "This means the private key used by GenericBankClient does NOT match the certificate.\n";
+    } else {
+        echo "\n✅ SIGNATURE FROM GENERICBANKCLIENT IS VALID!\n";
+        echo "The problem is somewhere else in the flow.\n";
     }
 } else {
     echo "   ❌ Failed to create signature\n";
