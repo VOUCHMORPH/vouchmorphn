@@ -1773,7 +1773,7 @@ private function getDecryptedRefreshToken(array $source): ?string
                 $feeAmount = $feeBreakdown['total_fee'] ?? 0;
                 
                 $holdPayload = $payload;
-                $holdPayload['amount'] = $amount + $feeAmount;
+                $holdPayload['amount'] = $amount;
                 $holdPayload['hold_reason'] = 'MULTI_DESTINATION_IDENTITY_' . $idx;
                 $holdPayload['reference'] = $subRef;
                 $holdPayload['from_institution'] = $sourceInstitution;
