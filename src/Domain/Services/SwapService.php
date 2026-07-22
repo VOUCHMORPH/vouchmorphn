@@ -6382,64 +6382,63 @@ public function isApprovedAgent(int $userId): bool
     }
 
     /**
-     * Generate cashout token
-     * STANDARD: Consistent with adapter and bank client
-     */
-    private function generateCashoutToken(array $payload, string $institution, float $amount): array
-    {
-        $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
-        $sourceInstitution = $this->extractSourceInstitution($payload);
+ * Generate cashout token
+ * STANDARD: Consistent with adapter and bank client
+ */
+private function generateCashoutToken(array $payload, string $institution, float $amount): array
+{
+    $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
+    $sourceInstitution = $this->extractSourceInstitution($payload);
+    $sourceId = $this->extractSourceIdentifier($payload);
 
-        $tokenPayload = [
-            'reference' => $this->currentSwapRef,
-            'amount' => $amount,
-            'currency' => $payload['currency'] ?? 'BWP',
-            'hold_reference' => $this->currentHoldReference,
-            'action' => 'GENERATE_TOKEN',
-            'source_verification' => $this->signedPayloads['verification'] ?? null,
-            'source_hold' => $this->signedPayloads['hold'] ?? null,
-            'beneficiary_phone' => $beneficiaryPhone,
-            'from_institution' => $sourceInstitution,
-            'source_institution' => $sourceInstitution,
-            'to_institution' => $institution,
-            'destination_institution' => $institution
-        ];
+    $tokenPayload = [
+        'reference' => $this->currentSwapRef,
+        'amount' => $amount,
+        'currency' => $payload['currency'] ?? 'BWP',
+        'hold_reference' => $this->currentHoldReference,
+        'action' => 'GENERATE_TOKEN',
+        'source_verification' => $this->signedPayloads['verification'] ?? null,
+        'source_hold' => $this->signedPayloads['hold'] ?? null,
+        'beneficiary_phone' => $beneficiaryPhone,
+        'from_institution' => $sourceInstitution,
+        'source_institution' => $sourceInstitution,
+        'to_institution' => $institution,
+        'destination_institution' => $institution,
+        'source_identifier' => $sourceId['identifier'] ?? null,
+        'source_identifier_type' => $sourceId['type'] ?? null,
+    ];
 
-        if (isset($payload['note_breakdown'])) {
-            $tokenPayload['note_breakdown'] = $payload['note_breakdown'];
-        }
-
-        $adapter = $this->adapterFactory->getAdapter($institution);
-        $result = $adapter->generateCashoutToken($tokenPayload, [
-            'swap_reference' => $this->currentSwapRef,
-            'source_institution' => $sourceInstitution,
-            'destination_institution' => $institution,
-            'hold_reference' => $this->currentHoldReference,
-            'beneficiary_phone' => $beneficiaryPhone,
-            'signed_payloads' => $this->signedPayloads
-        ]);
-
-        $success = $result['success'] ?? false;
-
-        // ============================================================
-        // STANDARDIZED RESPONSE STRUCTURE
-        // ============================================================
-        return [
-            'success' => $success,
-            'cashout_code' => $result['cashout_code'] ?? null,
-            'atm_pin' => $result['atm_pin'] ?? null,
-            'voucher_number' => $result['voucher_number'] ?? null,
-            'swap_code' => $result['swap_code'] ?? null,
-            'expires_at' => $result['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
-            'transaction_reference' => $result['transaction_reference'] ?? null,
-            'message' => $result['message'] ?? ($success ? 'Token generated' : 'Token generation failed'),
-            'status_code' => $result['status_code'] ?? 0,
-            'curl_error' => $result['curl_error'] ?? null,
-            'raw_response' => $result['raw_response'] ?? null,
-            'data' => $result['data'] ?? []
-        ];
+    if (isset($payload['note_breakdown'])) {
+        $tokenPayload['note_breakdown'] = $payload['note_breakdown'];
     }
 
+    $adapter = $this->adapterFactory->getAdapter($institution);
+    $result = $adapter->generateCashoutToken($tokenPayload, [
+        'swap_reference' => $this->currentSwapRef,
+        'source_institution' => $sourceInstitution,
+        'destination_institution' => $institution,
+        'hold_reference' => $this->currentHoldReference,
+        'beneficiary_phone' => $beneficiaryPhone,
+        'signed_payloads' => $this->signedPayloads
+    ]);
+
+    $success = $result['success'] ?? false;
+
+    return [
+        'success' => $success,
+        'cashout_code' => $result['cashout_code'] ?? null,
+        'atm_pin' => $result['atm_pin'] ?? null,
+        'voucher_number' => $result['voucher_number'] ?? null,
+        'swap_code' => $result['swap_code'] ?? null,
+        'expires_at' => $result['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
+        'transaction_reference' => $result['transaction_reference'] ?? null,
+        'message' => $result['message'] ?? ($success ? 'Token generated' : 'Token generation failed'),
+        'status_code' => $result['status_code'] ?? 0,
+        'curl_error' => $result['curl_error'] ?? null,
+        'raw_response' => $result['raw_response'] ?? null,
+        'data' => $result['data'] ?? []
+    ];
+}
     /**
      * Verify destination account
      * STANDARD: Returns consistent verification structure
