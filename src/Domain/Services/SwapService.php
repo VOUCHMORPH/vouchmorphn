@@ -7025,7 +7025,7 @@ private function findVerifiedIdentityOwner(string $identityType, string $identit
  * Once a match is found, it CLEARS the PIN hash (single-use) and marks the 
  * IDENTITY as authorized (the "green light") allowing ALL holds to be finalized.
  */
-private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin): void
+private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin, string $confirmedByType = 'agent'): void
 {
     $claimType = $identitySwap['claim_type'] ?? null;
     $holdId = (int)$identitySwap['hold_id'];
@@ -7043,74 +7043,12 @@ private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin
             "please escalate to VouchMorph ops rather than finalizing manually."
         );
     }
- 
-    if ($claimType === 'otp_pin') {
-        // Check ALL pending holds for this identity to find a matching PIN
-        $stmt = $this->swapDB->prepare("
-            SELECT hold_id, otp_pin_hash, otp_pin_locked_until, otp_pin_attempts
-            FROM identity_swap_holds 
-            WHERE identity_type = :type 
-              AND identity_value = :value 
-              AND status = 'pending'
-              AND otp_pin_hash IS NOT NULL
-              AND hold_expires_at > NOW()
-            ORDER BY created_at ASC
-        ");
-        $stmt->execute([
-            ':type' => $identityType,
-            ':value' => $identityValue
-        ]);
-        $allHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        if (empty($allHolds)) {
-            throw new RuntimeException("No pending holds found with a PIN for this identity.");
-        }
-        
-        // Find the first hold that matches the supplied PIN
-        $matchedHold = null;
-        $firstHold = $allHolds[0];
-        
-        foreach ($allHolds as $hold) {
-            $this->assertNotLocked($hold['otp_pin_locked_until'] ?? null, 'claim PIN');
-            
-            if (!empty($hold['otp_pin_hash']) && password_verify($suppliedPin, $hold['otp_pin_hash'])) {
-                $matchedHold = $hold;
-                break;
-            }
-        }
-        
-        if (!$matchedHold) {
-            $targetHold = $firstHold;
-            foreach ($allHolds as $hold) {
-                if ((int)($hold['otp_pin_attempts'] ?? 0) > (int)($targetHold['otp_pin_attempts'] ?? 0)) {
-                    $targetHold = $hold;
-                }
-            }
-            $this->recordFailedIdentityOtpAttempt(
-                (int)$targetHold['hold_id'], 
-                (int)($targetHold['otp_pin_attempts'] ?? 0)
-            );
-            throw new RuntimeException("Incorrect claim PIN.");
-        }
- 
-        // Clear the PIN hash on the matched hold - SINGLE USE
-        $stmt = $this->swapDB->prepare("
-            UPDATE identity_swap_holds
-            SET 
-                otp_pin_verified_at = NOW(),
-                otp_pin_attempts = 0,
-                otp_pin_hash = NULL
-            WHERE hold_id = :id
-        ");
-        $stmt->execute([':id' => $matchedHold['hold_id']]);
-        
-        // Mark ALL holds for this identity as authorized (the green light)
-        $this->markIdentityHoldsAuthorized($identityType, $identityValue, 'pin_verification');
- 
-        return;
-    }
- 
-    if ($claimType === 'account_pin') {
+
+    // ============================================================
+    // FIX: For a registered/verified identity, branch on WHO is
+    // finalizing rather than always trusting the account PIN path.
+    // ============================================================
+    if ($claimType === 'account_pin' && $confirmedByType === 'user') {
         $owner = $this->findVerifiedIdentityOwner($identityType, $identityValue);
         if (!$owner) {
             throw new RuntimeException("This identity's verification status changed - claim cannot proceed. Contact support.");
@@ -7138,6 +7076,73 @@ private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin
         $stmt->execute([':id' => $owner['user_id']]);
         
         $this->markIdentityHoldsAuthorized($identityType, $identityValue, 'account_pin_verification');
+        return;
+    }
+
+    // Every other path (unregistered identity, OR a registered
+    // identity being finalized by an agent) requires the OTP.
+    if ($claimType === 'account_pin' || $claimType === 'otp_pin') {
+        $stmt = $this->swapDB->prepare("
+            SELECT hold_id, otp_pin_hash, otp_pin_locked_until, otp_pin_attempts
+            FROM identity_swap_holds 
+            WHERE identity_type = :type 
+              AND identity_value = :value 
+              AND status = 'pending'
+              AND otp_pin_hash IS NOT NULL
+              AND hold_expires_at > NOW()
+            ORDER BY created_at ASC
+        ");
+        $stmt->execute([
+            ':type' => $identityType,
+            ':value' => $identityValue
+        ]);
+        $allHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        if (empty($allHolds)) {
+            if ($claimType === 'account_pin') {
+                throw new RuntimeException("No OTP is available for this claim right now. Ask the account owner to check their registered phone/email, or have them finalize it themselves by logging in.");
+            }
+            throw new RuntimeException("No pending holds found with a PIN for this identity.");
+        }
+        
+        $matchedHold = null;
+        $firstHold = $allHolds[0];
+        
+        foreach ($allHolds as $hold) {
+            $this->assertNotLocked($hold['otp_pin_locked_until'] ?? null, 'claim PIN');
+            
+            if (!empty($hold['otp_pin_hash']) && password_verify($suppliedPin, $hold['otp_pin_hash'])) {
+                $matchedHold = $hold;
+                break;
+            }
+        }
+        
+        if (!$matchedHold) {
+            $targetHold = $firstHold;
+            foreach ($allHolds as $hold) {
+                if ((int)($hold['otp_pin_attempts'] ?? 0) > (int)($targetHold['otp_pin_attempts'] ?? 0)) {
+                    $targetHold = $hold;
+                }
+            }
+            $this->recordFailedIdentityOtpAttempt(
+                (int)$targetHold['hold_id'], 
+                (int)($targetHold['otp_pin_attempts'] ?? 0)
+            );
+            throw new RuntimeException("Incorrect claim PIN.");
+        }
+ 
+        $stmt = $this->swapDB->prepare("
+            UPDATE identity_swap_holds
+            SET 
+                otp_pin_verified_at = NOW(),
+                otp_pin_attempts = 0,
+                otp_pin_hash = NULL
+            WHERE hold_id = :id
+        ");
+        $stmt->execute([':id' => $matchedHold['hold_id']]);
+        
+        $this->markIdentityHoldsAuthorized($identityType, $identityValue, 'pin_verification');
+ 
         return;
     }
  
