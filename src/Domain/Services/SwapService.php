@@ -6702,7 +6702,7 @@ private function generateCashoutToken(array $payload, string $institution, float
     // IDENTITY SWAP HELPER METHODS
     // ============================================================================
 
-    private function storeIdentityHold(array $payload, string $swapRef, array $holdResult, int $holdId): array
+   private function storeIdentityHold(array $payload, string $swapRef, array $holdResult, int $holdId): array
 {
     $sourceInstitution = $this->extractSourceInstitution($payload);
     $identityType = strtolower($payload['identity_type']);
@@ -6715,17 +6715,54 @@ private function generateCashoutToken(array $payload, string $institution, float
  
     $claimType = null;
     $otpHash = null;
-    $otpPlaintext = null; // NEW - only ever held in memory for this one request/response
+    $otpPlaintext = null;
+    $otpDestination = null;
+    $otpDestinationType = null; // 'phone' or 'email'
     $requiresDual = false;
  
     if ($owner) {
+        // ============================================================
+        // FIX: Registered/verified identities now ALSO get an OTP,
+        // sent to the OWNER'S OWN registered contact (not whatever
+        // notification_phone the sender supplied - that could be
+        // stale or belong to someone else). This lets:
+        //   - the owner finalize with just their account PIN (no OTP
+        //     needed) when self-service and logged in, OR
+        //   - an agent finalize on the owner's behalf, but ONLY with
+        //     the OTP the owner shows them (never the account PIN,
+        //     which the agent should never see/know).
+        // ============================================================
         $claimType = 'account_pin';
-        error_log("[SwapService] Identity {$identityType}={$identityValue} is a VERIFIED registered owner (user_id={$owner['user_id']}) - claim will require their account PIN");
-   } elseif ($notificationPhone) {
+        error_log("[SwapService] Identity {$identityType}={$identityValue} is a VERIFIED registered owner (user_id={$owner['user_id']}) - generating OTP for agent-assisted claims, account PIN available for self-service");
+
+        [$otpDestination, $otpDestinationType] = $this->getOwnerContactForOtp($owner['user_id']);
+
+        if ($otpDestination) {
+            $otp = $this->generateOtpPin();
+            $otpPlaintext = $otp;
+            $otpHash = password_hash($otp, PASSWORD_DEFAULT);
+
+            if ($otpDestinationType === 'phone' && $this->smsService) {
+                try {
+                    $this->smsService->sendCashoutCode($otpDestination, $otp, (float)$payload['amount'], $swapRef);
+                    $this->trackIdentityOtpSmsAttempt($swapRef, $otpDestination, 'queued');
+                } catch (Exception $e) {
+                    error_log("[SwapService] Failed to SMS claim PIN to registered owner: " . $e->getMessage());
+                    $this->trackIdentityOtpSmsAttempt($swapRef, $otpDestination, 'failed', $e->getMessage());
+                }
+            } elseif ($otpDestinationType === 'email') {
+                error_log("[SwapService] Registered owner's contact is email ({$otpDestination}) - email OTP delivery not wired in this method yet, PIN available via account login fallback only");
+            }
+        } else {
+            error_log("[SwapService] WARNING: Registered owner user_id={$owner['user_id']} has no usable phone/email on file for OTP delivery - agent-assisted claims will not be possible until this is fixed");
+        }
+
+    } elseif ($notificationPhone) {
         $claimType = 'otp_pin';
         $otp = $this->generateOtpPin();
-        $otpPlaintext = $otp; // NEW - kept only long enough to return to the sender once
+        $otpPlaintext = $otp;
         $otpHash = password_hash($otp, PASSWORD_DEFAULT);
+        $otpDestination = $notificationPhone;
         error_log("[SwapService] Identity {$identityType}={$identityValue} is UNREGISTERED - generated one-time claim PIN, sending to {$notificationPhone}");
         if ($this->smsService) {
             try {
@@ -6784,7 +6821,7 @@ private function generateCashoutToken(array $payload, string $institution, float
             ]),
             ':created_by' => $payload['user_id'] ?? null,
             ':otp_pin_hash' => $otpHash,
-            ':otp_pin_sent_to' => $otpHash ? $notificationPhone : null,
+            ':otp_pin_sent_to' => $otpHash ? $otpDestination : null,
             ':otp_pin_sent_at' => $otpHash ? date('Y-m-d H:i:s') : null,
             ':requires_dual' => $requiresDual ? 't' : 'f',
             ':claim_type' => $claimType
@@ -6792,9 +6829,6 @@ private function generateCashoutToken(array $payload, string $institution, float
  
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        // CHANGED: return array instead of bare int, so the caller can
-        // also get the plaintext OTP (never persisted anywhere in
-        // plaintext - this is the one moment it exists outside the SMS).
         return [
             'hold_id' => $row ? (int)$row['hold_id'] : 0,
             'claim_pin' => $otpPlaintext,
@@ -6804,6 +6838,39 @@ private function generateCashoutToken(array $payload, string $institution, float
     } catch (PDOException $e) {
         error_log("[SwapService] Failed to store identity hold: " . $e->getMessage());
         throw new RuntimeException("Failed to store identity hold: " . $e->getMessage());
+    }
+}
+
+/**
+ * Looks up a verified owner's own phone/email for OTP delivery,
+ * for the case where money is sent to a REGISTERED identity and we
+ * need to notify the actual account holder (not the sender's
+ * arbitrary notification_phone, which may be wrong or belong to
+ * someone else entirely).
+ *
+ * @return array{0: ?string, 1: ?string} [destination, type] where
+ *         type is 'phone' or 'email', or [null, null] if neither exists.
+ */
+private function getOwnerContactForOtp(int $userId): array
+{
+    try {
+        $stmt = $this->swapDB->prepare("SELECT phone, email FROM users WHERE user_id = :id");
+        $stmt->execute([':id' => $userId]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$user) {
+            return [null, null];
+        }
+        if (!empty($user['phone'])) {
+            return [$user['phone'], 'phone'];
+        }
+        if (!empty($user['email'])) {
+            return [$user['email'], 'email'];
+        }
+        return [null, null];
+    } catch (PDOException $e) {
+        error_log("[SwapService] getOwnerContactForOtp failed for user_id={$userId}: " . $e->getMessage());
+        return [null, null];
     }
 }
 
