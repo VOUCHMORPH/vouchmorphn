@@ -288,6 +288,8 @@ try {
                 email,
                 phone,
                 password_hash,
+                transaction_pin_hash,
+                transaction_pin_set_at,
                 verified,
                 created_at,
                 national_id,
@@ -296,12 +298,15 @@ try {
                 date_of_birth,
                 full_name,
                 phone2,
-                phone3
+                phone3,
+                registration_channel
             ) VALUES (
                 :username,
                 :email,
                 :phone,
                 :password_hash,
+                :transaction_pin_hash,
+                NOW(),
                 true,
                 NOW(),
                 :national_id,
@@ -310,7 +315,8 @@ try {
                 :date_of_birth,
                 :full_name,
                 :phone2,
-                :phone3
+                :phone3,
+                'self'
             )
         ");
         
@@ -319,6 +325,7 @@ try {
             ':email' => $email,
             ':phone' => $tempData['phone_number'] ?? null,
             ':password_hash' => $tempData['pin_hash'],
+            ':transaction_pin_hash' => $tempData['pin_hash'],
             ':national_id' => ($tempData['identifier_type'] === 'national_id') ? $tempData['identifier_value'] : null,
             ':drivers_license' => ($tempData['identifier_type'] === 'drivers_license') ? $tempData['identifier_value'] : null,
             ':passport' => ($tempData['identifier_type'] === 'passport') ? $tempData['identifier_value'] : null,
@@ -327,7 +334,6 @@ try {
             ':phone2' => $tempData['phone2'] ?? null,
             ':phone3' => $tempData['phone3'] ?? null
         ]);
-
         $userId = $db->lastInsertId();
         error_log("VERIFY OTP: User created with ID: {$userId}");
 
