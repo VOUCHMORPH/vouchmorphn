@@ -2028,37 +2028,56 @@ async function openSwapHistory() {
     if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap history: ${escapeHtml(result.error)}</div>`; return; }
     renderSwapHistory(result.body);
 }
+
 function renderSwapHistory(data) {
     const swaps = data.data || data.swaps || [];
     if (swaps.length === 0) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps found</div></div>`; return; }
     let historyHtml = `<div style="max-height:60vh;overflow-y:auto;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
     swaps.forEach((swap) => {
         const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
-        const hasCode = !!(swap.swap_code || swap.voucher_number || swap.pin_code || swap.atm_code);
+        // FIX: use the real API field names (voucher_number / atm_pin),
+        // not the nonexistent swap_code/pin_code/atm_code aliases that
+        // were being checked before.
+        const code = swap.voucher_number || null;
+        const pin = swap.atm_pin || null;
+        const hasCode = !!(code || pin);
+        const codeInlineHtml = hasCode ? `
+            <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
+                ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(code)}</div></div>` : ''}
+                ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(pin)}</div></div>` : ''}
+                ${swap.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(swap.voucher_expiry).toLocaleString()}</div></div>` : ''}
+            </div>` : '';
         historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
             <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-                <div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span>${hasCode ? '<span style="font-size:10px;color:var(--primary-dark);margin-left:6px;">· code available</span>' : ''}</div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
+                <div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
                 <div style="text-align:right;"><div style="font-weight:700;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || CONFIG.CURRENCY}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div>
-            </div></div>`;
+            </div>${codeInlineHtml}</div>`;
     });
     historyHtml += `</div>`;
     document.getElementById('modalBody').innerHTML = historyHtml;
 }
+
 async function viewSwapDetail(reference) {
     openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: reference });
     if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap details: ${escapeHtml(result.error)}</div>`; return; }
     renderSwapDetail(result.body);
 }
+
 function renderSwapDetail(data) {
     const swap = data.swap || data.data || {};
-    const code = swap.swap_code || swap.voucher_number || null;
-    const pin = swap.pin_code || swap.atm_code || null;
+    // FIX: the API (history.php / details.php) returns 'voucher_number',
+    // 'atm_pin', and 'voucher_expiry' — not 'swap_code', 'pin_code',
+    // 'atm_code', or 'code_expiry'. Those keys never existed in the
+    // response, so the PIN and expiry silently never rendered even
+    // though the underlying data was present all along.
+    const code = swap.voucher_number || null;
+    const pin = swap.atm_pin || null;
     const codeBox = (code || pin) ? `
         <div class="atm-code" style="margin-bottom:12px;">
             ${code ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Cashout / Voucher Code</div><div class="code">${escapeHtml(code)}</div>` : ''}
             ${pin ? `<div style="font-size:11px;color:var(--text-muted);margin:${code ? '10px' : '0'} 0 4px;">PIN</div><div class="code">${escapeHtml(pin)}</div>` : ''}
-            ${swap.code_expiry ? `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Expires ${new Date(swap.code_expiry).toLocaleString()}</div>` : ''}
+            ${swap.voucher_expiry ? `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Expires ${new Date(swap.voucher_expiry).toLocaleString()}</div>` : ''}
         </div>` : '';
     document.getElementById('modalBody').innerHTML = `
         <div style="max-height:70vh;overflow-y:auto;">
