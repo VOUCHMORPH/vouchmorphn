@@ -108,6 +108,11 @@ class CertificateManager
         ksort($payloadWithTimestamp);
         
         $jsonToSign = json_encode($payloadWithTimestamp, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        // DEBUG: Log exactly what bytes are being signed, so this can be
+        // diffed directly against the receiving side's "VERIFYING JSON" log.
+        error_log("CertificateManager: SIGNING JSON: " . $jsonToSign);
+
         $signature = '';
         $keyResource = openssl_pkey_get_private($this->myPrivateKey);
         openssl_sign($jsonToSign, $signature, $keyResource, OPENSSL_ALGO_SHA256);
