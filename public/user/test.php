@@ -1,5 +1,5 @@
 <?php
-require_once '../../../src/Infrastructure/Crypto/CertificateManager.php';
+require_once '../../src/Infrastructure/Crypto/CertificateManager.php';
 use Infrastructure\Crypto\CertificateManager;
 
 echo "========================================\n";
