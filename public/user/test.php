@@ -1,6 +1,6 @@
 <?php
-require_once '/var/www/html/src/Infrastructure/Crypto/CertificateManager.php';
-require_once '/var/www/html/src/Infrastructure/Banks/GenericBankClient.php';
+require_once '../../src/Infrastructure/Crypto/CertificateManager.php';
+require_once '../../src/Infrastructure/Banks/GenericBankClient.php';
 
 use Infrastructure\Crypto\CertificateManager;
 use Infrastructure\Banks\GenericBankClient;
