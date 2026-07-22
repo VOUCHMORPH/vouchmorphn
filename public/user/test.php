@@ -1,86 +1,83 @@
 <?php
 require_once '../../../src/Infrastructure/Crypto/CertificateManager.php';
+use Infrastructure\Crypto\CertificateManager;
 
 echo "========================================\n";
-echo "AGGRESSIVE DIAGNOSTIC TEST - VOUCHMORPH\n";
+echo "VOUCHMORPH SIGNING TEST\n";
 echo "========================================\n\n";
 
-// 1. Check environment variables
-echo "1. ENVIRONMENT VARIABLES:\n";
-$vars = [
-    'VOUCHMORPH_PRIVATE_KEY_CONTENT',
-    'VOUCHMORPH_CERT_CONTENT',
-    'VOUCHMORPH_CA_CERT_CONTENT',
-    'VOUCHMORPH_PARTNER_NAME'
-];
-foreach ($vars as $var) {
-    $val = getenv($var);
-    if ($val) {
-        echo "   ✅ $var: SET (length: " . strlen($val) . ")\n";
-    } else {
-        echo "   ❌ $var: NOT SET\n";
-    }
+// Get the private key and certificate
+$privateKeyContent = getenv('VOUCHMORPH_PRIVATE_KEY_CONTENT');
+$certContent = getenv('VOUCHMORPH_CERT_CONTENT');
+
+if (!$privateKeyContent || !$certContent) {
+    echo "❌ Missing private key or certificate\n";
+    exit;
 }
-echo "\n";
 
-// 2. Check CertificateManager initialization
-echo "2. CERTIFICATEMANAGER INITIALIZATION:\n";
+$privateKeyContent = str_replace(['\\n', '\n'], "\n", $privateKeyContent);
+$certContent = str_replace(['\\n', '\n'], "\n", $certContent);
 
-// Test with VOUCHMORPH parameter
-$cm = new CertificateManager('VOUCHMORPH');
-echo "   With 'VOUCHMORPH': myName = " . $cm->myName . "\n";
-echo "   Configured: " . ($cm->isConfigured() ? "✅ YES" : "❌ NO") . "\n\n";
-
-// 3. Check if private key matches certificate
-echo "3. PRIVATE KEY / CERTIFICATE MATCH:\n";
-$cert = getenv('VOUCHMORPH_CERT_CONTENT');
-$key = getenv('VOUCHMORPH_PRIVATE_KEY_CONTENT');
-if ($cert && $key) {
-    $cert = str_replace(['\\n', '\n'], "\n", $cert);
-    $key = str_replace(['\\n', '\n'], "\n", $key);
-    
-    $tempCert = tempnam(sys_get_temp_dir(), 'cert_');
-    $tempKey = tempnam(sys_get_temp_dir(), 'key_');
-    file_put_contents($tempCert, $cert);
-    file_put_contents($tempKey, $key);
-    
-    exec("openssl x509 -noout -modulus -in $tempCert 2>&1", $certMod, $certCode);
-    exec("openssl rsa -noout -modulus -in $tempKey 2>&1", $keyMod, $keyCode);
-    
-    echo "   Certificate modulus: " . (isset($certMod[0]) ? substr($certMod[0], 0, 50) . '...' : 'NOT FOUND') . "\n";
-    echo "   Private key modulus: " . (isset($keyMod[0]) ? substr($keyMod[0], 0, 50) . '...' : 'NOT FOUND') . "\n";
-    
-    if ($certCode === 0 && $keyCode === 0) {
-        $match = ($certMod[0] ?? '') === ($keyMod[0] ?? '');
-        echo "   MODULUS MATCH: " . ($match ? "✅ YES" : "❌ NO") . "\n";
-        if (!$match) {
-            echo "   ❌ THE CERTIFICATE AND PRIVATE KEY DO NOT MATCH!\n";
-            echo "   This is why SACCUSSALIS rejects the signature.\n";
-        }
-    } else {
-        echo "   ❌ Could not read certificate or private key\n";
-    }
-    
-    unlink($tempCert);
-    unlink($tempKey);
-}
-echo "\n";
-
-// 4. Test signing and verification locally
-echo "4. LOCAL SIGNING AND VERIFICATION TEST:\n";
+// Create test payload
 $testPayload = [
-    'action' => 'TEST',
-    'amount' => 100,
+    'action' => 'GENERATE_TOKEN',
+    'amount' => 400,
+    'beneficiary_phone' => '+26770000000',
     'currency' => 'BWP',
-    'reference' => 'TEST_' . time()
+    'destination_institution' => 'SACCUSSALIS',
+    'from_institution' => 'ZURUBANK',
+    'hold_reference' => 'TEST_' . time(),
+    'reference' => 'TEST_' . time(),
+    'requester' => 'VOUCHMORPH',
+    'source_institution' => 'ZURUBANK',
+    'to_institution' => 'SACCUSSALIS'
 ];
-$requester = 'VOUCHMORPH';
+$testPayload['timestamp'] = time();
+ksort($testPayload);
+$jsonToSign = json_encode($testPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-$signed = $cm->createSignedRequest($testPayload, $requester);
-echo "   Signed payload created\n";
-echo "   Signature length: " . strlen($signed['signature']) . "\n";
-echo "   Certificate length: " . strlen($signed['certificate']) . "\n";
+echo "1. JSON to sign:\n" . $jsonToSign . "\n\n";
 
-$verified = $cm->verifySignedRequest($signed);
-echo "   Local verification result: " . ($verified['verified'] ? "✅ VALID" : "❌ INVALID") . "\n";
-echo "   Message: " . $verified['message'] . "\n";
+// Sign with private key
+$privateKey = openssl_pkey_get_private($privateKeyContent);
+if (!$privateKey) {
+    echo "❌ Failed to load private key\n";
+    exit;
+}
+
+$signature = '';
+openssl_sign($jsonToSign, $signature, $privateKey, OPENSSL_ALGO_SHA256);
+$signatureB64 = base64_encode($signature);
+
+echo "2. Generated signature:\n" . $signatureB64 . "\n\n";
+
+// Verify with the certificate
+$publicKey = openssl_pkey_get_public($certContent);
+$result = openssl_verify($jsonToSign, $signature, $publicKey, OPENSSL_ALGO_SHA256);
+
+echo "3. Manual verification with openssl:\n";
+echo "   openssl_verify result: " . $result . " (1=valid, 0=invalid)\n";
+echo "   Result: " . ($result === 1 ? "✅ VALID" : "❌ INVALID") . "\n\n";
+
+// Now check what GenericBankClient is actually doing
+echo "4. Checking GenericBankClient:\n";
+$config = ['provider_code' => 'ZURUBANK'];
+$gbc = new \Infrastructure\Banks\GenericBankClient($config);
+echo "   CertificateManager exists: " . ($gbc->certManager ? "✅ YES" : "❌ NO") . "\n";
+if ($gbc->certManager) {
+    echo "   myName: " . $gbc->certManager->myName . "\n";
+    echo "   Configured: " . ($gbc->certManager->isConfigured() ? "✅ YES" : "❌ NO") . "\n";
+}
+
+echo "\n5. Testing GenericBankClient signing:\n";
+$payload = [
+    'action' => 'TEST_GBC',
+    'amount' => 100,
+    'reference' => 'GBC_TEST_' . time()
+];
+$signed = $gbc->createSignedPayload($payload, 'VOUCHMORPH');
+echo "   Signature created: " . (isset($signed['signature']) ? "✅ YES" : "❌ NO") . "\n";
+echo "   Certificate included: " . (isset($signed['certificate']) ? "✅ YES" : "❌ NO") . "\n";
+if (isset($signed['signature'])) {
+    echo "   Signature length: " . strlen($signed['signature']) . "\n";
+}
