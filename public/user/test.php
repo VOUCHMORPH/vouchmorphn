@@ -1,6 +1,8 @@
 <?php
+require_once '/var/www/html/src/Infrastructure/Crypto/CertificateManager.php';
+
 echo "========================================\n";
-echo "AGGRESSIVE DIAGNOSTIC TEST\n";
+echo "AGGRESSIVE DIAGNOSTIC TEST - VOUCHMORPH\n";
 echo "========================================\n\n";
 
 // 1. Check environment variables
@@ -23,49 +25,14 @@ echo "\n";
 
 // 2. Check CertificateManager initialization
 echo "2. CERTIFICATEMANAGER INITIALIZATION:\n";
-require_once '/var/www/html/src/Infrastructure/Crypto/CertificateManager.php';
-
-// Test with no parameter (default)
-$cm1 = new CertificateManager();
-echo "   No parameter: myName = " . $cm1->myName . "\n";
-echo "   Configured: " . ($cm1->isConfigured() ? "✅ YES" : "❌ NO") . "\n\n";
 
 // Test with VOUCHMORPH parameter
-$cm2 = new CertificateManager('VOUCHMORPH');
-echo "   With 'VOUCHMORPH': myName = " . $cm2->myName . "\n";
-echo "   Configured: " . ($cm2->isConfigured() ? "✅ YES" : "❌ NO") . "\n\n";
+$cm = new CertificateManager('VOUCHMORPH');
+echo "   With 'VOUCHMORPH': myName = " . $cm->myName . "\n";
+echo "   Configured: " . ($cm->isConfigured() ? "✅ YES" : "❌ NO") . "\n\n";
 
-// 3. Check what GenericBankClient is actually using
-echo "3. GENERIC BANK CLIENT INITIALIZATION:\n";
-$config = ['provider_code' => 'ZURUBANK'];
-$gbc = new Infrastructure\Banks\GenericBankClient($config);
-echo "   CertificateManager configured: " . ($gbc->certManager && $gbc->certManager->isConfigured() ? "✅ YES" : "❌ NO") . "\n";
-if ($gbc->certManager) {
-    echo "   CertificateManager myName: " . $gbc->certManager->myName . "\n";
-}
-echo "\n";
-
-// 4. Test signing and verification locally
-echo "4. LOCAL SIGNING AND VERIFICATION TEST:\n";
-$testPayload = [
-    'action' => 'TEST',
-    'amount' => 100,
-    'currency' => 'BWP',
-    'reference' => 'TEST_' . time()
-];
-$requester = 'VOUCHMORPH';
-
-$signed = $cm2->createSignedRequest($testPayload, $requester);
-echo "   Signed payload created\n";
-echo "   Signature length: " . strlen($signed['signature']) . "\n";
-echo "   Certificate length: " . strlen($signed['certificate']) . "\n";
-
-$verified = $cm2->verifySignedRequest($signed);
-echo "   Local verification result: " . ($verified['verified'] ? "✅ VALID" : "❌ INVALID") . "\n";
-echo "   Message: " . $verified['message'] . "\n\n";
-
-// 5. Check if private key matches certificate
-echo "5. PRIVATE KEY / CERTIFICATE MATCH:\n";
+// 3. Check if private key matches certificate
+echo "3. PRIVATE KEY / CERTIFICATE MATCH:\n";
 $cert = getenv('VOUCHMORPH_CERT_CONTENT');
 $key = getenv('VOUCHMORPH_PRIVATE_KEY_CONTENT');
 if ($cert && $key) {
@@ -80,12 +47,16 @@ if ($cert && $key) {
     exec("openssl x509 -noout -modulus -in $tempCert 2>&1", $certMod, $certCode);
     exec("openssl rsa -noout -modulus -in $tempKey 2>&1", $keyMod, $keyCode);
     
-    echo "   Certificate modulus: " . (isset($certMod[0]) ? substr($certMod[0], 0, 30) . '...' : 'NOT FOUND') . "\n";
-    echo "   Private key modulus: " . (isset($keyMod[0]) ? substr($keyMod[0], 0, 30) . '...' : 'NOT FOUND') . "\n";
+    echo "   Certificate modulus: " . (isset($certMod[0]) ? substr($certMod[0], 0, 50) . '...' : 'NOT FOUND') . "\n";
+    echo "   Private key modulus: " . (isset($keyMod[0]) ? substr($keyMod[0], 0, 50) . '...' : 'NOT FOUND') . "\n";
     
     if ($certCode === 0 && $keyCode === 0) {
         $match = ($certMod[0] ?? '') === ($keyMod[0] ?? '');
-        echo "   MATCH: " . ($match ? "✅ YES" : "❌ NO") . "\n";
+        echo "   MODULUS MATCH: " . ($match ? "✅ YES" : "❌ NO") . "\n";
+        if (!$match) {
+            echo "   ❌ THE CERTIFICATE AND PRIVATE KEY DO NOT MATCH!\n";
+            echo "   This is why SACCUSSALIS rejects the signature.\n";
+        }
     } else {
         echo "   ❌ Could not read certificate or private key\n";
     }
@@ -93,3 +64,23 @@ if ($cert && $key) {
     unlink($tempCert);
     unlink($tempKey);
 }
+echo "\n";
+
+// 4. Test signing and verification locally
+echo "4. LOCAL SIGNING AND VERIFICATION TEST:\n";
+$testPayload = [
+    'action' => 'TEST',
+    'amount' => 100,
+    'currency' => 'BWP',
+    'reference' => 'TEST_' . time()
+];
+$requester = 'VOUCHMORPH';
+
+$signed = $cm->createSignedRequest($testPayload, $requester);
+echo "   Signed payload created\n";
+echo "   Signature length: " . strlen($signed['signature']) . "\n";
+echo "   Certificate length: " . strlen($signed['certificate']) . "\n";
+
+$verified = $cm->verifySignedRequest($signed);
+echo "   Local verification result: " . ($verified['verified'] ? "✅ VALID" : "❌ INVALID") . "\n";
+echo "   Message: " . $verified['message'] . "\n";
