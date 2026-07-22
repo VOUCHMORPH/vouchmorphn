@@ -3126,9 +3126,8 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
         }
     }
 
-    // PIN check applies REGARDLESS of confirmed_by_type.
-    $this->verifyIdentityClaimPin($identitySwap, $suppliedPin);
-
+// PIN check applies REGARDLESS of confirmed_by_type.
+    $this->verifyIdentityClaimPin($identitySwap, $suppliedPin, $confirmedByType);
     return $this->finalizeIdentityHoldNoPin($identitySwap, $payload);
 }
 
@@ -3185,7 +3184,7 @@ private function finalizeIdentityHoldNoPin(array $identitySwap, array $payload):
             // Only verify PIN if not already authorized
             // This is for single hold finalization (not aggregated)
             $suppliedPin = (string)($payload['pin'] ?? '');
-            $this->verifyIdentityClaimPin($identitySwap, $suppliedPin);
+            $this->verifyIdentityClaimPin($identitySwap, $suppliedPin, $confirmedByType);
         } else {
             error_log("[DEBUG][agg_claim] finalizeIdentityHoldNoPin: Skipping PIN verification for hold {$holdId} (identity already authorized)");
         }
