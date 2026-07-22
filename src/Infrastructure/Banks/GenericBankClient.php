@@ -1173,7 +1173,21 @@ $this->certManager = new CertificateManager('VOUCHMORPH');
     public function generateToken(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: generateToken (CASHOUT TOKEN) ===");
-        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+
+        // FIX: Avoid double-signing. If this payload was already signed
+        // upstream (e.g. by generateTokenWithProof(), which calls
+        // createSignedPayload() before handing off to this method),
+        // re-signing here would treat the existing signature/certificate
+        // as ordinary data fields, sign over them, and then overwrite
+        // them with a brand-new signature — producing a request whose
+        // signature can never be reconstructed/verified by the receiver.
+        if (!empty($payload['signature']) && !empty($payload['certificate'])) {
+            error_log("[GenericBankClient] generateToken: payload already signed upstream, skipping re-sign");
+            $signedPayload = $payload;
+        } else {
+            $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+        }
+
         $result = $this->send('generate_token', $signedPayload);
         
         $data = $result['data'] ?? [];
