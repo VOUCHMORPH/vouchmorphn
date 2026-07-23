@@ -5,7 +5,7 @@
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 use Application\Utils\SessionManager;
 
-SessionManager::start(); 
+SessionManager::start();
 
 if (!SessionManager::isLoggedIn()) {
     header('Location: login.php');
@@ -177,12 +177,10 @@ foreach ($assets as $assetKey => $assetConfig) {
 :root {
     --bg: #FAF3E0; --surface: rgba(0,0,0,0.04); --surface-hover: rgba(0,0,0,0.08);
     --border: rgba(0,0,0,0.16); --border-active: rgba(0,150,160,0.5);
-    /* Dark, near-black text throughout. Colored accents (primary/success/warning/danger) are untouched. */
     --text: #0d0d0d; --text-muted: #1f1f1f; --text-dim: #3a3a3a;
     --primary: #00a0ad; --primary-dark: #007d88;
     --gradient: linear-gradient(135deg, #00a0ad 0%, #8a2be2 100%);
     --success: #1a9e5c; --warning: #b8860b; --danger: #d32f2f;
-    /* Sharp edges everywhere. */
     --radius: 0px; --radius-sm: 0px;
     --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     --transition: all 0.2s ease;
@@ -209,7 +207,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .agent-badge { font-size: 10px; color: #fff; background: var(--primary-dark); padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
 .test-mode-badge { font-size: 10px; color: #791f1f; border: 1px solid #d32f2f; padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
 
-/* Toolbox trigger — one door into everything that used to crowd the topbar */
 .toolbox-btn { position: relative; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: #fff; background: var(--text); border: none; padding: 9px 18px; border-radius: var(--radius); cursor: pointer; }
 .toolbox-btn:hover { background: #000; }
 .toolbox-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; border-radius: var(--radius); display: inline-flex; align-items: center; justify-content: center; }
@@ -276,7 +273,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .raw-json { text-align: left; font-size: 11px; background: var(--surface); border-radius: var(--radius); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-dim); margin-top: 12px; max-height: 200px; overflow-y: auto; }
 @media (max-width: 480px) { body { padding: 12px; } .btn, .btn-secondary { padding: 12px 24px; width: 100%; } .cta-row { flex-direction: column; } .topbar { flex-direction: column; align-items: stretch; } }
 
-/* Source category tabs (Wallet/Account, Card, Voucher) */
 .type-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
 .type-tab { flex: 1; padding: 11px 10px; font-size: 12px; font-weight: 700; text-align: center; background: #fff; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-family: var(--font); }
 .type-tab:hover { border-color: var(--primary); color: var(--primary-dark); }
@@ -285,7 +281,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .empty-source-box { text-align: center; padding: 18px 12px; border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface); }
 .empty-source-box p { font-size: 12px; color: var(--text-dim); margin-bottom: 10px; }
 
-/* Source management styles */
 .source-card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 10px; }
 .source-card .source-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .source-card .source-institution { font-weight: 700; font-size: 15px; }
@@ -298,7 +293,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .otp-input-group input { flex: 1; }
 .otp-input-group button { flex-shrink: 0; }
 
-/* Quick source chips (Wallet/Account only) */
 .source-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; padding: 6px 12px; border-radius: var(--radius); cursor: pointer; border: 1px solid var(--border); background: #fff; }
 .source-chip:hover { background: var(--text); color: #fff; border-color: var(--text); }
 .source-chip .chip-identifier { font-weight: 400; color: var(--text-dim); font-size: 10px; }
@@ -306,7 +300,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .source-chip.active { background: var(--text); color: #fff; border-color: var(--text); }
 .source-chip.active .chip-identifier { color: rgba(255,255,255,0.75); }
 
-/* Toolbox modal rows */
 .toolbox-list { display: flex; flex-direction: column; gap: 2px; }
 .toolbox-row { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; margin-bottom: 6px; background: #fff; }
 .toolbox-row:hover { background: var(--surface); border-color: var(--text); }
@@ -492,7 +485,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <button type="button" class="type-tab" data-cat="VOUCHER" onclick="selectSourceCategory('VOUCHER')">Voucher</button>
         </div>
 
-        <!-- WALLET / ACCOUNT: saved sources, or a prompt to add one -->
         <div id="walletPanel" class="source-panel">
             <div id="savedSourcesContainer" style="margin-bottom:12px;display:none;">
                 <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;">
@@ -507,7 +499,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             </div>
         </div>
 
-        <!-- CARD / VOUCHER: institution + dynamic fields entered fresh each time -->
         <div id="instAssetPanel" class="source-panel" style="display:none;">
             <div class="field-group">
                 <label>Institution</label>
@@ -678,10 +669,6 @@ function switchCountry(country) {
     if (country !== CONFIG.COUNTRY_CODE) window.location.href = '?country=' + encodeURIComponent(country);
 }
 
-// ============================================================
-// SOURCE CATEGORY (Wallet/Account, Card, Voucher)
-// ============================================================
-
 function selectSourceCategory(cat) {
     state.fromCategory = cat;
     state.fromInst = null; state.fromAsset = null; state.fromFields = {};
@@ -771,11 +758,6 @@ async function callApi(endpoint, payload) {
     if (!response.ok || body.success === false) return { ok: false, error: body.error || ('HTTP ' + response.status), body };
     return { ok: true, body };
 }
-
-// ============================================================
-// FROM SIDE: institution + fields (used by Card/Voucher, and by
-// the Wallet/Account "saved source" auto-fill)
-// ============================================================
 
 function selectFromInst(code) {
     state.fromInst = code || null;
@@ -1066,7 +1048,7 @@ async function loadUserSources() {
     }
     
     // Load pending sources for the badge count
-    const pendingResult = await callApi(CONFIG.API_BASE + '/../api/v1/sources/pending.php', {});
+    const pendingResult = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
     if (pendingResult.ok) {
         pendingSources = pendingResult.body.data || [];
         updateToolboxBadge();
@@ -1315,13 +1297,6 @@ function onAddSourceInstChange(code) {
     const group = document.getElementById('addSourceAssetGroup');
     const sel = document.getElementById('addSourceAssetType');
     if (!code) { group.style.display = 'none'; sel.innerHTML = ''; return; }
-    // Hardcoded rather than filtered from PARTICIPANTS[code].asset_types --
-    // that config list is per-institution and has been found incomplete
-    // (e.g. an institution supporting WALLET but missing it from its
-    // asset_types entry). Account/Wallet/Card are always offered as
-    // addable source types; the bank adapter itself will reject the
-    // combination server-side if a given institution genuinely doesn't
-    // support one of them.
     const eligibleTypes = ['ACCOUNT', 'WALLET', 'CARD'];
     sel.innerHTML = eligibleTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
     group.style.display = 'block';
@@ -1409,17 +1384,14 @@ async function removeSource(sourceId) {
 // PENDING SOURCES MANAGEMENT - View, Delete, Retry
 // ============================================================
 
-/**
- * Open the pending sources modal
- */
+let pendingSources = [];
+let selectedPendingSource = null;
+
 function openPendingSources() {
     openModal('Pending Sources', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading pending sources...</div>');
     loadPendingSources();
 }
 
-/**
- * Load pending sources from the API
- */
 async function loadPendingSources() {
     const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
     
@@ -1438,9 +1410,6 @@ async function loadPendingSources() {
     renderPendingSources();
 }
 
-/**
- * Render the pending sources list
- */
 function renderPendingSources() {
     const container = document.getElementById('modalBody');
     
@@ -1494,7 +1463,6 @@ function renderPendingSources() {
                         ${isExpiring ? `<span style="font-size:10px;color:var(--warning);font-weight:700;">Expiring soon</span>` : ''}
                         ${canDelete ? `<button class="btn-danger-outline" onclick="deletePendingSource('${source.type}', ${source.id})" style="font-size:10px;padding:4px 10px;">Delete</button>` : ''}
                         ${canRetry ? `<button class="btn-primary btn-sm" onclick="retryPendingSource('${source.type}', ${source.id})" style="font-size:10px;padding:4px 10px;">Retry</button>` : ''}
-                        ${source.status === 'otp_pending' ? `<button class="btn-primary btn-sm" onclick="resendOtpForSource(${source.id})" style="font-size:10px;padding:4px 10px;">Resend OTP</button>` : ''}
                     </div>
                 </div>
                 <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">
@@ -1511,9 +1479,6 @@ function renderPendingSources() {
     container.innerHTML = html;
 }
 
-/**
- * Get status label for display
- */
 function getSourceStatusLabel(source) {
     const statusMap = {
         'pending_confirmation': 'Pending Confirmation',
@@ -1529,9 +1494,6 @@ function getSourceStatusLabel(source) {
     return statusMap[source.status] || source.status;
 }
 
-/**
- * Get status class for styling
- */
 function getSourceStatusClass(source) {
     const classMap = {
         'pending_confirmation': 'pending',
@@ -1547,9 +1509,6 @@ function getSourceStatusClass(source) {
     return classMap[source.status] || 'pending';
 }
 
-/**
- * Get human-readable source type
- */
 function getSourceTypeLabel(source) {
     const typeMap = {
         'user_source': 'Source',
@@ -1560,9 +1519,6 @@ function getSourceTypeLabel(source) {
     return typeMap[source.type] || source.type;
 }
 
-/**
- * Get icon for source type
- */
 function getSourceIcon(source) {
     const iconMap = {
         'user_source': '🏦',
@@ -1573,9 +1529,6 @@ function getSourceIcon(source) {
     return iconMap[source.type] || '📌';
 }
 
-/**
- * Delete a pending source
- */
 async function deletePendingSource(type, sourceId) {
     if (!confirm('Delete this pending source? It can be re-added later.')) return;
     
@@ -1599,9 +1552,6 @@ async function deletePendingSource(type, sourceId) {
     loadPendingSources();
 }
 
-/**
- * Retry a failed source
- */
 async function retryPendingSource(type, sourceId) {
     if (!confirm('Retry this source? This will start a new verification attempt.')) return;
     
@@ -1629,7 +1579,6 @@ async function retryPendingSource(type, sourceId) {
     }
     if (data.requires_otp) {
         showMessage(data.message || 'OTP sent. Enter the code to verify.', 'success');
-        // Refresh the list to show the OTP state
         loadPendingSources();
         return;
     }
@@ -1638,40 +1587,14 @@ async function retryPendingSource(type, sourceId) {
     loadPendingSources();
 }
 
-/**
- * Resend OTP for a source
- */
-async function resendOtpForSource(attemptId) {
-    const btn = document.querySelector(`[onclick*="resendOtpForSource(${attemptId})"]`);
-    const originalText = btn ? btn.textContent : 'Resend OTP';
-    if (btn) { btn.textContent = 'Sending...'; btn.disabled = true; }
-
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/resend_otp.php', {
-        attempt_id: attemptId
-    });
-
-    if (btn) { btn.textContent = originalText; btn.disabled = false; }
-
-    if (!result.ok) {
-        showMessage('Failed to resend OTP: ' + result.error, 'error');
-        return;
-    }
-
-    showMessage(result.body.data?.message || 'OTP resent successfully.', 'success');
-}
-
 // ============================================================
-// TOOLBOX — single entry point for everything that used to
-// crowd the topbar: sources, history, claims, agent tools,
-// profile, help, terms.
+// TOOLBOX
 // ============================================================
 
 function openToolbox() { openModal('Toolbox', renderToolbox()); }
 
 function renderToolbox() {
-    // Count pending sources from the stored data
     const pendingCount = pendingSources.length;
-    
     const claimCount = pendingClaims.length;
     const rows = [
         { label: 'Finalize identity swap', badge: claimCount > 0 ? claimCount : null, action: 'openFinalizeIdentityModal()' },
@@ -1692,9 +1615,6 @@ function renderToolbox() {
         </div>`).join('')}</div>`;
 }
 
-/**
- * Update the toolbox badge with pending count
- */
 function updateToolboxBadge() {
     const badge = document.getElementById('toolboxBadge');
     const totalPending = pendingSources.length + pendingClaims.length;
