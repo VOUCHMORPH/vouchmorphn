@@ -1,6 +1,6 @@
 <?php
 // ============================================================
-// FIX 1: Use SessionManager instead of bare session_start()
+// SessionManager-based auth
 // ============================================================
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 use Application\Utils\SessionManager;
@@ -15,9 +15,12 @@ if (!SessionManager::isLoggedIn()) {
 $userData = SessionManager::getUser();
 $userName = $userData['full_name'] ?? $userData['username'] ?? 'User';
 $userCountry = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
-$userCurrency = $userData['currency'] ?? getenv('VOUCHMORPH_CURRENCY') ?: 'BWP';
 $userRole = $userData['role'] ?? 'user';
 $userId = $userData['id'] ?? $userData['user_id'] ?? 0;
+// NOTE: VouchMorph is not a wallet or bank — it's a switch that orchestrates
+// between partner institutions. There is no such thing as "the user's currency"
+// or a platform default; every currency in this dashboard is read live off
+// whichever institution/asset is actually selected (PARTICIPANTS[code].limits.currency).
 
 if (empty($userId)) {
     error_log("[DASHBOARD] WARNING: Session user data has no 'id' field.");
@@ -188,7 +191,6 @@ foreach ($assets as $assetKey => $assetConfig) {
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; line-height: 1.5; padding: 24px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .container { width: 100%; max-width: 960px; margin: 6vh auto 0; position: relative; z-index: 1; }
-.doodle-bg { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 0; pointer-events: none; overflow: hidden; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
 .logo { font-size: 22px; font-weight: 800; color: var(--text); letter-spacing: 0.3px; }
 .logo sup { font-size: 11px; font-weight: 700; margin-left: 2px; }
@@ -208,127 +210,25 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .test-mode-badge { font-size: 10px; color: #791f1f; border: 1px solid #d32f2f; padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
 
 /* ============================================================
-   WALLET DROPDOWN (replaces old wallet button)
+   WALLET DROPDOWN (header)
    ============================================================ */
-.wallet-account-wrap {
-    position: relative;
-    display: inline-block;
-}
-.wallet-account-wrap .btn {
-    padding: 9px 18px;
-    border: none;
-    border-radius: var(--radius);
-    font-size: 13px;
-    font-weight: 700;
-    font-family: var(--font);
-    cursor: pointer;
-}
-.wallet-account-wrap .btn-primary {
-    background: var(--text);
-    color: #fff;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-.wallet-account-wrap .btn-primary:hover {
-    background: #000;
-}
-#walletDropdown {
-    display: none;
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
-    background: #fff;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
-    min-width: 230px;
-    z-index: 50;
-    overflow: hidden;
-}
-.wallet-dropdown-item {
-    padding: 12px 16px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    border-bottom: 1px solid var(--border);
-}
-.wallet-dropdown-item:hover {
-    background: var(--surface);
-}
-.wallet-dropdown-item:last-child {
-    border-bottom: none;
-}
-.wallet-dropdown-item .icon {
-    font-size: 18px;
-}
-.wallet-dropdown-item .label {
-    font-weight: 700;
-    font-size: 14px;
-}
-.wallet-dropdown-item .sub {
-    font-size: 11px;
-    color: var(--text-muted);
-}
-#sourceCountBadge {
-    display: none;
-    background: #fff;
-    color: var(--primary-dark);
-    border-radius: 10px;
-    font-size: 11px;
-    font-weight: 800;
-    padding: 1px 7px;
-    margin-left: 4px;
-}
+.wallet-account-wrap { position: relative; display: inline-block; }
+.wallet-account-wrap .btn { padding: 9px 18px; border: none; border-radius: var(--radius); font-size: 13px; font-weight: 700; font-family: var(--font); cursor: pointer; }
+.wallet-account-wrap .btn-primary { background: var(--text); color: #fff; display: flex; align-items: center; gap: 6px; }
+.wallet-account-wrap .btn-primary:hover { background: #000; }
+#walletDropdown { display: none; position: absolute; top: calc(100% + 6px); right: 0; background: #fff; border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0,0,0,0.12); min-width: 230px; z-index: 50; overflow: hidden; }
+.wallet-dropdown-item { padding: 12px 16px; cursor: pointer; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); }
+.wallet-dropdown-item:hover { background: var(--surface); }
+.wallet-dropdown-item:last-child { border-bottom: none; }
+.wallet-dropdown-item .icon { font-size: 18px; }
+.wallet-dropdown-item .label { font-weight: 700; font-size: 14px; }
+.wallet-dropdown-item .sub { font-size: 11px; color: var(--text-muted); }
+#sourceCountBadge { display: none; background: #fff; color: var(--primary-dark); border-radius: 10px; font-size: 11px; font-weight: 800; padding: 1px 7px; margin-left: 4px; }
 
 /* Toolbox trigger */
 .toolbox-btn { position: relative; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: #fff; background: var(--text); border: none; padding: 9px 18px; border-radius: var(--radius); cursor: pointer; }
 .toolbox-btn:hover { background: #000; }
 .toolbox-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; border-radius: var(--radius); display: inline-flex; align-items: center; justify-content: center; }
-
-/* LEGO SOURCE STYLES */
-.lego-source {
-    width: 130px;
-    padding: 14px 10px;
-    border: 2px solid var(--border);
-    border-radius: 12px;
-    cursor: pointer;
-    text-align: center;
-    background: #fff;
-    transition: all .15s;
-    position: relative;
-}
-.lego-source:hover {
-    border-color: var(--primary);
-    transform: translateY(-2px);
-}
-.lego-source .status-dot {
-    position: absolute;
-    top: 8px;
-    left: 8px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-}
-.lego-source .icon { font-size: 26px; margin-bottom: 6px; }
-.lego-source .name { font-weight: 700; font-size: 12px; }
-.lego-source .detail { font-size: 11px; color: var(--text-muted); }
-.lego-source .currency { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
-.lego-check {
-    display: none;
-    position: absolute;
-    top: 6px;
-    right: 6px;
-    background: var(--success);
-    color: #fff;
-    border-radius: 50%;
-    width: 20px;
-    height: 20px;
-    font-size: 12px;
-    line-height: 20px;
-    text-align: center;
-}
 
 .message { padding: 12px 16px; border-radius: var(--radius); margin: 0 0 16px; font-size: 13px; display: none; font-weight: 600; }
 .message.show { display: block; }
@@ -393,11 +293,16 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .raw-json { text-align: left; font-size: 11px; background: var(--surface); border-radius: var(--radius); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-dim); margin-top: 12px; max-height: 200px; overflow-y: auto; }
 @media (max-width: 480px) { body { padding: 12px; } .btn, .btn-secondary { padding: 12px 24px; width: 100%; } .cta-row { flex-direction: column; } .topbar { flex-direction: column; align-items: stretch; } }
 
-/* Source category tabs */
-.type-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
-.type-tab { flex: 1; padding: 11px 10px; font-size: 12px; font-weight: 700; text-align: center; background: #fff; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-family: var(--font); }
-.type-tab:hover { border-color: var(--primary); color: var(--primary-dark); }
-.type-tab.active { background: var(--text); color: #fff; border-color: var(--text); }
+/* ============================================================
+   FROM SIDE — 3 clean source buttons
+   ============================================================ */
+.source-type-buttons { display: flex; gap: 8px; margin-bottom: 12px; }
+.source-type-btn { flex: 1; padding: 12px 10px; font-size: 12px; font-weight: 700; text-align: center; background: #fff; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-family: var(--font); display: flex; align-items: center; justify-content: center; gap: 6px; position: relative; }
+.source-type-btn:hover { border-color: var(--primary); color: var(--primary-dark); }
+.source-type-btn.active { background: var(--text); color: #fff; border-color: var(--text); }
+.source-type-btn .count { background: var(--primary); color: #fff; border-radius: 10px; font-size: 10px; font-weight: 800; padding: 1px 6px; }
+.source-type-btn.active .count { background: #fff; color: var(--text); }
+.source-panel-wrap { margin-bottom: 4px; }
 .source-panel { margin-bottom: 4px; }
 .empty-source-box { text-align: center; padding: 18px 12px; border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface); }
 .empty-source-box p { font-size: 12px; color: var(--text-dim); margin-bottom: 10px; }
@@ -432,168 +337,10 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .toolbox-row-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; border-radius: var(--radius); display: inline-flex; align-items: center; justify-content: center; }
 
 /* Identity swap hint */
-#identitySwapHint {
-    display: none;
-    background: rgba(0,160,173,0.08);
-    border-left: 3px solid var(--primary);
-    padding: 10px 14px;
-    border-radius: 6px;
-    font-size: 13px;
-    margin-top: 8px;
-}
-
-/* Multi-source chips */
-#multiSourceChips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-bottom: 10px;
-}
+#identitySwapHint { display: none; background: rgba(0,160,173,0.08); border-left: 3px solid var(--primary); padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-top: 8px; }
 </style>
 </head>
 <body>
-<div class="doodle-bg" aria-hidden="true">
-<svg width="100%" height="100%" viewBox="0 0 1440 1000" preserveAspectRatio="xMidYMid slice" focusable="false">
-<defs>
-<symbol id="d-wallet" viewBox="0 0 40 40"><rect x="4" y="10" width="32" height="22" rx="4"/><path d="M4 17h32" stroke-linecap="round"/><circle cx="27" cy="24" r="2"/></symbol>
-<symbol id="d-coin" viewBox="0 0 40 40"><circle cx="20" cy="20" r="14"/><path d="M20 13v14M16 16.5h6a3 3 0 0 1 0 6h-4a3 3 0 0 0 0 6h6" stroke-linecap="round"/></symbol>
-<symbol id="d-card" viewBox="0 0 40 40"><rect x="3" y="9" width="34" height="22" rx="4"/><path d="M3 16.5h34" stroke-linecap="round"/><path d="M9 25h9" stroke-linecap="round"/></symbol>
-<symbol id="d-swap" viewBox="0 0 40 40"><path d="M6 14h22" stroke-linecap="round"/><path d="M22 8l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/><path d="M34 26H12" stroke-linecap="round"/><path d="M18 32l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-<symbol id="d-phone" viewBox="0 0 40 40"><rect x="11" y="4" width="18" height="32" rx="4"/><path d="M18 32h4" stroke-linecap="round"/></symbol>
-<symbol id="d-bank" viewBox="0 0 40 40"><path d="M20 4l16 9H4z" stroke-linejoin="round"/><path d="M7 15v16M15 15v16M25 15v16M33 15v16" stroke-linecap="round"/><path d="M4 35h32" stroke-linecap="round"/></symbol>
-<symbol id="d-envelope" viewBox="0 0 40 40"><rect x="3" y="8" width="34" height="24" rx="3"/><path d="M3 10.5l17 12.5L37 10.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-<symbol id="d-check" viewBox="0 0 40 40"><circle cx="20" cy="20" r="15"/><path d="M13 20.5l5 5 10-11" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-<symbol id="p-chevron" viewBox="0 0 40 40"><path d="M4 12l9 8-9 8M17 12l9 8-9 8M30 12l6 8-6 8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-<symbol id="p-diamond" viewBox="0 0 40 40"><path d="M20 4l16 16-16 16L4 20z" stroke-linejoin="round"/><path d="M20 14l6 6-6 6-6-6z" stroke-linejoin="round"/></symbol>
-<symbol id="p-triangles" viewBox="0 0 40 40"><path d="M8 30l7-14 7 14z" stroke-linejoin="round"/><path d="M22 30l7-14 7 14z" stroke-linejoin="round"/></symbol>
-<symbol id="p-sun" viewBox="0 0 40 40"><circle cx="20" cy="20" r="7"/><path d="M20 3v6M20 31v6M3 20h6M31 20h6M8 8l4.2 4.2M27.8 27.8L32 32M32 8l-4.2 4.2M12.2 27.8L8 32" stroke-linecap="round"/></symbol>
-<symbol id="p-spiral" viewBox="0 0 40 40"><path d="M20 20c0-3.3 2.7-6 6-6s6 2.7 6 6-2.7 6-6 6-8-3.6-8-8 4-10 10-10 12 5.4 12 12" stroke-linecap="round"/></symbol>
-<symbol id="p-dots" viewBox="0 0 40 40"><circle cx="20" cy="10" r="2.4"/><circle cx="11" cy="27" r="2.4"/><circle cx="29" cy="27" r="2.4"/></symbol>
-</defs>
-<g fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-<use href="#p-chevron" transform="translate(47.3 29.1) rotate(45) scale(0.57) translate(-20 -20)" opacity="0.046" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(159.5 25.2) rotate(-30) scale(0.89) translate(-20 -20)" opacity="0.023" stroke="#8B5A3C"/>
-<use href="#p-chevron" transform="translate(332.2 57.8) rotate(60) scale(0.91) translate(-20 -20)" opacity="0.022" stroke="#8B5A3C"/>
-<use href="#p-spiral" transform="translate(424.1 28.0) rotate(-30) scale(0.9) translate(-20 -20)" opacity="0.045" stroke="#8B5A3C"/>
-<use href="#p-chevron" transform="translate(511.4 54.3) rotate(45) scale(1.0) translate(-20 -20)" opacity="0.045" stroke="#8B5A3C"/>
-<use href="#d-check" transform="translate(659.7 51.9) rotate(60) scale(1.15) translate(-20 -20)" opacity="0.036" stroke="#8B5A3C"/>
-<use href="#p-triangles" transform="translate(756.9 66.8) rotate(45) scale(0.85) translate(-20 -20)" opacity="0.035" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(907.8 24.4) rotate(10) scale(0.61) translate(-20 -20)" opacity="0.042" stroke="#B8860B"/>
-<use href="#p-triangles" transform="translate(1032.1 65.9) rotate(10) scale(0.99) translate(-20 -20)" opacity="0.046" stroke="#8B5A3C"/>
-<use href="#d-check" transform="translate(1136.8 70.4) rotate(90) scale(0.55) translate(-20 -20)" opacity="0.052" stroke="#8B5A3C"/>
-<use href="#p-dots" transform="translate(1265.6 60.9) rotate(20) scale(1.12) translate(-20 -20)" opacity="0.035" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(1369.6 56.7) rotate(0) scale(0.59) translate(-20 -20)" opacity="0.031" stroke="#8B5A3C"/>
-<use href="#d-phone" transform="translate(86.7 124.8) rotate(-20) scale(1.07) translate(-20 -20)" opacity="0.058" stroke="#8B5A3C"/>
-<use href="#d-swap" transform="translate(173.9 141.5) rotate(-20) scale(0.56) translate(-20 -20)" opacity="0.027" stroke="#8B5A3C"/>
-<use href="#p-triangles" transform="translate(264.9 169.9) rotate(-45) scale(0.6) translate(-20 -20)" opacity="0.044" stroke="#8B5A3C"/>
-<use href="#d-wallet" transform="translate(406.9 127.5) rotate(30) scale(1.13) translate(-20 -20)" opacity="0.054" stroke="#8B5A3C"/>
-<use href="#d-coin" transform="translate(561.4 143.5) rotate(30) scale(0.94) translate(-20 -20)" opacity="0.023" stroke="#B8860B"/>
-<use href="#d-wallet" transform="translate(639.0 129.7) rotate(-30) scale(0.5) translate(-20 -20)" opacity="0.027" stroke="#B8860B"/>
-<use href="#d-envelope" transform="translate(770.2 121.5) rotate(-20) scale(0.94) translate(-20 -20)" opacity="0.062" stroke="#8B5A3C"/>
-<use href="#d-check" transform="translate(898.1 126.9) rotate(30) scale(0.84) translate(-20 -20)" opacity="0.024" stroke="#B8860B"/>
-<use href="#d-card" transform="translate(1008.7 135.9) rotate(45) scale(0.52) translate(-20 -20)" opacity="0.062" stroke="#8B5A3C"/>
-<use href="#p-spiral" transform="translate(1114.6 152.6) rotate(0) scale(1.18) translate(-20 -20)" opacity="0.058" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(1242.8 142.0) rotate(45) scale(0.88) translate(-20 -20)" opacity="0.042" stroke="#8B5A3C"/>
-<use href="#d-swap" transform="translate(1388.2 167.3) rotate(-10) scale(1.07) translate(-20 -20)" opacity="0.053" stroke="#8B5A3C"/>
-<use href="#p-chevron" transform="translate(61.3 241.3) rotate(0) scale(0.83) translate(-20 -20)" opacity="0.029" stroke="#8B5A3C"/>
-<use href="#d-bank" transform="translate(168.8 268.5) rotate(10) scale(0.56) translate(-20 -20)" opacity="0.024" stroke="#8B5A3C"/>
-<use href="#d-wallet" transform="translate(288.3 249.0) rotate(30) scale(1.14) translate(-20 -20)" opacity="0.035" stroke="#8B5A3C"/>
-<use href="#p-dots" transform="translate(444.1 227.2) rotate(-10) scale(0.83) translate(-20 -20)" opacity="0.028" stroke="#8B5A3C"/>
-<use href="#d-envelope" transform="translate(527.9 268.0) rotate(30) scale(0.78) translate(-20 -20)" opacity="0.062" stroke="#8B5A3C"/>
-<use href="#p-sun" transform="translate(636.2 227.6) rotate(90) scale(0.6) translate(-20 -20)" opacity="0.056" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(791.3 241.0) rotate(-45) scale(0.51) translate(-20 -20)" opacity="0.063" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(901.9 276.0) rotate(-10) scale(0.52) translate(-20 -20)" opacity="0.029" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(1039.0 239.6) rotate(-45) scale(1.14) translate(-20 -20)" opacity="0.036" stroke="#8B5A3C"/>
-<use href="#p-spiral" transform="translate(1146.0 274.3) rotate(-20) scale(0.87) translate(-20 -20)" opacity="0.043" stroke="#B8860B"/>
-<use href="#p-diamond" transform="translate(1255.7 231.0) rotate(-20) scale(0.6) translate(-20 -20)" opacity="0.047" stroke="#B8860B"/>
-<use href="#p-sun" transform="translate(1348.4 260.9) rotate(-30) scale(1.12) translate(-20 -20)" opacity="0.023" stroke="#8B5A3C"/>
-<use href="#d-wallet" transform="translate(27.0 325.9) rotate(-30) scale(0.81) translate(-20 -20)" opacity="0.047" stroke="#8B5A3C"/>
-<use href="#d-check" transform="translate(180.9 361.6) rotate(45) scale(1.16) translate(-20 -20)" opacity="0.051" stroke="#8B5A3C"/>
-<use href="#d-swap" transform="translate(331.8 335.6) rotate(30) scale(0.6) translate(-20 -20)" opacity="0.025" stroke="#8B5A3C"/>
-<use href="#p-dots" transform="translate(389.2 334.4) rotate(0) scale(1.05) translate(-20 -20)" opacity="0.059" stroke="#B8860B"/>
-<use href="#p-diamond" transform="translate(555.6 359.6) rotate(30) scale(0.65) translate(-20 -20)" opacity="0.062" stroke="#8B5A3C"/>
-<use href="#d-card" transform="translate(659.1 379.4) rotate(20) scale(1.2) translate(-20 -20)" opacity="0.038" stroke="#8B5A3C"/>
-<use href="#d-bank" transform="translate(769.7 325.5) rotate(45) scale(0.82) translate(-20 -20)" opacity="0.051" stroke="#8B5A3C"/>
-<use href="#d-coin" transform="translate(901.3 337.7) rotate(-10) scale(1.18) translate(-20 -20)" opacity="0.025" stroke="#8B5A3C"/>
-<use href="#d-card" transform="translate(986.9 366.7) rotate(20) scale(1.09) translate(-20 -20)" opacity="0.05" stroke="#8B5A3C"/>
-<use href="#d-check" transform="translate(1133.2 352.2) rotate(10) scale(0.56) translate(-20 -20)" opacity="0.023" stroke="#8B5A3C"/>
-<use href="#d-coin" transform="translate(1254.6 324.3) rotate(0) scale(0.56) translate(-20 -20)" opacity="0.058" stroke="#B8860B"/>
-<use href="#d-envelope" transform="translate(1406.1 347.2) rotate(0) scale(0.94) translate(-20 -20)" opacity="0.022" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(91.5 478.2) rotate(-10) scale(1.15) translate(-20 -20)" opacity="0.048" stroke="#8B5A3C"/>
-<use href="#p-triangles" transform="translate(158.8 446.7) rotate(10) scale(1.06) translate(-20 -20)" opacity="0.064" stroke="#B8860B"/>
-<use href="#d-check" transform="translate(265.3 450.3) rotate(-10) scale(1.15) translate(-20 -20)" opacity="0.025" stroke="#8B5A3C"/>
-<use href="#d-envelope" transform="translate(415.1 449.7) rotate(45) scale(0.72) translate(-20 -20)" opacity="0.029" stroke="#8B5A3C"/>
-<use href="#d-card" transform="translate(518.3 472.9) rotate(20) scale(1.19) translate(-20 -20)" opacity="0.063" stroke="#8B5A3C"/>
-<use href="#d-envelope" transform="translate(625.0 457.5) rotate(-20) scale(0.54) translate(-20 -20)" opacity="0.049" stroke="#8B5A3C"/>
-<use href="#p-dots" transform="translate(780.4 478.3) rotate(0) scale(0.53) translate(-20 -20)" opacity="0.028" stroke="#8B5A3C"/>
-<use href="#p-spiral" transform="translate(864.3 441.8) rotate(10) scale(0.67) translate(-20 -20)" opacity="0.062" stroke="#8B5A3C"/>
-<use href="#p-sun" transform="translate(1009.7 420.1) rotate(0) scale(0.85) translate(-20 -20)" opacity="0.029" stroke="#8B5A3C"/>
-<use href="#p-sun" transform="translate(1104.4 435.9) rotate(60) scale(0.53) translate(-20 -20)" opacity="0.021" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(1240.8 455.1) rotate(90) scale(1.12) translate(-20 -20)" opacity="0.054" stroke="#8B5A3C"/>
-<use href="#p-triangles" transform="translate(1399.0 463.2) rotate(60) scale(0.95) translate(-20 -20)" opacity="0.022" stroke="#8B5A3C"/>
-<use href="#d-card" transform="translate(88.2 557.6) rotate(45) scale(1.03) translate(-20 -20)" opacity="0.045" stroke="#8B5A3C"/>
-<use href="#d-swap" transform="translate(145.2 561.2) rotate(-30) scale(0.52) translate(-20 -20)" opacity="0.026" stroke="#8B5A3C"/>
-<use href="#d-wallet" transform="translate(271.6 570.1) rotate(90) scale(0.87) translate(-20 -20)" opacity="0.031" stroke="#8B5A3C"/>
-<use href="#d-coin" transform="translate(416.9 524.2) rotate(90) scale(0.87) translate(-20 -20)" opacity="0.053" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(562.3 570.8) rotate(-10) scale(1.02) translate(-20 -20)" opacity="0.063" stroke="#8B5A3C"/>
-<use href="#d-wallet" transform="translate(651.5 548.7) rotate(60) scale(0.94) translate(-20 -20)" opacity="0.029" stroke="#8B5A3C"/>
-<use href="#d-card" transform="translate(767.9 559.1) rotate(-45) scale(0.84) translate(-20 -20)" opacity="0.041" stroke="#8B5A3C"/>
-<use href="#d-phone" transform="translate(871.2 533.1) rotate(30) scale(0.83) translate(-20 -20)" opacity="0.054" stroke="#8B5A3C"/>
-<use href="#p-sun" transform="translate(1023.5 538.7) rotate(-45) scale(0.7) translate(-20 -20)" opacity="0.023" stroke="#8B5A3C"/>
-<use href="#d-swap" transform="translate(1175.6 579.6) rotate(-30) scale(0.91) translate(-20 -20)" opacity="0.026" stroke="#8B5A3C"/>
-<use href="#d-phone" transform="translate(1292.6 528.0) rotate(-30) scale(0.99) translate(-20 -20)" opacity="0.03" stroke="#8B5A3C"/>
-<use href="#p-sun" transform="translate(1379.0 521.5) rotate(90) scale(0.82) translate(-20 -20)" opacity="0.033" stroke="#B8860B"/>
-<use href="#d-wallet" transform="translate(48.8 639.0) rotate(10) scale(1.03) translate(-20 -20)" opacity="0.057" stroke="#B8860B"/>
-<use href="#d-phone" transform="translate(210.7 662.8) rotate(0) scale(0.76) translate(-20 -20)" opacity="0.037" stroke="#8B5A3C"/>
-<use href="#p-triangles" transform="translate(306.4 641.6) rotate(-45) scale(0.7) translate(-20 -20)" opacity="0.022" stroke="#8B5A3C"/>
-<use href="#d-envelope" transform="translate(429.7 628.9) rotate(45) scale(0.72) translate(-20 -20)" opacity="0.054" stroke="#8B5A3C"/>
-<use href="#d-envelope" transform="translate(534.8 621.7) rotate(45) scale(0.88) translate(-20 -20)" opacity="0.052" stroke="#B8860B"/>
-<use href="#d-phone" transform="translate(676.7 647.1) rotate(30) scale(0.53) translate(-20 -20)" opacity="0.061" stroke="#B8860B"/>
-<use href="#p-dots" transform="translate(778.0 640.6) rotate(90) scale(0.68) translate(-20 -20)" opacity="0.049" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(904.1 643.7) rotate(-30) scale(0.65) translate(-20 -20)" opacity="0.06" stroke="#8B5A3C"/>
-<use href="#d-check" transform="translate(999.8 674.4) rotate(20) scale(0.6) translate(-20 -20)" opacity="0.028" stroke="#B8860B"/>
-<use href="#p-triangles" transform="translate(1128.6 625.5) rotate(60) scale(0.64) translate(-20 -20)" opacity="0.021" stroke="#8B5A3C"/>
-<use href="#p-triangles" transform="translate(1251.6 664.8) rotate(10) scale(1.03) translate(-20 -20)" opacity="0.042" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(1369.9 661.2) rotate(-30) scale(0.69) translate(-20 -20)" opacity="0.031" stroke="#8B5A3C"/>
-<use href="#d-wallet" transform="translate(56.1 777.2) rotate(-20) scale(0.52) translate(-20 -20)" opacity="0.051" stroke="#8B5A3C"/>
-<use href="#p-sun" transform="translate(178.1 755.2) rotate(45) scale(1.1) translate(-20 -20)" opacity="0.063" stroke="#8B5A3C"/>
-<use href="#d-coin" transform="translate(271.9 729.3) rotate(90) scale(1.09) translate(-20 -20)" opacity="0.059" stroke="#B8860B"/>
-<use href="#p-spiral" transform="translate(439.9 720.1) rotate(-45) scale(0.95) translate(-20 -20)" opacity="0.033" stroke="#B8860B"/>
-<use href="#d-coin" transform="translate(522.1 758.2) rotate(-30) scale(0.55) translate(-20 -20)" opacity="0.043" stroke="#8B5A3C"/>
-<use href="#d-wallet" transform="translate(651.9 733.4) rotate(45) scale(0.71) translate(-20 -20)" opacity="0.04" stroke="#8B5A3C"/>
-<use href="#d-swap" transform="translate(790.4 773.0) rotate(45) scale(0.67) translate(-20 -20)" opacity="0.062" stroke="#8B5A3C"/>
-<use href="#d-envelope" transform="translate(886.1 721.3) rotate(-30) scale(0.68) translate(-20 -20)" opacity="0.049" stroke="#8B5A3C"/>
-<use href="#d-envelope" transform="translate(1000.3 722.0) rotate(10) scale(0.98) translate(-20 -20)" opacity="0.029" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(1157.2 750.3) rotate(0) scale(1.04) translate(-20 -20)" opacity="0.029" stroke="#8B5A3C"/>
-<use href="#p-spiral" transform="translate(1243.1 773.4) rotate(30) scale(0.93) translate(-20 -20)" opacity="0.059" stroke="#8B5A3C"/>
-<use href="#d-envelope" transform="translate(1409.5 723.4) rotate(-45) scale(0.65) translate(-20 -20)" opacity="0.063" stroke="#B8860B"/>
-<use href="#p-dots" transform="translate(27.7 823.6) rotate(10) scale(1.01) translate(-20 -20)" opacity="0.064" stroke="#8B5A3C"/>
-<use href="#d-check" transform="translate(167.7 831.1) rotate(-45) scale(0.72) translate(-20 -20)" opacity="0.052" stroke="#8B5A3C"/>
-<use href="#p-chevron" transform="translate(334.9 846.5) rotate(0) scale(0.56) translate(-20 -20)" opacity="0.038" stroke="#8B5A3C"/>
-<use href="#p-triangles" transform="translate(424.4 865.5) rotate(20) scale(0.56) translate(-20 -20)" opacity="0.051" stroke="#8B5A3C"/>
-<use href="#p-dots" transform="translate(543.0 846.8) rotate(30) scale(0.52) translate(-20 -20)" opacity="0.038" stroke="#8B5A3C"/>
-<use href="#p-chevron" transform="translate(679.2 822.4) rotate(-45) scale(0.68) translate(-20 -20)" opacity="0.053" stroke="#8B5A3C"/>
-<use href="#d-wallet" transform="translate(768.4 836.3) rotate(0) scale(1.02) translate(-20 -20)" opacity="0.05" stroke="#8B5A3C"/>
-<use href="#p-dots" transform="translate(885.4 863.3) rotate(-30) scale(0.52) translate(-20 -20)" opacity="0.03" stroke="#8B5A3C"/>
-<use href="#p-triangles" transform="translate(1052.9 877.2) rotate(20) scale(1.07) translate(-20 -20)" opacity="0.026" stroke="#8B5A3C"/>
-<use href="#p-dots" transform="translate(1104.6 875.9) rotate(-20) scale(0.93) translate(-20 -20)" opacity="0.034" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(1250.1 866.9) rotate(20) scale(1.03) translate(-20 -20)" opacity="0.031" stroke="#B8860B"/>
-<use href="#p-sun" transform="translate(1346.4 853.2) rotate(-30) scale(1.19) translate(-20 -20)" opacity="0.032" stroke="#B8860B"/>
-<use href="#d-check" transform="translate(30.9 949.9) rotate(-20) scale(0.66) translate(-20 -20)" opacity="0.038" stroke="#8B5A3C"/>
-<use href="#d-coin" transform="translate(192.5 964.9) rotate(0) scale(0.71) translate(-20 -20)" opacity="0.045" stroke="#8B5A3C"/>
-<use href="#p-diamond" transform="translate(317.1 932.0) rotate(-10) scale(0.61) translate(-20 -20)" opacity="0.059" stroke="#8B5A3C"/>
-<use href="#d-swap" transform="translate(407.5 943.8) rotate(90) scale(1.07) translate(-20 -20)" opacity="0.049" stroke="#8B5A3C"/>
-<use href="#d-check" transform="translate(511.4 948.5) rotate(10) scale(0.53) translate(-20 -20)" opacity="0.033" stroke="#B8860B"/>
-<use href="#d-coin" transform="translate(637.6 978.4) rotate(10) scale(0.86) translate(-20 -20)" opacity="0.028" stroke="#8B5A3C"/>
-<use href="#p-dots" transform="translate(799.8 959.9) rotate(60) scale(1.0) translate(-20 -20)" opacity="0.035" stroke="#B8860B"/>
-<use href="#d-wallet" transform="translate(888.5 922.6) rotate(60) scale(1.01) translate(-20 -20)" opacity="0.06" stroke="#8B5A3C"/>
-<use href="#d-phone" transform="translate(1043.0 944.5) rotate(-30) scale(0.64) translate(-20 -20)" opacity="0.055" stroke="#8B5A3C"/>
-<use href="#d-card" transform="translate(1108.6 926.1) rotate(90) scale(0.87) translate(-20 -20)" opacity="0.049" stroke="#8B5A3C"/>
-<use href="#d-envelope" transform="translate(1243.5 979.3) rotate(-45) scale(0.72) translate(-20 -20)" opacity="0.045" stroke="#8B5A3C"/>
-<use href="#d-bank" transform="translate(1374.0 971.9) rotate(90) scale(0.64) translate(-20 -20)" opacity="0.052" stroke="#8B5A3C"/>
-</g>
-</svg>
-</div>
 <div class="container">
 <div class="topbar">
     <div class="logo">VOUCHMORPH<sup>TM</sup></div>
@@ -609,20 +356,22 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         </select>
 
         <!-- ============================================================
-             WALLET / ACCOUNT DROPDOWN (replaces old wallet button)
+             WALLET / ACCOUNT DROPDOWN — header shortcut, single source of truth.
+             "My Sources" scrolls to and opens the SAME panel used inline
+             below (openMySourcesFromHeader), no separate modal/system.
              ============================================================ -->
         <div class="wallet-account-wrap">
-            <button class="btn btn-primary" onclick="toggleWalletMenu(event)" id="walletAccountBtn" style="display:flex;align-items:center;gap:6px;">
+            <button class="btn btn-primary" onclick="toggleWalletMenu(event)" id="walletAccountBtn">
                 <span>💳</span> Wallet / Account
-                <span id="sourceCountBadge" style="display:none;background:#fff;color:var(--primary-dark);border-radius:10px;font-size:11px;font-weight:800;padding:1px 7px;margin-left:4px;">0</span>
+                <span id="sourceCountBadge">0</span>
                 <span style="font-size:10px;">▾</span>
             </button>
-            <div id="walletDropdown" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#fff;border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 8px 24px rgba(0,0,0,0.12);min-width:230px;z-index:50;overflow:hidden;">
+            <div id="walletDropdown">
                 <div class="wallet-dropdown-item" onclick="viewWalletBalance()">
                     <span class="icon">💰</span>
                     <div><div class="label">View Balance</div><div class="sub">Cumulative across sources</div></div>
                 </div>
-                <div class="wallet-dropdown-item" onclick="openMySources()">
+                <div class="wallet-dropdown-item" onclick="openMySourcesFromHeader()">
                     <span class="icon">🔗</span>
                     <div><div class="label">My Sources</div><div class="sub" id="sourceCountText">No sources linked yet</div></div>
                 </div>
@@ -630,7 +379,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
                     <span class="icon">➕</span>
                     <div><div class="label">Add Source</div><div class="sub">Bank, wallet, card, or voucher</div></div>
                 </div>
-                <div class="wallet-dropdown-item" onclick="alert('VouchMorph Card is coming soon — hook multiple sources to one card and swipe to finalize any swap instantly.')" style="opacity:0.6;">
+                <div class="wallet-dropdown-item" style="opacity:0.6;" onclick="alert('VouchMorph Card is coming soon — hook multiple sources to one card and swipe to finalize any swap instantly.')">
                     <span class="icon">💳</span>
                     <div><div class="label">VouchMorph Card <span style="font-size:10px;background:var(--warning);color:#fff;padding:1px 6px;border-radius:8px;">Soon</span></div><div class="sub">Multi-source, balanceless swiping</div></div>
                 </div>
@@ -652,39 +401,43 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
     <div class="section split-box" id="fromSection">
         <div class="section-title"><span class="n">1</span> From</div>
 
-        <!-- WALLET / ACCOUNT: small toggle button (hidden panel, opens on click) -->
-        <div style="margin-bottom:10px;">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleWalletSourcePanel()" id="walletPanelToggleBtn">
-                💳 Use a saved wallet/account <span id="walletPanelToggleCount" style="opacity:0.7;"></span>
+        <!-- ============================================================
+             CLEAN 3-BUTTON SOURCE PICKER
+             Wallet/Account -> dropdown of saved sources + Add
+             Card / Voucher -> institution + dynamic fields
+             Only one panel open at a time; pressing the active
+             button again closes it.
+             ============================================================ -->
+        <div class="source-type-buttons" id="sourceTypeButtons">
+            <button type="button" class="source-type-btn" data-cat="WALLET" onclick="toggleSourcePanel('WALLET')">
+                💳 Wallet / Account <span class="count" id="walletBtnCount" style="display:none;">0</span>
             </button>
+            <button type="button" class="source-type-btn" data-cat="CARD" onclick="toggleSourcePanel('CARD')">🏦 Card</button>
+            <button type="button" class="source-type-btn" data-cat="VOUCHER" onclick="toggleSourcePanel('VOUCHER')">🎟️ Voucher</button>
         </div>
 
-        <div class="type-tabs" id="sourceTypeTabs" style="display:none;">
-            <button type="button" class="type-tab active" data-cat="WALLET" onclick="selectSourceCategory('WALLET')">Wallet / Account</button>
-            <button type="button" class="type-tab" data-cat="CARD" onclick="selectSourceCategory('CARD')">Card</button>
-            <button type="button" class="type-tab" data-cat="VOUCHER" onclick="selectSourceCategory('VOUCHER')">Voucher</button>
-        </div>
-
-        <!-- WALLET / ACCOUNT: saved sources, or a prompt to add one -->
-        <div id="walletPanel" class="source-panel" style="display:none;">
-            <div id="savedSourcesContainer" style="margin-bottom:12px;display:none;">
-                <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;">
-                    <div id="savedSourcesChips" style="display:inline-flex;flex-wrap:wrap;gap:6px;"></div>
-                    <span class="quick-link muted" onclick="clearSourceSelection()" style="font-size:10px;padding:4px 10px;display:none;" id="clearSourceBtn">Clear</span>
+        <div id="sourcePanelWrap" class="source-panel-wrap" style="display:none;">
+            <!-- WALLET / ACCOUNT: saved sources, or a prompt to add one -->
+            <div id="walletPanel" class="source-panel" style="display:none;">
+                <div id="savedSourcesContainer" style="margin-bottom:12px;display:none;">
+                    <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;">
+                        <div id="savedSourcesChips" style="display:inline-flex;flex-wrap:wrap;gap:6px;"></div>
+                        <span class="quick-link muted" onclick="clearSourceSelection()" style="font-size:10px;padding:4px 10px;display:none;" id="clearSourceBtn">Clear</span>
+                    </div>
+                    <div style="font-size:10px;color:var(--text-dim);margin-top:6px;">Tap a saved source to auto-fill it, then just enter the amount. <span class="quick-link muted" style="padding:3px 9px;font-size:10px;" onclick="openAddSource()">+ Add another</span></div>
                 </div>
-                <div style="font-size:10px;color:var(--text-dim);margin-top:6px;">Tap a saved source to auto-fill it, then just enter the amount. <span class="quick-link muted" style="padding:3px 9px;font-size:10px;" onclick="openAddSource()">+ Add another</span></div>
+                <div id="noSourcesPrompt" class="empty-source-box" style="display:none;">
+                    <p>No linked wallet or account yet.</p>
+                    <button class="btn btn-primary btn-sm" onclick="openAddSource()">Add wallet or account</button>
+                </div>
             </div>
-            <div id="noSourcesPrompt" class="empty-source-box" style="display:none;">
-                <p>No linked wallet or account yet.</p>
-                <button class="btn btn-primary btn-sm" onclick="openAddSource()">Add wallet or account</button>
-            </div>
-        </div>
 
-        <!-- CARD / VOUCHER: institution + dynamic fields entered fresh each time -->
-        <div id="instAssetPanel" class="source-panel" style="display:none;">
-            <div class="field-group">
-                <label>Institution</label>
-                <select id="fromInstSelect" onchange="selectFromInst(this.value)"><option value="">Select institution</option></select>
+            <!-- CARD / VOUCHER: institution + dynamic fields entered fresh each time -->
+            <div id="instAssetPanel" class="source-panel" style="display:none;">
+                <div class="field-group">
+                    <label>Institution</label>
+                    <select id="fromInstSelect" onchange="selectFromInst(this.value)"><option value="">Select institution</option></select>
+                </div>
             </div>
         </div>
 
@@ -693,25 +446,14 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         <div class="field-group amount-field">
             <label>Amount</label>
             <input type="number" id="fromAmount" placeholder="0.00" step="0.01" min="0.01">
-            <span class="currency-suffix" id="fromCurrencyLabel"><?php echo htmlspecialchars($userCurrency); ?></span>
+            <span class="currency-suffix" id="fromCurrencyLabel"></span>
             <div class="help" id="fromLimitsHelp"></div>
             <div class="help" id="fromCurrencyInfo" style="font-size:11px;color:var(--text-dim);margin-top:2px;"></div>
             <div class="help" id="sourceSelectedHelp" style="font-size:11px;color:var(--primary-dark);margin-top:2px;display:none;"></div>
         </div>
-
-        <!-- Amount preview -->
-        <div style="margin-top:10px;">
-            <div style="font-size:13px;color:var(--text-muted);margin-top:4px;">You'll send <strong id="amountPreview">0.00 BWP</strong></div>
-        </div>
-
-        <!-- Identity swap hint -->
-        <div id="identitySwapHint" style="display:none;background:rgba(0,160,173,0.08);border-left:3px solid var(--primary);padding:10px 14px;border-radius:6px;font-size:13px;margin-top:8px;">
-            📩 We'll text the recipient a code. If they have a VouchMorph account, they finalize instantly — no code needed. If not, an agent finalizes it for them using the code.
-        </div>
+        <div style="font-size:13px;color:var(--text-muted);margin-top:4px;">You'll send <strong id="amountPreview">0.00</strong></div>
     </div>
-
     <div class="swap-divider"><span>&#8645;</span></div>
-
     <div class="section split-box" id="toSection">
         <div class="section-title"><span class="n">2</span> To</div>
         <div class="field-group">
@@ -771,13 +513,14 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
                 <label>SMS Notification (optional)</label>
                 <input id="identitySms" placeholder="Phone to send SMS notification" oninput="state.toIdentitySms=this.value">
             </div>
+            <div id="identitySwapHint">📩 We'll text the recipient a code. If they have a VouchMorph account, they finalize instantly — no code needed. If not, an agent finalizes it for them using the code.</div>
             <div class="hint" id="identityHint" style="font-size:12px;color:var(--text-muted);margin-top:4px;">The recipient will be notified and can claim the funds within 24 hours.</div>
         </div>
         <div id="multiSourceFields" style="display:none;">
             <label class="field-label">Sources (minimum 2)</label>
             <div id="multiSourceList"></div>
             <span class="quick-link" onclick="addMultiSourceRow()">+ Add another source</span>
-            <div class="multi-total">Total requested: <span class="amt" id="multiTotal"><?php echo $userCurrency; ?> 0.00</span></div>
+            <div class="multi-total">Total requested: <span class="amt" id="multiTotal">0.00</span></div>
         </div>
     </div>
     </div>
@@ -791,7 +534,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
     <div class="footer-links">
         <span onclick="openHelpModal()">Help</span>
         <span onclick="openTermsModal()">Terms &amp; conditions</span>
-        <span onclick="openMySources()">My sources</span>
+        <span onclick="openMySourcesLegacy()">My sources</span>
     </div>
     <div class="footer-mark">VOUCHMORPH<sup>TM</sup> &middot; <?php echo htmlspecialchars($userCountry); ?></div>
 </div>
@@ -811,7 +554,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 const CONFIG = {
     API_KEY: '<?php echo htmlspecialchars($apiKey); ?>',
     COUNTRY_CODE: '<?php echo htmlspecialchars($userCountry); ?>',
-    CURRENCY: '<?php echo htmlspecialchars($userCurrency); ?>',
     API_BASE: '<?php echo htmlspecialchars($apiBase); ?>',
     IS_TEST_MODE: <?php echo $isTestMode ? 'true' : 'false'; ?>,
     PREVIEW_ENDPOINT: '<?php echo $apiBase; ?>/api/v1/swap/preview.php',
@@ -823,7 +565,6 @@ const ASSETS = <?php echo json_encode($assetTypes); ?>;
 const ASSET_KEY_MAP = {};
 Object.keys(ASSETS).forEach(k => { ASSET_KEY_MAP[k.trim().toUpperCase()] = k; });
 
-// Add this mapping for asset type aliases
 const ASSET_TYPE_ALIASES = {
     'WALLET': ['MNO-WALLET', 'BANK-WALLET'],
     'MOBILE_WALLET': 'MNO-WALLET',
@@ -839,65 +580,24 @@ const ASSET_TYPE_ALIASES = {
 
 function getAssetConfig(type) {
     if (!type) return null;
-
-    // Try exact match first
     if (ASSETS[type]) return ASSETS[type];
-
-    // Try with the normalized type (uppercase)
     const normalized = String(type).trim().toUpperCase();
     if (ASSETS[normalized]) return ASSETS[normalized];
-
-    // Try aliases - handle both string and array mappings
     const alias = ASSET_TYPE_ALIASES[normalized];
     if (alias) {
         if (Array.isArray(alias)) {
-            // Try each alias in order
-            for (const a of alias) {
-                if (ASSETS[a]) return ASSETS[a];
-            }
+            for (const a of alias) { if (ASSETS[a]) return ASSETS[a]; }
         } else if (ASSETS[alias]) {
             return ASSETS[alias];
         }
     }
-
-    // Try to find by key in ASSETS (case insensitive)
     const realKey = ASSET_KEY_MAP[normalized];
     if (realKey) return ASSETS[realKey];
-
-    // Try to find by matching the key that contains the type
     const assetKeys = Object.keys(ASSETS);
     for (const key of assetKeys) {
-        if (key.includes(normalized) || normalized.includes(key)) {
-            return ASSETS[key];
-        }
+        if (key.includes(normalized) || normalized.includes(key)) return ASSETS[key];
     }
-
     return null;
-}
-
-// Helper function to get all possible mappings for a type
-function getAssetTypeMappings(type) {
-    if (!type) return [];
-    const normalized = String(type).trim().toUpperCase();
-    const mappings = [];
-
-    // Add the original
-    mappings.push(type);
-
-    // Add normalized
-    mappings.push(normalized);
-
-    // Add aliases
-    const alias = ASSET_TYPE_ALIASES[normalized];
-    if (alias) {
-        if (Array.isArray(alias)) {
-            mappings.push(...alias);
-        } else {
-            mappings.push(alias);
-        }
-    }
-
-    return mappings;
 }
 
 let state = {
@@ -915,29 +615,32 @@ let selectedSourceId = null;
 let pendingClaims = [];
 let pendingSources = [];
 let agentStatus = { is_agent: false, approved_destinations: [], all_destinations: [] };
+let sourcePanelOpenCat = null; // which of WALLET/CARD/VOUCHER is currently open below the 3 buttons
+let SessionUser = null; // cached whoami.php result — single source of truth for role (users.role_id -> roles.role_name)
 
 // ============================================================
 // MONEY FORMATTING — 3-letter currency, consistent everywhere
 // ============================================================
 function formatMoney(amount, currency) {
-    const cur = (currency || CONFIG.CURRENCY || 'BWP').toUpperCase().slice(0, 3);
+    // VouchMorph doesn't hold a currency of its own — it's a switch between
+    // partner institutions, each with theirs. Always pass the currency that
+    // came from the specific institution/source/destination in play. If none
+    // is known yet (nothing selected), show the number alone rather than
+    // guessing a default.
     const num = parseFloat(amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return `${num} ${cur}`;
+    if (!currency) return num;
+    return `${num} ${String(currency).toUpperCase().slice(0, 3)}`;
 }
-
 function maskIdentifier(value) {
     if (!value) return '';
     const str = String(value);
-    if (str.includes('@')) {
-        const [local, domain] = str.split('@');
-        return local.slice(0, 2) + '•••@' + domain;
-    }
+    if (str.includes('@')) { const [local, domain] = str.split('@'); return local.slice(0, 2) + '•••@' + domain; }
     if (str.length <= 4) return '•'.repeat(str.length);
     return str.slice(0, 3) + '•'.repeat(Math.max(0, str.length - 6)) + str.slice(-3);
 }
 
 // ============================================================
-// WALLET / ACCOUNT DROPDOWN
+// HEADER WALLET/ACCOUNT DROPDOWN
 // ============================================================
 function toggleWalletMenu(e) {
     e.stopPropagation();
@@ -946,18 +649,12 @@ function toggleWalletMenu(e) {
 }
 document.addEventListener('click', (e) => {
     const dd = document.getElementById('walletDropdown');
-    if (dd && dd.style.display === 'block' && !e.target.closest('.wallet-account-wrap')) {
-        dd.style.display = 'none';
-    }
+    if (dd && dd.style.display === 'block' && !e.target.closest('.wallet-account-wrap')) dd.style.display = 'none';
 });
 
 async function getUserSources() {
     try {
-        const resp = await fetch(CONFIG.API_BASE + '/user/sources.php', {
-            method: 'GET',
-            credentials: 'include',
-            headers: { 'Accept': 'application/json' }
-        });
+        const resp = await fetch(CONFIG.API_BASE + '/user/sources.php', { method: 'GET', credentials: 'include', headers: { 'Accept': 'application/json' } });
         const body = await resp.json();
         return { ok: resp.ok && body.success, body };
     } catch (e) {
@@ -968,19 +665,19 @@ async function getUserSources() {
 async function refreshSourceCount() {
     const result = await getUserSources();
     const sources = (result.ok && result.body.data && result.body.data.sources) || [];
+    userSources = sources;
     const badge = document.getElementById('sourceCountBadge');
     const text = document.getElementById('sourceCountText');
-    if (badge) {
-        if (sources.length > 0) {
-            badge.style.display = 'inline-block';
-            badge.textContent = sources.length;
-            text.textContent = `${sources.length} source${sources.length > 1 ? 's' : ''} linked`;
-        } else {
-            badge.style.display = 'none';
-            text.textContent = 'No sources linked yet';
-        }
+    const walletBtnCount = document.getElementById('walletBtnCount');
+    if (sources.length > 0) {
+        badge.style.display = 'inline-block'; badge.textContent = sources.length;
+        text.textContent = `${sources.length} source${sources.length > 1 ? 's' : ''} linked`;
+        walletBtnCount.style.display = 'inline-block'; walletBtnCount.textContent = sources.length;
+    } else {
+        badge.style.display = 'none'; text.textContent = 'No sources linked yet';
+        walletBtnCount.style.display = 'none';
     }
-    updateWalletPanelToggleLabel(sources.length);
+    if (sourcePanelOpenCat === 'WALLET') renderSavedSourceChips();
     return sources;
 }
 document.addEventListener('DOMContentLoaded', refreshSourceCount);
@@ -995,7 +692,7 @@ async function viewWalletBalance() {
     }
     let byCurrency = {};
     sources.forEach(s => {
-        const cur = (s.currency || CONFIG.CURRENCY).toUpperCase().slice(0, 3);
+        const cur = (s.currency || PARTICIPANTS[s.institution]?.limits?.currency || 'UNKNOWN').toUpperCase().slice(0, 3);
         byCurrency[cur] = byCurrency[cur] || [];
         byCurrency[cur].push(s);
     });
@@ -1003,245 +700,46 @@ async function viewWalletBalance() {
     Object.keys(byCurrency).forEach(cur => {
         html += `<div style="background:var(--surface);border-radius:var(--radius);padding:14px;margin-bottom:10px;">
             <div style="font-size:12px;color:var(--text-muted);">${byCurrency[cur].length} source(s) in ${cur}</div>
-            <div style="font-size:12px;margin-top:6px;">${byCurrency[cur].map(s => `${escapeHtml(s.institution)} — ${escapeHtml(s.account_name || s.identifier || '')}`).join('<br>')}</div>
+            <div style="font-size:12px;margin-top:6px;">${byCurrency[cur].map(s => `${escapeHtml(s.institution)} — ${escapeHtml(s.account_name || maskIdentifier(s.identifier))}`).join('<br>')}</div>
         </div>`;
     });
     html += `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Exact figures are pulled live from each source at swap time.</div>`;
     document.getElementById('modalBody').innerHTML = html;
 }
 
-// ============================================================
-// MY SOURCES — opens the same panel, no separate modal
-// ============================================================
-function openMySources() {
+// Header dropdown's "My Sources" -> scroll to and open the SAME inline
+// panel used by the 3 From-side buttons. One system, no duplicate modal.
+function openMySourcesFromHeader() {
     document.getElementById('walletDropdown').style.display = 'none';
-    // Scroll to the wallet panel toggle button and open the panel
-    const toggleBtn = document.getElementById('walletPanelToggleBtn');
-    if (toggleBtn) {
-        toggleBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    document.getElementById('sourceTypeButtons')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (sourcePanelOpenCat !== 'WALLET') toggleSourcePanel('WALLET');
+}
+
+// ============================================================
+// FROM-SIDE 3-BUTTON SOURCE PICKER
+// ============================================================
+function toggleSourcePanel(cat) {
+    const wrap = document.getElementById('sourcePanelWrap');
+    const walletPanel = document.getElementById('walletPanel');
+    const instAssetPanel = document.getElementById('instAssetPanel');
+
+    if (sourcePanelOpenCat === cat) {
+        wrap.style.display = 'none';
+        sourcePanelOpenCat = null;
+        document.querySelectorAll('.source-type-btn').forEach(b => b.classList.remove('active'));
+        return;
     }
-    const panel = document.getElementById('walletPanel');
-    if (panel && panel.style.display === 'none') {
-        toggleWalletSourcePanel();
-    }
-}
 
-// ============================================================
-// INLINE "1 FROM" SAVED-SOURCE PANEL — hidden until toggled
-// ============================================================
-function toggleWalletSourcePanel() {
-    const panel = document.getElementById('walletPanel');
-    const isOpen = panel.style.display !== 'none';
-    if (isOpen) {
-        panel.style.display = 'none';
-    } else {
-        panel.style.display = 'block';
-        renderSavedSourceChips();
-    }
-}
+    sourcePanelOpenCat = cat;
+    wrap.style.display = 'block';
+    document.querySelectorAll('.source-type-btn').forEach(b => b.classList.toggle('active', b.dataset.cat === cat));
 
-function updateWalletPanelToggleLabel(count) {
-    const label = document.getElementById('walletPanelToggleCount');
-    if (!label) return;
-    const n = count !== undefined ? count : (typeof walletEligibleSources === 'function' ? walletEligibleSources().length : 0);
-    label.textContent = n > 0 ? `(${n} saved)` : '';
-}
-
-// ============================================================
-// LIVE AMOUNT PREVIEW — 3-letter currency, always visible
-// ============================================================
-document.addEventListener('DOMContentLoaded', () => {
-    const amountInput = document.getElementById('fromAmount');
-    if (amountInput) {
-        amountInput.addEventListener('input', function() {
-            const preview = document.getElementById('amountPreview');
-            if (preview) preview.textContent = formatMoney(this.value, CONFIG.CURRENCY);
-        });
-    }
-});
-
-// ============================================================
-// IDENTITY SWAP HINT TOGGLE
-// ============================================================
-function onSwapTypeChange() {
-    const type = document.querySelector('input[name="swapType"]:checked')?.value;
-    const hint = document.getElementById('identitySwapHint');
-    if (hint) hint.style.display = (type === 'IDENTITY') ? 'block' : 'none';
-}
-
-// ============================================================
-// REGISTER IDENTITY — split user vs agent view
-// ============================================================
-async function openAddIdentityModal() {
-    const currentUser = SessionUser || (typeof getCurrentUserRole === 'function' ? await getCurrentUserRole() : null);
-    const isAgent = currentUser && (currentUser.role === 'agent' || currentUser.is_agent);
-    openModal('Add Identity', '');
-    if (isAgent) {
-        renderAgentIdentityForm();
-    } else {
-        renderUserIdentityForm();
-    }
-}
-
-function renderUserIdentityForm() {
-    document.getElementById('modalBody').innerHTML = `
-        <div style="max-width:400px;">
-            <div style="font-weight:800;font-size:16px;margin-bottom:4px;">Add an identity</div>
-            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Add a phone number or email so people can send swaps directly to you.</div>
-            <label style="font-size:12px;color:var(--text-muted);">Identity type</label>
-            <select id="userIdentityType" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
-                <option value="phone">Phone number</option>
-                <option value="email">Email</option>
-            </select>
-            <input type="text" id="userIdentityValue" placeholder="Enter value" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;">
-            <div style="background:rgba(0,160,173,0.08);border-left:3px solid var(--primary);padding:10px 14px;border-radius:6px;font-size:12px;margin-bottom:14px;">
-                🪪 Need to add a National ID, Voter's ID, Driver's License, Birth Certificate, or Passport? That has to be verified in person — <strong>ask any VouchMorph agent or government official to add it for you.</strong>
-            </div>
-            <button class="btn btn-primary" style="width:100%;" onclick="submitUserIdentity()">Add Identity</button>
-        </div>`;
-}
-
-async function submitUserIdentity() {
-    const type = document.getElementById('userIdentityType').value;
-    const value = document.getElementById('userIdentityValue').value.trim();
-    if (!value) { alert('Please enter a value.'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/user/register_identity.php', { identity_type: type, identity_value: value });
-    if (result.ok) {
-        alert(result.body.message || 'Identity added.');
-        closeModal();
-    } else {
-        alert(result.body.message || result.error || 'Failed to add identity.');
-    }
-}
-
-function renderAgentIdentityForm() {
-    document.getElementById('modalBody').innerHTML = `
-        <div style="max-width:420px;">
-            <div style="font-weight:800;font-size:16px;margin-bottom:4px;">Register a verified identity</div>
-            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Use this after physically verifying the person's document.</div>
-            <label style="font-size:12px;color:var(--text-muted);">Account holder's phone or email</label>
-            <input type="text" id="agentTargetLookup" placeholder="Phone or email on their VouchMorph account" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
-            <label style="font-size:12px;color:var(--text-muted);">Identity type</label>
-            <select id="agentIdentityType" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
-                <option value="national_id">National ID</option>
-                <option value="voters_id">Voter's ID</option>
-                <option value="drivers_license">Driver's License</option>
-                <option value="birth_certificate">Birth Certificate</option>
-                <option value="passport">Passport</option>
-            </select>
-            <input type="text" id="agentIdentityValue" placeholder="ID number" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;">
-            <button class="btn btn-primary" style="width:100%;" onclick="submitAgentIdentity()">Register Identity</button>
-        </div>`;
-}
-
-async function submitAgentIdentity() {
-    const lookup = document.getElementById('agentTargetLookup').value.trim();
-    const type = document.getElementById('agentIdentityType').value;
-    const value = document.getElementById('agentIdentityValue').value.trim();
-    if (!lookup || !value) { alert('Please fill in all fields.'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/add_verified_identity.php', {
-        target_lookup: lookup, identity_type: type, identity_value: value
-    });
-    if (result.ok) {
-        alert(result.body.message || 'Identity registered.');
-        closeModal();
-    } else {
-        alert(result.body.message || result.error || 'Failed to register identity.');
-    }
-}
-
-// ============================================================
-// SWAP HISTORY / DETAIL — using formatMoney consistently
-// ============================================================
-function renderSwapHistory(data) {
-    const swaps = data.data || data.swaps || [];
-    if (swaps.length === 0) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps found</div></div>`; return; }
-    let historyHtml = `<div style="max-height:60vh;overflow-y:auto;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
-    swaps.forEach((swap) => {
-        const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
-        const code = swap.voucher_number || null;
-        const pin = swap.atm_pin || null;
-        const hasCode = !!(code || pin);
-        const codeInlineHtml = hasCode ? `
-            <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
-                ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(code)}</div></div>` : ''}
-                ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(pin)}</div></div>` : ''}
-                ${swap.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(swap.voucher_expiry).toLocaleString()}</div></div>` : ''}
-            </div>` : '';
-        historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
-            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-                <div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
-                <div style="text-align:right;"><div style="font-weight:700;color:var(--primary-dark);">${formatMoney(swap.amount, swap.currency)}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div>
-            </div>${codeInlineHtml}</div>`;
-    });
-    historyHtml += `</div>`;
-    document.getElementById('modalBody').innerHTML = historyHtml;
-}
-
-async function viewSwapDetail(reference) {
-    openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: reference });
-    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap details: ${escapeHtml(result.error)}</div>`; return; }
-    renderSwapDetail(result.body);
-}
-function renderSwapDetail(data) {
-    const swap = data.swap || data.data || {};
-    const code = swap.voucher_number || null;
-    const pin = swap.atm_pin || null;
-    const codeBox = (code || pin) ? `
-        <div class="atm-code" style="margin-bottom:12px;">
-            ${code ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Cashout / Voucher Code</div><div class="code">${escapeHtml(code)}</div>` : ''}
-            ${pin ? `<div style="font-size:11px;color:var(--text-muted);margin:${code ? '10px' : '0'} 0 4px;">PIN</div><div class="code">${escapeHtml(pin)}</div>` : ''}
-            ${swap.voucher_expiry ? `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Expires ${new Date(swap.voucher_expiry).toLocaleString()}</div>` : ''}
-        </div>` : '';
-    document.getElementById('modalBody').innerHTML = `
-        <div style="max-height:70vh;overflow-y:auto;">
-            <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:16px;margin-bottom:12px;">
-                <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-                    <div><div style="font-size:12px;color:var(--text-muted);">Reference</div><div style="font-weight:700;">${swap.reference || swap.swap_reference || 'N/A'}</div></div>
-                    <div><div style="font-size:12px;color:var(--text-muted);">Status</div><div style="font-weight:700;">${swap.status || 'unknown'}</div></div>
-                </div>
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
-                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Swap Type</div><div style="font-weight:700;">${swap.swap_type || 'N/A'}</div></div>
-                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${formatMoney(swap.amount, swap.currency)}</div></div>
-            </div>
-            ${codeBox}
-            <div style="margin-top:12px;"><button class="btn btn-secondary" onclick="openSwapHistory()" style="width:100%;">← Back to History</button></div>
-        </div>`;
-}
-
-function getInstitutionCurrency(instCode) {
-    if (!instCode) return CONFIG.CURRENCY;
-    return PARTICIPANTS[instCode]?.limits?.currency || CONFIG.CURRENCY;
-}
-function updateCurrencyDisplay() {
-    const fromCurrency = getInstitutionCurrency(state.fromInst);
-    const fromLabel = document.getElementById('fromCurrencyLabel');
-    if (fromLabel) fromLabel.textContent = fromCurrency;
-    const fromInfo = document.getElementById('fromCurrencyInfo');
-    if (fromInfo) fromInfo.textContent = state.fromInst ? `Source currency: ${fromCurrency}` : '';
-}
-function switchCountry(country) {
-    if (country !== CONFIG.COUNTRY_CODE) window.location.href = '?country=' + encodeURIComponent(country);
-}
-
-// ============================================================
-// SOURCE CATEGORY (Wallet/Account, Card, Voucher)
-// ============================================================
-
-function selectSourceCategory(cat) {
     state.fromCategory = cat;
     state.fromInst = null; state.fromAsset = null; state.fromFields = {};
     selectedSourceId = null;
 
-    document.querySelectorAll('.type-tab').forEach(b => b.classList.toggle('active', b.dataset.cat === cat));
-
-    const walletPanel = document.getElementById('walletPanel');
-    const instAssetPanel = document.getElementById('instAssetPanel');
     const fieldsBox = document.getElementById('fromFields');
     const helpEl = document.getElementById('sourceSelectedHelp');
-
     fieldsBox.innerHTML = ''; fieldsBox.style.display = 'none';
     if (helpEl) helpEl.style.display = 'none';
 
@@ -1278,10 +776,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const toSelect = document.getElementById('toInstSelect');
     if (!toSelect) { showMessage('Dashboard initialization error. Please refresh.', 'error'); return; }
     const instOptions = Object.keys(PARTICIPANTS);
-    if (instOptions.length === 0) {
-        showMessage('No institutions found for this country.', 'error');
-        return;
-    }
+    if (instOptions.length === 0) { showMessage('No institutions found for this country.', 'error'); return; }
     toSelect.innerHTML = '<option value="">Select institution</option>';
     instOptions.forEach(code => {
         const name = PARTICIPANTS[code]?.name || code;
@@ -1290,9 +785,10 @@ document.addEventListener('DOMContentLoaded', function() {
     updateCurrencyDisplay();
     document.getElementById('fromAmount').addEventListener('input', function() {
         state.fromAmount = parseFloat(this.value) || 0;
+        const preview = document.getElementById('amountPreview');
+        if (preview) preview.textContent = formatMoney(this.value, getInstitutionCurrency(state.fromInst));
         refreshUI();
     });
-    selectSourceCategory('WALLET');
     checkPendingClaims();
     loadAgentStatus();
     loadUserSources();
@@ -1309,12 +805,7 @@ async function callApi(endpoint, payload) {
     if (CONFIG.IS_TEST_MODE) url += (url.includes('?') ? '&' : '?') + 'test_mode=1';
     let response, body;
     try {
-        response = await fetch(url, {
-            method: 'POST',
-            headers: buildHeaders(),
-            body: JSON.stringify(payload),
-            credentials: 'include'
-        });
+        response = await fetch(url, { method: 'POST', headers: buildHeaders(), body: JSON.stringify(payload), credentials: 'include' });
     } catch (networkErr) {
         return { ok: false, error: 'Network error: could not reach ' + url + ' (' + networkErr.message + ')' };
     }
@@ -1326,10 +817,8 @@ async function callApi(endpoint, payload) {
 }
 
 // ============================================================
-// FROM SIDE: institution + fields (used by Card/Voucher, and by
-// the Wallet/Account "saved source" auto-fill)
+// FROM SIDE: institution + fields (Card/Voucher, and Wallet auto-fill)
 // ============================================================
-
 function selectFromInst(code) {
     state.fromInst = code || null;
     state.fromFields = {};
@@ -1348,23 +837,11 @@ function assetHasAmountField(assetType) { return (getAssetConfig(assetType)?.fie
 function renderDynamicFields(containerId, assetType, prefix, onChange, includePin) {
     const container = document.getElementById(containerId);
     const config = getAssetConfig(assetType);
-    if (!config) {
-        container.innerHTML = `<div class="help" style="color:var(--danger);">Unknown asset type: ${assetType}</div>`;
-        return;
-    }
-
-    // Get fields, filter out amount if needed, and handle PIN filtering
+    if (!config) { container.innerHTML = `<div class="help" style="color:var(--danger);">Unknown asset type: ${assetType}</div>`; return; }
     let fields = config.fields || [];
-    if (!includePin) {
-        fields = fields.filter(f => f.vault_field !== 'pin');
-    }
-    fields = fields.filter(f => f.name !== 'amount'); // Amount is handled separately
-
-    if (!fields || fields.length === 0) {
-        container.innerHTML = '';
-        return;
-    }
-
+    if (!includePin) fields = fields.filter(f => f.vault_field !== 'pin');
+    fields = fields.filter(f => f.name !== 'amount');
+    if (!fields || fields.length === 0) { container.innerHTML = ''; return; }
     container.innerHTML = fields.map(f => {
         const attrs = [];
         if (f.pattern) attrs.push(`pattern="${f.pattern}"`);
@@ -1373,32 +850,20 @@ function renderDynamicFields(containerId, assetType, prefix, onChange, includePi
         if (f.required) attrs.push('required');
         if (f.min !== undefined) attrs.push(`min="${f.min}"`);
         if (f.max !== undefined) attrs.push(`max="${f.max}"`);
-
-        // For select fields
         if (f.type === 'select' && f.options) {
-            const optionsHtml = f.options.map(opt =>
-                `<option value="${opt}">${opt}</option>`
-            ).join('');
+            const optionsHtml = f.options.map(opt => `<option value="${opt}">${opt}</option>`).join('');
             return `<div class="field-group">
                 <label>${f.label} ${f.required ? '*' : ''}</label>
                 <select id="${prefix}${f.name}" onchange="window['${onChange.name}']('${f.name}', this.value)">
-                    <option value="">${f.placeholder || 'Select'}</option>
-                    ${optionsHtml}
+                    <option value="">${f.placeholder || 'Select'}</option>${optionsHtml}
                 </select>
                 ${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}
             </div>`;
         }
-
-        // For password fields
         const inputType = f.vault_field === 'pin' || f.name.includes('pin') || f.name === 'cvv' ? 'password' : (f.type || 'text');
-
         return `<div class="field-group">
             <label>${f.label} ${f.required ? '*' : ''}</label>
-            <input type="${inputType}"
-                   id="${prefix}${f.name}"
-                   placeholder="${f.placeholder || ''}"
-                   ${attrs.join(' ')}
-                   oninput="window['${onChange.name}']('${f.name}', this.value)">
+            <input type="${inputType}" id="${prefix}${f.name}" placeholder="${f.placeholder || ''}" ${attrs.join(' ')} oninput="window['${onChange.name}']('${f.name}', this.value)">
             ${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}
         </div>`;
     }).join('');
@@ -1406,32 +871,21 @@ function renderDynamicFields(containerId, assetType, prefix, onChange, includePi
 function fieldsValidForAsset(assetType, values, includePin) {
     const config = getAssetConfig(assetType);
     if (!config) return false;
-
-    // Get fields, filter out amount (handled separately)
     let fields = config.fields || [];
     fields = fields.filter(f => f.name !== 'amount');
-
-    // PIN is OPTIONAL - never required for validation
-    // Only check non-PIN required fields
-    fields = fields.filter(f => f.vault_field !== 'pin');
-
+    fields = fields.filter(f => f.vault_field !== 'pin'); // PIN is always optional
     return fields.every(f => {
         const val = values[f.name];
-        // If field is not required, it's valid
         if (!f.required) return true;
-        // If required, must have a non-empty value
         if (!val || String(val).trim().length === 0) return false;
-        // Check pattern if exists
         if (val && f.pattern && !new RegExp(f.pattern).test(val)) return false;
         return true;
     });
 }
 function extractPinFromFields(assetType, values) {
     const pinField = (getAssetConfig(assetType)?.fields || []).find(f => f.vault_field === 'pin');
-    // If no pin field exists, or no pin value, return empty string (not null)
     return pinField ? (values[pinField.name] || '') : '';
 }
-
 function amountWithinLimits(instCode, amount) {
     const limits = PARTICIPANTS[instCode]?.limits;
     if (!limits) return true;
@@ -1467,6 +921,7 @@ function setSwapType(type) {
     state.swapType = type;
     const isIdentity = type === 'IDENTITY', isMulti = type === 'MULTI_SOURCE', isDeposit = type === 'DEPOSIT', isCashout = type === 'CASHOUT';
     document.getElementById('identityFields').style.display = isIdentity ? 'block' : 'none';
+    document.getElementById('identitySwapHint').style.display = isIdentity ? 'block' : 'none';
     document.getElementById('multiSourceFields').style.display = isMulti ? 'block' : 'none';
     document.getElementById('cashoutFields').style.display = isCashout ? 'block' : 'none';
     document.getElementById('toInstSection').style.display = (isDeposit || isCashout || isMulti) ? 'block' : 'none';
@@ -1516,13 +971,15 @@ function setMultiSourceInst(id, code) { const src = state.multiSources.find(s =>
 function setMultiSourceAsset(id, type) { const src = state.multiSources.find(s => s.id === id); src.assetType = type || null; src.fields = {}; renderMultiSourceRows(); }
 function setMultiSourceField(id, name, value) { state.multiSources.find(s => s.id === id).fields[name] = value; refreshUI(); }
 function setMultiSourceAmount(id, value) { state.multiSources.find(s => s.id === id).amount = parseFloat(value) || 0; updateMultiTotal(); refreshUI(); }
-function updateMultiTotal() { const total = state.multiSources.reduce((sum, s) => sum + (s.amount || 0), 0); document.getElementById('multiTotal').textContent = `${CONFIG.CURRENCY} ${total.toFixed(2)}`; }
+function updateMultiTotal() {
+    const total = state.multiSources.reduce((sum, s) => sum + (s.amount || 0), 0);
+    const cur = PARTICIPANTS[state.toInst]?.limits?.currency || null; // unknown until a destination institution is picked
+    document.getElementById('multiTotal').textContent = formatMoney(total, cur);
+}
 function multiSourcesValid() {
     if (state.multiSources.length < 2) return false;
     return state.multiSources.every(s => {
         if (!s.institution || !s.assetType || !(s.amount > 0)) return false;
-        // PIN is OPTIONAL - don't require it
-        // Just validate the required non-PIN fields
         return fieldsValidForAsset(s.assetType, s.fields, true);
     });
 }
@@ -1555,8 +1012,8 @@ function buildPayload() {
         const destFields = { ...state.toFields };
         if (assetHasAmountField(state.toAsset)) destFields.amount = totalAmount;
         const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-        const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency || CONFIG.CURRENCY;
-        const payload = { swap_type: 'MULTI_SOURCE', reference, idempotency_key: idempotencyKey, user_id: CONFIG.USER_ID, amount: totalAmount, currency: CONFIG.CURRENCY, destination_currency: destCurrency, contribution_strategy: 'USER_SPECIFIED', sources, to_institution: state.toInst, destination_institution: state.toInst, destination_asset_type: state.toAsset, asset_type: state.toAsset, destination_asset_fields: destFields };
+        const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency;
+        const payload = { swap_type: 'MULTI_SOURCE', reference, idempotency_key: idempotencyKey, user_id: CONFIG.USER_ID, amount: totalAmount, currency: destCurrency, destination_currency: destCurrency, contribution_strategy: 'USER_SPECIFIED', sources, to_institution: state.toInst, destination_institution: state.toInst, destination_asset_type: state.toAsset, asset_type: state.toAsset, destination_asset_fields: destFields };
         for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
         if (destIdField) payload.destination_identifier = state.toFields[destIdField.name];
         return payload;
@@ -1564,7 +1021,7 @@ function buildPayload() {
     const pin = extractPinFromFields(state.fromAsset, state.fromFields);
     const sourceAssetFields = { ...state.fromFields };
     if (assetHasAmountField(state.fromAsset)) sourceAssetFields.amount = state.fromAmount;
-    const sourceCurrency = PARTICIPANTS[state.fromInst]?.limits?.currency || CONFIG.CURRENCY;
+    const sourceCurrency = PARTICIPANTS[state.fromInst]?.limits?.currency;
     const payload = { swap_type: state.swapType, reference, idempotency_key: idempotencyKey, user_id: CONFIG.USER_ID, from_institution: state.fromInst, source_institution: state.fromInst, asset_type: state.fromAsset, amount: state.fromAmount, currency: sourceCurrency, wallet_pin: pin || undefined, pin: pin || undefined, asset_fields: sourceAssetFields, ...sourceAssetFields };
     payload.amount = state.fromAmount;
     const idField = (ASSETS[state.fromAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
@@ -1579,7 +1036,7 @@ function buildPayload() {
         payload.destination_institution = state.toInst;
         payload.delivery_method = state.deliveryMethod;
         if (state.beneficiaryPhone) { payload.beneficiary_phone = state.beneficiaryPhone; payload.client_phone = state.beneficiaryPhone; }
-        payload.destination_currency = PARTICIPANTS[state.toInst]?.limits?.currency || CONFIG.CURRENCY;
+        payload.destination_currency = PARTICIPANTS[state.toInst]?.limits?.currency;
     } else {
         payload.to_institution = state.toInst;
         payload.destination_institution = state.toInst;
@@ -1615,9 +1072,9 @@ function showPreviewModal(previewData) {
             <div class="preview-row"><span>Swap Type</span><span class="value">${swapType}</span></div>
             <div class="preview-row"><span>Source</span><span class="value">${data.source_institution || '—'}</span></div>
             <div class="preview-row"><span>Destination</span><span class="value">${data.destination_institution || '—'}</span></div>
-            <div class="preview-row"><span>Amount Requested</span><span class="value">${data.amount_requested} ${data.source_currency}</span></div>
-            <div class="preview-row" style="border-top:2px solid var(--border);padding-top:8px;"><span style="font-weight:700;">Total Fee</span><span class="value" style="color:var(--danger);">${data.total_fee} ${data.source_currency}</span></div>
-            <div class="preview-row" style="border-top:2px solid var(--primary);padding-top:8px;"><span style="font-weight:700;font-size:16px;">Net Amount</span><span class="value highlight">${data.net_amount_destination_currency || data.net_amount} ${data.destination_currency || data.source_currency}</span></div>
+            <div class="preview-row"><span>Amount Requested</span><span class="value">${formatMoney(data.amount_requested, data.source_currency)}</span></div>
+            <div class="preview-row" style="border-top:2px solid var(--border);padding-top:8px;"><span style="font-weight:700;">Total Fee</span><span class="value" style="color:var(--danger);">${formatMoney(data.total_fee, data.source_currency)}</span></div>
+            <div class="preview-row" style="border-top:2px solid var(--primary);padding-top:8px;"><span style="font-weight:700;font-size:16px;">Net Amount</span><span class="value highlight">${formatMoney(data.net_amount_destination_currency || data.net_amount, data.destination_currency || data.source_currency)}</span></div>
         </div>
         <div class="cta-row">
             <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;">Cancel</button>
@@ -1644,60 +1101,72 @@ function showResultModal(response) {
     const reference = response.swap_reference || data.reference || '—';
     let inner = '';
     if (swapType === 'CASHOUT') {
-        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Cashout Code Generated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div>${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}<div style="margin-top:12px;"><div style="font-size:24px;font-weight:700;">${data.amount ?? state.swapPayload.amount} ${state.swapPayload.currency || CONFIG.CURRENCY}</div></div>`;
+        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Cashout Code Generated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div>${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}<div style="margin-top:12px;"><div style="font-size:24px;font-weight:700;">${formatMoney(data.amount ?? state.swapPayload.amount, state.swapPayload.currency)}</div></div>`;
     } else if (swapType === 'IDENTITY') {
         const claimPinBox = data.claim_pin ? `
             <div class="atm-code" style="margin-top:12px;">
                 <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Backup PIN — only share this if the recipient doesn't get the SMS</div>
                 <div class="code">${escapeHtml(data.claim_pin)}</div>
             </div>` : '';
-        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Identity Swap Initiated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:24px;font-weight:700;">${data.amount ?? state.swapPayload.amount} ${data.currency || CONFIG.CURRENCY}</div>${claimPinBox}`;
+        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Identity Swap Initiated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:24px;font-weight:700;">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || state.swapPayload.currency)}</div>${claimPinBox}`;
     } else {
-        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Swap Completed</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="font-size:24px;font-weight:700;margin-top:12px;">${data.amount ?? state.swapPayload.amount} ${CONFIG.CURRENCY}</div>`;
+        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Swap Completed</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="font-size:24px;font-weight:700;margin-top:12px;">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || data.destination_currency || state.swapPayload.destination_currency || state.swapPayload.currency)}</div>`;
     }
     openModal('Swap Result', `<div class="result-box">${inner}<div class="cta-row"><button class="btn btn-primary" onclick="closeModal(); location.reload();">Done</button></div></div>`);
 }
 
 const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'Birth Certificate', voter_id: 'Voter ID', phone: 'Phone Number', email: 'Email' };
 
-// ============================================================
-// WALLET/ACCOUNT SAVED SOURCES
-// ============================================================
+function getInstitutionCurrency(instCode) {
+    // No institution selected yet -> no currency to show. VouchMorph doesn't
+    // have one of its own; it only ever speaks in whichever partner's currency
+    // is actually in play.
+    if (!instCode) return null;
+    return PARTICIPANTS[instCode]?.limits?.currency || null;
+}
+function updateCurrencyDisplay() {
+    const fromCurrency = getInstitutionCurrency(state.fromInst);
+    const fromLabel = document.getElementById('fromCurrencyLabel');
+    if (fromLabel) fromLabel.textContent = fromCurrency || '';
+    const fromInfo = document.getElementById('fromCurrencyInfo');
+    if (fromInfo) fromInfo.textContent = state.fromInst ? `Source currency: ${fromCurrency}` : '';
+    const preview = document.getElementById('amountPreview');
+    if (preview) preview.textContent = formatMoney(state.fromAmount, fromCurrency);
+}
+function switchCountry(country) {
+    if (country !== CONFIG.COUNTRY_CODE) window.location.href = '?country=' + encodeURIComponent(country);
+}
 
+// ============================================================
+// WALLET/ACCOUNT SAVED SOURCES (single system — no lego duplicate)
+// ============================================================
 async function loadUserSources() {
     if (!CONFIG.USER_ID) return;
-
-    // Load active sources
     const result = await callApi(CONFIG.API_BASE + '/user/sources.php', {});
     if (result.ok) {
         userSources = result.body.data?.sources || [];
-        if (state.fromCategory === 'WALLET') renderSavedSourceChips();
+        if (sourcePanelOpenCat === 'WALLET') renderSavedSourceChips();
+        const badge = document.getElementById('sourceCountBadge');
+        const text = document.getElementById('sourceCountText');
+        const walletBtnCount = document.getElementById('walletBtnCount');
+        if (userSources.length > 0) {
+            badge.style.display = 'inline-block'; badge.textContent = userSources.length;
+            text.textContent = `${userSources.length} source${userSources.length > 1 ? 's' : ''} linked`;
+            walletBtnCount.style.display = 'inline-block'; walletBtnCount.textContent = userSources.length;
+        }
     }
-
-    // Load pending sources for the badge count
     const pendingResult = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
-    if (pendingResult.ok) {
-        pendingSources = pendingResult.body.data || [];
-        updateToolboxBadge();
-    }
+    if (pendingResult.ok) { pendingSources = pendingResult.body.data || []; updateToolboxBadge(); }
 }
 
 function walletEligibleSources() {
     return userSources.filter(s => {
         if (s.status !== 'active') return false;
         const assetType = String(s.asset_type).toUpperCase();
-        // Check if it's a wallet or account type using the mappings
         const config = getAssetConfig(s.asset_type);
         const category = config?.category || '';
-
-        return assetType === 'ACCOUNT' ||
-               assetType === 'WALLET' ||
-               assetType === 'MNO-WALLET' ||
-               assetType === 'BANK-WALLET' ||
-               assetType === 'MOBILE_WALLET' ||
-               category === 'MOBILE_MONEY' ||
-               category === 'BANK_WALLET' ||
-               category === 'BANK_ACCOUNT';
+        return assetType === 'ACCOUNT' || assetType === 'WALLET' || assetType === 'MNO-WALLET' || assetType === 'BANK-WALLET' || assetType === 'MOBILE_WALLET' ||
+               category === 'MOBILE_MONEY' || category === 'BANK_WALLET' || category === 'BANK_ACCOUNT';
     });
 }
 
@@ -1709,12 +1178,7 @@ function renderSavedSourceChips() {
     if (!container || !chipsContainer) return;
 
     const activeSources = walletEligibleSources();
-
-    if (activeSources.length === 0) {
-        container.style.display = 'none';
-        emptyPrompt.style.display = 'block';
-        return;
-    }
+    if (activeSources.length === 0) { container.style.display = 'none'; emptyPrompt.style.display = 'block'; return; }
     emptyPrompt.style.display = 'none';
     container.style.display = 'block';
 
@@ -1724,15 +1188,11 @@ function renderSavedSourceChips() {
         const shortId = identifier.length > 15 ? identifier.substring(0, 12) + '…' : identifier;
         const isSelected = selectedSourceId === source.id;
         return `
-            <span class="source-chip ${isSelected ? 'active' : ''}"
-                  onclick="selectSavedSource('${source.id}')"
-                  title="${escapeHtml(instName)} - ${escapeHtml(identifier)}">
+            <span class="source-chip ${isSelected ? 'active' : ''}" onclick="selectSavedSource('${source.id}')" title="${escapeHtml(instName)} - ${escapeHtml(identifier)}">
                 <span>${escapeHtml(instName)}</span>
                 <span class="chip-identifier">${escapeHtml(shortId)}</span>
-            </span>
-        `;
+            </span>`;
     }).join('');
-
     clearBtn.style.display = selectedSourceId ? 'inline-flex' : 'none';
 }
 
@@ -1743,9 +1203,6 @@ function selectSavedSource(sourceId) {
     selectedSourceId = sourceId;
     state.fromInst = source.institution;
     state.fromAsset = source.asset_type;
-
-    // ✅ CRITICAL: Clear ALL existing fields before rendering new ones
-    // This ensures no old data leaks through
     state.fromFields = {};
 
     const inst = PARTICIPANTS[source.institution];
@@ -1753,41 +1210,24 @@ function selectSavedSource(sourceId) {
 
     const fieldsBox = document.getElementById('fromFields');
     fieldsBox.style.display = 'block';
-
-    // ✅ Clear the fields box HTML before re-rendering
     fieldsBox.innerHTML = '';
-
-    // Render fields
     renderDynamicFields('fromFields', source.asset_type, 'fromField_', updateFromField, true);
 
-    // Use a longer delay to ensure all DOM elements are created
     setTimeout(() => {
-        // Fill the fields
         fillSourceIdentifierFields(source);
-
-        // Verify the field was filled
         const config = getAssetConfig(source.asset_type);
         if (config) {
-            const idField = config.fields?.find(f =>
-                f.vault_field !== 'pin' &&
-                f.name !== 'amount'
-            );
+            const idField = config.fields?.find(f => f.vault_field !== 'pin' && f.name !== 'amount');
             if (idField) {
                 const input = document.getElementById(`fromField_${idField.name}`);
                 if (input && !input.value) {
-                    console.warn('Field still empty, trying direct fill:', idField.name);
                     const identifier = source.identifier || source.source_identifier || '';
                     input.value = identifier;
                     state.fromFields[idField.name] = identifier;
                 }
             }
         }
-
-        // Force refresh UI to update button state
         refreshUI();
-
-        console.log('After fill - isSwapReady:', isSwapReady());
-        console.log('State fields (should ONLY be this source):', state.fromFields);
     }, 150);
 
     const helpEl = document.getElementById('sourceSelectedHelp');
@@ -1812,169 +1252,101 @@ function selectSavedSource(sourceId) {
 }
 
 function fillSourceIdentifierFields(source) {
-    // FIX: Use getAssetConfig instead of ASSETS directly
     const assetConfig = getAssetConfig(source.asset_type);
-    if (!assetConfig) {
-        console.warn('No asset config for type:', source.asset_type);
-        return;
-    }
-
+    if (!assetConfig) return;
     const fields = assetConfig.fields || [];
 
-    // Find the identifier field
     const identifierField = fields.find(f =>
-        f.vault_field !== 'pin' &&
-        f.name !== 'amount' &&
-        (f.name === 'account_number' ||
-         f.name === 'identifier' ||
-         f.name === 'account' ||
-         f.name === 'phone_number' ||
-         f.name === 'phone' ||
-         f.name === 'card_number' ||
-         f.name === 'wallet_account' ||
-         f.name === 'wallet_address' ||
-         f.name === 'order_number' ||
-         f.name === 'cheque_number' ||
-         f.name === 'atm_code' ||
-         f.name === 'voucher_number' ||
-         f.name === 'source_identifier' ||
-         f.name === 'wallet_id')
+        f.vault_field !== 'pin' && f.name !== 'amount' &&
+        (f.name === 'account_number' || f.name === 'identifier' || f.name === 'account' || f.name === 'phone_number' ||
+         f.name === 'phone' || f.name === 'card_number' || f.name === 'wallet_account' || f.name === 'wallet_address' ||
+         f.name === 'order_number' || f.name === 'cheque_number' || f.name === 'atm_code' || f.name === 'voucher_number' ||
+         f.name === 'source_identifier' || f.name === 'wallet_id')
     );
-
     const pinField = fields.find(f => f.vault_field === 'pin');
 
-    // ✅ CRITICAL FIX: Clear ALL existing input values first
-    // This prevents showing old data from previous selections
     document.querySelectorAll('#fromFields input').forEach(input => {
-        // Only clear if not disabled (disabled fields are auto-filled)
-        if (!input.disabled) {
-            input.value = '';
-        }
-        // Reset styles
-        input.style.background = '#fff';
-        input.style.color = 'var(--text)';
+        if (!input.disabled) input.value = '';
+        input.style.background = '#fff'; input.style.color = 'var(--text)';
     });
-
-    // Also clear any help text
     document.querySelectorAll('#fromFields .help').forEach(help => {
-        if (!help.textContent.includes('Auto-filled')) {
-            help.textContent = '';
-        }
+        if (!help.textContent.includes('Auto-filled')) help.textContent = '';
     });
-
-    // Remove disabled state from all inputs first
     document.querySelectorAll('#fromFields input[disabled]').forEach(input => {
-        input.disabled = false;
-        input.style.background = '#fff';
-        input.style.color = 'var(--text)';
+        input.disabled = false; input.style.background = '#fff'; input.style.color = 'var(--text)';
     });
 
-    // CRITICAL FIX: Reset state.fromFields for this source
-    // Only keep the fields we're about to set
     const newFields = {};
-
-    // Store the identifier value
     const identifier = source.identifier || source.source_identifier || '';
 
-    // Fill identifier field
     if (identifierField) {
         const input = document.getElementById(`fromField_${identifierField.name}`);
         if (input) {
             input.value = identifier;
             newFields[identifierField.name] = identifier;
             input.disabled = true;
-            input.style.background = 'var(--surface)';
-            input.style.color = 'var(--text-dim)';
-
-            // Add help text
+            input.style.background = 'var(--surface)'; input.style.color = 'var(--text-dim)';
             let helpText = input.parentElement?.querySelector('.help');
-            if (helpText) {
-                helpText.textContent = 'Auto-filled from your saved source';
-                helpText.style.color = 'var(--primary-dark)';
-            }
+            if (helpText) { helpText.textContent = 'Auto-filled from your saved source'; helpText.style.color = 'var(--primary-dark)'; }
         } else {
-            console.warn('Identifier input not found:', `fromField_${identifierField.name}`);
             newFields[identifierField.name] = identifier;
         }
     }
 
-    // Fill PIN field if saved - PIN IS OPTIONAL
     if (pinField) {
         const pin = source.pin || source.source_pin || '';
         if (pin) {
             const pinInput = document.getElementById(`fromField_${pinField.name}`);
             if (pinInput) {
-                pinInput.value = pin;
-                newFields[pinField.name] = pin;
-                pinInput.disabled = true;
-                pinInput.style.background = 'var(--surface)';
-                pinInput.style.color = 'var(--text-dim)';
+                pinInput.value = pin; newFields[pinField.name] = pin;
+                pinInput.disabled = true; pinInput.style.background = 'var(--surface)'; pinInput.style.color = 'var(--text-dim)';
             } else {
                 newFields[pinField.name] = pin;
             }
         } else {
-            // PIN is optional - don't require it
-            console.log('No PIN required for source:', source.asset_type);
             const pinInput = document.getElementById(`fromField_${pinField.name}`);
-            if (pinInput) {
-                pinInput.placeholder = 'PIN (optional)';
-                pinInput.style.borderColor = 'var(--border)';
-                // Don't set a value, leave it empty
-            }
+            if (pinInput) { pinInput.placeholder = 'PIN (optional)'; pinInput.style.borderColor = 'var(--border)'; }
         }
     }
 
-    // ✅ CRITICAL: Replace state.fromFields with ONLY the new values
-    // This prevents old data from other sources leaking through
     state.fromFields = newFields;
 
-    // Fallback: If no specific identifier field was found but we have source_identifier
     if (!identifierField && source.source_identifier) {
-        const genericField = fields.find(f =>
-            f.vault_field !== 'pin' &&
-            f.name !== 'amount' &&
-            (f.type === 'text' || f.type === 'tel' || f.type === 'number') &&
-            !f.name.includes('pin') &&
-            !f.name.includes('cvv')
-        );
+        const genericField = fields.find(f => f.vault_field !== 'pin' && f.name !== 'amount' && (f.type === 'text' || f.type === 'tel' || f.type === 'number') && !f.name.includes('pin') && !f.name.includes('cvv'));
         if (genericField) {
             const input = document.getElementById(`fromField_${genericField.name}`);
             if (input) {
                 input.value = source.source_identifier;
                 state.fromFields[genericField.name] = source.source_identifier;
-                input.disabled = true;
-                input.style.background = 'var(--surface)';
-                input.style.color = 'var(--text-dim)';
+                input.disabled = true; input.style.background = 'var(--surface)'; input.style.color = 'var(--text-dim)';
             } else {
                 state.fromFields[genericField.name] = source.source_identifier;
             }
         }
     }
-
-    console.log('Filled fields for source:', source.asset_type, state.fromFields);
-
     refreshUI();
 }
 
 function clearSourceSelection() {
     selectedSourceId = null;
     state.fromInst = null; state.fromAsset = null; state.fromFields = {};
-
     document.getElementById('fromFields').innerHTML = '';
     document.getElementById('fromFields').style.display = 'none';
-
     const helpEl = document.getElementById('sourceSelectedHelp');
     if (helpEl) helpEl.style.display = 'none';
-
     const amountField = document.getElementById('fromAmount');
     if (amountField) { amountField.value = ''; amountField.focus(); }
-
     showMessage('Source selection cleared.', 'info');
     updateCurrencyDisplay();
     renderSavedSourceChips();
     refreshUI();
 }
 
+// ============================================================
+// FULL SOURCE MANAGEMENT MODAL (list / remove / add) — reached
+// via Toolbox -> "My sources" or footer link. Separate from the
+// quick inline chips above; this is the detailed management view.
+// ============================================================
 function openMySourcesLegacy() {
     openModal('My sources', renderMySourcesLegacy());
 }
@@ -1985,8 +1357,7 @@ function renderMySourcesLegacy() {
                 <div style="font-weight:700;margin:8px 0;">No sources added yet</div>
                 <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">Link your bank accounts, wallets, or cards to use them as swap sources.</div>
                 <button class="btn btn-primary" onclick="openAddSource()">+ Add Source</button>
-            </div>
-        `;
+            </div>`;
     }
     const sourceList = userSources.map(source => {
         const statusClass = source.status === 'active' ? 'active' : source.status === 'pending_confirmation' ? 'pending' : 'inactive';
@@ -2009,8 +1380,7 @@ function renderMySourcesLegacy() {
                     ${source.currency ? ` · ${source.currency}` : ''}
                     ${source.confirmed_at ? ` · Confirmed: ${new Date(source.confirmed_at).toLocaleDateString()}` : ''}
                 </div>
-            </div>
-        `;
+            </div>`;
     }).join('');
     return `
         <div style="margin-bottom:16px;">
@@ -2021,19 +1391,17 @@ function renderMySourcesLegacy() {
         <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);font-size:11px;color:var(--text-dim);">
             You can add Accounts, Wallets, or Cards here. Vouchers and Bank-Wallets are added manually by admin.
             <br>Click <strong>Use</strong> on any active source to auto-fill the swap form.
-        </div>
-    `;
+        </div>`;
 }
 function useSourceForSwap(sourceId) {
     closeModal();
-    selectSourceCategory('WALLET');
+    toggleSourcePanel('WALLET');
     setTimeout(() => { selectSavedSource(sourceId); }, 200);
 }
 
 function openAddSource() {
-    const instOptions = Object.keys(PARTICIPANTS).map(code =>
-        `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`
-    ).join('');
+    document.getElementById('walletDropdown').style.display = 'none';
+    const instOptions = Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('');
     const body = `
         <div style="margin-bottom:16px;">
             <div style="font-size:14px;font-weight:700;margin-bottom:4px;">Link a new source</div>
@@ -2042,8 +1410,7 @@ function openAddSource() {
         <div class="field-group">
             <label>Institution</label>
             <select id="addSourceInst" onchange="onAddSourceInstChange(this.value)">
-                <option value="">Select institution</option>
-                ${instOptions}
+                <option value="">Select institution</option>${instOptions}
             </select>
         </div>
         <div class="field-group" id="addSourceAssetGroup" style="display:none;">
@@ -2071,8 +1438,7 @@ function openAddSource() {
         <div class="cta-row">
             <button class="btn btn-secondary" onclick="openMySourcesLegacy()">Cancel</button>
             <button class="btn btn-primary" id="addSourceSubmitBtn" onclick="submitAddSource()">Link source</button>
-        </div>
-    `;
+        </div>`;
     openModal('Add Source', body);
 }
 
@@ -2082,13 +1448,6 @@ function onAddSourceInstChange(code) {
     const group = document.getElementById('addSourceAssetGroup');
     const sel = document.getElementById('addSourceAssetType');
     if (!code) { group.style.display = 'none'; sel.innerHTML = ''; return; }
-    // Hardcoded rather than filtered from PARTICIPANTS[code].asset_types --
-    // that config list is per-institution and has been found incomplete
-    // (e.g. an institution supporting WALLET but missing it from its
-    // asset_types entry). Account/Wallet/Card are always offered as
-    // addable source types; the bank adapter itself will reject the
-    // combination server-side if a given institution genuinely doesn't
-    // support one of them.
     const eligibleTypes = ['ACCOUNT', 'WALLET', 'CARD'];
     sel.innerHTML = eligibleTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
     group.style.display = 'block';
@@ -2106,16 +1465,11 @@ async function submitAddSource() {
 
     const btn = document.getElementById('addSourceSubmitBtn');
     const original = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Registering...';
+    btn.disabled = true; btn.textContent = 'Registering...';
 
-    const result = await callApi(CONFIG.API_BASE + '/user/add_source.php', {
-        institution: institution, asset_type: assetType, identifier: identifier, account_name: accountName || undefined
-    });
+    const result = await callApi(CONFIG.API_BASE + '/user/add_source.php', { institution, asset_type: assetType, identifier, account_name: accountName || undefined });
 
-    btn.disabled = false;
-    btn.textContent = original;
-
+    btn.disabled = false; btn.textContent = original;
     if (!result.ok) { showMessage('Failed to add source: ' + result.error, 'error'); return; }
 
     const data = result.body.data || {};
@@ -2123,9 +1477,7 @@ async function submitAddSource() {
     addSourceState.requiresOtp = data.requires_otp || false;
     addSourceState.requiresRedirect = data.requires_redirect || false;
     addSourceState.redirectUrl = data.redirect_url || null;
-    addSourceState.institution = institution;
-    addSourceState.assetType = assetType;
-    addSourceState.identifier = identifier;
+    addSourceState.institution = institution; addSourceState.assetType = assetType; addSourceState.identifier = identifier;
 
     if (data.requires_redirect) {
         showMessage('Redirecting to your bank for verification...', 'info');
@@ -2150,23 +1502,12 @@ async function completeSourceOtp() {
 
     const btn = document.querySelector('#addSourceOtpFields .btn-primary');
     const original = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Verifying...';
+    btn.disabled = true; btn.textContent = 'Verifying...';
 
-    // ✅ FIX: Include user_id in the request
-    const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', {
-        attempt_id: addSourceState.attemptId,
-        otp: otp,
-        user_id: CONFIG.USER_ID
-    });
+    const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', { attempt_id: addSourceState.attemptId, otp, user_id: CONFIG.USER_ID });
 
-    btn.disabled = false;
-    btn.textContent = original;
-
-    if (!result.ok) {
-        showMessage('Verification failed: ' + result.error, 'error');
-        return;
-    }
+    btn.disabled = false; btn.textContent = original;
+    if (!result.ok) { showMessage('Verification failed: ' + result.error, 'error'); return; }
     showMessage('Source verified and activated!', 'success');
     setTimeout(() => { loadUserSources(); openMySourcesLegacy(); }, 1500);
 }
@@ -2181,64 +1522,39 @@ async function removeSource(sourceId) {
 }
 
 // ============================================================
-// PENDING SOURCES MANAGEMENT - View, Delete, Retry
+// PENDING SOURCES MANAGEMENT
 // ============================================================
-
-/**
- * Open the pending sources modal
- */
 function openPendingSources() {
     openModal('Pending Sources', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading pending sources...</div>');
     loadPendingSources();
 }
-
-/**
- * Load pending sources from the API
- */
 async function loadPendingSources() {
     const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
-
     if (!result.ok) {
         document.getElementById('modalBody').innerHTML = `
             <div style="text-align:center;padding:20px;color:var(--danger);">
                 <div style="font-weight:700;">Failed to load pending sources</div>
                 <div style="font-size:13px;color:var(--text-muted);margin-top:8px;">${escapeHtml(result.error)}</div>
                 <button class="btn btn-primary btn-sm" onclick="loadPendingSources()" style="margin-top:12px;">Retry</button>
-            </div>
-        `;
+            </div>`;
         return;
     }
-
     pendingSources = result.body.data || [];
     renderPendingSources();
 }
-
-/**
- * Render the pending sources list
- */
 function renderPendingSources() {
     const container = document.getElementById('modalBody');
-
     if (!pendingSources || pendingSources.length === 0) {
         container.innerHTML = `
             <div style="text-align:center;padding:30px;color:var(--text-muted);">
                 <div style="font-size:40px;margin-bottom:12px;">✓</div>
                 <div style="font-weight:700;font-size:18px;">No pending sources</div>
                 <div style="font-size:13px;margin-top:8px;">All your sources are active and verified.</div>
-            </div>
-        `;
+            </div>`;
         return;
     }
-
-    let html = `
-        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">
-            ${pendingSources.length} source(s) pending verification.
-            Pending sources expire after 3 minutes if not completed.
-        </div>
-        <div style="max-height:60vh;overflow-y:auto;">
-    `;
-
-    pendingSources.forEach((source, index) => {
+    let html = `<div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">${pendingSources.length} source(s) pending verification. Pending sources expire after 3 minutes if not completed.</div><div style="max-height:60vh;overflow-y:auto;">`;
+    pendingSources.forEach((source) => {
         const statusLabel = getSourceStatusLabel(source);
         const statusClass = getSourceStatusClass(source);
         const sourceTypeLabel = getSourceTypeLabel(source);
@@ -2246,17 +1562,12 @@ function renderPendingSources() {
         const canDelete = ['pending_confirmation', 'pending', 'proposed', 'otp_pending', 'oauth_pending'].includes(source.status);
         const canRetry = ['cancelled', 'rejected', 'failed'].includes(source.status);
         const isExpiring = source.is_expiring || false;
-
         html += `
             <div class="source-card" style="border-left: 3px solid ${isExpiring ? 'var(--warning)' : 'var(--border)'};">
                 <div class="source-header">
                     <div>
-                        <div class="source-institution">
-                            <span style="margin-right:8px;">${icon}</span>
-                            ${escapeHtml(source.institution_name || source.institution)}
-                            <span style="font-size:11px;color:var(--text-muted);font-weight:400;margin-left:6px;">
-                                (${sourceTypeLabel})
-                            </span>
+                        <div class="source-institution"><span style="margin-right:8px;">${icon}</span>${escapeHtml(source.institution_name || source.institution)}
+                            <span style="font-size:11px;color:var(--text-muted);font-weight:400;margin-left:6px;">(${sourceTypeLabel})</span>
                         </div>
                         <div class="source-details" style="margin-top:4px;">
                             <span style="font-weight:600;">${escapeHtml(source.identifier)}</span>
@@ -2277,186 +1588,91 @@ function renderPendingSources() {
                     ${source.expires_at ? ` · Expires: ${new Date(source.expires_at).toLocaleString()}` : ''}
                 </div>
                 ${source.error_message ? `<div style="font-size:11px;color:var(--danger);margin-top:4px;">Error: ${escapeHtml(source.error_message)}</div>` : ''}
-            </div>
-        `;
+            </div>`;
     });
-
     html += `</div>`;
     container.innerHTML = html;
 }
-
-/**
- * Get status label for display
- */
 function getSourceStatusLabel(source) {
-    const statusMap = {
-        'pending_confirmation': 'Pending Confirmation',
-        'pending': 'Pending',
-        'proposed': 'Proposed',
-        'otp_pending': 'OTP Verification',
-        'oauth_pending': 'OAuth Verification',
-        'cancelled': 'Cancelled',
-        'rejected': 'Rejected',
-        'failed': 'Failed',
-        'expired': 'Expired'
-    };
+    const statusMap = { pending_confirmation: 'Pending Confirmation', pending: 'Pending', proposed: 'Proposed', otp_pending: 'OTP Verification', oauth_pending: 'OAuth Verification', cancelled: 'Cancelled', rejected: 'Rejected', failed: 'Failed', expired: 'Expired' };
     return statusMap[source.status] || source.status;
 }
-
-/**
- * Get status class for styling
- */
 function getSourceStatusClass(source) {
-    const classMap = {
-        'pending_confirmation': 'pending',
-        'pending': 'pending',
-        'proposed': 'pending',
-        'otp_pending': 'pending',
-        'oauth_pending': 'pending',
-        'cancelled': 'inactive',
-        'rejected': 'inactive',
-        'failed': 'inactive',
-        'expired': 'inactive'
-    };
+    const classMap = { pending_confirmation: 'pending', pending: 'pending', proposed: 'pending', otp_pending: 'pending', oauth_pending: 'pending', cancelled: 'inactive', rejected: 'inactive', failed: 'inactive', expired: 'inactive' };
     return classMap[source.status] || 'pending';
 }
-
-/**
- * Get human-readable source type
- */
 function getSourceTypeLabel(source) {
-    const typeMap = {
-        'user_source': 'Source',
-        'agent_destination': 'Agent Destination',
-        'registration_attempt': 'Verification Attempt',
-        'agent_attempt': 'Agent Verification'
-    };
+    const typeMap = { user_source: 'Source', agent_destination: 'Agent Destination', registration_attempt: 'Verification Attempt', agent_attempt: 'Agent Verification' };
     return typeMap[source.type] || source.type;
 }
-
-/**
- * Get icon for source type
- */
 function getSourceIcon(source) {
-    const iconMap = {
-        'user_source': '🏦',
-        'agent_destination': '🏢',
-        'registration_attempt': '📱',
-        'agent_attempt': '📋'
-    };
+    const iconMap = { user_source: '🏦', agent_destination: '🏢', registration_attempt: '📱', agent_attempt: '📋' };
     return iconMap[source.type] || '📌';
 }
-
-/**
- * Delete a pending source
- */
 async function deletePendingSource(type, sourceId) {
     if (!confirm('Delete this pending source? It can be re-added later.')) return;
-
     const btn = document.querySelector(`[onclick*="deletePendingSource('${type}', ${sourceId})"]`);
     const originalText = btn ? btn.textContent : 'Delete';
     if (btn) { btn.textContent = 'Deleting...'; btn.disabled = true; }
-
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/delete.php', {
-        type: type,
-        source_id: sourceId
-    });
-
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/delete.php', { type, source_id: sourceId });
     if (btn) { btn.textContent = originalText; btn.disabled = false; }
-
-    if (!result.ok) {
-        showMessage('Failed to delete source: ' + result.error, 'error');
-        return;
-    }
-
+    if (!result.ok) { showMessage('Failed to delete source: ' + result.error, 'error'); return; }
     showMessage(result.body.data?.message || 'Source deleted successfully.', 'success');
     loadPendingSources();
 }
-
-/**
- * Retry a failed source
- */
 async function retryPendingSource(type, sourceId) {
     if (!confirm('Retry this source? This will start a new verification attempt.')) return;
-
     const btn = document.querySelector(`[onclick*="retryPendingSource('${type}', ${sourceId})"]`);
     const originalText = btn ? btn.textContent : 'Retry';
     if (btn) { btn.textContent = 'Retrying...'; btn.disabled = true; }
-
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/retry.php', {
-        type: type,
-        source_id: sourceId
-    });
-
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/retry.php', { type, source_id: sourceId });
     if (btn) { btn.textContent = originalText; btn.disabled = false; }
-
-    if (!result.ok) {
-        showMessage('Failed to retry source: ' + result.error, 'error');
-        return;
-    }
-
+    if (!result.ok) { showMessage('Failed to retry source: ' + result.error, 'error'); return; }
     const data = result.body.data || {};
-    if (data.requires_redirect) {
-        showMessage(data.message || 'Redirecting to bank...', 'info');
-        setTimeout(() => { window.location.href = data.redirect_url; }, 1500);
-        return;
-    }
-    if (data.requires_otp) {
-        showMessage(data.message || 'OTP sent. Enter the code to verify.', 'success');
-        // Refresh the list to show the OTP state
-        loadPendingSources();
-        return;
-    }
-
+    if (data.requires_redirect) { showMessage(data.message || 'Redirecting to bank...', 'info'); setTimeout(() => { window.location.href = data.redirect_url; }, 1500); return; }
+    if (data.requires_otp) { showMessage(data.message || 'OTP sent. Enter the code to verify.', 'success'); loadPendingSources(); return; }
     showMessage(data.message || 'Source retry initiated successfully.', 'success');
     loadPendingSources();
 }
 
-
 // ============================================================
-// TOOLBOX — single entry point for everything that used to
-// crowd the topbar: sources, history, claims, agent tools,
-// profile, help, terms.
+// TOOLBOX
 // ============================================================
-
-function openToolbox() { openModal('Toolbox', renderToolbox()); }
-
+async function openToolbox() {
+    openModal('Toolbox', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
+    await getCurrentUserRole();
+    document.getElementById('modalBody').innerHTML = renderToolbox();
+}
 function renderToolbox() {
-    // Count pending sources from the stored data
     const pendingCount = pendingSources.length;
-
     const claimCount = pendingClaims.length;
+    const isAgent = !!(SessionUser && SessionUser.is_agent);
     const rows = [
         { label: 'Finalize identity swap', badge: claimCount > 0 ? claimCount : null, action: 'openFinalizeIdentityModal()' },
         { label: 'Pending sources', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
         { label: 'My sources', action: 'openMySourcesLegacy()' },
         { label: 'Swap history', action: 'openSwapHistory()' },
+        { label: 'Register identity', action: 'openAddIdentityModal()' },
     ];
-    if (agentStatus.is_agent) rows.push({ label: 'Agent tools', action: 'openAgentToolsModal()' });
-    rows.push({ label: 'Become an agent', action: 'openAgentModal()' });
+    // Agent status now comes from the real role (users.role_id -> roles.role_name = 'agent'),
+    // not a boolean column — granted by an admin, so there's no self-service "become an agent" here.
+    if (isAgent) {
+        rows.push({ label: 'Agent tools', action: 'openAgentToolsModal()' });
+        rows.push({ label: 'Agent destinations', action: 'openAgentModal()' });
+    }
     rows.push({ label: 'My profile', action: 'openProfileModal()' });
     rows.push({ label: 'Help', action: 'openHelpModal()' });
     rows.push({ label: 'Terms & conditions', action: 'openTermsModal()' });
-
     return `<div class="toolbox-list">${rows.map(r => `
         <div class="toolbox-row" onclick="${r.action}">
             <span class="toolbox-row-label">${r.label}</span>
             ${r.badge ? `<span class="toolbox-row-badge">${r.badge}</span>` : ''}
         </div>`).join('')}</div>`;
 }
-
-/**
- * Update the toolbox badge with pending count
- */
 function updateToolboxBadge() {
     const badge = document.getElementById('toolboxBadge');
     const totalPending = pendingSources.length + pendingClaims.length;
-    if (totalPending > 0) {
-        badge.style.display = 'inline-flex';
-        badge.textContent = totalPending;
-    } else {
-        badge.style.display = 'none';
-    }
+    if (totalPending > 0) { badge.style.display = 'inline-flex'; badge.textContent = totalPending; } else { badge.style.display = 'none'; }
 }
 
 function openHelpModal() {
@@ -2470,18 +1686,16 @@ function openHelpModal() {
             </ol>
             <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
             <ol style="padding-left:18px;margin-bottom:16px;">
-                <li>Open Toolbox &rarr; Claim money.</li>
+                <li>Open Toolbox &rarr; Finalize identity swap.</li>
                 <li>Enter your claim PIN and choose how to receive it.</li>
             </ol>
-            <p style="font-weight:700;margin-bottom:6px;">Becoming an agent</p>
+            <p style="font-weight:700;margin-bottom:6px;">Agent access</p>
             <ol style="padding-left:18px;">
-                <li>Open Toolbox &rarr; Become an agent and register a business account.</li>
-                <li>Once approved, use Agent tools to search and finalize client claims.</li>
+                <li>Agent access is granted by VouchMorph admin staff to your account.</li>
+                <li>Once granted, open Toolbox &rarr; Agent destinations to register a business account, then use Agent tools to search and finalize client claims.</li>
             </ol>
-        </div>
-    `);
+        </div>`);
 }
-
 function openTermsModal() {
     openModal('Terms &amp; conditions', `
         <div style="font-size:13px;line-height:1.7;color:var(--text);">
@@ -2494,10 +1708,8 @@ function openTermsModal() {
             <p style="font-weight:700;margin-bottom:6px;">4. Identity swaps</p>
             <p style="margin-bottom:14px;">Money sent to an identity (national ID, phone, email, etc.) is held for the recipient for a limited window and requires verification to claim.</p>
             <p style="margin-top:16px;color:var(--text-dim);font-size:11px;">This is placeholder text for structure only — replace with your reviewed legal terms before launch.</p>
-        </div>
-    `);
+        </div>`);
 }
-
 function openProfileModal() { openModal('My Profile', renderProfileModal()); }
 function renderProfileModal() {
     const rows = savedIdentities.length ? savedIdentities.map((id, i) => `
@@ -2556,10 +1768,7 @@ async function checkPendingClaims() {
         updateToolboxBadge();
     } catch (e) { console.error('[claims] Failed to check pending claims', e); }
 }
-function openFinalizeIdentityModal() {
-    openModal('Finalize Identity Swap', renderFinalizeIdentityModal());
-}
-
+function openFinalizeIdentityModal() { openModal('Finalize Identity Swap', renderFinalizeIdentityModal()); }
 function renderFinalizeIdentityModal() {
     const claimsHtml = pendingClaims.length === 0
         ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;">No identity money is currently waiting for you.</div>`
@@ -2569,7 +1778,7 @@ function renderFinalizeIdentityModal() {
             <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
                 <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                     <div>
-                        <div style="font-weight:700;font-size:16px;color:var(--primary-dark);">${escapeHtml(c.amount)} ${escapeHtml(c.currency)}</div>
+                        <div style="font-weight:700;font-size:16px;color:var(--primary-dark);">${formatMoney(c.amount, c.currency)}</div>
                         <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(c.source_institution || 'Unknown')}</div>
                         <div style="font-size:11px;color:var(--text-dim);">Needs ${pinLabel} · Expires ${c.hold_expires_at ? new Date(c.hold_expires_at).toLocaleString() : 'soon'}</div>
                     </div>
@@ -2606,26 +1815,18 @@ function renderFinalizeIdentityModal() {
         </div>
         <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;">
             <span class="quick-link muted" onclick="openProfileModal()">Set / change transaction PIN</span>
-        </div>
-    `;
+        </div>`;
 }
 
 let regIdentityState = { attemptId: null, identityType: null, identityValue: null };
-
 async function submitRegisterIdentity() {
     const identityType = document.getElementById('regIdentityType').value;
     const identityValue = document.getElementById('regIdentityValue').value.trim();
     if (!identityValue) { showMessage('Enter the identity value.', 'warning'); return; }
-
-    const result = await callApi(CONFIG.API_BASE + '/user/add_identity.php', {
-        identity_type: identityType, identity_value: identityValue
-    });
+    const result = await callApi(CONFIG.API_BASE + '/user/add_identity.php', { identity_type: identityType, identity_value: identityValue });
     if (!result.ok) { showMessage('Could not register identity: ' + result.error, 'error'); return; }
-
     const data = result.body.data || {};
-    regIdentityState.identityType = identityType;
-    regIdentityState.identityValue = identityValue;
-
+    regIdentityState.identityType = identityType; regIdentityState.identityValue = identityValue;
     if (data.requires_otp) {
         regIdentityState.attemptId = data.attempt_id || null;
         document.getElementById('regIdentityOtpFields').style.display = 'block';
@@ -2633,16 +1834,12 @@ async function submitRegisterIdentity() {
         showMessage('Verification code sent.', 'success');
         return;
     }
-
     showMessage(data.message || 'Identity submitted for review.', 'success');
 }
-
 async function submitVerifyIdentityOtp() {
     const otp = document.getElementById('regIdentityOtp').value.trim();
     if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/user/verify_identity_otp.php', {
-        attempt_id: regIdentityState.attemptId, otp
-    });
+    const result = await callApi(CONFIG.API_BASE + '/user/verify_identity_otp.php', { attempt_id: regIdentityState.attemptId, otp });
     if (!result.ok) { showMessage('Verification failed: ' + result.error, 'error'); return; }
     showMessage('Identity verified. You can now use your transaction PIN for this identity.', 'success');
     openFinalizeIdentityModal();
@@ -2654,7 +1851,7 @@ function openClaimForm(idx) {
     const pinHint = claim.claim_type === 'otp_pin' ? 'Use the one-time PIN sent by SMS when this money was sent.' : 'Use your VouchMorph transaction PIN.';
     const body = `
         <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:14px;margin-bottom:14px;">
-            <div style="font-size:20px;font-weight:700;color:var(--primary-dark);">${escapeHtml(claim.amount)} ${escapeHtml(claim.currency)}</div>
+            <div style="font-size:20px;font-weight:700;color:var(--primary-dark);">${formatMoney(claim.amount, claim.currency)}</div>
             <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(claim.source_institution || 'Unknown')}</div>
         </div>
         <div class="field-group"><label>Claim PIN</label><input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="••••"><div class="help">${pinHint}</div></div>
@@ -2666,7 +1863,6 @@ function openClaimForm(idx) {
         <div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">← Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Finalize</button></div>`;
     openModal('Finalize Identity Swap', body);
 }
-
 function toggleClaimDestFields(type) { document.getElementById('claimDepositFields').style.display = type === 'DEPOSIT' ? 'block' : 'none'; }
 async function submitClaim(swapReference) {
     const pin = document.getElementById('claimPin').value.trim();
@@ -2683,22 +1879,127 @@ async function submitClaim(swapReference) {
     closeModal(); showMessage('Funds claimed successfully!', 'success'); checkPendingClaims();
 }
 
+// ============================================================
+// SESSION / ROLE — single source of truth via users.role_id -> roles.role_name
+// (whoami.php). Replaces any is_agent/is_admin boolean-column or
+// BUSINESS-account inference. Cached after first call.
+// ============================================================
+async function getCurrentUserRole() {
+    if (SessionUser) return SessionUser;
+    const result = await callApi(CONFIG.API_BASE + '/user/whoami.php', {});
+    if (result.ok && result.body) {
+        SessionUser = result.body;
+    } else {
+        // Fail safe to the least-privileged role rather than guessing agent/admin.
+        SessionUser = { success: false, role: 'user', is_agent: false, is_admin: false, permissions: [] };
+    }
+    const badge = document.getElementById('agentBadge');
+    if (badge) badge.style.display = SessionUser.is_agent ? 'inline-block' : 'none';
+    return SessionUser;
+}
+
+// agent_destination_accounts (approved deposit destinations for an agent) is a
+// separate, still-valid concept from the role itself — it's the set of accounts
+// an agent has registered to receive cash-ins, not "is this person an agent".
+// The role check now always comes from SessionUser/getCurrentUserRole().
 async function loadAgentStatus() {
     if (!CONFIG.USER_ID) return;
+    await getCurrentUserRole();
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
     if (!result.ok) return;
     agentStatus = result.body.data;
-    document.getElementById('agentBadge').style.display = agentStatus.is_agent ? 'inline-block' : 'none';
+    agentStatus.is_agent = SessionUser.is_agent; // role_id=13 is authoritative, not this endpoint
 }
 async function openAgentModal() {
     openModal('Agent Account', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
+    await getCurrentUserRole();
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
     if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);">Failed to load agent status: ${escapeHtml(result.error)}</div>`; return; }
     agentStatus = result.body.data;
-    document.getElementById('agentBadge').style.display = agentStatus.is_agent ? 'inline-block' : 'none';
+    agentStatus.is_agent = SessionUser.is_agent;
     document.getElementById('modalBody').innerHTML = renderAgentModal();
 }
 
+// ============================================================
+// REGISTER IDENTITY — split user vs agent view, driven by the
+// real role (SessionUser.is_agent from whoami.php), not a guess.
+// ============================================================
+async function openAddIdentityModal() {
+    openModal('Add Identity', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
+    const session = await getCurrentUserRole();
+    if (session.is_agent) {
+        renderAgentIdentityForm();
+    } else {
+        renderUserIdentityForm();
+    }
+}
+
+function renderUserIdentityForm() {
+    document.getElementById('modalBody').innerHTML = `
+        <div style="max-width:400px;">
+            <div style="font-weight:800;font-size:16px;margin-bottom:4px;">Add an identity</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Add a phone number or email so people can send swaps directly to you.</div>
+            <label style="font-size:12px;color:var(--text-muted);">Identity type</label>
+            <select id="userIdentityType" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
+                <option value="phone">Phone number</option>
+                <option value="email">Email</option>
+            </select>
+            <input type="text" id="userIdentityValue" placeholder="Enter value" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;">
+            <div style="background:rgba(0,160,173,0.08);border-left:3px solid var(--primary);padding:10px 14px;border-radius:6px;font-size:12px;margin-bottom:14px;">
+                🪪 Need to add a National ID, Voter's ID, Driver's License, Birth Certificate, or Passport? That has to be verified in person — <strong>ask any VouchMorph agent or government official to add it for you.</strong>
+            </div>
+            <button class="btn btn-primary" style="width:100%;" onclick="submitUserIdentity()">Add Identity</button>
+        </div>`;
+}
+
+async function submitUserIdentity() {
+    const type = document.getElementById('userIdentityType').value;
+    const value = document.getElementById('userIdentityValue').value.trim();
+    if (!value) { showMessage('Please enter a value.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/user/register_identity.php', { identity_type: type, identity_value: value });
+    if (result.ok) {
+        showMessage(result.body.message || 'Identity added.', 'success');
+        closeModal();
+    } else {
+        showMessage(result.body?.message || result.error || 'Failed to add identity.', 'error');
+    }
+}
+
+function renderAgentIdentityForm() {
+    document.getElementById('modalBody').innerHTML = `
+        <div style="max-width:420px;">
+            <div style="font-weight:800;font-size:16px;margin-bottom:4px;">Register a verified identity</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Use this after physically verifying the person's document.</div>
+            <label style="font-size:12px;color:var(--text-muted);">Account holder's phone or email</label>
+            <input type="text" id="agentTargetLookup" placeholder="Phone or email on their VouchMorph account" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
+            <label style="font-size:12px;color:var(--text-muted);">Identity type</label>
+            <select id="agentIdentityType" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
+                <option value="national_id">National ID</option>
+                <option value="voters_id">Voter's ID</option>
+                <option value="drivers_license">Driver's License</option>
+                <option value="birth_certificate">Birth Certificate</option>
+                <option value="passport">Passport</option>
+            </select>
+            <input type="text" id="agentIdentityValue" placeholder="ID number" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;">
+            <button class="btn btn-primary" style="width:100%;" onclick="submitAgentIdentity()">Register Identity</button>
+        </div>`;
+}
+
+async function submitAgentIdentity() {
+    const lookup = document.getElementById('agentTargetLookup').value.trim();
+    const type = document.getElementById('agentIdentityType').value;
+    const value = document.getElementById('agentIdentityValue').value.trim();
+    if (!lookup || !value) { showMessage('Please fill in all fields.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/add_verified_identity.php', {
+        target_lookup: lookup, identity_type: type, identity_value: value
+    });
+    if (result.ok) {
+        showMessage(result.body.message || 'Identity registered.', 'success');
+        closeModal();
+    } else {
+        showMessage(result.body?.message || result.error || 'Failed to register identity.', 'error');
+    }
+}
 function renderAgentModal() {
     const activeDestinations = agentStatus.all_destinations.filter(d => d.status !== 'cancelled' && !d.deleted_at);
     const statusRows = activeDestinations.length ? activeDestinations.map(d => {
@@ -2712,10 +2013,7 @@ function renderAgentModal() {
         return `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:8px;background:#fff;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                 <div><div style="font-weight:700;">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(d.identifier)} · ${escapeHtml(d.account_type || d.asset_type)}</div></div>
-                <div style="display:flex;align-items:center;gap:8px;">
-                    ${badge}
-                    ${canCancel ? `<button class="btn-danger-outline" onclick="cancelAgentDestination(${d.id})" style="font-size:10px;padding:4px 10px;">Cancel</button>` : ''}
-                </div>
+                <div style="display:flex;align-items:center;gap:8px;">${badge}${canCancel ? `<button class="btn-danger-outline" onclick="cancelAgentDestination(${d.id})" style="font-size:10px;padding:4px 10px;">Cancel</button>` : ''}</div>
             </div>${d.status === 'rejected' && d.rejection_reason ? `<div style="font-size:12px;color:var(--danger);margin-top:6px;">Reason: ${escapeHtml(d.rejection_reason)}</div>` : ''}
         </div>`;
     }).join('') : '<div style="font-size:12px;color:var(--text-dim);">You have no agent destination accounts registered yet.</div>';
@@ -2732,7 +2030,6 @@ function renderAgentModal() {
             <div class="cta-row"><button class="btn btn-primary" onclick="submitAgentDestination()">Register &amp; verify</button></div>
         </div>`;
 }
-
 async function cancelAgentDestination(destinationId) {
     if (!confirm('Cancel this registration? You can register again later.')) return;
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/cancel_destination.php', { destination_id: destinationId });
@@ -2740,7 +2037,6 @@ async function cancelAgentDestination(destinationId) {
     showMessage('Registration cancelled successfully.', 'success');
     openAgentModal();
 }
-
 async function submitAgentDestination() {
     const institution = document.getElementById('agentInst').value;
     const assetType = document.getElementById('agentAssetType').value;
@@ -2748,24 +2044,13 @@ async function submitAgentDestination() {
     const accountName = document.getElementById('agentAccountName').value.trim();
     if (!institution || !identifier) { showMessage('Select an institution and enter your account number.', 'warning'); return; }
     if (!assetType) { showMessage('Select whether this is an Account, Wallet, or Card.', 'warning'); return; }
-
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/propose_destination.php', { institution, asset_type: assetType, identifier, account_name: accountName || undefined });
     if (!result.ok) { showMessage('Could not register: ' + result.error, 'error'); return; }
-
     const data = result.body.data;
-    if (data.requires_redirect) {
-        showMessage(data.message || 'Redirecting you to your bank to confirm this account...', 'info');
-        window.location.href = data.redirect_url;
-        return;
-    }
-    if (!data.requires_otp) {
-        showMessage(data.message, data.otp_supported ? 'success' : 'warning');
-        openAgentModal();
-        return;
-    }
+    if (data.requires_redirect) { showMessage(data.message || 'Redirecting you to your bank to confirm this account...', 'info'); window.location.href = data.redirect_url; return; }
+    if (!data.requires_otp) { showMessage(data.message, data.otp_supported ? 'success' : 'warning'); openAgentModal(); return; }
     document.getElementById('modalBody').innerHTML = renderAgentOtpStep(data);
 }
-
 function renderAgentOtpStep(data) {
     return `
         <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:14px;margin-bottom:16px;">
@@ -2773,10 +2058,8 @@ function renderAgentOtpStep(data) {
             <div style="font-size:12px;color:var(--text-muted);">${escapeHtml(data.message)}</div>
         </div>
         <div class="field-group"><label>Enter the code</label><input type="text" id="agentOtpCode" inputmode="numeric" maxlength="8" placeholder="Code from your bank"></div>
-        <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentModal()">Cancel</button><button class="btn btn-primary" onclick="verifyAgentOtp(${data.attempt_id})">Verify &amp; register</button></div>
-    `;
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentModal()">Cancel</button><button class="btn btn-primary" onclick="verifyAgentOtp(${data.attempt_id})">Verify &amp; register</button></div>`;
 }
-
 async function verifyAgentOtp(attemptId) {
     const otp = document.getElementById('agentOtpCode').value.trim();
     if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
@@ -2787,7 +2070,6 @@ async function verifyAgentOtp(attemptId) {
 }
 
 const AGENT_ELIGIBLE_ASSET_TYPES = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
-
 function onAgentInstChange(code) {
     const group = document.getElementById('agentAssetTypeGroup');
     const sel = document.getElementById('agentAssetType');
@@ -2795,17 +2077,12 @@ function onAgentInstChange(code) {
     const inst = PARTICIPANTS[code];
     const allTypes = inst?.asset_types || [];
     const eligible = allTypes.filter(t => AGENT_ELIGIBLE_ASSET_TYPES.includes(String(t).toUpperCase()));
-    if (eligible.length === 0) {
-        group.style.display = 'block';
-        sel.innerHTML = '<option value="">No eligible account types at this institution</option>';
-        return;
-    }
+    if (eligible.length === 0) { group.style.display = 'block'; sel.innerHTML = '<option value="">No eligible account types at this institution</option>'; return; }
     sel.innerHTML = eligible.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
     group.style.display = 'block';
 }
 
 function openAgentToolsModal() { openModal('Agent Tools', renderAgentToolsSearch()); }
-
 function renderAgentToolsSearch() {
     return `
         <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Search for a client's pending identity payment. You'll need to physically verify their document and have them tell you the OTP PIN texted to them — never their personal VouchMorph transaction PIN — before you can finalize.</div>
@@ -2814,22 +2091,17 @@ function renderAgentToolsSearch() {
         <div class="cta-row"><button class="btn btn-primary" onclick="searchAgentClaim()">Search</button></div>
         <div id="agentSearchResults" style="margin-top:16px;"></div>`;
 }
-
 async function searchAgentClaim() {
     const identityType = document.getElementById('agentSearchType').value;
     const identityValue = document.getElementById('agentSearchValue').value.trim();
     const resultsBox = document.getElementById('agentSearchResults');
     if (!identityValue) { showMessage('Enter the document number to search.', 'warning'); return; }
     resultsBox.innerHTML = '<div style="text-align:center;padding:16px;"><div class="spinner"></div> Searching...</div>';
-
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/search_claim.php', { identity_type: identityType, identity_value: identityValue });
     if (!result.ok) { resultsBox.innerHTML = `<div style="color:var(--danger);">${escapeHtml(result.error)}</div>`; return; }
-
     const data = result.body.data;
     if (!data) { resultsBox.innerHTML = '<div style="font-size:12px;color:var(--text-dim);">No pending payment found for this identity.</div>'; return; }
-
     agentSearchData = data;
-
     if (data.multi_currency) {
         let html = '<div style="margin-bottom:12px;"><strong>Multiple currencies found for this identity:</strong></div>';
         data.balances.forEach((b) => {
@@ -2842,7 +2114,7 @@ async function searchAgentClaim() {
                 <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                         <div>
-                            <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${totalAmount} ${currency}</div>
+                            <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${formatMoney(totalAmount, currency)}</div>
                             <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
                             <div style="font-size:11px;color:var(--text-dim);">Expires ${b.earliest_expires_at ? new Date(b.earliest_expires_at).toLocaleString() : 'soon'}</div>
                         </div>
@@ -2853,27 +2125,23 @@ async function searchAgentClaim() {
         resultsBox.innerHTML = html;
         return;
     }
-
     const currency = escapeHtml(data.currency);
     const totalAmount = parseFloat(data.total_amount).toFixed(2);
     const swapCount = parseInt(data.swap_count);
     const identityTypeEscaped = escapeHtml(data.identity_type);
     const identityValueEscaped = escapeHtml(data.identity_value);
-
     resultsBox.innerHTML = `
         <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                 <div>
-                    <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${totalAmount} ${currency}</div>
+                    <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${formatMoney(totalAmount, currency)}</div>
                     <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
                     <div style="font-size:11px;color:var(--text-dim);">Expires ${data.earliest_expires_at ? new Date(data.earliest_expires_at).toLocaleString() : 'soon'}</div>
                 </div>
                 <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">Claim</button>
             </div>
-        </div>
-    `;
+        </div>`;
 }
-
 function openAgentFinalizeFormAggregated(identityType, identityValue, currency, totalAmount, swapCount) {
     const data = agentSearchData;
     if (!data) { showMessage('Search data not found. Please search again.', 'error'); return; }
@@ -2881,20 +2149,13 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
         openModal('Agent Tools', '<div style="color:var(--danger);">You have no approved agent destination account. Register one first.</div>');
         return;
     }
-    const destOptions = agentStatus.approved_destinations.map(d =>
-        `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} - ${escapeHtml(d.identifier)}</option>`
-    ).join('');
+    const destOptions = agentStatus.approved_destinations.map(d => `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} - ${escapeHtml(d.identifier)}</option>`).join('');
     const searchTypeLabel = IDENTITY_TYPE_LABELS[document.getElementById('agentSearchType')?.value] || 'document';
-
     const body = `
         <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:14px;margin-bottom:14px;">
             <div style="font-size:12px;color:var(--text-muted);">Client's total balance</div>
-            <div style="font-size:24px;font-weight:700;color:var(--primary-dark);">${totalAmount} ${currency}</div>
-            <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">
-                This is an aggregated balance from ${swapCount} different source(s).
-                The full amount deposits into your account. Whatever the client doesn't take as cash today
-                is instantly sent back to their identity as a new claim.
-            </div>
+            <div style="font-size:24px;font-weight:700;color:var(--primary-dark);">${formatMoney(totalAmount, currency)}</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">This is an aggregated balance from ${swapCount} different source(s). The full amount deposits into your account. Whatever the client doesn't take as cash today is instantly sent back to their identity as a new claim.</div>
         </div>
         <div class="field-group"><label>Deposit into</label><select id="agentDestSelect">${destOptions}</select></div>
         <div class="field-group">
@@ -2916,34 +2177,21 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
         <div class="cta-row">
             <button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back to Search</button>
             <button class="btn btn-primary" onclick="submitAgentFinalizeAggregated('${escapeHtml(identityType)}', '${escapeHtml(identityValue)}', ${totalAmount}, '${currency}')">Process</button>
-        </div>
-    `;
+        </div>`;
     openModal('Confirm Deposit', body);
 }
-
 async function submitAgentFinalizeAggregated(identityType, identityValue, totalAmount, currency) {
     const destinationAccountId = document.getElementById('agentDestSelect').value;
     const docVerified = document.getElementById('agentDocVerified').checked;
     const pin = document.getElementById('agentClaimPin').value.trim();
     const cashNowAmount = parseFloat(document.getElementById('cashNowAmount').value);
-
     if (!docVerified) { showMessage('You must confirm you verified the client\'s physical document.', 'warning'); return; }
     if (!pin) { showMessage('Enter the client\'s claim PIN.', 'warning'); return; }
-    if (isNaN(cashNowAmount) || cashNowAmount < 0 || cashNowAmount > totalAmount) {
-        showMessage(`Cash amount must be between 0 and ${totalAmount}.`, 'warning');
-        return;
-    }
-
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', {
-        identity_type: identityType, identity_value: identityValue, pin: pin,
-        identity_document_verified: true, destination_account_id: parseInt(destinationAccountId, 10), cash_now_amount: cashNowAmount
-    });
-
+    if (isNaN(cashNowAmount) || cashNowAmount < 0 || cashNowAmount > totalAmount) { showMessage(`Cash amount must be between 0 and ${totalAmount}.`, 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', { identity_type: identityType, identity_value: identityValue, pin, identity_document_verified: true, destination_account_id: parseInt(destinationAccountId, 10), cash_now_amount: cashNowAmount });
     if (!result.ok) { showMessage('Failed: ' + result.error, 'error'); return; }
-
     const data = result.body.data || {};
     closeModal();
-
     const netDeposited = data.actually_claimed_net || totalAmount;
     const grossAmount = data.actually_claimed_gross || totalAmount;
     const remainder = data.remainder_reswap?.amount || 0;
@@ -2951,106 +2199,54 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
     const successfulSwaps = data.swap_count || 0;
     const failedSwaps = data.failed_deposits ? data.failed_deposits.length : 0;
     const totalFees = parseFloat(grossAmount) - parseFloat(netDeposited);
-
     let msg = '';
-    if (netDeposited > 0) {
-        msg += `Deposited ${netDeposited.toFixed(2)} ${currency} into your account`;
-        if (totalFees > 0) msg += ` (fee: ${totalFees.toFixed(2)} ${currency})`;
-        msg += '. ';
-    }
-    if (cashGiven > 0) msg += `Gave client ${cashGiven.toFixed(2)} ${currency} in cash. `;
-    else msg += `No cash given now. `;
-    if (remainder > 0) msg += `The remaining ${remainder.toFixed(2)} ${currency} was sent back to their identity — a new PIN was texted to them. `;
-    if (successfulSwaps > 1) {
-        msg += `(Processed ${successfulSwaps} source(s)`;
-        if (failedSwaps > 0) msg += `, ${failedSwaps} failed`;
-        msg += `)`;
-    } else if (failedSwaps > 0) {
-        msg += `(${failedSwaps} source(s) failed)`;
-    }
+    if (netDeposited > 0) { msg += `Deposited ${formatMoney(netDeposited, currency)} into your account`; if (totalFees > 0) msg += ` (fee: ${formatMoney(totalFees, currency)})`; msg += '. '; }
+    if (cashGiven > 0) msg += `Gave client ${formatMoney(cashGiven, currency)} in cash. `; else msg += `No cash given now. `;
+    if (remainder > 0) msg += `The remaining ${formatMoney(remainder, currency)} was sent back to their identity — a new PIN was texted to them. `;
+    if (successfulSwaps > 1) { msg += `(Processed ${successfulSwaps} source(s)`; if (failedSwaps > 0) msg += `, ${failedSwaps} failed`; msg += `)`; }
+    else if (failedSwaps > 0) msg += `(${failedSwaps} source(s) failed)`;
     if (data.status === 'partial_success') msg += ' Partial success — some sources failed.';
-
     showMessage(msg, 'success');
-    agentSearchData = null;
-    agentSearchResult = null;
+    agentSearchData = null; agentSearchResult = null;
 }
-
 function openAgentFinalizeForm(claim) {
-    if (claim && claim.total_amount !== undefined) {
-        openAgentFinalizeFormAggregated(claim.identity_type, claim.identity_value, claim.currency, claim.total_amount, claim.swap_count);
-        return;
-    }
+    if (claim && claim.total_amount !== undefined) { openAgentFinalizeFormAggregated(claim.identity_type, claim.identity_value, claim.currency, claim.total_amount, claim.swap_count); return; }
     agentSearchResult = claim;
-    if (!agentStatus.approved_destinations || agentStatus.approved_destinations.length === 0) {
-        openModal('Agent Tools', '<div style="color:var(--danger);">You have no approved agent destination account. Register one first.</div>');
-        return;
-    }
-    const destOptions = agentStatus.approved_destinations.map(d =>
-        `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} - ${escapeHtml(d.identifier)}</option>`
-    ).join('');
+    if (!agentStatus.approved_destinations || agentStatus.approved_destinations.length === 0) { openModal('Agent Tools', '<div style="color:var(--danger);">You have no approved agent destination account. Register one first.</div>'); return; }
+    const destOptions = agentStatus.approved_destinations.map(d => `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} - ${escapeHtml(d.identifier)}</option>`).join('');
     const searchTypeLabel = IDENTITY_TYPE_LABELS[document.getElementById('agentSearchType')?.value] || 'document';
     const body = `
         <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:14px;margin-bottom:14px;">
             <div style="font-size:12px;color:var(--text-muted);">Client's balance</div>
-            <div style="font-size:24px;font-weight:700;color:var(--primary-dark);">${escapeHtml(claim.amount)} ${escapeHtml(claim.currency)}</div>
+            <div style="font-size:24px;font-weight:700;color:var(--primary-dark);">${formatMoney(claim.amount, claim.currency)}</div>
         </div>
         <div class="field-group"><label>Deposit into</label><select id="agentDestSelect">${destOptions}</select></div>
-        <div class="field-group">
-            <label>Cash to give the client now</label>
-            <input type="number" id="cashNowAmount" min="0" max="${claim.amount}" step="0.01" value="${claim.amount}">
-        </div>
-        <div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;">
-            <input type="checkbox" id="agentDocVerified"> I have physically verified the client's ${searchTypeLabel}
-        </label></div>
-        <div class="field-group"><label>Client's OTP PIN</label>
-            <input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for the PIN texted to them">
-            <div class="help">This is the OTP PIN sent by SMS — never a personal transaction PIN.</div>
-        </div>
-        <div class="cta-row">
-            <button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back</button>
-            <button class="btn btn-primary" onclick="submitAgentFinalize()">Process</button>
-        </div>`;
+        <div class="field-group"><label>Cash to give the client now</label><input type="number" id="cashNowAmount" min="0" max="${claim.amount}" step="0.01" value="${claim.amount}"></div>
+        <div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;"><input type="checkbox" id="agentDocVerified"> I have physically verified the client's ${searchTypeLabel}</label></div>
+        <div class="field-group"><label>Client's OTP PIN</label><input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for the PIN texted to them"><div class="help">This is the OTP PIN sent by SMS — never a personal transaction PIN.</div></div>
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back</button><button class="btn btn-primary" onclick="submitAgentFinalize()">Process</button></div>`;
     openModal('Confirm Deposit', body);
 }
-
 async function submitAgentFinalize() {
     const destinationAccountId = document.getElementById('agentDestSelect').value;
     const docVerified = document.getElementById('agentDocVerified').checked;
     const pin = document.getElementById('agentClaimPin').value.trim();
     const cashNowAmount = parseFloat(document.getElementById('cashNowAmount').value);
-
     if (!docVerified) { showMessage('You must confirm you verified the client\'s physical document.', 'warning'); return; }
     if (!pin) { showMessage('Enter the client\'s claim PIN.', 'warning'); return; }
-    if (isNaN(cashNowAmount) || cashNowAmount < 0 || cashNowAmount > agentSearchResult.amount) {
-        showMessage(`Cash amount must be between 0 and ${agentSearchResult.amount}.`, 'warning');
-        return;
-    }
-
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', {
-        swap_reference: agentSearchResult.swap_reference, pin, identity_document_verified: true,
-        destination_account_id: parseInt(destinationAccountId, 10), cash_now_amount: cashNowAmount
-    });
-
+    if (isNaN(cashNowAmount) || cashNowAmount < 0 || cashNowAmount > agentSearchResult.amount) { showMessage(`Cash amount must be between 0 and ${agentSearchResult.amount}.`, 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', { swap_reference: agentSearchResult.swap_reference, pin, identity_document_verified: true, destination_account_id: parseInt(destinationAccountId, 10), cash_now_amount: cashNowAmount });
     if (!result.ok) { showMessage('Failed: ' + result.error, 'error'); return; }
-
     const data = result.body.data || {};
     closeModal();
-
     const netDeposited = data.actually_claimed_net || agentSearchResult.amount;
     const remainder = data.remainder_reswap?.amount || 0;
     const cashGiven = data.cash_now_amount || cashNowAmount;
     const totalFees = data.total_fee || 0;
-
     let msg = '';
-    if (netDeposited > 0) {
-        msg += `Deposited ${netDeposited.toFixed(2)} ${agentSearchResult.currency} into your account`;
-        if (totalFees > 0) msg += ` (fee: ${totalFees.toFixed(2)} ${agentSearchResult.currency})`;
-        msg += '. ';
-    }
-    if (cashGiven > 0) msg += `Gave client ${cashGiven.toFixed(2)} ${agentSearchResult.currency} in cash. `;
-    else msg += `No cash given now. `;
-    if (remainder > 0) msg += `The remaining ${remainder.toFixed(2)} ${agentSearchResult.currency} was sent back to their identity — a new PIN was texted to them.`;
-
+    if (netDeposited > 0) { msg += `Deposited ${formatMoney(netDeposited, agentSearchResult.currency)} into your account`; if (totalFees > 0) msg += ` (fee: ${formatMoney(totalFees, agentSearchResult.currency)})`; msg += '. '; }
+    if (cashGiven > 0) msg += `Gave client ${formatMoney(cashGiven, agentSearchResult.currency)} in cash. `; else msg += `No cash given now. `;
+    if (remainder > 0) msg += `The remaining ${formatMoney(remainder, agentSearchResult.currency)} was sent back to their identity — a new PIN was texted to them.`;
     showMessage(msg, 'success');
     agentSearchResult = null;
 }
@@ -3064,6 +2260,62 @@ async function openSwapHistory() {
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/history.php', { user_id: CONFIG.USER_ID, limit: 50 });
     if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap history: ${escapeHtml(result.error)}</div>`; return; }
     renderSwapHistory(result.body);
+}
+function renderSwapHistory(data) {
+    const swaps = data.data || data.swaps || [];
+    if (swaps.length === 0) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps found</div></div>`; return; }
+    let historyHtml = `<div style="max-height:60vh;overflow-y:auto;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
+    swaps.forEach((swap) => {
+        const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
+        const code = swap.voucher_number || null;
+        const pin = swap.atm_pin || null;
+        const hasCode = !!(code || pin);
+        const codeInlineHtml = hasCode ? `
+            <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
+                ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(code)}</div></div>` : ''}
+                ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(pin)}</div></div>` : ''}
+                ${swap.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(swap.voucher_expiry).toLocaleString()}</div></div>` : ''}
+            </div>` : '';
+        historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
+            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                <div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
+                <div style="text-align:right;"><div style="font-weight:700;color:var(--primary-dark);">${formatMoney(swap.amount, swap.currency)}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div>
+            </div>${codeInlineHtml}</div>`;
+    });
+    historyHtml += `</div>`;
+    document.getElementById('modalBody').innerHTML = historyHtml;
+}
+async function viewSwapDetail(reference) {
+    openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: reference });
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap details: ${escapeHtml(result.error)}</div>`; return; }
+    renderSwapDetail(result.body);
+}
+function renderSwapDetail(data) {
+    const swap = data.swap || data.data || {};
+    const code = swap.voucher_number || null;
+    const pin = swap.atm_pin || null;
+    const codeBox = (code || pin) ? `
+        <div class="atm-code" style="margin-bottom:12px;">
+            ${code ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Cashout / Voucher Code</div><div class="code">${escapeHtml(code)}</div>` : ''}
+            ${pin ? `<div style="font-size:11px;color:var(--text-muted);margin:${code ? '10px' : '0'} 0 4px;">PIN</div><div class="code">${escapeHtml(pin)}</div>` : ''}
+            ${swap.voucher_expiry ? `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Expires ${new Date(swap.voucher_expiry).toLocaleString()}</div>` : ''}
+        </div>` : '';
+    document.getElementById('modalBody').innerHTML = `
+        <div style="max-height:70vh;overflow-y:auto;">
+            <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:16px;margin-bottom:12px;">
+                <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                    <div><div style="font-size:12px;color:var(--text-muted);">Reference</div><div style="font-weight:700;">${swap.reference || swap.swap_reference || 'N/A'}</div></div>
+                    <div><div style="font-size:12px;color:var(--text-muted);">Status</div><div style="font-weight:700;">${swap.status || 'unknown'}</div></div>
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Swap Type</div><div style="font-weight:700;">${swap.swap_type || 'N/A'}</div></div>
+                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${formatMoney(swap.amount, swap.currency)}</div></div>
+            </div>
+            ${codeBox}
+            <div style="margin-top:12px;"><button class="btn btn-secondary" onclick="openSwapHistory()" style="width:100%;">← Back to History</button></div>
+        </div>`;
 }
 
 function openModal(title, bodyHtml) {
