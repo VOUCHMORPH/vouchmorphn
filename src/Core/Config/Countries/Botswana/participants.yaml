@@ -62,7 +62,7 @@ participants:
     asset_types:
       - ACCOUNT
       - VOUCHER
-      - BANK-WALLET
+      - WALLET
     
     routing:
       priority: 15
@@ -99,7 +99,7 @@ participants:
     status: ACTIVE
     
     asset_types:
-      - MNO-WALLET
+      - WALLET
       - VOUCHER
     
     routing:
