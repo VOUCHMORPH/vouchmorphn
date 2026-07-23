@@ -8522,27 +8522,30 @@ private function updateHoldExpiry(?int $holdId, string $expiresAt): void
 
     // Nickname path - self-service, no verification required
     if ($identityType === 'nickname') {
-        $stmt = $this->swapDB->prepare("
-            INSERT INTO user_identities (
-                user_id, identity_type, identity_value, status, created_at
-            ) VALUES (
-                :user_id, :type, :value, 'verified', NOW()
-            ) RETURNING id
-        ");
-        $stmt->execute([
-            ':user_id' => $userId,
-            ':type' => $identityType,
-            ':value' => $identityValue,
-        ]);
+    // Nicknames are self-verified by definition - no OTP needed
+    $stmt = $this->swapDB->prepare("
+        INSERT INTO user_identities (
+            user_id, identity_type, identity_value, status, verified, created_at
+        ) VALUES (
+            :user_id, :type, :value, 'verified', true, NOW()
+        ) RETURNING id
+    ");
+    $stmt->execute([
+        ':user_id' => $userId,
+        ':type' => $identityType,
+        ':value' => $identityValue,
+    ]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $identityId = $row ? (int)$row['id'] : 0;
 
-        error_log("[SwapService] registerUserIdentity: nickname set for user_id={$userId}");
-
-        return [
-            'requires_otp' => false,
-            'status' => 'verified',
-            'message' => 'Nickname added to your account.',
-        ];
-    }
+    return [
+        'requires_otp' => false,
+        'identity_id' => $identityId,
+        'status' => 'verified',
+        'verified' => true,
+        'message' => 'Nickname registered and verified immediately.',
+    ];
+}
 
     // Document path - no self-service proof available yet.
     // This should never be reached since we block government types above,
@@ -8639,7 +8642,7 @@ public function addVerifiedIdentityAsAgent(
         if ($existing['status'] !== 'verified') {
             $stmt = $this->swapDB->prepare("
                 UPDATE user_identities
-                SET status = 'verified', otp_pin_hash = NULL, verified_at = NOW()
+                SET status = 'verified', verified = true, otp_pin_hash = NULL, verified_at = NOW()
                 WHERE id = :id
             ");
             $stmt->execute([':id' => $identityId]);
@@ -8650,9 +8653,9 @@ public function addVerifiedIdentityAsAgent(
         // already physically checked the document.
         $stmt = $this->swapDB->prepare("
             INSERT INTO user_identities (
-                user_id, identity_type, identity_value, status, verified_at, created_at
+                user_id, identity_type, identity_value, status, verified, verified_at, created_at
             ) VALUES (
-                :user_id, :type, :value, 'verified', NOW(), NOW()
+                :user_id, :type, :value, 'verified', true, NOW(), NOW()
             ) RETURNING id
         ");
         $stmt->execute([
@@ -8690,6 +8693,7 @@ public function addVerifiedIdentityAsAgent(
     return [
         'success' => true,
         'status' => 'verified',
+        'verified' => true,
         'identity_id' => $identityId,
         'identity_type' => $identityType,
         'identity_value' => $identityValue,
@@ -8697,40 +8701,40 @@ public function addVerifiedIdentityAsAgent(
         'message' => "Identity verified and added to the account. It can now be used to receive identity swaps finalized with the account's transaction PIN.",
     ];
 }
-
   // Completes phone-based identity registration.
     
-    public function verifyUserIdentityOtp(int $userId, int $attemptId, string $otp): array
-    {
-        $stmt = $this->swapDB->prepare("
-            SELECT * FROM user_identities
-            WHERE id = :id AND user_id = :user_id AND status = 'pending_otp'
-        ");
-        $stmt->execute([':id' => $attemptId, ':user_id' => $userId]);
-        $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+   public function verifyUserIdentityOtp(int $userId, int $attemptId, string $otp): array
+{
+    $stmt = $this->swapDB->prepare("
+        SELECT * FROM user_identities
+        WHERE id = :id AND user_id = :user_id AND status = 'pending_otp'
+    ");
+    $stmt->execute([':id' => $attemptId, ':user_id' => $userId]);
+    $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if (!$attempt) {
-            throw new RuntimeException("Verification attempt not found.");
-        }
-        if (strtotime($attempt['otp_expires_at']) < time()) {
-            throw new RuntimeException("Verification code expired. Start again.");
-        }
-        if (empty($attempt['otp_pin_hash']) || !password_verify($otp, $attempt['otp_pin_hash'])) {
-            throw new RuntimeException("Incorrect verification code.");
-        }
-
-        $stmt = $this->swapDB->prepare("
-            UPDATE user_identities
-            SET status = 'verified', otp_pin_hash = NULL, verified_at = NOW()
-            WHERE id = :id
-        ");
-        $stmt->execute([':id' => $attemptId]);
-
-        error_log("[SwapService] verifyUserIdentityOtp: identity id={$attemptId} verified for user_id={$userId}");
-
-        return [
-            'status' => 'verified',
-            'message' => 'Identity verified. You can now finalize identity swaps sent to it with your transaction PIN.',
-        ];
+    if (!$attempt) {
+        throw new RuntimeException("Verification attempt not found.");
     }
+    if (strtotime($attempt['otp_expires_at']) < time()) {
+        throw new RuntimeException("Verification code expired. Start again.");
+    }
+    if (empty($attempt['otp_pin_hash']) || !password_verify($otp, $attempt['otp_pin_hash'])) {
+        throw new RuntimeException("Incorrect verification code.");
+    }
+
+    $stmt = $this->swapDB->prepare("
+        UPDATE user_identities
+        SET status = 'verified', verified = true, otp_pin_hash = NULL, verified_at = NOW()
+        WHERE id = :id
+    ");
+    $stmt->execute([':id' => $attemptId]);
+
+    error_log("[SwapService] verifyUserIdentityOtp: identity id={$attemptId} verified for user_id={$userId}");
+
+    return [
+        'status' => 'verified',
+        'verified' => true,
+        'message' => 'Identity verified. You can now finalize identity swaps sent to it with your transaction PIN.',
+    ];
+}
 }
