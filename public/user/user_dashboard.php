@@ -761,7 +761,12 @@ async function callApi(endpoint, payload) {
     if (CONFIG.IS_TEST_MODE) url += (url.includes('?') ? '&' : '?') + 'test_mode=1';
     let response, body;
     try {
-        response = await fetch(url, { method: 'POST', headers: buildHeaders(), body: JSON.stringify(payload) });
+        response = await fetch(url, { 
+            method: 'POST', 
+            headers: buildHeaders(), 
+            body: JSON.stringify(payload),
+            credentials: 'include'  // ← ADD THIS - sends session cookie
+        });
     } catch (networkErr) {
         return { ok: false, error: 'Network error: could not reach ' + url + ' (' + networkErr.message + ')' };
     }
