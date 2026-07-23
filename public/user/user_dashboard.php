@@ -1386,12 +1386,20 @@ async function completeSourceOtp() {
     btn.disabled = true;
     btn.textContent = 'Verifying...';
 
-    const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', { attempt_id: addSourceState.attemptId, otp: otp });
+    // ✅ FIX: Include user_id in the request
+    const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', { 
+        attempt_id: addSourceState.attemptId, 
+        otp: otp,
+        user_id: CONFIG.USER_ID  // ← ADD THIS
+    });
 
     btn.disabled = false;
     btn.textContent = original;
 
-    if (!result.ok) { showMessage('Verification failed: ' + result.error, 'error'); return; }
+    if (!result.ok) { 
+        showMessage('Verification failed: ' + result.error, 'error'); 
+        return; 
+    }
     showMessage('Source verified and activated!', 'success');
     setTimeout(() => { loadUserSources(); openMySources(); }, 1500);
 }
