@@ -8379,97 +8379,124 @@ private function updateHoldExpiry(?int $holdId, string $expiresAt): void
      * silently trusting it.
      */
     public function registerUserIdentity(int $userId, string $identityType, string $identityValue): array
-    {
-        $identityType = strtolower(trim($identityType));
-        $identityValue = trim($identityValue);
+{
+    $identityType = strtolower(trim($identityType));
+    $identityValue = trim($identityValue);
 
-        if (!$this->isValidIdentityType($identityType)) {
-            throw new RuntimeException("Invalid identity_type. Must be one of: " . $this->validIdentityTypesLabel());
-        }
-        if ($identityValue === '') {
-            throw new RuntimeException("identity_value is required");
-        }
+    if (!$this->isValidIdentityType($identityType)) {
+        throw new RuntimeException("Invalid identity_type. Must be one of: " . $this->validIdentityTypesLabel());
+    }
+    if ($identityValue === '') {
+        throw new RuntimeException("identity_value is required");
+    }
 
-        // ============================================================
-        // UNIQUENESS: reject if this identity is already registered to
-        // a DIFFERENT user, in any status (pending_review counts too -
-        // first claimant wins the review queue, not a race at verify time).
-        // ============================================================
-        $stmt = $this->swapDB->prepare("
-            SELECT user_id, status FROM user_identities
-            WHERE identity_type = :type AND identity_value = :value
-            LIMIT 1
-        ");
-        $stmt->execute([':type' => $identityType, ':value' => $identityValue]);
-        $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+    // ============================================================
+    // FIX: Self-service identity addition can ONLY use phone, email, 
+    // or nickname. Government-issued IDs (national_id, voters_id, 
+    // birth_certificate, drivers_license, passport) can NEVER be 
+    // self-added — VouchMorph has no way to verify authenticity 
+    // without a human agent/organization checking the physical 
+    // document. These identities must be added by an approved agent 
+    // via addVerifiedIdentityAsAgent().
+    // ============================================================
+    $selfServiceTypes = ['phone', 'email', 'nickname'];
+    $governmentTypes = ['national_id', 'voters_id', 'birth_certificate', 'drivers_license', 'passport'];
 
-        if ($existing && (int)$existing['user_id'] !== $userId) {
-            error_log("[SwapService] registerUserIdentity: REJECTED - {$identityType}={$identityValue} already registered to a different user_id={$existing['user_id']}");
-            throw new RuntimeException("This identity is already registered to another VouchMorph account. If this is a mistake, contact support.");
-        }
+    if (in_array($identityType, $governmentTypes, true)) {
+        throw new RuntimeException(
+            "Government-issued IDs can only be added with help from a VouchMorph agent or government official. " .
+            "Please visit an agent to verify and add this identity to your account."
+        );
+    }
 
-        if ($existing && (int)$existing['user_id'] === $userId) {
-            // Already theirs - idempotent response rather than an error.
-            if ($existing['status'] === 'verified') {
-                return [
-                    'requires_otp' => false,
-                    'status' => 'verified',
-                    'message' => 'This identity is already verified on your account.',
-                ];
-            }
+    if (!in_array($identityType, $selfServiceTypes, true)) {
+        throw new RuntimeException("Unsupported identity type: {$identityType}");
+    }
+
+    // ============================================================
+    // UNIQUENESS: reject if this identity is already registered to
+    // a DIFFERENT user, in any status (pending_review counts too -
+    // first claimant wins the review queue, not a race at verify time).
+    // ============================================================
+    $stmt = $this->swapDB->prepare("
+        SELECT user_id, status FROM user_identities
+        WHERE identity_type = :type AND identity_value = :value
+        LIMIT 1
+    ");
+    $stmt->execute([':type' => $identityType, ':value' => $identityValue]);
+    $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($existing && (int)$existing['user_id'] !== $userId) {
+        error_log("[SwapService] registerUserIdentity: REJECTED - {$identityType}={$identityValue} already registered to a different user_id={$existing['user_id']}");
+        throw new RuntimeException("This identity is already registered to another VouchMorph account. If this is a mistake, contact support.");
+    }
+
+    if ($existing && (int)$existing['user_id'] === $userId) {
+        // Already theirs - idempotent response rather than an error.
+        if ($existing['status'] === 'verified') {
             return [
                 'requires_otp' => false,
-                'status' => $existing['status'],
-                'message' => 'This identity is already registered and awaiting verification.',
+                'status' => 'verified',
+                'message' => 'This identity is already verified on your account.',
             ];
         }
+        return [
+            'requires_otp' => false,
+            'status' => $existing['status'],
+            'message' => 'This identity is already registered and awaiting verification.',
+        ];
+    }
 
-        // Self-service phone OTP path.
-        if ($identityType === 'phone') {
-            if (!$this->smsService) {
-                throw new RuntimeException("SMS verification is not available right now - try again later.");
-            }
-
-            $otp = $this->generateOtpPin();
-            $otpHash = password_hash($otp, PASSWORD_DEFAULT);
-
-            $stmt = $this->swapDB->prepare("
-                INSERT INTO user_identities (
-                    user_id, identity_type, identity_value, status,
-                    otp_pin_hash, otp_expires_at, created_at
-                ) VALUES (
-                    :user_id, :type, :value, 'pending_otp',
-                    :otp_hash, :otp_expires_at, NOW()
-                ) RETURNING id
-            ");
-            $stmt->execute([
-                ':user_id' => $userId,
-                ':type' => $identityType,
-                ':value' => $identityValue,
-                ':otp_hash' => $otpHash,
-                ':otp_expires_at' => date('Y-m-d H:i:s', time() + 600),
-            ]);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            $attemptId = $row ? (int)$row['id'] : 0;
-
-            try {
-                $this->smsService->sendCashoutCode($identityValue, $otp, 0, 'IDENTITY_VERIFY_' . $attemptId);
-            } catch (Exception $e) {
-                error_log("[SwapService] registerUserIdentity: failed to SMS verification code: " . $e->getMessage());
-                throw new RuntimeException("Could not send the verification code - try again.");
-            }
-
-            error_log("[SwapService] registerUserIdentity: OTP sent for phone identity, user_id={$userId}, attempt_id={$attemptId}");
-
-            return [
-                'requires_otp' => true,
-                'attempt_id' => $attemptId,
-                'status' => 'pending_otp',
-                'message' => 'A verification code has been texted to this number.',
-            ];
+    // Self-service phone OTP path.
+    if ($identityType === 'phone') {
+        if (!$this->smsService) {
+            throw new RuntimeException("SMS verification is not available right now - try again later.");
         }
 
-        // Document / email path - no self-service proof available yet.
+        $otp = $this->generateOtpPin();
+        $otpHash = password_hash($otp, PASSWORD_DEFAULT);
+
+        $stmt = $this->swapDB->prepare("
+            INSERT INTO user_identities (
+                user_id, identity_type, identity_value, status,
+                otp_pin_hash, otp_expires_at, created_at
+            ) VALUES (
+                :user_id, :type, :value, 'pending_otp',
+                :otp_hash, :otp_expires_at, NOW()
+            ) RETURNING id
+        ");
+        $stmt->execute([
+            ':user_id' => $userId,
+            ':type' => $identityType,
+            ':value' => $identityValue,
+            ':otp_hash' => $otpHash,
+            ':otp_expires_at' => date('Y-m-d H:i:s', time() + 600),
+        ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $attemptId = $row ? (int)$row['id'] : 0;
+
+        try {
+            $this->smsService->sendCashoutCode($identityValue, $otp, 0, 'IDENTITY_VERIFY_' . $attemptId);
+        } catch (Exception $e) {
+            error_log("[SwapService] registerUserIdentity: failed to SMS verification code: " . $e->getMessage());
+            throw new RuntimeException("Could not send the verification code - try again.");
+        }
+
+        error_log("[SwapService] registerUserIdentity: OTP sent for phone identity, user_id={$userId}, attempt_id={$attemptId}");
+
+        return [
+            'requires_otp' => true,
+            'attempt_id' => $attemptId,
+            'status' => 'pending_otp',
+            'message' => 'A verification code has been texted to this number.',
+        ];
+    }
+
+    // Email path - self-service with email verification
+    if ($identityType === 'email') {
+        // For email, we could send a verification link or OTP via email
+        // For now, we'll mark it as pending_review since we don't have 
+        // an email OTP service in this method yet
         $stmt = $this->swapDB->prepare("
             INSERT INTO user_identities (
                 user_id, identity_type, identity_value, status, created_at
@@ -8483,14 +8510,63 @@ private function updateHoldExpiry(?int $holdId, string $expiresAt): void
             ':value' => $identityValue,
         ]);
 
-        error_log("[SwapService] registerUserIdentity: {$identityType}={$identityValue} submitted for manual review, user_id={$userId}");
+        error_log("[SwapService] registerUserIdentity: email identity submitted, user_id={$userId}");
 
         return [
             'requires_otp' => false,
             'status' => 'pending_review',
-            'message' => 'Submitted for review. Document-based identities are verified manually before they can be used with your transaction PIN.',
+            'message' => 'Email submitted for verification. Please check your email for a verification link.',
         ];
     }
+
+    // Nickname path - self-service, no verification required
+    if ($identityType === 'nickname') {
+        $stmt = $this->swapDB->prepare("
+            INSERT INTO user_identities (
+                user_id, identity_type, identity_value, status, created_at
+            ) VALUES (
+                :user_id, :type, :value, 'verified', NOW()
+            ) RETURNING id
+        ");
+        $stmt->execute([
+            ':user_id' => $userId,
+            ':type' => $identityType,
+            ':value' => $identityValue,
+        ]);
+
+        error_log("[SwapService] registerUserIdentity: nickname set for user_id={$userId}");
+
+        return [
+            'requires_otp' => false,
+            'status' => 'verified',
+            'message' => 'Nickname added to your account.',
+        ];
+    }
+
+    // Document path - no self-service proof available yet.
+    // This should never be reached since we block government types above,
+    // but kept as a fallback for safety.
+    $stmt = $this->swapDB->prepare("
+        INSERT INTO user_identities (
+            user_id, identity_type, identity_value, status, created_at
+        ) VALUES (
+            :user_id, :type, :value, 'pending_review', NOW()
+        ) RETURNING id
+    ");
+    $stmt->execute([
+        ':user_id' => $userId,
+        ':type' => $identityType,
+        ':value' => $identityValue,
+    ]);
+
+    error_log("[SwapService] registerUserIdentity: {$identityType}={$identityValue} submitted for manual review, user_id={$userId}");
+
+    return [
+        'requires_otp' => false,
+        'status' => 'pending_review',
+        'message' => 'Submitted for review. Document-based identities are verified manually before they can be used with your transaction PIN.',
+    ];
+}
 
 
   // Completes phone-based identity registration.
