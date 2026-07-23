@@ -1046,9 +1046,10 @@ function multiSourcesValid() {
         return fieldsValidForAsset(s.assetType, s.fields, true);
     });
 }
-    function refreshUI() {
+   function refreshUI() {
     document.getElementById('reviewBtn').disabled = !isSwapReady();
     updateToolboxBadge();
+    debugIsSwapReady(); // Add this line
 }
 function isSwapReady() {
     if (state.swapType === 'MULTI_SOURCE') return multiSourcesValid() && state.toInst && state.toAsset && fieldsValidForAsset(state.toAsset, state.toFields, false);
@@ -2304,6 +2305,40 @@ async function verifyAgentOtp(attemptId) {
     if (!result.ok) { showMessage('Verification failed: ' + result.error, 'error'); return; }
     showMessage(result.body.data.message || 'Account verified and registered.', 'success');
     openAgentModal();
+}
+
+    function debugIsSwapReady() {
+    console.log('=== DEBUG isSwapReady ===');
+    console.log('1. Source - fromInst:', state.fromInst);
+    console.log('2. Source - fromAsset:', state.fromAsset);
+    console.log('3. Amount - fromAmount:', state.fromAmount);
+    console.log('4. Amount > 0?', state.fromAmount > 0);
+    console.log('5. Amount within limits?', amountWithinLimits(state.fromInst, state.fromAmount));
+    
+    const config = getAssetConfig(state.fromAsset);
+    console.log('6. Asset config found?', !!config);
+    
+    if (config) {
+        const fields = config.fields || [];
+        const requiredFields = fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
+        console.log('7. Required non-PIN fields:', requiredFields.map(f => f.name));
+        
+        requiredFields.forEach(f => {
+            const hasValue = state.fromFields[f.name] && String(state.fromFields[f.name]).trim().length > 0;
+            console.log(`   - ${f.name}: ${hasValue ? '✅' : '❌'} (value: "${state.fromFields[f.name] || 'empty'}")`);
+        });
+        
+        const isValid = fieldsValidForAsset(state.fromAsset, state.fromFields, true);
+        console.log('8. fieldsValidForAsset result:', isValid);
+    }
+    
+    console.log('9. Swap type:', state.swapType);
+    console.log('10. Destination - toInst:', state.toInst);
+    console.log('11. Destination - toAsset:', state.toAsset);
+    console.log('12. Destination fields valid?', state.toInst && state.toAsset ? fieldsValidForAsset(state.toAsset, state.toFields, false) : 'N/A');
+    
+    console.log('13. Final isSwapReady:', isSwapReady());
+    console.log('=== END DEBUG ===');
 }
 
 const AGENT_ELIGIBLE_ASSET_TYPES = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
