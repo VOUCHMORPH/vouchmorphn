@@ -31,7 +31,7 @@ ACCOUNT:
       label: "Account Number"
       type: text
       required: true
-      pattern: "^[0-9]{8,16}$"
+      pattern: "^[A-Z0-9]{8,16}$"
       min_length: 8
       max_length: 16
       placeholder: "Enter account number"
