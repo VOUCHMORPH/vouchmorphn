@@ -43,6 +43,7 @@ $isLoader = in_array($userRole, ['program_officer', 'department_head']);
 $canProposeSource = in_array($userRole, ['finance_officer', 'owner']);
 $canConfirmSource = in_array($userRole, ['owner', 'it_manager_enterprise']);
 $canManageSourceAccounts = $canProposeSource || $canConfirmSource;
+$canTrace = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise', 'auditor', 'senior_approver', 'approver', 'finance_officer']);
 
 // ============================================================
 // HELPER: Check if user can edit a batch
@@ -223,6 +224,50 @@ try {
 }
 
 // ============================================================
+// PAYMENT TRACE
+// A single reference (batch reference, beneficiary phone/ID, or any
+// free-text fragment) searched across the batch and beneficiary
+// tables. Uses to_jsonb(table.*)::text ILIKE so it works without
+// hardcoding every column name — safe against schema drift, though
+// less indexed/performant than a targeted column search. If this is
+// used heavily, consider adding indexed lookup columns later.
+// ============================================================
+$traceQuery = trim($_GET['trace'] ?? '');
+$traceBatches = [];
+$traceBeneficiaries = [];
+if ($canTrace && $traceQuery !== '') {
+    $likeQ = '%' . $traceQuery . '%';
+    try {
+        $stmt = $pdo->prepare("
+            SELECT id, batch_reference, batch_name, source_institution,
+                   total_amount, total_destinations, status, created_at, updated_at
+            FROM disbursement_batches
+            WHERE organization_id = :org_id
+              AND (batch_reference ILIKE :q OR to_jsonb(disbursement_batches.*)::text ILIKE :q)
+            ORDER BY created_at DESC LIMIT 10
+        ");
+        $stmt->execute([':org_id' => $orgId, ':q' => $likeQ]);
+        $traceBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log("[ENTERPRISE DASHBOARD] Trace batch error: " . $e->getMessage());
+    }
+    try {
+        $stmt = $pdo->prepare("
+            SELECT *
+            FROM organization_beneficiaries
+            WHERE organization_id = :org_id
+              AND is_active = true
+              AND to_jsonb(organization_beneficiaries.*)::text ILIKE :q
+            ORDER BY id DESC LIMIT 10
+        ");
+        $stmt->execute([':org_id' => $orgId, ':q' => $likeQ]);
+        $traceBeneficiaries = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log("[ENTERPRISE DASHBOARD] Trace beneficiary error: " . $e->getMessage());
+    }
+}
+
+// ============================================================
 // HELPER FUNCTIONS
 // ============================================================
 function safeHtml($value) {
@@ -278,6 +323,39 @@ function getRoleLabel($role) {
     ];
     return $labels[$role] ?? ucfirst(str_replace('_', ' ', $role));
 }
+
+// Consolidated "needs your attention" queue — every role-specific
+// pending item in one place, so nothing requires digging through
+// nav to discover. Ordered by urgency.
+$actionItems = [];
+if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0) {
+    $actionItems[] = [
+        'icon' => '⏳', 'label' => 'Batches awaiting your approval',
+        'count' => $metrics['pending_approvals'], 'href' => 'batches/index.php?status=pending_approval',
+        'cta' => 'Review Now', 'tone' => 'amber',
+    ];
+}
+if ($canDisburse && ($metrics['approved_for_disbursement'] ?? 0) > 0) {
+    $actionItems[] = [
+        'icon' => '💸', 'label' => 'Approved batches ready to disburse',
+        'count' => $metrics['approved_for_disbursement'], 'href' => 'batches/index.php?status=approved',
+        'cta' => 'Disburse Now', 'tone' => 'green',
+    ];
+}
+if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0) {
+    $actionItems[] = [
+        'icon' => '💰', 'label' => 'Source accounts awaiting confirmation',
+        'count' => $metrics['pending_source_confirmations'], 'href' => 'imports/add_source.php',
+        'cta' => 'Confirm Now', 'tone' => 'amber',
+    ];
+}
+if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
+    $actionItems[] = [
+        'icon' => '❌', 'label' => 'Rejected batches that may need correction',
+        'count' => $metrics['rejected_batches'], 'href' => 'batches/index.php?status=rejected',
+        'cta' => 'Review', 'tone' => 'danger',
+    ];
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -291,6 +369,7 @@ function getRoleLabel($role) {
         /* ============================================================
            VOUCHMORPH STANDARD STYLE
            Sharp corners · Centralized · Brass/Ink-900 · Appropriate font sizes
+           One button-height scale everywhere: --btn-h / --btn-h-sm.
            ============================================================ */
         :root {
             --paper:        #EEF1EF;
@@ -305,6 +384,7 @@ function getRoleLabel($role) {
             --brass-tint:   #F4EFE3;
             --seal-red:     #7A2118;
             --amber:        #8A5A0B;
+            --amber-bg:     #FEF3C7;
             --ledger-green: #24513A;
             --green-tint:   #E5EEE7;
             --blue-tint:    #E7EEF4;
@@ -312,6 +392,8 @@ function getRoleLabel($role) {
             --danger-bg:    #fbeceb;
 
             --max-width:    1400px;
+            --btn-h:        36px;
+            --btn-h-sm:     28px;
 
             --f-body: 'IBM Plex Sans', sans-serif;
             --f-cond: 'IBM Plex Sans Condensed', sans-serif;
@@ -402,7 +484,10 @@ function getRoleLabel($role) {
             letter-spacing: 0.04em;
         }
         .logout-btn {
-            padding: 6px 16px;
+            height: var(--btn-h-sm);
+            display: inline-flex;
+            align-items: center;
+            padding: 0 16px;
             border: 2px solid var(--brass);
             color: var(--brass);
             text-decoration: none;
@@ -412,6 +497,7 @@ function getRoleLabel($role) {
             font-family: var(--f-cond);
             transition: all 0.15s;
             letter-spacing: 0.04em;
+            box-sizing: border-box;
         }
         .logout-btn:hover {
             background: var(--brass);
@@ -501,6 +587,117 @@ function getRoleLabel($role) {
             font-size: 12px;
             font-family: var(--f-mono);
         }
+
+        /* ============================================================
+           ACTION QUEUE — the "everything on my face" panel. Every
+           role-specific pending item, ranked by urgency, before the
+           user has clicked anywhere.
+           ============================================================ */
+        .action-queue {
+            background: var(--ink-900);
+            border: 1px solid var(--ink-900);
+            border-left: 4px solid var(--seal-red);
+            margin-bottom: 24px;
+            padding: 18px 22px;
+        }
+        .action-queue-title {
+            font-family: var(--f-cond);
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--brass);
+            margin-bottom: 12px;
+        }
+        .action-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 0;
+            border-top: 1px solid rgba(255,255,255,0.08);
+            flex-wrap: wrap;
+        }
+        .action-row:first-of-type { border-top: none; }
+        .action-row-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            color: #fff;
+            font-size: 13.5px;
+        }
+        .action-row .count-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 26px;
+            height: 22px;
+            padding: 0 6px;
+            font-family: var(--f-mono);
+            font-weight: 700;
+            font-size: 12px;
+            color: #fff;
+        }
+        .count-pill.amber { background: var(--amber); }
+        .count-pill.green { background: var(--ledger-green); }
+        .count-pill.danger { background: var(--seal-red); }
+        .action-queue-empty {
+            color: rgba(255,255,255,0.6);
+            font-size: 13.5px;
+        }
+
+        /* ============================================================
+           PAYMENT TRACE
+           ============================================================ */
+        .trace-box {
+            display: flex;
+            gap: 10px;
+            align-items: stretch;
+            flex-wrap: wrap;
+        }
+        .trace-box input[type="text"] {
+            height: var(--btn-h);
+            padding: 0 14px;
+            border: 1.5px solid var(--line);
+            font-size: 13.5px;
+            font-family: var(--f-body);
+            background: var(--paper);
+            color: var(--ink-900);
+            min-width: 260px;
+            flex: 1;
+            box-sizing: border-box;
+        }
+        .trace-box input[type="text"]:focus {
+            outline: none;
+            border-color: var(--brass);
+            background: var(--panel);
+        }
+        .trace-result-group { margin-top: 16px; }
+        .trace-result-group h4 {
+            font-family: var(--f-cond);
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--ink-500);
+            margin-bottom: 8px;
+        }
+        .trace-timeline {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-top: 6px;
+        }
+        .trace-step {
+            font-family: var(--f-mono);
+            font-size: 11px;
+            padding: 3px 10px;
+            background: var(--paper);
+            color: var(--ink-500);
+            border: 1px solid var(--line);
+        }
+        .trace-step.done { background: var(--green-tint); color: var(--ledger-green); border-color: var(--ledger-green); }
+        .trace-step.now { background: var(--brass-tint); color: var(--brass); border-color: var(--brass); font-weight: 700; }
 
         /* ============================================================
            QUICK ACTIONS
@@ -620,6 +817,7 @@ function getRoleLabel($role) {
             display: flex;
             gap: 8px;
             flex-wrap: wrap;
+            align-items: center;
         }
 
         /* ============================================================
@@ -664,50 +862,59 @@ function getRoleLabel($role) {
             font-family: var(--f-cond);
         }
         .status-draft { background: var(--paper); color: var(--ink-500); }
-        .status-pending { background: #fef3c7; color: var(--amber); }
+        .status-pending { background: var(--amber-bg); color: var(--amber); }
         .status-approved { background: var(--blue-tint); color: #1e40af; }
         .status-completed { background: var(--green-tint); color: var(--ledger-green); }
         .status-rejected { background: var(--danger-bg); color: var(--danger); }
 
         /* ============================================================
-           BUTTONS
+           BUTTONS — one height scale (--btn-h / --btn-h-sm) shared by
+           every button and button-like link on the page, regardless
+           of color/variant class, so nothing reads as "smaller".
            ============================================================ */
         .btn {
-            padding: 6px 18px;
+            height: var(--btn-h);
+            padding: 0 18px;
             font-size: 12px;
             font-weight: 600;
             font-family: var(--f-cond);
-            border: none;
+            border: 1px solid transparent;
             cursor: pointer;
             transition: all 0.15s;
             text-decoration: none;
-            display: inline-block;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
             letter-spacing: 0.04em;
             text-transform: uppercase;
+            box-sizing: border-box;
+            line-height: 1;
         }
         .btn:hover { opacity: 0.85; }
         .btn-primary {
             background: var(--ink-900);
             color: #fff;
+            border-color: var(--ink-900);
         }
         .btn-primary:hover {
             background: var(--brass);
+            border-color: var(--brass);
             color: var(--ink-900);
+            opacity: 1;
         }
         .btn-success {
             background: var(--ledger-green);
             color: #fff;
+            border-color: var(--ledger-green);
         }
-        .btn-success:hover {
-            background: #1a3d2c;
-        }
+        .btn-success:hover { background: #1a3d2c; opacity: 1; }
         .btn-warning {
             background: var(--amber);
             color: #fff;
+            border-color: var(--amber);
         }
-        .btn-warning:hover {
-            background: #6e4800;
-        }
+        .btn-warning:hover { background: #6e4800; opacity: 1; }
         .btn-outline {
             background: transparent;
             border: 1px solid var(--line);
@@ -717,8 +924,9 @@ function getRoleLabel($role) {
             border-color: var(--brass);
             color: var(--ink-900);
             background: var(--brass-tint);
+            opacity: 1;
         }
-        .btn-sm { padding: 4px 14px; font-size: 11px; }
+        .btn-sm { height: var(--btn-h-sm); padding: 0 14px; font-size: 11px; }
         .btn-disabled {
             opacity: 0.5;
             cursor: not-allowed;
@@ -798,6 +1006,7 @@ function getRoleLabel($role) {
             .table-responsive { font-size: 12px; }
             th, td { padding: 6px 8px; }
             .page-header h1 { font-size: 20px; }
+            .action-row { flex-direction: column; align-items: flex-start; }
         }
         @media (max-width: 480px) {
             .metrics-grid { grid-template-columns: 1fr; }
@@ -839,6 +1048,8 @@ function getRoleLabel($role) {
             .btn-outline:hover { border-color: var(--brass); color: #ECEFF2; background: #22303A; }
             .status-draft { background: #2C3A45; color: #93A2AC; }
             .footer { background: #0d1a26; }
+            .trace-box input[type="text"] { background: #22303A; color: #ECEFF2; }
+            .trace-step { background: #22303A; color: #93A2AC; }
         }
     </style>
 </head>
@@ -912,6 +1123,10 @@ function getRoleLabel($role) {
             <?php endif; ?>
         </a>
         <?php endif; ?>
+
+        <?php if ($canTrace): ?>
+        <a href="#trace" class="nav-item">🔍 Trace Payment</a>
+        <?php endif; ?>
         
         <a href="reports.php" class="nav-item">📈 Reports</a>
         
@@ -935,6 +1150,109 @@ function getRoleLabel($role) {
             </div>
             <div class="timestamp"><?php echo date('l, F j, Y · H:i'); ?></div>
         </div>
+
+        <!-- ============================================================ -->
+        <!-- ACTION QUEUE — front and center, before anything else.       -->
+        <!-- Everything this user needs to act on today, in one place.    -->
+        <!-- ============================================================ -->
+        <?php if (!empty($actionItems)): ?>
+        <div class="action-queue">
+            <div class="action-queue-title">⚡ Needs Your Attention</div>
+            <?php foreach ($actionItems as $item): ?>
+            <div class="action-row">
+                <div class="action-row-left">
+                    <span class="count-pill <?php echo $item['tone']; ?>"><?php echo (int)$item['count']; ?></span>
+                    <span><?php echo $item['icon']; ?> <?php echo safeHtml($item['label']); ?></span>
+                </div>
+                <a href="<?php echo safeHtml($item['href']); ?>" class="btn btn-primary btn-sm"><?php echo safeHtml($item['cta']); ?></a>
+            </div>
+            <?php endforeach; ?>
+        </div>
+        <?php elseif ($canApprove || $canDisburse || $canConfirmSource): ?>
+        <div class="action-queue" style="border-left-color: var(--ledger-green);">
+            <div class="action-queue-title" style="color:#fff;">✅ All Clear</div>
+            <div class="action-queue-empty">Nothing is waiting on you right now.</div>
+        </div>
+        <?php endif; ?>
+
+        <!-- ============================================================ -->
+        <!-- PAYMENT TRACE — find any payment's full lifecycle instantly. -->
+        <!-- ============================================================ -->
+        <?php if ($canTrace): ?>
+        <div class="card" id="trace">
+            <div class="card-header">
+                <span class="card-title">🔍 Trace a Payment</span>
+                <span style="font-size:12px; color:var(--ink-500);">Batch reference, beneficiary phone, or national ID</span>
+            </div>
+            <form method="get" class="trace-box" action="index.php#trace">
+                <input type="text" name="trace" placeholder="e.g. batch reference, phone number, national ID..." value="<?php echo safeHtml($traceQuery); ?>">
+                <button type="submit" class="btn btn-primary">Trace</button>
+                <?php if ($traceQuery !== ''): ?><a href="index.php#trace" class="btn btn-outline">Clear</a><?php endif; ?>
+            </form>
+
+            <?php if ($traceQuery !== ''): ?>
+                <?php if (empty($traceBatches) && empty($traceBeneficiaries)): ?>
+                <div class="empty-state"><div class="icon">🔍</div><p>No matches for "<?php echo safeHtml($traceQuery); ?>".</p></div>
+                <?php endif; ?>
+
+                <?php if (!empty($traceBatches)): ?>
+                <div class="trace-result-group">
+                    <h4>Matching Batches (<?php echo count($traceBatches); ?>)</h4>
+                    <?php foreach ($traceBatches as $b): $st = strtolower($b['status'] ?? ''); ?>
+                    <div class="card" style="border-left:3px solid var(--brass); margin-bottom:10px;">
+                        <div class="card-header" style="margin-bottom:8px; padding-bottom:8px;">
+                            <span class="card-title" style="font-size:14px;"><?php echo safeHtml($b['batch_reference']); ?> — <?php echo safeHtml($b['batch_name'] ?? 'Unnamed'); ?></span>
+                            <span class="status status-<?php echo getStatusClass($b['status']); ?>"><?php echo getStatusLabel($b['status']); ?></span>
+                        </div>
+                        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap:8px; font-size:13px;">
+                            <div><strong>Source:</strong> <?php echo safeHtml($b['source_institution'] ?? 'N/A'); ?></div>
+                            <div><strong>Amount:</strong> <?php echo formatCurrency($b['total_amount'] ?? 0); ?></div>
+                            <div><strong>Destinations:</strong> <?php echo number_format($b['total_destinations'] ?? 0); ?></div>
+                        </div>
+                        <div class="trace-timeline">
+                            <span class="trace-step done">Created <?php echo date('Y-m-d H:i', strtotime($b['created_at'] ?? 'now')); ?></span>
+                            <?php
+                            $stepsOrder = ['draft', 'pending', 'approved', 'completed'];
+                            $curIdx = array_search($st === 'pending_approval' ? 'pending' : ($st === 'executed' ? 'completed' : $st), $stepsOrder);
+                            foreach (['Draft', 'Pending Approval', 'Approved', 'Disbursed'] as $i => $label):
+                                $cls = $curIdx === false ? '' : ($i < $curIdx ? 'done' : ($i === $curIdx ? 'now' : ''));
+                            ?>
+                            <span class="trace-step <?php echo $cls; ?>"><?php echo safeHtml($label); ?></span>
+                            <?php endforeach; ?>
+                            <span class="trace-step">Updated <?php echo date('Y-m-d H:i', strtotime($b['updated_at'] ?? $b['created_at'] ?? 'now')); ?></span>
+                        </div>
+                        <div style="text-align:right; margin-top:10px;">
+                            <a href="imports/review_batch.php?batch_id=<?php echo $b['id']; ?>" class="btn btn-outline btn-sm">Open Batch</a>
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+                <?php endif; ?>
+
+                <?php if (!empty($traceBeneficiaries)): ?>
+                <div class="trace-result-group">
+                    <h4>Matching Beneficiary Records (<?php echo count($traceBeneficiaries); ?>)</h4>
+                    <div class="table-responsive">
+                        <table>
+                            <thead><tr><?php foreach (array_keys($traceBeneficiaries[0]) as $col): if (in_array($col, ['organization_id'])) continue; ?><th><?php echo safeHtml($col); ?></th><?php endforeach; ?></tr></thead>
+                            <tbody>
+                            <?php foreach ($traceBeneficiaries as $row): ?>
+                            <tr>
+                                <?php foreach ($row as $col => $val): if ($col === 'organization_id') continue; $s = is_array($val) ? json_encode($val) : (string)$val; ?>
+                                <td><?php echo safeHtml(strlen($s) > 40 ? substr($s, 0, 40) . '…' : $s); ?></td>
+                                <?php endforeach; ?>
+                            </tr>
+                            <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <?php endif; ?>
+            <?php else: ?>
+            <p style="color:var(--ink-300); font-size:13px;">Enter any reference to see that payment's full path — created, approved, disbursed — with timestamps, in one view.</p>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
 
         <!-- Quick Actions - Role Specific -->
         <div class="quick-actions">
@@ -1148,7 +1466,7 @@ function getRoleLabel($role) {
         <?php endif; ?>
 
         <?php if ($isApprover): ?>
-        <div class="info-panel" style="border-left-color: var(--amber); background: #fef3c7;">
+        <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);">
             <div class="label">✅ Approver Access</div>
             <div class="desc">
                 You can review and approve pending disbursement batches.
@@ -1184,7 +1502,7 @@ function getRoleLabel($role) {
         <?php endif; ?>
 
         <?php if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0): ?>
-        <div class="info-panel" style="border-left-color: var(--amber); background: #fef3c7;">
+        <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);">
             <div class="label">💰 Source Accounts Awaiting Confirmation</div>
             <div class="desc">
                 <span class="highlight"><?php echo $metrics['pending_source_confirmations']; ?> source account(s)</span> proposed by Finance are waiting for an Owner or IT Manager to confirm before they can be used in disbursements.
