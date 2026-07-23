@@ -702,6 +702,18 @@ function toggleSourcePanel(cat) {
     refreshUI();
 }
 
+// Once a source/institution is actually chosen, close the dropdown so the
+// page doesn't stay stretched out — the chosen button stays visually marked
+// so clicking it again reopens the list to change the choice.
+function collapseSourcePanel() {
+    const wrap = document.getElementById('sourcePanelWrap');
+    if (wrap) wrap.style.display = 'none';
+    sourcePanelOpenCat = null;
+    document.querySelectorAll('.source-type-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.cat === state.fromCategory);
+    });
+}
+
 function populateInstitutionsForAsset(assetType) {
     const sel = document.getElementById('fromInstSelect');
     const codes = Object.keys(PARTICIPANTS).filter(code =>
@@ -774,6 +786,7 @@ function selectFromInst(code) {
     box.style.display = 'block';
     renderDynamicFields('fromFields', state.fromAsset, 'fromField_', updateFromField, true);
     updateCurrencyDisplay();
+    collapseSourcePanel();
     refreshUI();
 }
 function updateFromField(name, value) { state.fromFields[name] = value; refreshUI(); }
@@ -1193,7 +1206,7 @@ function selectSavedSource(sourceId) {
     }, 300);
 
     updateCurrencyDisplay();
-    renderSavedSourceChips();
+    collapseSourcePanel();
     refreshUI();
 }
 
