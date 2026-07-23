@@ -930,7 +930,7 @@ public function retryPendingSource(int $userId, string $type, int $sourceId): ar
     
     // For user_source_accounts, initiate a new verification
     if ($type === 'user_source') {
-        $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
+        $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn-production.up.railway.app', '/')
             . '/user/source_oauth_callback.php';
         
         return $this->initiateUserSourceRegistration(
@@ -945,7 +945,7 @@ public function retryPendingSource(int $userId, string $type, int $sourceId): ar
     
     // For agent destinations
     if ($type === 'agent_destination') {
-        $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
+        $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn-production.up.railway.app', '/')
             . '/api/v1/agent/oauth_callback.php';
         
         return $this->initiateAgentDestinationRegistration(
@@ -5083,7 +5083,7 @@ public function initiateAgentDestinationRegistration(
         throw new RuntimeException("A verification attempt is already pending for this account.");
     }
 
-    $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
+    $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn-production.up.railway.app', '/')
         . '/api/v1/agent/oauth_callback.php';
 
     $linkResult = null;
@@ -5339,7 +5339,7 @@ public function completeAgentDestinationRegistrationByState(string $oauthState, 
         throw new RuntimeException("Registration attempt not found or already completed.");
     }
 
-    $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
+    $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn-production.up.railway.app', '/')
         . '/api/v1/agent/oauth_callback.php';
 
     try {
@@ -5557,7 +5557,7 @@ public function initiateUserSourceRegistration(
         throw new RuntimeException("A verification attempt is already pending for this account.");
     }
 
-    $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
+    $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn-production.up.railway.app', '/')
         . '/user/source_oauth_callback.php';
 
     // ============================================================
@@ -5755,7 +5755,7 @@ public function completeUserSourceRegistrationByState(string $oauthState, string
         throw new RuntimeException("Registration attempt not found or already completed.");
     }
 
-    $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
+    $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn-production.up.railway.app', '/')
         . '/user/source_oauth_callback.php';
 
     try {
