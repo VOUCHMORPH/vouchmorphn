@@ -273,7 +273,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .raw-json { text-align: left; font-size: 11px; background: var(--surface); border-radius: var(--radius); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-dim); margin-top: 12px; max-height: 200px; overflow-y: auto; }
 @media (max-width: 480px) { body { padding: 12px; } .btn, .btn-secondary { padding: 12px 24px; width: 100%; } .cta-row { flex-direction: column; } .cta-row .btn, .cta-row .btn-secondary, .cta-row .btn:only-child, .cta-row .btn-secondary:only-child { flex: 0 0 auto; } .topbar { flex-direction: column; align-items: stretch; } }
 
-/* Source type buttons */
 .source-type-buttons { display: flex; flex-direction: column; gap: 12px; }
 .source-type-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 12px 14px; font-size: 16px; font-weight: 600; text-align: left; background: #fff; color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-family: var(--font); position: relative; }
 .source-type-btn:hover { border-color: var(--primary); color: var(--primary-dark); }
@@ -288,7 +287,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .empty-source-box { text-align: center; padding: 18px 12px; border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface); }
 .empty-source-box p { font-size: 12px; color: var(--text-dim); margin-bottom: 10px; }
 
-/* Source management styles */
 .source-card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 10px; }
 .source-card .source-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .source-card .source-institution { font-weight: 700; font-size: 15px; }
@@ -301,7 +299,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .otp-input-group input { flex: 1; }
 .otp-input-group button { flex-shrink: 0; }
 
-/* Saved sources */
 .saved-source-list { border: 1px solid var(--border); border-radius: var(--radius); background: #fff; overflow: hidden; }
 .saved-source-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; border-bottom: 1px solid var(--border); }
 .saved-source-row:last-child { border-bottom: none; }
@@ -315,7 +312,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .saved-source-row .row-check { font-size: 14px; opacity: 0; }
 .saved-source-row.active .row-check { opacity: 1; }
 
-/* Toolbox modal rows */
 .toolbox-list { display: flex; flex-direction: column; gap: 2px; }
 .toolbox-row { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; margin-bottom: 6px; background: #fff; }
 .toolbox-row:hover { background: var(--surface); border-color: var(--text); }
@@ -323,10 +319,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .toolbox-row-label { flex: 1; font-size: 14px; font-weight: 600; color: var(--text); }
 .toolbox-row-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; border-radius: var(--radius); display: inline-flex; align-items: center; justify-content: center; }
 
-/* Identity swap hint */
 #identitySwapHint { display: none; background: rgba(0,160,173,0.08); border-left: 3px solid var(--primary); padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-top: 8px; }
-
-/* Swap readiness hint */
 #swapReadinessHint { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 8px; display: none; }
 #swapReadinessHint.show { display: block; }
 #swapReadinessHint.warning { background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); padding: 10px 14px; border-radius: var(--radius); color: var(--text-muted); }
@@ -913,16 +906,12 @@ function multiSourcesValid() {
     });
 }
 
-// ============================================================
-// SWAP READINESS - ALWAYS ACTIVE BUTTON WITH DETAILED FIELD HINTS
-// ============================================================
 function getSwapReadiness() {
     const reasons = [];
     const missingFields = [];
     
     if (state.swapType === 'MULTI_SOURCE') {
         if (!multiSourcesValid()) {
-            // Check each source for missing fields
             state.multiSources.forEach((s, idx) => {
                 if (!s.institution) missingFields.push(`Source ${idx + 1}: institution not selected`);
                 if (!s.assetType) missingFields.push(`Source ${idx + 1}: asset type not selected`);
@@ -969,7 +958,6 @@ function getSwapReadiness() {
         reasons.push(limits ? `enter an amount between ${limits.min_amount} and ${limits.max_amount}` : 'enter an amount within this institution\'s limits');
     }
     
-    // Check source fields
     if (state.fromInst && state.fromAsset && !fieldsValidForAsset(state.fromAsset, state.fromFields, true)) {
         const config = getAssetConfig(state.fromAsset);
         if (config) {
@@ -984,7 +972,6 @@ function getSwapReadiness() {
         reasons.push('fill in the required source fields');
     }
     
-    // Check destination based on swap type
     if (state.swapType === 'IDENTITY') {
         if (!state.toIdentityValue) {
             missingFields.push('Identity: identity value required');
@@ -1294,24 +1281,104 @@ function selectSavedSource(sourceId) {
     const fieldsBox = document.getElementById('fromFields');
     fieldsBox.style.display = 'block';
     fieldsBox.innerHTML = '';
+    
     renderDynamicFields('fromFields', source.asset_type, 'fromField_', updateFromField, true);
 
     setTimeout(() => {
-        fillSourceIdentifierFields(source);
-        const config = getAssetConfig(source.asset_type);
-        if (config) {
-            const idField = config.fields?.find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-            if (idField) {
-                const input = document.getElementById(`fromField_${idField.name}`);
-                if (input && !input.value) {
-                    const identifier = source.identifier || source.source_identifier || '';
-                    input.value = identifier;
-                    state.fromFields[idField.name] = identifier;
+        const assetConfig = getAssetConfig(source.asset_type);
+        if (!assetConfig) {
+            console.warn('No asset config for type:', source.asset_type);
+            return;
+        }
+        
+        const fields = assetConfig.fields || [];
+        const identifier = source.identifier || source.source_identifier || '';
+        
+        const identifierField = fields.find(f =>
+            f.vault_field !== 'pin' &&
+            f.name !== 'amount' &&
+            (f.name === 'account_number' || f.name === 'identifier' || f.name === 'account' || 
+             f.name === 'phone_number' || f.name === 'phone' || f.name === 'card_number' || 
+             f.name === 'wallet_account' || f.name === 'wallet_address' || f.name === 'order_number' || 
+             f.name === 'cheque_number' || f.name === 'atm_code' || f.name === 'voucher_number' ||
+             f.name === 'source_identifier' || f.name === 'wallet_id')
+        );
+        
+        const pinField = fields.find(f => f.vault_field === 'pin');
+
+        document.querySelectorAll('#fromFields input').forEach(input => {
+            if (!input.disabled) input.value = '';
+            input.style.background = '#fff';
+            input.style.color = 'var(--text)';
+        });
+        document.querySelectorAll('#fromFields input[disabled]').forEach(input => {
+            input.disabled = false;
+            input.style.background = '#fff';
+            input.style.color = 'var(--text)';
+        });
+
+        const newFields = {};
+
+        if (identifierField) {
+            const input = document.getElementById(`fromField_${identifierField.name}`);
+            if (input) {
+                input.value = identifier;
+                newFields[identifierField.name] = identifier;
+                input.disabled = true;
+                input.style.background = 'var(--surface)';
+                input.style.color = 'var(--text-dim)';
+                let helpText = input.parentElement?.querySelector('.help');
+                if (helpText) { 
+                    helpText.textContent = 'Auto-filled from your saved source'; 
+                    helpText.style.color = 'var(--primary-dark)';
+                }
+            } else {
+                newFields[identifierField.name] = identifier;
+            }
+        }
+
+        if (pinField) {
+            const pin = source.pin || source.source_pin || '';
+            if (pin) {
+                const pinInput = document.getElementById(`fromField_${pinField.name}`);
+                if (pinInput) {
+                    pinInput.value = pin;
+                    newFields[pinField.name] = pin;
+                    pinInput.disabled = true;
+                    pinInput.style.background = 'var(--surface)';
+                    pinInput.style.color = 'var(--text-dim)';
+                } else {
+                    newFields[pinField.name] = pin;
+                }
+            } else {
+                const pinInput = document.getElementById(`fromField_${pinField.name}`);
+                if (pinInput) {
+                    pinInput.placeholder = 'PIN (optional)';
+                    pinInput.style.borderColor = 'var(--border)';
                 }
             }
         }
+
+        state.fromFields = newFields;
+        
+        console.log('Filled fields for source:', source.asset_type, state.fromFields);
+        
         refreshUI();
-    }, 150);
+        
+        const isValid = fieldsValidForAsset(state.fromAsset, state.fromFields, true);
+        console.log('fieldsValidForAsset result after fill:', isValid);
+        
+        if (!isValid) {
+            const config = getAssetConfig(state.fromAsset);
+            if (config) {
+                const requiredFields = config.fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
+                requiredFields.forEach(f => {
+                    const hasValue = state.fromFields[f.name] && String(state.fromFields[f.name]).trim().length > 0;
+                    console.log(`  ${f.name}: ${hasValue ? '✅' : '❌'} (value: "${state.fromFields[f.name] || 'empty'}")`);
+                });
+            }
+        }
+    }, 200);
 
     const helpEl = document.getElementById('sourceSelectedHelp');
     if (helpEl) {
@@ -1331,82 +1398,6 @@ function selectSavedSource(sourceId) {
 
     updateCurrencyDisplay();
     collapseSourcePanel();
-    refreshUI();
-}
-
-function fillSourceIdentifierFields(source) {
-    const assetConfig = getAssetConfig(source.asset_type);
-    if (!assetConfig) return;
-    const fields = assetConfig.fields || [];
-
-    const identifierField = fields.find(f =>
-        f.vault_field !== 'pin' && f.name !== 'amount' &&
-        (f.name === 'account_number' || f.name === 'identifier' || f.name === 'account' || f.name === 'phone_number' ||
-         f.name === 'phone' || f.name === 'card_number' || f.name === 'wallet_account' || f.name === 'wallet_address' ||
-         f.name === 'order_number' || f.name === 'cheque_number' || f.name === 'atm_code' || f.name === 'voucher_number' ||
-         f.name === 'source_identifier' || f.name === 'wallet_id')
-    );
-    const pinField = fields.find(f => f.vault_field === 'pin');
-
-    document.querySelectorAll('#fromFields input').forEach(input => {
-        if (!input.disabled) input.value = '';
-        input.style.background = '#fff'; input.style.color = 'var(--text)';
-    });
-    document.querySelectorAll('#fromFields .help').forEach(help => {
-        if (!help.textContent.includes('Auto-filled')) help.textContent = '';
-    });
-    document.querySelectorAll('#fromFields input[disabled]').forEach(input => {
-        input.disabled = false; input.style.background = '#fff'; input.style.color = 'var(--text)';
-    });
-
-    const newFields = {};
-    const identifier = source.identifier || source.source_identifier || '';
-
-    if (identifierField) {
-        const input = document.getElementById(`fromField_${identifierField.name}`);
-        if (input) {
-            input.value = identifier;
-            newFields[identifierField.name] = identifier;
-            input.disabled = true;
-            input.style.background = 'var(--surface)'; input.style.color = 'var(--text-dim)';
-            let helpText = input.parentElement?.querySelector('.help');
-            if (helpText) { helpText.textContent = 'Auto-filled from your saved source'; helpText.style.color = 'var(--primary-dark)'; }
-        } else {
-            newFields[identifierField.name] = identifier;
-        }
-    }
-
-    if (pinField) {
-        const pin = source.pin || source.source_pin || '';
-        if (pin) {
-            const pinInput = document.getElementById(`fromField_${pinField.name}`);
-            if (pinInput) {
-                pinInput.value = pin; newFields[pinField.name] = pin;
-                pinInput.disabled = true; pinInput.style.background = 'var(--surface)'; pinInput.style.color = 'var(--text-dim)';
-            } else {
-                newFields[pinField.name] = pin;
-            }
-        } else {
-            const pinInput = document.getElementById(`fromField_${pinField.name}`);
-            if (pinInput) { pinInput.placeholder = 'PIN (optional)'; pinInput.style.borderColor = 'var(--border)'; }
-        }
-    }
-
-    state.fromFields = newFields;
-
-    if (!identifierField && source.source_identifier) {
-        const genericField = fields.find(f => f.vault_field !== 'pin' && f.name !== 'amount' && (f.type === 'text' || f.type === 'tel' || f.type === 'number') && !f.name.includes('pin') && !f.name.includes('cvv'));
-        if (genericField) {
-            const input = document.getElementById(`fromField_${genericField.name}`);
-            if (input) {
-                input.value = source.source_identifier;
-                state.fromFields[genericField.name] = source.source_identifier;
-                input.disabled = true; input.style.background = 'var(--surface)'; input.style.color = 'var(--text-dim)';
-            } else {
-                state.fromFields[genericField.name] = source.source_identifier;
-            }
-        }
-    }
     refreshUI();
 }
 
