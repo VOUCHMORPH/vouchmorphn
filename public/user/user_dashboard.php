@@ -1494,7 +1494,6 @@ function renderPendingSources() {
                         ${isExpiring ? `<span style="font-size:10px;color:var(--warning);font-weight:700;">Expiring soon</span>` : ''}
                         ${canDelete ? `<button class="btn-danger-outline" onclick="deletePendingSource('${source.type}', ${source.id})" style="font-size:10px;padding:4px 10px;">Delete</button>` : ''}
                         ${canRetry ? `<button class="btn-primary btn-sm" onclick="retryPendingSource('${source.type}', ${source.id})" style="font-size:10px;padding:4px 10px;">Retry</button>` : ''}
-                        ${source.status === 'otp_pending' ? `<button class="btn-primary btn-sm" onclick="resendOtpForSource(${source.id})" style="font-size:10px;padding:4px 10px;">Resend OTP</button>` : ''}
                     </div>
                 </div>
                 <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">
@@ -1638,27 +1637,6 @@ async function retryPendingSource(type, sourceId) {
     loadPendingSources();
 }
 
-/**
- * Resend OTP for a source
- */
-async function resendOtpForSource(attemptId) {
-    const btn = document.querySelector(`[onclick*="resendOtpForSource(${attemptId})"]`);
-    const originalText = btn ? btn.textContent : 'Resend OTP';
-    if (btn) { btn.textContent = 'Sending...'; btn.disabled = true; }
-
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/resend_otp.php', {
-        attempt_id: attemptId
-    });
-
-    if (btn) { btn.textContent = originalText; btn.disabled = false; }
-
-    if (!result.ok) {
-        showMessage('Failed to resend OTP: ' + result.error, 'error');
-        return;
-    }
-
-    showMessage(result.body.data?.message || 'OTP resent successfully.', 'success');
-}
 
 // ============================================================
 // TOOLBOX — single entry point for everything that used to
