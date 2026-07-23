@@ -638,13 +638,81 @@ const ASSETS = <?php echo json_encode($assetTypes); ?>;
 const ASSET_KEY_MAP = {};
 Object.keys(ASSETS).forEach(k => { ASSET_KEY_MAP[k.trim().toUpperCase()] = k; });
 
+// Add this mapping for asset type aliases
+const ASSET_TYPE_ALIASES = {
+    'WALLET': ['MNO-WALLET', 'BANK-WALLET'],  // Map WALLET to both mobile and bank wallets
+    'MOBILE_WALLET': 'MNO-WALLET',
+    'BANK_WALLET': 'BANK-WALLET',
+    'ACCOUNT': 'ACCOUNT',
+    'CARD': 'CARD',
+    'VOUCHER': 'VOUCHER',
+    'ATM': 'ATM',
+    'POSTAL_ORDER': 'POSTAL-ORDER',
+    'CHEQUE': 'CHEQUE',
+    'CRYPTO': 'CRYPTO'
+};
+
 function getAssetConfig(type) {
     if (!type) return null;
+    
+    // Try exact match first
     if (ASSETS[type]) return ASSETS[type];
+    
+    // Try with the normalized type (uppercase)
     const normalized = String(type).trim().toUpperCase();
+    if (ASSETS[normalized]) return ASSETS[normalized];
+    
+    // Try aliases - handle both string and array mappings
+    const alias = ASSET_TYPE_ALIASES[normalized];
+    if (alias) {
+        if (Array.isArray(alias)) {
+            // Try each alias in order
+            for (const a of alias) {
+                if (ASSETS[a]) return ASSETS[a];
+            }
+        } else if (ASSETS[alias]) {
+            return ASSETS[alias];
+        }
+    }
+    
+    // Try to find by key in ASSETS (case insensitive)
     const realKey = ASSET_KEY_MAP[normalized];
     if (realKey) return ASSETS[realKey];
+    
+    // Try to find by matching the key that contains the type
+    const assetKeys = Object.keys(ASSETS);
+    for (const key of assetKeys) {
+        if (key.includes(normalized) || normalized.includes(key)) {
+            return ASSETS[key];
+        }
+    }
+    
     return null;
+}
+
+// Helper function to get all possible mappings for a type
+function getAssetTypeMappings(type) {
+    if (!type) return [];
+    const normalized = String(type).trim().toUpperCase();
+    const mappings = [];
+    
+    // Add the original
+    mappings.push(type);
+    
+    // Add normalized
+    mappings.push(normalized);
+    
+    // Add aliases
+    const alias = ASSET_TYPE_ALIASES[normalized];
+    if (alias) {
+        if (Array.isArray(alias)) {
+            mappings.push(...alias);
+        } else {
+            mappings.push(alias);
+        }
+    }
+    
+    return mappings;
 }
 
 let state = {
@@ -1121,7 +1189,22 @@ async function loadUserSources() {
 }
 
 function walletEligibleSources() {
-    return userSources.filter(s => s.status === 'active' && ['WALLET', 'ACCOUNT'].includes(String(s.asset_type).toUpperCase()));
+    return userSources.filter(s => {
+        if (s.status !== 'active') return false;
+        const assetType = String(s.asset_type).toUpperCase();
+        // Check if it's a wallet or account type using the mappings
+        const config = getAssetConfig(s.asset_type);
+        const category = config?.category || '';
+        
+        return assetType === 'ACCOUNT' || 
+               assetType === 'WALLET' || 
+               assetType === 'MNO-WALLET' || 
+               assetType === 'BANK-WALLET' ||
+               assetType === 'MOBILE_WALLET' ||
+               category === 'MOBILE_MONEY' ||
+               category === 'BANK_WALLET' ||
+               category === 'BANK_ACCOUNT';
+    });
 }
 
 function renderSavedSourceChips() {
