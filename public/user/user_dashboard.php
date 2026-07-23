@@ -1622,7 +1622,7 @@ async function completeSourceOtp() {
 
 async function removeSource(sourceId) {
     if (!confirm('Remove this source? You can add it again later.')) return;
-    const result = await callApi(CONFIG.API_BASE + '/user/sources/delete.php', { source_id: sourceId });
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/delete.php', { source_id: sourceId });
     if (!result.ok) { showMessage('Failed to remove source: ' + result.error, 'error'); return; }
     showMessage('Source removed.', 'success');
     loadUserSources();
