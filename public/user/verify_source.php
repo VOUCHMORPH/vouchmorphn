@@ -20,57 +20,61 @@
 require_once __DIR__ . '/../../src/bootstrap.php';
 require_once __DIR__ . '/../../src/Domain/Services/SwapService.php';
 
-use Domain\Services\SwapService;  // ← FIXED: Correct namespace
-use Core\Database\DBConnection;    // ← ADD: For database connection
+use Domain\Services\SwapService;
+use Core\Database\DBConnection;
 
 header('Content-Type: application/json');
 
 try {
     // ============================================================
-    // AUTHENTICATION: Get user_id from session or request
+    // AUTHENTICATION: API Key method (primary)
     // ============================================================
     
-    // Start session if not already started
-    if (session_status() === PHP_SESSION_NONE) {
-        session_start();
+    $input = json_decode(file_get_contents('php://input'), true);
+    if (!$input) {
+        throw new RuntimeException("Invalid JSON input");
     }
     
-    // Get user_id from session (logged-in user)
-    $userId = $_SESSION['user_id'] ?? null;
+    // Get API key from header
+    $apiKey = $_SERVER['HTTP_X_API_KEY'] ?? null;
     
-    // If not in session, check request body (API calls)
-    if (!$userId) {
-        $input = json_decode(file_get_contents('php://input'), true);
-        $userId = $input['user_id'] ?? null;
-    }
+    // Get user_id from request body
+    $userId = $input['user_id'] ?? null;
     
-    // If still no userId, check Authorization header for JWT
-    if (!$userId) {
-        $headers = getallheaders();
-        $authHeader = $headers['Authorization'] ?? '';
-        if (preg_match('/Bearer\s+(.*)$/i', $authHeader, $matches)) {
-            $token = $matches[1];
-            // Validate JWT token (you'll need to implement this)
-            // $userId = validateJwtToken($token);
-            // For now, fall back to a simple check
-            error_log("[verify_source] JWT authentication not implemented - using user_id from request");
+    // If user_id not provided, try to get it from the attempt
+    if (!$userId && isset($input['attempt_id'])) {
+        $db = DBConnection::getConnection();
+        if ($db) {
+            $stmt = $db->prepare("
+                SELECT user_id FROM user_source_registration_attempts 
+                WHERE id = :id
+            ");
+            $stmt->execute([':id' => (int)$input['attempt_id']]);
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($result) {
+                $userId = (int)$result['user_id'];
+                error_log("[verify_source] User from attempt: {$userId}");
+            }
         }
+    }
+    
+    // If still no userId, check session (for dashboard users)
+    if (!$userId && session_status() === PHP_SESSION_NONE) {
+        session_start();
+        $userId = $_SESSION['user_id'] ?? null;
     }
     
     // If still no userId, throw error
     if (!$userId) {
-        throw new RuntimeException("Authentication required. Please log in.");
+        error_log("[verify_source] No user_id found. API Key: " . ($apiKey ? 'present' : 'missing'));
+        throw new RuntimeException("Authentication required. Please provide user_id or log in.");
     }
     
     $userId = (int)$userId;
     
     // ============================================================
-    // Get and validate input
+    // Validate input
     // ============================================================
-    $input = json_decode(file_get_contents('php://input'), true);
-    if (!$input) {
-        throw new RuntimeException("Invalid JSON input");
-    }
     
     if (empty($input['attempt_id']) || empty($input['otp'])) {
         throw new RuntimeException("Missing required fields: attempt_id, otp");
@@ -79,18 +83,20 @@ try {
     $attemptId = (int)$input['attempt_id'];
     $otp = trim($input['otp']);
     
+    error_log("[verify_source] Verifying: user_id={$userId}, attempt_id={$attemptId}, otp={$otp}");
+    
     // ============================================================
     // Initialize SwapService with database and config
     // ============================================================
     
-    // Get PDO connection using DBConnection class
-    $db = DBConnection::getConnection();  // ← FIXED: Use DBConnection class
+    $db = DBConnection::getConnection();
+    if (!$db) {
+        throw new RuntimeException("Database connection failed");
+    }
     
-    // Get country configuration
     $country = getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
     $config = \Core\Config\LoadCountry::getConfig();
     
-    // Initialize SwapService
     $swapService = new SwapService($db, $config, $country);
     
     // ============================================================
@@ -104,6 +110,7 @@ try {
     ]);
     
 } catch (Exception $e) {
+    error_log("[verify_source] ERROR: " . $e->getMessage());
     http_response_code(400);
     echo json_encode([
         'success' => false,
