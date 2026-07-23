@@ -17,10 +17,6 @@ $userName = $userData['full_name'] ?? $userData['username'] ?? 'User';
 $userCountry = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
 $userRole = $userData['role'] ?? 'user';
 $userId = $userData['id'] ?? $userData['user_id'] ?? 0;
-// NOTE: VouchMorph is not a wallet or bank — it's a switch that orchestrates
-// between partner institutions. There is no such thing as "the user's currency"
-// or a platform default; every currency in this dashboard is read live off
-// whichever institution/asset is actually selected (PARTICIPANTS[code].limits.currency).
 
 if (empty($userId)) {
     error_log("[DASHBOARD] WARNING: Session user data has no 'id' field.");
@@ -209,7 +205,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .agent-badge { font-size: 10px; color: #fff; background: var(--primary-dark); padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
 .test-mode-badge { font-size: 10px; color: #791f1f; border: 1px solid #d32f2f; padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
 
-/* Toolbox trigger */
 .toolbox-btn { position: relative; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: #fff; background: var(--text); border: none; padding: 9px 18px; border-radius: var(--radius); cursor: pointer; }
 .toolbox-btn:hover { background: #000; }
 .toolbox-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; border-radius: var(--radius); display: inline-flex; align-items: center; justify-content: center; }
@@ -249,7 +244,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .btn { padding: 14px 40px; border: none; border-radius: var(--radius); font-size: 14px; font-weight: 700; font-family: var(--font); cursor: pointer; }
 .btn-primary { background: var(--text); color: #fff; }
 .btn-primary:hover { background: #000; }
-.btn-primary:disabled { opacity: 0.35; cursor: not-allowed; }
 .btn-secondary { background: #fff; color: var(--text); border: 1px solid var(--border); padding: 14px 32px; border-radius: var(--radius); font-weight: 700; cursor: pointer; }
 .btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid rgba(211,47,47,0.4); padding: 6px 14px; border-radius: var(--radius); font-size: 11px; cursor: pointer; font-weight: 700; }
 .btn-sm { padding: 8px 18px !important; font-size: 12px; }
@@ -279,9 +273,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .raw-json { text-align: left; font-size: 11px; background: var(--surface); border-radius: var(--radius); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-dim); margin-top: 12px; max-height: 200px; overflow-y: auto; }
 @media (max-width: 480px) { body { padding: 12px; } .btn, .btn-secondary { padding: 12px 24px; width: 100%; } .cta-row { flex-direction: column; } .cta-row .btn, .cta-row .btn-secondary, .cta-row .btn:only-child, .cta-row .btn-secondary:only-child { flex: 0 0 auto; } .topbar { flex-direction: column; align-items: stretch; } }
 
-/* ============================================================
-   FROM SIDE — 3 clean source buttons
-   ============================================================ */
+/* Source type buttons */
 .source-type-buttons { display: flex; flex-direction: column; gap: 12px; }
 .source-type-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 12px 14px; font-size: 16px; font-weight: 600; text-align: left; background: #fff; color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-family: var(--font); position: relative; }
 .source-type-btn:hover { border-color: var(--primary); color: var(--primary-dark); }
@@ -309,7 +301,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .otp-input-group input { flex: 1; }
 .otp-input-group button { flex-shrink: 0; }
 
-/* Saved sources — vertical dropdown list (not wrapped chips) */
+/* Saved sources */
 .saved-source-list { border: 1px solid var(--border); border-radius: var(--radius); background: #fff; overflow: hidden; }
 .saved-source-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; border-bottom: 1px solid var(--border); }
 .saved-source-row:last-child { border-bottom: none; }
@@ -333,6 +325,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 
 /* Identity swap hint */
 #identitySwapHint { display: none; background: rgba(0,160,173,0.08); border-left: 3px solid var(--primary); padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-top: 8px; }
+
+/* Swap readiness hint */
+#swapReadinessHint { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 8px; display: none; }
+#swapReadinessHint.show { display: block; }
+#swapReadinessHint.warning { background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); padding: 10px 14px; border-radius: var(--radius); color: var(--text-muted); }
+#swapReadinessHint.success { background: rgba(26,158,92,0.08); border-left: 3px solid var(--success); padding: 10px 14px; border-radius: var(--radius); color: #146b40; }
 </style>
 </head>
 <body>
@@ -365,15 +363,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
     <div class="section split-box" id="fromSection">
         <div class="section-title"><span class="n">1</span> From</div>
 
-        <!-- ============================================================
-             CLEAN 3-BUTTON SOURCE PICKER — stacked vertically, styled to
-             match the field-group selects exactly (e.g. Swap Type on the
-             right) so both columns line up row-for-row.
-             Wallet/Account -> dropdown of saved sources + Add
-             Card / Voucher -> institution + dynamic fields
-             Only one panel open at a time; pressing the active
-             button again closes it.
-             ============================================================ -->
         <div class="field-group">
             <label>Source Type</label>
             <div class="source-type-buttons" id="sourceTypeButtons">
@@ -393,7 +382,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         </div>
 
         <div id="sourcePanelWrap" class="source-panel-wrap" style="display:none;">
-            <!-- WALLET / ACCOUNT: saved sources, or a prompt to add one -->
             <div id="walletPanel" class="source-panel" style="display:none;">
                 <div id="savedSourcesContainer" style="margin-bottom:12px;display:none;">
                     <div id="savedSourcesChips" class="saved-source-list"></div>
@@ -408,7 +396,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
                 </div>
             </div>
 
-            <!-- CARD / VOUCHER: institution + dynamic fields entered fresh each time -->
             <div id="instAssetPanel" class="source-panel" style="display:none;">
                 <div class="field-group">
                     <label>Institution</label>
@@ -501,8 +488,9 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
     </div>
     </div>
     <div class="cta-row">
-        <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()" disabled>Review Swap &rarr;</button>
+        <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()">Review Swap &rarr;</button>
     </div>
+    <div id="swapReadinessHint"></div>
 </div>
 
 <div class="page-footer">
@@ -591,18 +579,10 @@ let selectedSourceId = null;
 let pendingClaims = [];
 let pendingSources = [];
 let agentStatus = { is_agent: false, approved_destinations: [], all_destinations: [] };
-let sourcePanelOpenCat = null; // which of WALLET/CARD/VOUCHER is currently open below the 3 buttons
-let SessionUser = null; // cached whoami.php result — single source of truth for role (users.role_id -> roles.role_name)
+let sourcePanelOpenCat = null;
+let SessionUser = null;
 
-// ============================================================
-// MONEY FORMATTING — 3-letter currency, consistent everywhere
-// ============================================================
 function formatMoney(amount, currency) {
-    // VouchMorph doesn't hold a currency of its own — it's a switch between
-    // partner institutions, each with theirs. Always pass the currency that
-    // came from the specific institution/source/destination in play. If none
-    // is known yet (nothing selected), show the number alone rather than
-    // guessing a default.
     const num = parseFloat(amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     if (!currency) return num;
     return `${num} ${String(currency).toUpperCase().slice(0, 3)}`;
@@ -615,9 +595,6 @@ function maskIdentifier(value) {
     return str.slice(0, 3) + '•'.repeat(Math.max(0, str.length - 6)) + str.slice(-3);
 }
 
-// ============================================================
-// SAVED SOURCES DATA
-// ============================================================
 async function getUserSources() {
     try {
         const resp = await fetch(CONFIG.API_BASE + '/user/sources.php', { method: 'GET', credentials: 'include', headers: { 'Accept': 'application/json' } });
@@ -666,17 +643,12 @@ async function viewWalletBalance() {
     document.getElementById('modalBody').innerHTML = html;
 }
 
-// Toolbox's "Select a saved source" -> scroll to and open the From-side
-// Wallet/Account panel. One system, no duplicate modal.
 function openMySourcesFromHeader() {
     closeModal();
     document.getElementById('sourceTypeButtons')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     if (sourcePanelOpenCat !== 'WALLET') toggleSourcePanel('WALLET');
 }
 
-// ============================================================
-// FROM-SIDE 3-BUTTON SOURCE PICKER
-// ============================================================
 function toggleSourcePanel(cat) {
     const wrap = document.getElementById('sourcePanelWrap');
     const walletPanel = document.getElementById('walletPanel');
@@ -715,18 +687,6 @@ function toggleSourcePanel(cat) {
     }
     updateCurrencyDisplay();
     refreshUI();
-}
-
-// Once a source/institution is actually chosen, close the dropdown so the
-// page doesn't stay stretched out — the chosen button stays visually marked
-// so clicking it again reopens the list to change the choice.
-function collapseSourcePanel() {
-    const wrap = document.getElementById('sourcePanelWrap');
-    if (wrap) wrap.style.display = 'none';
-    sourcePanelOpenCat = null;
-    document.querySelectorAll('.source-type-btn').forEach(b => {
-        b.classList.toggle('active', b.dataset.cat === state.fromCategory);
-    });
 }
 
 function populateInstitutionsForAsset(assetType) {
@@ -787,9 +747,6 @@ async function callApi(endpoint, payload) {
     return { ok: true, body };
 }
 
-// ============================================================
-// FROM SIDE: institution + fields (Card/Voucher, and Wallet auto-fill)
-// ============================================================
 function selectFromInst(code) {
     state.fromInst = code || null;
     state.fromFields = {};
@@ -845,7 +802,7 @@ function fieldsValidForAsset(assetType, values, includePin) {
     if (!config) return false;
     let fields = config.fields || [];
     fields = fields.filter(f => f.name !== 'amount');
-    fields = fields.filter(f => f.vault_field !== 'pin'); // PIN is always optional
+    fields = fields.filter(f => f.vault_field !== 'pin');
     return fields.every(f => {
         const val = values[f.name];
         if (!f.required) return true;
@@ -945,7 +902,7 @@ function setMultiSourceField(id, name, value) { state.multiSources.find(s => s.i
 function setMultiSourceAmount(id, value) { state.multiSources.find(s => s.id === id).amount = parseFloat(value) || 0; updateMultiTotal(); refreshUI(); }
 function updateMultiTotal() {
     const total = state.multiSources.reduce((sum, s) => sum + (s.amount || 0), 0);
-    const cur = PARTICIPANTS[state.toInst]?.limits?.currency || null; // unknown until a destination institution is picked
+    const cur = PARTICIPANTS[state.toInst]?.limits?.currency || null;
     document.getElementById('multiTotal').textContent = formatMoney(total, cur);
 }
 function multiSourcesValid() {
@@ -955,20 +912,64 @@ function multiSourcesValid() {
         return fieldsValidForAsset(s.assetType, s.fields, true);
     });
 }
+
+// ============================================================
+// SWAP READINESS - ALWAYS ACTIVE BUTTON WITH CLEAR HINTS
+// ============================================================
+function getSwapReadiness() {
+    const reasons = [];
+    if (state.swapType === 'MULTI_SOURCE') {
+        if (!multiSourcesValid()) reasons.push('fill in all source rows (institution, asset type, required fields, and amount — at least 2 sources)');
+        if (!state.toInst) reasons.push('select a destination institution');
+        else if (!state.toAsset) reasons.push('select a destination asset type');
+        else if (!fieldsValidForAsset(state.toAsset, state.toFields, false)) reasons.push('fill in the required destination fields');
+        return { ready: reasons.length === 0, reasons };
+    }
+    if (!state.fromInst || !state.fromAsset) reasons.push('choose a source (Wallet/Account, Card, or Voucher)');
+    if (!(state.fromAmount > 0)) {
+        reasons.push('enter an amount');
+    } else if (state.fromInst && !amountWithinLimits(state.fromInst, state.fromAmount)) {
+        const limits = PARTICIPANTS[state.fromInst]?.limits;
+        reasons.push(limits ? `enter an amount between ${limits.min_amount} and ${limits.max_amount}` : 'enter an amount within this institution\'s limits');
+    }
+    if (state.fromInst && state.fromAsset && !fieldsValidForAsset(state.fromAsset, state.fromFields, true)) {
+        reasons.push('fill in the required source fields');
+    }
+    if (state.swapType === 'IDENTITY') {
+        if (!state.toIdentityValue) reasons.push('enter the identity value to send to');
+    } else if (state.swapType === 'CASHOUT') {
+        if (!state.toInst) reasons.push('select a destination institution for the cashout');
+    } else {
+        if (!state.toInst) reasons.push('select a destination institution');
+        else if (!state.toAsset) reasons.push('select a destination asset type');
+        else if (!fieldsValidForAsset(state.toAsset, state.toFields, false)) reasons.push('fill in the required destination fields');
+    }
+    return { ready: reasons.length === 0, reasons };
+}
+
+function isSwapReady() {
+    return getSwapReadiness().ready;
+}
+
 function refreshUI() {
-    document.getElementById('reviewBtn').disabled = !isSwapReady();
+    const readiness = getSwapReadiness();
+    const btn = document.getElementById('reviewBtn');
+    btn.disabled = false;
+    const hint = document.getElementById('swapReadinessHint');
+    if (hint) {
+        if (readiness.ready) {
+            hint.textContent = '';
+            hint.className = '';
+            hint.style.display = 'none';
+        } else {
+            hint.textContent = '⚠️ ' + readiness.reasons.join(', ');
+            hint.className = 'show warning';
+            hint.style.display = 'block';
+        }
+    }
     updateToolboxBadge();
 }
-function isSwapReady() {
-    if (state.swapType === 'MULTI_SOURCE') return multiSourcesValid() && state.toInst && state.toAsset && fieldsValidForAsset(state.toAsset, state.toFields, false);
-    const hasSource = state.fromInst && state.fromAsset;
-    if (!hasSource) return false;
-    if (!(state.fromAmount > 0) || !amountWithinLimits(state.fromInst, state.fromAmount)) return false;
-    if (!fieldsValidForAsset(state.fromAsset, state.fromFields, true)) return false;
-    if (state.swapType === 'IDENTITY') return !!state.toIdentityValue;
-    if (state.swapType === 'CASHOUT') return !!state.toInst;
-    return !!(state.toInst && state.toAsset && fieldsValidForAsset(state.toAsset, state.toFields, false));
-}
+
 function buildPayload() {
     const reference = 'SWAP_' + Date.now();
     const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
@@ -1024,15 +1025,23 @@ function buildPayload() {
     }
     return payload;
 }
+
 async function previewSwap() {
-    if (!isSwapReady()) { showMessage('Please fill in all required fields.', 'warning'); return; }
+    const readiness = getSwapReadiness();
+    if (!readiness.ready) {
+        showMessage('Before reviewing: ' + readiness.reasons.join(', ') + '.', 'warning');
+        return;
+    }
     const payload = buildPayload();
     state.swapPayload = payload;
     const btn = document.getElementById('reviewBtn');
     const original = btn.innerHTML;
-    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Calculating…';
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Calculating…';
     const result = await callApi(CONFIG.PREVIEW_ENDPOINT, payload);
-    btn.disabled = false; btn.innerHTML = original; refreshUI();
+    btn.disabled = false;
+    btn.innerHTML = original;
+    refreshUI();
     if (!result.ok) { showMessage('Preview failed: ' + result.error, 'error'); return; }
     showPreviewModal(result.body);
 }
@@ -1061,9 +1070,12 @@ async function confirmSwap() {
     if (!payload) { showMessage('No swap payload to execute', 'error'); return; }
     const btn = document.getElementById('reviewBtn');
     const original = btn.innerHTML;
-    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Executing…';
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Executing…';
     const result = await callApi(CONFIG.EXECUTE_ENDPOINT, payload);
-    btn.disabled = false; btn.innerHTML = original; refreshUI();
+    btn.disabled = false;
+    btn.innerHTML = original;
+    refreshUI();
     if (!result.ok) { showMessage('Swap failed: ' + result.error, 'error'); return; }
     showResultModal(result.body);
 }
@@ -1090,9 +1102,6 @@ function showResultModal(response) {
 const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'Birth Certificate', voter_id: 'Voter ID', phone: 'Phone Number', email: 'Email' };
 
 function getInstitutionCurrency(instCode) {
-    // No institution selected yet -> no currency to show. VouchMorph doesn't
-    // have one of its own; it only ever speaks in whichever partner's currency
-    // is actually in play.
     if (!instCode) return null;
     return PARTICIPANTS[instCode]?.limits?.currency || null;
 }
@@ -1109,9 +1118,15 @@ function switchCountry(country) {
     if (country !== CONFIG.COUNTRY_CODE) window.location.href = '?country=' + encodeURIComponent(country);
 }
 
-// ============================================================
-// WALLET/ACCOUNT SAVED SOURCES (single system — no lego duplicate)
-// ============================================================
+function collapseSourcePanel() {
+    const wrap = document.getElementById('sourcePanelWrap');
+    if (wrap) wrap.style.display = 'none';
+    sourcePanelOpenCat = null;
+    document.querySelectorAll('.source-type-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.cat === state.fromCategory);
+    });
+}
+
 async function loadUserSources() {
     if (!CONFIG.USER_ID) return;
     const result = await callApi(CONFIG.API_BASE + '/user/sources.php', {});
@@ -1316,11 +1331,6 @@ function clearSourceSelection() {
     refreshUI();
 }
 
-// ============================================================
-// FULL SOURCE MANAGEMENT MODAL (list / remove / add) — reached
-// via Toolbox -> "My sources" or footer link. Separate from the
-// quick inline chips above; this is the detailed management view.
-// ============================================================
 function openMySourcesLegacy() {
     openModal('My sources', renderMySourcesLegacy());
 }
@@ -1494,9 +1504,6 @@ async function removeSource(sourceId) {
     openMySourcesLegacy();
 }
 
-// ============================================================
-// PENDING SOURCES MANAGEMENT
-// ============================================================
 function openPendingSources() {
     openModal('Pending Sources', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading pending sources...</div>');
     loadPendingSources();
@@ -1608,9 +1615,6 @@ async function retryPendingSource(type, sourceId) {
     loadPendingSources();
 }
 
-// ============================================================
-// TOOLBOX
-// ============================================================
 async function openToolbox() {
     openModal('Toolbox', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
     await getCurrentUserRole();
@@ -1630,8 +1634,6 @@ function renderToolbox() {
         { label: 'Swap history', icon: '🕘', action: 'openSwapHistory()' },
         { label: 'Register identity', icon: '🪪', action: 'openAddIdentityModal()' },
     ];
-    // Agent status now comes from the real role (users.role_id -> roles.role_name = 'agent'),
-    // not a boolean column — granted by an admin, so there's no self-service "become an agent" here.
     if (isAgent) {
         rows.push({ label: 'Agent tools', icon: '🕵️', action: 'openAgentToolsModal()' });
         rows.push({ label: 'Agent destinations', icon: '🏢', action: 'openAgentModal()' });
@@ -1857,18 +1859,12 @@ async function submitClaim(swapReference) {
     closeModal(); showMessage('Funds claimed successfully!', 'success'); checkPendingClaims();
 }
 
-// ============================================================
-// SESSION / ROLE — single source of truth via users.role_id -> roles.role_name
-// (whoami.php). Replaces any is_agent/is_admin boolean-column or
-// BUSINESS-account inference. Cached after first call.
-// ============================================================
 async function getCurrentUserRole() {
     if (SessionUser) return SessionUser;
     const result = await callApi(CONFIG.API_BASE + '/user/whoami.php', {});
     if (result.ok && result.body) {
         SessionUser = result.body;
     } else {
-        // Fail safe to the least-privileged role rather than guessing agent/admin.
         SessionUser = { success: false, role: 'user', is_agent: false, is_admin: false, permissions: [] };
     }
     const badge = document.getElementById('agentBadge');
@@ -1876,17 +1872,13 @@ async function getCurrentUserRole() {
     return SessionUser;
 }
 
-// agent_destination_accounts (approved deposit destinations for an agent) is a
-// separate, still-valid concept from the role itself — it's the set of accounts
-// an agent has registered to receive cash-ins, not "is this person an agent".
-// The role check now always comes from SessionUser/getCurrentUserRole().
 async function loadAgentStatus() {
     if (!CONFIG.USER_ID) return;
     await getCurrentUserRole();
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
     if (!result.ok) return;
     agentStatus = result.body.data;
-    agentStatus.is_agent = SessionUser.is_agent; // role_id=13 is authoritative, not this endpoint
+    agentStatus.is_agent = SessionUser.is_agent;
 }
 async function openAgentModal() {
     openModal('Agent Account', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
@@ -1898,10 +1890,6 @@ async function openAgentModal() {
     document.getElementById('modalBody').innerHTML = renderAgentModal();
 }
 
-// ============================================================
-// REGISTER IDENTITY — split user vs agent view, driven by the
-// real role (SessionUser.is_agent from whoami.php), not a guess.
-// ============================================================
 async function openAddIdentityModal() {
     openModal('Add Identity', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
     const session = await getCurrentUserRole();
