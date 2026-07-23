@@ -20,7 +20,8 @@
 require_once __DIR__ . '/../../src/bootstrap.php';
 require_once __DIR__ . '/../../src/Domain/Services/SwapService.php';
 
-use VouchMorph\Services\SwapService;
+use Domain\Services\SwapService;  // ← FIXED: Correct namespace
+use Core\Database\DBConnection;    // ← ADD: For database connection
 
 header('Content-Type: application/json');
 
@@ -82,23 +83,19 @@ try {
     // Initialize SwapService with database and config
     // ============================================================
     
-    // Get PDO connection from bootstrap
-    global $swapDB;
-    if (!$swapDB) {
-        throw new RuntimeException("Database connection not available");
-    }
+    // Get PDO connection using DBConnection class
+    $db = DBConnection::getConnection();  // ← FIXED: Use DBConnection class
     
     // Get country configuration
-    $country = getenv('VOUCHMORPH_COUNTRY') ?: 'BW';
+    $country = getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
     $config = \Core\Config\LoadCountry::getConfig();
     
     // Initialize SwapService
-    $swapService = new SwapService($swapDB, $config, $country);
+    $swapService = new SwapService($db, $config, $country);
     
     // ============================================================
     // Complete the source registration
     // ============================================================
-    // Use the completeUserSourceRegistration method from SwapService
     $result = $swapService->completeUserSourceRegistration($userId, $attemptId, $otp);
     
     echo json_encode([
