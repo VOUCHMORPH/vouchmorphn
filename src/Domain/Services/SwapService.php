@@ -930,7 +930,7 @@ public function retryPendingSource(int $userId, string $type, int $sourceId): ar
     // For user_source_accounts, initiate a new verification
     if ($type === 'user_source') {
         $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
-            . '/user/source_oauth_callback.php';
+            . '/api/v1/user/source_oauth_callback.php';
         
         return $this->initiateUserSourceRegistration(
             $userId,
