@@ -792,17 +792,81 @@ function renderDynamicFields(containerId, assetType, prefix, onChange, includePi
 }
 function fieldsValidForAsset(assetType, values, includePin) {
     const config = getAssetConfig(assetType);
-    if (!config) return false;
+    if (!config) {
+        console.warn('No config found for asset type:', assetType);
+        return { valid: false, reason: 'Asset type not found: ' + assetType };
+    }
+    
     let fields = config.fields || [];
     fields = fields.filter(f => f.name !== 'amount');
+    
+    // PIN fields are ALWAYS optional - skip them entirely
     fields = fields.filter(f => f.vault_field !== 'pin');
-    return fields.every(f => {
+    fields = fields.filter(f => !f.name.toLowerCase().includes('pin'));
+    
+    // Only check fields that are explicitly required
+    const requiredFields = fields.filter(f => f.required === true);
+    
+    console.log('Validating required fields for asset:', assetType, requiredFields.map(f => f.name));
+    
+    let failedField = null;
+    let failedReason = null;
+    
+    const result = requiredFields.every(f => {
         const val = values[f.name];
-        if (!f.required) return true;
-        if (!val || String(val).trim().length === 0) return false;
-        if (val && f.pattern && !new RegExp(f.pattern).test(val)) return false;
+        // Must have a non-empty value
+        if (!val || String(val).trim().length === 0) {
+            failedField = f.name;
+            failedReason = 'required but empty';
+            console.log(`  ${f.name} - ❌ required but empty`);
+            return false;
+        }
+        // Check pattern if exists
+        if (f.pattern) {
+            try {
+                let pattern = f.pattern;
+                pattern = pattern.replace(/\\\\/g, '\\');
+                const regex = new RegExp(pattern);
+                const matches = regex.test(String(val));
+                if (!matches) {
+                    console.log(`  ${f.name} - ❌ pattern mismatch (${pattern}) against "${val}"`);
+                    // Fallback for phone numbers
+                    if (f.name === 'phone' || f.name === 'phone_number') {
+                        const simpleMatch = /^\+?[0-9]{10,15}$/.test(String(val));
+                        if (simpleMatch) {
+                            console.log(`  ${f.name} - ✅ matched simple phone validation`);
+                            return true;
+                        }
+                    }
+                    // Fallback for account numbers
+                    if (f.name === 'account_number' || f.name === 'account') {
+                        const alphanumericMatch = /^[A-Z0-9]{8,16}$/i.test(String(val));
+                        if (alphanumericMatch) {
+                            console.log(`  ${f.name} - ✅ matched alphanumeric fallback`);
+                            return true;
+                        }
+                    }
+                    failedField = f.name;
+                    failedReason = `pattern mismatch (value: "${val}", pattern: ${pattern})`;
+                    return false;
+                }
+                console.log(`  ${f.name} - ✅ pattern matches`);
+            } catch (e) {
+                console.warn(`  ${f.name} - pattern error:`, e.message);
+                return true;
+            }
+        }
+        console.log(`  ${f.name} - ✅ valid (value: "${val}")`);
         return true;
     });
+    
+    if (!result) {
+        console.log('fieldsValidForAsset result: false - Failed field:', failedField, 'Reason:', failedReason);
+        return { valid: false, field: failedField, reason: failedReason };
+    }
+    
+    console.log('fieldsValidForAsset result: true');
+    return { valid: true };
 }
 function extractPinFromFields(assetType, values) {
     const pinField = (getAssetConfig(assetType)?.fields || []).find(f => f.vault_field === 'pin');
@@ -931,17 +995,9 @@ function getSwapReadiness() {
         }
         if (!state.toInst) reasons.push('select a destination institution');
         else if (!state.toAsset) reasons.push('select a destination asset type');
-        else if (!fieldsValidForAsset(state.toAsset, state.toFields, false)) {
-            const config = getAssetConfig(state.toAsset);
-            if (config) {
-                const fields = config.fields || [];
-                const requiredFields = fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
-                requiredFields.forEach(f => {
-                    if (!state.toFields[f.name] || String(state.toFields[f.name]).trim().length === 0) {
-                        missingFields.push(`Destination: ${f.label} (${f.name}) required`);
-                    }
-                });
-            }
+        else if (!fieldsValidForAsset(state.toAsset, state.toFields, false).valid) {
+            const result = fieldsValidForAsset(state.toAsset, state.toFields, false);
+            missingFields.push(`Destination: ${result.field || 'unknown field'} - ${result.reason || 'required'}`);
             reasons.push('fill in the required destination fields');
         }
         return { ready: reasons.length === 0, reasons, missingFields };
@@ -958,20 +1014,16 @@ function getSwapReadiness() {
         reasons.push(limits ? `enter an amount between ${limits.min_amount} and ${limits.max_amount}` : 'enter an amount within this institution\'s limits');
     }
     
-    if (state.fromInst && state.fromAsset && !fieldsValidForAsset(state.fromAsset, state.fromFields, true)) {
-        const config = getAssetConfig(state.fromAsset);
-        if (config) {
-            const fields = config.fields || [];
-            const requiredFields = fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
-            requiredFields.forEach(f => {
-                if (!state.fromFields[f.name] || String(state.fromFields[f.name]).trim().length === 0) {
-                    missingFields.push(`Source: ${f.label} (${f.name}) required`);
-                }
-            });
+    // Check source fields
+    if (state.fromInst && state.fromAsset) {
+        const validation = fieldsValidForAsset(state.fromAsset, state.fromFields, true);
+        if (!validation.valid) {
+            missingFields.push(`Source: ${validation.field || 'unknown field'} - ${validation.reason || 'required'}`);
+            reasons.push('fill in the required source fields');
         }
-        reasons.push('fill in the required source fields');
     }
     
+    // Check destination based on swap type
     if (state.swapType === 'IDENTITY') {
         if (!state.toIdentityValue) {
             missingFields.push('Identity: identity value required');
@@ -980,36 +1032,24 @@ function getSwapReadiness() {
     } else if (state.swapType === 'CASHOUT') {
         if (!state.toInst) {
             reasons.push('select a destination institution for the cashout');
-        } else if (state.toInst && state.toAsset && !fieldsValidForAsset(state.toAsset, state.toFields, false)) {
-            const config = getAssetConfig(state.toAsset);
-            if (config) {
-                const fields = config.fields || [];
-                const requiredFields = fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
-                requiredFields.forEach(f => {
-                    if (!state.toFields[f.name] || String(state.toFields[f.name]).trim().length === 0) {
-                        missingFields.push(`Destination: ${f.label} (${f.name}) required`);
-                    }
-                });
+        } else if (state.toInst && state.toAsset) {
+            const validation = fieldsValidForAsset(state.toAsset, state.toFields, false);
+            if (!validation.valid) {
+                missingFields.push(`Destination: ${validation.field || 'unknown field'} - ${validation.reason || 'required'}`);
+                reasons.push('fill in the required destination fields');
             }
-            reasons.push('fill in the required destination fields');
         }
     } else {
         if (!state.toInst) {
             reasons.push('select a destination institution');
         } else if (!state.toAsset) {
             reasons.push('select a destination asset type');
-        } else if (!fieldsValidForAsset(state.toAsset, state.toFields, false)) {
-            const config = getAssetConfig(state.toAsset);
-            if (config) {
-                const fields = config.fields || [];
-                const requiredFields = fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
-                requiredFields.forEach(f => {
-                    if (!state.toFields[f.name] || String(state.toFields[f.name]).trim().length === 0) {
-                        missingFields.push(`Destination: ${f.label} (${f.name}) required`);
-                    }
-                });
+        } else {
+            const validation = fieldsValidForAsset(state.toAsset, state.toFields, false);
+            if (!validation.valid) {
+                missingFields.push(`Destination: ${validation.field || 'unknown field'} - ${validation.reason || 'required'}`);
+                reasons.push('fill in the required destination fields');
             }
-            reasons.push('fill in the required destination fields');
         }
     }
     
