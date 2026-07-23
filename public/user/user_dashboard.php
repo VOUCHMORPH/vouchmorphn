@@ -924,19 +924,34 @@ function renderDynamicFields(containerId, assetType, prefix, onChange, includePi
     }).join('');
 }
 function fieldsValidForAsset(assetType, values, includePin) {
-    const fields = (getAssetConfig(assetType)?.fields || []).filter(f => includePin || f.vault_field !== 'pin').filter(f => f.name !== 'amount');
+    const config = getAssetConfig(assetType);
+    if (!config) return false;
+    
+    // Get fields, filter out amount (handled separately)
+    let fields = config.fields || [];
+    fields = fields.filter(f => f.name !== 'amount');
+    
+    // PIN is OPTIONAL - never required for validation
+    // Only check non-PIN required fields
+    fields = fields.filter(f => f.vault_field !== 'pin');
+    
     return fields.every(f => {
         const val = values[f.name];
+        // If field is not required, it's valid
         if (!f.required) return true;
+        // If required, must have a non-empty value
         if (!val || String(val).trim().length === 0) return false;
+        // Check pattern if exists
         if (val && f.pattern && !new RegExp(f.pattern).test(val)) return false;
         return true;
     });
 }
 function extractPinFromFields(assetType, values) {
     const pinField = (getAssetConfig(assetType)?.fields || []).find(f => f.vault_field === 'pin');
+    // If no pin field exists, or no pin value, return empty string (not null)
     return pinField ? (values[pinField.name] || '') : '';
 }
+    
 function amountWithinLimits(instCode, amount) {
     const limits = PARTICIPANTS[instCode]?.limits;
     if (!limits) return true;
@@ -1026,13 +1041,12 @@ function multiSourcesValid() {
     if (state.multiSources.length < 2) return false;
     return state.multiSources.every(s => {
         if (!s.institution || !s.assetType || !(s.amount > 0)) return false;
-        const pin = extractPinFromFields(s.assetType, s.fields);
-        const needsPin = getAssetConfig(s.assetType)?.fields?.some(f => f.vault_field === 'pin');
-        if (needsPin && pin.length < 4) return false;
+        // PIN is OPTIONAL - don't require it
+        // Just validate the required non-PIN fields
         return fieldsValidForAsset(s.assetType, s.fields, true);
     });
 }
-function refreshUI() {
+    function refreshUI() {
     document.getElementById('reviewBtn').disabled = !isSwapReady();
     updateToolboxBadge();
 }
@@ -1395,17 +1409,29 @@ function fillSourceIdentifierFields(source) {
         }
     }
 
-    // Fill PIN field if saved
-    if (pinField && source.pin) {
-        const pinInput = document.getElementById(`fromField_${pinField.name}`);
-        if (pinInput) {
-            pinInput.value = source.pin;
-            state.fromFields[pinField.name] = source.pin;
-            pinInput.disabled = true;
-            pinInput.style.background = 'var(--surface)';
-            pinInput.style.color = 'var(--text-dim)';
+        // Fill PIN field if saved - PIN IS OPTIONAL
+    if (pinField) {
+        const pin = source.pin || source.source_pin || '';
+        if (pin) {
+            const pinInput = document.getElementById(`fromField_${pinField.name}`);
+            if (pinInput) {
+                pinInput.value = pin;
+                state.fromFields[pinField.name] = pin;
+                pinInput.disabled = true;
+                pinInput.style.background = 'var(--surface)';
+                pinInput.style.color = 'var(--text-dim)';
+            } else {
+                state.fromFields[pinField.name] = pin;
+            }
         } else {
-            state.fromFields[pinField.name] = source.pin;
+            // PIN is optional - don't require it
+            console.log('No PIN required for source:', source.asset_type);
+            // Optionally show a hint that PIN is optional
+            const pinInput = document.getElementById(`fromField_${pinField.name}`);
+            if (pinInput) {
+                pinInput.placeholder = 'PIN (optional)';
+                pinInput.style.borderColor = 'var(--border)';
+            }
         }
     }
     
