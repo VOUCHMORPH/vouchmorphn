@@ -664,6 +664,327 @@ public function revokeHookedSource(int $userId, string $sourceReference): array
         return $this->executeAtomicSwap($multiPayload);
     }
 
+    // ============================================================================
+// PENDING SOURCES MANAGEMENT - GET, DELETE, RETRY
+// ============================================================================
+
+/**
+ * Get all pending sources for a user
+ * Includes user_source_accounts, agent_destination_accounts, and registration attempts
+ */
+public function getPendingSources(int $userId): array
+{
+    $sources = [];
+    
+    // 1. Pending user source accounts
+    $stmt = $this->swapDB->prepare("
+        SELECT 
+            id,
+            institution,
+            asset_type,
+            identifier,
+            identifier_type,
+            account_name,
+            currency,
+            source_reference,
+            status,
+            proposed_at as created_at,
+            'user_source' as type,
+            error_message
+        FROM user_source_accounts
+        WHERE user_id = :user_id 
+        AND status IN ('pending_confirmation', 'pending', 'proposed', 'failed')
+        AND deleted_at IS NULL
+        ORDER BY proposed_at DESC
+    ");
+    $stmt->execute([':user_id' => $userId]);
+    $sources = array_merge($sources, $stmt->fetchAll(PDO::FETCH_ASSOC));
+    
+    // 2. Pending agent destination accounts
+    $stmt = $this->swapDB->prepare("
+        SELECT 
+            id,
+            institution,
+            asset_type,
+            identifier,
+            identifier_type,
+            account_name,
+            account_type,
+            status,
+            proposed_at as created_at,
+            'agent_destination' as type,
+            error_message
+        FROM agent_destination_accounts
+        WHERE user_id = :user_id 
+        AND status IN ('pending_confirmation', 'pending', 'proposed', 'failed')
+        AND deleted_at IS NULL
+        ORDER BY proposed_at DESC
+    ");
+    $stmt->execute([':user_id' => $userId]);
+    $sources = array_merge($sources, $stmt->fetchAll(PDO::FETCH_ASSOC));
+    
+    // 3. Pending registration attempts (OTP/OAuth in progress)
+    $stmt = $this->swapDB->prepare("
+        SELECT 
+            id,
+            institution,
+            asset_type,
+            identifier,
+            identifier_type,
+            account_name,
+            status,
+            otp_method,
+            otp_expires_at,
+            created_at,
+            'registration_attempt' as type,
+            NULL as error_message
+        FROM user_source_registration_attempts
+        WHERE user_id = :user_id 
+        AND status IN ('otp_pending', 'oauth_pending')
+        ORDER BY created_at DESC
+    ");
+    $stmt->execute([':user_id' => $userId]);
+    $sources = array_merge($sources, $stmt->fetchAll(PDO::FETCH_ASSOC));
+    
+    // 4. Pending agent registration attempts
+    $stmt = $this->swapDB->prepare("
+        SELECT 
+            id,
+            institution,
+            asset_type,
+            identifier,
+            identifier_type,
+            account_name,
+            account_type,
+            status,
+            otp_method,
+            otp_expires_at,
+            created_at,
+            'agent_attempt' as type,
+            NULL as error_message
+        FROM agent_registration_attempts
+        WHERE user_id = :user_id 
+        AND status IN ('otp_pending', 'oauth_pending')
+        ORDER BY created_at DESC
+    ");
+    $stmt->execute([':user_id' => $userId]);
+    $sources = array_merge($sources, $stmt->fetchAll(PDO::FETCH_ASSOC));
+    
+    // Add institution names and check expiry
+    foreach ($sources as &$source) {
+        $source['institution_name'] = $this->participants[$source['institution']]['name'] ?? $source['institution'];
+        
+        // Check if OTP is about to expire
+        if (!empty($source['otp_expires_at'])) {
+            $expiryTime = strtotime($source['otp_expires_at']);
+            $source['is_expiring'] = ($expiryTime - time()) < 60; // Less than 1 minute
+            $source['expires_at'] = $source['otp_expires_at'];
+        } elseif (!empty($source['created_at'])) {
+            // Check if created more than 3 minutes ago (auto-expire)
+            $createdTime = strtotime($source['created_at']);
+            $source['is_expiring'] = (time() - $createdTime) > 150; // More than 2.5 minutes
+        }
+    }
+    
+    return $sources;
+}
+
+/**
+ * Delete a pending source (soft delete)
+ */
+public function deletePendingSource(int $userId, string $type, int $sourceId): array
+{
+    $table = $this->getPendingSourceTable($type);
+    $idColumn = $this->getPendingSourceIdColumn($type);
+    
+    // Check ownership
+    $stmt = $this->swapDB->prepare("
+        SELECT id, status FROM {$table}
+        WHERE {$idColumn} = :id AND user_id = :user_id AND deleted_at IS NULL
+    ");
+    $stmt->execute([':id' => $sourceId, ':user_id' => $userId]);
+    $source = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$source) {
+        throw new RuntimeException("Source not found or does not belong to you.");
+    }
+    
+    // Soft delete
+    $stmt = $this->swapDB->prepare("
+        UPDATE {$table}
+        SET status = 'cancelled',
+            deleted_at = NOW(),
+            updated_at = NOW()
+        WHERE {$idColumn} = :id AND user_id = :user_id
+    ");
+    $stmt->execute([':id' => $sourceId, ':user_id' => $userId]);
+    
+    // Also cancel any pending attempts for this source
+    if ($type === 'user_source' || $type === 'agent_destination') {
+        $this->cancelPendingAttemptsBySource($userId, $source['institution'] ?? '', $source['identifier'] ?? '');
+    }
+    
+    return ['success' => true, 'message' => 'Source deleted successfully.'];
+}
+
+/**
+ * Retry a failed/cancelled source
+ */
+public function retryPendingSource(int $userId, string $type, int $sourceId): array
+{
+    $table = $this->getPendingSourceTable($type);
+    $idColumn = $this->getPendingSourceIdColumn($type);
+    
+    // Get the source details
+    $stmt = $this->swapDB->prepare("
+        SELECT * FROM {$table}
+        WHERE {$idColumn} = :id AND user_id = :user_id AND deleted_at IS NULL
+    ");
+    $stmt->execute([':id' => $sourceId, ':user_id' => $userId]);
+    $source = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$source) {
+        throw new RuntimeException("Source not found or does not belong to you.");
+    }
+    
+    if (!in_array($source['status'], ['cancelled', 'rejected', 'failed'])) {
+        throw new RuntimeException("This source cannot be retried (status: {$source['status']}).");
+    }
+    
+    // Reset the status
+    $stmt = $this->swapDB->prepare("
+        UPDATE {$table}
+        SET status = 'pending_confirmation',
+            deleted_at = NULL,
+            updated_at = NOW(),
+            retry_count = COALESCE(retry_count, 0) + 1
+        WHERE {$idColumn} = :id AND user_id = :user_id
+    ");
+    $stmt->execute([':id' => $sourceId, ':user_id' => $userId]);
+    
+    // For user_source_accounts, initiate a new verification
+    if ($type === 'user_source') {
+        $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
+            . '/user/source_oauth_callback.php';
+        
+        return $this->initiateUserSourceRegistration(
+            $userId,
+            $source['institution'],
+            $source['asset_type'],
+            $source['identifier'],
+            $source['identifier_type'],
+            $source['account_name'] ?? null
+        );
+    }
+    
+    // For agent destinations
+    if ($type === 'agent_destination') {
+        $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
+            . '/api/v1/agent/oauth_callback.php';
+        
+        return $this->initiateAgentDestinationRegistration(
+            $userId,
+            $source['institution'],
+            $source['asset_type'],
+            $source['identifier'],
+            $source['identifier_type'],
+            $source['account_name'] ?? null
+        );
+    }
+    
+    return ['success' => true, 'message' => 'Source retry initiated.', 'status' => 'pending_confirmation'];
+}
+
+/**
+ * Resend OTP for a pending attempt
+ */
+public function resendOtpForAttempt(int $userId, int $attemptId): array
+{
+    // Find the attempt
+    $stmt = $this->swapDB->prepare("
+        SELECT * FROM user_source_registration_attempts
+        WHERE id = :id AND user_id = :user_id AND status = 'otp_pending'
+        UNION
+        SELECT * FROM agent_registration_attempts
+        WHERE id = :id AND user_id = :user_id AND status = 'otp_pending'
+    ");
+    $stmt->execute([':id' => $attemptId, ':user_id' => $userId]);
+    $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$attempt) {
+        throw new RuntimeException("OTP attempt not found or not pending.");
+    }
+    
+    // Generate new OTP
+    $otp = $this->generateOtpPin();
+    $otpHash = password_hash($otp, PASSWORD_DEFAULT);
+    
+    // Determine which table
+    $table = isset($attempt['oauth_state']) 
+        ? 'user_source_registration_attempts' 
+        : 'agent_registration_attempts';
+    
+    // Update the attempt
+    $stmt = $this->swapDB->prepare("
+        UPDATE {$table}
+        SET otp_pin_hash = :otp_hash,
+            otp_expires_at = :expires_at,
+            retry_count = COALESCE(retry_count, 0) + 1,
+            updated_at = NOW()
+        WHERE id = :id AND user_id = :user_id
+    ");
+    $stmt->execute([
+        ':otp_hash' => $otpHash,
+        ':expires_at' => date('Y-m-d H:i:s', time() + 600),
+        ':id' => $attemptId,
+        ':user_id' => $userId
+    ]);
+    
+    // Send the OTP
+    if ($this->smsService) {
+        try {
+            $this->smsService->sendCashoutCode(
+                $attempt['identifier'], 
+                $otp, 
+                0, 
+                'VERIFY_' . $attemptId
+            );
+        } catch (Exception $e) {
+            throw new RuntimeException("Failed to send verification code: " . $e->getMessage());
+        }
+    }
+    
+    return ['success' => true, 'message' => 'Verification code resent successfully.'];
+}
+
+/**
+ * Get the table name for a source type
+ */
+private function getPendingSourceTable(string $type): string
+{
+    return match($type) {
+        'user_source' => 'user_source_accounts',
+        'agent_destination' => 'agent_destination_accounts',
+        'registration_attempt' => 'user_source_registration_attempts',
+        'agent_attempt' => 'agent_registration_attempts',
+        default => throw new RuntimeException("Unknown source type: {$type}")
+    };
+}
+
+/**
+ * Get the ID column name for a source type
+ */
+private function getPendingSourceIdColumn(string $type): string
+{
+    return match($type) {
+        'user_source' => 'id',
+        'agent_destination' => 'id',
+        'registration_attempt' => 'id',
+        'agent_attempt' => 'id',
+        default => 'id'
+    };
+}
+
 /**
  * Encrypt a source secret (access_token or refresh_token)
  * Matches the encryption used in enterprise add_source.php
