@@ -914,37 +914,119 @@ function multiSourcesValid() {
 }
 
 // ============================================================
-// SWAP READINESS - ALWAYS ACTIVE BUTTON WITH CLEAR HINTS
+// SWAP READINESS - ALWAYS ACTIVE BUTTON WITH DETAILED FIELD HINTS
 // ============================================================
 function getSwapReadiness() {
     const reasons = [];
+    const missingFields = [];
+    
     if (state.swapType === 'MULTI_SOURCE') {
-        if (!multiSourcesValid()) reasons.push('fill in all source rows (institution, asset type, required fields, and amount — at least 2 sources)');
+        if (!multiSourcesValid()) {
+            // Check each source for missing fields
+            state.multiSources.forEach((s, idx) => {
+                if (!s.institution) missingFields.push(`Source ${idx + 1}: institution not selected`);
+                if (!s.assetType) missingFields.push(`Source ${idx + 1}: asset type not selected`);
+                if (!(s.amount > 0)) missingFields.push(`Source ${idx + 1}: amount not entered`);
+                const config = getAssetConfig(s.assetType);
+                if (config) {
+                    const fields = config.fields || [];
+                    const requiredFields = fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
+                    requiredFields.forEach(f => {
+                        if (!s.fields[f.name] || String(s.fields[f.name]).trim().length === 0) {
+                            missingFields.push(`Source ${idx + 1}: ${f.label} (${f.name}) required`);
+                        }
+                    });
+                }
+            });
+            reasons.push('fill in all source rows (institution, asset type, required fields, and amount — at least 2 sources)');
+        }
         if (!state.toInst) reasons.push('select a destination institution');
         else if (!state.toAsset) reasons.push('select a destination asset type');
-        else if (!fieldsValidForAsset(state.toAsset, state.toFields, false)) reasons.push('fill in the required destination fields');
-        return { ready: reasons.length === 0, reasons };
+        else if (!fieldsValidForAsset(state.toAsset, state.toFields, false)) {
+            const config = getAssetConfig(state.toAsset);
+            if (config) {
+                const fields = config.fields || [];
+                const requiredFields = fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
+                requiredFields.forEach(f => {
+                    if (!state.toFields[f.name] || String(state.toFields[f.name]).trim().length === 0) {
+                        missingFields.push(`Destination: ${f.label} (${f.name}) required`);
+                    }
+                });
+            }
+            reasons.push('fill in the required destination fields');
+        }
+        return { ready: reasons.length === 0, reasons, missingFields };
     }
-    if (!state.fromInst || !state.fromAsset) reasons.push('choose a source (Wallet/Account, Card, or Voucher)');
+    
+    if (!state.fromInst || !state.fromAsset) {
+        reasons.push('choose a source (Wallet/Account, Card, or Voucher)');
+    }
+    
     if (!(state.fromAmount > 0)) {
         reasons.push('enter an amount');
     } else if (state.fromInst && !amountWithinLimits(state.fromInst, state.fromAmount)) {
         const limits = PARTICIPANTS[state.fromInst]?.limits;
         reasons.push(limits ? `enter an amount between ${limits.min_amount} and ${limits.max_amount}` : 'enter an amount within this institution\'s limits');
     }
+    
+    // Check source fields
     if (state.fromInst && state.fromAsset && !fieldsValidForAsset(state.fromAsset, state.fromFields, true)) {
+        const config = getAssetConfig(state.fromAsset);
+        if (config) {
+            const fields = config.fields || [];
+            const requiredFields = fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
+            requiredFields.forEach(f => {
+                if (!state.fromFields[f.name] || String(state.fromFields[f.name]).trim().length === 0) {
+                    missingFields.push(`Source: ${f.label} (${f.name}) required`);
+                }
+            });
+        }
         reasons.push('fill in the required source fields');
     }
+    
+    // Check destination based on swap type
     if (state.swapType === 'IDENTITY') {
-        if (!state.toIdentityValue) reasons.push('enter the identity value to send to');
+        if (!state.toIdentityValue) {
+            missingFields.push('Identity: identity value required');
+            reasons.push('enter the identity value to send to');
+        }
     } else if (state.swapType === 'CASHOUT') {
-        if (!state.toInst) reasons.push('select a destination institution for the cashout');
+        if (!state.toInst) {
+            reasons.push('select a destination institution for the cashout');
+        } else if (state.toInst && state.toAsset && !fieldsValidForAsset(state.toAsset, state.toFields, false)) {
+            const config = getAssetConfig(state.toAsset);
+            if (config) {
+                const fields = config.fields || [];
+                const requiredFields = fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
+                requiredFields.forEach(f => {
+                    if (!state.toFields[f.name] || String(state.toFields[f.name]).trim().length === 0) {
+                        missingFields.push(`Destination: ${f.label} (${f.name}) required`);
+                    }
+                });
+            }
+            reasons.push('fill in the required destination fields');
+        }
     } else {
-        if (!state.toInst) reasons.push('select a destination institution');
-        else if (!state.toAsset) reasons.push('select a destination asset type');
-        else if (!fieldsValidForAsset(state.toAsset, state.toFields, false)) reasons.push('fill in the required destination fields');
+        if (!state.toInst) {
+            reasons.push('select a destination institution');
+        } else if (!state.toAsset) {
+            reasons.push('select a destination asset type');
+        } else if (!fieldsValidForAsset(state.toAsset, state.toFields, false)) {
+            const config = getAssetConfig(state.toAsset);
+            if (config) {
+                const fields = config.fields || [];
+                const requiredFields = fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
+                requiredFields.forEach(f => {
+                    if (!state.toFields[f.name] || String(state.toFields[f.name]).trim().length === 0) {
+                        missingFields.push(`Destination: ${f.label} (${f.name}) required`);
+                    }
+                });
+            }
+            reasons.push('fill in the required destination fields');
+        }
     }
-    return { ready: reasons.length === 0, reasons };
+    
+    return { ready: reasons.length === 0, reasons, missingFields };
 }
 
 function isSwapReady() {
@@ -962,7 +1044,13 @@ function refreshUI() {
             hint.className = '';
             hint.style.display = 'none';
         } else {
-            hint.textContent = '⚠️ ' + readiness.reasons.join(', ');
+            let msg = '⚠️ ';
+            if (readiness.missingFields && readiness.missingFields.length > 0) {
+                msg += 'Missing: ' + readiness.missingFields.join('; ');
+            } else {
+                msg += readiness.reasons.join(', ');
+            }
+            hint.textContent = msg;
             hint.className = 'show warning';
             hint.style.display = 'block';
         }
@@ -1029,7 +1117,13 @@ function buildPayload() {
 async function previewSwap() {
     const readiness = getSwapReadiness();
     if (!readiness.ready) {
-        showMessage('Before reviewing: ' + readiness.reasons.join(', ') + '.', 'warning');
+        let msg = 'Before reviewing: ';
+        if (readiness.missingFields && readiness.missingFields.length > 0) {
+            msg += readiness.missingFields.join('; ');
+        } else {
+            msg += readiness.reasons.join(', ');
+        }
+        showMessage(msg + '.', 'warning');
         return;
     }
     const payload = buildPayload();
