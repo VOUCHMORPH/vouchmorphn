@@ -1262,8 +1262,8 @@ function selectSavedSource(sourceId) {
     
     // Use a longer delay to ensure all DOM elements are created
     setTimeout(() => {
-        fillSourceIdentifierFields(source);
-        // Verify the field was filled
+        // First, set the identifier in state directly
+        const identifier = source.identifier || source.source_identifier || '';
         const assetConfig = getAssetConfig(source.asset_type);
         if (assetConfig) {
             const idField = assetConfig.fields?.find(f => 
@@ -1271,25 +1271,57 @@ function selectSavedSource(sourceId) {
                 f.name !== 'amount'
             );
             if (idField) {
+                // Set in state immediately
+                state.fromFields[idField.name] = identifier;
+            }
+        }
+        
+        // Then fill the DOM fields
+        fillSourceIdentifierFields(source);
+        
+        // Verify the field was filled - if not, try direct DOM manipulation
+        const config = getAssetConfig(source.asset_type);
+        if (config) {
+            const idField = config.fields?.find(f => 
+                f.vault_field !== 'pin' && 
+                f.name !== 'amount'
+            );
+            if (idField) {
                 const input = document.getElementById(`fromField_${idField.name}`);
                 if (input && !input.value) {
-                    console.warn('Field still empty, trying direct fill:', idField.name);
-                    input.value = source.identifier || source.source_identifier || '';
-                    updateFromField(idField.name, input.value);
+                    console.warn('Field still empty, forcing direct fill:', idField.name);
+                    const identifier = source.identifier || source.source_identifier || '';
+                    input.value = identifier;
+                    state.fromFields[idField.name] = identifier;
                 }
             }
         }
-    }, 100);
+        
+        // Force refresh UI to update button state
+        refreshUI();
+        
+        // Double-check if the button should be enabled
+        console.log('After fill - isSwapReady:', isSwapReady());
+        console.log('State fields:', state.fromFields);
+        console.log('Amount:', state.fromAmount);
+        console.log('Source:', state.fromInst, state.fromAsset);
+    }, 150);
 
     const helpEl = document.getElementById('sourceSelectedHelp');
     if (helpEl) {
         helpEl.style.display = 'block';
-        helpEl.textContent = `Source selected: ${inst?.name || source.institution} — ${source.identifier || ''}. Enter the amount below.`;
+        const config = getAssetConfig(source.asset_type);
+        const displayName = config?.label || source.asset_type;
+        helpEl.textContent = `${displayName} selected: ${inst?.name || source.institution} — ${source.identifier || ''}. Enter the amount below.`;
     }
 
     setTimeout(() => {
         document.getElementById('fromAmount')?.focus();
-        showMessage(`Source selected: ${inst?.name || source.institution}`, 'success');
+        const config = getAssetConfig(source.asset_type);
+        const displayName = config?.label || source.asset_type;
+        showMessage(`${displayName} selected: ${inst?.name || source.institution}`, 'success');
+        // Force another refresh
+        refreshUI();
     }, 300);
 
     updateCurrencyDisplay();
@@ -1298,7 +1330,8 @@ function selectSavedSource(sourceId) {
 }
 
 function fillSourceIdentifierFields(source) {
-    const assetConfig = ASSETS[source.asset_type];
+    // FIX: Use getAssetConfig instead of ASSETS directly
+    const assetConfig = getAssetConfig(source.asset_type);
     if (!assetConfig) {
         console.warn('No asset config for type:', source.asset_type);
         return;
@@ -1335,13 +1368,16 @@ function fillSourceIdentifierFields(source) {
         input.style.color = 'var(--text)';
     });
 
+    // CRITICAL FIX: Store the identifier value
+    const identifier = source.identifier || source.source_identifier || '';
+    
     // Fill identifier field
     if (identifierField) {
         const input = document.getElementById(`fromField_${identifierField.name}`);
         if (input) {
-            const identifier = source.identifier || source.source_identifier || '';
             input.value = identifier;
-            updateFromField(identifierField.name, identifier);
+            // CRITICAL: Update state.fromFields with the value
+            state.fromFields[identifierField.name] = identifier;
             input.disabled = true;
             input.style.background = 'var(--surface)';
             input.style.color = 'var(--text-dim)';
@@ -1354,6 +1390,8 @@ function fillSourceIdentifierFields(source) {
             }
         } else {
             console.warn('Identifier input not found:', `fromField_${identifierField.name}`);
+            // Still set the state even if input not found
+            state.fromFields[identifierField.name] = identifier;
         }
     }
 
@@ -1362,10 +1400,12 @@ function fillSourceIdentifierFields(source) {
         const pinInput = document.getElementById(`fromField_${pinField.name}`);
         if (pinInput) {
             pinInput.value = source.pin;
-            updateFromField(pinField.name, source.pin);
+            state.fromFields[pinField.name] = source.pin;
             pinInput.disabled = true;
             pinInput.style.background = 'var(--surface)';
             pinInput.style.color = 'var(--text-dim)';
+        } else {
+            state.fromFields[pinField.name] = source.pin;
         }
     }
     
@@ -1383,14 +1423,19 @@ function fillSourceIdentifierFields(source) {
             const input = document.getElementById(`fromField_${genericField.name}`);
             if (input) {
                 input.value = source.source_identifier;
-                updateFromField(genericField.name, source.source_identifier);
+                state.fromFields[genericField.name] = source.source_identifier;
                 input.disabled = true;
                 input.style.background = 'var(--surface)';
                 input.style.color = 'var(--text-dim)';
+            } else {
+                state.fromFields[genericField.name] = source.source_identifier;
             }
         }
     }
 
+    // DEBUG: Log what fields are set
+    console.log('Filled fields for source:', source.asset_type, state.fromFields);
+    
     refreshUI();
 }
 
