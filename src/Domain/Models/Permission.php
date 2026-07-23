@@ -1,6 +1,6 @@
 <?php
 
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
+require_once dirname(__DIR__, 3) . '/src/bootstrap.php';
 
 class Permission
 {
