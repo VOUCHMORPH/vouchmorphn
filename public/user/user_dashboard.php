@@ -1263,6 +1263,9 @@ function selectSavedSource(sourceId) {
     selectedSourceId = sourceId;
     state.fromInst = source.institution;
     state.fromAsset = source.asset_type;
+    
+    // ✅ CRITICAL: Clear ALL existing fields before rendering new ones
+    // This ensures no old data leaks through
     state.fromFields = {};
 
     const inst = PARTICIPANTS[source.institution];
@@ -1271,29 +1274,18 @@ function selectSavedSource(sourceId) {
     const fieldsBox = document.getElementById('fromFields');
     fieldsBox.style.display = 'block';
     
-    // Render fields - use setTimeout to ensure DOM is ready
+    // ✅ Clear the fields box HTML before re-rendering
+    fieldsBox.innerHTML = '';
+    
+    // Render fields
     renderDynamicFields('fromFields', source.asset_type, 'fromField_', updateFromField, true);
     
     // Use a longer delay to ensure all DOM elements are created
     setTimeout(() => {
-        // First, set the identifier in state directly
-        const identifier = source.identifier || source.source_identifier || '';
-        const assetConfig = getAssetConfig(source.asset_type);
-        if (assetConfig) {
-            const idField = assetConfig.fields?.find(f => 
-                f.vault_field !== 'pin' && 
-                f.name !== 'amount'
-            );
-            if (idField) {
-                // Set in state immediately
-                state.fromFields[idField.name] = identifier;
-            }
-        }
-        
-        // Then fill the DOM fields
+        // Fill the fields
         fillSourceIdentifierFields(source);
         
-        // Verify the field was filled - if not, try direct DOM manipulation
+        // Verify the field was filled
         const config = getAssetConfig(source.asset_type);
         if (config) {
             const idField = config.fields?.find(f => 
@@ -1303,7 +1295,7 @@ function selectSavedSource(sourceId) {
             if (idField) {
                 const input = document.getElementById(`fromField_${idField.name}`);
                 if (input && !input.value) {
-                    console.warn('Field still empty, forcing direct fill:', idField.name);
+                    console.warn('Field still empty, trying direct fill:', idField.name);
                     const identifier = source.identifier || source.source_identifier || '';
                     input.value = identifier;
                     state.fromFields[idField.name] = identifier;
@@ -1314,11 +1306,8 @@ function selectSavedSource(sourceId) {
         // Force refresh UI to update button state
         refreshUI();
         
-        // Double-check if the button should be enabled
         console.log('After fill - isSwapReady:', isSwapReady());
-        console.log('State fields:', state.fromFields);
-        console.log('Amount:', state.fromAmount);
-        console.log('Source:', state.fromInst, state.fromAsset);
+        console.log('State fields (should ONLY be this source):', state.fromFields);
     }, 150);
 
     const helpEl = document.getElementById('sourceSelectedHelp');
@@ -1334,7 +1323,6 @@ function selectSavedSource(sourceId) {
         const config = getAssetConfig(source.asset_type);
         const displayName = config?.label || source.asset_type;
         showMessage(`${displayName} selected: ${inst?.name || source.institution}`, 'success');
-        // Force another refresh
         refreshUI();
     }, 300);
 
@@ -1342,7 +1330,7 @@ function selectSavedSource(sourceId) {
     renderSavedSourceChips();
     refreshUI();
 }
-
+    
 function fillSourceIdentifierFields(source) {
     // FIX: Use getAssetConfig instead of ASSETS directly
     const assetConfig = getAssetConfig(source.asset_type);
@@ -1353,27 +1341,46 @@ function fillSourceIdentifierFields(source) {
     
     const fields = assetConfig.fields || [];
 
-    // Find the identifier field - match against ALL possible field names from assets.yaml
+    // Find the identifier field
     const identifierField = fields.find(f =>
         f.vault_field !== 'pin' &&
         f.name !== 'amount' &&
-        (f.name === 'account_number' ||  // ACCOUNT type
-         f.name === 'identifier' ||      // Generic
-         f.name === 'account' || 
-         f.name === 'phone_number' ||    // MNO-WALLET type
-         f.name === 'phone' ||           // VOUCHER type
-         f.name === 'card_number' ||     // CARD type
-         f.name === 'wallet_account' ||  // BANK-WALLET type
-         f.name === 'wallet_address' ||  // CRYPTO type
-         f.name === 'order_number' ||    // POSTAL-ORDER type
-         f.name === 'cheque_number' ||   // CHEQUE type
-         f.name === 'atm_code' ||        // ATM type
-         f.name === 'voucher_number' ||  // VOUCHER type
+        (f.name === 'account_number' ||
+         f.name === 'identifier' ||
+         f.name === 'account' ||
+         f.name === 'phone_number' ||
+         f.name === 'phone' ||
+         f.name === 'card_number' ||
+         f.name === 'wallet_account' ||
+         f.name === 'wallet_address' ||
+         f.name === 'order_number' ||
+         f.name === 'cheque_number' ||
+         f.name === 'atm_code' ||
+         f.name === 'voucher_number' ||
          f.name === 'source_identifier' ||
          f.name === 'wallet_id')
     );
     
     const pinField = fields.find(f => f.vault_field === 'pin');
+
+    // ✅ CRITICAL FIX: Clear ALL existing input values first
+    // This prevents showing old data from previous selections
+    document.querySelectorAll('#fromFields input').forEach(input => {
+        // Only clear if not disabled (disabled fields are auto-filled)
+        if (!input.disabled) {
+            input.value = '';
+        }
+        // Reset styles
+        input.style.background = '#fff';
+        input.style.color = 'var(--text)';
+    });
+    
+    // Also clear any help text
+    document.querySelectorAll('#fromFields .help').forEach(help => {
+        if (!help.textContent.includes('Auto-filled')) {
+            help.textContent = '';
+        }
+    });
 
     // Remove disabled state from all inputs first
     document.querySelectorAll('#fromFields input[disabled]').forEach(input => {
@@ -1382,7 +1389,11 @@ function fillSourceIdentifierFields(source) {
         input.style.color = 'var(--text)';
     });
 
-    // CRITICAL FIX: Store the identifier value
+    // CRITICAL FIX: Reset state.fromFields for this source
+    // Only keep the fields we're about to set
+    const newFields = {};
+    
+    // Store the identifier value
     const identifier = source.identifier || source.source_identifier || '';
     
     // Fill identifier field
@@ -1390,8 +1401,7 @@ function fillSourceIdentifierFields(source) {
         const input = document.getElementById(`fromField_${identifierField.name}`);
         if (input) {
             input.value = identifier;
-            // CRITICAL: Update state.fromFields with the value
-            state.fromFields[identifierField.name] = identifier;
+            newFields[identifierField.name] = identifier;
             input.disabled = true;
             input.style.background = 'var(--surface)';
             input.style.color = 'var(--text-dim)';
@@ -1404,40 +1414,42 @@ function fillSourceIdentifierFields(source) {
             }
         } else {
             console.warn('Identifier input not found:', `fromField_${identifierField.name}`);
-            // Still set the state even if input not found
-            state.fromFields[identifierField.name] = identifier;
+            newFields[identifierField.name] = identifier;
         }
     }
 
-        // Fill PIN field if saved - PIN IS OPTIONAL
+    // Fill PIN field if saved - PIN IS OPTIONAL
     if (pinField) {
         const pin = source.pin || source.source_pin || '';
         if (pin) {
             const pinInput = document.getElementById(`fromField_${pinField.name}`);
             if (pinInput) {
                 pinInput.value = pin;
-                state.fromFields[pinField.name] = pin;
+                newFields[pinField.name] = pin;
                 pinInput.disabled = true;
                 pinInput.style.background = 'var(--surface)';
                 pinInput.style.color = 'var(--text-dim)';
             } else {
-                state.fromFields[pinField.name] = pin;
+                newFields[pinField.name] = pin;
             }
         } else {
             // PIN is optional - don't require it
             console.log('No PIN required for source:', source.asset_type);
-            // Optionally show a hint that PIN is optional
             const pinInput = document.getElementById(`fromField_${pinField.name}`);
             if (pinInput) {
                 pinInput.placeholder = 'PIN (optional)';
                 pinInput.style.borderColor = 'var(--border)';
+                // Don't set a value, leave it empty
             }
         }
     }
     
+    // ✅ CRITICAL: Replace state.fromFields with ONLY the new values
+    // This prevents old data from other sources leaking through
+    state.fromFields = newFields;
+    
     // Fallback: If no specific identifier field was found but we have source_identifier
     if (!identifierField && source.source_identifier) {
-        // Try to find a generic text/tel/number field that's not the PIN
         const genericField = fields.find(f => 
             f.vault_field !== 'pin' && 
             f.name !== 'amount' && 
@@ -1459,7 +1471,6 @@ function fillSourceIdentifierFields(source) {
         }
     }
 
-    // DEBUG: Log what fields are set
     console.log('Filled fields for source:', source.asset_type, state.fromFields);
     
     refreshUI();
