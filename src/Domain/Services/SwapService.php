@@ -931,7 +931,7 @@ public function retryPendingSource(int $userId, string $type, int $sourceId): ar
     // For user_source_accounts, initiate a new verification
     if ($type === 'user_source') {
         $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
-            . '/api/v1/user/source_oauth_callback.php';
+            . '/user/source_oauth_callback.php';
         
         return $this->initiateUserSourceRegistration(
             $userId,
@@ -5558,7 +5558,7 @@ public function initiateUserSourceRegistration(
     }
 
     $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
-        . '/api/v1/user/source_oauth_callback.php';
+        . '/user/source_oauth_callback.php';
 
     // ============================================================
     // Initiate OAuth or OTP - this does NOT verify the account
@@ -5756,7 +5756,7 @@ public function completeUserSourceRegistrationByState(string $oauthState, string
     }
 
     $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn.com', '/')
-        . '/api/v1/user/source_oauth_callback.php';
+        . '/user/source_oauth_callback.php';
 
     try {
         $verifyResult = $this->verifySourceLink([
