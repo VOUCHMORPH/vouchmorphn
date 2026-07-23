@@ -186,12 +186,13 @@ BANK-WALLET:
     description: "Bank's digital wallet"
   
   fields:
-    - name: wallet_account
-      label: "Wallet Account"
-      type: text
+    - name: phone_number
+      label: "Phone Number"
+      type: tel
       required: true
-      placeholder: "Enter wallet account"
-      help_text: "Wallet account identifier"
+      pattern: "^\\+?[0-9]{10,15}$"  # Global pattern, country-specific validated in code
+      placeholder: "+267XXXXXXXX"
+      help_text: "Phone number (country code optional)"
     
     - name: wallet_pin
       label: "Wallet PIN"
