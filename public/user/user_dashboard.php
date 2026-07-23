@@ -1066,7 +1066,7 @@ async function loadUserSources() {
     }
     
     // Load pending sources for the badge count
-    const pendingResult = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
+    const pendingResult = await callApi(CONFIG.API_BASE + '/../api/v1/sources/pending.php', {});
     if (pendingResult.ok) {
         pendingSources = pendingResult.body.data || [];
         updateToolboxBadge();
