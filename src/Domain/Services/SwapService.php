@@ -802,38 +802,97 @@ public function getPendingSources(int $userId): array
 public function deletePendingSource(int $userId, string $type, int $sourceId): array
 {
     $table = $this->getPendingSourceTable($type);
-    $idColumn = $this->getPendingSourceIdColumn($type);
-    
-    // Check ownership
-    $stmt = $this->swapDB->prepare("
-        SELECT id, status, institution, identifier FROM {$table}
-        WHERE {$idColumn} = :id AND user_id = :user_id AND deleted_at IS NULL
-    ");
-    $stmt->execute([':id' => $sourceId, ':user_id' => $userId]);
-    $source = $stmt->fetch(PDO::FETCH_ASSOC);
-    
-    if (!$source) {
-        throw new RuntimeException("Source not found or does not belong to you.");
-    }
-    
-    // Soft delete
-    $stmt = $this->swapDB->prepare("
-        UPDATE {$table}
-        SET status = 'cancelled',
-            deleted_at = NOW(),
-            updated_at = NOW()
-        WHERE {$idColumn} = :id AND user_id = :user_id
-    ");
-    $stmt->execute([':id' => $sourceId, ':user_id' => $userId]);
-    
-    // Also cancel any pending attempts for this source
-    if ($type === 'user_source' || $type === 'agent_destination') {
-        $this->cancelPendingAttemptsBySource($userId, $source['institution'] ?? '', $source['identifier'] ?? '');
-    }
-    
-    return ['success' => true, 'message' => 'Source deleted successfully.'];
-}
 
+    // Only account tables support soft delete
+    $hasDeletedAt = in_array($type, [
+        'user_source',
+        'agent_destination'
+    ]);
+
+    // Check ownership
+    $sql = "
+        SELECT id, status 
+        FROM {$table}
+        WHERE id = :id
+        AND user_id = :user_id
+    ";
+
+    if ($hasDeletedAt) {
+        $sql .= " AND deleted_at IS NULL ";
+    }
+
+    $stmt = $this->swapDB->prepare($sql);
+
+    $stmt->execute([
+        ':id' => $sourceId,
+        ':user_id' => $userId
+    ]);
+
+    $source = $stmt->fetch(PDO::FETCH_ASSOC);
+
+
+    if (!$source) {
+        throw new RuntimeException(
+            "Source not found or does not belong to you."
+        );
+    }
+
+
+    // Account tables
+    if ($hasDeletedAt) {
+
+        $stmt = $this->swapDB->prepare("
+            UPDATE {$table}
+            SET 
+                status = 'cancelled',
+                deleted_at = NOW(),
+                updated_at = NOW()
+            WHERE id = :id
+            AND user_id = :user_id
+        ");
+
+    } 
+    // Registration attempt tables
+    else {
+
+        $cancelColumn = ($type === 'registration_attempt')
+            ? 'cancelled_at'
+            : null;
+
+
+        $stmt = $this->swapDB->prepare("
+            UPDATE {$table}
+            SET 
+                status = 'cancelled',
+                cancelled_at = NOW()
+            WHERE id = :id
+            AND user_id = :user_id
+        ");
+    }
+
+
+    $stmt->execute([
+        ':id'=>$sourceId,
+        ':user_id'=>$userId
+    ]);
+
+
+    // Cancel related attempts
+    if ($type === 'user_source' || $type === 'agent_destination') {
+
+        $this->cancelPendingAttemptsBySource(
+            $userId,
+            $source['institution'] ?? '',
+            $source['identifier'] ?? ''
+        );
+    }
+
+
+    return [
+        'success'=>true,
+        'message'=>'Source deleted successfully.'
+    ];
+}
 /**
  * Retry a failed/cancelled source
  */
