@@ -799,18 +799,60 @@ function updateFromField(name, value) { state.fromFields[name] = value; refreshU
 function assetHasAmountField(assetType) { return (getAssetConfig(assetType)?.fields || []).some(f => f.name === 'amount'); }
 function renderDynamicFields(containerId, assetType, prefix, onChange, includePin) {
     const container = document.getElementById(containerId);
-    const fields = (getAssetConfig(assetType)?.fields || []).filter(f => includePin || f.vault_field !== 'pin').filter(f => f.name !== 'amount');
-    if (!fields || fields.length === 0) { container.innerHTML = ''; return; }
+    const config = getAssetConfig(assetType);
+    if (!config) {
+        container.innerHTML = `<div class="help" style="color:var(--danger);">Unknown asset type: ${assetType}</div>`;
+        return;
+    }
+    
+    // Get fields, filter out amount if needed, and handle PIN filtering
+    let fields = config.fields || [];
+    if (!includePin) {
+        fields = fields.filter(f => f.vault_field !== 'pin');
+    }
+    fields = fields.filter(f => f.name !== 'amount'); // Amount is handled separately
+    
+    if (!fields || fields.length === 0) {
+        container.innerHTML = '';
+        return;
+    }
+    
     container.innerHTML = fields.map(f => {
         const attrs = [];
         if (f.pattern) attrs.push(`pattern="${f.pattern}"`);
         if (f.min_length) attrs.push(`minlength="${f.min_length}"`);
         if (f.max_length) attrs.push(`maxlength="${f.max_length}"`);
         if (f.required) attrs.push('required');
-        if (f.type === 'select') {
-            return `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label><select id="${prefix}${f.name}" onchange="window['${onChange.name}']('${f.name}', this.value)"><option value="">${f.placeholder || 'Select'}</option>${(f.options || []).map(o => `<option value="${o}">${o}</option>`).join('')}</select></div>`;
+        if (f.min !== undefined) attrs.push(`min="${f.min}"`);
+        if (f.max !== undefined) attrs.push(`max="${f.max}"`);
+        
+        // For select fields
+        if (f.type === 'select' && f.options) {
+            const optionsHtml = f.options.map(opt => 
+                `<option value="${opt}">${opt}</option>`
+            ).join('');
+            return `<div class="field-group">
+                <label>${f.label} ${f.required ? '*' : ''}</label>
+                <select id="${prefix}${f.name}" onchange="window['${onChange.name}']('${f.name}', this.value)">
+                    <option value="">${f.placeholder || 'Select'}</option>
+                    ${optionsHtml}
+                </select>
+                ${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}
+            </div>`;
         }
-        return `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label><input type="${f.type}" id="${prefix}${f.name}" placeholder="${f.placeholder || ''}" ${attrs.join(' ')} oninput="window['${onChange.name}']('${f.name}', this.value)"></div>`;
+        
+        // For password fields
+        const inputType = f.vault_field === 'pin' || f.name.includes('pin') || f.name === 'cvv' ? 'password' : (f.type || 'text');
+        
+        return `<div class="field-group">
+            <label>${f.label} ${f.required ? '*' : ''}</label>
+            <input type="${inputType}" 
+                   id="${prefix}${f.name}" 
+                   placeholder="${f.placeholder || ''}" 
+                   ${attrs.join(' ')} 
+                   oninput="window['${onChange.name}']('${f.name}', this.value)">
+            ${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}
+        </div>`;
     }).join('');
 }
 function fieldsValidForAsset(assetType, values, includePin) {
@@ -1131,8 +1173,30 @@ function selectSavedSource(sourceId) {
 
     const fieldsBox = document.getElementById('fromFields');
     fieldsBox.style.display = 'block';
+    
+    // Render fields - use setTimeout to ensure DOM is ready
     renderDynamicFields('fromFields', source.asset_type, 'fromField_', updateFromField, true);
-    setTimeout(() => fillSourceIdentifierFields(source), 30);
+    
+    // Use a longer delay to ensure all DOM elements are created
+    setTimeout(() => {
+        fillSourceIdentifierFields(source);
+        // Verify the field was filled
+        const assetConfig = getAssetConfig(source.asset_type);
+        if (assetConfig) {
+            const idField = assetConfig.fields?.find(f => 
+                f.vault_field !== 'pin' && 
+                f.name !== 'amount'
+            );
+            if (idField) {
+                const input = document.getElementById(`fromField_${idField.name}`);
+                if (input && !input.value) {
+                    console.warn('Field still empty, trying direct fill:', idField.name);
+                    input.value = source.identifier || source.source_identifier || '';
+                    updateFromField(idField.name, input.value);
+                }
+            }
+        }
+    }, 100);
 
     const helpEl = document.getElementById('sourceSelectedHelp');
     if (helpEl) {
@@ -1143,7 +1207,7 @@ function selectSavedSource(sourceId) {
     setTimeout(() => {
         document.getElementById('fromAmount')?.focus();
         showMessage(`Source selected: ${inst?.name || source.institution}`, 'success');
-    }, 200);
+    }, 300);
 
     updateCurrencyDisplay();
     renderSavedSourceChips();
@@ -1152,22 +1216,43 @@ function selectSavedSource(sourceId) {
 
 function fillSourceIdentifierFields(source) {
     const assetConfig = ASSETS[source.asset_type];
-    if (!assetConfig) return;
+    if (!assetConfig) {
+        console.warn('No asset config for type:', source.asset_type);
+        return;
+    }
+    
     const fields = assetConfig.fields || [];
 
+    // Find the identifier field - match against ALL possible field names from assets.yaml
     const identifierField = fields.find(f =>
         f.vault_field !== 'pin' &&
         f.name !== 'amount' &&
-        (f.name === 'identifier' || f.name === 'account' || f.name === 'phone' || f.name === 'card_number' || f.name === 'wallet_id')
+        (f.name === 'account_number' ||  // ACCOUNT type
+         f.name === 'identifier' ||      // Generic
+         f.name === 'account' || 
+         f.name === 'phone_number' ||    // MNO-WALLET type
+         f.name === 'phone' ||           // VOUCHER type
+         f.name === 'card_number' ||     // CARD type
+         f.name === 'wallet_account' ||  // BANK-WALLET type
+         f.name === 'wallet_address' ||  // CRYPTO type
+         f.name === 'order_number' ||    // POSTAL-ORDER type
+         f.name === 'cheque_number' ||   // CHEQUE type
+         f.name === 'atm_code' ||        // ATM type
+         f.name === 'voucher_number' ||  // VOUCHER type
+         f.name === 'source_identifier' ||
+         f.name === 'wallet_id')
     );
+    
     const pinField = fields.find(f => f.vault_field === 'pin');
 
+    // Remove disabled state from all inputs first
     document.querySelectorAll('#fromFields input[disabled]').forEach(input => {
         input.disabled = false;
         input.style.background = '#fff';
         input.style.color = 'var(--text)';
     });
 
+    // Fill identifier field
     if (identifierField) {
         const input = document.getElementById(`fromField_${identifierField.name}`);
         if (input) {
@@ -1177,10 +1262,19 @@ function fillSourceIdentifierFields(source) {
             input.disabled = true;
             input.style.background = 'var(--surface)';
             input.style.color = 'var(--text-dim)';
-            const helpText = input.parentElement?.querySelector('.help');
-            if (helpText) { helpText.textContent = 'Auto-filled from your saved source'; helpText.style.color = 'var(--primary-dark)'; }
+            
+            // Add help text
+            let helpText = input.parentElement?.querySelector('.help');
+            if (helpText) { 
+                helpText.textContent = 'Auto-filled from your saved source'; 
+                helpText.style.color = 'var(--primary-dark)';
+            }
+        } else {
+            console.warn('Identifier input not found:', `fromField_${identifierField.name}`);
         }
     }
+
+    // Fill PIN field if saved
     if (pinField && source.pin) {
         const pinInput = document.getElementById(`fromField_${pinField.name}`);
         if (pinInput) {
@@ -1191,6 +1285,29 @@ function fillSourceIdentifierFields(source) {
             pinInput.style.color = 'var(--text-dim)';
         }
     }
+    
+    // Fallback: If no specific identifier field was found but we have source_identifier
+    if (!identifierField && source.source_identifier) {
+        // Try to find a generic text/tel/number field that's not the PIN
+        const genericField = fields.find(f => 
+            f.vault_field !== 'pin' && 
+            f.name !== 'amount' && 
+            (f.type === 'text' || f.type === 'tel' || f.type === 'number') &&
+            !f.name.includes('pin') &&
+            !f.name.includes('cvv')
+        );
+        if (genericField) {
+            const input = document.getElementById(`fromField_${genericField.name}`);
+            if (input) {
+                input.value = source.source_identifier;
+                updateFromField(genericField.name, source.source_identifier);
+                input.disabled = true;
+                input.style.background = 'var(--surface)';
+                input.style.color = 'var(--text-dim)';
+            }
+        }
+    }
+
     refreshUI();
 }
 
