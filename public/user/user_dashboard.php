@@ -5,7 +5,7 @@
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 use Application\Utils\SessionManager;
 
-SessionManager::start();
+SessionManager::start(); 
 
 if (!SessionManager::isLoggedIn()) {
     header('Location: login.php');
