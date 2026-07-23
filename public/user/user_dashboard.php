@@ -660,6 +660,7 @@ let agentSearchResult = null;
 let agentSearchData = null;
 let selectedSourceId = null;
 let pendingClaims = [];
+let pendingSources = [];
 let agentStatus = { is_agent: false, approved_destinations: [], all_destinations: [] };
 
 function getInstitutionCurrency(instCode) {
@@ -918,6 +919,7 @@ function multiSourcesValid() {
 }
 function refreshUI() {
     document.getElementById('reviewBtn').disabled = !isSwapReady();
+    updateToolboxBadge();
 }
 function isSwapReady() {
     if (state.swapType === 'MULTI_SOURCE') return multiSourcesValid() && state.toInst && state.toAsset && fieldsValidForAsset(state.toAsset, state.toFields, false);
@@ -1055,10 +1057,20 @@ const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'B
 
 async function loadUserSources() {
     if (!CONFIG.USER_ID) return;
+    
+    // Load active sources
     const result = await callApi(CONFIG.API_BASE + '/user/sources.php', {});
-    if (!result.ok) return;
-    userSources = result.body.data?.sources || [];
-    if (state.fromCategory === 'WALLET') renderSavedSourceChips();
+    if (result.ok) {
+        userSources = result.body.data?.sources || [];
+        if (state.fromCategory === 'WALLET') renderSavedSourceChips();
+    }
+    
+    // Load pending sources for the badge count
+    const pendingResult = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
+    if (pendingResult.ok) {
+        pendingSources = pendingResult.body.data || [];
+        updateToolboxBadge();
+    }
 }
 
 function walletEligibleSources() {
@@ -1394,6 +1406,261 @@ async function removeSource(sourceId) {
 }
 
 // ============================================================
+// PENDING SOURCES MANAGEMENT - View, Delete, Retry
+// ============================================================
+
+/**
+ * Open the pending sources modal
+ */
+function openPendingSources() {
+    openModal('Pending Sources', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading pending sources...</div>');
+    loadPendingSources();
+}
+
+/**
+ * Load pending sources from the API
+ */
+async function loadPendingSources() {
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
+    
+    if (!result.ok) {
+        document.getElementById('modalBody').innerHTML = `
+            <div style="text-align:center;padding:20px;color:var(--danger);">
+                <div style="font-weight:700;">Failed to load pending sources</div>
+                <div style="font-size:13px;color:var(--text-muted);margin-top:8px;">${escapeHtml(result.error)}</div>
+                <button class="btn btn-primary btn-sm" onclick="loadPendingSources()" style="margin-top:12px;">Retry</button>
+            </div>
+        `;
+        return;
+    }
+
+    pendingSources = result.body.data || [];
+    renderPendingSources();
+}
+
+/**
+ * Render the pending sources list
+ */
+function renderPendingSources() {
+    const container = document.getElementById('modalBody');
+    
+    if (!pendingSources || pendingSources.length === 0) {
+        container.innerHTML = `
+            <div style="text-align:center;padding:30px;color:var(--text-muted);">
+                <div style="font-size:40px;margin-bottom:12px;">✓</div>
+                <div style="font-weight:700;font-size:18px;">No pending sources</div>
+                <div style="font-size:13px;margin-top:8px;">All your sources are active and verified.</div>
+            </div>
+        `;
+        return;
+    }
+
+    let html = `
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">
+            ${pendingSources.length} source(s) pending verification. 
+            Pending sources expire after 3 minutes if not completed.
+        </div>
+        <div style="max-height:60vh;overflow-y:auto;">
+    `;
+
+    pendingSources.forEach((source, index) => {
+        const statusLabel = getSourceStatusLabel(source);
+        const statusClass = getSourceStatusClass(source);
+        const sourceTypeLabel = getSourceTypeLabel(source);
+        const icon = getSourceIcon(source);
+        const canDelete = ['pending_confirmation', 'pending', 'proposed', 'otp_pending', 'oauth_pending'].includes(source.status);
+        const canRetry = ['cancelled', 'rejected', 'failed'].includes(source.status);
+        const isExpiring = source.is_expiring || false;
+
+        html += `
+            <div class="source-card" style="border-left: 3px solid ${isExpiring ? 'var(--warning)' : 'var(--border)'};">
+                <div class="source-header">
+                    <div>
+                        <div class="source-institution">
+                            <span style="margin-right:8px;">${icon}</span>
+                            ${escapeHtml(source.institution_name || source.institution)}
+                            <span style="font-size:11px;color:var(--text-muted);font-weight:400;margin-left:6px;">
+                                (${sourceTypeLabel})
+                            </span>
+                        </div>
+                        <div class="source-details" style="margin-top:4px;">
+                            <span style="font-weight:600;">${escapeHtml(source.identifier)}</span>
+                            ${source.account_name ? ` · ${escapeHtml(source.account_name)}` : ''}
+                            ${source.asset_type ? ` · ${source.asset_type}` : ''}
+                        </div>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                        <span class="source-status ${statusClass}">${statusLabel}</span>
+                        ${isExpiring ? `<span style="font-size:10px;color:var(--warning);font-weight:700;">Expiring soon</span>` : ''}
+                        ${canDelete ? `<button class="btn-danger-outline" onclick="deletePendingSource('${source.type}', ${source.id})" style="font-size:10px;padding:4px 10px;">Delete</button>` : ''}
+                        ${canRetry ? `<button class="btn-primary btn-sm" onclick="retryPendingSource('${source.type}', ${source.id})" style="font-size:10px;padding:4px 10px;">Retry</button>` : ''}
+                        ${source.status === 'otp_pending' ? `<button class="btn-primary btn-sm" onclick="resendOtpForSource(${source.id})" style="font-size:10px;padding:4px 10px;">Resend OTP</button>` : ''}
+                    </div>
+                </div>
+                <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">
+                    ${source.created_at ? `Added: ${new Date(source.created_at).toLocaleString()}` : ''}
+                    ${source.otp_expires_at ? ` · OTP expires: ${new Date(source.otp_expires_at).toLocaleString()}` : ''}
+                    ${source.expires_at ? ` · Expires: ${new Date(source.expires_at).toLocaleString()}` : ''}
+                </div>
+                ${source.error_message ? `<div style="font-size:11px;color:var(--danger);margin-top:4px;">Error: ${escapeHtml(source.error_message)}</div>` : ''}
+            </div>
+        `;
+    });
+
+    html += `</div>`;
+    container.innerHTML = html;
+}
+
+/**
+ * Get status label for display
+ */
+function getSourceStatusLabel(source) {
+    const statusMap = {
+        'pending_confirmation': 'Pending Confirmation',
+        'pending': 'Pending',
+        'proposed': 'Proposed',
+        'otp_pending': 'OTP Verification',
+        'oauth_pending': 'OAuth Verification',
+        'cancelled': 'Cancelled',
+        'rejected': 'Rejected',
+        'failed': 'Failed',
+        'expired': 'Expired'
+    };
+    return statusMap[source.status] || source.status;
+}
+
+/**
+ * Get status class for styling
+ */
+function getSourceStatusClass(source) {
+    const classMap = {
+        'pending_confirmation': 'pending',
+        'pending': 'pending',
+        'proposed': 'pending',
+        'otp_pending': 'pending',
+        'oauth_pending': 'pending',
+        'cancelled': 'inactive',
+        'rejected': 'inactive',
+        'failed': 'inactive',
+        'expired': 'inactive'
+    };
+    return classMap[source.status] || 'pending';
+}
+
+/**
+ * Get human-readable source type
+ */
+function getSourceTypeLabel(source) {
+    const typeMap = {
+        'user_source': 'Source',
+        'agent_destination': 'Agent Destination',
+        'registration_attempt': 'Verification Attempt',
+        'agent_attempt': 'Agent Verification'
+    };
+    return typeMap[source.type] || source.type;
+}
+
+/**
+ * Get icon for source type
+ */
+function getSourceIcon(source) {
+    const iconMap = {
+        'user_source': '🏦',
+        'agent_destination': '🏢',
+        'registration_attempt': '📱',
+        'agent_attempt': '📋'
+    };
+    return iconMap[source.type] || '📌';
+}
+
+/**
+ * Delete a pending source
+ */
+async function deletePendingSource(type, sourceId) {
+    if (!confirm('Delete this pending source? It can be re-added later.')) return;
+    
+    const btn = document.querySelector(`[onclick*="deletePendingSource('${type}', ${sourceId})"]`);
+    const originalText = btn ? btn.textContent : 'Delete';
+    if (btn) { btn.textContent = 'Deleting...'; btn.disabled = true; }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/delete.php', {
+        type: type,
+        source_id: sourceId
+    });
+
+    if (btn) { btn.textContent = originalText; btn.disabled = false; }
+
+    if (!result.ok) {
+        showMessage('Failed to delete source: ' + result.error, 'error');
+        return;
+    }
+
+    showMessage(result.body.data?.message || 'Source deleted successfully.', 'success');
+    loadPendingSources();
+}
+
+/**
+ * Retry a failed source
+ */
+async function retryPendingSource(type, sourceId) {
+    if (!confirm('Retry this source? This will start a new verification attempt.')) return;
+    
+    const btn = document.querySelector(`[onclick*="retryPendingSource('${type}', ${sourceId})"]`);
+    const originalText = btn ? btn.textContent : 'Retry';
+    if (btn) { btn.textContent = 'Retrying...'; btn.disabled = true; }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/retry.php', {
+        type: type,
+        source_id: sourceId
+    });
+
+    if (btn) { btn.textContent = originalText; btn.disabled = false; }
+
+    if (!result.ok) {
+        showMessage('Failed to retry source: ' + result.error, 'error');
+        return;
+    }
+
+    const data = result.body.data || {};
+    if (data.requires_redirect) {
+        showMessage(data.message || 'Redirecting to bank...', 'info');
+        setTimeout(() => { window.location.href = data.redirect_url; }, 1500);
+        return;
+    }
+    if (data.requires_otp) {
+        showMessage(data.message || 'OTP sent. Enter the code to verify.', 'success');
+        // Refresh the list to show the OTP state
+        loadPendingSources();
+        return;
+    }
+
+    showMessage(data.message || 'Source retry initiated successfully.', 'success');
+    loadPendingSources();
+}
+
+/**
+ * Resend OTP for a source
+ */
+async function resendOtpForSource(attemptId) {
+    const btn = document.querySelector(`[onclick*="resendOtpForSource(${attemptId})"]`);
+    const originalText = btn ? btn.textContent : 'Resend OTP';
+    if (btn) { btn.textContent = 'Sending...'; btn.disabled = true; }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/resend_otp.php', {
+        attempt_id: attemptId
+    });
+
+    if (btn) { btn.textContent = originalText; btn.disabled = false; }
+
+    if (!result.ok) {
+        showMessage('Failed to resend OTP: ' + result.error, 'error');
+        return;
+    }
+
+    showMessage(result.body.data?.message || 'OTP resent successfully.', 'success');
+}
+
+// ============================================================
 // TOOLBOX — single entry point for everything that used to
 // crowd the topbar: sources, history, claims, agent tools,
 // profile, help, terms.
@@ -1402,9 +1669,13 @@ async function removeSource(sourceId) {
 function openToolbox() { openModal('Toolbox', renderToolbox()); }
 
 function renderToolbox() {
+    // Count pending sources from the stored data
+    const pendingCount = pendingSources.length;
+    
     const claimCount = pendingClaims.length;
     const rows = [
         { label: 'Finalize identity swap', badge: claimCount > 0 ? claimCount : null, action: 'openFinalizeIdentityModal()' },
+        { label: 'Pending sources', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
         { label: 'My sources', action: 'openMySources()' },
         { label: 'Swap history', action: 'openSwapHistory()' },
     ];
@@ -1419,6 +1690,20 @@ function renderToolbox() {
             <span class="toolbox-row-label">${r.label}</span>
             ${r.badge ? `<span class="toolbox-row-badge">${r.badge}</span>` : ''}
         </div>`).join('')}</div>`;
+}
+
+/**
+ * Update the toolbox badge with pending count
+ */
+function updateToolboxBadge() {
+    const badge = document.getElementById('toolboxBadge');
+    const totalPending = pendingSources.length + pendingClaims.length;
+    if (totalPending > 0) {
+        badge.style.display = 'inline-flex';
+        badge.textContent = totalPending;
+    } else {
+        badge.style.display = 'none';
+    }
 }
 
 function openHelpModal() {
@@ -1515,8 +1800,7 @@ async function checkPendingClaims() {
         const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {});
         if (!result.ok) return;
         pendingClaims = result.body.data || [];
-        const badge = document.getElementById('toolboxBadge');
-        if (pendingClaims.length > 0) { badge.style.display = 'inline-flex'; badge.textContent = pendingClaims.length; } else { badge.style.display = 'none'; }
+        updateToolboxBadge();
     } catch (e) { console.error('[claims] Failed to check pending claims', e); }
 }
 function openFinalizeIdentityModal() {
@@ -2035,9 +2319,6 @@ function renderSwapHistory(data) {
     let historyHtml = `<div style="max-height:60vh;overflow-y:auto;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
     swaps.forEach((swap) => {
         const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
-        // FIX: use the real API field names (voucher_number / atm_pin),
-        // not the nonexistent swap_code/pin_code/atm_code aliases that
-        // were being checked before.
         const code = swap.voucher_number || null;
         const pin = swap.atm_pin || null;
         const hasCode = !!(code || pin);
@@ -2066,11 +2347,6 @@ async function viewSwapDetail(reference) {
 
 function renderSwapDetail(data) {
     const swap = data.swap || data.data || {};
-    // FIX: the API (history.php / details.php) returns 'voucher_number',
-    // 'atm_pin', and 'voucher_expiry' — not 'swap_code', 'pin_code',
-    // 'atm_code', or 'code_expiry'. Those keys never existed in the
-    // response, so the PIN and expiry silently never rendered even
-    // though the underlying data was present all along.
     const code = swap.voucher_number || null;
     const pin = swap.atm_pin || null;
     const codeBox = (code || pin) ? `
