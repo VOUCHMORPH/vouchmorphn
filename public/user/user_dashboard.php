@@ -202,28 +202,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .page-footer .footer-mark { font-size: 11px; color: var(--text-dim); margin-top: 16px; }
 .topbar-right { display: flex; align-items: center; gap: 14px; font-size: 14px; flex-wrap: wrap; }
 .topbar-right .greeting { color: var(--text-muted); }
-.country-selector { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px; color: var(--text-muted); font-size: 12px; cursor: pointer; font-family: var(--font); }
-.logout-btn { color: var(--text-muted); text-decoration: none; padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius); font-weight: 600; font-size: 13px; }
+.country-selector { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 14px; color: var(--text-muted); font-size: 13px; cursor: pointer; font-family: var(--font); line-height: 1; }
+.logout-btn { color: var(--text-muted); text-decoration: none; padding: 9px 18px; border: 1px solid var(--border); border-radius: var(--radius); font-weight: 700; font-size: 13px; line-height: 1; display: inline-flex; align-items: center; }
 .logout-btn:hover { border-color: var(--danger); color: var(--danger); }
 .role-badge { font-size: 10px; color: var(--primary-dark); border: 1px solid var(--primary); padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
 .agent-badge { font-size: 10px; color: #fff; background: var(--primary-dark); padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
 .test-mode-badge { font-size: 10px; color: #791f1f; border: 1px solid #d32f2f; padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
-
-/* ============================================================
-   WALLET DROPDOWN (header)
-   ============================================================ */
-.wallet-account-wrap { position: relative; display: inline-block; }
-.wallet-account-wrap .btn { padding: 9px 18px; border: none; border-radius: var(--radius); font-size: 13px; font-weight: 700; font-family: var(--font); cursor: pointer; }
-.wallet-account-wrap .btn-primary { background: var(--text); color: #fff; display: flex; align-items: center; gap: 6px; }
-.wallet-account-wrap .btn-primary:hover { background: #000; }
-#walletDropdown { display: none; position: absolute; top: calc(100% + 6px); right: 0; background: #fff; border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0,0,0,0.12); min-width: 230px; z-index: 50; overflow: hidden; }
-.wallet-dropdown-item { padding: 12px 16px; cursor: pointer; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); }
-.wallet-dropdown-item:hover { background: var(--surface); }
-.wallet-dropdown-item:last-child { border-bottom: none; }
-.wallet-dropdown-item .icon { font-size: 18px; }
-.wallet-dropdown-item .label { font-weight: 700; font-size: 14px; }
-.wallet-dropdown-item .sub { font-size: 11px; color: var(--text-muted); }
-#sourceCountBadge { display: none; background: #fff; color: var(--primary-dark); border-radius: 10px; font-size: 11px; font-weight: 800; padding: 1px 7px; margin-left: 4px; }
 
 /* Toolbox trigger */
 .toolbox-btn { position: relative; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: #fff; background: var(--text); border: none; padding: 9px 18px; border-radius: var(--radius); cursor: pointer; }
@@ -260,6 +244,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .asset-fields { margin: 4px 0 12px; padding: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 .identity-field { margin: 4px 0 12px; padding: 14px; background: rgba(0,160,173,0.05); border: 1px dashed var(--primary); border-radius: var(--radius); }
 .cta-row { display: flex; justify-content: center; margin-top: 24px; gap: 12px; }
+.cta-row .btn, .cta-row .btn-secondary { flex: 1 1 0; }
+.cta-row .btn:only-child, .cta-row .btn-secondary:only-child { flex: 0 1 320px; }
 .btn { padding: 14px 40px; border: none; border-radius: var(--radius); font-size: 14px; font-weight: 700; font-family: var(--font); cursor: pointer; }
 .btn-primary { background: var(--text); color: #fff; }
 .btn-primary:hover { background: #000; }
@@ -291,7 +277,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .result-box .atm-code { margin: 12px 0; padding: 16px; background: rgba(0,160,173,0.06); border: 2px solid var(--primary); border-radius: var(--radius); }
 .result-box .atm-code .code { font-size: 26px; font-weight: 700; font-family: monospace; letter-spacing: 4px; color: var(--primary-dark); }
 .raw-json { text-align: left; font-size: 11px; background: var(--surface); border-radius: var(--radius); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-dim); margin-top: 12px; max-height: 200px; overflow-y: auto; }
-@media (max-width: 480px) { body { padding: 12px; } .btn, .btn-secondary { padding: 12px 24px; width: 100%; } .cta-row { flex-direction: column; } .topbar { flex-direction: column; align-items: stretch; } }
+@media (max-width: 480px) { body { padding: 12px; } .btn, .btn-secondary { padding: 12px 24px; width: 100%; } .cta-row { flex-direction: column; } .cta-row .btn, .cta-row .btn-secondary, .cta-row .btn:only-child, .cta-row .btn-secondary:only-child { flex: 0 0 auto; } .topbar { flex-direction: column; align-items: stretch; } }
 
 /* ============================================================
    FROM SIDE — 3 clean source buttons
@@ -320,13 +306,19 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .otp-input-group input { flex: 1; }
 .otp-input-group button { flex-shrink: 0; }
 
-/* Quick source chips */
-.source-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; padding: 6px 12px; border-radius: var(--radius); cursor: pointer; border: 1px solid var(--border); background: #fff; }
-.source-chip:hover { background: var(--text); color: #fff; border-color: var(--text); }
-.source-chip .chip-identifier { font-weight: 400; color: var(--text-dim); font-size: 10px; }
-.source-chip:hover .chip-identifier { color: rgba(255,255,255,0.75); }
-.source-chip.active { background: var(--text); color: #fff; border-color: var(--text); }
-.source-chip.active .chip-identifier { color: rgba(255,255,255,0.75); }
+/* Saved sources — vertical dropdown list (not wrapped chips) */
+.saved-source-list { border: 1px solid var(--border); border-radius: var(--radius); background: #fff; overflow: hidden; }
+.saved-source-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.saved-source-row:last-child { border-bottom: none; }
+.saved-source-row:hover { background: var(--surface); }
+.saved-source-row.active { background: var(--text); color: #fff; }
+.saved-source-row .row-icon { font-size: 16px; flex-shrink: 0; }
+.saved-source-row .row-main { flex: 1; min-width: 0; }
+.saved-source-row .row-inst { font-weight: 700; font-size: 13px; }
+.saved-source-row .row-ident { font-size: 11px; color: var(--text-dim); }
+.saved-source-row.active .row-ident { color: rgba(255,255,255,0.75); }
+.saved-source-row .row-check { font-size: 14px; opacity: 0; }
+.saved-source-row.active .row-check { opacity: 1; }
 
 /* Toolbox modal rows */
 .toolbox-list { display: flex; flex-direction: column; gap: 2px; }
@@ -354,37 +346,6 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $userCountry ? 'selected' : ''; ?>><?php echo htmlspecialchars($country); ?></option>
             <?php endforeach; ?>
         </select>
-
-        <!-- ============================================================
-             WALLET / ACCOUNT DROPDOWN — header shortcut, single source of truth.
-             "My Sources" scrolls to and opens the SAME panel used inline
-             below (openMySourcesFromHeader), no separate modal/system.
-             ============================================================ -->
-        <div class="wallet-account-wrap">
-            <button class="btn btn-primary" onclick="toggleWalletMenu(event)" id="walletAccountBtn">
-                <span>💳</span> Wallet / Account
-                <span id="sourceCountBadge">0</span>
-                <span style="font-size:10px;">▾</span>
-            </button>
-            <div id="walletDropdown">
-                <div class="wallet-dropdown-item" onclick="viewWalletBalance()">
-                    <span class="icon">💰</span>
-                    <div><div class="label">View Balance</div><div class="sub">Cumulative across sources</div></div>
-                </div>
-                <div class="wallet-dropdown-item" onclick="openMySourcesFromHeader()">
-                    <span class="icon">🔗</span>
-                    <div><div class="label">My Sources</div><div class="sub" id="sourceCountText">No sources linked yet</div></div>
-                </div>
-                <div class="wallet-dropdown-item" onclick="openAddSource()">
-                    <span class="icon">➕</span>
-                    <div><div class="label">Add Source</div><div class="sub">Bank, wallet, card, or voucher</div></div>
-                </div>
-                <div class="wallet-dropdown-item" style="opacity:0.6;" onclick="alert('VouchMorph Card is coming soon — hook multiple sources to one card and swipe to finalize any swap instantly.')">
-                    <span class="icon">💳</span>
-                    <div><div class="label">VouchMorph Card <span style="font-size:10px;background:var(--warning);color:#fff;padding:1px 6px;border-radius:8px;">Soon</span></div><div class="sub">Multi-source, balanceless swiping</div></div>
-                </div>
-            </div>
-        </div>
 
         <button class="toolbox-btn" onclick="openToolbox()">
             Toolbox
@@ -420,11 +381,11 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <!-- WALLET / ACCOUNT: saved sources, or a prompt to add one -->
             <div id="walletPanel" class="source-panel" style="display:none;">
                 <div id="savedSourcesContainer" style="margin-bottom:12px;display:none;">
-                    <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;">
-                        <div id="savedSourcesChips" style="display:inline-flex;flex-wrap:wrap;gap:6px;"></div>
-                        <span class="quick-link muted" onclick="clearSourceSelection()" style="font-size:10px;padding:4px 10px;display:none;" id="clearSourceBtn">Clear</span>
+                    <div id="savedSourcesChips" class="saved-source-list"></div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:8px;">
+                        <div style="font-size:12px;color:var(--text-dim);">Tap a saved source to auto-fill it, then just enter the amount. <span class="quick-link muted" onclick="openAddSource()">+ Add another</span></div>
+                        <span class="quick-link muted" onclick="clearSourceSelection()" style="display:none;" id="clearSourceBtn">Clear</span>
                     </div>
-                    <div style="font-size:10px;color:var(--text-dim);margin-top:6px;">Tap a saved source to auto-fill it, then just enter the amount. <span class="quick-link muted" style="padding:3px 9px;font-size:10px;" onclick="openAddSource()">+ Add another</span></div>
                 </div>
                 <div id="noSourcesPrompt" class="empty-source-box" style="display:none;">
                     <p>No linked wallet or account yet.</p>
@@ -640,18 +601,8 @@ function maskIdentifier(value) {
 }
 
 // ============================================================
-// HEADER WALLET/ACCOUNT DROPDOWN
+// SAVED SOURCES DATA
 // ============================================================
-function toggleWalletMenu(e) {
-    e.stopPropagation();
-    const dd = document.getElementById('walletDropdown');
-    dd.style.display = dd.style.display === 'block' ? 'none' : 'block';
-}
-document.addEventListener('click', (e) => {
-    const dd = document.getElementById('walletDropdown');
-    if (dd && dd.style.display === 'block' && !e.target.closest('.wallet-account-wrap')) dd.style.display = 'none';
-});
-
 async function getUserSources() {
     try {
         const resp = await fetch(CONFIG.API_BASE + '/user/sources.php', { method: 'GET', credentials: 'include', headers: { 'Accept': 'application/json' } });
@@ -666,16 +617,10 @@ async function refreshSourceCount() {
     const result = await getUserSources();
     const sources = (result.ok && result.body.data && result.body.data.sources) || [];
     userSources = sources;
-    const badge = document.getElementById('sourceCountBadge');
-    const text = document.getElementById('sourceCountText');
     const walletBtnCount = document.getElementById('walletBtnCount');
-    if (sources.length > 0) {
-        badge.style.display = 'inline-block'; badge.textContent = sources.length;
-        text.textContent = `${sources.length} source${sources.length > 1 ? 's' : ''} linked`;
-        walletBtnCount.style.display = 'inline-block'; walletBtnCount.textContent = sources.length;
-    } else {
-        badge.style.display = 'none'; text.textContent = 'No sources linked yet';
-        walletBtnCount.style.display = 'none';
+    if (walletBtnCount) {
+        if (sources.length > 0) { walletBtnCount.style.display = 'inline-block'; walletBtnCount.textContent = sources.length; }
+        else { walletBtnCount.style.display = 'none'; }
     }
     if (sourcePanelOpenCat === 'WALLET') renderSavedSourceChips();
     return sources;
@@ -683,7 +628,6 @@ async function refreshSourceCount() {
 document.addEventListener('DOMContentLoaded', refreshSourceCount);
 
 async function viewWalletBalance() {
-    document.getElementById('walletDropdown').style.display = 'none';
     openModal('Balance', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Calculating cumulative balance...</div>');
     const sources = await getUserSources().then(r => (r.ok && r.body.data.sources) || []);
     if (sources.length === 0) {
@@ -707,10 +651,10 @@ async function viewWalletBalance() {
     document.getElementById('modalBody').innerHTML = html;
 }
 
-// Header dropdown's "My Sources" -> scroll to and open the SAME inline
-// panel used by the 3 From-side buttons. One system, no duplicate modal.
+// Toolbox's "Select a saved source" -> scroll to and open the From-side
+// Wallet/Account panel. One system, no duplicate modal.
 function openMySourcesFromHeader() {
-    document.getElementById('walletDropdown').style.display = 'none';
+    closeModal();
     document.getElementById('sourceTypeButtons')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     if (sourcePanelOpenCat !== 'WALLET') toggleSourcePanel('WALLET');
 }
@@ -1146,13 +1090,10 @@ async function loadUserSources() {
     if (result.ok) {
         userSources = result.body.data?.sources || [];
         if (sourcePanelOpenCat === 'WALLET') renderSavedSourceChips();
-        const badge = document.getElementById('sourceCountBadge');
-        const text = document.getElementById('sourceCountText');
         const walletBtnCount = document.getElementById('walletBtnCount');
-        if (userSources.length > 0) {
-            badge.style.display = 'inline-block'; badge.textContent = userSources.length;
-            text.textContent = `${userSources.length} source${userSources.length > 1 ? 's' : ''} linked`;
-            walletBtnCount.style.display = 'inline-block'; walletBtnCount.textContent = userSources.length;
+        if (walletBtnCount) {
+            if (userSources.length > 0) { walletBtnCount.style.display = 'inline-block'; walletBtnCount.textContent = userSources.length; }
+            else { walletBtnCount.style.display = 'none'; }
         }
     }
     const pendingResult = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
@@ -1182,16 +1123,21 @@ function renderSavedSourceChips() {
     emptyPrompt.style.display = 'none';
     container.style.display = 'block';
 
+    const icons = { BANK: '🏦', WALLET: '📱', ACCOUNT: '🏦', 'MNO-WALLET': '📱', 'BANK-WALLET': '🏦' };
     chipsContainer.innerHTML = activeSources.map(source => {
         const instName = PARTICIPANTS[source.institution]?.name || source.institution;
         const identifier = source.identifier || source.source_identifier || '';
-        const shortId = identifier.length > 15 ? identifier.substring(0, 12) + '…' : identifier;
         const isSelected = selectedSourceId === source.id;
+        const icon = icons[String(source.asset_type).toUpperCase()] || '🔗';
         return `
-            <span class="source-chip ${isSelected ? 'active' : ''}" onclick="selectSavedSource('${source.id}')" title="${escapeHtml(instName)} - ${escapeHtml(identifier)}">
-                <span>${escapeHtml(instName)}</span>
-                <span class="chip-identifier">${escapeHtml(shortId)}</span>
-            </span>`;
+            <div class="saved-source-row ${isSelected ? 'active' : ''}" onclick="selectSavedSource('${source.id}')">
+                <span class="row-icon">${icon}</span>
+                <div class="row-main">
+                    <div class="row-inst">${escapeHtml(instName)}</div>
+                    <div class="row-ident">${escapeHtml(identifier)}${source.account_name ? ' · ' + escapeHtml(source.account_name) : ''}</div>
+                </div>
+                <span class="row-check">✓</span>
+            </div>`;
     }).join('');
     clearBtn.style.display = selectedSourceId ? 'inline-flex' : 'none';
 }
@@ -1400,7 +1346,6 @@ function useSourceForSwap(sourceId) {
 }
 
 function openAddSource() {
-    document.getElementById('walletDropdown').style.display = 'none';
     const instOptions = Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('');
     const body = `
         <div style="margin-bottom:16px;">
@@ -1578,8 +1523,8 @@ function renderPendingSources() {
                     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                         <span class="source-status ${statusClass}">${statusLabel}</span>
                         ${isExpiring ? `<span style="font-size:10px;color:var(--warning);font-weight:700;">Expiring soon</span>` : ''}
-                        ${canDelete ? `<button class="btn-danger-outline" onclick="deletePendingSource('${source.type}', ${source.id})" style="font-size:10px;padding:4px 10px;">Delete</button>` : ''}
-                        ${canRetry ? `<button class="btn-primary btn-sm" onclick="retryPendingSource('${source.type}', ${source.id})" style="font-size:10px;padding:4px 10px;">Retry</button>` : ''}
+                        ${canDelete ? `<button class="btn-danger-outline" onclick="deletePendingSource('${source.type}', ${source.id})">Delete</button>` : ''}
+                        ${canRetry ? `<button class="btn-primary btn-sm" onclick="retryPendingSource('${source.type}', ${source.id})">Retry</button>` : ''}
                     </div>
                 </div>
                 <div style="font-size:11px;color:var(--text-dim);margin-top:6px;">
@@ -1648,23 +1593,28 @@ function renderToolbox() {
     const claimCount = pendingClaims.length;
     const isAgent = !!(SessionUser && SessionUser.is_agent);
     const rows = [
-        { label: 'Finalize identity swap', badge: claimCount > 0 ? claimCount : null, action: 'openFinalizeIdentityModal()' },
-        { label: 'Pending sources', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
-        { label: 'My sources', action: 'openMySourcesLegacy()' },
-        { label: 'Swap history', action: 'openSwapHistory()' },
-        { label: 'Register identity', action: 'openAddIdentityModal()' },
+        { label: 'View balance', icon: '💰', action: 'viewWalletBalance()' },
+        { label: 'Select a saved source', icon: '🔗', action: 'openMySourcesFromHeader()' },
+        { label: 'Add source', icon: '➕', action: 'openAddSource()' },
+        { label: 'Finalize identity swap', icon: '📩', badge: claimCount > 0 ? claimCount : null, action: 'openFinalizeIdentityModal()' },
+        { label: 'Pending sources', icon: '⏳', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
+        { label: 'My sources', icon: '📋', action: 'openMySourcesLegacy()' },
+        { label: 'Swap history', icon: '🕘', action: 'openSwapHistory()' },
+        { label: 'Register identity', icon: '🪪', action: 'openAddIdentityModal()' },
     ];
     // Agent status now comes from the real role (users.role_id -> roles.role_name = 'agent'),
     // not a boolean column — granted by an admin, so there's no self-service "become an agent" here.
     if (isAgent) {
-        rows.push({ label: 'Agent tools', action: 'openAgentToolsModal()' });
-        rows.push({ label: 'Agent destinations', action: 'openAgentModal()' });
+        rows.push({ label: 'Agent tools', icon: '🕵️', action: 'openAgentToolsModal()' });
+        rows.push({ label: 'Agent destinations', icon: '🏢', action: 'openAgentModal()' });
     }
-    rows.push({ label: 'My profile', action: 'openProfileModal()' });
-    rows.push({ label: 'Help', action: 'openHelpModal()' });
-    rows.push({ label: 'Terms & conditions', action: 'openTermsModal()' });
+    rows.push({ label: 'VouchMorph Card (coming soon)', icon: '💳', action: "alert('VouchMorph Card is coming soon — hook multiple sources to one card and swipe to finalize any swap instantly.')" });
+    rows.push({ label: 'My profile', icon: '👤', action: 'openProfileModal()' });
+    rows.push({ label: 'Help', icon: '❓', action: 'openHelpModal()' });
+    rows.push({ label: 'Terms & conditions', icon: '📄', action: 'openTermsModal()' });
     return `<div class="toolbox-list">${rows.map(r => `
         <div class="toolbox-row" onclick="${r.action}">
+            <span class="toolbox-row-icon">${r.icon || ''}</span>
             <span class="toolbox-row-label">${r.label}</span>
             ${r.badge ? `<span class="toolbox-row-badge">${r.badge}</span>` : ''}
         </div>`).join('')}</div>`;
@@ -2013,7 +1963,7 @@ function renderAgentModal() {
         return `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:8px;background:#fff;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                 <div><div style="font-weight:700;">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(d.identifier)} · ${escapeHtml(d.account_type || d.asset_type)}</div></div>
-                <div style="display:flex;align-items:center;gap:8px;">${badge}${canCancel ? `<button class="btn-danger-outline" onclick="cancelAgentDestination(${d.id})" style="font-size:10px;padding:4px 10px;">Cancel</button>` : ''}</div>
+                <div style="display:flex;align-items:center;gap:8px;">${badge}${canCancel ? `<button class="btn-danger-outline" onclick="cancelAgentDestination(${d.id})">Cancel</button>` : ''}</div>
             </div>${d.status === 'rejected' && d.rejection_reason ? `<div style="font-size:12px;color:var(--danger);margin-top:6px;">Reason: ${escapeHtml(d.rejection_reason)}</div>` : ''}
         </div>`;
     }).join('') : '<div style="font-size:12px;color:var(--text-dim);">You have no agent destination accounts registered yet.</div>';
