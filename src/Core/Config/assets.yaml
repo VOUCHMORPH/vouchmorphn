@@ -148,7 +148,7 @@ MNO-WALLET:
     description: "Mobile money wallet"
   
   fields:
-    - name: phone_number
+    - name: phone
       label: "Phone Number"
       type: tel
       required: true
@@ -159,7 +159,7 @@ MNO-WALLET:
     - name: wallet_pin
       label: "Wallet PIN"
       type: password
-      required: true
+      required: false
       vault_field: pin
       min_length: 4
       max_length: 6
@@ -186,7 +186,7 @@ BANK-WALLET:
     description: "Bank's digital wallet"
   
   fields:
-    - name: phone_number
+    - name: phone
       label: "Phone Number"
       type: tel
       required: true
