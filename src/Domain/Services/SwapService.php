@@ -668,6 +668,10 @@ public function revokeHookedSource(int $userId, string $sourceReference): array
 // PENDING SOURCES MANAGEMENT - GET, DELETE, RETRY
 // ============================================================================
 
+// ============================================================================
+// PENDING SOURCES MANAGEMENT - GET, DELETE, RETRY
+// ============================================================================
+
 /**
  * Get all pending sources for a user
  * Includes user_source_accounts, agent_destination_accounts, and registration attempts
@@ -689,8 +693,7 @@ public function getPendingSources(int $userId): array
             source_reference,
             status,
             proposed_at as created_at,
-            'user_source' as type,
-            error_message
+            'user_source' as type
         FROM user_source_accounts
         WHERE user_id = :user_id 
         AND status IN ('pending_confirmation', 'pending', 'proposed', 'failed')
@@ -712,8 +715,7 @@ public function getPendingSources(int $userId): array
             account_type,
             status,
             proposed_at as created_at,
-            'agent_destination' as type,
-            error_message
+            'agent_destination' as type
         FROM agent_destination_accounts
         WHERE user_id = :user_id 
         AND status IN ('pending_confirmation', 'pending', 'proposed', 'failed')
@@ -736,8 +738,7 @@ public function getPendingSources(int $userId): array
             otp_method,
             otp_expires_at,
             created_at,
-            'registration_attempt' as type,
-            NULL as error_message
+            'registration_attempt' as type
         FROM user_source_registration_attempts
         WHERE user_id = :user_id 
         AND status IN ('otp_pending', 'oauth_pending')
@@ -760,8 +761,7 @@ public function getPendingSources(int $userId): array
             otp_method,
             otp_expires_at,
             created_at,
-            'agent_attempt' as type,
-            NULL as error_message
+            'agent_attempt' as type
         FROM agent_registration_attempts
         WHERE user_id = :user_id 
         AND status IN ('otp_pending', 'oauth_pending')
@@ -799,7 +799,7 @@ public function deletePendingSource(int $userId, string $type, int $sourceId): a
     
     // Check ownership
     $stmt = $this->swapDB->prepare("
-        SELECT id, status FROM {$table}
+        SELECT id, status, institution, identifier FROM {$table}
         WHERE {$idColumn} = :id AND user_id = :user_id AND deleted_at IS NULL
     ");
     $stmt->execute([':id' => $sourceId, ':user_id' => $userId]);
@@ -856,8 +856,7 @@ public function retryPendingSource(int $userId, string $type, int $sourceId): ar
         UPDATE {$table}
         SET status = 'pending_confirmation',
             deleted_at = NULL,
-            updated_at = NOW(),
-            retry_count = COALESCE(retry_count, 0) + 1
+            updated_at = NOW()
         WHERE {$idColumn} = :id AND user_id = :user_id
     ");
     $stmt->execute([':id' => $sourceId, ':user_id' => $userId]);
@@ -927,14 +926,10 @@ public function resendOtpForAttempt(int $userId, int $attemptId): array
     // Update the attempt
     $stmt = $this->swapDB->prepare("
         UPDATE {$table}
-        SET otp_pin_hash = :otp_hash,
-            otp_expires_at = :expires_at,
-            retry_count = COALESCE(retry_count, 0) + 1,
-            updated_at = NOW()
+        SET otp_expires_at = :expires_at
         WHERE id = :id AND user_id = :user_id
     ");
     $stmt->execute([
-        ':otp_hash' => $otpHash,
         ':expires_at' => date('Y-m-d H:i:s', time() + 600),
         ':id' => $attemptId,
         ':user_id' => $userId
@@ -955,6 +950,42 @@ public function resendOtpForAttempt(int $userId, int $attemptId): array
     }
     
     return ['success' => true, 'message' => 'Verification code resent successfully.'];
+}
+
+/**
+ * Cancel pending attempts by source
+ */
+private function cancelPendingAttemptsBySource(int $userId, string $institution, string $identifier): void
+{
+    // Cancel user source attempts
+    $stmt = $this->swapDB->prepare("
+        UPDATE user_source_registration_attempts
+        SET status = 'cancelled', cancelled_at = NOW()
+        WHERE user_id = :user_id 
+        AND institution = :institution 
+        AND identifier = :identifier 
+        AND status IN ('otp_pending', 'oauth_pending')
+    ");
+    $stmt->execute([
+        ':user_id' => $userId,
+        ':institution' => $institution,
+        ':identifier' => $identifier
+    ]);
+    
+    // Cancel agent attempts
+    $stmt = $this->swapDB->prepare("
+        UPDATE agent_registration_attempts
+        SET status = 'cancelled'
+        WHERE user_id = :user_id 
+        AND institution = :institution 
+        AND identifier = :identifier 
+        AND status IN ('otp_pending', 'oauth_pending')
+    ");
+    $stmt->execute([
+        ':user_id' => $userId,
+        ':institution' => $institution,
+        ':identifier' => $identifier
+    ]);
 }
 
 /**
