@@ -663,24 +663,15 @@ public function revokeHookedSource(int $userId, string $sourceReference): array
         
         return $this->executeAtomicSwap($multiPayload);
     }
-
-    // ============================================================================
-// PENDING SOURCES MANAGEMENT - GET, DELETE, RETRY
-// ============================================================================
-
 // ============================================================================
 // PENDING SOURCES MANAGEMENT - GET, DELETE, RETRY
 // ============================================================================
 
-/**
- * Get all pending sources for a user
- * Includes user_source_accounts, agent_destination_accounts, and registration attempts
- */
 public function getPendingSources(int $userId): array
 {
     $sources = [];
-    
-    // 1. Pending user source accounts
+
+    // USER SOURCES
     $stmt = $this->swapDB->prepare("
         SELECT 
             id,
@@ -692,20 +683,23 @@ public function getPendingSources(int $userId): array
             currency,
             source_reference,
             status,
-            proposed_at as created_at,
-            'user_source' as type
+            proposed_at AS created_at,
+            'user_source' AS type,
+            NULL AS rejection_reason
         FROM user_source_accounts
-        WHERE user_id = :user_id 
-        AND status IN ('pending_confirmation', 'pending', 'proposed', 'failed')
+        WHERE user_id = :user_id
+        AND status IN ('pending_confirmation','pending','proposed','failed')
         AND deleted_at IS NULL
         ORDER BY proposed_at DESC
     ");
-    $stmt->execute([':user_id' => $userId]);
-    $sources = array_merge($sources, $stmt->fetchAll(PDO::FETCH_ASSOC));
-    
-    // 2. Pending agent destination accounts
+
+    $stmt->execute([':user_id'=>$userId]);
+    $sources = array_merge($sources,$stmt->fetchAll(PDO::FETCH_ASSOC));
+
+
+    // AGENT DESTINATIONS
     $stmt = $this->swapDB->prepare("
-        SELECT 
+        SELECT
             id,
             institution,
             asset_type,
@@ -714,42 +708,49 @@ public function getPendingSources(int $userId): array
             account_name,
             account_type,
             status,
-            proposed_at as created_at,
-            'agent_destination' as type
+            proposed_at AS created_at,
+            'agent_destination' AS type,
+            rejection_reason
         FROM agent_destination_accounts
-        WHERE user_id = :user_id 
-        AND status IN ('pending_confirmation', 'pending', 'proposed', 'failed')
+        WHERE user_id = :user_id
+        AND status IN ('pending_confirmation','pending','proposed','failed')
         AND deleted_at IS NULL
         ORDER BY proposed_at DESC
     ");
-    $stmt->execute([':user_id' => $userId]);
-    $sources = array_merge($sources, $stmt->fetchAll(PDO::FETCH_ASSOC));
-    
-    // 3. Pending registration attempts (OTP/OAuth in progress)
-    $stmt = $this->swapDB->prepare("
-        SELECT 
+
+    $stmt->execute([':user_id'=>$userId]);
+    $sources = array_merge($sources,$stmt->fetchAll(PDO::FETCH_ASSOC));
+
+
+    // USER REGISTRATION ATTEMPTS
+    $stmt=$this->swapDB->prepare("
+        SELECT
             id,
             institution,
             asset_type,
             identifier,
             identifier_type,
             account_name,
+            NULL AS account_type,
             status,
-            otp_method,
-            otp_expires_at,
             created_at,
-            'registration_attempt' as type
+            'registration_attempt' AS type,
+            NULL AS rejection_reason,
+            otp_method,
+            otp_expires_at
         FROM user_source_registration_attempts
-        WHERE user_id = :user_id 
-        AND status IN ('otp_pending', 'oauth_pending')
+        WHERE user_id=:user_id
+        AND status IN ('otp_pending','oauth_pending')
         ORDER BY created_at DESC
     ");
-    $stmt->execute([':user_id' => $userId]);
-    $sources = array_merge($sources, $stmt->fetchAll(PDO::FETCH_ASSOC));
-    
-    // 4. Pending agent registration attempts
-    $stmt = $this->swapDB->prepare("
-        SELECT 
+
+    $stmt->execute([':user_id'=>$userId]);
+    $sources=array_merge($sources,$stmt->fetchAll(PDO::FETCH_ASSOC));
+
+
+    // AGENT REGISTRATION ATTEMPTS
+    $stmt=$this->swapDB->prepare("
+        SELECT
             id,
             institution,
             asset_type,
@@ -758,37 +759,43 @@ public function getPendingSources(int $userId): array
             account_name,
             account_type,
             status,
-            otp_method,
-            otp_expires_at,
             created_at,
-            'agent_attempt' as type
+            'agent_attempt' AS type,
+            NULL AS rejection_reason,
+            otp_method,
+            otp_expires_at
         FROM agent_registration_attempts
-        WHERE user_id = :user_id 
-        AND status IN ('otp_pending', 'oauth_pending')
+        WHERE user_id=:user_id
+        AND status IN ('otp_pending','oauth_pending')
         ORDER BY created_at DESC
     ");
-    $stmt->execute([':user_id' => $userId]);
-    $sources = array_merge($sources, $stmt->fetchAll(PDO::FETCH_ASSOC));
-    
-    // Add institution names and check expiry
-    foreach ($sources as &$source) {
-        $source['institution_name'] = $this->participants[$source['institution']]['name'] ?? $source['institution'];
-        
-        // Check if OTP is about to expire
-        if (!empty($source['otp_expires_at'])) {
-            $expiryTime = strtotime($source['otp_expires_at']);
-            $source['is_expiring'] = ($expiryTime - time()) < 60; // Less than 1 minute
-            $source['expires_at'] = $source['otp_expires_at'];
-        } elseif (!empty($source['created_at'])) {
-            // Check if created more than 3 minutes ago (auto-expire)
-            $createdTime = strtotime($source['created_at']);
-            $source['is_expiring'] = (time() - $createdTime) > 150; // More than 2.5 minutes
+
+    $stmt->execute([':user_id'=>$userId]);
+    $sources=array_merge($sources,$stmt->fetchAll(PDO::FETCH_ASSOC));
+
+
+    foreach($sources as &$source){
+
+        $source['institution_name'] =
+            $this->participants[$source['institution']]['name']
+            ?? $source['institution'];
+
+
+        if(!empty($source['otp_expires_at'])){
+
+            $expiry=strtotime($source['otp_expires_at']);
+
+            $source['is_expiring'] =
+                ($expiry-time()) < 60;
+
+            $source['expires_at'] =
+                $source['otp_expires_at'];
         }
     }
-    
+
+
     return $sources;
 }
-
 /**
  * Delete a pending source (soft delete)
  */
