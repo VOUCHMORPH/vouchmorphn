@@ -294,7 +294,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json; charset=utf-8');
 
     try {
-        $inputType         = $_POST['input_type'] ?? 'phone';
+        $inputType         = trim($_POST['input_type'] ?? '');
         $inputValue        = trim($_POST['identifier'] ?? '');
         $fullName          = trim($_POST['full_name'] ?? '');
         $dateOfBirth       = trim($_POST['date_of_birth'] ?? '');
@@ -304,6 +304,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pinConfirm        = trim($_POST['pin_confirm'] ?? '');
         $contactChannel    = $_POST['contact_channel'] ?? null;
         $contactValue      = trim($_POST['contact_value'] ?? '');
+
+        // ============================================================
+        // FIX: Self-service registration can ONLY use phone or email as
+        // the seed identity. Government-issued IDs (national_id,
+        // voters_id, birth_certificate, drivers_license, passport) can
+        // NEVER be self-registered — VouchMorph has no way to verify
+        // authenticity without a human agent/organization checking the
+        // physical document. These identities must be added later, in
+        // person, by an approved agent via addVerifiedIdentityAsAgent().
+        // ============================================================
+        $selfServiceIdentityTypes = ['phone', 'email'];
+
+        if (!in_array($inputType, $selfServiceIdentityTypes, true)) {
+            echo json_encode([
+                'success' => false,
+                'message' => 'Government-issued IDs can only be added with help from a VouchMorph agent or government official. Please register with your phone number or email — you can add a verified ID later at any agent.'
+            ]);
+            exit();
+        }
 
         // Validate input
         if (empty($inputValue)) {
@@ -780,9 +799,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="selector-tabs">
             <button class="selector-tab active" data-type="phone">📱 Phone</button>
             <button class="selector-tab" data-type="email">✉️ Email</button>
-            <button class="selector-tab" data-type="national_id">🆔 National ID</button>
-            <button class="selector-tab" data-type="drivers_license">🚗 Driver's License</button>
-            <button class="selector-tab" data-type="passport">📖 Passport</button>
+            <button class="selector-tab" data-type="national_id" style="opacity:0.5;cursor:not-allowed;">🆔 National ID</button>
+            <button class="selector-tab" data-type="drivers_license" style="opacity:0.5;cursor:not-allowed;">🚗 Driver's License</button>
+            <button class="selector-tab" data-type="passport" style="opacity:0.5;cursor:not-allowed;">📖 Passport</button>
         </div>
 
         <div id="register-step">
@@ -884,6 +903,13 @@ function toggleAdditionalPhones() {
 
 document.querySelectorAll('.selector-tab').forEach(tab => {
     tab.addEventListener('click', function() {
+        // Only allow phone and email for self-registration
+        const type = this.dataset.type;
+        if (type === 'national_id' || type === 'drivers_license' || type === 'passport') {
+            showMessage('Government-issued IDs can only be added with help from a VouchMorph agent or government official. Please register with your phone number or email — you can add a verified ID later at any agent.', 'warning');
+            return;
+        }
+        
         document.querySelectorAll('.selector-tab').forEach(t => t.classList.remove('active'));
         this.classList.add('active');
         currentIdentifierType = this.dataset.type;
@@ -922,6 +948,7 @@ function updateFormForIdentifierType(type) {
         dobGroup.style.display = 'none';
         contactGroup.classList.remove('show');
     } else {
+        // This shouldn't be reached now, but keep as fallback
         const labels = {
             'national_id': 'NATIONAL ID NUMBER',
             'drivers_license': "DRIVER'S LICENSE NUMBER",
@@ -976,6 +1003,12 @@ function sendOTP() {
     const pin = document.getElementById('pin').value.trim();
     const pinConfirm = document.getElementById('pin_confirm').value.trim();
 
+    // Double-check identifier type on the client side too
+    if (currentIdentifierType === 'national_id' || currentIdentifierType === 'drivers_license' || currentIdentifierType === 'passport') {
+        showMessage('Government-issued IDs can only be added with help from a VouchMorph agent or government official. Please register with your phone number or email.', 'warning');
+        return;
+    }
+
     if (!identifier) {
         showMessage('Please enter your identifier.', 'error');
         document.getElementById('identifier').focus();
@@ -1019,6 +1052,7 @@ function sendOTP() {
     if (phone2) formData.append('phone2', phone2);
     if (phone3) formData.append('phone3', phone3);
 
+    // Only for ID types (now blocked, but keep for completeness)
     if (!['phone', 'email'].includes(currentIdentifierType)) {
         const contactChannel = document.querySelector('input[name="contact_channel"]:checked')?.value;
         const contactValue = document.getElementById('contact_value').value.trim();
