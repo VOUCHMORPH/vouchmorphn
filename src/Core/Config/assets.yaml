@@ -197,7 +197,7 @@ BANK-WALLET:
     - name: wallet_pin
       label: "Wallet PIN"
       type: password
-      required: true
+      required: false
       vault_field: pin
       min_length: 4
       max_length: 6
