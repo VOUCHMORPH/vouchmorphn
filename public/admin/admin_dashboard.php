@@ -27,6 +27,10 @@ if (!SessionManager::isAdminLoggedIn()) {
     exit();
 }
 
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 $adminId = SessionManager::getAdminId();
 $adminUsername = SessionManager::getAdminUsername();
 $adminFullName = SessionManager::get('admin_full_name');
@@ -34,13 +38,13 @@ $adminRoleId = SessionManager::getAdminRoleId();
 $adminCountry = SessionManager::getAdminCountry();
 
 $roleDefinitions = [
-    999 => ['name' => 'Super Admin', 'label' => 'SUPER ADMIN', 'view' => ['dashboard', 'live_transactions', 'audit', 'invoices', 'regulatory', 'all_tables', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'client_lookup']],
-    3 => ['name' => 'Central Bank Regulator', 'label' => 'REGULATOR', 'view' => ['dashboard', 'regulatory', 'audit', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health']],
-    4 => ['name' => 'Compliance Officer', 'label' => 'COMPLIANCE', 'view' => ['dashboard', 'audit', 'recent_swaps', 'alerts', 'client_lookup']],
-    5 => ['name' => 'Auditor', 'label' => 'AUDITOR', 'view' => ['dashboard', 'audit', 'recent_swaps', 'institution_health']],
-    10 => ['name' => 'Finance Manager', 'label' => 'FINANCE', 'view' => ['dashboard', 'invoices', 'recent_swaps', 'alerts', 'institution_health']],
+    999 => ['name' => 'Super Admin', 'label' => 'SUPER ADMIN', 'view' => ['dashboard', 'live_transactions', 'audit', 'invoices', 'regulatory', 'all_tables', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'client_lookup', 'agent_approvals', 'reports']],
+    3 => ['name' => 'Central Bank Regulator', 'label' => 'REGULATOR', 'view' => ['dashboard', 'regulatory', 'audit', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'reports']],
+    4 => ['name' => 'Compliance Officer', 'label' => 'COMPLIANCE', 'view' => ['dashboard', 'audit', 'recent_swaps', 'alerts', 'client_lookup', 'agent_approvals', 'reports']],
+    5 => ['name' => 'Auditor', 'label' => 'AUDITOR', 'view' => ['dashboard', 'audit', 'recent_swaps', 'institution_health', 'reports']],
+    10 => ['name' => 'Finance Manager', 'label' => 'FINANCE', 'view' => ['dashboard', 'invoices', 'recent_swaps', 'alerts', 'institution_health', 'reports']],
     11 => ['name' => 'Settlement Officer', 'label' => 'SETTLEMENT', 'view' => ['dashboard', 'recent_swaps', 'alerts', 'institution_health']],
-    20 => ['name' => 'Customer Support', 'label' => 'SUPPORT', 'view' => ['dashboard', 'client_lookup']]
+    20 => ['name' => 'Customer Support', 'label' => 'SUPPORT', 'view' => ['dashboard', 'client_lookup', 'agent_approvals']]
 ];
 
 $roleInfo = $roleDefinitions[$adminRoleId] ?? $roleDefinitions[5];
@@ -57,6 +61,14 @@ function safeHtml($value) {
     return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
 }
 
+function csvEscape($value) {
+    $value = (string)$value;
+    if (preg_match('/[",\n]/', $value)) {
+        $value = '"' . str_replace('"', '""', $value) . '"';
+    }
+    return $value;
+}
+
 try {
     $db = DBConnection::getConnection();
     if (!$db) throw new Exception("Database connection failed");
@@ -68,6 +80,43 @@ try {
 $view = $_GET['view'] ?? 'dashboard';
 $search = trim($_GET['search'] ?? '');
 $lookup = trim($_GET['lookup'] ?? '');
+$reportKey = $_GET['report'] ?? '';
+$reportFormat = $_GET['format'] ?? '';
+
+// ============================================================
+// AGENT APPROVAL ACTIONS — POST only, CSRF-checked. Approving
+// or rejecting an agent redirects back to the list (POST/Redirect/GET)
+// so a page refresh never re-submits the action.
+// ============================================================
+if ($view === 'agent_approvals' && canView('agent_approvals') && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+    $agentId = $_POST['agent_id'] ?? '';
+    $csrfOk = isset($_POST['csrf_token']) && hash_equals($_SESSION['csrf_token'], (string)$_POST['csrf_token']);
+    if ($csrfOk && $agentId !== '' && in_array($action, ['approve', 'reject'], true)) {
+        try {
+            $newStatus = $action === 'approve' ? 'approved' : 'rejected';
+            $stmt = $db->prepare("
+                UPDATE agents
+                SET status = :status, approved_by = :adminId, approved_at = NOW()
+                WHERE id = :id
+            ");
+            $stmt->execute([':status' => $newStatus, ':adminId' => $adminId, ':id' => $agentId]);
+            try {
+                $logStmt = $db->prepare("
+                    INSERT INTO audit_logs (admin_id, action, target_type, target_id, created_at)
+                    VALUES (:aid, :action, 'agent', :tid, NOW())
+                ");
+                $logStmt->execute([':aid' => $adminId, ':action' => 'agent_' . $newStatus, ':tid' => $agentId]);
+            } catch (Throwable $e) {
+                // audit_logs schema may differ — approval still succeeds even if the log write fails
+            }
+        } catch (Throwable $e) {
+            error_log("[ADMIN DASHBOARD] agent approval error: " . $e->getMessage());
+        }
+    }
+    header('Location: ?view=agent_approvals');
+    exit;
+}
 
 // ============================================================
 // AJAX HANDLER — the live-transactions auto-refresh fetches
@@ -327,6 +376,181 @@ if ($view === 'invoices' && canView('invoices')) {
     try { $invoiceMessages = $db->query("SELECT * FROM settlement_outbox WHERE message_type = 'FEE_INVOICE' ORDER BY created_at DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
 }
 
+// ============================================================
+// AGENT APPROVALS DATA
+// Assumes an `agents` table: id, full_name, phone, email,
+// institution, id_number, status ('pending'|'approved'|'rejected'),
+// created_at, approved_by, approved_at.
+// Adjust column names below if your schema differs.
+// ============================================================
+$pendingAgents = [];
+$allAgents = [];
+$agentCounts = ['pending' => 0, 'approved' => 0, 'rejected' => 0];
+if (canView('agent_approvals')) {
+    try {
+        $pendingAgents = $db->query("
+            SELECT id, full_name, phone, email, institution, id_number, status, created_at
+            FROM agents WHERE status = 'pending' ORDER BY created_at ASC
+        ")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {}
+    if ($view === 'agent_approvals') {
+        try {
+            $allAgents = $db->query("
+                SELECT id, full_name, phone, email, institution, status, created_at, approved_at
+                FROM agents ORDER BY created_at DESC LIMIT 200
+            ")->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {}
+        try {
+            $countRows = $db->query("SELECT status, COUNT(*) AS c FROM agents GROUP BY status")->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($countRows as $cr) {
+                $key = strtolower($cr['status'] ?? '');
+                if (isset($agentCounts[$key])) $agentCounts[$key] = (int)$cr['c'];
+            }
+        } catch (Throwable $e) {}
+    }
+}
+$agentApprovalCount = count($pendingAgents);
+
+// ============================================================
+// REPORTS — each report is self-contained: it fetches only what
+// it needs, fails gracefully to an empty state, and (aside from
+// the executive summary, which reuses $metrics/$institutionHealth
+// already fetched above) is scoped to when it's actually requested.
+// CSV export short-circuits before any HTML is emitted.
+// ============================================================
+$reportCatalog = [
+    'executive_summary'  => ['group' => 'Executive',  'title' => 'Executive Summary',            'blurb' => 'One-page snapshot of volume, revenue, and network health.'],
+    'trust_scorecard'     => ['group' => 'Executive',  'title' => 'Institutional Trust Scorecard', 'blurb' => 'Success rate ranking and tiering across every connected institution.'],
+    'net_settlement'      => ['group' => 'Regulatory', 'title' => 'Net Settlement Position',       'blurb' => 'Net obligations between institutions, for regulatory review.'],
+    'fee_revenue'         => ['group' => 'Finance',    'title' => 'Fee Revenue Summary',           'blurb' => 'Fee income by institution, sourced from settlement invoicing.'],
+    'audit_export'        => ['group' => 'Audit',      'title' => 'Audit Trail Export',            'blurb' => 'Full audit log, exportable to CSV for external review.'],
+    'daily_reconciliation'   => ['group' => 'Reconciliation', 'title' => 'Daily Reconciliation',   'blurb' => 'Transaction totals by day for the last 30 days — volume, fees, and outcome counts.'],
+    'weekly_reconciliation'  => ['group' => 'Reconciliation', 'title' => 'Weekly Reconciliation',  'blurb' => 'Transaction totals by week for the last 12 weeks.'],
+    'monthly_reconciliation' => ['group' => 'Reconciliation', 'title' => 'Monthly Reconciliation', 'blurb' => 'Transaction totals by month for the last 12 months.'],
+];
+
+$reportNetPositions = [];
+$reportFeeRevenue = [];
+$reportAuditRows = [];
+$reportReconciliation = [];
+
+// Maps a report key to the SQL date_trunc unit and lookback window used
+// for the three reconciliation reports below.
+$reconciliationConfig = [
+    'daily_reconciliation'   => ['unit' => 'day',   'window' => '30 days',  'label' => 'Day'],
+    'weekly_reconciliation'  => ['unit' => 'week',  'window' => '12 weeks', 'label' => 'Week'],
+    'monthly_reconciliation' => ['unit' => 'month', 'window' => '12 months', 'label' => 'Month'],
+];
+
+if ($view === 'reports' && canView('reports') && $reportKey !== '') {
+    if ($reportKey === 'net_settlement') {
+        try { $reportNetPositions = $db->query("SELECT * FROM net_positions ORDER BY id DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+    }
+    if ($reportKey === 'fee_revenue') {
+        try {
+            $reportFeeRevenue = $db->query("
+                SELECT source_institution, destination_institution,
+                       COALESCE(SUM((message_payload->>'fee_amount')::numeric), 0) AS fees,
+                       COUNT(*) AS invoice_count
+                FROM settlement_outbox
+                WHERE message_type = 'FEE_INVOICE'
+                GROUP BY source_institution, destination_institution
+                ORDER BY fees DESC
+            ")->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {}
+    }
+    if ($reportKey === 'audit_export') {
+        try { $reportAuditRows = $db->query("SELECT * FROM audit_logs ORDER BY audit_id DESC LIMIT 1000")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+
+        if ($reportFormat === 'csv') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="vouchmorph_audit_export_' . date('Ymd_His') . '.csv"');
+            $out = fopen('php://output', 'w');
+            if (!empty($reportAuditRows)) {
+                fputcsv($out, array_keys($reportAuditRows[0]));
+                foreach ($reportAuditRows as $row) {
+                    fputcsv($out, array_map(fn($v) => is_array($v) ? json_encode($v) : $v, $row));
+                }
+            } else {
+                fputcsv($out, ['No audit records']);
+            }
+            fclose($out);
+            exit;
+        }
+    }
+    if ($reportKey === 'fee_revenue' && $reportFormat === 'csv') {
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="vouchmorph_fee_revenue_' . date('Ymd_His') . '.csv"');
+        $out = fopen('php://output', 'w');
+        fputcsv($out, ['Source Institution', 'Destination Institution', 'Fees Collected', 'Invoice Count']);
+        foreach ($reportFeeRevenue as $row) {
+            fputcsv($out, [$row['source_institution'], $row['destination_institution'], $row['fees'], $row['invoice_count']]);
+        }
+        fclose($out);
+        exit;
+    }
+    if ($reportKey === 'net_settlement' && $reportFormat === 'csv') {
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="vouchmorph_net_settlement_' . date('Ymd_His') . '.csv"');
+        $out = fopen('php://output', 'w');
+        if (!empty($reportNetPositions)) {
+            fputcsv($out, array_keys($reportNetPositions[0]));
+            foreach ($reportNetPositions as $row) {
+                fputcsv($out, array_map(fn($v) => is_array($v) ? json_encode($v) : $v, $row));
+            }
+        } else {
+            fputcsv($out, ['No net position records']);
+        }
+        fclose($out);
+        exit;
+    }
+    if (isset($reconciliationConfig[$reportKey])) {
+        $cfg = $reconciliationConfig[$reportKey];
+        try {
+            $checkStmt = $db->query("SELECT to_regclass('vw_all_swaps')");
+            if ($checkStmt->fetchColumn()) {
+                $stmt = $db->prepare("
+                    SELECT date_trunc(:unit, created_at) AS period,
+                           COUNT(*) AS txn_count,
+                           COALESCE(SUM(amount), 0) AS volume,
+                           COALESCE(SUM(fee_amount), 0) AS fees,
+                           COUNT(*) FILTER (WHERE status ILIKE '%completed%' OR status ILIKE '%success%') AS completed,
+                           COUNT(*) FILTER (WHERE status ILIKE '%pending%' OR status ILIKE '%processing%') AS pending,
+                           COUNT(*) FILTER (WHERE status ILIKE '%fail%' OR status ILIKE '%error%') AS failed
+                    FROM vw_all_swaps
+                    WHERE created_at >= NOW() - :windowInterval::interval
+                    GROUP BY period ORDER BY period DESC
+                ");
+                $stmt->execute([':unit' => $cfg['unit'], ':windowInterval' => $cfg['window']]);
+                $reportReconciliation = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($reportReconciliation as &$rrow) {
+                    $rrow['txn_count'] = (int)($rrow['txn_count'] ?? 0);
+                    $rrow['volume'] = (float)($rrow['volume'] ?? 0);
+                    $rrow['fees'] = (float)($rrow['fees'] ?? 0);
+                    $rrow['completed'] = (int)($rrow['completed'] ?? 0);
+                    $rrow['pending'] = (int)($rrow['pending'] ?? 0);
+                    $rrow['failed'] = (int)($rrow['failed'] ?? 0);
+                }
+                unset($rrow);
+            }
+        } catch (Throwable $e) {
+            error_log("[ADMIN DASHBOARD] reconciliation report error: " . $e->getMessage());
+        }
+
+        if ($reportFormat === 'csv') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="vouchmorph_' . $reportKey . '_' . date('Ymd_His') . '.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, [$cfg['label'], 'Transactions', 'Volume', 'Fees', 'Completed', 'Pending', 'Failed']);
+            foreach ($reportReconciliation as $row) {
+                fputcsv($out, [$row['period'], $row['txn_count'], $row['volume'], $row['fees'], $row['completed'], $row['pending'], $row['failed']]);
+            }
+            fclose($out);
+            exit;
+        }
+    }
+}
+
 // View meta for description panel
 $viewMeta = [
     'dashboard' => ['side' => 'left', 'eyebrow' => 'Operating Picture', 'blurb' => "Total swap volume, pending settlements, and the numbers that tell you whether the system is healthy right now — without opening a single table."],
@@ -339,6 +563,8 @@ $viewMeta = [
     'regulatory' => ['side' => 'left', 'eyebrow' => 'Regulatory Oversight', 'blurb' => "Net positions between institutions and pending settlements — the numbers a regulator needs, not the raw transaction feed."],
     'audit' => ['side' => 'right', 'eyebrow' => 'Audit Trail', 'blurb' => "Every recorded action, most recent first. This is the trail — who did what, and when."],
     'invoices' => ['side' => 'right', 'eyebrow' => 'Invoicing', 'blurb' => "Fee invoices generated automatically through settlement — the paper trail for what's owed to whom."],
+    'agent_approvals' => ['side' => 'left', 'eyebrow' => 'Agent Onboarding', 'blurb' => "Agents can't touch a client's money until an admin has approved them. Review, approve, or reject every applicant here."],
+    'reports' => ['side' => 'right', 'eyebrow' => 'Reporting Suite', 'blurb' => "Executive, regulatory, finance, and audit reports — built for the people who never see the raw tables."],
 ];
 $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph Admin', 'blurb' => "Administrative tools for VouchMorph's enterprise disbursement network."];
 ?>
@@ -364,6 +590,9 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             --brass:        #C9A227;
             --brass-deep:   #9A7B1E;
             --brass-tint:   #FBF3D9;
+            --good:         #1E7A4C;
+            --good-tint:    #E4F3EA;
+            --bad:          #D32F2F;
 
             --f-display: 'Source Serif 4', 'IBM Plex Sans', serif;
             --f-body:    'IBM Plex Sans', sans-serif;
@@ -376,6 +605,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
             --content-max: 1440px;
             --header-h: 38px;
+            --btn-h: 40px;
+            --btn-h-sm: 32px;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -391,16 +622,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             display: flex;
             flex-direction: column;
         }
-
-        /* ============================================================
-           TOP/BOTTOM SPLIT — dark header band (brand + nav) above,
-           full-width light content below. No vertical column eating
-           into the work area; everything shares one consistent left
-           edge (--sp-7) so header, nav, and content line up exactly.
-           Per-view description now lives as a subtitle under each
-           page's <h1> instead of a dedicated dark rail — same voice,
-           proportionate to a horizontal layout.
-           ============================================================ */
 
         .admin-ribbon {
             background: var(--ink-900);
@@ -493,10 +714,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         .admin-content { padding: var(--sp-8) var(--sp-7) var(--sp-7); flex: 1 0 auto; }
         .admin-content-inner { width: 100%; max-width: var(--content-max); margin: 0 auto; }
 
-        /* Description bar — centered letterhead, echoing the login
-           page's centered masthead treatment. Eyebrow above, sentence
-           centered below, both capped to a readable measure so long
-           blurbs don't stretch edge-to-edge. */
         .page-description {
             background: var(--parchment, #FBF9F4);
             border-bottom: 1px solid var(--line);
@@ -538,6 +755,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             .content-header h1 { font-size: 20px; width: 100%; }
             .content-header { row-gap: var(--sp-2); }
             .admin-content { padding: var(--sp-4); }
+            .report-catalog-grid { grid-template-columns: 1fr; }
         }
         @media (max-width: 480px) {
             .metrics-grid { grid-template-columns: 1fr; }
@@ -582,6 +800,9 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             white-space: nowrap;
         }
         .content-header .back-link {
+            height: var(--btn-h-sm);
+            display: inline-flex;
+            align-items: center;
             font-family: var(--f-cond);
             font-size: 12px;
             font-weight: 600;
@@ -589,11 +810,12 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             letter-spacing: 0.06em;
             color: var(--ink-500);
             text-decoration: none;
-            padding: var(--sp-2) var(--sp-3);
+            padding: 0 var(--sp-4);
             border: 1px solid var(--line-strong);
             transition: all 0.15s;
             white-space: nowrap;
             line-height: 1;
+            box-sizing: border-box;
         }
         .content-header .back-link:hover {
             border-color: var(--brass);
@@ -603,7 +825,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
         .metrics-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
             gap: 1px;
             background: var(--line);
             border: 1px solid var(--line);
@@ -715,7 +937,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         .search-box input[type="text"] {
             font-family: var(--f-body);
             padding: 0 var(--sp-4);
-            height: 40px;
+            height: var(--btn-h);
             border: 1.5px solid var(--line);
             font-size: 15px;
             background: #fdfcf9;
@@ -724,7 +946,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             flex: 1;
             transition: border-color .15s, background .15s;
         }
-        .search-box .btn { height: 40px; }
+        .search-box .btn { height: var(--btn-h); }
         .search-box input[type="text"]:focus {
             outline: none;
             border-color: var(--brass);
@@ -736,7 +958,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
 
         .btn {
-            padding: var(--sp-2) var(--sp-5);
+            height: var(--btn-h);
+            padding: 0 var(--sp-5);
             font-size: 13px;
             font-weight: 700;
             border: 1.5px solid var(--ink-900);
@@ -747,11 +970,13 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             text-decoration: none;
             display: inline-flex;
             align-items: center;
+            justify-content: center;
             gap: var(--sp-2);
             font-family: var(--f-cond);
             text-transform: uppercase;
             letter-spacing: 0.06em;
             line-height: 1;
+            box-sizing: border-box;
         }
         .btn:hover {
             background: var(--ink-900);
@@ -767,7 +992,12 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             border-color: var(--brass);
             color: var(--ink-900);
         }
-        .btn-sm { padding: var(--sp-1) var(--sp-4); font-size: 12px; }
+        .btn-sm { height: var(--btn-h-sm); padding: 0 var(--sp-4); font-size: 12px; }
+        .btn-good { border-color: var(--good); color: var(--good); }
+        .btn-good:hover { background: var(--good); border-color: var(--good); color: #fff; }
+        .btn-bad { border-color: var(--bad); color: var(--bad); }
+        .btn-bad:hover { background: var(--bad); border-color: var(--bad); color: #fff; }
+        .inline-form { display: inline-block; }
 
         .table-responsive { overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; font-size: 15px; font-variant-numeric: tabular-nums; }
@@ -857,6 +1087,84 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             border-left: 3px solid var(--brass);
         }
 
+        .agent-row { border-left: 3px solid var(--brass); }
+        .agent-actions { display: flex; gap: var(--sp-2); justify-content: center; margin-top: var(--sp-3); }
+
+        .report-catalog-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: var(--sp-4);
+            margin-bottom: var(--sp-6);
+        }
+        .report-tile {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            padding: var(--sp-5);
+            display: flex;
+            flex-direction: column;
+            gap: var(--sp-2);
+        }
+        .report-tile .report-group {
+            font-family: var(--f-cond);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--brass-deep);
+        }
+        .report-tile h3 { font-family: var(--f-display); font-size: 18px; font-weight: 600; }
+        .report-tile p { font-size: 13.5px; color: var(--ink-500); flex: 1; }
+        .report-tile.pending { opacity: 0.6; }
+        .report-tile .report-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-2); }
+
+        .scorecard-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px var(--sp-3);
+            font-family: var(--f-cond);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+        .scorecard-badge.gold { background: var(--brass-tint); color: var(--brass-deep); border: 1px solid var(--brass); }
+        .scorecard-badge.silver { background: var(--paper); color: var(--ink-500); border: 1px solid var(--line-strong); }
+        .scorecard-badge.watch { background: #fbeceb; color: var(--bad); border: 1px solid #e3b3ae; }
+
+        .report-page {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            padding: var(--sp-7);
+        }
+        .report-page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            border-bottom: 2px solid var(--ink-900);
+            padding-bottom: var(--sp-4);
+            margin-bottom: var(--sp-6);
+            flex-wrap: wrap;
+            gap: var(--sp-3);
+        }
+        .report-page-header .report-title { font-family: var(--f-display); font-size: 24px; font-weight: 600; }
+        .report-page-header .report-meta { font-family: var(--f-mono); font-size: 12px; color: var(--ink-300); text-align: right; }
+        .report-section-title {
+            font-family: var(--f-cond);
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--brass-deep);
+            margin: var(--sp-6) 0 var(--sp-3);
+        }
+        .report-section-title:first-child { margin-top: 0; }
+
+        @media print {
+            .admin-ribbon, .admin-header, .admin-nav, .page-description, .content-header .back-link, .report-tile .report-actions, .agent-actions, .admin-footer { display: none !important; }
+            .admin-content { padding: 0; }
+            .card, .report-page { border: 1px solid #999; }
+        }
+
         .admin-footer {
             background: var(--ink-900);
             color: var(--ink-300);
@@ -904,6 +1212,11 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         <div class="admin-nav-inner">
         <?php if (canView('dashboard')): ?><a href="?view=dashboard" class="nav-item <?php echo $view === 'dashboard' ? 'active' : ''; ?>">Dashboard</a><?php endif; ?>
         <?php if (canView('client_lookup')): ?><a href="?view=client_lookup" class="nav-item <?php echo $view === 'client_lookup' ? 'active' : ''; ?>">Client Lookup</a><?php endif; ?>
+        <?php if (canView('agent_approvals')): ?>
+        <a href="?view=agent_approvals" class="nav-item <?php echo $view === 'agent_approvals' ? 'active' : ''; ?>">
+            Agents <?php if ($agentApprovalCount > 0): ?><span class="nav-badge"><?php echo $agentApprovalCount; ?></span><?php endif; ?>
+        </a>
+        <?php endif; ?>
         <?php if (canView('alerts')): ?>
         <a href="?view=alerts" class="nav-item <?php echo $view === 'alerts' ? 'active' : ''; ?>">
             Alerts <?php if ($totalAlerts > 0): ?><span class="nav-badge"><?php echo $totalAlerts; ?></span><?php endif; ?>
@@ -914,6 +1227,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         <?php if (canView('recent_swaps')): ?><a href="?view=recent_swaps" class="nav-item <?php echo $view === 'recent_swaps' ? 'active' : ''; ?>">Swaps</a><?php endif; ?>
         <?php if (canView('institution_health')): ?><a href="?view=institution_health" class="nav-item <?php echo $view === 'institution_health' ? 'active' : ''; ?>">Institutions</a><?php endif; ?>
         <?php if (canView('regulatory')): ?><a href="?view=regulatory" class="nav-item <?php echo $view === 'regulatory' ? 'active' : ''; ?>">Regulatory</a><?php endif; ?>
+        <?php if (canView('reports')): ?><a href="?view=reports" class="nav-item <?php echo $view === 'reports' ? 'active' : ''; ?>">Reports</a><?php endif; ?>
         <?php if (canView('audit')): ?><a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">Audit</a><?php endif; ?>
         <?php if (canView('invoices')): ?><a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">Invoices</a><?php endif; ?>
         <?php if (canView('all_tables') && $isSuperAdmin): ?><a href="?view=all_tables" class="nav-item <?php echo $view === 'all_tables' ? 'active' : ''; ?>">Tables</a><?php endif; ?>
@@ -951,6 +1265,15 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             </div>
             <?php endif; ?>
 
+            <?php if ($agentApprovalCount > 0 && canView('agent_approvals')): ?>
+            <div class="card" style="border-color:var(--line-strong);">
+                <div class="card-header">
+                    <span class="card-title" style="color:var(--brass-deep);">🧑‍💼 <?php echo $agentApprovalCount; ?> agent<?php echo $agentApprovalCount === 1 ? '' : 's'; ?> awaiting approval</span>
+                    <a href="?view=agent_approvals" class="btn btn-primary btn-sm">Review Agents</a>
+                </div>
+            </div>
+            <?php endif; ?>
+
             <div class="metrics-grid">
                 <div class="metric-card"><span class="metric-label">Total Swaps</span><span class="metric-value"><?php echo number_format($metrics['total_swaps'] ?? 0); ?></span><span class="metric-sub">Lifetime</span></div>
                 <div class="metric-card"><span class="metric-label">Total Users</span><span class="metric-value"><?php echo number_format($metrics['total_users'] ?? 0); ?></span><span class="metric-sub">Registered</span></div>
@@ -963,11 +1286,83 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             <div class="card">
                 <div class="card-header"><span class="card-title">Quick Actions</span></div>
                 <div style="display:flex; justify-content:center; gap:var(--sp-3); flex-wrap:wrap;">
-                    <?php if (canView('invoices')): ?><a href="?view=invoices" class="btn btn-primary">Invoices</a><?php endif; ?>
+                    <?php if (canView('reports')): ?><a href="?view=reports" class="btn btn-primary">Reports</a><?php endif; ?>
+                    <?php if (canView('invoices')): ?><a href="?view=invoices" class="btn">Invoices</a><?php endif; ?>
                     <?php if (canView('alerts')): ?><a href="?view=alerts" class="btn">Alerts</a><?php endif; ?>
+                    <?php if (canView('agent_approvals')): ?><a href="?view=agent_approvals" class="btn">Agents</a><?php endif; ?>
                     <?php if (canView('institution_health')): ?><a href="?view=institution_health" class="btn">Institution Health</a><?php endif; ?>
                     <?php if (canView('client_lookup')): ?><a href="?view=client_lookup" class="btn">Client Lookup</a><?php endif; ?>
                 </div>
+            </div>
+            <?php endif; ?>
+
+            <!-- AGENT APPROVALS -->
+            <?php if ($view === 'agent_approvals' && canView('agent_approvals')): ?>
+            <div class="content-header">
+                <h1>Agent Approvals</h1>
+                <span class="timestamp">Agents can't operate until approved</span>
+                <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+            <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));">
+                <div class="metric-card"><span class="metric-label">Pending</span><span class="metric-value"><?php echo number_format($agentCounts['pending']); ?></span></div>
+                <div class="metric-card"><span class="metric-label">Approved</span><span class="metric-value" style="color:var(--good);"><?php echo number_format($agentCounts['approved']); ?></span></div>
+                <div class="metric-card"><span class="metric-label">Rejected</span><span class="metric-value" style="color:var(--bad);"><?php echo number_format($agentCounts['rejected']); ?></span></div>
+            </div>
+
+            <div class="card">
+                <div class="card-header"><span class="card-title">Pending Approval</span><span class="card-badge brass"><?php echo count($pendingAgents); ?></span></div>
+                <?php if (empty($pendingAgents)): ?>
+                <div class="empty-state"><span class="icon">✅</span><p>No agents waiting on approval.</p></div>
+                <?php else: foreach ($pendingAgents as $agent): ?>
+                <div class="card agent-row">
+                    <div class="card-header">
+                        <span class="card-title"><?php echo safeHtml($agent['full_name'] ?? 'Unnamed Agent'); ?></span>
+                        <span class="status status-pending">PENDING</span>
+                    </div>
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:var(--sp-2); font-size:14px;">
+                        <div><strong>Phone:</strong> <?php echo safeHtml($agent['phone'] ?? 'N/A'); ?></div>
+                        <div><strong>Email:</strong> <?php echo safeHtml($agent['email'] ?? 'N/A'); ?></div>
+                        <div><strong>Institution:</strong> <?php echo safeHtml($agent['institution'] ?? 'N/A'); ?></div>
+                        <div><strong>ID Number:</strong> <?php echo safeHtml($agent['id_number'] ?? 'N/A'); ?></div>
+                        <div><strong>Applied:</strong> <?php echo safeHtml(date('Y-m-d H:i', strtotime($agent['created_at'] ?? 'now'))); ?></div>
+                    </div>
+                    <div class="agent-actions">
+                        <form class="inline-form" method="post" action="?view=agent_approvals">
+                            <input type="hidden" name="csrf_token" value="<?php echo safeHtml($_SESSION['csrf_token']); ?>">
+                            <input type="hidden" name="agent_id" value="<?php echo safeHtml($agent['id']); ?>">
+                            <input type="hidden" name="action" value="approve">
+                            <button type="submit" class="btn btn-good btn-sm">Approve</button>
+                        </form>
+                        <form class="inline-form" method="post" action="?view=agent_approvals" onsubmit="return confirm('Reject this agent application?');">
+                            <input type="hidden" name="csrf_token" value="<?php echo safeHtml($_SESSION['csrf_token']); ?>">
+                            <input type="hidden" name="agent_id" value="<?php echo safeHtml($agent['id']); ?>">
+                            <input type="hidden" name="action" value="reject">
+                            <button type="submit" class="btn btn-bad btn-sm">Reject</button>
+                        </form>
+                    </div>
+                </div>
+                <?php endforeach; endif; ?>
+            </div>
+
+            <div class="card">
+                <div class="card-header"><span class="card-title">Full Agent Registry</span><span class="card-badge"><?php echo count($allAgents); ?></span></div>
+                <?php if (empty($allAgents)): ?>
+                <div class="empty-state"><span class="icon">📭</span><p>No agent records found. (Expects an <code>agents</code> table — adjust the query near the top of this file if your schema uses a different name.)</p></div>
+                <?php else: ?>
+                <div class="table-responsive"><table><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Institution</th><th>Status</th><th>Applied</th><th>Decided</th></tr></thead><tbody>
+                <?php foreach ($allAgents as $agent): $st = strtolower($agent['status'] ?? ''); $cls = match($st) { 'approved' => 'success', 'pending' => 'pending', 'rejected' => 'failed', default => 'info' }; ?>
+                <tr>
+                    <td><?php echo safeHtml($agent['full_name'] ?? 'N/A'); ?></td>
+                    <td><?php echo safeHtml($agent['phone'] ?? 'N/A'); ?></td>
+                    <td><?php echo safeHtml($agent['email'] ?? 'N/A'); ?></td>
+                    <td><?php echo safeHtml($agent['institution'] ?? 'N/A'); ?></td>
+                    <td><span class="status status-<?php echo $cls; ?>"><?php echo safeHtml(strtoupper($agent['status'] ?? '')); ?></span></td>
+                    <td><?php echo safeHtml(date('Y-m-d', strtotime($agent['created_at'] ?? 'now'))); ?></td>
+                    <td><?php echo $agent['approved_at'] ? safeHtml(date('Y-m-d', strtotime($agent['approved_at']))) : '—'; ?></td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+                <?php endif; ?>
             </div>
             <?php endif; ?>
 
@@ -1012,7 +1407,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                 <span class="timestamp">Items requiring attention</span>
                 <a href="?view=dashboard" class="back-link">← Back</a>
             </div>
-            <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));">
+            <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));">
                 <div class="metric-card"><span class="metric-label">Stuck Holds</span><span class="metric-value"><?php echo number_format(count($alerts['stuck_holds'])); ?></span><span class="metric-sub">&gt;24h</span></div>
                 <div class="metric-card"><span class="metric-label">Expired Identity</span><span class="metric-value"><?php echo number_format(count($alerts['expired_identity_swaps'])); ?></span><span class="metric-sub">Unconfirmed</span></div>
                 <div class="metric-card"><span class="metric-label">Stuck Cashouts</span><span class="metric-value"><?php echo number_format(count($alerts['stuck_cashouts'])); ?></span><span class="metric-sub">Expired</span></div>
@@ -1090,7 +1485,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                 <button type="submit" class="btn btn-primary btn-sm">Search</button>
                 <?php if ($search !== ''): ?><a href="?view=live_transactions" class="btn btn-sm">Clear</a><?php endif; ?>
             </form>
-            <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));">
+            <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));">
                 <div class="metric-card"><span class="metric-label">24h Total</span><span class="metric-value"><?php echo number_format($liveStats['total'] ?? 0); ?></span></div>
                 <div class="metric-card"><span class="metric-label">Completed</span><span class="metric-value" style="color:var(--ink-500);"><?php echo number_format($liveStats['completed'] ?? 0); ?></span></div>
                 <div class="metric-card"><span class="metric-label">Pending</span><span class="metric-value"><?php echo number_format($liveStats['pending'] ?? 0); ?></span></div>
@@ -1199,6 +1594,219 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             <?php endforeach; endif; ?>
             <?php endif; ?>
 
+            <!-- REPORTS HUB -->
+            <?php if ($view === 'reports' && canView('reports')): ?>
+                <?php if ($reportKey === ''): ?>
+                <div class="content-header">
+                    <h1>Reporting Suite</h1>
+                    <span class="timestamp">Choose a report to generate</span>
+                    <a href="?view=dashboard" class="back-link">← Back</a>
+                </div>
+                <?php
+                $groupsOrder = ['Executive', 'Regulatory', 'Finance', 'Audit', 'Reconciliation'];
+                foreach ($groupsOrder as $grp):
+                    $tiles = array_filter($reportCatalog, fn($r) => $r['group'] === $grp);
+                    if (empty($tiles)) continue;
+                ?>
+                <div class="report-section-title"><?php echo safeHtml($grp); ?></div>
+                <div class="report-catalog-grid">
+                    <?php foreach ($tiles as $key => $r): $isPending = !empty($r['pending']); ?>
+                    <div class="report-tile <?php echo $isPending ? 'pending' : ''; ?>">
+                        <span class="report-group"><?php echo safeHtml($r['group']); ?></span>
+                        <h3><?php echo safeHtml($r['title']); ?></h3>
+                        <p><?php echo safeHtml($r['blurb']); ?></p>
+                        <div class="report-actions">
+                            <?php if ($isPending): ?>
+                            <span class="btn btn-sm" style="cursor:default;">Awaiting Data</span>
+                            <?php else: ?>
+                            <a href="?view=reports&report=<?php echo urlencode($key); ?>" class="btn btn-primary btn-sm">Generate</a>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+                <?php endforeach; ?>
+
+                <?php else: /* ---------- INDIVIDUAL REPORT RENDER ---------- */ ?>
+                <div class="content-header">
+                    <h1><?php echo safeHtml($reportCatalog[$reportKey]['title'] ?? 'Report'); ?></h1>
+                    <span class="timestamp">Generated <?php echo date('Y-m-d H:i:s'); ?></span>
+                    <a href="?view=reports" class="back-link">← All Reports</a>
+                </div>
+
+                <?php if ($reportKey === 'executive_summary'): ?>
+                <div class="report-page">
+                    <div class="report-page-header">
+                        <div>
+                            <div class="report-title">VouchMorph — Executive Summary</div>
+                            <div style="color:var(--ink-500); font-size:13px;">Bank of Botswana Regulatory Sandbox Participant</div>
+                        </div>
+                        <div class="report-meta">Prepared by <?php echo safeHtml($adminFullName ?: $adminUsername); ?><br><?php echo date('Y-m-d H:i:s'); ?></div>
+                    </div>
+                    <div class="report-section-title">Network Volume</div>
+                    <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));">
+                        <div class="metric-card"><span class="metric-label">Total Swaps</span><span class="metric-value"><?php echo number_format($metrics['total_swaps'] ?? 0); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Total Users</span><span class="metric-value"><?php echo number_format($metrics['total_users'] ?? 0); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">24h Swaps</span><span class="metric-value"><?php echo number_format($metrics['recent_swaps_24h'] ?? 0); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Fees Collected</span><span class="metric-value"><?php echo number_format($metrics['total_fees'] ?? 0, 2); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Pending Settlements</span><span class="metric-value"><?php echo number_format($metrics['pending_settlements'] ?? 0); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Multi-Dest Batches</span><span class="metric-value"><?php echo number_format($metrics['multi_destination_count'] ?? 0); ?></span></div>
+                    </div>
+                    <div class="report-section-title">Institution Snapshot</div>
+                    <?php if (empty($institutionHealth)): ?>
+                    <div class="empty-state"><p>No institution data available.</p></div>
+                    <?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><th>Institution</th><th>Volume</th><th>Success Rate</th></tr></thead><tbody>
+                    <?php foreach (array_slice($institutionHealth, 0, 10) as $inst): ?>
+                    <tr><td><?php echo safeHtml($inst['institution']); ?></td><td><?php echo number_format((float)$inst['volume'], 2); ?></td><td><?php echo $inst['success_rate']; ?>%</td></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+                    <div class="report-section-title">Open Items</div>
+                    <p style="font-size:14px;"><?php echo $totalAlerts; ?> alert<?php echo $totalAlerts === 1 ? '' : 's'; ?> outstanding · <?php echo $agentApprovalCount; ?> agent application<?php echo $agentApprovalCount === 1 ? '' : 's'; ?> awaiting approval.</p>
+                </div>
+                <div style="text-align:center; margin-top:var(--sp-4);"><button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button></div>
+                <?php endif; ?>
+
+                <?php if ($reportKey === 'trust_scorecard'): ?>
+                <div class="report-page">
+                    <div class="report-page-header">
+                        <div><div class="report-title">Institutional Trust Scorecard</div><div style="color:var(--ink-500); font-size:13px;">Success rate ranking across the network</div></div>
+                        <div class="report-meta"><?php echo date('Y-m-d H:i:s'); ?></div>
+                    </div>
+                    <?php if (empty($institutionHealth)): ?>
+                    <div class="empty-state"><p>No institution data available.</p></div>
+                    <?php else: $ranked = $institutionHealth; usort($ranked, fn($a, $b) => $b['success_rate'] <=> $a['success_rate']); ?>
+                    <div class="table-responsive"><table><thead><tr><th>#</th><th>Institution</th><th>Total Txns</th><th>Success Rate</th><th>Volume</th><th>Tier</th></tr></thead><tbody>
+                    <?php foreach ($ranked as $i => $inst): $rate = (float)$inst['success_rate']; $tier = $rate >= 95 ? ['gold','Gold'] : ($rate >= 80 ? ['silver','Silver'] : ['watch','Needs Review']); ?>
+                    <tr>
+                        <td><?php echo $i + 1; ?></td>
+                        <td><?php echo safeHtml($inst['institution']); ?></td>
+                        <td><?php echo number_format($inst['total']); ?></td>
+                        <td><?php echo $rate; ?>%</td>
+                        <td><?php echo number_format((float)$inst['volume'], 2); ?></td>
+                        <td><span class="scorecard-badge <?php echo $tier[0]; ?>"><?php echo $tier[1]; ?></span></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+                </div>
+                <div style="text-align:center; margin-top:var(--sp-4);"><button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button></div>
+                <?php endif; ?>
+
+                <?php if ($reportKey === 'net_settlement'): ?>
+                <div class="report-page">
+                    <div class="report-page-header">
+                        <div><div class="report-title">Net Settlement Position</div><div style="color:var(--ink-500); font-size:13px;">For regulatory review</div></div>
+                        <div class="report-meta"><?php echo date('Y-m-d H:i:s'); ?></div>
+                    </div>
+                    <?php if (empty($reportNetPositions)): ?>
+                    <div class="empty-state"><span class="icon">📭</span><p>No net position records found in <code>net_positions</code>.</p></div>
+                    <?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><?php foreach (array_keys($reportNetPositions[0]) as $col): ?><th><?php echo safeHtml($col); ?></th><?php endforeach; ?></tr></thead><tbody>
+                    <?php foreach ($reportNetPositions as $row): ?>
+                    <tr><?php foreach ($row as $val): ?><td><?php echo safeHtml(is_array($val) ? json_encode($val) : $val); ?></td><?php endforeach; ?></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+                </div>
+                <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
+                    <button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button>
+                    <a href="?view=reports&report=net_settlement&format=csv" class="btn">Download CSV</a>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($reportKey === 'fee_revenue'): ?>
+                <div class="report-page">
+                    <div class="report-page-header">
+                        <div><div class="report-title">Fee Revenue Summary</div><div style="color:var(--ink-500); font-size:13px;">By institution pair, sourced from settlement invoicing</div></div>
+                        <div class="report-meta"><?php echo date('Y-m-d H:i:s'); ?></div>
+                    </div>
+                    <?php if (empty($reportFeeRevenue)): ?>
+                    <div class="empty-state"><span class="icon">📭</span><p>No fee invoice records found.</p></div>
+                    <?php else: $grandTotal = array_sum(array_column($reportFeeRevenue, 'fees')); ?>
+                    <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));">
+                        <div class="metric-card"><span class="metric-label">Total Fee Revenue</span><span class="metric-value"><?php echo number_format($grandTotal, 2); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Institution Pairs</span><span class="metric-value"><?php echo count($reportFeeRevenue); ?></span></div>
+                    </div>
+                    <div class="table-responsive"><table><thead><tr><th>Source</th><th>Destination</th><th>Fees Collected</th><th>Invoices</th></tr></thead><tbody>
+                    <?php foreach ($reportFeeRevenue as $row): ?>
+                    <tr><td><?php echo safeHtml($row['source_institution'] ?? 'N/A'); ?></td><td><?php echo safeHtml($row['destination_institution'] ?? 'N/A'); ?></td><td><strong><?php echo number_format((float)$row['fees'], 2); ?></strong></td><td><?php echo number_format($row['invoice_count']); ?></td></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <p style="font-size:12px; color:var(--ink-300); margin-top:var(--sp-3);">Note: this reflects gross fee income only. A full profit &amp; loss statement also needs operating costs, settlement charges, and overhead — send over your chart of accounts / expense export and this can be extended into a true P&amp;L.</p>
+                    <?php endif; ?>
+                </div>
+                <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
+                    <button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button>
+                    <a href="?view=reports&report=fee_revenue&format=csv" class="btn">Download CSV</a>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($reportKey === 'audit_export'): ?>
+                <div class="report-page">
+                    <div class="report-page-header">
+                        <div><div class="report-title">Audit Trail Export</div><div style="color:var(--ink-500); font-size:13px;">Most recent 1,000 entries</div></div>
+                        <div class="report-meta"><?php echo date('Y-m-d H:i:s'); ?></div>
+                    </div>
+                    <?php if (empty($reportAuditRows)): ?>
+                    <div class="empty-state"><span class="icon">📭</span><p>No audit records.</p></div>
+                    <?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><?php foreach (array_keys($reportAuditRows[0]) as $col): ?><th><?php echo safeHtml($col); ?></th><?php endforeach; ?></tr></thead><tbody>
+                    <?php foreach (array_slice($reportAuditRows, 0, 200) as $row): ?>
+                    <tr><?php foreach ($row as $val): $s = is_array($val) ? json_encode($val) : (string)$val; ?><td><?php echo safeHtml(strlen($s) > 50 ? substr($s, 0, 50) . '…' : $s); ?></td><?php endforeach; ?></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <p style="font-size:12px; color:var(--ink-300); margin-top:var(--sp-3);">Showing first 200 of <?php echo count($reportAuditRows); ?> rows on screen — the CSV download includes all of them.</p>
+                    <?php endif; ?>
+                </div>
+                <div style="text-align:center; margin-top:var(--sp-4);">
+                    <a href="?view=reports&report=audit_export&format=csv" class="btn btn-primary">Download Full CSV</a>
+                </div>
+                <?php endif; ?>
+
+                <?php if (isset($reconciliationConfig[$reportKey])): $cfg = $reconciliationConfig[$reportKey]; ?>
+                <div class="report-page">
+                    <div class="report-page-header">
+                        <div>
+                            <div class="report-title"><?php echo safeHtml($reportCatalog[$reportKey]['title']); ?></div>
+                            <div style="color:var(--ink-500); font-size:13px;">Grouped by <?php echo safeHtml($cfg['label']); ?>, last <?php echo safeHtml($cfg['window']); ?></div>
+                        </div>
+                        <div class="report-meta">Prepared by <?php echo safeHtml($adminFullName ?: $adminUsername); ?><br><?php echo date('Y-m-d H:i:s'); ?></div>
+                    </div>
+                    <?php if (empty($reportReconciliation)): ?>
+                    <div class="empty-state"><span class="icon">📭</span><p>No transaction data available for this period.</p></div>
+                    <?php else: $totalTxn = array_sum(array_column($reportReconciliation, 'txn_count')); $totalVol = array_sum(array_column($reportReconciliation, 'volume')); $totalFees = array_sum(array_column($reportReconciliation, 'fees')); ?>
+                    <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));">
+                        <div class="metric-card"><span class="metric-label">Total Transactions</span><span class="metric-value"><?php echo number_format($totalTxn); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Total Volume</span><span class="metric-value"><?php echo number_format($totalVol, 2); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Total Fees</span><span class="metric-value"><?php echo number_format($totalFees, 2); ?></span></div>
+                    </div>
+                    <div class="table-responsive"><table><thead><tr><th><?php echo safeHtml($cfg['label']); ?></th><th>Transactions</th><th>Volume</th><th>Fees</th><th>Completed</th><th>Pending</th><th>Failed</th></tr></thead><tbody>
+                    <?php foreach ($reportReconciliation as $row): ?>
+                    <tr>
+                        <td><?php echo safeHtml(date($cfg['unit'] === 'month' ? 'Y-m' : 'Y-m-d', strtotime($row['period']))); ?></td>
+                        <td><?php echo number_format($row['txn_count']); ?></td>
+                        <td><?php echo number_format($row['volume'], 2); ?></td>
+                        <td><?php echo number_format($row['fees'], 2); ?></td>
+                        <td><span class="status status-success"><?php echo number_format($row['completed']); ?></span></td>
+                        <td><span class="status status-pending"><?php echo number_format($row['pending']); ?></span></td>
+                        <td><span class="status status-failed"><?php echo number_format($row['failed']); ?></span></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <p style="font-size:12px; color:var(--ink-300); margin-top:var(--sp-3);">This reconciles internal ledger totals only (what VouchMorph recorded). Once you share your existing reconciliation files, this can be extended to compare against bank/settlement statements and flag variances line by line.</p>
+                    <?php endif; ?>
+                </div>
+                <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
+                    <button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button>
+                    <a href="?view=reports&report=<?php echo urlencode($reportKey); ?>&format=csv" class="btn">Download CSV</a>
+                </div>
+                <?php endif; ?>
+
+                <?php endif; ?>
+            <?php endif; ?>
+
             <!-- AUDIT -->
             <?php if ($view === 'audit' && canView('audit')): ?>
             <div class="content-header">
@@ -1297,7 +1905,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
             <!-- ACCESS DENIED -->
             <?php
-            $knownViews = ['dashboard', 'client_lookup', 'alerts', 'live_transactions', 'multi_destination', 'recent_swaps', 'institution_health', 'regulatory', 'audit', 'invoices', 'all_tables'];
+            $knownViews = ['dashboard', 'client_lookup', 'alerts', 'live_transactions', 'multi_destination', 'recent_swaps', 'institution_health', 'regulatory', 'audit', 'invoices', 'all_tables', 'agent_approvals', 'reports'];
             if (!canView($view) && !in_array($view, $knownViews)):
             ?>
             <div class="card"><div class="empty-state"><span class="icon">🚫</span><h2 style="font-family:var(--f-cond);text-transform:uppercase;font-size:20px;margin-bottom:var(--sp-2);">Access Denied</h2><p>You do not have permission to view this page.</p><a href="?view=dashboard" class="btn btn-primary" style="margin-top:var(--sp-4);">Return to Dashboard</a></div></div>
