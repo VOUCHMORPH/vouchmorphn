@@ -282,12 +282,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 /* ============================================================
    FROM SIDE — 3 clean source buttons
    ============================================================ */
-.source-type-buttons { display: flex; gap: 8px; margin-bottom: 12px; }
-.source-type-btn { flex: 1; padding: 12px 10px; font-size: 12px; font-weight: 700; text-align: center; background: #fff; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-family: var(--font); display: flex; align-items: center; justify-content: center; gap: 6px; position: relative; }
+.source-type-buttons { display: flex; flex-direction: column; gap: 12px; }
+.source-type-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 12px 14px; font-size: 16px; font-weight: 600; text-align: left; background: #fff; color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-family: var(--font); position: relative; }
 .source-type-btn:hover { border-color: var(--primary); color: var(--primary-dark); }
 .source-type-btn.active { background: var(--text); color: #fff; border-color: var(--text); }
-.source-type-btn .count { background: var(--primary); color: #fff; border-radius: 10px; font-size: 10px; font-weight: 800; padding: 1px 6px; }
+.source-type-btn .btn-label { display: flex; align-items: center; gap: 8px; }
+.source-type-btn .count { background: var(--primary); color: #fff; border-radius: 10px; font-size: 11px; font-weight: 800; padding: 1px 7px; }
 .source-type-btn.active .count { background: #fff; color: var(--text); }
+.source-type-btn .chevron { font-size: 12px; opacity: 0.55; }
+.source-type-btn.active .chevron { color: #fff; opacity: 0.85; }
 .source-panel-wrap { margin-bottom: 4px; }
 .source-panel { margin-bottom: 4px; }
 .empty-source-box { text-align: center; padding: 18px 12px; border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface); }
@@ -363,18 +366,30 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
         <div class="section-title"><span class="n">1</span> From</div>
 
         <!-- ============================================================
-             CLEAN 3-BUTTON SOURCE PICKER
+             CLEAN 3-BUTTON SOURCE PICKER — stacked vertically, styled to
+             match the field-group selects exactly (e.g. Swap Type on the
+             right) so both columns line up row-for-row.
              Wallet/Account -> dropdown of saved sources + Add
              Card / Voucher -> institution + dynamic fields
              Only one panel open at a time; pressing the active
              button again closes it.
              ============================================================ -->
-        <div class="source-type-buttons" id="sourceTypeButtons">
-            <button type="button" class="source-type-btn" data-cat="WALLET" onclick="toggleSourcePanel('WALLET')">
-                💳 Wallet / Account <span class="count" id="walletBtnCount" style="display:none;">0</span>
-            </button>
-            <button type="button" class="source-type-btn" data-cat="CARD" onclick="toggleSourcePanel('CARD')">🏦 Card</button>
-            <button type="button" class="source-type-btn" data-cat="VOUCHER" onclick="toggleSourcePanel('VOUCHER')">🎟️ Voucher</button>
+        <div class="field-group">
+            <label>Source Type</label>
+            <div class="source-type-buttons" id="sourceTypeButtons">
+                <button type="button" class="source-type-btn" data-cat="WALLET" onclick="toggleSourcePanel('WALLET')">
+                    <span class="btn-label">💳 Wallet / Account <span class="count" id="walletBtnCount" style="display:none;">0</span></span>
+                    <span class="chevron">▾</span>
+                </button>
+                <button type="button" class="source-type-btn" data-cat="CARD" onclick="toggleSourcePanel('CARD')">
+                    <span class="btn-label">🏦 Card</span>
+                    <span class="chevron">▾</span>
+                </button>
+                <button type="button" class="source-type-btn" data-cat="VOUCHER" onclick="toggleSourcePanel('VOUCHER')">
+                    <span class="btn-label">🎟️ Voucher</span>
+                    <span class="chevron">▾</span>
+                </button>
+            </div>
         </div>
 
         <div id="sourcePanelWrap" class="source-panel-wrap" style="display:none;">
