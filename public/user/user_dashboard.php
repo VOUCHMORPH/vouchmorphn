@@ -652,14 +652,21 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
     <div class="section split-box" id="fromSection">
         <div class="section-title"><span class="n">1</span> From</div>
 
-        <div class="type-tabs" id="sourceTypeTabs">
+        <!-- WALLET / ACCOUNT: small toggle button (hidden panel, opens on click) -->
+        <div style="margin-bottom:10px;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleWalletSourcePanel()" id="walletPanelToggleBtn">
+                💳 Use a saved wallet/account <span id="walletPanelToggleCount" style="opacity:0.7;"></span>
+            </button>
+        </div>
+
+        <div class="type-tabs" id="sourceTypeTabs" style="display:none;">
             <button type="button" class="type-tab active" data-cat="WALLET" onclick="selectSourceCategory('WALLET')">Wallet / Account</button>
             <button type="button" class="type-tab" data-cat="CARD" onclick="selectSourceCategory('CARD')">Card</button>
             <button type="button" class="type-tab" data-cat="VOUCHER" onclick="selectSourceCategory('VOUCHER')">Voucher</button>
         </div>
 
         <!-- WALLET / ACCOUNT: saved sources, or a prompt to add one -->
-        <div id="walletPanel" class="source-panel">
+        <div id="walletPanel" class="source-panel" style="display:none;">
             <div id="savedSourcesContainer" style="margin-bottom:12px;display:none;">
                 <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;">
                     <div id="savedSourcesChips" style="display:inline-flex;flex-wrap:wrap;gap:6px;"></div>
@@ -691,8 +698,20 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <div class="help" id="fromCurrencyInfo" style="font-size:11px;color:var(--text-dim);margin-top:2px;"></div>
             <div class="help" id="sourceSelectedHelp" style="font-size:11px;color:var(--primary-dark);margin-top:2px;display:none;"></div>
         </div>
+
+        <!-- Amount preview -->
+        <div style="margin-top:10px;">
+            <div style="font-size:13px;color:var(--text-muted);margin-top:4px;">You'll send <strong id="amountPreview">0.00 BWP</strong></div>
+        </div>
+
+        <!-- Identity swap hint -->
+        <div id="identitySwapHint" style="display:none;background:rgba(0,160,173,0.08);border-left:3px solid var(--primary);padding:10px 14px;border-radius:6px;font-size:13px;margin-top:8px;">
+            📩 We'll text the recipient a code. If they have a VouchMorph account, they finalize instantly — no code needed. If not, an agent finalizes it for them using the code.
+        </div>
     </div>
+
     <div class="swap-divider"><span>&#8645;</span></div>
+
     <div class="section split-box" id="toSection">
         <div class="section-title"><span class="n">2</span> To</div>
         <div class="field-group">
@@ -951,14 +970,17 @@ async function refreshSourceCount() {
     const sources = (result.ok && result.body.data && result.body.data.sources) || [];
     const badge = document.getElementById('sourceCountBadge');
     const text = document.getElementById('sourceCountText');
-    if (sources.length > 0) {
-        badge.style.display = 'inline-block';
-        badge.textContent = sources.length;
-        text.textContent = `${sources.length} source${sources.length > 1 ? 's' : ''} linked`;
-    } else {
-        badge.style.display = 'none';
-        text.textContent = 'No sources linked yet';
+    if (badge) {
+        if (sources.length > 0) {
+            badge.style.display = 'inline-block';
+            badge.textContent = sources.length;
+            text.textContent = `${sources.length} source${sources.length > 1 ? 's' : ''} linked`;
+        } else {
+            badge.style.display = 'none';
+            text.textContent = 'No sources linked yet';
+        }
     }
+    updateWalletPanelToggleLabel(sources.length);
     return sources;
 }
 document.addEventListener('DOMContentLoaded', refreshSourceCount);
@@ -968,13 +990,12 @@ async function viewWalletBalance() {
     openModal('Balance', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Calculating cumulative balance...</div>');
     const sources = await getUserSources().then(r => (r.ok && r.body.data.sources) || []);
     if (sources.length === 0) {
-        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--text-muted);">No sources linked yet — nothing to show a balance for. <br><br><button class="btn btn-primary" onclick="openAddSource()">➕ Add a source</button></div>`;
+        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--text-muted);">No sources linked yet — nothing to show a balance for.<br><br><button class="btn btn-primary" onclick="closeModal();openAddSource()">➕ Add a source</button></div>`;
         return;
     }
-    // Cumulative balance across all hooked sources — grouped by currency
     let byCurrency = {};
     sources.forEach(s => {
-        const cur = (s.currency || CONFIG.CURRENCY).toUpperCase().slice(0,3);
+        const cur = (s.currency || CONFIG.CURRENCY).toUpperCase().slice(0, 3);
         byCurrency[cur] = byCurrency[cur] || [];
         byCurrency[cur].push(s);
     });
@@ -982,7 +1003,7 @@ async function viewWalletBalance() {
     Object.keys(byCurrency).forEach(cur => {
         html += `<div style="background:var(--surface);border-radius:var(--radius);padding:14px;margin-bottom:10px;">
             <div style="font-size:12px;color:var(--text-muted);">${byCurrency[cur].length} source(s) in ${cur}</div>
-            <div style="font-size:12px;margin-top:6px;">${byCurrency[cur].map(s => `${escapeHtml(s.institution)} — ${escapeHtml(s.account_name || maskIdentifier(s.identifier))}`).join('<br>')}</div>
+            <div style="font-size:12px;margin-top:6px;">${byCurrency[cur].map(s => `${escapeHtml(s.institution)} — ${escapeHtml(s.account_name || s.identifier || '')}`).join('<br>')}</div>
         </div>`;
     });
     html += `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Exact figures are pulled live from each source at swap time.</div>`;
@@ -990,102 +1011,47 @@ async function viewWalletBalance() {
 }
 
 // ============================================================
-// MY SOURCES — lego-style hooking
+// MY SOURCES — opens the same panel, no separate modal
 // ============================================================
-async function openMySources() {
+function openMySources() {
     document.getElementById('walletDropdown').style.display = 'none';
-    openModal('My Sources', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading your sources...</div>');
-    const sources = await refreshSourceCount();
-    renderMySources(sources);
-}
-
-function renderMySources(sources) {
-    let html = `<div style="max-height:65vh;overflow-y:auto;">`;
-    if (sources.length === 0) {
-        html += `<div style="text-align:center;padding:30px 10px;">
-            <div style="font-size:40px;margin-bottom:8px;">🔗</div>
-            <div style="font-weight:700;margin-bottom:6px;">No sources linked yet</div>
-            <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">Link a bank account, wallet, card, or voucher so you can swap from it — or combine several into one swap.</div>
-            <button class="btn btn-primary" onclick="openAddSource()">➕ Add your first source</button>
-        </div>`;
-    } else {
-        html += `<div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">Tap sources to select, then combine them into one swap — like snapping blocks together.</div>
-        <div id="legoSourceGrid" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;">`;
-        sources.forEach((s) => {
-            const icon = { BANK: '🏦', WALLET: '📱', CARD: '💳', VOUCHER: '🎟️', ACCOUNT: '🏦' }[String(s.asset_type).toUpperCase()] || '🔗';
-            const isActive = (s.status || '').toLowerCase() === 'active' || (s.status || '').toLowerCase() === 'confirmed';
-            const statusDot = isActive ? 'var(--success)' : 'var(--warning)';
-            html += `
-            <div class="lego-source" data-source-id="${s.id}" data-currency="${escapeHtml((s.currency || CONFIG.CURRENCY))}" onclick="toggleLegoSource(this)" style="
-                width:130px;padding:14px 10px;border:2px solid var(--border);border-radius:12px;cursor:pointer;
-                text-align:center;background:#fff;transition:all .15s;position:relative;">
-                <div class="status-dot" style="background:${statusDot};" title="${escapeHtml(s.status || 'unknown')}"></div>
-                <div class="icon">${icon}</div>
-                <div class="name">${escapeHtml(s.institution || 'Source')}</div>
-                <div class="detail">${escapeHtml(s.account_name || maskIdentifier(s.identifier))}</div>
-                <div class="currency">${escapeHtml((s.currency || CONFIG.CURRENCY).toUpperCase().slice(0,3))}</div>
-                <div class="lego-check">✓</div>
-            </div>`;
-        });
-        html += `</div>
-        <div id="legoActionBar" style="display:none;background:rgba(0,160,173,0.08);border-radius:var(--radius);padding:12px;margin-bottom:12px;">
-            <div style="font-size:12px;margin-bottom:8px;"><span id="legoSelectedCount">0</span> source(s) selected for this swap</div>
-            <button class="btn btn-primary" style="width:100%;" onclick="useSelectedSourcesForSwap()">Use these sources →</button>
-        </div>
-        <button class="btn btn-secondary" style="width:100%;" onclick="openAddSource()">➕ Add another source</button>`;
+    // Scroll to the wallet panel toggle button and open the panel
+    const toggleBtn = document.getElementById('walletPanelToggleBtn');
+    if (toggleBtn) {
+        toggleBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
-    html += `</div>`;
-    document.getElementById('modalBody').innerHTML = html;
-}
-
-let selectedLegoSources = [];
-function toggleLegoSource(el) {
-    const id = el.dataset.sourceId;
-    const check = el.querySelector('.lego-check');
-    const idx = selectedLegoSources.indexOf(id);
-    if (idx > -1) {
-        selectedLegoSources.splice(idx, 1);
-        el.style.borderColor = 'var(--border)';
-        el.style.background = '#fff';
-        check.style.display = 'none';
-    } else {
-        selectedLegoSources.push(id);
-        el.style.borderColor = 'var(--primary)';
-        el.style.background = 'rgba(0,160,173,0.06)';
-        check.style.display = 'block';
+    const panel = document.getElementById('walletPanel');
+    if (panel && panel.style.display === 'none') {
+        toggleWalletSourcePanel();
     }
-    const bar = document.getElementById('legoActionBar');
-    document.getElementById('legoSelectedCount').textContent = selectedLegoSources.length;
-    bar.style.display = selectedLegoSources.length > 0 ? 'block' : 'none';
 }
 
-function useSelectedSourcesForSwap() {
-    window.multiSourceSelection = [...selectedLegoSources];
-    closeModal();
-    document.getElementById('swapForm')?.scrollIntoView({ behavior: 'smooth' });
-    renderMultiSourceChips();
+// ============================================================
+// INLINE "1 FROM" SAVED-SOURCE PANEL — hidden until toggled
+// ============================================================
+function toggleWalletSourcePanel() {
+    const panel = document.getElementById('walletPanel');
+    const isOpen = panel.style.display !== 'none';
+    if (isOpen) {
+        panel.style.display = 'none';
+    } else {
+        panel.style.display = 'block';
+        renderSavedSourceChips();
+    }
 }
 
-function renderMultiSourceChips() {
-    const wrap = document.getElementById('multiSourceChips');
-    if (!wrap) return;
-    const selected = window.multiSourceSelection || [];
-    wrap.innerHTML = selected.map(id => `
-        <span style="background:rgba(0,160,173,0.1);border:1px solid var(--primary);border-radius:20px;padding:4px 10px 4px 12px;font-size:12px;display:inline-flex;align-items:center;gap:6px;">
-            🔗 ${escapeHtml(id)}
-            <span onclick="removeMultiSource('${id}')" style="cursor:pointer;font-weight:700;">✕</span>
-        </span>`).join('');
-}
-function removeMultiSource(id) {
-    window.multiSourceSelection = (window.multiSourceSelection || []).filter(s => s !== id);
-    renderMultiSourceChips();
+function updateWalletPanelToggleLabel(count) {
+    const label = document.getElementById('walletPanelToggleCount');
+    if (!label) return;
+    const n = count !== undefined ? count : (typeof walletEligibleSources === 'function' ? walletEligibleSources().length : 0);
+    label.textContent = n > 0 ? `(${n} saved)` : '';
 }
 
 // ============================================================
 // LIVE AMOUNT PREVIEW — 3-letter currency, always visible
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
-    const amountInput = document.getElementById('amountInput');
+    const amountInput = document.getElementById('fromAmount');
     if (amountInput) {
         amountInput.addEventListener('input', function() {
             const preview = document.getElementById('amountPreview');
@@ -1100,10 +1066,150 @@ document.addEventListener('DOMContentLoaded', () => {
 function onSwapTypeChange() {
     const type = document.querySelector('input[name="swapType"]:checked')?.value;
     const hint = document.getElementById('identitySwapHint');
-    if (hint) hint.style.display = (type === 'identity') ? 'block' : 'none';
+    if (hint) hint.style.display = (type === 'IDENTITY') ? 'block' : 'none';
 }
-// Wire this to your existing swap-type radio buttons, e.g.:
-// <input type="radio" name="swapType" value="identity" onchange="onSwapTypeChange()">
+
+// ============================================================
+// REGISTER IDENTITY — split user vs agent view
+// ============================================================
+async function openAddIdentityModal() {
+    const currentUser = SessionUser || (typeof getCurrentUserRole === 'function' ? await getCurrentUserRole() : null);
+    const isAgent = currentUser && (currentUser.role === 'agent' || currentUser.is_agent);
+    openModal('Add Identity', '');
+    if (isAgent) {
+        renderAgentIdentityForm();
+    } else {
+        renderUserIdentityForm();
+    }
+}
+
+function renderUserIdentityForm() {
+    document.getElementById('modalBody').innerHTML = `
+        <div style="max-width:400px;">
+            <div style="font-weight:800;font-size:16px;margin-bottom:4px;">Add an identity</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Add a phone number or email so people can send swaps directly to you.</div>
+            <label style="font-size:12px;color:var(--text-muted);">Identity type</label>
+            <select id="userIdentityType" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
+                <option value="phone">Phone number</option>
+                <option value="email">Email</option>
+            </select>
+            <input type="text" id="userIdentityValue" placeholder="Enter value" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;">
+            <div style="background:rgba(0,160,173,0.08);border-left:3px solid var(--primary);padding:10px 14px;border-radius:6px;font-size:12px;margin-bottom:14px;">
+                🪪 Need to add a National ID, Voter's ID, Driver's License, Birth Certificate, or Passport? That has to be verified in person — <strong>ask any VouchMorph agent or government official to add it for you.</strong>
+            </div>
+            <button class="btn btn-primary" style="width:100%;" onclick="submitUserIdentity()">Add Identity</button>
+        </div>`;
+}
+
+async function submitUserIdentity() {
+    const type = document.getElementById('userIdentityType').value;
+    const value = document.getElementById('userIdentityValue').value.trim();
+    if (!value) { alert('Please enter a value.'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/user/register_identity.php', { identity_type: type, identity_value: value });
+    if (result.ok) {
+        alert(result.body.message || 'Identity added.');
+        closeModal();
+    } else {
+        alert(result.body.message || result.error || 'Failed to add identity.');
+    }
+}
+
+function renderAgentIdentityForm() {
+    document.getElementById('modalBody').innerHTML = `
+        <div style="max-width:420px;">
+            <div style="font-weight:800;font-size:16px;margin-bottom:4px;">Register a verified identity</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Use this after physically verifying the person's document.</div>
+            <label style="font-size:12px;color:var(--text-muted);">Account holder's phone or email</label>
+            <input type="text" id="agentTargetLookup" placeholder="Phone or email on their VouchMorph account" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
+            <label style="font-size:12px;color:var(--text-muted);">Identity type</label>
+            <select id="agentIdentityType" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
+                <option value="national_id">National ID</option>
+                <option value="voters_id">Voter's ID</option>
+                <option value="drivers_license">Driver's License</option>
+                <option value="birth_certificate">Birth Certificate</option>
+                <option value="passport">Passport</option>
+            </select>
+            <input type="text" id="agentIdentityValue" placeholder="ID number" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;">
+            <button class="btn btn-primary" style="width:100%;" onclick="submitAgentIdentity()">Register Identity</button>
+        </div>`;
+}
+
+async function submitAgentIdentity() {
+    const lookup = document.getElementById('agentTargetLookup').value.trim();
+    const type = document.getElementById('agentIdentityType').value;
+    const value = document.getElementById('agentIdentityValue').value.trim();
+    if (!lookup || !value) { alert('Please fill in all fields.'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/add_verified_identity.php', {
+        target_lookup: lookup, identity_type: type, identity_value: value
+    });
+    if (result.ok) {
+        alert(result.body.message || 'Identity registered.');
+        closeModal();
+    } else {
+        alert(result.body.message || result.error || 'Failed to register identity.');
+    }
+}
+
+// ============================================================
+// SWAP HISTORY / DETAIL — using formatMoney consistently
+// ============================================================
+function renderSwapHistory(data) {
+    const swaps = data.data || data.swaps || [];
+    if (swaps.length === 0) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps found</div></div>`; return; }
+    let historyHtml = `<div style="max-height:60vh;overflow-y:auto;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
+    swaps.forEach((swap) => {
+        const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
+        const code = swap.voucher_number || null;
+        const pin = swap.atm_pin || null;
+        const hasCode = !!(code || pin);
+        const codeInlineHtml = hasCode ? `
+            <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
+                ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(code)}</div></div>` : ''}
+                ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(pin)}</div></div>` : ''}
+                ${swap.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(swap.voucher_expiry).toLocaleString()}</div></div>` : ''}
+            </div>` : '';
+        historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
+            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                <div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
+                <div style="text-align:right;"><div style="font-weight:700;color:var(--primary-dark);">${formatMoney(swap.amount, swap.currency)}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div>
+            </div>${codeInlineHtml}</div>`;
+    });
+    historyHtml += `</div>`;
+    document.getElementById('modalBody').innerHTML = historyHtml;
+}
+
+async function viewSwapDetail(reference) {
+    openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: reference });
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap details: ${escapeHtml(result.error)}</div>`; return; }
+    renderSwapDetail(result.body);
+}
+function renderSwapDetail(data) {
+    const swap = data.swap || data.data || {};
+    const code = swap.voucher_number || null;
+    const pin = swap.atm_pin || null;
+    const codeBox = (code || pin) ? `
+        <div class="atm-code" style="margin-bottom:12px;">
+            ${code ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Cashout / Voucher Code</div><div class="code">${escapeHtml(code)}</div>` : ''}
+            ${pin ? `<div style="font-size:11px;color:var(--text-muted);margin:${code ? '10px' : '0'} 0 4px;">PIN</div><div class="code">${escapeHtml(pin)}</div>` : ''}
+            ${swap.voucher_expiry ? `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Expires ${new Date(swap.voucher_expiry).toLocaleString()}</div>` : ''}
+        </div>` : '';
+    document.getElementById('modalBody').innerHTML = `
+        <div style="max-height:70vh;overflow-y:auto;">
+            <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:16px;margin-bottom:12px;">
+                <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                    <div><div style="font-size:12px;color:var(--text-muted);">Reference</div><div style="font-weight:700;">${swap.reference || swap.swap_reference || 'N/A'}</div></div>
+                    <div><div style="font-size:12px;color:var(--text-muted);">Status</div><div style="font-weight:700;">${swap.status || 'unknown'}</div></div>
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Swap Type</div><div style="font-weight:700;">${swap.swap_type || 'N/A'}</div></div>
+                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${formatMoney(swap.amount, swap.currency)}</div></div>
+            </div>
+            ${codeBox}
+            <div style="margin-top:12px;"><button class="btn btn-secondary" onclick="openSwapHistory()" style="width:100%;">← Back to History</button></div>
+        </div>`;
+}
 
 function getInstitutionCurrency(instCode) {
     if (!instCode) return CONFIG.CURRENCY;
@@ -2958,65 +3064,6 @@ async function openSwapHistory() {
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/history.php', { user_id: CONFIG.USER_ID, limit: 50 });
     if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap history: ${escapeHtml(result.error)}</div>`; return; }
     renderSwapHistory(result.body);
-}
-
-function renderSwapHistory(data) {
-    const swaps = data.data || data.swaps || [];
-    if (swaps.length === 0) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps found</div></div>`; return; }
-    let historyHtml = `<div style="max-height:60vh;overflow-y:auto;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
-    swaps.forEach((swap) => {
-        const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
-        const code = swap.voucher_number || null;
-        const pin = swap.atm_pin || null;
-        const hasCode = !!(code || pin);
-        const codeInlineHtml = hasCode ? `
-            <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
-                ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(code)}</div></div>` : ''}
-                ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(pin)}</div></div>` : ''}
-                ${swap.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(swap.voucher_expiry).toLocaleString()}</div></div>` : ''}
-            </div>` : '';
-        historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
-            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-                <div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
-                <div style="text-align:right;"><div style="font-weight:700;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || CONFIG.CURRENCY}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div>
-            </div>${codeInlineHtml}</div>`;
-    });
-    historyHtml += `</div>`;
-    document.getElementById('modalBody').innerHTML = historyHtml;
-}
-
-async function viewSwapDetail(reference) {
-    openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: reference });
-    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap details: ${escapeHtml(result.error)}</div>`; return; }
-    renderSwapDetail(result.body);
-}
-
-function renderSwapDetail(data) {
-    const swap = data.swap || data.data || {};
-    const code = swap.voucher_number || null;
-    const pin = swap.atm_pin || null;
-    const codeBox = (code || pin) ? `
-        <div class="atm-code" style="margin-bottom:12px;">
-            ${code ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Cashout / Voucher Code</div><div class="code">${escapeHtml(code)}</div>` : ''}
-            ${pin ? `<div style="font-size:11px;color:var(--text-muted);margin:${code ? '10px' : '0'} 0 4px;">PIN</div><div class="code">${escapeHtml(pin)}</div>` : ''}
-            ${swap.voucher_expiry ? `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Expires ${new Date(swap.voucher_expiry).toLocaleString()}</div>` : ''}
-        </div>` : '';
-    document.getElementById('modalBody').innerHTML = `
-        <div style="max-height:70vh;overflow-y:auto;">
-            <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:16px;margin-bottom:12px;">
-                <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-                    <div><div style="font-size:12px;color:var(--text-muted);">Reference</div><div style="font-weight:700;">${swap.reference || swap.swap_reference || 'N/A'}</div></div>
-                    <div><div style="font-size:12px;color:var(--text-muted);">Status</div><div style="font-weight:700;">${swap.status || 'unknown'}</div></div>
-                </div>
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
-                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Swap Type</div><div style="font-weight:700;">${swap.swap_type || 'N/A'}</div></div>
-                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${swap.amount || 0} ${swap.currency || CONFIG.CURRENCY}</div></div>
-            </div>
-            ${codeBox}
-            <div style="margin-top:12px;"><button class="btn btn-secondary" onclick="openSwapHistory()" style="width:100%;">← Back to History</button></div>
-        </div>`;
 }
 
 function openModal(title, bodyHtml) {
