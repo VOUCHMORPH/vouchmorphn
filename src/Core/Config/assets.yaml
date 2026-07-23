@@ -129,48 +129,10 @@ VOUCHER:
       help_text: "Phone number associated with the voucher"
 
 # ------------------------------------------------------------
-# MNO-WALLET - Mobile money wallet (country-specific patterns)
+# WALLET - Unified wallet (both mobile and bank wallets)
 # ------------------------------------------------------------
-MNO-WALLET:
-  category: MOBILE_MONEY
-  delivery_modes:
-    - deposit
-    - cashout
-  hold_required: true
-  hold_expiry_seconds: 900
-  reversal_window_seconds: 86400
-  partial_debit_allowed: true
-  
-  ui:
-    icon: "📱"
-    display_name: "Mobile Wallet"
-    color: "#E91E63"
-    description: "Mobile money wallet"
-  
-  fields:
-    - name: phone
-      label: "Phone Number"
-      type: tel
-      required: true
-      pattern: "^\\+?[0-9]{10,15}$"  # Global pattern, country-specific validated in code
-      placeholder: "+267XXXXXXXX"
-      help_text: "Phone number (country code optional)"
-    
-    - name: wallet_pin
-      label: "Wallet PIN"
-      type: password
-      required: false
-      vault_field: pin
-      min_length: 4
-      max_length: 6
-      placeholder: "Enter wallet PIN"
-      help_text: "4-6 digit wallet PIN"
-
-# ------------------------------------------------------------
-# BANK-WALLET - Bank's digital wallet
-# ------------------------------------------------------------
-BANK-WALLET:
-  category: BANK_WALLET
+WALLET:
+  category: WALLET
   delivery_modes:
     - deposit
     - cashout
@@ -181,16 +143,16 @@ BANK-WALLET:
   
   ui:
     icon: "👛"
-    display_name: "Bank Wallet"
+    display_name: "Wallet"
     color: "#9C27B0"
-    description: "Bank's digital wallet"
+    description: "Wallet (mobile or bank wallet)"
   
   fields:
     - name: phone
       label: "Phone Number"
       type: tel
       required: true
-      pattern: "^\\+?[0-9]{10,15}$"  # Global pattern, country-specific validated in code
+      pattern: "^\\+?[0-9]{10,15}$"
       placeholder: "+267XXXXXXXX"
       help_text: "Phone number (country code optional)"
     
@@ -201,8 +163,8 @@ BANK-WALLET:
       vault_field: pin
       min_length: 4
       max_length: 6
-      placeholder: "Enter wallet PIN"
-      help_text: "4-6 digit wallet PIN"
+      placeholder: "Enter wallet PIN (optional)"
+      help_text: "4-6 digit wallet PIN (optional)"
 
 # ------------------------------------------------------------
 # CARD - Payment card
