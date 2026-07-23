@@ -177,12 +177,10 @@ foreach ($assets as $assetKey => $assetConfig) {
 :root {
     --bg: #FAF3E0; --surface: rgba(0,0,0,0.04); --surface-hover: rgba(0,0,0,0.08);
     --border: rgba(0,0,0,0.16); --border-active: rgba(0,150,160,0.5);
-    /* Dark, near-black text throughout. Colored accents (primary/success/warning/danger) are untouched. */
     --text: #0d0d0d; --text-muted: #1f1f1f; --text-dim: #3a3a3a;
     --primary: #00a0ad; --primary-dark: #007d88;
     --gradient: linear-gradient(135deg, #00a0ad 0%, #8a2be2 100%);
     --success: #1a9e5c; --warning: #b8860b; --danger: #d32f2f;
-    /* Sharp edges everywhere. */
     --radius: 0px; --radius-sm: 0px;
     --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     --transition: all 0.2s ease;
@@ -209,10 +207,128 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .agent-badge { font-size: 10px; color: #fff; background: var(--primary-dark); padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
 .test-mode-badge { font-size: 10px; color: #791f1f; border: 1px solid #d32f2f; padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
 
-/* Toolbox trigger — one door into everything that used to crowd the topbar */
+/* ============================================================
+   WALLET DROPDOWN (replaces old wallet button)
+   ============================================================ */
+.wallet-account-wrap {
+    position: relative;
+    display: inline-block;
+}
+.wallet-account-wrap .btn {
+    padding: 9px 18px;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-weight: 700;
+    font-family: var(--font);
+    cursor: pointer;
+}
+.wallet-account-wrap .btn-primary {
+    background: var(--text);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.wallet-account-wrap .btn-primary:hover {
+    background: #000;
+}
+#walletDropdown {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+    min-width: 230px;
+    z-index: 50;
+    overflow: hidden;
+}
+.wallet-dropdown-item {
+    padding: 12px 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+}
+.wallet-dropdown-item:hover {
+    background: var(--surface);
+}
+.wallet-dropdown-item:last-child {
+    border-bottom: none;
+}
+.wallet-dropdown-item .icon {
+    font-size: 18px;
+}
+.wallet-dropdown-item .label {
+    font-weight: 700;
+    font-size: 14px;
+}
+.wallet-dropdown-item .sub {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+#sourceCountBadge {
+    display: none;
+    background: #fff;
+    color: var(--primary-dark);
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 800;
+    padding: 1px 7px;
+    margin-left: 4px;
+}
+
+/* Toolbox trigger */
 .toolbox-btn { position: relative; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: #fff; background: var(--text); border: none; padding: 9px 18px; border-radius: var(--radius); cursor: pointer; }
 .toolbox-btn:hover { background: #000; }
 .toolbox-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; border-radius: var(--radius); display: inline-flex; align-items: center; justify-content: center; }
+
+/* LEGO SOURCE STYLES */
+.lego-source {
+    width: 130px;
+    padding: 14px 10px;
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    cursor: pointer;
+    text-align: center;
+    background: #fff;
+    transition: all .15s;
+    position: relative;
+}
+.lego-source:hover {
+    border-color: var(--primary);
+    transform: translateY(-2px);
+}
+.lego-source .status-dot {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+.lego-source .icon { font-size: 26px; margin-bottom: 6px; }
+.lego-source .name { font-weight: 700; font-size: 12px; }
+.lego-source .detail { font-size: 11px; color: var(--text-muted); }
+.lego-source .currency { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
+.lego-check {
+    display: none;
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: var(--success);
+    color: #fff;
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    font-size: 12px;
+    line-height: 20px;
+    text-align: center;
+}
 
 .message { padding: 12px 16px; border-radius: var(--radius); margin: 0 0 16px; font-size: 13px; display: none; font-weight: 600; }
 .message.show { display: block; }
@@ -251,6 +367,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .btn-secondary { background: #fff; color: var(--text); border: 1px solid var(--border); padding: 14px 32px; border-radius: var(--radius); font-weight: 700; cursor: pointer; }
 .btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid rgba(211,47,47,0.4); padding: 6px 14px; border-radius: var(--radius); font-size: 11px; cursor: pointer; font-weight: 700; }
 .btn-sm { padding: 8px 18px !important; font-size: 12px; }
+.btn-link { background: none; border: none; padding: 0; cursor: pointer; color: var(--primary-dark); font-size: 12px; }
 .quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 12px; }
 .quick-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: var(--primary-dark); background: rgba(0,160,173,0.07); border: 1px solid rgba(0,160,173,0.25); padding: 6px 12px; border-radius: var(--radius); cursor: pointer; }
 .quick-link.muted { color: var(--text-muted); background: var(--surface); border-color: var(--border); }
@@ -276,7 +393,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .raw-json { text-align: left; font-size: 11px; background: var(--surface); border-radius: var(--radius); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-dim); margin-top: 12px; max-height: 200px; overflow-y: auto; }
 @media (max-width: 480px) { body { padding: 12px; } .btn, .btn-secondary { padding: 12px 24px; width: 100%; } .cta-row { flex-direction: column; } .topbar { flex-direction: column; align-items: stretch; } }
 
-/* Source category tabs (Wallet/Account, Card, Voucher) */
+/* Source category tabs */
 .type-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
 .type-tab { flex: 1; padding: 11px 10px; font-size: 12px; font-weight: 700; text-align: center; background: #fff; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-family: var(--font); }
 .type-tab:hover { border-color: var(--primary); color: var(--primary-dark); }
@@ -298,7 +415,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .otp-input-group input { flex: 1; }
 .otp-input-group button { flex-shrink: 0; }
 
-/* Quick source chips (Wallet/Account only) */
+/* Quick source chips */
 .source-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; padding: 6px 12px; border-radius: var(--radius); cursor: pointer; border: 1px solid var(--border); background: #fff; }
 .source-chip:hover { background: var(--text); color: #fff; border-color: var(--text); }
 .source-chip .chip-identifier { font-weight: 400; color: var(--text-dim); font-size: 10px; }
@@ -313,6 +430,25 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .toolbox-row-icon { width: 22px; text-align: center; font-size: 15px; }
 .toolbox-row-label { flex: 1; font-size: 14px; font-weight: 600; color: var(--text); }
 .toolbox-row-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; border-radius: var(--radius); display: inline-flex; align-items: center; justify-content: center; }
+
+/* Identity swap hint */
+#identitySwapHint {
+    display: none;
+    background: rgba(0,160,173,0.08);
+    border-left: 3px solid var(--primary);
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    margin-top: 8px;
+}
+
+/* Multi-source chips */
+#multiSourceChips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+}
 </style>
 </head>
 <body>
@@ -471,6 +607,36 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $userCountry ? 'selected' : ''; ?>><?php echo htmlspecialchars($country); ?></option>
             <?php endforeach; ?>
         </select>
+
+        <!-- ============================================================
+             WALLET / ACCOUNT DROPDOWN (replaces old wallet button)
+             ============================================================ -->
+        <div class="wallet-account-wrap">
+            <button class="btn btn-primary" onclick="toggleWalletMenu(event)" id="walletAccountBtn" style="display:flex;align-items:center;gap:6px;">
+                <span>💳</span> Wallet / Account
+                <span id="sourceCountBadge" style="display:none;background:#fff;color:var(--primary-dark);border-radius:10px;font-size:11px;font-weight:800;padding:1px 7px;margin-left:4px;">0</span>
+                <span style="font-size:10px;">▾</span>
+            </button>
+            <div id="walletDropdown" style="display:none;position:absolute;top:calc(100% + 6px);right:0;background:#fff;border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 8px 24px rgba(0,0,0,0.12);min-width:230px;z-index:50;overflow:hidden;">
+                <div class="wallet-dropdown-item" onclick="viewWalletBalance()">
+                    <span class="icon">💰</span>
+                    <div><div class="label">View Balance</div><div class="sub">Cumulative across sources</div></div>
+                </div>
+                <div class="wallet-dropdown-item" onclick="openMySources()">
+                    <span class="icon">🔗</span>
+                    <div><div class="label">My Sources</div><div class="sub" id="sourceCountText">No sources linked yet</div></div>
+                </div>
+                <div class="wallet-dropdown-item" onclick="openAddSource()">
+                    <span class="icon">➕</span>
+                    <div><div class="label">Add Source</div><div class="sub">Bank, wallet, card, or voucher</div></div>
+                </div>
+                <div class="wallet-dropdown-item" onclick="alert('VouchMorph Card is coming soon — hook multiple sources to one card and swipe to finalize any swap instantly.')" style="opacity:0.6;">
+                    <span class="icon">💳</span>
+                    <div><div class="label">VouchMorph Card <span style="font-size:10px;background:var(--warning);color:#fff;padding:1px 6px;border-radius:8px;">Soon</span></div><div class="sub">Multi-source, balanceless swiping</div></div>
+                </div>
+            </div>
+        </div>
+
         <button class="toolbox-btn" onclick="openToolbox()">
             Toolbox
             <span id="toolboxBadge" class="toolbox-badge" style="display:none;"></span>
@@ -640,7 +806,7 @@ Object.keys(ASSETS).forEach(k => { ASSET_KEY_MAP[k.trim().toUpperCase()] = k; })
 
 // Add this mapping for asset type aliases
 const ASSET_TYPE_ALIASES = {
-    'WALLET': ['MNO-WALLET', 'BANK-WALLET'],  // Map WALLET to both mobile and bank wallets
+    'WALLET': ['MNO-WALLET', 'BANK-WALLET'],
     'MOBILE_WALLET': 'MNO-WALLET',
     'BANK_WALLET': 'BANK-WALLET',
     'ACCOUNT': 'ACCOUNT',
@@ -654,14 +820,14 @@ const ASSET_TYPE_ALIASES = {
 
 function getAssetConfig(type) {
     if (!type) return null;
-    
+
     // Try exact match first
     if (ASSETS[type]) return ASSETS[type];
-    
+
     // Try with the normalized type (uppercase)
     const normalized = String(type).trim().toUpperCase();
     if (ASSETS[normalized]) return ASSETS[normalized];
-    
+
     // Try aliases - handle both string and array mappings
     const alias = ASSET_TYPE_ALIASES[normalized];
     if (alias) {
@@ -674,11 +840,11 @@ function getAssetConfig(type) {
             return ASSETS[alias];
         }
     }
-    
+
     // Try to find by key in ASSETS (case insensitive)
     const realKey = ASSET_KEY_MAP[normalized];
     if (realKey) return ASSETS[realKey];
-    
+
     // Try to find by matching the key that contains the type
     const assetKeys = Object.keys(ASSETS);
     for (const key of assetKeys) {
@@ -686,7 +852,7 @@ function getAssetConfig(type) {
             return ASSETS[key];
         }
     }
-    
+
     return null;
 }
 
@@ -695,13 +861,13 @@ function getAssetTypeMappings(type) {
     if (!type) return [];
     const normalized = String(type).trim().toUpperCase();
     const mappings = [];
-    
+
     // Add the original
     mappings.push(type);
-    
+
     // Add normalized
     mappings.push(normalized);
-    
+
     // Add aliases
     const alias = ASSET_TYPE_ALIASES[normalized];
     if (alias) {
@@ -711,7 +877,7 @@ function getAssetTypeMappings(type) {
             mappings.push(alias);
         }
     }
-    
+
     return mappings;
 }
 
@@ -730,6 +896,214 @@ let selectedSourceId = null;
 let pendingClaims = [];
 let pendingSources = [];
 let agentStatus = { is_agent: false, approved_destinations: [], all_destinations: [] };
+
+// ============================================================
+// MONEY FORMATTING — 3-letter currency, consistent everywhere
+// ============================================================
+function formatMoney(amount, currency) {
+    const cur = (currency || CONFIG.CURRENCY || 'BWP').toUpperCase().slice(0, 3);
+    const num = parseFloat(amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return `${num} ${cur}`;
+}
+
+function maskIdentifier(value) {
+    if (!value) return '';
+    const str = String(value);
+    if (str.includes('@')) {
+        const [local, domain] = str.split('@');
+        return local.slice(0, 2) + '•••@' + domain;
+    }
+    if (str.length <= 4) return '•'.repeat(str.length);
+    return str.slice(0, 3) + '•'.repeat(Math.max(0, str.length - 6)) + str.slice(-3);
+}
+
+// ============================================================
+// WALLET / ACCOUNT DROPDOWN
+// ============================================================
+function toggleWalletMenu(e) {
+    e.stopPropagation();
+    const dd = document.getElementById('walletDropdown');
+    dd.style.display = dd.style.display === 'block' ? 'none' : 'block';
+}
+document.addEventListener('click', (e) => {
+    const dd = document.getElementById('walletDropdown');
+    if (dd && dd.style.display === 'block' && !e.target.closest('.wallet-account-wrap')) {
+        dd.style.display = 'none';
+    }
+});
+
+async function getUserSources() {
+    try {
+        const resp = await fetch(CONFIG.API_BASE + '/user/sources.php', {
+            method: 'GET',
+            credentials: 'include',
+            headers: { 'Accept': 'application/json' }
+        });
+        const body = await resp.json();
+        return { ok: resp.ok && body.success, body };
+    } catch (e) {
+        return { ok: false, body: { error: e.message } };
+    }
+}
+
+async function refreshSourceCount() {
+    const result = await getUserSources();
+    const sources = (result.ok && result.body.data && result.body.data.sources) || [];
+    const badge = document.getElementById('sourceCountBadge');
+    const text = document.getElementById('sourceCountText');
+    if (sources.length > 0) {
+        badge.style.display = 'inline-block';
+        badge.textContent = sources.length;
+        text.textContent = `${sources.length} source${sources.length > 1 ? 's' : ''} linked`;
+    } else {
+        badge.style.display = 'none';
+        text.textContent = 'No sources linked yet';
+    }
+    return sources;
+}
+document.addEventListener('DOMContentLoaded', refreshSourceCount);
+
+async function viewWalletBalance() {
+    document.getElementById('walletDropdown').style.display = 'none';
+    openModal('Balance', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Calculating cumulative balance...</div>');
+    const sources = await getUserSources().then(r => (r.ok && r.body.data.sources) || []);
+    if (sources.length === 0) {
+        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--text-muted);">No sources linked yet — nothing to show a balance for. <br><br><button class="btn btn-primary" onclick="openAddSource()">➕ Add a source</button></div>`;
+        return;
+    }
+    // Cumulative balance across all hooked sources — grouped by currency
+    let byCurrency = {};
+    sources.forEach(s => {
+        const cur = (s.currency || CONFIG.CURRENCY).toUpperCase().slice(0,3);
+        byCurrency[cur] = byCurrency[cur] || [];
+        byCurrency[cur].push(s);
+    });
+    let html = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">This is your cumulative balance across all linked sources.</div>`;
+    Object.keys(byCurrency).forEach(cur => {
+        html += `<div style="background:var(--surface);border-radius:var(--radius);padding:14px;margin-bottom:10px;">
+            <div style="font-size:12px;color:var(--text-muted);">${byCurrency[cur].length} source(s) in ${cur}</div>
+            <div style="font-size:12px;margin-top:6px;">${byCurrency[cur].map(s => `${escapeHtml(s.institution)} — ${escapeHtml(s.account_name || maskIdentifier(s.identifier))}`).join('<br>')}</div>
+        </div>`;
+    });
+    html += `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Exact figures are pulled live from each source at swap time.</div>`;
+    document.getElementById('modalBody').innerHTML = html;
+}
+
+// ============================================================
+// MY SOURCES — lego-style hooking
+// ============================================================
+async function openMySources() {
+    document.getElementById('walletDropdown').style.display = 'none';
+    openModal('My Sources', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading your sources...</div>');
+    const sources = await refreshSourceCount();
+    renderMySources(sources);
+}
+
+function renderMySources(sources) {
+    let html = `<div style="max-height:65vh;overflow-y:auto;">`;
+    if (sources.length === 0) {
+        html += `<div style="text-align:center;padding:30px 10px;">
+            <div style="font-size:40px;margin-bottom:8px;">🔗</div>
+            <div style="font-weight:700;margin-bottom:6px;">No sources linked yet</div>
+            <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">Link a bank account, wallet, card, or voucher so you can swap from it — or combine several into one swap.</div>
+            <button class="btn btn-primary" onclick="openAddSource()">➕ Add your first source</button>
+        </div>`;
+    } else {
+        html += `<div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">Tap sources to select, then combine them into one swap — like snapping blocks together.</div>
+        <div id="legoSourceGrid" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;">`;
+        sources.forEach((s) => {
+            const icon = { BANK: '🏦', WALLET: '📱', CARD: '💳', VOUCHER: '🎟️', ACCOUNT: '🏦' }[String(s.asset_type).toUpperCase()] || '🔗';
+            const isActive = (s.status || '').toLowerCase() === 'active' || (s.status || '').toLowerCase() === 'confirmed';
+            const statusDot = isActive ? 'var(--success)' : 'var(--warning)';
+            html += `
+            <div class="lego-source" data-source-id="${s.id}" data-currency="${escapeHtml((s.currency || CONFIG.CURRENCY))}" onclick="toggleLegoSource(this)" style="
+                width:130px;padding:14px 10px;border:2px solid var(--border);border-radius:12px;cursor:pointer;
+                text-align:center;background:#fff;transition:all .15s;position:relative;">
+                <div class="status-dot" style="background:${statusDot};" title="${escapeHtml(s.status || 'unknown')}"></div>
+                <div class="icon">${icon}</div>
+                <div class="name">${escapeHtml(s.institution || 'Source')}</div>
+                <div class="detail">${escapeHtml(s.account_name || maskIdentifier(s.identifier))}</div>
+                <div class="currency">${escapeHtml((s.currency || CONFIG.CURRENCY).toUpperCase().slice(0,3))}</div>
+                <div class="lego-check">✓</div>
+            </div>`;
+        });
+        html += `</div>
+        <div id="legoActionBar" style="display:none;background:rgba(0,160,173,0.08);border-radius:var(--radius);padding:12px;margin-bottom:12px;">
+            <div style="font-size:12px;margin-bottom:8px;"><span id="legoSelectedCount">0</span> source(s) selected for this swap</div>
+            <button class="btn btn-primary" style="width:100%;" onclick="useSelectedSourcesForSwap()">Use these sources →</button>
+        </div>
+        <button class="btn btn-secondary" style="width:100%;" onclick="openAddSource()">➕ Add another source</button>`;
+    }
+    html += `</div>`;
+    document.getElementById('modalBody').innerHTML = html;
+}
+
+let selectedLegoSources = [];
+function toggleLegoSource(el) {
+    const id = el.dataset.sourceId;
+    const check = el.querySelector('.lego-check');
+    const idx = selectedLegoSources.indexOf(id);
+    if (idx > -1) {
+        selectedLegoSources.splice(idx, 1);
+        el.style.borderColor = 'var(--border)';
+        el.style.background = '#fff';
+        check.style.display = 'none';
+    } else {
+        selectedLegoSources.push(id);
+        el.style.borderColor = 'var(--primary)';
+        el.style.background = 'rgba(0,160,173,0.06)';
+        check.style.display = 'block';
+    }
+    const bar = document.getElementById('legoActionBar');
+    document.getElementById('legoSelectedCount').textContent = selectedLegoSources.length;
+    bar.style.display = selectedLegoSources.length > 0 ? 'block' : 'none';
+}
+
+function useSelectedSourcesForSwap() {
+    window.multiSourceSelection = [...selectedLegoSources];
+    closeModal();
+    document.getElementById('swapForm')?.scrollIntoView({ behavior: 'smooth' });
+    renderMultiSourceChips();
+}
+
+function renderMultiSourceChips() {
+    const wrap = document.getElementById('multiSourceChips');
+    if (!wrap) return;
+    const selected = window.multiSourceSelection || [];
+    wrap.innerHTML = selected.map(id => `
+        <span style="background:rgba(0,160,173,0.1);border:1px solid var(--primary);border-radius:20px;padding:4px 10px 4px 12px;font-size:12px;display:inline-flex;align-items:center;gap:6px;">
+            🔗 ${escapeHtml(id)}
+            <span onclick="removeMultiSource('${id}')" style="cursor:pointer;font-weight:700;">✕</span>
+        </span>`).join('');
+}
+function removeMultiSource(id) {
+    window.multiSourceSelection = (window.multiSourceSelection || []).filter(s => s !== id);
+    renderMultiSourceChips();
+}
+
+// ============================================================
+// LIVE AMOUNT PREVIEW — 3-letter currency, always visible
+// ============================================================
+document.addEventListener('DOMContentLoaded', () => {
+    const amountInput = document.getElementById('amountInput');
+    if (amountInput) {
+        amountInput.addEventListener('input', function() {
+            const preview = document.getElementById('amountPreview');
+            if (preview) preview.textContent = formatMoney(this.value, CONFIG.CURRENCY);
+        });
+    }
+});
+
+// ============================================================
+// IDENTITY SWAP HINT TOGGLE
+// ============================================================
+function onSwapTypeChange() {
+    const type = document.querySelector('input[name="swapType"]:checked')?.value;
+    const hint = document.getElementById('identitySwapHint');
+    if (hint) hint.style.display = (type === 'identity') ? 'block' : 'none';
+}
+// Wire this to your existing swap-type radio buttons, e.g.:
+// <input type="radio" name="swapType" value="identity" onchange="onSwapTypeChange()">
 
 function getInstitutionCurrency(instCode) {
     if (!instCode) return CONFIG.CURRENCY;
@@ -829,11 +1203,11 @@ async function callApi(endpoint, payload) {
     if (CONFIG.IS_TEST_MODE) url += (url.includes('?') ? '&' : '?') + 'test_mode=1';
     let response, body;
     try {
-        response = await fetch(url, { 
-            method: 'POST', 
-            headers: buildHeaders(), 
+        response = await fetch(url, {
+            method: 'POST',
+            headers: buildHeaders(),
             body: JSON.stringify(payload),
-            credentials: 'include'  // ← ADD THIS - sends session cookie
+            credentials: 'include'
         });
     } catch (networkErr) {
         return { ok: false, error: 'Network error: could not reach ' + url + ' (' + networkErr.message + ')' };
@@ -872,19 +1246,19 @@ function renderDynamicFields(containerId, assetType, prefix, onChange, includePi
         container.innerHTML = `<div class="help" style="color:var(--danger);">Unknown asset type: ${assetType}</div>`;
         return;
     }
-    
+
     // Get fields, filter out amount if needed, and handle PIN filtering
     let fields = config.fields || [];
     if (!includePin) {
         fields = fields.filter(f => f.vault_field !== 'pin');
     }
     fields = fields.filter(f => f.name !== 'amount'); // Amount is handled separately
-    
+
     if (!fields || fields.length === 0) {
         container.innerHTML = '';
         return;
     }
-    
+
     container.innerHTML = fields.map(f => {
         const attrs = [];
         if (f.pattern) attrs.push(`pattern="${f.pattern}"`);
@@ -893,10 +1267,10 @@ function renderDynamicFields(containerId, assetType, prefix, onChange, includePi
         if (f.required) attrs.push('required');
         if (f.min !== undefined) attrs.push(`min="${f.min}"`);
         if (f.max !== undefined) attrs.push(`max="${f.max}"`);
-        
+
         // For select fields
         if (f.type === 'select' && f.options) {
-            const optionsHtml = f.options.map(opt => 
+            const optionsHtml = f.options.map(opt =>
                 `<option value="${opt}">${opt}</option>`
             ).join('');
             return `<div class="field-group">
@@ -908,16 +1282,16 @@ function renderDynamicFields(containerId, assetType, prefix, onChange, includePi
                 ${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}
             </div>`;
         }
-        
+
         // For password fields
         const inputType = f.vault_field === 'pin' || f.name.includes('pin') || f.name === 'cvv' ? 'password' : (f.type || 'text');
-        
+
         return `<div class="field-group">
             <label>${f.label} ${f.required ? '*' : ''}</label>
-            <input type="${inputType}" 
-                   id="${prefix}${f.name}" 
-                   placeholder="${f.placeholder || ''}" 
-                   ${attrs.join(' ')} 
+            <input type="${inputType}"
+                   id="${prefix}${f.name}"
+                   placeholder="${f.placeholder || ''}"
+                   ${attrs.join(' ')}
                    oninput="window['${onChange.name}']('${f.name}', this.value)">
             ${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}
         </div>`;
@@ -926,15 +1300,15 @@ function renderDynamicFields(containerId, assetType, prefix, onChange, includePi
 function fieldsValidForAsset(assetType, values, includePin) {
     const config = getAssetConfig(assetType);
     if (!config) return false;
-    
+
     // Get fields, filter out amount (handled separately)
     let fields = config.fields || [];
     fields = fields.filter(f => f.name !== 'amount');
-    
+
     // PIN is OPTIONAL - never required for validation
     // Only check non-PIN required fields
     fields = fields.filter(f => f.vault_field !== 'pin');
-    
+
     return fields.every(f => {
         const val = values[f.name];
         // If field is not required, it's valid
@@ -951,7 +1325,7 @@ function extractPinFromFields(assetType, values) {
     // If no pin field exists, or no pin value, return empty string (not null)
     return pinField ? (values[pinField.name] || '') : '';
 }
-    
+
 function amountWithinLimits(instCode, amount) {
     const limits = PARTICIPANTS[instCode]?.limits;
     if (!limits) return true;
@@ -1046,10 +1420,9 @@ function multiSourcesValid() {
         return fieldsValidForAsset(s.assetType, s.fields, true);
     });
 }
-   function refreshUI() {
+function refreshUI() {
     document.getElementById('reviewBtn').disabled = !isSwapReady();
     updateToolboxBadge();
-    debugIsSwapReady(); // Add this line
 }
 function isSwapReady() {
     if (state.swapType === 'MULTI_SOURCE') return multiSourcesValid() && state.toInst && state.toAsset && fieldsValidForAsset(state.toAsset, state.toFields, false);
@@ -1187,14 +1560,14 @@ const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'B
 
 async function loadUserSources() {
     if (!CONFIG.USER_ID) return;
-    
+
     // Load active sources
     const result = await callApi(CONFIG.API_BASE + '/user/sources.php', {});
     if (result.ok) {
         userSources = result.body.data?.sources || [];
         if (state.fromCategory === 'WALLET') renderSavedSourceChips();
     }
-    
+
     // Load pending sources for the badge count
     const pendingResult = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
     if (pendingResult.ok) {
@@ -1210,10 +1583,10 @@ function walletEligibleSources() {
         // Check if it's a wallet or account type using the mappings
         const config = getAssetConfig(s.asset_type);
         const category = config?.category || '';
-        
-        return assetType === 'ACCOUNT' || 
-               assetType === 'WALLET' || 
-               assetType === 'MNO-WALLET' || 
+
+        return assetType === 'ACCOUNT' ||
+               assetType === 'WALLET' ||
+               assetType === 'MNO-WALLET' ||
                assetType === 'BANK-WALLET' ||
                assetType === 'MOBILE_WALLET' ||
                category === 'MOBILE_MONEY' ||
@@ -1246,7 +1619,7 @@ function renderSavedSourceChips() {
         const isSelected = selectedSourceId === source.id;
         return `
             <span class="source-chip ${isSelected ? 'active' : ''}"
-                  onclick="selectSavedSource(${source.id})"
+                  onclick="selectSavedSource('${source.id}')"
                   title="${escapeHtml(instName)} - ${escapeHtml(identifier)}">
                 <span>${escapeHtml(instName)}</span>
                 <span class="chip-identifier">${escapeHtml(shortId)}</span>
@@ -1264,7 +1637,7 @@ function selectSavedSource(sourceId) {
     selectedSourceId = sourceId;
     state.fromInst = source.institution;
     state.fromAsset = source.asset_type;
-    
+
     // ✅ CRITICAL: Clear ALL existing fields before rendering new ones
     // This ensures no old data leaks through
     state.fromFields = {};
@@ -1274,23 +1647,23 @@ function selectSavedSource(sourceId) {
 
     const fieldsBox = document.getElementById('fromFields');
     fieldsBox.style.display = 'block';
-    
+
     // ✅ Clear the fields box HTML before re-rendering
     fieldsBox.innerHTML = '';
-    
+
     // Render fields
     renderDynamicFields('fromFields', source.asset_type, 'fromField_', updateFromField, true);
-    
+
     // Use a longer delay to ensure all DOM elements are created
     setTimeout(() => {
         // Fill the fields
         fillSourceIdentifierFields(source);
-        
+
         // Verify the field was filled
         const config = getAssetConfig(source.asset_type);
         if (config) {
-            const idField = config.fields?.find(f => 
-                f.vault_field !== 'pin' && 
+            const idField = config.fields?.find(f =>
+                f.vault_field !== 'pin' &&
                 f.name !== 'amount'
             );
             if (idField) {
@@ -1303,10 +1676,10 @@ function selectSavedSource(sourceId) {
                 }
             }
         }
-        
+
         // Force refresh UI to update button state
         refreshUI();
-        
+
         console.log('After fill - isSwapReady:', isSwapReady());
         console.log('State fields (should ONLY be this source):', state.fromFields);
     }, 150);
@@ -1331,7 +1704,7 @@ function selectSavedSource(sourceId) {
     renderSavedSourceChips();
     refreshUI();
 }
-    
+
 function fillSourceIdentifierFields(source) {
     // FIX: Use getAssetConfig instead of ASSETS directly
     const assetConfig = getAssetConfig(source.asset_type);
@@ -1339,7 +1712,7 @@ function fillSourceIdentifierFields(source) {
         console.warn('No asset config for type:', source.asset_type);
         return;
     }
-    
+
     const fields = assetConfig.fields || [];
 
     // Find the identifier field
@@ -1361,7 +1734,7 @@ function fillSourceIdentifierFields(source) {
          f.name === 'source_identifier' ||
          f.name === 'wallet_id')
     );
-    
+
     const pinField = fields.find(f => f.vault_field === 'pin');
 
     // ✅ CRITICAL FIX: Clear ALL existing input values first
@@ -1375,7 +1748,7 @@ function fillSourceIdentifierFields(source) {
         input.style.background = '#fff';
         input.style.color = 'var(--text)';
     });
-    
+
     // Also clear any help text
     document.querySelectorAll('#fromFields .help').forEach(help => {
         if (!help.textContent.includes('Auto-filled')) {
@@ -1393,10 +1766,10 @@ function fillSourceIdentifierFields(source) {
     // CRITICAL FIX: Reset state.fromFields for this source
     // Only keep the fields we're about to set
     const newFields = {};
-    
+
     // Store the identifier value
     const identifier = source.identifier || source.source_identifier || '';
-    
+
     // Fill identifier field
     if (identifierField) {
         const input = document.getElementById(`fromField_${identifierField.name}`);
@@ -1406,11 +1779,11 @@ function fillSourceIdentifierFields(source) {
             input.disabled = true;
             input.style.background = 'var(--surface)';
             input.style.color = 'var(--text-dim)';
-            
+
             // Add help text
             let helpText = input.parentElement?.querySelector('.help');
-            if (helpText) { 
-                helpText.textContent = 'Auto-filled from your saved source'; 
+            if (helpText) {
+                helpText.textContent = 'Auto-filled from your saved source';
                 helpText.style.color = 'var(--primary-dark)';
             }
         } else {
@@ -1444,16 +1817,16 @@ function fillSourceIdentifierFields(source) {
             }
         }
     }
-    
+
     // ✅ CRITICAL: Replace state.fromFields with ONLY the new values
     // This prevents old data from other sources leaking through
     state.fromFields = newFields;
-    
+
     // Fallback: If no specific identifier field was found but we have source_identifier
     if (!identifierField && source.source_identifier) {
-        const genericField = fields.find(f => 
-            f.vault_field !== 'pin' && 
-            f.name !== 'amount' && 
+        const genericField = fields.find(f =>
+            f.vault_field !== 'pin' &&
+            f.name !== 'amount' &&
             (f.type === 'text' || f.type === 'tel' || f.type === 'number') &&
             !f.name.includes('pin') &&
             !f.name.includes('cvv')
@@ -1473,7 +1846,7 @@ function fillSourceIdentifierFields(source) {
     }
 
     console.log('Filled fields for source:', source.asset_type, state.fromFields);
-    
+
     refreshUI();
 }
 
@@ -1496,10 +1869,10 @@ function clearSourceSelection() {
     refreshUI();
 }
 
-function openMySources() {
-    openModal('My sources', renderMySources());
+function openMySourcesLegacy() {
+    openModal('My sources', renderMySourcesLegacy());
 }
-function renderMySources() {
+function renderMySourcesLegacy() {
     if (userSources.length === 0) {
         return `
             <div style="text-align:center;padding:20px;">
@@ -1520,8 +1893,8 @@ function renderMySources() {
                     <div class="source-institution">${escapeHtml(PARTICIPANTS[source.institution]?.name || source.institution)}</div>
                     <div>
                         <span class="source-status ${statusClass}">${statusLabel}</span>
-                        ${isActive ? `<button class="btn-primary btn-sm" onclick="useSourceForSwap(${source.id})" style="margin-left:8px;">Use</button>` : ''}
-                        ${isActive ? `<button class="btn-danger-outline" onclick="removeSource(${source.id})" style="margin-left:4px;">Remove</button>` : ''}
+                        ${isActive ? `<button class="btn-primary btn-sm" onclick="useSourceForSwap('${source.id}')" style="margin-left:8px;">Use</button>` : ''}
+                        ${isActive ? `<button class="btn-danger-outline" onclick="removeSource('${source.id}')" style="margin-left:4px;">Remove</button>` : ''}
                     </div>
                 </div>
                 <div class="source-details">
@@ -1590,7 +1963,7 @@ function openAddSource() {
             </div>
         </div>
         <div class="cta-row">
-            <button class="btn btn-secondary" onclick="openMySources()">Cancel</button>
+            <button class="btn btn-secondary" onclick="openMySourcesLegacy()">Cancel</button>
             <button class="btn btn-primary" id="addSourceSubmitBtn" onclick="submitAddSource()">Link source</button>
         </div>
     `;
@@ -1661,7 +2034,7 @@ async function submitAddSource() {
         return;
     }
     showMessage(data.message || 'Source added!', 'success');
-    setTimeout(() => { loadUserSources(); openMySources(); }, 1500);
+    setTimeout(() => { loadUserSources(); openMySourcesLegacy(); }, 1500);
 }
 
 async function completeSourceOtp() {
@@ -1675,21 +2048,21 @@ async function completeSourceOtp() {
     btn.textContent = 'Verifying...';
 
     // ✅ FIX: Include user_id in the request
-    const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', { 
-        attempt_id: addSourceState.attemptId, 
+    const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', {
+        attempt_id: addSourceState.attemptId,
         otp: otp,
-        user_id: CONFIG.USER_ID  // ← ADD THIS
+        user_id: CONFIG.USER_ID
     });
 
     btn.disabled = false;
     btn.textContent = original;
 
-    if (!result.ok) { 
-        showMessage('Verification failed: ' + result.error, 'error'); 
-        return; 
+    if (!result.ok) {
+        showMessage('Verification failed: ' + result.error, 'error');
+        return;
     }
     showMessage('Source verified and activated!', 'success');
-    setTimeout(() => { loadUserSources(); openMySources(); }, 1500);
+    setTimeout(() => { loadUserSources(); openMySourcesLegacy(); }, 1500);
 }
 
 async function removeSource(sourceId) {
@@ -1698,7 +2071,7 @@ async function removeSource(sourceId) {
     if (!result.ok) { showMessage('Failed to remove source: ' + result.error, 'error'); return; }
     showMessage('Source removed.', 'success');
     loadUserSources();
-    openMySources();
+    openMySourcesLegacy();
 }
 
 // ============================================================
@@ -1718,7 +2091,7 @@ function openPendingSources() {
  */
 async function loadPendingSources() {
     const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
-    
+
     if (!result.ok) {
         document.getElementById('modalBody').innerHTML = `
             <div style="text-align:center;padding:20px;color:var(--danger);">
@@ -1739,7 +2112,7 @@ async function loadPendingSources() {
  */
 function renderPendingSources() {
     const container = document.getElementById('modalBody');
-    
+
     if (!pendingSources || pendingSources.length === 0) {
         container.innerHTML = `
             <div style="text-align:center;padding:30px;color:var(--text-muted);">
@@ -1753,7 +2126,7 @@ function renderPendingSources() {
 
     let html = `
         <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">
-            ${pendingSources.length} source(s) pending verification. 
+            ${pendingSources.length} source(s) pending verification.
             Pending sources expire after 3 minutes if not completed.
         </div>
         <div style="max-height:60vh;overflow-y:auto;">
@@ -1873,7 +2246,7 @@ function getSourceIcon(source) {
  */
 async function deletePendingSource(type, sourceId) {
     if (!confirm('Delete this pending source? It can be re-added later.')) return;
-    
+
     const btn = document.querySelector(`[onclick*="deletePendingSource('${type}', ${sourceId})"]`);
     const originalText = btn ? btn.textContent : 'Delete';
     if (btn) { btn.textContent = 'Deleting...'; btn.disabled = true; }
@@ -1899,7 +2272,7 @@ async function deletePendingSource(type, sourceId) {
  */
 async function retryPendingSource(type, sourceId) {
     if (!confirm('Retry this source? This will start a new verification attempt.')) return;
-    
+
     const btn = document.querySelector(`[onclick*="retryPendingSource('${type}', ${sourceId})"]`);
     const originalText = btn ? btn.textContent : 'Retry';
     if (btn) { btn.textContent = 'Retrying...'; btn.disabled = true; }
@@ -1945,12 +2318,12 @@ function openToolbox() { openModal('Toolbox', renderToolbox()); }
 function renderToolbox() {
     // Count pending sources from the stored data
     const pendingCount = pendingSources.length;
-    
+
     const claimCount = pendingClaims.length;
     const rows = [
         { label: 'Finalize identity swap', badge: claimCount > 0 ? claimCount : null, action: 'openFinalizeIdentityModal()' },
         { label: 'Pending sources', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
-        { label: 'My sources', action: 'openMySources()' },
+        { label: 'My sources', action: 'openMySourcesLegacy()' },
         { label: 'Swap history', action: 'openSwapHistory()' },
     ];
     if (agentStatus.is_agent) rows.push({ label: 'Agent tools', action: 'openAgentToolsModal()' });
@@ -2305,40 +2678,6 @@ async function verifyAgentOtp(attemptId) {
     if (!result.ok) { showMessage('Verification failed: ' + result.error, 'error'); return; }
     showMessage(result.body.data.message || 'Account verified and registered.', 'success');
     openAgentModal();
-}
-
-    function debugIsSwapReady() {
-    console.log('=== DEBUG isSwapReady ===');
-    console.log('1. Source - fromInst:', state.fromInst);
-    console.log('2. Source - fromAsset:', state.fromAsset);
-    console.log('3. Amount - fromAmount:', state.fromAmount);
-    console.log('4. Amount > 0?', state.fromAmount > 0);
-    console.log('5. Amount within limits?', amountWithinLimits(state.fromInst, state.fromAmount));
-    
-    const config = getAssetConfig(state.fromAsset);
-    console.log('6. Asset config found?', !!config);
-    
-    if (config) {
-        const fields = config.fields || [];
-        const requiredFields = fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
-        console.log('7. Required non-PIN fields:', requiredFields.map(f => f.name));
-        
-        requiredFields.forEach(f => {
-            const hasValue = state.fromFields[f.name] && String(state.fromFields[f.name]).trim().length > 0;
-            console.log(`   - ${f.name}: ${hasValue ? '✅' : '❌'} (value: "${state.fromFields[f.name] || 'empty'}")`);
-        });
-        
-        const isValid = fieldsValidForAsset(state.fromAsset, state.fromFields, true);
-        console.log('8. fieldsValidForAsset result:', isValid);
-    }
-    
-    console.log('9. Swap type:', state.swapType);
-    console.log('10. Destination - toInst:', state.toInst);
-    console.log('11. Destination - toAsset:', state.toAsset);
-    console.log('12. Destination fields valid?', state.toInst && state.toAsset ? fieldsValidForAsset(state.toAsset, state.toFields, false) : 'N/A');
-    
-    console.log('13. Final isSwapReady:', isSwapReady());
-    console.log('=== END DEBUG ===');
 }
 
 const AGENT_ELIGIBLE_ASSET_TYPES = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
