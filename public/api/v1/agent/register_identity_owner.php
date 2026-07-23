@@ -15,7 +15,7 @@ declare(strict_types=1);
  *
  * Two-step flow, mirroring register.php/verify_otp.php:
  *   action=initiate -> validates + sends OTP to the owner's contact
- *   action=complete  -> verifies OTP, creates the account, generates
+ *   action=  -> verifies OTP, creates the account, generates
  *                       + sends the PIN
  */
 
@@ -362,7 +362,7 @@ try {
         exit();
     }
 
-    if ($action === 'complete') {
+    if ($action === '') {
         $otpDestinationInput = trim($input['otp_destination'] ?? '');
         $otp = trim($input['otp'] ?? '');
 
@@ -452,6 +452,11 @@ try {
                 }
             }
 
+            // ============================================================
+            // FIX: Add must_change_pin flag to force PIN change on first login
+            // The account owner will be prompted to change their PIN
+            // immediately after their first successful login.
+            // ============================================================
             $stmt = $db->prepare("
                 INSERT INTO users (
                     username, email, phone, password_hash,
@@ -459,14 +464,16 @@ try {
                     verified, created_at,
                     national_id, drivers_license, passport,
                     date_of_birth, full_name,
-                    registered_by_agent_id, registration_channel
+                    registered_by_agent_id, registration_channel,
+                    must_change_pin
                 ) VALUES (
                     :username, :email, :phone, :password_hash,
                     :transaction_pin_hash, NOW(),
                     true, NOW(),
                     :national_id, :drivers_license, :passport,
                     :date_of_birth, :full_name,
-                    :registered_by_agent_id, :registration_channel
+                    :registered_by_agent_id, :registration_channel,
+                    true
                 )
             ");
             $stmt->execute([
@@ -489,7 +496,7 @@ try {
             $db->commit();
 
             // Send the PIN to the same verified contact channel
-            $pinMessage = "Your VouchMorph account has been created. Your PIN is: {$pin}. Keep it private - never share it, even with the agent who helped you register.";
+            $pinMessage = "Your VouchMorph account has been created. Your PIN is: {$pin}. For security, you will be required to change this PIN after your first login. Keep it private - never share it, even with the agent who helped you register.";
             if ($tempData['otp_channel'] === 'sms') {
                 try {
                     $comm = CommunicationFactory::createForPhone('sms', $tempData['otp_destination']);
@@ -510,8 +517,9 @@ try {
 
             echo json_encode([
                 'success' => true,
-                'message' => 'Account created. The PIN has been sent to the owner\'s ' . ($tempData['otp_channel'] === 'sms' ? 'phone' : 'email') . '.',
+                'message' => 'Account created. The PIN has been sent to the owner\'s ' . ($tempData['otp_channel'] === 'sms' ? 'phone' : 'email') . '. They must change their PIN after first login.',
                 'user_id' => $userId,
+                'must_change_pin' => true,
             ]);
 
         } catch (Throwable $e) {
@@ -522,7 +530,7 @@ try {
         exit();
     }
 
-    echo json_encode(['success' => false, 'message' => 'Invalid action. Must be "initiate" or "complete".']);
+    echo json_encode(['success' => false, 'message' => 'Invalid action. Must be "initiate" or "".']);
 
 } catch (Throwable $e) {
     error_log("REGISTER_IDENTITY_OWNER ERROR: " . $e->getMessage());
