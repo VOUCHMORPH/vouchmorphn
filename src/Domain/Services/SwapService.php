@@ -55,6 +55,7 @@ class SwapService
     // ============================================================
     private const IDENTITY_TYPES_SELF_SERVICE = ['phone', 'email'];
     private const IDENTITY_TYPES_AGENT_VERIFIABLE = ['national_id', 'birth_certificate', 'voter_id'];
+    private const IDENTITY_PROFILE_GOVERNMENT_TYPES = ['national_id', 'voter_id', 'birth_certificate', 'drivers_license', 'passport'];
 
     private function isValidIdentityType(string $type): bool
     {
@@ -8568,6 +8569,134 @@ private function updateHoldExpiry(?int $holdId, string $expiresAt): void
     ];
 }
 
+
+    /**
+ * ============================================================
+ * addVerifiedIdentityAsAgent()
+ * ============================================================
+ * Agent-assisted (or government-official-assisted) addition of a
+ * government-issued identity to an EXISTING user's account, after
+ * the agent has physically verified the document. This is the
+ * counterpart to registerUserIdentity()'s self-service path, which
+ * deliberately REFUSES national_id/voters_id/birth_certificate/
+ * drivers_license/passport from the account owner directly — those
+ * can only land here, going straight to 'verified' (no pending_review
+ * queue), because a human has already checked the physical document.
+ *
+ * Same global-uniqueness rule as registerUserIdentity(): one
+ * identity_type+identity_value can only ever belong to one user_id.
+ */
+public function addVerifiedIdentityAsAgent(
+    int $targetUserId,
+    string $identityType,
+    string $identityValue,
+    int $agentUserId
+): array {
+    $identityType = strtolower(trim($identityType));
+    $identityValue = trim($identityValue);
+
+    if ($identityValue === '') {
+        throw new RuntimeException("identity_value is required");
+    }
+
+    if (!in_array($identityType, self::IDENTITY_PROFILE_GOVERNMENT_TYPES, true)) {
+        throw new RuntimeException(
+            "Invalid identity_type for agent verification. Must be one of: " .
+            implode(', ', self::IDENTITY_PROFILE_GOVERNMENT_TYPES) .
+            ". Phone, email, and nickname are self-service only."
+        );
+    }
+
+    // Confirm the target account actually exists.
+    $stmt = $this->swapDB->prepare("SELECT user_id FROM users WHERE user_id = :id");
+    $stmt->execute([':id' => $targetUserId]);
+    if (!$stmt->fetchColumn()) {
+        throw new RuntimeException("No VouchMorph account found for that user.");
+    }
+
+    // Global uniqueness check — same rule as registerUserIdentity().
+    $stmt = $this->swapDB->prepare("
+        SELECT id, user_id, status FROM user_identities
+        WHERE identity_type = :type AND identity_value = :value
+        LIMIT 1
+    ");
+    $stmt->execute([':type' => $identityType, ':value' => $identityValue]);
+    $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($existing && (int)$existing['user_id'] !== $targetUserId) {
+        error_log("[SwapService] addVerifiedIdentityAsAgent: REJECTED - {$identityType}={$identityValue} already registered to a different user_id={$existing['user_id']}");
+        throw new RuntimeException("This identity is already registered to another VouchMorph account.");
+    }
+
+    $identityId = null;
+
+    if ($existing && (int)$existing['user_id'] === $targetUserId) {
+        // Already theirs — upgrade to verified if it wasn't already (e.g.
+        // was sitting in pending_review from a self-service submission),
+        // otherwise this is just an idempotent no-op.
+        $identityId = (int)$existing['id'];
+
+        if ($existing['status'] !== 'verified') {
+            $stmt = $this->swapDB->prepare("
+                UPDATE user_identities
+                SET status = 'verified', otp_pin_hash = NULL, verified_at = NOW()
+                WHERE id = :id
+            ");
+            $stmt->execute([':id' => $identityId]);
+            error_log("[SwapService] addVerifiedIdentityAsAgent: upgraded existing identity id={$identityId} to verified");
+        }
+    } else {
+        // Brand new — insert straight to 'verified' since the agent has
+        // already physically checked the document.
+        $stmt = $this->swapDB->prepare("
+            INSERT INTO user_identities (
+                user_id, identity_type, identity_value, status, verified_at, created_at
+            ) VALUES (
+                :user_id, :type, :value, 'verified', NOW(), NOW()
+            ) RETURNING id
+        ");
+        $stmt->execute([
+            ':user_id' => $targetUserId,
+            ':type' => $identityType,
+            ':value' => $identityValue,
+        ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $identityId = $row ? (int)$row['id'] : 0;
+    }
+
+    // Audit trail — who verified this, and for whom.
+    try {
+        $auditStmt = $this->swapDB->prepare("
+            INSERT INTO audit_logs
+            (entity_type, entity_id, action, category, severity, performed_by, metadata, performed_at)
+            VALUES
+            ('user_identities', :entity_id, 'IDENTITY_VERIFIED_BY_AGENT', 'identity', 'info', :performed_by, :metadata, NOW())
+        ");
+        $auditStmt->execute([
+            ':entity_id' => $identityId,
+            ':performed_by' => $agentUserId,
+            ':metadata' => json_encode([
+                'target_user_id' => $targetUserId,
+                'identity_type' => $identityType,
+                'identity_value' => $identityValue,
+            ]),
+        ]);
+    } catch (Exception $e) {
+        error_log("[SwapService] addVerifiedIdentityAsAgent: audit log warning: " . $e->getMessage());
+    }
+
+    error_log("[SwapService] addVerifiedIdentityAsAgent: {$identityType}={$identityValue} verified for user_id={$targetUserId} by agent_user_id={$agentUserId}");
+
+    return [
+        'success' => true,
+        'status' => 'verified',
+        'identity_id' => $identityId,
+        'identity_type' => $identityType,
+        'identity_value' => $identityValue,
+        'target_user_id' => $targetUserId,
+        'message' => "Identity verified and added to the account. It can now be used to receive identity swaps finalized with the account's transaction PIN.",
+    ];
+}
 
   // Completes phone-based identity registration.
     
