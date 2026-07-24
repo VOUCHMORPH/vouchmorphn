@@ -1,14 +1,11 @@
 <?php
 // public/api/v1/user/balance.php
-// Get balance for a specific source - DYNAMIC from country config
-// Handles SACCUSSALIS (type parameter) and ZURUBANK (source_identifier)
+// Get balance for a specific source - DYNAMIC from endpoints.yaml
 
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
-require_once __DIR__ . '/../../../../src/Core/Config/LoadCountry.php';
 require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
 
 use Core\Database\DBConnection;
-use Core\Config\LoadCountry;
 use Application\Utils\SessionManager;
 
 // ============================================================
@@ -24,6 +21,7 @@ if (!SessionManager::isLoggedIn()) {
 
 $userData = SessionManager::getUser();
 $userId = $userData['id'] ?? $userData['user_id'] ?? 0;
+$userCountry = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
 
 if (empty($userId)) {
     http_response_code(400);
@@ -103,32 +101,160 @@ if (!$assetType) {
 }
 
 // ============================================================
-// 5. LOAD COUNTRY CONFIG
+// 5. LOAD YAML PARSER (SAME AS DASHBOARD)
 // ============================================================
-$countryConfig = LoadCountry::getConfig();
-if (empty($countryConfig)) {
-    http_response_code(500);
-    echo json_encode(['success' => false, 'error' => 'Country configuration not loaded']);
-    exit();
+if (!function_exists('dashboard_yaml_parse_file')) {
+    function dashboard_yaml_castScalar(string $v) {
+        $v = trim($v);
+        if ($v === '') return null;
+        if ($v[0] === '"' || $v[0] === "'") {
+            $quote = $v[0];
+            $len = strlen($v);
+            for ($i = 1; $i < $len; $i++) {
+                if ($v[$i] === '\\' && $i + 1 < $len) { $i++; continue; }
+                if ($v[$i] === $quote) return substr($v, 1, $i - 1);
+            }
+            return $v;
+        }
+        $hashPos = strpos($v, ' #');
+        if ($hashPos !== false) $v = trim(substr($v, 0, $hashPos));
+        $lower = strtolower($v);
+        if ($lower === 'true' || $lower === 'yes') return true;
+        if ($lower === 'false' || $lower === 'no') return false;
+        if ($lower === 'null' || $v === '~') return null;
+        if (is_numeric($v)) return $v + 0;
+        if ($v[0] === '[' && str_ends_with($v, ']')) {
+            $inner = trim(substr($v, 1, -1));
+            if ($inner === '') return [];
+            return array_map(fn($x) => dashboard_yaml_castScalar(trim($x)), explode(',', $inner));
+        }
+        return $v;
+    }
+
+    function dashboard_yaml_tokenize(string $content): array {
+        $raw = explode("\n", str_replace("\r\n", "\n", $content));
+        $lines = [];
+        foreach ($raw as $line) {
+            $trimmedRight = rtrim($line);
+            if ($trimmedRight === '') continue;
+            $stripped = ltrim($trimmedRight);
+            if ($stripped === '' || $stripped[0] === '#') continue;
+            if (preg_match('/^---\s*$/', $stripped) || preg_match('/^\.\.\.\s*$/', $stripped)) continue;
+            $indent = strlen($trimmedRight) - strlen($stripped);
+            $lines[] = [$indent, $stripped];
+        }
+        return array_values($lines);
+    }
+
+    function dashboard_yaml_parseBlock(array &$lines, int &$idx, int $blockIndent): array {
+        $result = [];
+        while ($idx < count($lines)) {
+            [$indent, $content] = $lines[$idx];
+            if ($blockIndent === -1) $blockIndent = $indent;
+            if ($indent < $blockIndent) break;
+            if ($indent > $blockIndent) { $idx++; continue; }
+
+            if (str_starts_with($content, '- ')) {
+                $itemContent = trim(substr($content, 2));
+                if ($itemContent !== '' && preg_match('/^([A-Za-z0-9_\.\-]+):\s*(.*)$/', $itemContent, $m)) {
+                    $lines[$idx] = [$indent + 2, $itemContent];
+                    $item = dashboard_yaml_parseBlock($lines, $idx, $indent + 2);
+                } elseif ($itemContent === '') {
+                    $idx++;
+                    $item = dashboard_yaml_parseBlock($lines, $idx, -1);
+                } else {
+                    $item = dashboard_yaml_castScalar($itemContent);
+                    $idx++;
+                }
+                $result[] = $item;
+                continue;
+            }
+
+            if (preg_match('/^([^:]+):\s*(.*)$/', $content, $m)) {
+                $key = trim($m[1]);
+                $value = $m[2];
+                $idx++;
+                if ($value === '') {
+                    if ($idx < count($lines) && $lines[$idx][0] > $indent) {
+                        $result[$key] = dashboard_yaml_parseBlock($lines, $idx, -1);
+                    } else {
+                        $result[$key] = null;
+                    }
+                } else {
+                    $result[$key] = dashboard_yaml_castScalar($value);
+                }
+                continue;
+            }
+            $idx++;
+        }
+        return $result;
+    }
+
+    function dashboard_yaml_parse_file(string $path): array {
+        if (!file_exists($path)) return [];
+        $content = file_get_contents($path);
+        if ($content === false) return [];
+        try {
+            $lines = dashboard_yaml_tokenize($content);
+            $idx = 0;
+            return dashboard_yaml_parseBlock($lines, $idx, -1);
+        } catch (\Throwable $e) {
+            error_log("[dashboard_yaml_parse_file] Failed: " . $e->getMessage());
+            return [];
+        }
+    }
 }
 
-$participants = $countryConfig['participants'] ?? [];
-if (empty($participants[$institution])) {
-    http_response_code(400);
+// ============================================================
+// 6. LOAD ENDPOINTS CONFIG FROM endpoints.yaml
+// ============================================================
+$endpointsConfig = [];
+$endpointsPath = __DIR__ . '/../../../../src/Core/Config/Countries/' . $userCountry . '/endpoints.yaml';
+if (file_exists($endpointsPath)) {
+    $parsed = dashboard_yaml_parse_file($endpointsPath);
+    $endpointsConfig = $parsed ?? [];
+    error_log("[Balance] Loaded endpoints from: {$endpointsPath}");
+    error_log("[Balance] Endpoints keys: " . json_encode(array_keys($endpointsConfig)));
+} else {
+    error_log("[Balance] endpoints.yaml NOT found at: {$endpointsPath}");
+    http_response_code(500);
     echo json_encode([
         'success' => false, 
-        'error' => "Institution '{$institution}' not configured",
-        'available_institutions' => array_keys($participants)
+        'error' => "Endpoints configuration not found for country: {$userCountry}"
     ]);
     exit();
 }
 
-// ============================================================
-// 6. GET INSTITUTION CONFIGURATION
-// ============================================================
-$participantConfig = $participants[$institution];
+// Also load participants for fallback config
+$participants = [];
+$participantsPath = __DIR__ . '/../../../../src/Core/Config/Countries/' . $userCountry . '/participants.yaml';
+if (file_exists($participantsPath)) {
+    $parsed = dashboard_yaml_parse_file($participantsPath);
+    $participants = $parsed['participants'] ?? $parsed ?? [];
+}
 
-$baseUrl = rtrim($participantConfig['base_url'] ?? '', '/');
+// ============================================================
+// 7. GET INSTITUTION CONFIGURATION
+// ============================================================
+if (!isset($endpointsConfig[$institution])) {
+    http_response_code(400);
+    echo json_encode([
+        'success' => false, 
+        'error' => "Institution '{$institution}' not configured in endpoints.yaml",
+        'available_institutions' => array_keys($endpointsConfig)
+    ]);
+    exit();
+}
+
+$endpointConfig = $endpointsConfig[$institution];
+
+// Get base_url from endpoints.yaml, fallback to participants.yaml
+$baseUrl = rtrim($endpointConfig['base_url'] ?? '', '/');
+if (empty($baseUrl)) {
+    $participantConfig = $participants[$institution] ?? [];
+    $baseUrl = rtrim($participantConfig['base_url'] ?? '', '/');
+}
+
 if (empty($baseUrl)) {
     http_response_code(400);
     echo json_encode(['success' => false, 'error' => "No base_url configured for {$institution}"]);
@@ -136,17 +262,20 @@ if (empty($baseUrl)) {
 }
 
 // ============================================================
-// 7. GET BALANCE ENDPOINT
+// 8. GET BALANCE ENDPOINT
 // ============================================================
-$endpoints = $participantConfig['endpoints'] ?? [];
+$endpoints = $endpointConfig['endpoints'] ?? [];
 $sourceEndpoints = $endpoints['source'] ?? [];
 $balanceEndpoint = $sourceEndpoints['get_balance'] ?? $sourceEndpoints['balance'] ?? null;
+
+error_log("[Balance] {$institution} - balance endpoint: " . ($balanceEndpoint ?? 'NOT FOUND'));
 
 if (!$balanceEndpoint) {
     http_response_code(400);
     echo json_encode([
         'success' => false, 
-        'error' => "No balance endpoint configured for {$institution}"
+        'error' => "No balance endpoint configured for {$institution} in endpoints.yaml",
+        'available_endpoints' => array_keys($sourceEndpoints)
     ]);
     exit();
 }
@@ -154,9 +283,9 @@ if (!$balanceEndpoint) {
 $fullUrl = $baseUrl . '/' . ltrim($balanceEndpoint, '/');
 
 // ============================================================
-// 8. GET AUTHENTICATION
+// 9. GET AUTHENTICATION
 // ============================================================
-$authConfig = $participantConfig['auth'] ?? [];
+$authConfig = $endpointConfig['auth'] ?? [];
 $headerName = $authConfig['header_name'] ?? 'X-API-KEY';
 $secretSource = $authConfig['secret_source'] ?? [];
 $apiKeyEnv = $secretSource['name'] ?? strtoupper($institution) . '_API_KEY';
@@ -172,13 +301,12 @@ if (!$apiKey) {
 }
 
 // ============================================================
-// 9. BUILD PARAMETERS - INSTITUTION SPECIFIC
+// 10. BUILD PARAMETERS - INSTITUTION SPECIFIC
 // ============================================================
 $params = [];
 
 // SACCUSSALIS: expects 'type' and 'identifier'
 if ($institution === 'SACCUSSALIS') {
-    // Determine if wallet or account
     $assetTypeUpper = strtoupper($assetType);
     if ($assetTypeUpper === 'WALLET' || $assetTypeUpper === 'MNO-WALLET' || $assetTypeUpper === 'BANK-WALLET') {
         $params['type'] = 'wallet';
@@ -191,25 +319,9 @@ if ($institution === 'SACCUSSALIS') {
 elseif ($institution === 'ZURUBANK') {
     $params['source_identifier'] = $identifier;
 } 
-// Generic fallback using param mapping from config
+// Generic fallback
 else {
-    $paramMapping = $sourceEndpoints['param_mapping'] ?? [];
-    $identifierTypeLower = strtolower($identifierType);
-    
-    $defaultParamMap = [
-        'phone' => ['phone', 'wallet_phone', 'beneficiary_phone', 'client_phone', 'msisdn'],
-        'account' => ['account_number', 'account_id', 'source_identifier', 'identifier'],
-        'card' => ['card_number', 'card_id', 'card_no'],
-        'email' => ['email', 'email_address'],
-        'national_id' => ['national_id', 'id_number', 'identity_value'],
-        'auto' => ['source_identifier', 'identifier', 'account_number', 'phone', 'wallet_phone']
-    ];
-    
-    $paramMap = !empty($paramMapping) ? $paramMapping : ($defaultParamMap[$identifierTypeLower] ?? $defaultParamMap['auto']);
-    
-    foreach ($paramMap as $paramName) {
-        $params[$paramName] = $identifier;
-    }
+    $params['identifier'] = $identifier;
 }
 
 // Add additional parameters if needed
@@ -225,7 +337,7 @@ if ($sourceEndpoints['requires_currency'] ?? false) {
     $params['currency'] = $source['currency'] ?? 'BWP';
 }
 
-// Add static parameters
+// Add static parameters from config
 $staticParams = $sourceEndpoints['static_params'] ?? [];
 foreach ($staticParams as $key => $value) {
     $params[$key] = $value;
@@ -234,13 +346,15 @@ foreach ($staticParams as $key => $value) {
 $queryString = http_build_query($params);
 $requestUrl = $fullUrl . (strpos($fullUrl, '?') === false ? '?' : '&') . $queryString;
 
+error_log("[Balance] Request URL: {$requestUrl}");
+
 // ============================================================
-// 10. MAKE REQUEST
+// 11. MAKE REQUEST
 // ============================================================
 $ch = curl_init();
 curl_setopt($ch, CURLOPT_URL, $requestUrl);
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_TIMEOUT, $participantConfig['timeout_ms'] ?? 5000);
+curl_setopt($ch, CURLOPT_TIMEOUT, $endpointConfig['timeout_ms'] ?? 5000);
 curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
 curl_setopt($ch, CURLOPT_HTTPHEADER, [
     $headerName . ': ' . $apiKey,
@@ -274,7 +388,7 @@ if (!$data) {
 }
 
 // ============================================================
-// 11. EXTRACT BALANCE - HANDLE DIFFERENT RESPONSE FORMATS
+// 12. EXTRACT BALANCE - HANDLE DIFFERENT RESPONSE FORMATS
 // ============================================================
 $balance = null;
 $currency = 'BWP';
@@ -338,7 +452,7 @@ if ($balance === null) {
 }
 
 // ============================================================
-// 12. RETURN
+// 13. RETURN
 // ============================================================
 echo json_encode([
     'success' => true,
