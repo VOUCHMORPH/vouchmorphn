@@ -1,7 +1,7 @@
 <?php
 // public/api/v1/user/all_balances.php
 // Get balances for all user sources - AGGREGATED
-// Pulls configuration from country config files - NO HARDCODING
+// Handles SACCUSSALIS (type parameter) and ZURUBANK (source_identifier)
 
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../../../src/Core/Config/LoadCountry.php';
@@ -45,7 +45,6 @@ if (!$pdo) {
 // ============================================================
 // 3. GET ALL ACTIVE SOURCES FOR THE USER
 // ============================================================
-// Using ONLY columns that exist in the table
 $stmt = $pdo->prepare("
     SELECT 
         id, 
@@ -159,6 +158,7 @@ function getSourceBalance($source, $participants) {
     $institution = $source['institution'];
     $identifier = $source['identifier'];
     $identifierType = $source['identifier_type'] ?? 'auto';
+    $assetType = strtoupper($source['asset_type'] ?? 'ACCOUNT');
     
     // Get participant config
     $participantConfig = $participants[$institution] ?? null;
@@ -194,30 +194,49 @@ function getSourceBalance($source, $participants) {
         return ['success' => false, 'error' => "No API key for '{$institution}' (env: {$apiKeyEnv})"];
     }
     
-    // Build parameters
+    // ============================================================
+    // BUILD PARAMETERS - INSTITUTION SPECIFIC
+    // ============================================================
     $params = [];
-    $paramMapping = $sourceEndpoints['param_mapping'] ?? [];
-    $identifierTypeLower = strtolower($identifierType);
     
-    // Default parameter mapping
-    $defaultParamMap = [
-        'phone' => ['phone', 'wallet_phone', 'beneficiary_phone', 'client_phone', 'msisdn'],
-        'account' => ['account_number', 'account_id', 'source_identifier', 'identifier'],
-        'card' => ['card_number', 'card_id', 'card_no'],
-        'email' => ['email', 'email_address'],
-        'national_id' => ['national_id', 'id_number', 'identity_value'],
-        'auto' => ['source_identifier', 'identifier', 'account_number', 'phone', 'wallet_phone']
-    ];
-    
-    $paramMap = !empty($paramMapping) ? $paramMapping : ($defaultParamMap[$identifierTypeLower] ?? $defaultParamMap['auto']);
-    
-    foreach ($paramMap as $paramName) {
-        $params[$paramName] = $identifier;
+    // SACCUSSALIS: expects 'type' and 'identifier'
+    if ($institution === 'SACCUSSALIS') {
+        // Determine if wallet or account
+        if ($assetType === 'WALLET' || $assetType === 'MNO-WALLET' || $assetType === 'BANK-WALLET') {
+            $params['type'] = 'wallet';
+        } else {
+            $params['type'] = 'account';
+        }
+        $params['identifier'] = $identifier;
+    } 
+    // ZURUBANK: expects 'source_identifier'
+    elseif ($institution === 'ZURUBANK') {
+        $params['source_identifier'] = $identifier;
+    } 
+    // Generic fallback using param mapping from config
+    else {
+        $paramMapping = $sourceEndpoints['param_mapping'] ?? [];
+        $identifierTypeLower = strtolower($identifierType);
+        
+        $defaultParamMap = [
+            'phone' => ['phone', 'wallet_phone', 'beneficiary_phone', 'client_phone', 'msisdn'],
+            'account' => ['account_number', 'account_id', 'source_identifier', 'identifier'],
+            'card' => ['card_number', 'card_id', 'card_no'],
+            'email' => ['email', 'email_address'],
+            'national_id' => ['national_id', 'id_number', 'identity_value'],
+            'auto' => ['source_identifier', 'identifier', 'account_number', 'phone', 'wallet_phone']
+        ];
+        
+        $paramMap = !empty($paramMapping) ? $paramMapping : ($defaultParamMap[$identifierTypeLower] ?? $defaultParamMap['auto']);
+        
+        foreach ($paramMap as $paramName) {
+            $params[$paramName] = $identifier;
+        }
     }
     
     // Add additional parameters if needed
     if ($sourceEndpoints['requires_asset_type'] ?? false) {
-        $params['asset_type'] = $source['asset_type'] ?? 'ACCOUNT';
+        $params['asset_type'] = $assetType;
     }
     
     if ($sourceEndpoints['requires_identifier_type'] ?? false) {
@@ -268,57 +287,50 @@ function getSourceBalance($source, $participants) {
         return ['success' => false, 'error' => "Request failed: {$curlError}"];
     }
     
-    if ($httpCode !== 200) {
-        return ['success' => false, 'error' => "HTTP {$httpCode} from {$institution}"];
-    }
-    
     $data = json_decode($response, true);
     if (!$data) {
         return ['success' => false, 'error' => "Invalid JSON response from {$institution}"];
     }
     
-    // Extract balance using response mapping
-    $responseMapping = $sourceEndpoints['response_mapping'] ?? [];
-    $balanceField = $responseMapping['balance'] ?? 'balance';
-    $currencyField = $responseMapping['currency'] ?? 'currency';
-    $accountField = $responseMapping['account'] ?? 'account_number';
-    $statusField = $responseMapping['status'] ?? 'status';
+    // ============================================================
+    // EXTRACT BALANCE - HANDLE DIFFERENT RESPONSE FORMATS
+    // ============================================================
+    $balance = null;
+    $currency = 'BWP';
+    $account = $identifier;
     
-    // Extract balance using dot notation
-    $balance = array_get($data, $balanceField);
-    if ($balance === null) {
-        $fallbacks = ['balance', 'total_balance', 'available_balance', 'amount', 'data.balance', 'data.total_balance'];
-        foreach ($fallbacks as $fallback) {
-            $balance = array_get($data, $fallback);
-            if ($balance !== null) break;
-        }
+    // SACCUSSALIS format: { status: 'success', data: { balance: 1000 } }
+    if (isset($data['data']['balance'])) {
+        $balance = $data['data']['balance'];
+        $currency = $data['data']['currency'] ?? 'BWP';
+        $account = $data['data']['account_number'] ?? $data['data']['account_id'] ?? $identifier;
+    } 
+    // ZURUBANK format: { balance: 1000 }
+    elseif (isset($data['balance'])) {
+        $balance = $data['balance'];
+        $currency = $data['currency'] ?? 'BWP';
+        $account = $data['account_number'] ?? $identifier;
+    }
+    // { data: { balance: 1000 } } - generic
+    elseif (isset($data['data']['available_balance'])) {
+        $balance = $data['data']['available_balance'];
+        $currency = $data['data']['currency'] ?? 'BWP';
+    }
+    // { available_balance: 1000 }
+    elseif (isset($data['available_balance'])) {
+        $balance = $data['available_balance'];
+        $currency = $data['currency'] ?? 'BWP';
+    }
+    // { status: 'success', balance: 1000 }
+    elseif (isset($data['balance']) && isset($data['status']) && $data['status'] === 'success') {
+        $balance = $data['balance'];
+        $currency = $data['currency'] ?? 'BWP';
     }
     
     if ($balance === null) {
+        // Log the response for debugging
+        error_log("[Balance] No balance found in response from {$institution}: " . json_encode($data));
         return ['success' => false, 'error' => "No balance found in response from {$institution}"];
-    }
-    
-    // Extract currency
-    $currency = array_get($data, $currencyField);
-    if (!$currency) {
-        $currencyFallbacks = ['currency', 'currency_code', 'data.currency', 'data.currency_code'];
-        foreach ($currencyFallbacks as $fallback) {
-            $currency = array_get($data, $fallback);
-            if ($currency) break;
-        }
-    }
-    $currency = $currency ?? $source['currency'] ?? 'BWP';
-    
-    // Extract account identifier
-    $account = array_get($data, $accountField);
-    if (!$account) {
-        $account = $identifier;
-    }
-    
-    // Extract status
-    $status = array_get($data, $statusField);
-    if (!$status) {
-        $status = 'active';
     }
     
     return [
@@ -328,26 +340,6 @@ function getSourceBalance($source, $participants) {
         'account' => $account,
         'institution' => $institution,
         'identifier' => $identifier,
-        'identifier_type' => $identifierType,
-        'status' => $status
+        'identifier_type' => $identifierType
     ];
-}
-
-/**
- * Get nested array value using dot notation
- */
-function array_get($array, $key, $default = null) {
-    if (is_null($key)) return $default;
-    if (isset($array[$key])) return $array[$key];
-    
-    $keys = explode('.', $key);
-    $current = $array;
-    
-    foreach ($keys as $segment) {
-        if (!is_array($current) || !array_key_exists($segment, $current)) {
-            return $default;
-        }
-        $current = $current[$segment];
-    }
-    return $current;
 }
