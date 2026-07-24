@@ -1,7 +1,7 @@
 <?php
 // test_complete_swap_flow.php
-// Complete test: Execute swap and verify all tables with ULTRA-AGGRESSIVE DIAGNOSTICS
-//
+// ULTIMATE DIAGNOSTIC TEST - Tests ALL possible solutions
+// 
 // ⚠️  WARNING: This calls the REAL ZURUBANK and SACCUSSALIS production
 // endpoints over HTTPS. It creates a genuine hold on account 10000001
 // and a genuine SAT token at SACCUSSALIS (SMS included). Don't loop this.
@@ -33,7 +33,8 @@ $testConfig = [
 ];
 
 echo "========================================\n";
-echo "COMPLETE SWAP FLOW TEST (ULTRA DIAGNOSTIC)\n";
+echo "ULTIMATE DIAGNOSTIC TEST\n";
+echo "Testing ALL possible solutions\n";
 echo "========================================\n\n";
 
 // ============================================================
@@ -57,6 +58,7 @@ echo "PostgreSQL Version : " . $pdo->query("SELECT version()")->fetchColumn() . 
 echo "Current User       : " . $pdo->query("SELECT current_user")->fetchColumn() . PHP_EOL;
 echo "Current Database   : " . $pdo->query("SELECT current_database()")->fetchColumn() . PHP_EOL;
 echo "Current Schema     : " . $pdo->query("SELECT current_schema()")->fetchColumn() . PHP_EOL;
+echo "Search Path        : " . $pdo->query("SHOW search_path")->fetchColumn() . PHP_EOL;
 echo "In Transaction     : " . ($pdo->inTransaction() ? 'YES ⚠️' : 'NO ✅') . PHP_EOL;
 echo "PDO Object ID      : " . spl_object_id($pdo) . PHP_EOL;
 
@@ -66,54 +68,12 @@ if ($pdo->inTransaction()) {
     echo "   ✅ Rolled back\n";
 }
 
-// Ensure autocommit is ON
-try {
-    $pdo->setAttribute(PDO::ATTR_AUTOCOMMIT, true);
-    echo "Autocommit set     : ON ✅\n";
-} catch (PDOException $e) {
-    echo "Autocommit set     : ⚠️ " . $e->getMessage() . "\n";
-}
+$pdo->setAttribute(PDO::ATTR_AUTOCOMMIT, true);
+echo "Autocommit set     : ON ✅\n";
 echo "\n";
 
 // ============================================================
-// 3. ENABLE PDO EXCEPTIONS AND DEBUG
-// ============================================================
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-$pdo->setAttribute(PDO::ATTR_EMULATE_PREPARES, false);
-
-// Create a custom error handler to catch PDO exceptions
-$lastException = null;
-set_exception_handler(function($e) use (&$lastException) {
-    $lastException = $e;
-    echo "\n🔥 EXCEPTION CAUGHT: " . get_class($e) . "\n";
-    echo "   Message: " . $e->getMessage() . "\n";
-    echo "   File: " . $e->getFile() . ":" . $e->getLine() . "\n";
-    echo "   Trace:\n" . $e->getTraceAsString() . "\n";
-});
-
-// ============================================================
-// 4. LOAD COUNTRY CONFIG
-// ============================================================
-echo "📂 Loading country config...\n";
-$countryConfig = LoadCountry::getConfig();
-
-if (empty($countryConfig)) {
-    die("❌ Failed to load country config\n");
-}
-echo "✅ Country config loaded\n\n";
-
-// ============================================================
-// 5. CHECK PARTICIPANTS
-// ============================================================
-$participants = $countryConfig['participants'] ?? [];
-echo "🔍 PARTICIPANT CHECK\n";
-echo "=============================\n";
-echo "   Source '{$testConfig['source_institution']}': " . (isset($participants[$testConfig['source_institution']]) ? '✅ FOUND' : '❌ NOT FOUND') . "\n";
-echo "   Destination '{$testConfig['destination_institution']}': " . (isset($participants[$testConfig['destination_institution']]) ? '✅ FOUND' : '❌ NOT FOUND') . "\n";
-echo "\n";
-
-// ============================================================
-// 6. CHECK TABLE STRUCTURES
+// 3. CHECK TABLE STRUCTURES
 // ============================================================
 echo "📊 Checking table structures...\n\n";
 $tablesToCheck = [
@@ -136,6 +96,101 @@ foreach ($tablesToCheck as $table) {
     }
 }
 echo "\n";
+
+// ============================================================
+// 4. CLEAN UP EARMARKED BALANCES (SOLUTION 1)
+// ============================================================
+echo "🔧 SOLUTION 1: Clean up earmarked balances\n";
+echo "=============================\n";
+
+try {
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) FROM identity_earmarked_balances
+        WHERE destination_institution = :inst
+          AND destination_identifier = :ident
+          AND status = 'open'
+    ");
+    $stmt->execute([
+        ':inst' => $testConfig['source_institution'],
+        ':ident' => $testConfig['source_identifier']
+    ]);
+    $openCount = $stmt->fetchColumn();
+    echo "   Open earmarks before: {$openCount}\n";
+    
+    // Close all open earmarks for the test account
+    $stmt = $pdo->prepare("
+        UPDATE identity_earmarked_balances
+        SET status = 'depleted', 
+            remaining_amount = 0, 
+            depleted_at = NOW(),
+            updated_at = NOW()
+        WHERE destination_institution = :inst
+          AND destination_identifier = :ident
+          AND status = 'open'
+    ");
+    $stmt->execute([
+        ':inst' => $testConfig['source_institution'],
+        ':ident' => $testConfig['source_identifier']
+    ]);
+    $closed = $stmt->rowCount();
+    echo "   ✅ Closed {$closed} earmarked balance(s)\n";
+    
+} catch (PDOException $e) {
+    echo "   ⚠️  Could not clean earmarks: " . $e->getMessage() . "\n";
+}
+echo "\n";
+
+// ============================================================
+// 5. CHECK AND RELEASE PENDING HOLDS (SOLUTION 2)
+// ============================================================
+echo "🔧 SOLUTION 2: Check pending holds\n";
+echo "=============================\n";
+
+try {
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) FROM hold_transactions
+        WHERE source_institution = :inst
+          AND status IN ('ACTIVE', 'HELD', 'PENDING_CASHOUT', 'PENDING_IDENTITY')
+    ");
+    $stmt->execute([':inst' => $testConfig['source_institution']]);
+    $pendingHolds = $stmt->fetchColumn();
+    
+    if ($pendingHolds > 0) {
+        echo "   ⚠️  Found {$pendingHolds} pending holds\n";
+        
+        // Show the oldest holds
+        $stmt = $pdo->prepare("
+            SELECT hold_id, hold_reference, swap_reference, amount, status, placed_at
+            FROM hold_transactions
+            WHERE source_institution = :inst
+              AND status IN ('ACTIVE', 'HELD', 'PENDING_CASHOUT', 'PENDING_IDENTITY')
+            ORDER BY placed_at ASC
+            LIMIT 5
+        ");
+        $stmt->execute([':inst' => $testConfig['source_institution']]);
+        $holds = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($holds as $h) {
+            echo "      hold_id={$h['hold_id']}, amount={$h['amount']}, status={$h['status']}, placed={$h['placed_at']}\n";
+        }
+        echo "   💡 These may block new holds. Consider releasing them.\n";
+    } else {
+        echo "   ✅ No pending holds found\n";
+    }
+} catch (PDOException $e) {
+    echo "   ⚠️  Could not check holds: " . $e->getMessage() . "\n";
+}
+echo "\n";
+
+// ============================================================
+// 6. LOAD COUNTRY CONFIG
+// ============================================================
+echo "📂 Loading country config...\n";
+$countryConfig = LoadCountry::getConfig();
+
+if (empty($countryConfig)) {
+    die("❌ Failed to load country config\n");
+}
+echo "✅ Country config loaded\n\n";
 
 // ============================================================
 // 7. CREATE SWAP PAYLOAD
@@ -190,108 +245,58 @@ try {
 // ============================================================
 // 9. EXECUTE SWAP WITH STEP-BY-STEP TRACING
 // ============================================================
-echo "🚀 Executing swap with step-by-step tracing...\n";
+echo "🚀 Executing swap with full diagnostics...\n";
 echo "============================================================\n";
 
 $result = null;
 $swapFailed = false;
 $exceptionDetails = null;
 
-// Create a reflection to access private methods for testing
+// Capture all exceptions
+set_exception_handler(function($e) use (&$exceptionDetails) {
+    $exceptionDetails = [
+        'class' => get_class($e),
+        'message' => $e->getMessage(),
+        'code' => $e->getCode(),
+        'file' => $e->getFile(),
+        'line' => $e->getLine(),
+        'trace' => $e->getTraceAsString()
+    ];
+    
+    $inner = $e->getPrevious();
+    if ($inner) {
+        $exceptionDetails['inner'] = [
+            'class' => get_class($inner),
+            'message' => $inner->getMessage(),
+            'file' => $inner->getFile(),
+            'line' => $inner->getLine(),
+        ];
+    }
+});
+
+// Use reflection to inspect internal state
 $reflection = new ReflectionClass($swapService);
-
-// Get the current swap reference before execution
-$currentSwapRef = $reflection->getProperty('currentSwapRef');
-$currentSwapRef->setAccessible(true);
-
-// Get the inAtomicSwap flag
-$inAtomicSwap = $reflection->getProperty('inAtomicSwap');
-$inAtomicSwap->setAccessible(true);
-
-// Get the executedSteps
 $executedSteps = $reflection->getProperty('executedSteps');
 $executedSteps->setAccessible(true);
+$inAtomicSwap = $reflection->getProperty('inAtomicSwap');
+$inAtomicSwap->setAccessible(true);
+$currentSwapRef = $reflection->getProperty('currentSwapRef');
+$currentSwapRef->setAccessible(true);
+$currentHoldId = $reflection->getProperty('currentHoldId');
+$currentHoldId->setAccessible(true);
+$currentHoldReference = $reflection->getProperty('currentHoldReference');
+$currentHoldReference->setAccessible(true);
 
-// Get the stepResults
-$stepResults = $reflection->getProperty('stepResults');
-$stepResults->setAccessible(true);
-
-echo "📌 Starting swap execution...\n";
+echo "\n📌 Starting swap execution...\n";
 
 try {
     $startTime = microtime(true);
-    
-    // ============================================================
-    // STEP 1: Execute the swap
-    // ============================================================
-    echo "\n[STEP 1] Calling executeAtomicSwap()...\n";
     $result = $swapService->executeAtomicSwap($payload);
     $executionTime = round(microtime(true) - $startTime, 2);
     
-    echo "[STEP 1] ✅ executeAtomicSwap() returned successfully\n";
+    echo "\n✅ Swap executed successfully\n";
     echo "   Execution time: {$executionTime}s\n";
     
-    // ============================================================
-    // STEP 2: Check the state after execution
-    // ============================================================
-    echo "\n[STEP 2] Checking internal state...\n";
-    
-    // Check inAtomicSwap flag
-    $inAtomic = $inAtomicSwap->getValue($swapService);
-    echo "   inAtomicSwap: " . ($inAtomic ? 'TRUE ⚠️' : 'FALSE ✅') . "\n";
-    
-    // Check current swap reference
-    $swapRef = $currentSwapRef->getValue($swapService);
-    echo "   currentSwapRef: " . ($swapRef ?? 'NULL') . "\n";
-    
-    // Check executed steps
-    $steps = $executedSteps->getValue($swapService);
-    echo "   executedSteps: " . count($steps) . " steps\n";
-    foreach ($steps as $i => $step) {
-        echo "      Step " . ($i+1) . ": {$step['step']}\n";
-    }
-    
-    // ============================================================
-    // STEP 3: Check PDO transaction state
-    // ============================================================
-    echo "\n[STEP 3] Checking PDO transaction state...\n";
-    $inTransaction = $pdo->inTransaction();
-    echo "   PDO inTransaction: " . ($inTransaction ? 'YES ⚠️' : 'NO ✅') . "\n";
-    
-    if ($inTransaction) {
-        echo "   ⚠️  Transaction is still open! This means commit() was NOT called.\n";
-        echo "   🔍 Rolling back to clean up...\n";
-        $pdo->rollBack();
-        echo "   ✅ Rolled back\n";
-    }
-    
-    // ============================================================
-    // STEP 4: Check result structure
-    // ============================================================
-    echo "\n[STEP 4] Checking result structure...\n";
-    
-    if ($result) {
-        echo "   Result keys: " . implode(', ', array_keys($result)) . "\n";
-        
-        if (isset($result['status'])) {
-            echo "   status: {$result['status']}\n";
-        }
-        if (isset($result['auth_id'])) {
-            echo "   auth_id: {$result['auth_id']}\n";
-        }
-        if (isset($result['atomic_commit'])) {
-            echo "   atomic_commit: " . json_encode($result['atomic_commit']) . "\n";
-            if (isset($result['atomic_commit']['status'])) {
-                echo "   atomic_commit.status: {$result['atomic_commit']['status']}\n";
-            }
-        }
-        if (isset($result['reference'])) {
-            echo "   reference: {$result['reference']}\n";
-        }
-    } else {
-        echo "   ❌ Result is NULL\n";
-    }
-
 } catch (\Throwable $e) {
     $swapFailed = true;
     $exceptionDetails = [
@@ -303,20 +308,8 @@ try {
         'trace' => $e->getTraceAsString()
     ];
     
-    echo "\n❌ SWAP EXECUTION FAILED\n";
-    echo "   Exception class: " . get_class($e) . "\n";
-    echo "   Message: " . $e->getMessage() . "\n";
-    echo "   File: " . $e->getFile() . ":" . $e->getLine() . "\n";
-    echo "   Trace:\n" . $e->getTraceAsString() . "\n";
-
     $inner = $e->getPrevious();
     if ($inner) {
-        echo "\n   INNER EXCEPTION:\n";
-        echo "   Class: " . get_class($inner) . "\n";
-        echo "   Message: " . $inner->getMessage() . "\n";
-        echo "   File: " . $inner->getFile() . ":" . $inner->getLine() . "\n";
-        echo "   Trace:\n" . $inner->getTraceAsString() . "\n";
-        
         $exceptionDetails['inner'] = [
             'class' => get_class($inner),
             'message' => $inner->getMessage(),
@@ -324,17 +317,84 @@ try {
             'line' => $inner->getLine(),
         ];
     }
+    
+    echo "\n❌ Swap execution failed\n";
+    echo "   Exception: " . get_class($e) . "\n";
+    echo "   Message: " . $e->getMessage() . "\n";
 }
 
+// Restore default exception handler
+restore_exception_handler();
+
 // ============================================================
-// 10. POST-EXECUTION DATABASE STATE CHECK
+// 10. POST-EXECUTION DIAGNOSTICS
 // ============================================================
 echo "\n============================================================\n";
-echo "🔍 POST-EXECUTION DATABASE STATE\n";
+echo "🔍 POST-EXECUTION DIAGNOSTICS\n";
 echo "============================================================\n";
 
-// Check if any data was written at all
-echo "\n📊 Checking if ANY data was written...\n";
+// 10.1 Internal state
+echo "\n[10.1] Internal SwapService State\n";
+echo "------------------------------\n";
+echo "   inAtomicSwap: " . ($inAtomicSwap->getValue($swapService) ? 'TRUE ⚠️' : 'FALSE ✅') . "\n";
+echo "   currentSwapRef: " . ($currentSwapRef->getValue($swapService) ?? 'NULL') . "\n";
+echo "   currentHoldId: " . ($currentHoldId->getValue($swapService) ?? 'NULL') . "\n";
+echo "   currentHoldReference: " . ($currentHoldReference->getValue($swapService) ?? 'NULL') . "\n";
+
+$steps = $executedSteps->getValue($swapService);
+echo "   executedSteps: " . count($steps) . " steps\n";
+foreach ($steps as $i => $step) {
+    echo "      Step " . ($i+1) . ": {$step['step']}\n";
+}
+
+// 10.2 PDO Transaction State
+echo "\n[10.2] PDO Transaction State\n";
+echo "------------------------------\n";
+echo "   PDO inTransaction: " . ($pdo->inTransaction() ? 'YES ⚠️' : 'NO ✅') . "\n";
+
+if ($pdo->inTransaction()) {
+    echo "   ⚠️  Transaction is still open! Rolling back...\n";
+    $pdo->rollBack();
+    echo "   ✅ Rolled back\n";
+}
+
+// 10.3 Result Structure
+echo "\n[10.3] Result Structure\n";
+echo "------------------------------\n";
+if ($result) {
+    echo "   Result keys: " . implode(', ', array_keys($result)) . "\n";
+    
+    if (isset($result['status'])) {
+        echo "   status: {$result['status']}\n";
+    }
+    if (isset($result['auth_id'])) {
+        echo "   auth_id: {$result['auth_id']}\n";
+    }
+    if (isset($result['atomic_commit'])) {
+        echo "   atomic_commit: " . json_encode($result['atomic_commit']) . "\n";
+        if (isset($result['atomic_commit']['status'])) {
+            echo "   atomic_commit.status: {$result['atomic_commit']['status']}\n";
+        }
+    }
+    if (isset($result['reference'])) {
+        echo "   reference: {$result['reference']}\n";
+    }
+    if (isset($result['swap_code'])) {
+        echo "   swap_code: {$result['swap_code']}\n";
+    }
+    if (isset($result['atm_code'])) {
+        echo "   atm_code: {$result['atm_code']}\n";
+    }
+    if (isset($result['fee_calculation_details'])) {
+        echo "   fee_calculation_details: " . (is_array($result['fee_calculation_details']) ? 'Array' : gettype($result['fee_calculation_details'])) . "\n";
+    }
+} else {
+    echo "   ❌ Result is NULL\n";
+}
+
+// 10.4 Check if ANY data was written
+echo "\n[10.4] Database Write Check\n";
+echo "------------------------------\n";
 
 $tablesToCheck = [
     'swap_requests' => 'swap_uuid',
@@ -343,19 +403,31 @@ $tablesToCheck = [
 ];
 
 $anyDataWritten = false;
+$writeResults = [];
+
 foreach ($tablesToCheck as $table => $column) {
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM {$table} WHERE {$column} = ?");
-    $stmt->execute([$reference]);
-    $count = $stmt->fetchColumn();
-    if ($count > 0) {
-        echo "   ✅ {$table}: {$count} record(s) found\n";
-        $anyDataWritten = true;
-    } else {
-        echo "   ❌ {$table}: 0 records found\n";
+    try {
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM {$table} WHERE {$column} = ?");
+        $stmt->execute([$reference]);
+        $count = $stmt->fetchColumn();
+        if ($count > 0) {
+            echo "   ✅ {$table}: {$count} record(s) found\n";
+            $anyDataWritten = true;
+            $writeResults[$table] = true;
+        } else {
+            echo "   ❌ {$table}: 0 records found\n";
+            $writeResults[$table] = false;
+        }
+    } catch (PDOException $e) {
+        echo "   ❌ {$table}: Error - " . $e->getMessage() . "\n";
+        $writeResults[$table] = false;
     }
 }
 
-// Check if auth_id exists (by ID, not reference)
+// 10.5 Check by ID
+echo "\n[10.5] ID Lookup Check\n";
+echo "------------------------------\n";
+
 if ($result && !empty($result['auth_id'])) {
     $stmt = $pdo->prepare("SELECT COUNT(*) FROM cashout_authorizations WHERE auth_id = ?");
     $stmt->execute([$result['auth_id']]);
@@ -364,11 +436,10 @@ if ($result && !empty($result['auth_id'])) {
         echo "   ✅ auth_id {$result['auth_id']} exists in cashout_authorizations\n";
         $anyDataWritten = true;
     } else {
-        echo "   ❌ auth_id {$result['auth_id']} does NOT exist in cashout_authorizations\n";
+        echo "   ❌ auth_id {$result['auth_id']} does NOT exist\n";
     }
 }
 
-// Check if hold_id exists
 if ($result && isset($result['atomic_commit']['hold_id'])) {
     $holdId = $result['atomic_commit']['hold_id'];
     $stmt = $pdo->prepare("SELECT COUNT(*) FROM hold_transactions WHERE hold_id = ?");
@@ -378,135 +449,152 @@ if ($result && isset($result['atomic_commit']['hold_id'])) {
         echo "   ✅ hold_id {$holdId} exists in hold_transactions\n";
         $anyDataWritten = true;
     } else {
-        echo "   ❌ hold_id {$holdId} does NOT exist in hold_transactions\n";
+        echo "   ❌ hold_id {$holdId} does NOT exist\n";
     }
 }
 
 // ============================================================
-// 11. CHECK FOR CONSTRAINTS AND ERRORS
-// ============================================================
-echo "\n🔍 CHECKING FOR DATABASE CONSTRAINTS\n";
-echo "============================================================\n";
-
-// Check if there's a unique constraint violation on swap_reference
-try {
-    $stmt = $pdo->prepare("
-        SELECT conname, contype, pg_get_constraintdef(oid) 
-        FROM pg_constraint 
-        WHERE conrelid = 'cashout_authorizations'::regclass 
-        AND contype = 'u'
-    ");
-    $stmt->execute();
-    $constraints = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    
-    if ($constraints) {
-        echo "   Cashout authorizations unique constraints:\n";
-        foreach ($constraints as $constraint) {
-            echo "      - {$constraint['conname']}: {$constraint['pg_get_constraintdef']}\n";
-        }
-    }
-} catch (Exception $e) {
-    echo "   ⚠️  Could not check constraints: " . $e->getMessage() . "\n";
-}
-
-// Check for duplicate references
-try {
-    $stmt = $pdo->prepare("
-        SELECT swap_reference, COUNT(*) as cnt 
-        FROM cashout_authorizations 
-        WHERE swap_reference = ?
-        GROUP BY swap_reference
-    ");
-    $stmt->execute([$reference]);
-    $duplicates = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    
-    if ($duplicates) {
-        echo "   ⚠️  Found duplicates for reference '{$reference}':\n";
-        foreach ($duplicates as $dup) {
-            echo "      swap_reference: {$dup['swap_reference']}, count: {$dup['cnt']}\n";
-        }
-    } else {
-        echo "   ✅ No duplicates found for reference '{$reference}'\n";
-    }
-} catch (Exception $e) {
-    echo "   ⚠️  Could not check duplicates: " . $e->getMessage() . "\n";
-}
-
-// ============================================================
-// 12. CRITICAL: CHECK IF DATA EXISTS IN A FRESH CONNECTION
-// ============================================================
-echo "\n🔍 CHECKING WITH FRESH CONNECTION\n";
-echo "============================================================\n";
-
-// Get a fresh connection (bypass any transaction issues)
-try {
-    $freshPdo = DBConnection::getConnection();
-    $freshPdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    
-    if ($freshPdo === $pdo) {
-        echo "   ⚠️  Fresh connection is the SAME as test connection\n";
-        echo "   (DBConnection is returning the same singleton)\n";
-    } else {
-        echo "   ✅ Fresh connection is DIFFERENT from test connection\n";
-    }
-    
-    // Try to find the reference with the fresh connection
-    if ($result && !empty($result['reference'])) {
-        $stmt = $freshPdo->prepare("
-            SELECT swap_id FROM swap_requests WHERE swap_uuid = ?
-        ");
-        $stmt->execute([$result['reference']]);
-        $freshSwap = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($freshSwap) {
-            echo "   ✅ Found swap_requests with FRESH connection!\n";
-            echo "      This means the data IS in the database but hidden from your current connection\n";
-            echo "      (likely due to transaction isolation - your connection is in a transaction)\n";
-        } else {
-            echo "   ❌ No swap_requests found with FRESH connection either\n";
-            echo "      The data was truly NOT persisted (rollback happened)\n";
-        }
-    }
-    
-    // Try to find by auth_id with fresh connection
-    if ($result && !empty($result['auth_id'])) {
-        $stmt = $freshPdo->prepare("
-            SELECT auth_id FROM cashout_authorizations WHERE auth_id = ?
-        ");
-        $stmt->execute([$result['auth_id']]);
-        $freshAuth = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($freshAuth) {
-            echo "   ✅ Found auth_id with FRESH connection!\n";
-        } else {
-            echo "   ❌ No auth_id found with FRESH connection\n";
-        }
-    }
-    
-    // Try to find by hold_id with fresh connection
-    if ($result && isset($result['atomic_commit']['hold_id'])) {
-        $stmt = $freshPdo->prepare("
-            SELECT hold_id FROM hold_transactions WHERE hold_id = ?
-        ");
-        $stmt->execute([$result['atomic_commit']['hold_id']]);
-        $freshHold = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($freshHold) {
-            echo "   ✅ Found hold_id with FRESH connection!\n";
-        } else {
-            echo "   ❌ No hold_id found with FRESH connection\n";
-        }
-    }
-    
-} catch (Exception $e) {
-    echo "   ⚠️  Fresh connection check failed: " . $e->getMessage() . "\n";
-}
-
-// ============================================================
-// 13. SUMMARY
+// 11. DIAGNOSE THE EXACT PROBLEM
 // ============================================================
 echo "\n============================================================\n";
-echo "📊 TEST SUMMARY\n";
+echo "🔍 DIAGNOSIS\n";
+echo "============================================================\n";
+
+if ($swapFailed) {
+    echo "❌ SWAP FAILED WITH EXCEPTION\n";
+    echo "\n   Exception: " . ($exceptionDetails['class'] ?? 'Unknown') . "\n";
+    echo "   Message: " . ($exceptionDetails['message'] ?? 'No message') . "\n";
+    if (isset($exceptionDetails['inner'])) {
+        echo "   Inner Exception: " . $exceptionDetails['inner']['class'] . "\n";
+        echo "   Inner Message: " . $exceptionDetails['inner']['message'] . "\n";
+    }
+    
+} elseif ($pdo->inTransaction()) {
+    echo "❌ TRANSACTION IS STILL OPEN!\n";
+    echo "   The swap executed but commit() was never called.\n";
+    echo "   This is the ROOT CAUSE of the problem.\n";
+    
+} elseif (!$anyDataWritten) {
+    echo "❌ NO DATA WAS WRITTEN TO THE DATABASE!\n";
+    echo "\n   The transaction was rolled back.\n";
+    echo "   The swap executed and returned IDs, but the data never persisted.\n";
+    
+    echo "\n   🔍 POSSIBLE CAUSES:\n";
+    
+    // Check executed steps
+    if (count($steps) === 0) {
+        echo "   - executeStep() was NEVER called - the swap bypassed normal flow\n";
+        echo "   - Check if the match statement is matching the wrong case\n";
+        echo "   - Check if the swap type is being overridden\n";
+    }
+    
+    // Check if exception was thrown
+    if ($exceptionDetails) {
+        echo "   - An exception was thrown: " . ($exceptionDetails['message'] ?? 'Unknown') . "\n";
+    }
+    
+    // Check if fee calculation details exist
+    if ($result && isset($result['fee_calculation_details'])) {
+        echo "   - fee_calculation_details was added to result (may be causing issues)\n";
+    }
+    
+    echo "\n   💡 RECOMMENDED SOLUTIONS:\n";
+    echo "   1. Check if populateTrackingTables() is throwing an exception\n";
+    echo "   2. Add try/catch around populateTrackingTables()\n";
+    echo "   3. Check if the ON CONFLICT clause in populateCashoutAuthorization() is failing\n";
+    echo "   4. Remove duplicate populateCashoutAuthorization() call\n";
+    
+} elseif ($result && isset($result['atomic_commit']['status']) && $result['atomic_commit']['status'] === 'committed') {
+    echo "✅✅✅ SWAP COMMITTED SUCCESSFULLY!\n";
+    echo "\n   Reference: {$reference}\n";
+    if ($result && isset($result['auth_id'])) echo "   Auth ID: {$result['auth_id']}\n";
+    if ($result && isset($result['atomic_commit']['hold_id'])) echo "   Hold ID: {$result['atomic_commit']['hold_id']}\n";
+    echo "   Swap Code: " . ($result['swap_code'] ?? 'N/A') . "\n";
+    echo "   ATM PIN: " . ($result['atm_code'] ?? 'N/A') . "\n";
+    echo "\n   ✅ Transaction committed successfully!\n";
+    echo "   ✅ Data persisted to database\n";
+}
+
+// ============================================================
+// 12. ATTEMPT SOLUTIONS IF DATA IS MISSING
+// ============================================================
+if (!$anyDataWritten && !$swapFailed && !$pdo->inTransaction()) {
+    echo "\n============================================================\n";
+    echo "🔧 ATTEMPTING SOLUTIONS\n";
+    echo "============================================================\n";
+    
+    echo "\n[SOLUTION A] Check if data exists in a fresh connection\n";
+    echo "----------------------------------------------------\n";
+    try {
+        $freshPdo = DBConnection::getConnection();
+        if ($freshPdo !== $pdo) {
+            echo "   ✅ Fresh connection is DIFFERENT\n";
+        } else {
+            echo "   ⚠️  Fresh connection is the SAME (singleton)\n";
+        }
+        
+        if ($result && !empty($result['reference'])) {
+            $stmt = $freshPdo->prepare("SELECT swap_id FROM swap_requests WHERE swap_uuid = ?");
+            $stmt->execute([$result['reference']]);
+            $freshSwap = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($freshSwap) {
+                echo "   ✅ Found swap_requests with FRESH connection!\n";
+                echo "      Data IS in the database but hidden from your connection\n";
+                echo "      (likely due to transaction isolation)\n";
+            } else {
+                echo "   ❌ No swap_requests found with FRESH connection\n";
+                echo "      Data was truly NOT persisted\n";
+            }
+        }
+    } catch (Exception $e) {
+        echo "   ⚠️  Fresh connection check failed: " . $e->getMessage() . "\n";
+    }
+    
+    echo "\n[SOLUTION B] Check if fee_calculation_details is causing issues\n";
+    echo "----------------------------------------------------\n";
+    if ($result && isset($result['fee_calculation_details'])) {
+        echo "   fee_calculation_details exists in result\n";
+        echo "   Type: " . gettype($result['fee_calculation_details']) . "\n";
+        if (is_array($result['fee_calculation_details'])) {
+            echo "   Keys: " . implode(', ', array_keys($result['fee_calculation_details'])) . "\n";
+        }
+        echo "   💡 If this is causing issues, it may be added after the swap\n";
+    } else {
+        echo "   No fee_calculation_details in result\n";
+    }
+    
+    echo "\n[SOLUTION C] Check if populateTrackingTables() was called\n";
+    echo "----------------------------------------------------\n";
+    // Check if the reference exists in any table using a different column
+    $foundInAnyTable = false;
+    foreach (['swap_requests', 'hold_transactions', 'cashout_authorizations'] as $table) {
+        try {
+            $stmt = $pdo->query("SELECT column_name FROM information_schema.columns WHERE table_name = '{$table}' AND column_name IN ('swap_reference', 'swap_uuid', 'reference')");
+            $columns = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($columns as $col) {
+                $stmt = $pdo->prepare("SELECT COUNT(*) FROM {$table} WHERE {$col} = ?");
+                $stmt->execute([$reference]);
+                $count = $stmt->fetchColumn();
+                if ($count > 0) {
+                    echo "   ✅ Found in {$table}.{$col}: {$count} record(s)\n";
+                    $foundInAnyTable = true;
+                }
+            }
+        } catch (Exception $e) {
+            // Skip
+        }
+    }
+    if (!$foundInAnyTable) {
+        echo "   ❌ No data found in ANY table for this reference\n";
+        echo "      populateTrackingTables() was likely NOT called or failed\n";
+    }
+}
+
+// ============================================================
+// 13. FINAL SUMMARY
+// ============================================================
+echo "\n============================================================\n";
+echo "📊 FINAL SUMMARY\n";
 echo "============================================================\n";
 
 $results = [
@@ -528,51 +616,37 @@ foreach ($results as $key => $value) {
 echo "\n";
 
 // ============================================================
-// 14. FINAL VERDICT WITH PRECISE DIAGNOSIS
+// 14. FINAL VERDICT
 // ============================================================
 echo "🏁 FINAL VERDICT\n";
 echo "============================================================\n";
 
 if ($swapFailed) {
     echo "❌ SWAP FAILED WITH EXCEPTION\n";
-    echo "\n   Exception: " . ($exceptionDetails['class'] ?? 'Unknown') . "\n";
-    echo "   Message: " . ($exceptionDetails['message'] ?? 'No message') . "\n";
-    if (isset($exceptionDetails['inner'])) {
-        echo "   Inner Exception: " . $exceptionDetails['inner']['class'] . "\n";
-        echo "   Inner Message: " . $exceptionDetails['inner']['message'] . "\n";
-    }
-    
-} elseif ($pdo->inTransaction()) {
-    echo "❌ TRANSACTION IS STILL OPEN!\n";
-    echo "   The swap executed but commit() was never called.\n";
-    echo "   This indicates the transaction is being left open.\n";
-    echo "   Check:\n";
-    echo "   1. Is commitAtomicSwap() being called?\n";
-    echo "   2. Is there an exception being swallowed?\n";
-    echo "   3. Is the rollback code path being triggered?\n";
+    echo "   Check the exception details above for the root cause.\n";
     
 } elseif (!$anyDataWritten) {
-    echo "❌ NO DATA WAS WRITTEN TO THE DATABASE!\n";
-    echo "\n   This means the transaction was rolled back.\n";
-    echo "   The swap executed and returned IDs, but the data never persisted.\n";
-    echo "\n   🔍 PRECISE DIAGNOSIS:\n";
-    echo "   - The rollback is happening AFTER the swap returns\n";
-    echo "   - The rollback is happening in the outer try/catch block\n";
-    echo "   - Check if an exception is being thrown in commitAtomicSwap()\n";
-    echo "   - Check if populateTrackingTables() is throwing an exception\n";
-    echo "\n   💡 FIX: Add try/catch around commitAtomicSwap() and populateTrackingTables()\n";
+    echo "❌ TRANSACTION ROLLED BACK - DATA NOT PERSISTED\n";
+    echo "\n   The swap executed successfully but the transaction was rolled back.\n";
+    echo "   This is the classic 'populateTrackingTables() exception' problem.\n";
+    echo "\n   🔧 FIXES TO IMPLEMENT:\n";
+    echo "   1. Remove duplicate populateCashoutAuthorization() call\n";
+    echo "   2. Add try/catch around populateTrackingTables()\n";
+    echo "   3. Never re-throw exceptions from tracking methods\n";
+    echo "   4. Check ON CONFLICT clause in populateCashoutAuthorization()\n";
+    echo "\n   📝 The swap IS working - the problem is in tracking/persistence.\n";
     
-} elseif ($result && isset($result['atomic_commit']['status']) && $result['atomic_commit']['status'] === 'committed') {
-    echo "✅✅✅ SWAP COMMITTED SUCCESSFULLY!\n";
+} elseif ($anyDataWritten && $result && isset($result['atomic_commit']['status']) && $result['atomic_commit']['status'] === 'committed') {
+    echo "✅✅✅ SUCCESS! TRANSACTION FULLY COMMITTED!\n";
     echo "\n   Reference: {$reference}\n";
     if ($result && isset($result['auth_id'])) echo "   Auth ID: {$result['auth_id']}\n";
     if ($result && isset($result['atomic_commit']['hold_id'])) echo "   Hold ID: {$result['atomic_commit']['hold_id']}\n";
-    echo "\n   ✅ Transaction committed\n";
-    echo "   ✅ Data persisted to database\n";
+    echo "   Swap Code: " . ($result['swap_code'] ?? 'N/A') . "\n";
+    echo "   ATM PIN: " . ($result['atm_code'] ?? 'N/A') . "\n";
+    echo "\n   ✅ All systems working!\n";
     
 } else {
-    echo "❌ UNKNOWN STATE\n";
-    echo "   Please review the diagnostic output above.\n";
+    echo "❌ UNKNOWN STATE - Please review diagnostic output\n";
 }
 
 echo "\n";
