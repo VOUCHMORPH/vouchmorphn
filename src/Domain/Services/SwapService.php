@@ -4328,11 +4328,13 @@ private function validateAgentMinimumBalance(string $institution, string $identi
         );
     }
 }
-    
-/**
- * Actually decrements the earmarked ledger, FIFO across open entries,
- * after a withdrawal has genuinely succeeded.
- */
+    // ----------------------------------------------------------------------
+// 4. consumeEarmarkedBalance() — THE MOST DANGEROUS ONE.
+//    Called from confirmCashout() immediately after a real bank debit
+//    has already succeeded. Each ledger-entry update AND its audit
+//    insert now share one savepoint per entry, so a failure on one
+//    entry can't poison the rest of the loop or the outer commit.
+// ----------------------------------------------------------------------
 private function consumeEarmarkedBalance(string $institution, string $identifier, float $amountWithdrawn, ?string $swapReference = null): void
 {
     $summary = $this->getOpenEarmarkedSummary($institution, $identifier);
@@ -4354,38 +4356,44 @@ private function consumeEarmarkedBalance(string $institution, string $identifier
         $newStatus = $newEntryRemaining <= 0.005 ? 'depleted' : 'open';
  
         try {
-            $stmt = $this->swapDB->prepare("
-                UPDATE identity_earmarked_balances
-                SET withdrawn_amount = withdrawn_amount + :consumed,
-                    remaining_amount = :new_remaining,
-                    status = :status,
-                    depleted_at = CASE WHEN :status = 'depleted' THEN NOW() ELSE depleted_at END,
-                    updated_at = NOW()
-                WHERE id = :id
-            ");
-            $stmt->execute([
-                ':consumed' => $consumeFromThisEntry,
-                ':new_remaining' => max(0, $newEntryRemaining),
-                ':status' => $newStatus,
-                ':id' => $entryId,
-            ]);
+            $this->runInSavepoint('consume_earmarked_' . $entryId . '_' . ($swapReference ?? uniqid()), function () use ($entryId, $consumeFromThisEntry, $newEntryRemaining, $newStatus, $swapReference) {
+                $stmt = $this->swapDB->prepare("
+                    UPDATE identity_earmarked_balances
+                    SET withdrawn_amount = withdrawn_amount + :consumed,
+                        remaining_amount = :new_remaining,
+                        status = :status,
+                        depleted_at = CASE WHEN :status = 'depleted' THEN NOW() ELSE depleted_at END,
+                        updated_at = NOW()
+                    WHERE id = :id
+                ");
+                $stmt->execute([
+                    ':consumed' => $consumeFromThisEntry,
+                    ':new_remaining' => max(0, $newEntryRemaining),
+                    ':status' => $newStatus,
+                    ':id' => $entryId,
+                ]);
  
-            $auditStmt = $this->swapDB->prepare("
-                INSERT INTO identity_earmarked_withdrawals
-                (earmarked_balance_id, swap_reference, amount, remaining_after)
-                VALUES (:balance_id, :swap_ref, :amount, :remaining)
-            ");
-            $auditStmt->execute([
-                ':balance_id' => $entryId,
-                ':swap_ref' => $swapReference,
-                ':amount' => $consumeFromThisEntry,
-                ':remaining' => max(0, $newEntryRemaining),
-            ]);
+                $auditStmt = $this->swapDB->prepare("
+                    INSERT INTO identity_earmarked_withdrawals
+                    (earmarked_balance_id, swap_reference, amount, remaining_after)
+                    VALUES (:balance_id, :swap_ref, :amount, :remaining)
+                ");
+                $auditStmt->execute([
+                    ':balance_id' => $entryId,
+                    ':swap_ref' => $swapReference,
+                    ':amount' => $consumeFromThisEntry,
+                    ':remaining' => max(0, $newEntryRemaining),
+                ]);
+            });
  
             error_log("[SwapService] Earmarked balance {$entryId} consumed {$consumeFromThisEntry}, remaining {$newEntryRemaining}, status {$newStatus}");
  
-        } catch (PDOException $e) {
+        } catch (\Throwable $e) {
             error_log("[SwapService] Failed to consume earmarked balance {$entryId}: " . $e->getMessage());
+            // Safe to continue the loop now: the savepoint rollback already
+            // undid only THIS entry's update+audit insert. The outer
+            // transaction (cashout completion, hold status, audit log,
+            // eventual commit) is unaffected.
         }
  
         $remainingToConsume -= $consumeFromThisEntry;
@@ -4395,6 +4403,7 @@ private function consumeEarmarkedBalance(string $institution, string $identifier
         error_log("[SwapService] WARNING: withdrew {$amountWithdrawn} from {$institution}/{$identifier} but only {$summary['total_remaining']} was earmarked - {$remainingToConsume} came from the account's own funds, which is expected and fine.");
     }
 }
+
 
     
      
