@@ -1190,11 +1190,7 @@ private function getDecryptedRefreshToken(array $source): ?string
     return $this->decryptSourceSecret($source['refresh_token']);
 }
     
-    // ============================================================================
-    // TABLE POPULATION METHODS - UPDATED WITH FIXES
-    // ============================================================================
 
-<?php
 /**
  * ============================================================================
  * FIX: SAVEPOINT-protected tracking table population
