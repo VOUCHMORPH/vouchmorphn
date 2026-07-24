@@ -2,12 +2,55 @@
 // public/api/v1/user/all_balances.php
 // Get balances for all user sources - AGGREGATED
 // Loads endpoints from /src/Core/Config/Countries/Botswana/endpoints.yaml
+// API keys loaded from Railway environment variables (NO HARDCODING)
 
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
 
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
+
+// ============================================================
+// 0. ENVIRONMENT VARIABLE HELPER
+// ============================================================
+function getEnvVar($name, $default = null) {
+    // Try getenv()
+    $value = getenv($name);
+    if ($value !== false) {
+        return $value;
+    }
+    
+    // Try $_ENV
+    if (isset($_ENV[$name])) {
+        return $_ENV[$name];
+    }
+    
+    // Try $_SERVER
+    if (isset($_SERVER[$name])) {
+        return $_SERVER[$name];
+    }
+    
+    // Try apache_getenv()
+    if (function_exists('apache_getenv')) {
+        $value = apache_getenv($name);
+        if ($value !== false) {
+            return $value;
+        }
+    }
+    
+    // Try uppercase version
+    $upperName = strtoupper($name);
+    if (isset($_ENV[$upperName])) {
+        return $_ENV[$upperName];
+    }
+    
+    $value = getenv($upperName);
+    if ($value !== false) {
+        return $value;
+    }
+    
+    return $default;
+}
 
 // ============================================================
 // 1. AUTHENTICATION
@@ -22,7 +65,7 @@ if (!SessionManager::isLoggedIn()) {
 
 $userData = SessionManager::getUser();
 $userId = $userData['id'] ?? $userData['user_id'] ?? 0;
-$userCountry = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
+$userCountry = $userData['country'] ?? getEnvVar('VOUCHMORPH_COUNTRY') ?: 'Botswana';
 
 if (empty($userId)) {
     http_response_code(400);
@@ -68,7 +111,7 @@ $stmt->execute([':user_id' => $userId]);
 $sources = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // ============================================================
-// 4. LOAD ENDPOINTS CONFIG FROM endpoints.yaml
+// 4. LOAD YAML PARSER
 // ============================================================
 if (!function_exists('dashboard_yaml_parse_file')) {
     function dashboard_yaml_castScalar(string $v) {
@@ -172,19 +215,19 @@ if (!function_exists('dashboard_yaml_parse_file')) {
     }
 }
 
-// Load endpoints from endpoints.yaml
+// ============================================================
+// 5. LOAD ENDPOINTS CONFIG
+// ============================================================
 $endpointsConfig = [];
 $endpointsPath = __DIR__ . '/../../../../src/Core/Config/Countries/' . $userCountry . '/endpoints.yaml';
 if (file_exists($endpointsPath)) {
     $parsed = dashboard_yaml_parse_file($endpointsPath);
     $endpointsConfig = $parsed ?? [];
     error_log("[Balance] Loaded endpoints from: {$endpointsPath}");
-    error_log("[Balance] Endpoints keys: " . json_encode(array_keys($endpointsConfig)));
 } else {
     error_log("[Balance] endpoints.yaml NOT found at: {$endpointsPath}");
 }
 
-// Also load participants for base_url and auth config
 $participants = [];
 $participantsPath = __DIR__ . '/../../../../src/Core/Config/Countries/' . $userCountry . '/participants.yaml';
 if (file_exists($participantsPath)) {
@@ -193,7 +236,7 @@ if (file_exists($participantsPath)) {
 }
 
 // ============================================================
-// 5. FETCH BALANCE FOR EACH SOURCE
+// 6. FETCH BALANCE FOR EACH SOURCE
 // ============================================================
 $results = [];
 $totalByCurrency = [];
@@ -238,7 +281,7 @@ foreach ($sources as $source) {
 }
 
 // ============================================================
-// 6. RETURN RESPONSE
+// 7. RETURN RESPONSE
 // ============================================================
 echo json_encode([
     'success' => true,
@@ -259,7 +302,7 @@ echo json_encode([
 exit;
 
 // ============================================================
-// 7. HELPER FUNCTION: Get balance for a single source
+// 8. HELPER FUNCTION: Get balance for a single source
 // ============================================================
 function getSourceBalance($source, $endpointsConfig, $participants) {
     $institution = $source['institution'];
@@ -267,7 +310,7 @@ function getSourceBalance($source, $endpointsConfig, $participants) {
     $identifierType = $source['identifier_type'] ?? 'auto';
     $assetType = strtoupper($source['asset_type'] ?? 'ACCOUNT');
     
-    // Get endpoint config for this institution
+    // Get endpoint config
     $endpointConfig = $endpointsConfig[$institution] ?? null;
     if (!$endpointConfig) {
         return ['success' => false, 'error' => "Institution '{$institution}' not found in endpoints config"];
@@ -278,17 +321,13 @@ function getSourceBalance($source, $endpointsConfig, $participants) {
     $sourceEndpoints = $endpoints['source'] ?? [];
     $balanceEndpoint = $sourceEndpoints['get_balance'] ?? $sourceEndpoints['balance'] ?? null;
     
-    error_log("[Balance] {$institution} - balance endpoint: " . ($balanceEndpoint ?? 'NOT FOUND'));
-    error_log("[Balance] {$institution} - source endpoints: " . json_encode(array_keys($sourceEndpoints)));
-    
     if (!$balanceEndpoint) {
         return ['success' => false, 'error' => "No balance endpoint configured for '{$institution}' in endpoints.yaml"];
     }
     
-    // Build URL - use base_url from endpoints.yaml
+    // Build URL
     $baseUrl = rtrim($endpointConfig['base_url'] ?? '', '/');
     if (empty($baseUrl)) {
-        // Fallback to participants config
         $participantConfig = $participants[$institution] ?? [];
         $baseUrl = rtrim($participantConfig['base_url'] ?? '', '/');
     }
@@ -299,18 +338,30 @@ function getSourceBalance($source, $endpointsConfig, $participants) {
     
     $fullUrl = $baseUrl . '/' . ltrim($balanceEndpoint, '/');
     
-    // Get authentication from endpoints.yaml
+    // ============================================================
+    // GET API KEY FROM ENVIRONMENT VARIABLES (NO HARDCODING!)
+    // ============================================================
     $authConfig = $endpointConfig['auth'] ?? [];
     $headerName = $authConfig['header_name'] ?? 'X-API-KEY';
     $secretSource = $authConfig['secret_source'] ?? [];
     $apiKeyEnv = $secretSource['name'] ?? strtoupper($institution) . '_API_KEY';
-    $apiKey = getenv($apiKeyEnv);
+    
+    // Use the getEnvVar() function to get the API key
+    $apiKey = getEnvVar($apiKeyEnv);
+    
+    // Log what we're looking for (for debugging)
+    error_log("[Balance] Looking for API key: {$apiKeyEnv}");
     
     if (!$apiKey) {
-        return ['success' => false, 'error' => "No API key for '{$institution}' (env: {$apiKeyEnv})"];
+        // Check if the environment variable exists but is empty
+        $envExists = isset($_ENV[$apiKeyEnv]) || getenv($apiKeyEnv) !== false;
+        return [
+            'success' => false, 
+            'error' => "No API key for '{$institution}' (env: {$apiKeyEnv})" . ($envExists ? ' - variable exists but is empty' : ' - variable not found')
+        ];
     }
     
-    // Build parameters based on institution
+    // Build parameters
     $params = [];
     
     // SACCUSSALIS: expects 'type' and 'identifier'
@@ -326,20 +377,12 @@ function getSourceBalance($source, $endpointsConfig, $participants) {
     elseif ($institution === 'ZURUBANK') {
         $params['source_identifier'] = $identifier;
     } 
-    // Generic fallback
     else {
         $params['identifier'] = $identifier;
     }
     
-    // Add asset_type if needed
-    if ($sourceEndpoints['requires_asset_type'] ?? false) {
-        $params['asset_type'] = $assetType;
-    }
-    
     $queryString = http_build_query($params);
     $requestUrl = $fullUrl . (strpos($fullUrl, '?') === false ? '?' : '&') . $queryString;
-    
-    error_log("[Balance] Request URL: {$requestUrl}");
     
     // Build headers
     $headers = [
@@ -370,21 +413,18 @@ function getSourceBalance($source, $endpointsConfig, $participants) {
         return ['success' => false, 'error' => "Invalid JSON response from {$institution}"];
     }
     
-    // Extract balance - handle different response formats
+    // Extract balance
     $balance = null;
     $currency = 'BWP';
     
-    // SACCUSSALIS format: { status: 'success', data: { balance: 1000 } }
     if (isset($data['data']['balance'])) {
         $balance = $data['data']['balance'];
         $currency = $data['data']['currency'] ?? 'BWP';
     } 
-    // ZURUBANK format: { balance: 1000 }
     elseif (isset($data['balance'])) {
         $balance = $data['balance'];
         $currency = $data['currency'] ?? 'BWP';
     }
-    // Fallback
     elseif (isset($data['available_balance'])) {
         $balance = $data['available_balance'];
         $currency = $data['currency'] ?? 'BWP';
