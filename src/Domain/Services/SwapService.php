@@ -1194,67 +1194,152 @@ private function getDecryptedRefreshToken(array $source): ?string
     // TABLE POPULATION METHODS - UPDATED WITH FIXES
     // ============================================================================
 
-    /**
+<?php
+/**
+ * ============================================================================
+ * FIX: SAVEPOINT-protected tracking table population
+ * ============================================================================
+ *
+ * ROOT CAUSE THIS FIXES:
+ * In PostgreSQL, once ANY statement inside a transaction fails, the entire
+ * transaction enters an "aborted" state (SQLSTATE 25P02). Every subsequent
+ * statement is rejected - INCLUDING a plain PHP try/catch that logs the
+ * error and "continues". Worse: the eventual $pdo->commit() does NOT throw
+ * an exception in this state - Postgres silently converts it into a
+ * ROLLBACK. This means the swap function returns 'status: committed' with
+ * a real-looking auth_id/hold_id, while zero rows actually exist in the
+ * database.
+ *
+ * A plain try/catch around an INSERT cannot rescue this - PHP has no idea
+ * the underlying Postgres session is poisoned. Only a real SAVEPOINT +
+ * ROLLBACK TO SAVEPOINT clears the aborted state and lets the outer
+ * transaction continue normally.
+ *
+ * This file wraps every individually-"non-critical" tracking insert in its
+ * own SAVEPOINT via runInSavepoint(), so a failure in, say, audit_logs
+ * can no longer silently kill the swap_requests / hold_transactions /
+ * cashout_authorizations rows that already committed successfully earlier
+ * in the same atomic swap.
+ * ============================================================================
+ */
+
+/**
+ * Run a callable inside a Postgres SAVEPOINT so that if it fails, only ITS
+ * work is undone - the outer atomic-swap transaction is NOT poisoned.
+ *
+ * WHY THIS EXISTS (read before removing it):
+ * "catch, log, and continue" is not actually possible against a live
+ * Postgres connection without a SAVEPOINT. Skipping this wrapper
+ * reintroduces the exact bug where executeAtomicSwap() reports
+ * 'status: committed' with a real auth_id/hold_id, but the whole
+ * transaction was silently rolled back underneath it.
+ */
+private function runInSavepoint(string $label, callable $fn)
+{
+    $safeName = 'sp_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $label);
+
+    try {
+        $this->swapDB->exec("SAVEPOINT {$safeName}");
+    } catch (PDOException $e) {
+        // Can't even create the savepoint - the connection is already in a
+        // state we can't safely operate on. Rethrow rather than silently
+        // proceeding, since we no longer know what state we're in.
+        $this->logger->error("Failed to create savepoint {$safeName}", ['error' => $e->getMessage()]);
+        throw $e;
+    }
+
+    try {
+        $result = $fn();
+        $this->swapDB->exec("RELEASE SAVEPOINT {$safeName}");
+        return $result;
+    } catch (\Throwable $e) {
+        try {
+            $this->swapDB->exec("ROLLBACK TO SAVEPOINT {$safeName}");
+            $this->swapDB->exec("RELEASE SAVEPOINT {$safeName}");
+        } catch (PDOException $rollbackError) {
+            // If even ROLLBACK TO SAVEPOINT fails, the outer transaction is
+            // genuinely unrecoverable - surface this loudly rather than
+            // pretending everything is fine.
+            $this->logger->error(
+                "ROLLBACK TO SAVEPOINT {$safeName} itself failed - outer transaction may be unrecoverable",
+                [
+                    'original_error' => $e->getMessage(),
+                    'rollback_error' => $rollbackError->getMessage()
+                ]
+            );
+        }
+        throw $e;
+    }
+}
+
+/**
  * Populate all tracking tables from swap data
  * Called after successful swap completion
- * 
+ *
  * CRITICAL FIXES:
- * 1. NEVER re-throw exceptions - tracking failures should NOT roll back the transaction
+ * 1. NEVER let a tracking failure roll back the transaction - but this can
+ *    ONLY be guaranteed with a SAVEPOINT per insert (see runInSavepoint()
+ *    above). A bare try/catch alone does NOT achieve this on Postgres.
  * 2. cashout_authorizations is ALREADY populated by storeCashoutAuthorization()
  *    earlier in executeSignedCashout(). DO NOT populate it again here!
- * 3. All operations are wrapped in individual try/catch blocks
- * 4. Each table population is independent - one failure doesn't affect others
- * 5. Detailed logging of what was populated and what failed
+ * 3. Each table population runs in its own SAVEPOINT + try/catch, so one
+ *    failure cannot affect any other table or the outer commit.
+ * 4. Detailed logging of what was populated and what failed.
  */
 private function populateTrackingTables(array $swapData, array $details, ?array $destResponse = null): void
 {
     $swapType = $swapData['swap_type'] ?? 'STANDARD';
     $swapRef = $swapData['reference'] ?? $this->currentSwapRef;
     $userId = $details['user_id'] ?? $swapData['user_id'] ?? null;
-    
+
     $populated = [];
     $errors = [];
-    
+    $swapId = null;
+
     // ============================================================
     // 1. Populate swap_requests - master record
     // ============================================================
     try {
-        $swapId = $this->populateSwapRequest($swapRef, $swapData, $details, $userId);
+        $swapId = $this->runInSavepoint('swap_request_' . $swapRef, function () use ($swapRef, $swapData, $details, $userId) {
+            return $this->populateSwapRequest($swapRef, $swapData, $details, $userId);
+        });
         if ($swapId) {
             $populated[] = 'swap_requests (id: ' . $swapId . ')';
         } else {
             $errors[] = 'swap_requests returned no swap_id';
         }
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         $errors[] = 'swap_requests: ' . $e->getMessage();
         $this->logger->error("Failed to populate swap_requests", [
             'reference' => $swapRef,
             'error' => $e->getMessage()
         ]);
-        // Continue - don't let this failure stop other tables
+        // Safely continued: the SAVEPOINT rollback above already undid
+        // only this insert's effect, so the outer transaction is intact.
     }
-    
+
     // ============================================================
     // 2. Populate swap_transactions - links to swap_id
     // ============================================================
-    if (isset($swapId) && $swapId) {
+    if ($swapId) {
         try {
-            $this->populateSwapTransaction($swapId, $swapRef, $swapData, $details, $userId);
+            $this->runInSavepoint('swap_transaction_' . $swapRef, function () use ($swapId, $swapRef, $swapData, $details, $userId) {
+                $this->populateSwapTransaction($swapId, $swapRef, $swapData, $details, $userId);
+            });
             $populated[] = 'swap_transactions';
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             $errors[] = 'swap_transactions: ' . $e->getMessage();
             $this->logger->error("Failed to populate swap_transactions", [
                 'reference' => $swapRef,
                 'swap_id' => $swapId,
                 'error' => $e->getMessage()
             ]);
-            // Continue - don't let this failure stop other tables
         }
     } else {
         $this->logger->warning("No swap_id available, skipping swap_transactions", ['swap_ref' => $swapRef]);
         $errors[] = 'swap_transactions skipped (no swap_id)';
     }
-    
+
     // ============================================================
     // 3. Populate type-specific tables
     // ============================================================
@@ -1268,56 +1353,59 @@ private function populateTrackingTables(array $swapData, array $details, ?array 
         //
         // We ONLY populate message_outbox here (SMS notifications)
         try {
-            $this->populateMessageOutbox($swapRef, $swapData, $details, $destResponse, $userId);
+            $this->runInSavepoint('message_outbox_' . $swapRef, function () use ($swapRef, $swapData, $details, $destResponse, $userId) {
+                $this->populateMessageOutbox($swapRef, $swapData, $details, $destResponse, $userId);
+            });
             $populated[] = 'message_outbox';
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             $errors[] = 'message_outbox: ' . $e->getMessage();
             $this->logger->error("Failed to populate message_outbox", [
                 'reference' => $swapRef,
                 'error' => $e->getMessage()
             ]);
-            // Continue - SMS is nice-to-have, not critical
         }
-        
+
     } elseif ($swapType === 'DEPOSIT') {
         try {
-            $this->populateDepositTransaction($swapRef, $swapData, $details, $userId);
+            $this->runInSavepoint('deposit_tx_' . $swapRef, function () use ($swapRef, $swapData, $details, $userId) {
+                $this->populateDepositTransaction($swapRef, $swapData, $details, $userId);
+            });
             $populated[] = 'deposit_transactions';
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             $errors[] = 'deposit_transactions: ' . $e->getMessage();
             $this->logger->error("Failed to populate deposit_transactions", [
                 'reference' => $swapRef,
                 'error' => $e->getMessage()
             ]);
-            // Continue - don't let this failure stop other tables
         }
-        
+
     } elseif ($swapType === 'IDENTITY' || $swapType === 'CONFIRM_IDENTITY') {
         // Identity swaps are tracked in identity_swap_holds table
         // No additional tracking needed here
         $populated[] = 'identity_swap_holds (already populated)';
-        
+
     } elseif ($swapType === 'MULTI_SOURCE' || $swapType === 'MULTI_DESTINATION') {
         // Multi-source/destination swaps have their own tracking
         // No additional tracking needed here
         $populated[] = 'multi_destination_swaps (already populated)';
     }
-    
+
     // ============================================================
     // 4. Populate audit_logs (optional but recommended)
     // ============================================================
     try {
-        $this->populateAuditLog($swapRef, $swapType, $swapData, $details, $userId);
+        $this->runInSavepoint('audit_log_' . $swapRef, function () use ($swapRef, $swapType, $swapData, $details, $userId) {
+            $this->populateAuditLog($swapRef, $swapType, $swapData, $details, $userId);
+        });
         $populated[] = 'audit_logs';
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         $errors[] = 'audit_logs: ' . $e->getMessage();
         $this->logger->warning("Failed to populate audit_logs", [
             'reference' => $swapRef,
             'error' => $e->getMessage()
         ]);
-        // Continue - audit logs are nice-to-have, not critical
     }
-    
+
     // ============================================================
     // 5. Log summary
     // ============================================================
