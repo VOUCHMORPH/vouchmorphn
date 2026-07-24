@@ -609,7 +609,10 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             }
             
           $data = $result['data'] ?? [];
-
+error_log("[DIAG] generateCashoutToken result keys: " . implode(',', array_keys($result)));
+error_log("[DIAG] generateCashoutToken result top-level voucher_number: " . var_export($result['voucher_number'] ?? 'MISSING', true));
+error_log("[DIAG] generateCashoutToken data keys: " . implode(',', array_keys($data)));
+error_log("[DIAG] generateCashoutToken data sat_number: " . var_export($data['sat_number'] ?? 'MISSING', true));
 // Prefer the already-normalized top-level fields GenericBankClient::generateToken()
 // computed (it maps bank-specific keys like sat_number -> voucher_number/swap_code).
 // Fall back to raw $data only if those are missing, and add sat_number as a last
