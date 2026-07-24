@@ -1,5 +1,5 @@
 <?php
-// ============================================================
+// ============================================================ 
 // SessionManager-based auth
 // ============================================================
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
@@ -612,30 +612,200 @@ async function refreshSourceCount() {
 }
 document.addEventListener('DOMContentLoaded', refreshSourceCount);
 
+/**
+ * View wallet balances - Enhanced to use api/v1/user/balance.php
+ * Shows real-time balances from all user sources
+ */
 async function viewWalletBalance() {
-    openModal('Balance', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Calculating cumulative balance...</div>');
-    const sources = await getUserSources().then(r => (r.ok && r.body.data.sources) || []);
-    if (sources.length === 0) {
-        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--text-muted);">No sources linked yet — nothing to show a balance for.<br><br><button class="btn btn-primary" onclick="closeModal();openAddSource()">➕ Add a source</button></div>`;
+    openModal('💰 Balances', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading balances...</div>');
+    
+    // Use the new API endpoint
+    const result = await fetchAllBalances();
+    
+    if (!result.success) {
+        document.getElementById('modalBody').innerHTML = `
+            <div style="text-align:center;padding:20px;color:var(--danger);">
+                <div style="font-size:40px;margin-bottom:12px;">⚠️</div>
+                <div style="font-weight:700;">Failed to load balances</div>
+                <div style="font-size:13px;color:var(--text-muted);margin-top:8px;">${escapeHtml(result.error)}</div>
+                <button class="btn btn-primary btn-sm" onclick="viewWalletBalance()" style="margin-top:12px;">
+                    🔄 Retry
+                </button>
+            </div>`;
         return;
     }
-    let byCurrency = {};
-    sources.forEach(s => {
-        const cur = (s.currency || PARTICIPANTS[s.institution]?.limits?.currency || 'UNKNOWN').toUpperCase().slice(0, 3);
-        byCurrency[cur] = byCurrency[cur] || [];
-        byCurrency[cur].push(s);
+    
+    const data = result.data || {};
+    const sources = data.sources || [];
+    const totals = data.total || {};
+    
+    if (sources.length === 0) {
+        document.getElementById('modalBody').innerHTML = `
+            <div style="text-align:center;padding:30px;color:var(--text-muted);">
+                <div style="font-size:40px;margin-bottom:12px;">📭</div>
+                <div style="font-weight:700;">No sources linked yet</div>
+                <div style="font-size:13px;margin-top:8px;">Add a source to see your balance</div>
+                <button class="btn btn-primary btn-sm" onclick="closeModal();openAddSource();" style="margin-top:12px;">
+                    ➕ Add Source
+                </button>
+            </div>`;
+        return;
+    }
+    
+    // Build the balance display
+    let html = `
+        <div style="margin-bottom:16px;">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Your total balance across all linked sources</div>`;
+    
+    // Show total balance by currency
+    if (Object.keys(totals).length > 0) {
+        html += `<div style="background:var(--text);color:#fff;padding:16px;border-radius:var(--radius);margin-bottom:12px;">`;
+        Object.keys(totals).forEach(cur => {
+            html += `
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <span style="font-size:12px;opacity:0.7;">Total ${cur}</span>
+                    <span style="font-size:24px;font-weight:700;">${formatMoney(totals[cur], cur)}</span>
+                </div>`;
+        });
+        html += `</div>`;
+    }
+    
+    // List individual sources
+    html += `<div style="max-height:50vh;overflow-y:auto;">`;
+    
+    sources.forEach(item => {
+        const source = item.source;
+        const balance = item.balance;
+        const instName = PARTICIPANTS[source.institution]?.name || source.institution;
+        const assetLabel = ASSETS[source.asset_type]?.label || source.asset_type;
+        
+        let statusIcon = '✅';
+        let balanceDisplay = '—';
+        let currency = source.currency || 'BWP';
+        
+        if (balance.success) {
+            balanceDisplay = formatMoney(balance.balance, balance.currency);
+            currency = balance.currency;
+        } else {
+            statusIcon = '⚠️';
+            balanceDisplay = `<span style="color:var(--text-muted);font-size:12px;">${escapeHtml(balance.error || 'Unavailable')}</span>`;
+        }
+        
+        html += `
+            <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+                    <div>
+                        <div style="font-weight:700;">${escapeHtml(instName)}</div>
+                        <div style="font-size:12px;color:var(--text-muted);">
+                            ${escapeHtml(assetLabel)} · ${escapeHtml(source.identifier)}
+                            ${source.account_name ? ` · ${escapeHtml(source.account_name)}` : ''}
+                        </div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div style="font-size:18px;font-weight:700;color:var(--primary-dark);">
+                            ${balanceDisplay}
+                        </div>
+                        <div style="font-size:11px;color:var(--text-dim);">
+                            ${statusIcon} ${source.status}
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;">
+                    <button class="btn-primary btn-sm" onclick="refreshSourceBalance('${source.id}')">⟳ Refresh</button>
+                    <button class="btn-secondary btn-sm" onclick="closeModal();useSourceForSwap('${source.id}')">Use as source</button>
+                </div>
+            </div>`;
     });
-    let html = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">This is your cumulative balance across all linked sources.</div>`;
-    Object.keys(byCurrency).forEach(cur => {
-        html += `<div style="background:var(--surface);border-radius:var(--radius);padding:14px;margin-bottom:10px;">
-            <div style="font-size:12px;color:var(--text-muted);">${byCurrency[cur].length} source(s) in ${cur}</div>
-            <div style="font-size:12px;margin-top:6px;">${byCurrency[cur].map(s => `${escapeHtml(s.institution)} — ${escapeHtml(s.account_name || maskIdentifier(s.identifier))}`).join('<br>')}</div>
+    
+    html += `</div>`;
+    
+    // Add action buttons
+    html += `
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-primary btn-sm" onclick="refreshAllBalances()">🔄 Refresh All</button>
+            <button class="btn btn-secondary btn-sm" onclick="closeModal();openAddSource()">➕ Add Source</button>
+            <button class="btn btn-secondary btn-sm" onclick="closeModal()">Close</button>
         </div>`;
-    });
-    html += `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Exact figures are pulled live from each source at swap time.</div>`;
+    
     document.getElementById('modalBody').innerHTML = html;
 }
 
+/**
+ * Refresh balance for a single source
+ */
+async function refreshSourceBalance(sourceId) {
+    const source = userSources.find(s => s.id === sourceId);
+    if (!source) {
+        showMessage('Source not found', 'error');
+        return;
+    }
+    
+    showMessage(`Fetching balance for ${source.institution}...`, 'info');
+    
+    const result = await fetchBalance(source.institution, source.identifier, source.identifier_type);
+    
+    if (result.success) {
+        const data = result.data || {};
+        showMessage(`Balance updated: ${formatMoney(data.balance, data.currency)}`, 'success');
+        // Refresh the view
+        viewWalletBalance();
+    } else {
+        showMessage(`Failed to fetch balance: ${result.error}`, 'error');
+        // Still refresh the view to show error state
+        viewWalletBalance();
+    }
+}
+
+/**
+ * Refresh all balances
+ */
+async function refreshAllBalances() {
+    showMessage('Refreshing all balances...', 'info');
+    await viewWalletBalance();
+}
+
+/**
+ * Fetch balance for a specific source using the API
+ */
+async function fetchBalance(institution, identifier, identifierType = 'auto') {
+    try {
+        const response = await fetch(CONFIG.API_BASE + '/api/v1/user/balance.php', {
+            method: 'POST',
+            headers: buildHeaders(),
+            body: JSON.stringify({
+                institution: institution,
+                identifier: identifier,
+                identifier_type: identifierType
+            }),
+            credentials: 'include'
+        });
+        
+        const data = await response.json();
+        return data;
+    } catch (error) {
+        console.error('Balance fetch error:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * Fetch balances for all user sources
+ */
+async function fetchAllBalances() {
+    try {
+        const response = await fetch(CONFIG.API_BASE + '/api/v1/user/all_balances.php', {
+            method: 'GET',
+            headers: buildHeaders(),
+            credentials: 'include'
+        });
+        
+        const data = await response.json();
+        return data;
+    } catch (error) {
+        console.error('Fetch all balances error:', error);
+        return { success: false, error: error.message };
+    }
+}
 function openMySourcesFromHeader() {
     closeModal();
     document.getElementById('sourceTypeButtons')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
