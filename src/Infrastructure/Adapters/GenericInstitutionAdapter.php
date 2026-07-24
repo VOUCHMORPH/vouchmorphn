@@ -608,20 +608,26 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
                 ];
             }
             
-            $data = $result['data'] ?? [];
-            
-            return [
-                'success' => true,
-                'cashout_code' => $data['cashout_code'] ?? $data['code'] ?? null,
-                'atm_pin' => $data['atm_pin'] ?? $data['pin'] ?? null,
-                'voucher_number' => $data['voucher_number'] ?? null,
-                'swap_code' => $data['swap_code'] ?? $data['voucher_number'] ?? null,
-                'expires_at' => $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
-                'transaction_reference' => $data['transaction_reference'] ?? null,
-                'message' => $data['message'] ?? 'Token generated',
-                'raw_response' => $result['raw_response'] ?? null,
-                'status_code' => $result['status_code'] ?? 0
-            ];
+          $data = $result['data'] ?? [];
+
+// Prefer the already-normalized top-level fields GenericBankClient::generateToken()
+// computed (it maps bank-specific keys like sat_number -> voucher_number/swap_code).
+// Fall back to raw $data only if those are missing, and add sat_number as a last
+// resort there too — this is the same class of bug as before, one hop later: this
+// method was re-deriving everything from the RAW bank response instead of trusting
+// the mapping GenericBankClient already did.
+return [
+    'success' => true,
+    'cashout_code' => $result['cashout_code'] ?? $data['cashout_code'] ?? $data['code'] ?? $data['sat_number'] ?? null,
+    'atm_pin' => $result['atm_pin'] ?? $data['atm_pin'] ?? $data['pin'] ?? null,
+    'voucher_number' => $result['voucher_number'] ?? $data['voucher_number'] ?? $data['sat_number'] ?? null,
+    'swap_code' => $result['swap_code'] ?? $data['swap_code'] ?? $data['voucher_number'] ?? $data['sat_number'] ?? null,
+    'expires_at' => $result['expires_at'] ?? $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
+    'transaction_reference' => $result['transaction_reference'] ?? $data['transaction_reference'] ?? $data['sat_number'] ?? null,
+    'message' => $data['message'] ?? 'Token generated',
+    'raw_response' => $result['raw_response'] ?? null,
+    'status_code' => $result['status_code'] ?? 0
+];
             
         } catch (\Exception $e) {
             return [
