@@ -7892,7 +7892,9 @@ private function beginAtomicSwap(string $reference): void
     private function commitAtomicSwap(): array
     {
         $this->swapDB->commit();
-        
+        error_log("[DIAG] PDO errorInfo after commit: " . json_encode($this->swapDB->errorInfo()));
+        $check = $this->swapDB->query("SELECT hold_id FROM hold_transactions WHERE hold_id = {$this->currentHoldId}")->fetchColumn();
+   error_log("[DIAG] Immediate post-commit re-read of hold_id: " . var_export($check, true));
         $result = [
             'status' => 'committed',
             'reference' => $this->currentSwapRef,
